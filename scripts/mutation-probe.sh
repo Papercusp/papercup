@@ -154,17 +154,16 @@
 #   under --in-tree, where the tracked file itself is the mutant and the
 #   substitution is a no-op.
 #
-#   --in-tree REFUSES to run until you say what you did about the sweep, because
-#   the sweep race is the one hazard this script cannot close on its own:
-#       --sweep-lock-held    you hold a file lock for each mutated path (the
-#                            incantation is in the refusal message) — git-sync
-#                            excludes those paths from its staging sweep
-#       --accept-sweep-race  you consciously accept it (an unswept checkout, or
-#                            a run short enough that you have judged the risk)
-#   The choice is echoed into MUTATION_PROBE_RESULT, so an accepted race is
-#   auditable after the fact rather than invisible. This gate exists because the
-#   advice it replaced was a log line printed while the mutation was ALREADY
-#   under way — nothing had to be decided for the probe to proceed.
+#   --in-tree REFUSES to run until the sweep is fenced:
+#       --sweep-lock-held    you hold a file lock for each mutated path with
+#                            intent 'mutation probe'; the script verifies that
+#                            this session owns it and extends its lease
+#       --accept-sweep-race  you consciously accept the race (an unswept
+#                            checkout, or a run short enough that you judged it)
+#   For a submodule, --sweep-lock-held also requires this session's exclusive
+#   git-sync:<harness> resource lock. Evidence binders refuse paths carrying the
+#   active 'mutation probe' file-lock intent. A bare acknowledgement never opens
+#   the gate; the verified lock state is echoed into MUTATION_PROBE_RESULT.
 #
 #   --mutate is a PERL expression, so on the PATTERN side ( ) { } + ? . * are
 #   REGEX METACHARACTERS. Escape them to match source code literally:
@@ -258,13 +257,82 @@ DESTRUCTIVE_LOG=""
 # gets the path git-sync will exclude in that repo's coordinate space.
 sweep_lock_path() {
   local root
-  root="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  root="$(sweep_lock_repo_root)"
   if [ -n "$root" ]; then
     case "$FILE" in
       "$root"/*) printf '%s' "${FILE#"$root"/}"; return 0 ;;
     esac
   fi
   printf '<repo-relative-mutated-file>'
+}
+
+sweep_lock_repo_root() {
+  git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true
+}
+
+ptool_json() {
+  # Surface the tool's own stderr on failure (WI-10002758). Discarding it
+  # turned a crisp dispatch refusal (e.g. projection_invalid) into the opaque
+  # "could not ..." the caller prints, which hid a probe that could never run.
+  local tool="$1" args="$2" projection="$3" result err_file rc
+  command -v ptool >/dev/null 2>&1 || { log "ptool $tool: ptool is not on PATH"; return 1; }
+  err_file="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-ptool.XXXXXX")" || return 1
+  result="$(printf '%s' "$args" | ptool "$tool" --json - --projection "$projection" 2>"$err_file")"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$result" ]; then
+    log "ptool $tool failed (exit $rc): $(tail -c 600 "$err_file" | tr '\n' ' ')"
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+  printf '%s' "$result"
+}
+
+verify_sweep_fence() {
+  local lock_root lock_path queue_args presence_json owner_id queue_json file_lock_id heartbeat_args heartbeat_json
+  local superproject_root harness_scope resource lock_list_args lock_list_json minimum_resource_ms
+  [ -n "${PAPERCUSP_SID:-}" ] || die "--sweep-lock-held requires the active Papercusp session id (PAPERCUSP_SID); use copy-out mode instead."
+  [ "$GUARD_MAX_SEC" -gt 0 ] && [ "$GUARD_MAX_SEC" -le 600 ] \
+    || die "--sweep-lock-held requires MUTATION_PROBE_WINDOW_MAX_SEC between 1 and 600 so the verified 1200s file-lock lease outlives the dirty window."
+  lock_root="$(sweep_lock_repo_root)"
+  lock_path="$(sweep_lock_path)"
+  [ -n "$lock_root" ] && [ "$lock_path" != '<repo-relative-mutated-file>' ] \
+    || die "could not resolve the mutated file's repository-relative lock path; use copy-out mode."
+
+  presence_json="$(ptool_json coord:presence '{"owner":"self"}' '{"pick":["self.ownerId"]}')" \
+    || die "could not read this session's Papercusp owner identity; refusing an unverified in-tree mutation."
+  owner_id="$(printf '%s' "$presence_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=JSON.parse(s).self?.ownerId;if(typeof id!=="string"||!id)process.exit(2);process.stdout.write(id)}catch{process.exit(2)}})')" \
+    || die "could not resolve this session's Papercusp owner identity; refusing an unverified in-tree mutation."
+
+  queue_args="$(node -e 'process.stdout.write(JSON.stringify({paths:[process.argv[1]],coordination_domain:process.argv[2]}))' "$lock_path" "$lock_root")" \
+    || die "could not build the file-lock query; refusing an unverified in-tree mutation."
+  queue_json="$(ptool_json locks:queue "$queue_args" '{"pick":["active_locks[].path","active_locks[].owner","active_locks[].intent","active_locks[].lock_id"]}')" \
+    || die "could not read the live file-lock queue; refusing an unverified in-tree mutation."
+  file_lock_id="$(printf '%s' "$queue_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const a=JSON.parse(s).active_locks||[];const r=a.find(x=>x.path===process.argv[1]&&x.owner===process.argv[2]&&String(x.intent||"").trim().toLowerCase()==="mutation probe");if(!r||typeof r.lock_id!=="string")process.exit(1);process.stdout.write(r.lock_id)}catch{process.exit(2)}})' "$lock_path" "$owner_id")" \
+    || die "no live file lock for '$lock_path' is held by this session with intent 'mutation probe'; acquire that exact lock before retrying."
+  heartbeat_args="$(node -e 'process.stdout.write(JSON.stringify({lock_id:process.argv[1],ttl_sec:1200,coordination_domain:process.argv[2]}))' "$file_lock_id" "$lock_root")" \
+    || die "could not build the file-lock heartbeat; refusing an unverified in-tree mutation."
+  # A real pick: dispatch refuses an empty projection ('{}') as projection_invalid.
+  heartbeat_json="$(ptool_json locks:heartbeat "$heartbeat_args" '{"pick":["results[].lock_id","results[].extended"]}')" \
+    || die "could not extend the verified file lock; refusing an unverified in-tree mutation."
+  printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=process.argv[1];const walk=v=>{if(!v)return false;if(typeof v==="string"){try{return walk(JSON.parse(v))}catch{return false}}if(Array.isArray(v))return v.some(walk);if(typeof v==="object"){if(v.lock_id===id&&v.extended===true)return true;return Object.values(v).some(walk)}return false};if(!walk(JSON.parse(s)))process.exit(1)}catch{process.exit(2)}})' "$file_lock_id" \
+    || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
+  log "verified this session's live file lock for $lock_path"
+
+  superproject_root="$(git -C "$(dirname "$FILE")" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+  if [ -n "$superproject_root" ]; then
+    harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
+    [ -n "$harness_scope" ] || die "a submodule in-tree probe requires a harness slug to verify the git-sync resource lock; use copy-out mode or set PAPERCUSP_TEST_RUN_HARNESS."
+    resource="git-sync:$harness_scope"
+    lock_list_args="$(node -e 'process.stdout.write(JSON.stringify({resource:process.argv[1]}))' "$resource")" \
+      || die "could not build the named-resource lock query; refusing a submodule mutation."
+    lock_list_json="$(ptool_json locks:list "$lock_list_args" '{"pick":["holders[].resource","holders[].owner","holders[].mode","holders[].status","holders[].expires_ts"]}')" \
+      || die "could not read the named-resource lock list; refusing a submodule mutation."
+    minimum_resource_ms=$(( (GUARD_MAX_SEC + 120) * 1000 ))
+    printf '%s' "$lock_list_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const owner=process.argv[1],resource=process.argv[2],minimum=Number(process.argv[3]);const h=(JSON.parse(s).holders||[]).find(x=>x.resource===resource&&x.owner===owner&&x.mode==="exclusive"&&x.status==="held"&&Date.parse(x.expires_ts)>=Date.now()+minimum);if(!h)process.exit(1)}catch{process.exit(2)}})' "$owner_id" "$resource" "$minimum_resource_ms" \
+      || die "this session must hold an exclusive '$resource' lock through the mutation window before probing a submodule."
+    log "verified this session's exclusive $resource lock through the mutation window"
+  fi
 }
 
 while [ $# -gt 0 ]; do
@@ -396,24 +464,31 @@ if [ "$IN_TREE" -eq 1 ] && [ -z "$SWEEP_ACK" ]; then
       deploys until someone notices. The trap in this script closes the DEATH
       race (a kill mid-run), not this one.
 
-      PREFERRED — hold only the mutated file off the sweep, then pass
+      PREFERRED — hold the mutated file off the sweep, then pass
       --sweep-lock-held:
 
           locks:acquire { paths: ['$(sweep_lock_path)'],
-                          ttl_sec: 600, intent: 'mutation probe' }
+                          coordination_domain: '$(sweep_lock_repo_root)',
+                          ttl_sec: 1200, intent: 'mutation probe' }
 
       git-sync excludes actively file-locked paths from its staging pathspecs,
-      so unrelated files and probes on disjoint paths keep moving. For a
-      multi-file mutation, include every mutated path in paths. Keep the
-      returned lock_id for the probe, heartbeat it before half the TTL, and
-      release it when done:
+      so unrelated files and probes on disjoint paths keep moving. The probe
+      verifies the current-session lock and heartbeats it to 1200 seconds. For
+      a submodule, also hold the exclusive per-harness git-sync resource:
 
-          locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 600 }
+          locks:acquire_resource { resource: 'git-sync:<harness>',
+                                   mode: 'exclusive', ttl_sec: 1200 }
+
+      Keep the resource lock alive for the entire probe and release both locks
+      after the restored file is verified:
+
+          locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 1200 }
           locks:release  { lock_id: '<returned lock_id>' }
 
-      A probe that genuinely mutates a subtree or whole checkout may still
-      require the global git-sync:<slug> resource, but that is not the normal
-      one-file case.
+      A file lock alone is insufficient for an in-tree submodule probe because
+      the git-sync tick can publish a nested-repo commit under its per-harness
+      lease. The probe refuses that case unless both fences are held by this
+      session.
 
       OR --accept-sweep-race, if this checkout is not swept (a scratch repo, a
       fork) or you have judged the exposure yourself. Either choice is recorded
@@ -1200,8 +1275,8 @@ if [ "$IN_TREE" = "1" ]; then
   log "⚠️  --in-tree: the TRACKED file will be mutated in place."
   if [ "$SWEEP_ACK" = "lock-held" ]; then
     log "⚠️  Sweep: you declared a file lock on $(sweep_lock_path) HELD — git-sync will exclude that path."
-    log "⚠️  That lock is NOT verified from here; if you did not actually take it,"
-    log "⚠️  or its ttl_sec expires mid-run, the mutant can still be swept."
+    log "⚠️  The lock owner and path will be verified immediately before mutation."
+    log "⚠️  A submodule additionally requires the exclusive git-sync resource lock."
   else
     log "⚠️  Sweep: race ACCEPTED — nothing is holding git-sync off. If a tick lands"
     log "⚠️  during this run, the mutant is committed to the shared tree."
@@ -1362,6 +1437,9 @@ MUTANT_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").mutant.non-whitespace"
 readonly MUTANT_NON_WHITESPACE
 
 # --- apply the mutation -----------------------------------------------------
+if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
+  verify_sweep_fence
+fi
 perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
 
 # Show the exact mutation before running the guard. This makes an accidental
