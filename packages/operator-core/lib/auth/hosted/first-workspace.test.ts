@@ -52,6 +52,7 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     provisionOperationId: 'prov-op',
   }));
   const resolvedSpecs: unknown[] = [];
+  const admissionOptions: unknown[] = [];
   const reserved: string[] = [];
   const deps: HostedFirstWorkspaceDependencies = {
     isEnabledFor: (organizationId) => organizationId === 'org-a',
@@ -86,8 +87,9 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
       if (!record || record.organizationId !== organizationId) throw new Error('missing');
       return { ...record, status: 'verified' as const };
     }),
-    createAdmission: (resolveDesiredSpec) => ({
+    createAdmission: (resolveDesiredSpec, options) => ({
       async ensureProvisioned(input) {
+        admissionOptions.push(options);
         resolvedSpecs.push(
           await resolveDesiredSpec({
             organizationId: input.organizationId,
@@ -104,7 +106,7 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     selectWorkspace: vi.fn(async () => ({ sessionId: 'session-rotated', expiresAt: new Date('2030-01-01T00:00:00Z') })),
     ...overrides,
   };
-  return { deps, records, ensureProvisioned, resolvedSpecs, reserved };
+  return { deps, records, ensureProvisioned, resolvedSpecs, admissionOptions, reserved };
 }
 
 describe('hosted first-workspace bootstrap (D-384)', () => {
@@ -333,6 +335,17 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
       provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' } },
     });
     expect((resolvedSpecs[0] as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
+  });
+
+  it('asks for the machine to be set up after it is built, with only the local-inference agent (D-401)', async () => {
+    const hosted = harness();
+    expect((await createHostedFirstWorkspace(hosted.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
+    expect(hosted.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
+
+    // The customer's own cloud is left exactly as they provisioned it.
+    const byoc = harness();
+    expect((await createHostedFirstWorkspace(byoc.deps).run(REQUEST)).ok).toBe(true);
+    expect(byoc.admissionOptions).toEqual([{}]);
   });
 
   it("ignores any configuration the browser sends: no request can steer Papercusp's cloud", async () => {

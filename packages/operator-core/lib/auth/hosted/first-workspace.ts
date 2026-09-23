@@ -52,6 +52,10 @@ import {
   type HostedProviderDelegationTemplate,
 } from '../../workspace-host/hosted-provider-delegation';
 import { HostedGcpNotReadyError, PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
+import {
+  PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  type WorkspaceHostBringUp,
+} from '../../workspace-host/hosted-bring-up';
 import { admissionIdentity, HostedWorkspaceAdmissionError } from './workspace-admission';
 import type { HostedWorkspaceAdmissionDependencies } from './workspace-admission';
 import type { HostedOnboardingWorkspacePort } from './onboarding';
@@ -100,8 +104,14 @@ export interface HostedFirstWorkspaceDependencies {
     hostId: string,
   ): Promise<HostedProviderDelegationOnboarding>;
   verifyDelegation(organizationId: string, workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord>;
-  /** Builds the admission port around a spec resolver bound to THIS verified delegation. */
-  createAdmission(resolveDesiredSpec: ResolveFirstWorkspaceSpec): HostedOnboardingWorkspacePort;
+  /**
+   * Builds the admission port around a spec resolver bound to THIS verified delegation. A
+   * `bringUp` sets the machine up once it is built (D-401); only Papercusp hosting passes one.
+   */
+  createAdmission(
+    resolveDesiredSpec: ResolveFirstWorkspaceSpec,
+    options?: { bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'> },
+  ): HostedOnboardingWorkspacePort;
   /** Rotate the caller's session onto the new workspace; null when the session moved on. */
   selectWorkspace(input: {
     sessionId: string;
@@ -334,8 +344,11 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         });
       }
 
-      const admission = deps.createAdmission(async (spec) =>
-        gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified }),
+      // D-401: a Papercusp-hosted machine is set up right after it is built; the customer's own
+      // cloud is left as they provisioned it.
+      const admission = deps.createAdmission(
+        async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified }),
+        hosting === 'papercusp' ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {},
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
       try {
