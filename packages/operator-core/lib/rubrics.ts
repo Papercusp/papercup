@@ -3859,15 +3859,16 @@ async function amendAcceptanceBarRubric(
             )?.barHash as string | undefined) ?? null,
         })),
       };
-      const approval =
-        preview || changedBars.length === 0
-          ? null
-          : await resolveAcceptanceBarApproval(tx as never, {
-              workspaceId: subjectScope.workspaceId,
-              approvalRef: input.approvalRef,
-              approvedBy: input.approvedBy,
-              expected: approvalRequest,
-            });
+      const shouldResolveApproval =
+        changedBars.length > 0 && (!preview || input.approvalRef !== undefined);
+      const approval = shouldResolveApproval
+        ? await resolveAcceptanceBarApproval(tx as never, {
+            workspaceId: subjectScope.workspaceId,
+            approvalRef: input.approvalRef,
+            approvedBy: input.approvedBy,
+            expected: approvalRequest,
+          })
+        : null;
       if (approval) {
         const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
           sql: tx as never,
