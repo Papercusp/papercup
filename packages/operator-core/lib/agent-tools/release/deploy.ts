@@ -318,14 +318,14 @@ export default defineTool({
   name: 'release:deploy',
   profile: 'engineer',
   description:
-    'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:gate-history reads the last N green-checkpoint ticks (candidate/status/failingTests/logPath per tick) instead of just the single most recent one; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
+    'Deploy diagnosis and manual levers for a committed change not live on :3070. status reads gate/deploy state and recommends an action; gate-history reads recent checkpoint ticks; trigger expedites a green-but-stalled deploy (confirm:true); force is an audited, role-gated un-green escape (acknowledgeRedTests + reason). Actions run detached; use git-sync:run separately.',
   guidance: {
     when:
       'A committed, gate-clean change isn\'t live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).',
     notWhen:
       'Never force as a reflex to "get my change out" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.',
     chaining:
-      'dev:pipeline_position{path} → release:deploy{op:status}; read status.gate.lastVerdict.read, status.checkpointRunInFlight.read, or status.deployInFlight.read with capability:read when you need the corresponding file log (these are files, not logs:read journal units). For checkpointRunInFlight, active:true + heldExternally:true means the shared run-lock observed a live external runner; systemd.appliesToActiveRun:false means its manual-unit probe does not describe that run, so loadState:not-found is not evidence the run ended. progressAtMs:null or equal to startedAtMs means no advancing heartbeat was observed, not proof of a stall. Do not fire another checkpoint based on those fields. Then {op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
+      'dev:pipeline_position{path} → release:deploy{op:status}. Read returned *.read handles with capability:read; they are files, not journal units. For checkpointRunInFlight, active:true + heldExternally:true confirms a live external runner. If systemd.appliesToActiveRun:false, a missing unit is not evidence it ended. Null or unchanged progressAtMs means no advancing heartbeat was observed, not proof of a stall. Do not fire a duplicate checkpoint from these fields. Trigger only when green-but-stalled; otherwise fix reds.',
     seeAlso: [
       'release:checkpoint-run (re-run the gate verdict before deploying)',
       'dev:pipeline_position (locate your commit in the pipeline first)',
