@@ -552,12 +552,12 @@ export interface CorestoreCutContext {
    * reader (SUBSTRATE_LOG_SNAPSHOT ON — P-005, REQUIRED for a sparse seed) folds
    * from `seedIndex` forward to the identical PG read model.
    *
-   * A core with NO complete snapshot within read-merge's `SNAPSHOT_SCAN_LOOKBACK`
-   * of its tail ships FULL (`seedIndex = 0`) + warns — the reader couldn't seed
-   * past a prefix it can't locate anyway, so a full ship is the safe fallback.
-   * The caller SHOULD append a fresh head snapshot (produceLogSnapshot, P-003)
-   * AFTER any large pre-cut drain, or the last snapshot falls outside the scan
-   * window and every core degrades to a full ship.
+   * A core with NO complete snapshot set ships FULL (`seedIndex = 0`) and warns.
+   * The reader could not seed past a prefix it cannot locate either, so a full
+   * ship is the safe fallback. Since p2p-join-catchup-speed P-004 the scan has no
+   * window (`SNAPSHOT_SCAN_LOOKBACK` is 0), so an old set far behind the tail is
+   * still found. A fresh head snapshot after a large pre-cut drain is still worth
+   * appending, because it trims the ops the old set does not summarize.
    *
    * Omitted / false ⇒ full ship (`downloadCoreRange` from 0), byte-identical to
    * the pre-P-004 behavior.
@@ -810,9 +810,10 @@ function coreAsAdmittedLog(core: ReadableCore, keyHex: string): AdmittedLog {
  * P-004 — the sparse-suffix start for a core: the chunk-0 index of its latest
  * COMPLETE snapshot set, via read-merge's `findLatestCompleteSnapshot` (the SAME
  * locator the joiner's cursor seeds to, so a `[seedIndex, len)` ship lines up with
- * where the reader folds from). `0` ⇒ no complete snapshot within the reader's scan
- * window ⇒ ship FULL (the reader can't seed past a prefix it can't find, so trimming
- * it would break restore). Scans only the tail — reads no prefix block.
+ * where the reader folds from). `0` ⇒ no complete snapshot set in the core ⇒ ship
+ * FULL (the reader can't seed past a prefix it can't find, so trimming it would break
+ * restore). When a set exists the scan reads only `[seedIndex, len)` plus its chunks,
+ * and no prefix block.
  */
 async function computeSparseFrom(store: Corestore, keyHex: string): Promise<number> {
   const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
@@ -858,8 +859,8 @@ async function computeSparseFrom(store: Corestore, keyHex: string): Promise<numb
     );
   } else {
     console.warn(
-      `[seed:corestore] sparse cut: no complete snapshot within the reader scan window ` +
-        `for ${short} → shipping FULL history for this core (append a fresh ` +
+      `[seed:corestore] sparse cut: no complete snapshot set anywhere ` +
+        `in ${short} → shipping FULL history for this core (append a fresh ` +
         `head snapshot via produceLogSnapshot after the pre-cut drain to trim it).`,
     );
   }

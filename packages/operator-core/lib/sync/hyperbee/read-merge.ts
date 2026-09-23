@@ -538,8 +538,12 @@ export interface MergeCursor {
 export interface SnapshotScanMemo {
   /** `log.length` when the scan ran. Every index below it has been scanned. */
   scannedTo: number;
-  /** The newest complete set found below `scannedTo`, or null for none. */
+  /** The newest complete set found below `scannedTo`, or null for none. While
+   *  `resumeBelow` is set it may be an OLDER complete set kept as a fallback. */
   seed: SnapshotSeed | null;
+  /** A scan that ran out of its time budget. Indices `[resumeBelow, scannedTo)` hold no
+   *  complete set; the next call continues downward from `resumeBelow - 1`. */
+  resumeBelow?: number;
   /** Set when the last attempt hit an unreadable block. The scan is retried once
    *  the log grows past this length or `SNAPSHOT_UNREADABLE_RETRY_MS` has passed,
    *  so a stuck tail block cannot cost a read timeout on every merge pass. */
@@ -578,16 +582,16 @@ export function createMergeCursor(): MergeCursor {
  * Dropping the bound does not add download. When a complete set exists, the
  * scan reads only `[seedIndex, length)`, which is exactly what the seeded fold
  * reads next. When none exists, the reader folds from 0 and reads every block
- * anyway. The scan reads windows in parallel and prefetches them
+ * anyway. The scan streams ranged-prefetch windows ahead of its reads
  * (`scanBackwardWindowed`), so its wall-clock cost tracks the fold's read side.
  * It does not replace the fold's own cost. An explicit positive `maxLookback`
  * still bounds the scan for callers that want a cheap tail probe.
  */
 export const SNAPSHOT_SCAN_LOOKBACK = 0;
 
-/** P-004: first and largest window of the parallel backward snapshot scan. The
- *  window doubles from MIN to MAX, so a set near the tail (steady state) costs a
- *  few reads beyond the answer, and a far one is read in large parallel batches.
+/** P-004: first and largest prefetch window of the backward snapshot scan. The
+ *  window doubles from MIN to MAX, so a set near the tail (steady state) hints at
+ *  most a few blocks below the answer, and a far one streams in large ranges.
  *  MAX stays modest because the seed cutter scans a live, WAL-churning corestore. */
 export const SNAPSHOT_SCAN_WINDOW_MIN = 32;
 export const SNAPSHOT_SCAN_WINDOW_MAX = 256;
@@ -613,36 +617,44 @@ function tryPrefetch(log: AdmittedLog, start: number, end: number): void {
 }
 
 /**
- * P-004: a read-through window over `log` for a BACKWARD scan. `read(i)` returns
- * the same tagged result `readOpBoundedDetailed` would. On a miss it reads the
- * window ending at `i` (down to `floor`) in parallel, after a ranged prefetch,
- * then yields a macrotask. Local corestore gets resolve on microtasks, so a long
- * scan with no yield would hold the event loop (the EI-81 class).
+ * P-004: the reader for a BACKWARD scan. `read(i)` returns exactly what
+ * `readOpBoundedDetailed(log, i)` returns, and the scan still calls it one index at
+ * a time, in the same order as before. So the scan GETs only the blocks it
+ * decides on, never a block below the set it finds.
  *
- * This is only a cache. The caller decides index by index, in descending order,
- * exactly as the sequential scan did. So a window that reads past the answer
- * changes no outcome. It costs at most one window of extra reads below it.
+ * That property is load-bearing. On a sparse joiner, every block below the seeded
+ * set is absent, so a speculative get there would stall on a network fetch or a
+ * read timeout (owner-roster-rebind-refold-snapshot.test.ts pins it).
+ *
+ * Speed comes from a ranged PREFETCH instead. When the scan enters a new window,
+ * it asks a remote log to stream that window (EI-92, the same hint the fold uses).
+ * The sequential gets then resolve as blocks arrive, rather than paying one round
+ * trip each. The window doubles from MIN to MAX, so the hint runs ahead in large
+ * ranges on a long scan. It can overshoot below the answer by at most one window,
+ * and that costs download only, never a wait. The scan also yields a macrotask
+ * every MIN reads, because local corestore gets resolve on microtasks and a long
+ * scan with no yield would hold the event loop (the EI-81 class).
  */
 function scanBackwardWindowed(
   log: AdmittedLog,
   floor: number,
   getTimeoutMs: number,
 ): (i: number) => Promise<BoundedReadResult> {
-  const cache = new Map<number, BoundedReadResult>();
   let size = SNAPSHOT_SCAN_WINDOW_MIN;
+  let hintedDownTo = Number.POSITIVE_INFINITY;
+  let sinceYield = 0;
   return async (i: number) => {
-    const hit = cache.get(i);
-    if (hit) return hit;
-    cache.clear();
-    const start = Math.max(floor, i - size + 1);
-    tryPrefetch(log, start, i + 1);
-    const reads = await Promise.all(
-      Array.from({ length: i - start + 1 }, (_, k) => readOpBoundedDetailed(log, start + k, getTimeoutMs)),
-    );
-    for (let k = 0; k < reads.length; k++) cache.set(start + k, reads[k]!);
-    size = Math.min(size * 2, SNAPSHOT_SCAN_WINDOW_MAX);
-    await yieldToEventLoop();
-    return cache.get(i)!;
+    if (i < hintedDownTo) {
+      const start = Math.max(floor, i - size + 1);
+      tryPrefetch(log, start, i + 1);
+      hintedDownTo = start;
+      size = Math.min(size * 2, SNAPSHOT_SCAN_WINDOW_MAX);
+    }
+    if (++sinceYield >= SNAPSHOT_SCAN_WINDOW_MIN) {
+      sinceYield = 0;
+      await yieldToEventLoop();
+    }
+    return readOpBoundedDetailed(log, i, getTimeoutMs);
   };
 }
 
@@ -727,7 +739,8 @@ export type SnapshotScanOutcome =
 
 /**
  * WI-2313 (supersedes the single-op P-007 scan): find the latest COMPLETE snapshot
- * set near the tail. Scans BACKWARD within `maxLookback`; on hitting any chunk of a
+ * set. Scans BACKWARD from the tail, within `maxLookback` when that is positive and
+ * with no floor by default (p2p-join-catchup-speed P-004); on hitting any chunk of a
  * set it derives the set span `[coversUpTo, coversUpTo + chunkCount)` from that
  * chunk's payload and verifies the whole span (`verifySnapshotSet`). A verified set
  * ⇒ its chunk-0 index; a TORN set ⇒ skip its whole span and keep scanning older
@@ -777,9 +790,33 @@ export async function findLatestCompleteSnapshotDetailed(
   const len = log.length;
   const lookbackFloor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
   const floor = Math.max(lookbackFloor, Math.max(0, Math.floor(opts?.floor ?? 0)));
+  const r = await scanForCompleteSnapshot(log, { from: len - 1, floor, getTimeoutMs });
+  // No deadline was given, so the budget outcome cannot occur.
+  return r.kind === 'budget' ? { kind: 'none-in-window', scannedFrom: len - 1, floor } : r;
+}
+
+/** P-004: a scan that stopped at its deadline. Indices `[resumeBelow, from]` were read
+ *  and hold no complete set; continue from `resumeBelow - 1`. */
+type SnapshotScanBudgetOutcome = { kind: 'budget'; resumeBelow: number };
+
+/**
+ * The backward scan behind {@link findLatestCompleteSnapshotDetailed}, from index
+ * `from` down to `floor`. `deadlineAt` (epoch ms) is optional. When the scan reaches
+ * it having found nothing, it stops with `budget`, and a caller can resume below.
+ * `seedCursorFromSnapshots` runs before the fold on every merge pass, so an
+ * unbounded scan of a huge snapshot-less log over a slow link could outlast the
+ * process. The fold would then never start. The deadline plus the resumable memo
+ * make that impossible.
+ */
+async function scanForCompleteSnapshot(
+  log: AdmittedLog,
+  args: { from: number; floor: number; getTimeoutMs: number; deadlineAt?: number },
+): Promise<SnapshotScanOutcome | SnapshotScanBudgetOutcome> {
+  const { from, floor, getTimeoutMs, deadlineAt } = args;
   const read = scanBackwardWindowed(log, floor, getTimeoutMs);
-  let i = len - 1;
+  let i = Math.min(from, log.length - 1);
   while (i >= floor) {
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) return { kind: 'budget', resumeBelow: i + 1 };
     const r = await read(i);
     if (r.kind !== 'op') {
       // Unavailable/withholding tail. The READER wrapper turns this back into `null`
@@ -805,7 +842,7 @@ export async function findLatestCompleteSnapshotDetailed(
     }
     i--;
   }
-  return { kind: 'none-in-window', scannedFrom: len - 1, floor };
+  return { kind: 'none-in-window', scannedFrom: from, floor };
 }
 
 /**
@@ -848,19 +885,20 @@ export async function seedCursorFromSnapshots(
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const jump = opts?.jumpFarBehind ?? true;
   const minBacklog = Math.max(1, opts?.jumpMinBacklogOps ?? SNAPSHOT_JUMP_MIN_BACKLOG_OPS);
+  const budgetMs = opts?.scanBudgetMs ?? SNAPSHOT_SEED_SCAN_BUDGET_MS;
   for (const log of logs) {
     const key = log.keyHex;
     if (cursor.snapshotSkipUnsafe?.has(key)) continue; // F4: durable failure state unknown
     const pos = cursor.positions.get(key);
     if (pos === undefined) {
       // Fresh log (P-007): seed at the newest complete set anywhere in the log.
-      const seed = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs);
+      const seed = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
       if (seed && seed.seedIndex > 0) cursor.positions.set(key, seed.seedIndex);
       continue;
     }
     // P-004 (R-4): a far-behind cursor jumps forward to a complete set AHEAD of it.
     if (!jump || log.length - pos < minBacklog || !snapshotJumpIsSafe(cursor, key)) continue;
-    const seed = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs);
+    const seed = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs, budgetMs);
     if (!seed || seed.seedIndex <= pos) continue; // never rewinds
     jumpCursorToSnapshot(cursor, key, pos, seed.seedIndex);
   }
@@ -879,7 +917,15 @@ export interface SeedCursorFromSnapshotsOpts {
   /** Backlog (ops) below which a positioned cursor does not look for a set ahead
    *  of it. Default `SNAPSHOT_JUMP_MIN_BACKLOG_OPS`. */
   jumpMinBacklogOps?: number;
+  /** Wall-clock budget (ms) for one log's scan in one call. The scan resumes on the
+   *  next call from where it stopped. Default `SNAPSHOT_SEED_SCAN_BUDGET_MS`;
+   *  `<= 0` means unbounded. */
+  scanBudgetMs?: number;
 }
+
+/** P-004: per-log, per-pass wall-clock budget for the seed/jump scan. It runs
+ *  before the fold, so it must never be able to keep the fold from starting. */
+export const SNAPSHOT_SEED_SCAN_BUDGET_MS = 20_000;
 
 /**
  * P-004 — when may a positioned cursor skip `[pos, seedIndex)`?
@@ -946,6 +992,7 @@ async function latestCompleteSnapshotMemoized(
   floor: number,
   maxLookback: number,
   getTimeoutMs: number,
+  budgetMs: number,
 ): Promise<SnapshotSeed | null> {
   if (maxLookback > 0) {
     const r = await findLatestCompleteSnapshotDetailed(log, maxLookback, getTimeoutMs, { floor });
@@ -966,22 +1013,67 @@ async function latestCompleteSnapshotMemoized(
   ) {
     return memo.seed;
   }
-  if (memo && memo.unreadableAtLength === undefined && len === memo.scannedTo) return memo.seed;
-  const scanFloor = Math.max(floor, memo?.scannedTo ?? 0);
-  const r = await findLatestCompleteSnapshotDetailed(log, 0, getTimeoutMs, { floor: scanFloor });
-  if (r.kind === 'unreadable') {
-    // Not evidence about any set. Keep what is known and retry once the log grows.
-    memos.set(log.keyHex, {
+  if (
+    memo &&
+    memo.unreadableAtLength === undefined &&
+    memo.resumeBelow === undefined &&
+    len === memo.scannedTo
+  ) {
+    return memo.seed;
+  }
+  const key = log.keyHex;
+  const known = memo?.seed ?? null;
+  const deadlineAt = budgetMs > 0 ? Date.now() + budgetMs : undefined;
+  const unreadable = (): SnapshotSeed | null => {
+    // Not evidence about any set. Keep what is known and retry later.
+    memos.set(key, {
       scannedTo: memo?.scannedTo ?? 0,
-      seed: memo?.seed ?? null,
+      seed: known,
+      ...(memo?.resumeBelow !== undefined ? { resumeBelow: memo.resumeBelow } : {}),
       unreadableAtLength: len,
       unreadableAtMs: Date.now(),
     });
-    return memo?.seed ?? null;
+    return known;
+  };
+
+  // 1. The newest region first: the ops appended since the last scan (all of the log on
+  //    the first scan). A set found here is the newest there is.
+  let resumeBelow = memo?.resumeBelow;
+  if (!memo || len > memo.scannedTo) {
+    const top = await scanForCompleteSnapshot(log, {
+      from: len - 1,
+      floor: Math.max(floor, memo?.scannedTo ?? 0),
+      getTimeoutMs,
+      deadlineAt,
+    });
+    if (top.kind === 'found') {
+      memos.set(key, { scannedTo: len, seed: top.seed });
+      return top.seed;
+    }
+    if (top.kind === 'unreadable') return unreadable();
+    if (top.kind === 'budget') {
+      // Out of time inside the new region. Resume below it next pass. Keep a known
+      // older set as the answer meanwhile: any complete set is a correct seed.
+      memos.set(key, { scannedTo: len, seed: known, resumeBelow: top.resumeBelow });
+      return known;
+    }
   }
-  const seed = r.kind === 'found' ? r.seed : (memo?.seed ?? null);
-  memos.set(log.keyHex, { scannedTo: len, seed });
-  return seed;
+
+  // 2. An earlier scan ran out of time: continue it downward from where it stopped.
+  if (resumeBelow !== undefined) {
+    const rest = await scanForCompleteSnapshot(log, { from: resumeBelow - 1, floor, getTimeoutMs, deadlineAt });
+    if (rest.kind === 'unreadable') return unreadable();
+    if (rest.kind === 'budget') {
+      memos.set(key, { scannedTo: len, seed: known, resumeBelow: rest.resumeBelow });
+      return known;
+    }
+    // Nothing above `resumeBelow` held a set, so a set found here is the newest.
+    const seed = rest.kind === 'found' ? rest.seed : known;
+    memos.set(key, { scannedTo: len, seed });
+    return seed;
+  }
+  memos.set(key, { scannedTo: len, seed: known });
+  return known;
 }
 
 /* ------------------------------------------------------------------ *

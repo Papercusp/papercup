@@ -3,9 +3,10 @@
  * fresh head `__snapshot__`, so a `--sparse` release cut can be taken with NO OUTAGE.
  *
  * Why this exists at all: `--sparse` ships only `[coreSparseFrom, len)`, and
- * `computeSparseFrom` finds that bound by scanning back `SNAPSHOT_SCAN_LOOKBACK`
- * (4,000) ops from the tail. So a head snapshot at the tail is a PRECONDITION of a
- * sparse cut. A quiesced cut appends it itself; the WI-4487 no-outage cut opens the
+ * `computeSparseFrom` finds that bound by scanning back from the tail to the newest
+ * complete snapshot set. That scan was capped at 4,000 ops until p2p-join-catchup-speed
+ * P-004 removed the cap. A head snapshot at the tail still keeps the cut small (it
+ * summarizes every op up to the cut), so the cut asks for one. A quiesced cut appends it itself; the WI-4487 no-outage cut opens the
  * store READ-ONLY and cannot. Before this, "no outage" and "sparse" were mutually
  * exclusive, and the release either took an outage or shipped 1.9 GB labelled sparse.
  *

@@ -129,6 +129,32 @@ describe('snapshot scan: unreadable vs absent (WI-37553)', () => {
     expect(r.kind).toBe('none-in-window');
   });
 
+  it('P-004: with the DEFAULT lookback, finds a complete set 9,000 blocks from the tail (the cutter path)', async () => {
+    // The cutter (seed-provider computeSparseFrom) passes SNAPSHOT_SCAN_LOOKBACK. When
+    // that was 4,000, a set further back read as none-in-window, so the cutter shipped
+    // FULL history even though a sparse cut was possible.
+    const ops: PeerLogOp[] = [];
+    for (let i = 0; i < 10; i++) ops.push(plainOp(i));
+    ops.push(snapshotChunk(10, 3, 0), snapshotChunk(10, 3, 1), snapshotChunk(10, 3, 2));
+    for (let i = 13; i < 9_013; i++) ops.push(plainOp(i));
+    const far = makeLog(ops);
+    const bounded = await findLatestCompleteSnapshotDetailed(far, 4_000, T);
+    expect(bounded.kind).toBe('none-in-window'); // the old window really did miss it
+    const r = await findLatestCompleteSnapshotDetailed(far, undefined, T);
+    expect(r).toEqual({ kind: 'found', seed: { seedIndex: 10, coversUpTo: 10, chunkCount: 3 } });
+  });
+
+  it('P-004: a hung block far from the tail still reports UNREADABLE at that block, not a later one', async () => {
+    // The scan reads windows in parallel. It must still report the FIRST problem in
+    // descending order, exactly like the old one-read-at-a-time scan.
+    const ops: PeerLogOp[] = [];
+    for (let i = 0; i < 10; i++) ops.push(plainOp(i));
+    ops.push(snapshotChunk(10, 3, 0), snapshotChunk(10, 3, 1), snapshotChunk(10, 3, 2));
+    for (let i = 13; i < 600; i++) ops.push(plainOp(i));
+    const r = await findLatestCompleteSnapshotDetailed(makeLog(ops, new Set([400, 50])), undefined, T);
+    expect(r).toEqual({ kind: 'unreadable', atIndex: 400, cause: 'timeout' });
+  });
+
   it('READER semantics are unchanged: the boolean wrapper still returns null on an unreadable tail', async () => {
     // Readers must keep folding from 0 on an unreadable tail — that is the safe direction
     // for them. Only the CUTTER needed the distinction, so this wrapper must not change.

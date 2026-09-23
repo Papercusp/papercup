@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { produceLogSnapshot } from '../log-snapshot';
 import {
   mergeAdmittedLogsIncremental,
@@ -156,6 +156,29 @@ describe('Brief Z H-Z1 — snapshot-seeded stale-PUT-after-DELETE resurrection (
       expect(pgSeeded['queue::A']).toBeUndefined();
     },
   );
+
+  it('P-004: a FAR-BEHIND cursor that jumps past the del keeps the deleted key absent', async () => {
+    // A peer that folded only A's first op (the put), fell behind, and then jumps to
+    // A's snapshot. The jump skips A's del op, so the tombstone row must carry it.
+    const { logA, logB } = await buildScenario();
+    const pg = new Map<string, unknown>();
+    const cursor = createMergeCursor();
+    const sink = async (env: { table?: string; hbKey?: string; type: string; value?: unknown }) => {
+      const k = `${env.table}::${env.hbKey}`;
+      if (env.type === 'del') pg.delete(k);
+      else pg.set(k, env.value);
+      return true;
+    };
+    await mergeAdmittedLogsIncremental([logA], cursor, { getTimeoutMs: 0, maxOpsPerPass: 1, applyImpl: sink as never });
+    expect(pg.get('queue::A')).toEqual({ v: 'v0' }); // the put landed, the del did not yet
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await seedCursorFromSnapshots([logA, logB], cursor, { maxLookback: 0, getTimeoutMs: 0, jumpMinBacklogOps: 1 });
+    expect(cursor.positions.get(logA.keyHex)).toBe(3); // jumped over the del to the set
+    warn.mockRestore();
+    await mergeAdmittedLogsIncremental([logA, logB], cursor, { getTimeoutMs: 0, maxOpsPerPass: 0, applyImpl: sink as never });
+    expect(pg.get('queue::A')).toBeUndefined(); // INVARIANT Z holds on the jump path too
+    expect(Object.fromEntries(pg)).toEqual(await foldToPg([logA, logB], 0));
+  });
 
   it('CONVERGENCE (EI-1688 fixed): seeded fold and full fold now AGREE — the deleted key stays absent', async () => {
     const { logA, logB } = await buildScenario();

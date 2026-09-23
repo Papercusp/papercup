@@ -25,7 +25,7 @@
  * `versionGatedLog` parameterized by the reading peer's build version.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
@@ -152,6 +152,30 @@ describe('Brief F / Scenario 7 C2 — schema-skew × snapshot-compaction recover
     // RECOVERY: the snapshot reconstituted every key, including the formerly-dropped
     // newer one — so compaction does NOT cause permanent loss across a rolling upgrade.
     expect(sink.appliedKeys.sort()).toEqual(['K1', 'K3', 'K_future']);
+    expect(sink.appliedKeys).toContain('K_future');
+  });
+
+  it('P-004: an OLD peer with a positioned cursor does NOT jump (it cannot read the v2 set)', async () => {
+    const B = fakeLog('B', bLog);
+    const cursor = createMergeCursor();
+    cursor.positions.set('B', 1);
+    await seedCursorFromSnapshots([gate(B, KNOWN_OLD)], cursor, { getTimeoutMs: 0, jumpMinBacklogOps: 1 });
+    expect(cursor.positions.get('B')).toBe(1);
+  });
+
+  it('P-004: an UPGRADED peer whose cursor sat behind the dropped op jumps and recovers it from the set', async () => {
+    // Resumed at position 2 (it had folded K1, gate-dropped K_future on the old build).
+    // After the upgrade the durable position survives, so fresh seeding never runs.
+    // Only the far-behind jump can reach the set.
+    const B = fakeLog('B', bLog);
+    const cursor = createMergeCursor();
+    cursor.positions.set('B', 2);
+    const sink = captureSink();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await seedCursorFromSnapshots([gate(B, NEWER)], cursor, { getTimeoutMs: 0, jumpMinBacklogOps: 1 });
+    warn.mockRestore();
+    expect(cursor.positions.get('B')).toBe(SNAP_INDEX);
+    await mergeAdmittedLogsIncremental([gate(B, NEWER)], cursor, { applyImpl: sink.applyImpl, getTimeoutMs: 0 });
     expect(sink.appliedKeys).toContain('K_future');
   });
 });
