@@ -27,6 +27,7 @@ const GCP: HostedProviderDelegationConfiguration = {
 const orgPrincipal = (organizationId: string) =>
   `serviceAccount:pco-${organizationId}@papercusp-identity.iam.gserviceaccount.com`;
 const SERVER_PRINCIPAL = orgPrincipal('org-a');
+const HOSTING_PROJECT = 'papercusp-hosted-workspaces';
 
 const REQUEST: HostedFirstWorkspaceRequest = {
   organizationId: 'org-a',
@@ -36,8 +37,11 @@ const REQUEST: HostedFirstWorkspaceRequest = {
   attemptKey: 'attempt-0123456789abcdef',
   displayName: 'My workspace',
   label: 'My GCP project',
+  hosting: 'byoc',
   configuration: GCP,
 };
+
+const PAPERCUSP_REQUEST: HostedFirstWorkspaceRequest = { ...REQUEST, hosting: 'papercusp', configuration: undefined };
 
 function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
   const records = new Map<string, HostedProviderDelegationRecord>();
@@ -46,12 +50,20 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     provisionOperationId: 'prov-op',
   }));
   const resolvedSpecs: unknown[] = [];
+  const reserved: string[] = [];
   const deps: HostedFirstWorkspaceDependencies = {
     isEnabledFor: (organizationId) => organizationId === 'org-a',
     provisioningAvailable: () => true,
     delegationOrganization: (organizationId) => ({
       organizationId,
       gcpTrustedPrincipal: async () => orgPrincipal(organizationId),
+      gcpPapercuspHosting: async (hostId) => {
+        reserved.push(hostId);
+        return {
+          projectId: HOSTING_PROJECT,
+          serviceAccountEmail: orgPrincipal(organizationId).slice('serviceAccount:'.length),
+        };
+      },
     }),
     organizationWorkspaceIds: async () => [],
     readDelegation: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
@@ -83,7 +95,7 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     selectWorkspace: vi.fn(async () => ({ sessionId: 'session-rotated', expiresAt: new Date('2030-01-01T00:00:00Z') })),
     ...overrides,
   };
-  return { deps, records, ensureProvisioned, resolvedSpecs };
+  return { deps, records, ensureProvisioned, resolvedSpecs, reserved };
 }
 
 describe('hosted first-workspace bootstrap (D-384)', () => {
@@ -237,6 +249,9 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
         gcpTrustedPrincipal: async () => {
           throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
         },
+        gcpPapercuspHosting: async () => {
+          throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
+        },
       }),
     });
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
@@ -263,5 +278,98 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
       configuration: GCP,
     }).record;
     expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record })).toMatchObject({ target: 'gcp', hostId: 'host-1' });
+  });
+
+  it('rejects a missing or unknown hosting choice, and bring-your-own-cloud without a configuration', async () => {
+    const { deps } = harness();
+    const bootstrap = createHostedFirstWorkspace(deps);
+    expect(await bootstrap.run({ ...REQUEST, hosting: undefined as never })).toMatchObject({ code: 'invalid_request' });
+    expect(await bootstrap.run({ ...REQUEST, hosting: 'someone-else' as never })).toMatchObject({ code: 'invalid_request' });
+    expect(await bootstrap.run({ ...REQUEST, configuration: undefined })).toMatchObject({ code: 'invalid_request' });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+});
+
+describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
+  it('reserves the derived host, provisions it in the hosting project with no machine identity, and selects it', async () => {
+    const { deps, records, resolvedSpecs, reserved } = harness();
+    const result = await createHostedFirstWorkspace(deps).run(PAPERCUSP_REQUEST);
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    expect(result).toMatchObject({ ok: true, workspaceId: identity.workspaceId, sessionId: 'session-rotated' });
+    // Reserved before the delegation is recorded, re-asserted once the workspace is admitted.
+    expect(reserved).toEqual([identity.hostId, identity.hostId]);
+    expect(records.get(`${identity.workspaceId}/${identity.connectionId}`)?.configuration).toEqual({
+      provider: 'gcp',
+      source: {
+        method: 'papercusp-hosted',
+        projectId: HOSTING_PROJECT,
+        serviceAccountEmail: SERVER_PRINCIPAL.slice('serviceAccount:'.length),
+        hostId: identity.hostId,
+      },
+    });
+    expect(resolvedSpecs[0]).toMatchObject({
+      hostId: identity.hostId,
+      scope: { kind: 'project', id: HOSTING_PROJECT },
+      region: 'us-central1',
+      zone: 'us-central1-c',
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
+      provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' } },
+    });
+    expect((resolvedSpecs[0] as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
+  });
+
+  it("ignores any configuration the browser sends: no request can steer Papercusp's cloud", async () => {
+    const { deps, records, reserved } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...PAPERCUSP_REQUEST,
+      configuration: {
+        provider: 'gcp',
+        source: {
+          method: 'papercusp-hosted',
+          projectId: 'attacker-project',
+          serviceAccountEmail: 'pco-org-b@papercusp-identity.iam.gserviceaccount.com',
+          hostId: 'host-of-org-b',
+        },
+      },
+    });
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    expect(result.ok).toBe(true);
+    expect(reserved).not.toContain('host-of-org-b');
+    expect(JSON.stringify(records.get(`${identity.workspaceId}/${identity.connectionId}`))).not.toMatch(
+      /attacker-project|org-b/,
+    );
+  });
+
+  it('asks the browser to retry, with nothing to apply, while the reservation propagates', async () => {
+    const { deps, ensureProvisioned } = harness({
+      verifyDelegation: vi.fn(async () => {
+        throw new Error('hosted_provider_delegation_verification_failed');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(PAPERCUSP_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', status: 409, retryable: true });
+    expect(result.ok === false && result.template).toBeUndefined();
+    expect(ensureProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('refuses a spec for a host other than the one the delegation reserves', () => {
+    const record = buildHostedProviderDelegationOnboarding({
+      organizationId: 'org-a',
+      workspaceId: 'ws-1',
+      connectionId: 'conn-1',
+      label: 'x',
+      credentialRef: 'delegation://ws-1/conn-1',
+      configuration: {
+        provider: 'gcp',
+        source: {
+          method: 'papercusp-hosted',
+          projectId: HOSTING_PROJECT,
+          serviceAccountEmail: 'pco-a@papercusp-identity.iam.gserviceaccount.com',
+          hostId: 'host-1',
+        },
+      },
+    }).record;
+    expect(() => gcpFirstWorkspaceDesiredSpec({ hostId: 'host-2', record })).toThrow(HostedWorkspaceAdmissionError);
+    expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record })).toMatchObject({ hostId: 'host-1' });
   });
 });
