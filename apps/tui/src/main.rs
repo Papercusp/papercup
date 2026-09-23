@@ -5443,6 +5443,15 @@ async fn stream_su_session_events(
     let mut terminal_seen = startup_snapshot
         .as_ref()
         .is_some_and(|snapshot| snapshot.terminal);
+    let startup_terminal = terminal_seen;
+    // Events at or below the snapshot head are the retained window replaying,
+    // and the snapshot above already judged that state. A replayed ready cannot
+    // send, and a replayed failure cannot fail: a reconnect after an engine
+    // death replays that death while the recovered runtime is starting. History
+    // may only supply the reason for a snapshot that is itself terminal.
+    let replay_head = startup_snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.last_sequence);
     let mut startup_error: Option<String> = None;
     // The host may spend 45 seconds initializing its engine and SU MCP. Keep
     // the draft pending across its starting descriptor and await a ready event.
@@ -5484,23 +5493,26 @@ async fn stream_su_session_events(
             crate::su_session::SuSessionEvent::Lifecycle { state, .. } => Some(*state),
             _ => None,
         };
-        terminal_seen |= matches!(
-            lifecycle,
-            Some(
-                crate::su_session::SuSessionLifecycleState::Ended
-                    | crate::su_session::SuSessionLifecycleState::Failed
-            )
-        );
-        let can_send = matches!(
-            lifecycle,
-            Some(
-                crate::su_session::SuSessionLifecycleState::Ready
-                    | crate::su_session::SuSessionLifecycleState::Running
-            )
-        );
-        let identity_matches =
-            su_turn_target_matches(&binding, &event.envelope().session, &harness, &chat_id);
-        if identity_matches {
+        let replayed = event.envelope().sequence <= replay_head;
+        terminal_seen |= !replayed
+            && matches!(
+                lifecycle,
+                Some(
+                    crate::su_session::SuSessionLifecycleState::Ended
+                        | crate::su_session::SuSessionLifecycleState::Failed
+                )
+            );
+        let can_send = !replayed
+            && matches!(
+                lifecycle,
+                Some(
+                    crate::su_session::SuSessionLifecycleState::Ready
+                        | crate::su_session::SuSessionLifecycleState::Running
+                )
+            );
+        let identity_matches = replayed
+            || su_turn_target_matches(&binding, &event.envelope().session, &harness, &chat_id);
+        if identity_matches && (!replayed || startup_terminal) {
             match &event {
                 crate::su_session::SuSessionEvent::Error { message, .. } => {
                     startup_error = Some(message.clone());

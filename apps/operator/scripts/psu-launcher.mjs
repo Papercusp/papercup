@@ -5560,15 +5560,22 @@ export function ompDefaultModelAdvisory(home = homedir()) {
  * NO adv-row link — that is what lets a fork run concurrently with the still-live
  * original without colliding on its locks/presence/inbox-wake. Workspace scope
  * still carries over (the fork stays in the same workspace).
+ *
+ * `ownerId` PRE-PINS that fresh id instead of minting a random one
+ * (consult-expert-routing-2026-09-22 P-003 — a consult names its responder
+ * before the answering session boots). It applies to the FORK branch ONLY: on a
+ * plain resume the recorded coord id is the whole point of the branch below, and
+ * overriding it there would strand the original's locks/awaits/presence, which is
+ * the exact regression the fresh-random-SID resume caused.
  */
 export function resumeEnvFor(
   session,
-  { mintSid = () => `su-${randomUUID()}`, fork = false } = {},
+  { mintSid = () => `su-${randomUUID()}`, fork = false, ownerId = null } = {},
 ) {
   if (fork) {
     return {
       PAPERCUSP_AGENT: session.agent,
-      PAPERCUSP_SID: mintSid(),
+      PAPERCUSP_SID: ownerId || mintSid(),
       ...(session.workspaceId
         ? { PAPERCUSP_WORKSPACE: session.workspaceId }
         : {}),
@@ -5617,14 +5624,14 @@ export function resumeAccountPlan(args) {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null, ownerId?: string | null}} [options]
  */
 export function buildResumeEnv(
   session,
-  { fork = false, brain = false, accountEnv = null } = {},
+  { fork = false, brain = false, accountEnv = null, ownerId = null } = {},
 ) {
   return {
-    ...resumeEnvFor(session, { fork }),
+    ...resumeEnvFor(session, { fork, ownerId }),
     // Anything launched/resumed through psu is an agent session for hook
     // purposes. Direct non-psu Claude terminals remain unmarked and keep the
     // owner-session exemption in pretooluse-bash-resource-gate.sh.
@@ -11900,6 +11907,7 @@ async function launchResume(
     modelSource = null,
     kickoff = null,
     launchMode = null,
+    ownerId = null,
   } = {},
 ) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
@@ -12115,7 +12123,7 @@ async function launchResume(
     // the inference-gateway account (spawn-env only, otherwise lost on resume); the
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
-    const env = buildResumeEnv(session, { fork, brain, accountEnv });
+    const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId });
     if (session.agent === "codex" && modelSource) {
       env.PAPERCUSP_MODEL_SOURCE = modelSource;
     }
@@ -12375,13 +12383,24 @@ async function launchResume(
  * MUST run in that same cwd). agent is claude here because tracked forks need a
  * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
-export function forkBootstrapBody(session, account = null, launchMode = null) {
+export function forkBootstrapBody(
+  session,
+  account = null,
+  launchMode = null,
+  ownerId = null,
+) {
   return {
     agent: "claude",
     workspace: session.workspaceId || null,
     harness_slug: null,
     plan_slug: session.planSlug || null,
     cwd: session.cwd,
+    // PRE-PINNED fork identity (consult-expert-routing-2026-09-22 P-003). A fork
+    // normally has bootstrap-su mint its fresh coord id, which leaves that id
+    // unknowable to the caller until the child registers presence. A consult
+    // must name its responder BEFORE the answering session boots, so it pins the
+    // id here and bootstrap-su adopts it exactly as on a fresh --owner-id launch.
+    ...(ownerId ? { owner_id: ownerId } : {}),
     // A tracked fork mints a fresh session, so the gateway account pin is folded
     // server-side (resolveAccountPin) into the new launch envelope — the same path
     // a fresh psu launch takes. Omitted → no `account` key (byte-identical).
@@ -12815,6 +12834,11 @@ async function launchTrackedFork(
     // here than for an in-place resume: a fork mints a FRESH coord identity, so no
     // external caller can even address it until it boots and registers presence.
     kickoff: resumeKickoffText(args),
+    // …unless the caller PRE-PINNED that identity (--owner-id), which is how a
+    // consult can name its responder before the answering session exists. Carried
+    // onto the untracked fallback below as well, so a bootstrap failure degrades
+    // to an untracked fork with the SAME id rather than an unaddressable one.
+    ownerId: args.ownerId || null,
   };
   const forkable =
     session.agent === "claude" &&
@@ -12836,6 +12860,7 @@ async function launchTrackedFork(
           session,
           acct?.forward ?? acct?.id ?? null,
           launchModeFromArgs(args),
+          args.ownerId || null,
         ),
       ),
     });
@@ -14056,6 +14081,9 @@ async function launchResolvedResume(source, args, { tracked }) {
     modelSource: target.modelSource,
     kickoff: resumeKickoffText(args),
     launchMode: launchModeFromArgs(args),
+    // Honored on the FORK branch only (resumeEnvFor): a same-backend resume
+    // re-attaches its recorded coord id and must not be re-pinned.
+    ownerId: args.ownerId || null,
   });
 }
 

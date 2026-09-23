@@ -80,6 +80,12 @@ import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
 import { assessWorkScope } from './work-scope-policy';
+import {
+  assessDirectiveStatus,
+  deriveDirectiveStatus,
+  type DirectiveLinkedWorkItem,
+  type DirectiveStatusDirectiveInput,
+} from './owner-directive-status';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
@@ -166,6 +172,20 @@ const ROLE_LAUNCH_CELLS = BUILTIN_CELLS.filter(
 const WORK_SCOPE_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'workspace:work_scope_status',
 );
+const DIRECTIVE_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'orders:get',
+);
+
+/**
+ * Drives the REAL pipeline end to end — deriveDirectiveStatus() then the exported
+ * assessDirectiveStatus() — rather than hand-building a DirectiveStatus. Building the
+ * status by hand would let a control assert a shape the derivation can no longer
+ * produce, which is a truth table about nothing.
+ */
+const DIRSTAT = (
+  directive: DirectiveStatusDirectiveInput,
+  linked: readonly DirectiveLinkedWorkItem[] = [],
+): string => assessDirectiveStatus(deriveDirectiveStatus(directive, linked));
 
 // The pipeline resolver is deliberately live and comparatively expensive, but every
 // row below only inspects a different declaration against one of TWO identical
@@ -981,6 +1001,27 @@ const CONTROLS: Record<string, readonly Control[]> = {
     { label: 'an enforce row whose allow-list is empty confines nothing', expect: assessWorkScope({ mode: 'enforce', allowHarnesses: [] }) },
     { label: 'an enforce row with an allow-list', expect: assessWorkScope({ mode: 'enforce', allowHarnesses: ['papercusp', 'papercusp/*'] }) },
   ],
+  // directive-visibility-and-ownership-2026-09-22 P-007. Row 2 is the one that matters:
+  // it is the measured D-007 shape — still `unclaimed`, but ONLY because every linked
+  // item is terminal and nobody recorded a disposition. Reading that as `open-unworked`
+  // is what made directives #86/#87 render "promote or dismiss" forever, so a control
+  // that could not tell those two apart would re-admit exactly that bug.
+  'owner.directive.status': [
+    { label: 'never claimed, no linked work-item ever', expect: DIRSTAT({ dispositionStatus: null }) },
+    {
+      label: 'worked but never dispositioned — every linked item is terminal',
+      expect: DIRSTAT({ dispositionStatus: null }, [{ id: 'WI-1', state: 'done' }]),
+    },
+    {
+      label: 'a non-terminal linked item is held',
+      expect: DIRSTAT({ dispositionStatus: null }, [{ id: 'WI-2', state: 'wip', assignee: 'su-a' }]),
+    },
+    { label: 'a done disposition was recorded', expect: DIRSTAT({ dispositionStatus: 'done', dispositionedAtMs: 1 }) },
+    {
+      label: 'a declined disposition is equally terminal',
+      expect: DIRSTAT({ dispositionStatus: 'declined', dispositionedAtMs: 1 }),
+    },
+  ],
 };
 
 /**
@@ -1143,6 +1184,13 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
+  'owner.directive.status': [
+    'open-unworked',
+    'worked-awaiting-disposition',
+    'in-flight',
+    'settled',
+    'settled',
+  ],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1158,7 +1206,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(26);
+    expect(BUILTIN_CELLS).toHaveLength(27);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1168,7 +1216,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         GOVERNOR_CELLS.length +
         CAPACITY_CELLS.length +
         ROLE_LAUNCH_CELLS.length +
-        WORK_SCOPE_CELLS.length,
+        WORK_SCOPE_CELLS.length +
+        DIRECTIVE_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(12);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1179,6 +1228,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(CAPACITY_CELLS).toHaveLength(1);
     expect(ROLE_LAUNCH_CELLS).toHaveLength(1);
     expect(WORK_SCOPE_CELLS).toHaveLength(1);
+    expect(DIRECTIVE_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1625,6 +1675,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessWorkScope({ mode: 'off', allowHarnesses: ['papercusp'] }),
       'an enforced confinement must not read as off',
     ],
+    [
+      'owner.directive.status',
+      'status.workedButUndispositioned',
+      DIRSTAT({ dispositionStatus: null }, [{ id: 'WI-1', state: 'done' }]),
+      DIRSTAT({ dispositionStatus: null }),
+      'work that happened and was never dispositioned must not read as never started',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
@@ -1933,7 +1990,14 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
   ];
-  const PAYLOADLESS = [...GOAL_CELLS, ...PORTFOLIO_CELLS, ...CAPACITY_CELLS, ...ROLE_LAUNCH_CELLS, ...WORK_SCOPE_CELLS];
+  const PAYLOADLESS = [
+    ...GOAL_CELLS,
+    ...PORTFOLIO_CELLS,
+    ...CAPACITY_CELLS,
+    ...ROLE_LAUNCH_CELLS,
+    ...WORK_SCOPE_CELLS,
+    ...DIRECTIVE_CELLS,
+  ];
 
   /**
    * THE TRIPWIRE. A cell the sweep cannot obtain a payload for is checked structurally
@@ -1948,6 +2012,9 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
       'agent.roleLaunch',
       'capacity.verdict',
       'goal.portfolioThroughput',
+      // P-007: assessDirectiveStatus is pure over a derived status and needs no live store;
+      // the sweep cannot obtain a payload for it because orders:get is per-directive-id.
+      'owner.directive.status',
       // WI-2145092: its payload builder is pure (buildWorkScopeStatusPayload) and needs no
       // live store, and its hoisted list (`allowHarnesses`) is a plain projection of the row.
       'workspace.workScope',

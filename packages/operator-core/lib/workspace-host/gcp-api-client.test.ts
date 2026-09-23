@@ -159,7 +159,12 @@ describe('GCP Cloud Billing export reader', () => {
         usageStartAt: '2026-09-07T00:00:00Z',
         usageEndAt: '2026-09-08T00:00:00Z',
       }),
-    ).resolves.toEqual({ status: 'retryable', retryable: true, reason: 'no-data' });
+    ).resolves.toEqual({
+      status: 'retryable',
+      retryable: true,
+      reason: 'no-data',
+      jobReference: { projectId: PROJECT, jobId: 'empty' },
+    });
 
     const pendingFetch = vi.fn(async () =>
       json({ jobComplete: false, jobReference: { projectId: PROJECT, jobId: 'pending', location: 'US' } }),

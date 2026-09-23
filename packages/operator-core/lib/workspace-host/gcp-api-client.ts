@@ -285,7 +285,9 @@ export class GoogleBigQueryBillingExportReader {
     if (raw.errors?.length) return retryable('query-rejected');
     if (raw.pageToken) return retryable('multiple-currencies');
     if (!jobReference) return retryable('malformed-result');
-    if (!raw.rows?.length) return retryable('no-data');
+    // A completed zero-row query is still a provider read: keep its job so the caller can cite it
+    // (a canary's preRunZeroBaseline is exactly this read, taken before the run label exists).
+    if (!raw.rows?.length) return { ...retryable('no-data'), jobReference };
     if (raw.rows.length !== 1) return retryable('multiple-currencies');
 
     const expectedFields = ['currency:STRING', 'gross_micros:INTEGER', 'credit_micros:INTEGER', 'net_micros:INTEGER'];

@@ -3527,6 +3527,7 @@ impl App {
         // owner reattached to read rendered EMPTY. `max` keeps the cursor
         // monotonic, so a reattach of an already-replayed pane still de-dupes.
         state.last_sequence = state.last_sequence.max(floor_sequence.saturating_sub(1));
+        state.replay_head = state.replay_head.max(head_sequence);
         state.stale = false;
         state.error = None;
         state.rematerialize =
@@ -3639,6 +3640,7 @@ impl App {
         if envelope.sequence <= state.last_sequence {
             return Action::None; // replay duplicate
         }
+        let replayed = envelope.sequence <= state.replay_head;
         if envelope.sequence > state.last_sequence.saturating_add(1) {
             // Keep rendering the newest event, but make the missing range
             // visible to the operator; the next reconnect starts from the
@@ -3810,7 +3812,7 @@ impl App {
                         .map(|r| format!("{}: {}", r.code, r.message))
                         .unwrap_or_else(|| "SU-session command refused".into());
                     state.error = Some(message.clone());
-                    if command_type != "owner_turn"
+                    if (command_type != "owner_turn" && !replayed)
                         || self.su_active_command_id.as_deref() == Some(command_id.as_str())
                         || self
                             .su_pending_turn
@@ -3856,11 +3858,15 @@ impl App {
             crate::su_session::SuSessionEvent::Error { message, .. } => {
                 state.error = Some(message.clone());
                 state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
-                let uncertain = self
-                    .su_pending_turn
-                    .as_ref()
-                    .is_some_and(|p| p.command.is_some());
-                self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
+                // A replayed error is a prior runtime's failure, shown on
+                // reattach; the turn being sent now never reached that runtime.
+                if !replayed {
+                    let uncertain = self
+                        .su_pending_turn
+                        .as_ref()
+                        .is_some_and(|p| p.command.is_some());
+                    self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
+                }
             }
             crate::su_session::SuSessionEvent::Card {
                 envelope,

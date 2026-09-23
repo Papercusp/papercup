@@ -512,11 +512,25 @@ export function buildAgentLaunchCommand(opts: {
    * failure already filed as EI-20015592992797890: a goal and an agent with
    * nothing joining them.
    *
-   * FRESH LAUNCHES ONLY — deliberately ignored on resume/fork. A resumed
-   * session already HAS an identity; forcing a fresh one onto it would either
-   * be refused by bootstrap-su or split the session away from its own history,
-   * which is the pin's purpose inverted (the same rule `/api/adv/launch-su`
-   * follows).
+   * ALLOWED ON A LAUNCH THAT MINTS AN IDENTITY — fresh, fork, and a
+   * CONVERSION; refused on a same-backend resume.
+   *
+   * The rule is about which launches already HAVE an identity, not about the
+   * mode name. A same-backend resume re-attaches the recorded session's own
+   * coord id (psu's resumeEnvFor), so pinning a different one there would split
+   * the session away from its own history — the pin's purpose inverted, and the
+   * reason this option was fresh-only before. A FORK and a cross-backend
+   * CONVERSION are the opposite case: psu deliberately mints a NEW identity for
+   * both (a fork must run alongside the still-live original without colliding on
+   * its locks/presence/inbox-wake; a conversion is a new session on the other
+   * backend), so there is an identity to pin and nothing to split.
+   *
+   * consult-expert-routing-2026-09-22 P-003 needs exactly that: the consult row
+   * names its responder BEFORE the answering session boots, so `consult:reply`
+   * has a participant gate for that session's first turn to pass. Without the
+   * pin the answering identity is minted inside the child process and is
+   * unknowable to the writer of the row (the fork case) — which is the same
+   * "state a spawner keys pre-spawn" problem, one launch mode over.
    */
   ownerId?: string | null;
   extraArgs?: string[] | null;
@@ -574,6 +588,22 @@ export function buildAgentLaunchCommand(opts: {
     const resumeLabel = opts.resumeId?.trim() ? 'resumeId' : 'sessionId';
     parts.push(`--resume=${safe(resumeLabel, requestedResumeId)}`);
     if (opts.mode === 'fork') parts.push('--fork');
+    // Pre-pinned coord identity on the launches that MINT one (see the option's
+    // doc). Refuse it on a same-backend resume rather than dropping it: a caller
+    // that pinned an identity is about to write a row naming it, and silently
+    // resuming under the RECORDED id instead produces a row pointing at a
+    // session that will never answer to it.
+    if (opts.ownerId) {
+      const isConversionLaunch = Boolean(targetAgent && targetAgent !== opts.agent?.trim());
+      if (opts.mode !== 'fork' && !isConversionLaunch) {
+        throw new Error(
+          'buildAgentLaunchCommand: ownerId pre-pins a NEWLY minted identity — valid on a fork or a ' +
+            'cross-backend conversion, but a same-backend resume re-attaches its recorded coord id and ' +
+            'must not be re-pinned',
+        );
+      }
+      parts.push(`--owner-id=${safe('ownerId', opts.ownerId)}`);
+    }
     // R-12: name the TARGET backend explicitly. Omitting it (the pre-R-12
     // behaviour) is NOT a neutral default for a conversion — psu's parseArgs
     // then back-fills the backend from `cloudModelBackendHint(model)`, which is

@@ -148,6 +148,21 @@ vi.mock('../su-session-claude-engine', async (original) => {
         scriptedEngine.sdkPermissions.push({ mode: sdkOptions.permissionMode,
           bypass: sdkOptions.allowDangerouslySkipPermissions });
         scriptedEngine.sdkSessions.push({ resume: sdkOptions.resume ?? null, sessionId: sdkOptions.sessionId ?? null });
+        // The real SDK launches the native CLI through this hook, and it is the
+        // ONLY place the engine learns its pid (su-session-claude-engine.ts
+        // `spawnClaudeCodeProcess`). Resume readiness refuses a null pid
+        // ('Resume produced no native process'), so a fixture that never spawned
+        // made every recovered engine fail at readiness. The stand-in keeps the
+        // CLI's lifetime: it exits on stdin EOF (the SDK's graceful close) or on
+        // the forwarded abort, and the death modes below kill it outright.
+        const native = sdkOptions.spawnClaudeCodeProcess?.({
+          command: process.execPath,
+          args: ['-e', "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));"],
+          cwd: args[0].cwd,
+          env: Object.fromEntries(Object.entries(sdkOptions.env ?? process.env)
+            .filter(([key]) => key !== 'NODE_OPTIONS')),
+          signal: sdkOptions.abortController?.signal ?? new AbortController().signal,
+        });
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
         // Real Claude appends every native line to its per-session JSONL as it
@@ -189,8 +204,13 @@ vi.mock('../su-session-claude-engine', async (original) => {
               output.write({ type: 'assistant', session_id: nativeId, message: { content: [
                 { type: 'text', text: 'PUI partial reply before the failure' },
               ] } });
-              if (scriptedEngine.mode === 'engine-death') output.destroy(new Error('PUI-E2E engine process died mid-turn'));
-              else output.end();
+              if (scriptedEngine.mode === 'engine-death') {
+                native?.kill('SIGKILL');
+                output.destroy(new Error('PUI-E2E engine process died mid-turn'));
+              } else {
+                native?.stdin.end();
+                output.end();
+              }
               return;
             }
             if (scriptedEngine.mode === 'auth-expired' || scriptedEngine.mode === 'rate-limit') {
@@ -353,6 +373,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
           initializationResult: async () => {
             await scriptedEngine.initialization;
             if (scriptedEngine.mode === 'startup-exit') {
+              native?.kill('SIGKILL');
               output.end();
               throw new Error('PUI-E2E engine exited during initialization');
             }
@@ -360,7 +381,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
           },
           mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
           interrupt: async () => { result(); },
-          close: () => output.end(),
+          close: () => { native?.stdin.end(); output.end(); },
         };
       };
       const engine = actual.startClaudeSuEngine(args[0], args[1], args[2], { ...args[3], query });

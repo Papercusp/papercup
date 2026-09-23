@@ -1372,10 +1372,18 @@ export function ompDefaultModelAdvisory(home?: string): string | null;
  * NO adv-row link — that is what lets a fork run concurrently with the still-live
  * original without colliding on its locks/presence/inbox-wake. Workspace scope
  * still carries over (the fork stays in the same workspace).
+ *
+ * `ownerId` PRE-PINS that fresh id instead of minting a random one
+ * (consult-expert-routing-2026-09-22 P-003 — a consult names its responder
+ * before the answering session boots). It applies to the FORK branch ONLY: on a
+ * plain resume the recorded coord id is the whole point of the branch below, and
+ * overriding it there would strand the original's locks/awaits/presence, which is
+ * the exact regression the fresh-random-SID resume caused.
  */
-export function resumeEnvFor(session: any, { mintSid, fork }?: {
+export function resumeEnvFor(session: any, { mintSid, fork, ownerId }?: {
     mintSid?: (() => string) | undefined;
     fork?: boolean | undefined;
+    ownerId?: null | undefined;
 }): {
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
@@ -1406,14 +1414,15 @@ export function resumeAccountPlan(args: any): {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null, ownerId?: string | null}} [options]
  */
-export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
+export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId }?: {
     fork?: boolean;
     brain?: boolean;
     accountEnv?: {
         env?: Record<string, string>;
     } | null;
+    ownerId?: string | null;
 }): {
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
@@ -3245,12 +3254,13 @@ export function codexActiveWriterMessage(session: any, holder: any): string;
  * MUST run in that same cwd). agent is claude here because tracked forks need a
  * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
-export function forkBootstrapBody(session: any, account?: null, launchMode?: null): {
+export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null): {
     mode_owner_directed?: boolean | undefined;
     mode_instructions?: any;
     mode_subject?: any;
     mode?: string | undefined;
     account?: undefined;
+    owner_id?: undefined;
     agent: string;
     workspace: any;
     harness_slug: null;

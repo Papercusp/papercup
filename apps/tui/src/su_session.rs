@@ -565,6 +565,11 @@ pub struct SuSessionState {
     pub descriptor: Option<SuSessionDescriptor>,
     pub lifecycle: SuSessionLifecycleState,
     pub last_sequence: u64,
+    /// Head sequence of the newest applied snapshot. Events at or below it are
+    /// the retained window being replayed: history the snapshot already
+    /// reflects. They render, but they cannot fail a turn sent after the
+    /// snapshot — a reconnect after an engine death replays that death.
+    pub replay_head: u64,
     pub stale: bool,
     pub error: Option<String>,
     /// Startup/reconnect outcome surfaced beside the lifecycle in the PUI.
@@ -582,6 +587,7 @@ impl SuSessionState {
             identity: None,
             descriptor: None,
             last_sequence: 0,
+            replay_head: 0,
             stale: false,
             error: None,
             reconciliation: SuSessionReconciliation::Pending,
