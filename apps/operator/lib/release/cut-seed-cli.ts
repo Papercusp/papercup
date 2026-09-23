@@ -135,7 +135,9 @@ import {
   waitForLiveOperatorHoldingHive,
   requestLiveOperatorHeadSnapshot,
   HEAD_SNAPSHOT_PATH,
+  type LiveHeadSnapshotNoHolder,
 } from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
+import { detectWedgedListener } from '@papercusp/operator-core/lib/service-health';
 import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
@@ -611,6 +613,85 @@ export function isTransientStoreOpenError(e: unknown): boolean {
 export const RO_OPEN_RETRY_ATTEMPTS = 10;
 export const RO_OPEN_RETRY_DELAY_MS = 1000;
 
+export const HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS = 250;
+
+type ListenerQueueSample = NonNullable<Awaited<ReturnType<typeof detectWedgedListener>>>;
+
+interface PersistentAcceptQueueEvidence {
+  readonly port: number;
+  readonly firstPending: number;
+  readonly secondPending: number;
+  readonly firstBacklog: number;
+  readonly secondBacklog: number;
+  readonly pid: number | null;
+}
+
+/**
+ * Add passive evidence only for ports that failed to answer the head-snapshot probe.
+ * A positive first sample is confirmed after a pause; transient backlog spikes and
+ * listener-table read failures stay undiagnosed. This never opens a client connection.
+ */
+async function confirmUnansweredAcceptQueues(inp: {
+  readonly outcome: LiveHeadSnapshotNoHolder;
+  readonly detect: typeof detectWedgedListener;
+  readonly pause: (ms: number) => Promise<void>;
+}): Promise<PersistentAcceptQueueEvidence[]> {
+  const responsive = new Set([...inp.outcome.answered, ...inp.outcome.staleBuild]);
+  const ports = [...new Set(inp.outcome.probed)].filter((port) => !responsive.has(port));
+  if (ports.length === 0) return [];
+
+  const listenUrl = (port: number): string => `http://127.0.0.1:${port}${HEAD_SNAPSHOT_PATH}`;
+  try {
+    const firstSamples = await Promise.all(
+      ports.map(async (port) => ({ port, sample: await inp.detect(listenUrl(port)) })),
+    );
+    const candidates = firstSamples.filter(
+      (entry): entry is { port: number; sample: ListenerQueueSample } =>
+        entry.sample?.wedged === true && entry.sample.pending > 0,
+    );
+    if (candidates.length === 0) return [];
+
+    await inp.pause(HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS);
+    const confirmed = await Promise.all(
+      candidates.map(async ({ port, sample: first }) => {
+        const second = await inp.detect(listenUrl(port));
+        if (!second?.wedged || second.pending <= 0) return null;
+        return {
+          port,
+          firstPending: first.pending,
+          secondPending: second.pending,
+          firstBacklog: first.backlog,
+          secondBacklog: second.backlog,
+          // A restart between samples means we cannot identify one PID as the listener.
+          pid: first.pid === second.pid ? first.pid : null,
+        };
+      }),
+    );
+    return confirmed.filter((entry): entry is PersistentAcceptQueueEvidence => entry !== null);
+  } catch {
+    // Diagnostics are fail-soft: they must not replace the original cut refusal.
+    return [];
+  }
+}
+
+function describeAcceptQueueEvidence(evidence: readonly PersistentAcceptQueueEvidence[]): string {
+  if (evidence.length === 0) return '';
+  const ports = evidence.map((entry) =>
+    `port ${entry.port}: pending ${entry.firstPending} -> ${entry.secondPending}, ` +
+      `backlog ${entry.firstBacklog} -> ${entry.secondBacklog}` +
+      (entry.pid === null ? '' : `, pid ${entry.pid}`),
+  );
+  return (
+    ` Passive listen-table samples ${HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS}ms apart found ` +
+    `persistent unaccepted connections (${ports.join('; ')}). This is queue evidence only; ` +
+    `it does not establish the listener's root cause.`
+  );
+}
+
+function pauseForAcceptQueueSample(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * WI-4487: wait until the LIVE operator has drained this hive's outbox into its own
  * log, so a read-only cut ships CURRENT state rather than a stale snapshot.
@@ -670,6 +751,10 @@ export async function openSourceStoreForCut(inp: {
   readonly headSnapshotImpl?: typeof requestLiveOperatorHeadSnapshot;
   /** Optional explicit override; otherwise the client derives from the holder's own-log length. */
   readonly headSnapshotTimeoutMs?: number;
+  /** Injectable only for the passive refusal diagnosis; production uses service-health's reader. */
+  readonly detectWedgedListenerImpl?: typeof detectWedgedListener;
+  /** Injectable only so the second passive listener sample is deterministic in tests. */
+  readonly acceptQueueSamplePauseImpl?: (ms: number) => Promise<void>;
   /** P-019 seam — the cheap, side-effect-free "who holds this hive?" discovery. */
   readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
   /**
@@ -749,6 +834,11 @@ export async function openSourceStoreForCut(inp: {
         // symptom: "no operator reports having booted it" reads as *nobody holds this hive*, which
         // points at the quiesce remedy — a fleet-affecting outage — for what is usually an
         // inconsistent in-process registry.
+        const listenerQueueEvidence = await confirmUnansweredAcceptQueues({
+          outcome: found,
+          detect: inp.detectWedgedListenerImpl ?? detectWedgedListener,
+          pause: inp.acceptQueueSamplePauseImpl ?? pauseForAcceptQueueSample,
+        });
         const invariant = judgeHolderBootInvariant({
           storeLocked: true,
           holderFound: false,
@@ -756,7 +846,8 @@ export async function openSourceStoreForCut(inp: {
           probed: found.probed,
           staleBuild: found.staleBuild,
         });
-        blocked = `${invariant.message} (hive ${inp.workspaceId}::${inp.hive})`;
+        blocked = `${invariant.message}${describeAcceptQueueEvidence(listenerQueueEvidence)} ` +
+          `(hive ${inp.workspaceId}::${inp.hive})`;
         // A sibling that is SERVING but 404s this one path is running a build older than the
         // route (the Hono host has no file-watch, so a long-lived holder keeps 404ing until it
         // restarts) — the competing explanation for the same symptom, and the one whose remedy
@@ -910,6 +1001,14 @@ export async function openSourceStoreForCut(inp: {
       // P-015 / D-025 again — same invariant, second site. We are inside `!sourceWritable`, so
       // the lock is proven held here too, and a bare "nobody reports having booted it" would
       // steer to the outage remedy for what is usually a registry inconsistency.
+      const listenerQueueEvidence =
+        outcome.kind === 'no-holder'
+          ? await confirmUnansweredAcceptQueues({
+            outcome,
+            detect: inp.detectWedgedListenerImpl ?? detectWedgedListener,
+            pause: inp.acceptQueueSamplePauseImpl ?? pauseForAcceptQueueSample,
+          })
+          : [];
       const why =
         outcome.kind === 'no-holder'
           ? judgeHolderBootInvariant({
@@ -918,7 +1017,7 @@ export async function openSourceStoreForCut(inp: {
               answered: outcome.answered,
               probed: outcome.probed,
               staleBuild: outcome.staleBuild,
-            }).message
+            }).message + describeAcceptQueueEvidence(listenerQueueEvidence)
           : `the operator on port ${outcome.port} could not produce it: ${outcome.error}`;
       // Say how hard we tried. Without this the refusal reads as a first-try failure, and
       // the natural next move is "just retry the cut" — which re-runs the ~17-min drain to

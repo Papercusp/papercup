@@ -660,6 +660,25 @@ describe('release:repair-queue', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
+  it('path-not-found remains a refusal instead of reading as already-admitted', async () => {
+    mocks.admit.mockReturnValue({
+      ok: false,
+      code: 'path-not-found',
+      detail: 'lib/never-existed.ts is absent from the candidate, source, and repairHead',
+    });
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/never-existed.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      admitted: false,
+      refused: true,
+      verdict: 'refused',
+      reason: 'path-not-found',
+    });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   it("converge is an ALIAS of admit — same door, same semantics, result op:'admit'", async () => {
     mocks.admit.mockReturnValue(admissionOf(true));
     const result = body(
@@ -872,6 +891,71 @@ describe('release:repair-queue', () => {
       );
       expect(published).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
       expect(dryRuns()).toEqual([true, true, false]);
+    });
+
+    it('retries a whole-blob pre-check with its persisted source SHA after staging advances', async () => {
+      const sourceCommit = 'e'.repeat(40);
+      const admissionFromSource = (published: boolean) => {
+        const result = admissionOf(published);
+        return {
+          ...result,
+          entry: { ...result.entry, source: { ref: 'staging', sha: sourceCommit } },
+        };
+      };
+      mocks.admit
+        .mockReturnValueOnce(admissionFromSource(false))
+        .mockReturnValueOnce(admissionFromSource(false))
+        .mockReturnValueOnce(admissionFromSource(true));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
+      const initialArgs = {
+        op: 'admit',
+        paths: ['lib/red.test.ts'],
+        wholeBlob: true,
+        reason: 'pin reviewed source commit',
+        confirm: true,
+      };
+
+      const started = body(await tool.handler(initialArgs as never, { role: 'su' } as never));
+      expect(started).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { status: 'running', sourceCommit },
+      });
+      expect(started.note).toContain(`sourceCommit:'${sourceCommit}'`);
+
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'passed', sourceCommit });
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      mocks.admissionGit
+        .mockReturnValueOnce({ status: 0, stdout: `${sourceCommit}\n`, stderr: '' })
+        .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+
+      const published = body(
+        await tool.handler(
+          {
+            ...initialArgs,
+            sourceCommit,
+            expectedCandidate: settled.candidate,
+            expectedRepairHead: settled.repairHead,
+            expectedUpdatedAtMs: settled.updatedAtMs,
+          } as never,
+          { role: 'su' } as never,
+        ),
+      );
+
+      expect(published).toMatchObject({ ok: true, admitted: true, verdict: 'admitted' });
+      expect(dryRuns()).toEqual([true, true, false]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      expect(mocks.admit.mock.calls[1]![0]).toMatchObject({
+        source: { ref: sourceCommit, recordAsRef: 'staging' },
+        dryRun: true,
+      });
+      expect(mocks.admit.mock.calls[2]![0]).toMatchObject({
+        source: { ref: sourceCommit, recordAsRef: 'staging' },
+        dryRun: false,
+      });
     });
 
     it('reuses a passed legacy pre-check when provenance changes the commit id but not its tree', async () => {

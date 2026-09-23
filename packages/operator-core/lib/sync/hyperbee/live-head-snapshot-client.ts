@@ -526,8 +526,8 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
     }
 
     inp.warn?.(
-      `[head-snapshot] attempt ${attempts} did not land (${describeOutcome(outcome)}) — the holder ` +
-        `is most likely mid-recycle; retrying in ${delayMs}ms ` +
+      `[head-snapshot] attempt ${attempts} did not land (${describeOutcome(outcome)}); ` +
+        `retrying in ${delayMs}ms ` +
         `(${Math.max(0, budgetMs - (now() - startedAt))}ms of budget left).`,
     );
     await sleep(delayMs);

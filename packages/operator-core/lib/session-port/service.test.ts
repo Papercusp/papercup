@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -88,7 +88,7 @@ describe('session-port current-version test fixtures', () => {
 });
 
 describe('consult evidence-span session ports (P-007)', () => {
-  it('inspectAcquiredSessionPort uses the evidence window instead of retaining the full adapted history', () => {
+  it('prepares a seed from the evidence window instead of retaining the full adapted history', async () => {
     const inspection = inspectAcquiredSessionPort({
       sourceRow: row,
       stableSource: source('needle evidence'),
@@ -103,6 +103,34 @@ describe('consult evidence-span session ports (P-007)', () => {
 
     expect(inspection.internal.turns.map((turn) => turn.id)).toEqual(['u1']);
     expect(inspection.warnings).toContain('consult evidence span: 1 matched turn(s), ±0 surrounding turn(s)');
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'consult-port-evidence-'));
+    const createPrepared = vi.fn(async (input: any): Promise<SessionPortRow> => ({
+      ...input,
+      status: 'prepared',
+      targetAdvSessionId: null,
+      error: null,
+      preparedAt: '2026-09-23T00:00:00.000Z',
+      pendingAt: null,
+      deliveredAt: null,
+      failedAt: null,
+    }));
+    try {
+      const prepared = await prepareInspectedSessionPort({
+        inspection,
+        expectedSourceHash: inspection.source.sha256,
+        tokenKey: 'server-only-key',
+        artifactRoot,
+        findExisting: async () => null,
+        createPrepared,
+      });
+      const seedPath = createPrepared.mock.calls[0]![0].artifactPath;
+      const seed = readFileSync(seedPath, 'utf8');
+      expect(verifySessionPortSeed(seed, prepared.summary.hashes.rendered)).toBe(true);
+      expect(seed).toContain('needle evidence');
+      expect(seed).not.toContain('done');
+    } finally {
+      rmSync(artifactRoot, { recursive: true, force: true });
+    }
     expect(() => inspectAcquiredSessionPort({
       sourceRow: row,
       stableSource: source('needle evidence'),

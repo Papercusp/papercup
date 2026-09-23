@@ -50,7 +50,7 @@ describe('the seed is the owner-stated policy (D-004)', () => {
       { rank: 1, agent: 'claude', model: 'fable' },
       { rank: 2, agent: 'claude', model: 'opus' },
       { rank: 3, agent: 'codex', model: 'sol' },
-      { rank: 4, agent: 'codex', model: 'astra' },
+      { rank: 4, agent: 'codex', model: 'gpt-6-astra' },
     ]);
   });
 
@@ -184,6 +184,17 @@ describe('loadExpertModelRanks (the ExpertModelAllowlistDeps.loadRanks seam)', (
 });
 
 describe('writes', () => {
+  it('rejects partial documents before they can reset an omitted setting to its seed', async () => {
+    const partial = {
+      allowlist: [{ rank: 1, agent: 'codex' as const, model: 'sol' }],
+    } as unknown as import('./expert-routing-settings').ConsultExpertRoutingSettings;
+
+    await expect(writeConsultExpertRoutingSettings(partial, WS)).rejects.toThrow(
+      'A complete consult expert-routing settings document is required',
+    );
+    expect(mocks.writeOperatorState).not.toHaveBeenCalled();
+  });
+
   it('persists the NORMALIZED settings and returns what was stored', async () => {
     mocks.writeOperatorState.mockResolvedValue(undefined);
     const stored = await writeConsultExpertRoutingSettings(

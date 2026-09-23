@@ -116,15 +116,24 @@ export async function readConsultExpertRoutingSettings(
 }
 
 /**
- * Persist the settings (the P-006 panel's writer). Returns what was actually
+ * Persist a complete settings document (the P-006 panel's writer). Returns what was actually
  * stored — normalized, so a caller reordering ranks 1/4/7 gets back 1/2/3 and
  * never has to guess how its write was interpreted.
  */
 export async function writeConsultExpertRoutingSettings(
-  next: Partial<ConsultExpertRoutingSettings>,
+  next: ConsultExpertRoutingSettings,
   workspaceId?: string,
 ): Promise<ConsultExpertRoutingSettings> {
-  const normalized = normalizeConsultExpertRoutingSettings(next);
+  const candidate = next as ConsultExpertRoutingSettings | null | undefined;
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    !Array.isArray(candidate.allowlist) ||
+    typeof candidate.recencyHalfLifeDays !== 'number'
+  ) {
+    throw new TypeError('A complete consult expert-routing settings document is required');
+  }
+  const normalized = normalizeConsultExpertRoutingSettings(candidate);
   await writeOperatorState<ConsultExpertRoutingSettings>(TABLE, normalized, workspaceId);
   if (workspaceId) invalidateOperatorStateCache(TABLE, workspaceId);
   return normalized;

@@ -14,7 +14,7 @@
  *     list, save, and watch the default policy reappear as if the edit was lost.
  *   - Half-life BOUNDS come from the server payload (the module that owns
  *     MIN/MAX), so the page cannot drift from 0.5/365.
- *   - A stored alias the canonical menu does not know (the seed's `astra`) still
+ *   - A stored full model ID the canonical menu does not know (the seed's `gpt-6-astra`) still
  *     renders and survives a save — the launcher's accepted id set is open.
  *   - A pair already ranked is DISABLED in the picker, matching the normalizer's
  *     (agent, model) dedupe: the UI must not offer what the store would drop.
@@ -117,7 +117,7 @@ vi.mock('../../harness/Select', () => ({
 
 import ExpertRoutingSettingsPage from './page';
 
-/* ── Fixtures: the shipped seed order (D-006 fable 1, opus 2, sol 3, astra 4) ── */
+/* ── Fixtures: the shipped seed order (D-006 fable 1, opus 2, sol 3, Astra 4) ── */
 /** Mirrors the page's wire entry. Spelled out rather than inferred from SEED so a
  *  fixture can exercise the third backend (`omp`) the seed happens not to use. */
 type WireEntry = { rank: number; agent: 'claude' | 'codex' | 'omp'; model: string };
@@ -126,7 +126,7 @@ const SEED: WireEntry[] = [
   { rank: 1, agent: 'claude', model: 'fable' },
   { rank: 2, agent: 'claude', model: 'opus' },
   { rank: 3, agent: 'codex', model: 'sol' },
-  { rank: 4, agent: 'codex', model: 'astra' },
+  { rank: 4, agent: 'codex', model: 'gpt-6-astra' },
 ];
 
 const mkRow = (over: Partial<{ allowlist: WireEntry[]; recencyHalfLifeDays: number }> = {}) => [
@@ -170,33 +170,33 @@ afterEach(cleanup);
 describe('/settings/expert-routing', () => {
   it('renders the ranked allowlist in walk order with positional rank badges', () => {
     render(<ExpertRoutingSettingsPage />);
-    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'gpt-6-astra']);
     expect(renderedRanks()).toEqual(['1', '2', '3', '4']);
   });
 
-  it('keeps an alias the canonical menu does not know (astra) rather than dropping it', () => {
+  it('keeps a full model ID the canonical alias menu does not know rather than dropping it', () => {
     render(<ExpertRoutingSettingsPage />);
-    // `astra` is in the seed but NOT in CLOUD_MODEL_MENU; it must still render.
-    expect(renderedModels()).toContain('astra');
+    // `gpt-6-astra` is in the seed but NOT in CLOUD_MODEL_MENU; it must still render.
+    expect(renderedModels()).toContain('gpt-6-astra');
   });
 
   it('reorders with the move controls and renumbers ranks densely', () => {
     render(<ExpertRoutingSettingsPage />);
     fireEvent.click(screen.getByRole('button', { name: /move opus up/i }));
-    expect(renderedModels()).toEqual(['opus', 'fable', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['opus', 'fable', 'sol', 'gpt-6-astra']);
     expect(renderedRanks()).toEqual(['1', '2', '3', '4']);
   });
 
   it('disables the move control at each end of the list', () => {
     render(<ExpertRoutingSettingsPage />);
     expect(isDisabled(screen.getByRole('button', { name: /move fable up/i }))).toBe(true);
-    expect(isDisabled(screen.getByRole('button', { name: /move astra down/i }))).toBe(true);
+    expect(isDisabled(screen.getByRole('button', { name: /move gpt-6-astra down/i }))).toBe(true);
   });
 
   it('removes an entry and renumbers the remaining ranks', () => {
     render(<ExpertRoutingSettingsPage />);
     fireEvent.click(screen.getByRole('button', { name: /remove opus/i }));
-    expect(renderedModels()).toEqual(['fable', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['fable', 'sol', 'gpt-6-astra']);
     expect(renderedRanks()).toEqual(['1', '2', '3']);
   });
 
@@ -210,7 +210,7 @@ describe('/settings/expert-routing', () => {
       allowlist: Array<Record<string, unknown>>;
       recencyHalfLifeDays: number;
     };
-    expect(args.allowlist.map((e) => e.model)).toEqual(['fable', 'sol', 'opus', 'astra']);
+    expect(args.allowlist.map((e) => e.model)).toEqual(['fable', 'sol', 'opus', 'gpt-6-astra']);
     expect(args.allowlist.map((e) => e.agent)).toEqual(['claude', 'codex', 'claude', 'codex']);
     // Rank is positional — a rank field on the wire would be a second, conflicting
     // representation of the same policy.
@@ -220,7 +220,7 @@ describe('/settings/expert-routing', () => {
 
   it('blocks the save on an empty list and explains the seed fallback', () => {
     render(<ExpertRoutingSettingsPage />);
-    for (const model of ['fable', 'opus', 'sol', 'astra']) {
+    for (const model of ['fable', 'opus', 'sol', 'gpt-6-astra']) {
       fireEvent.click(screen.getByRole('button', { name: new RegExp(`remove ${model}`, 'i') }));
     }
     expect(screen.queryAllByRole('listitem')).toHaveLength(0);
@@ -256,7 +256,7 @@ describe('/settings/expert-routing', () => {
     expect(args.recencyHalfLifeDays).toBe(7);
     // The whole list rides along, so the route's merge can never be the only
     // thing standing between a half-life edit and a reset allowlist.
-    expect(args.allowlist.map((e) => e.model)).toEqual(['fable', 'opus', 'sol', 'astra']);
+    expect(args.allowlist.map((e) => e.model)).toEqual(['fable', 'opus', 'sol', 'gpt-6-astra']);
   });
 
   it('offers no already-ranked pair in the add picker (the store would dedupe it)', () => {
@@ -290,7 +290,7 @@ describe('/settings/expert-routing', () => {
     h.row = mkRow({ allowlist: [{ rank: 1, agent: 'omp', model: 'something-else' }] });
     render(<ExpertRoutingSettingsPage />);
     fireEvent.click(screen.getByRole('button', { name: /restore defaults/i }));
-    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'gpt-6-astra']);
     expect(h.mutate).not.toHaveBeenCalled();
     expect(screen.getByText(/unsaved changes/i)).toBeTruthy();
   });
@@ -298,9 +298,9 @@ describe('/settings/expert-routing', () => {
   it('reverts drafts back to the stored value', () => {
     render(<ExpertRoutingSettingsPage />);
     fireEvent.click(screen.getByRole('button', { name: /remove fable/i }));
-    expect(renderedModels()).toEqual(['opus', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['opus', 'sol', 'gpt-6-astra']);
     fireEvent.click(screen.getByRole('button', { name: /revert/i }));
-    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'astra']);
+    expect(renderedModels()).toEqual(['fable', 'opus', 'sol', 'gpt-6-astra']);
     expect(isDisabled(saveButton())).toBe(true);
   });
 

@@ -639,6 +639,24 @@ describe('retrying across a holder recycle', () => {
     expect(c.slept).toEqual([]);
   });
 
+  it('does not label an unanswered no-holder probe as a recycle without evidence', async () => {
+    const f = fleet({ ports: [3170], dead: [3170] });
+    const c = clock();
+    const warnings: string[] = [];
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      ...c,
+      retryBudgetMs: 1,
+      retryDelayMs: 1,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(out.kind).toBe('no-holder');
+    expect(warnings.some((message) => message.includes('no booted holder among [3170]'))).toBe(true);
+    expect(warnings.every((message) => !message.includes('mid-recycle'))).toBe(true);
+  });
+
   it('gives up inside the budget, and reports how hard it tried', async () => {
     // A holder that never comes back must terminate — and say so, so the refusal is not
     // mistaken for a transient blip worth re-running a 17-minute drain against.

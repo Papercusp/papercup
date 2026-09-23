@@ -1,0 +1,86 @@
+/**
+ * rubrics:amend-status — poll the receipt a slow rubrics:amend returned
+ * (review-system-rework-reduction-2026-09-23 P-008, clause RSR-P-008-C).
+ *
+ * Answers in the order of certainty:
+ *  1. the in-process receipt (amend-receipts.ts): running / committed / failed,
+ *     with the exact payload the synchronous call would have returned;
+ *  2. the durable Decision a BAR-changing acceptance amendment commits
+ *     atomically (`Amendment-Id: <key>`): committed, even after a restart;
+ *  3. neither: not_found. Because an amendment is atomic and keyed, re-issuing
+ *     the same rubrics:amend with the same idempotencyKey is then safe — it
+ *     replays if the amendment landed and applies it if it did not.
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { COORD_ROLES } from '../coordination/roles';
+import { findAmendmentDecisionByKey } from '../../rubrics';
+import { getAmendReceipt } from './amend-receipts';
+
+export const rubricsAmendStatusArgs = z
+  .object({
+    rubricRef: z.string().min(1).describe('The rubric the amend targeted (receipt.rubricRef).'),
+    idempotencyKey: z.string().min(1).describe('The receipt key rubrics:amend returned (receipt.idempotencyKey).'),
+  })
+  .strict();
+
+export default defineTool({
+  name: 'rubrics:amend-status',
+  profile: 'engineer',
+  description:
+    'Poll a rubrics:amend receipt: running, committed (with the amend result), failed (with the error), or not_found. not_found means nothing is running and no committed amendment carries the key; re-issuing the same amend with the same idempotencyKey is then safe.',
+  guidance: {
+    when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
+    notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
+    returns:
+      "{ ok, state: 'running'|'committed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec? }.",
+  },
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES, 'judge'],
+  args: rubricsAmendStatusArgs,
+  // Structural shape behind `guidance.returns` (guidance-output-schema-live-guard).
+  result: z
+    .object({
+      ok: z.boolean(),
+      state: z.enum(['running', 'committed', 'failed', 'not_found']),
+      source: z.enum(['receipt', 'decision', 'none']),
+      result: z.record(z.string(), z.unknown()).optional(),
+      error: z.string().optional(),
+      decisionId: z.string().optional(),
+      ageSec: z.number().optional(),
+    })
+    .passthrough(),
+  async handler(args) {
+    const reply = (payload: Record<string, unknown>) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
+    });
+    const receipt = getAmendReceipt(args.idempotencyKey);
+    if (receipt && receipt.rubricRef === args.rubricRef) {
+      return reply({
+        state: receipt.state,
+        source: 'receipt',
+        ageSec: Math.round(((receipt.finishedAt ?? Date.now()) - receipt.startedAt) / 1000),
+        ...(receipt.result ? { result: receipt.result } : {}),
+        ...(receipt.error ? { error: receipt.error } : {}),
+      });
+    }
+    const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);
+    if (decision) {
+      return reply({
+        state: 'committed',
+        source: 'decision',
+        decisionId: decision.decisionId,
+        subjectPlan: decision.subjectPlan,
+        note: 'Committed; read the new revision with rubrics:get.',
+      });
+    }
+    return reply({
+      state: 'not_found',
+      source: 'none',
+      note:
+        'No amendment with this key is running in this operator process and no committed Decision carries it. ' +
+        'The amendment is atomic and keyed, so re-issuing the same rubrics:amend with this idempotencyKey is safe.',
+    });
+  },
+});

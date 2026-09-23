@@ -1958,7 +1958,10 @@ export function renderCarryBriefColdExtras(
     // EI-11484: open owner directives render FIRST — above walls, above the
     // agenda. Budgeted by the shared renderer (whole ≤300 chars, else substr
     // + orders:get pointer, block cap + "+N more").
-    const block = renderOwnerDirectivesBlock(brief.directives, { totalOpen: brief.directivesTotalOpen });
+    const block = renderOwnerDirectivesBlock(brief.directives, {
+      totalOpen: brief.directivesTotalOpen,
+      viewerOwnerId: brief.ownerId,
+    });
     if (block) sections.push(block);
   }
   if (brief.walls.length > 0) {
@@ -2199,7 +2202,11 @@ export function renderCarryBriefText(
   // point of the store is that they outrank the re-injected standing agenda.
   const directivesBlock =
     brief.directives.length > 0
-      ? renderOwnerDirectivesBlock(brief.directives, { nowMs: now, totalOpen: brief.directivesTotalOpen })
+      ? renderOwnerDirectivesBlock(brief.directives, {
+          nowMs: now,
+          totalOpen: brief.directivesTotalOpen,
+          viewerOwnerId: brief.ownerId,
+        })
       : null;
   if (directivesBlock) sections.push(directivesBlock);
   if (brief.loop) {

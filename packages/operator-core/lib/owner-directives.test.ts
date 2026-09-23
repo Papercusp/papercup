@@ -39,8 +39,10 @@ function row(over: Partial<OwnerDirectiveRow> = {}): OwnerDirectiveRow {
 
 describe('renderOwnerDirectiveRow', () => {
   it('renders a short row whole, verbatim, with id + age + recorder attribution', () => {
-    const out = renderOwnerDirectiveRow(row(), NOW);
+    const own = row();
+    const out = renderOwnerDirectiveRow(own, NOW, own.recordedBy);
     expect(out).toContain('#7');
+    expect(out).toContain('[FOR THIS SESSION]');
     expect(out).toContain('5m old');
     expect(out).toContain('su-00a9161f-'); // recorder shortened, still attributable
     expect(out).toContain('"resume all the sessions active in the last half hour"');
@@ -50,7 +52,8 @@ describe('renderOwnerDirectiveRow', () => {
   it('D-004: a long row with no summary yet shows NO fragment of the owner text — a note + the orders:get pointer', () => {
     const long = 'do the thing '.repeat(60); // ~780 chars
     expect(long.trim().length).toBeGreaterThan(OWNER_DIRECTIVE_VERBATIM_CAP);
-    const out = renderOwnerDirectiveRow(row({ id: 41, verbatimText: long }), NOW);
+    const own = row({ id: 41, verbatimText: long });
+    const out = renderOwnerDirectiveRow(own, NOW, own.recordedBy);
     expect(out).not.toContain('do the thing');
     expect(out).toContain('summary not written yet');
     expect(out).toContain('[full text: orders:get #41]');
@@ -58,10 +61,8 @@ describe('renderOwnerDirectiveRow', () => {
 
   it('D-004: a long row with a summary shows the summary, labelled with its author', () => {
     const long = 'do the thing '.repeat(60);
-    const out = renderOwnerDirectiveRow(
-      row({ id: 41, verbatimText: long, summaryText: 'Do the thing, sixty times.', summaryBy: 'su-summarizer-01' }),
-      NOW,
-    );
+    const own = row({ id: 41, verbatimText: long, summaryText: 'Do the thing, sixty times.', summaryBy: 'su-summarizer-01' });
+    const out = renderOwnerDirectiveRow(own, NOW, own.recordedBy);
     expect(out).toContain('summary by su-summarize');
     expect(out).toContain('"Do the thing, sixty times."');
     expect(out).toContain('[full text: orders:get #41]');
@@ -69,9 +70,34 @@ describe('renderOwnerDirectiveRow', () => {
 
   it('renders exactly at the whole-row boundary without a pointer', () => {
     const exact = 'x'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP);
-    const out = renderOwnerDirectiveRow(row({ verbatimText: exact }), NOW);
+    const own = row({ verbatimText: exact });
+    const out = renderOwnerDirectiveRow(own, NOW, own.recordedBy);
     expect(out).toContain(`"${exact}"`);
     expect(out).not.toContain('orders:get');
+  });
+
+  it('shows a peer directive as FYI while preserving the action row for its recorded session', () => {
+    const peer = row({
+      id: 43,
+      recordedBy: 'su-peer-session',
+      sessionRef: 'source-session-peer',
+      verbatimText: 'answer the owner about the peer project',
+    });
+    const foreignView = renderOwnerDirectiveRow(peer, NOW, 'su-current-session');
+    const ownerView = renderOwnerDirectiveRow(peer, NOW, peer.recordedBy);
+
+    expect(foreignView).toContain('[FYI');
+    expect(foreignView).toContain('recorded by su-peer-s');
+    expect(foreignView).toContain('source session source-s');
+    expect(foreignView).toContain('not an action assignment for this session');
+    expect(foreignView).toContain('orders:get #43');
+    expect(foreignView).not.toContain(peer.verbatimText);
+    expect(foreignView).not.toContain('[FOR THIS SESSION]');
+
+    // Negative control: the same row is actionable only for its recorded session.
+    expect(ownerView).toContain('[FOR THIS SESSION]');
+    expect(ownerView).toContain(peer.verbatimText);
+    expect(ownerView).not.toContain('[FYI');
   });
 });
 
@@ -81,7 +107,10 @@ describe('renderOwnerDirectivesBlock', () => {
   });
 
   it('renders header + one line per row, oldest first as given', () => {
-    const out = renderOwnerDirectivesBlock([row({ id: 1 }), row({ id: 2 })], { nowMs: NOW })!;
+    const out = renderOwnerDirectivesBlock([row({ id: 1 }), row({ id: 2 })], {
+      nowMs: NOW,
+      viewerOwnerId: row().recordedBy,
+    })!;
     expect(out.startsWith(OWNER_DIRECTIVES_BLOCK_HEADER)).toBe(true);
     expect(out.indexOf('#1')).toBeLessThan(out.indexOf('#2'));
     expect(out).not.toContain('more open');
@@ -91,20 +120,45 @@ describe('renderOwnerDirectivesBlock', () => {
     // Each row renders the full verbatim (~560 chars); enough rows to blow the cap.
     const long = 'L'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP);
     const rows = Array.from({ length: 40 }, (_, i) => row({ id: i + 1, verbatimText: long }));
-    const out = renderOwnerDirectivesBlock(rows, { nowMs: NOW })!;
+    const out = renderOwnerDirectivesBlock(rows, { nowMs: NOW, viewerOwnerId: row().recordedBy })!;
     expect(out.length).toBeLessThanOrEqual(OWNER_DIRECTIVES_BLOCK_CHAR_CAP + 200); // header + "+N more" slack
     expect(out).toMatch(/\+\d+ more open — orders:list/);
   });
 
   it('adds the "+N more" line when totalOpen exceeds the fetched rows even under the cap', () => {
-    const out = renderOwnerDirectivesBlock([row({ id: 3 })], { nowMs: NOW, totalOpen: 9 })!;
+    const out = renderOwnerDirectivesBlock([row({ id: 3 })], {
+      nowMs: NOW,
+      totalOpen: 9,
+      viewerOwnerId: row().recordedBy,
+    })!;
     expect(out).toContain('+8 more open — orders:list');
+  });
+
+  it('labels mixed workspace rows by the session that can act on each one', () => {
+    const ownerId = 'su-current-session';
+    const ownText = 'carry out my open directive';
+    const peerText = 'take over the peer session project';
+    const own = row({ id: 44, recordedBy: ownerId, verbatimText: ownText });
+    const peer = row({ id: 45, recordedBy: 'su-peer-session', verbatimText: peerText });
+    const out = renderOwnerDirectivesBlock([own, peer], { nowMs: NOW, viewerOwnerId: ownerId })!;
+    const ownLine = out.split('\n').find((line) => line.includes('#44'))!;
+    const peerLine = out.split('\n').find((line) => line.includes('#45'))!;
+
+    expect(ownLine).toContain('[FOR THIS SESSION]');
+    expect(ownLine).toContain(ownText);
+    expect(peerLine).toContain('[FYI');
+    expect(peerLine).toContain('not an action assignment for this session');
+    expect(peerLine).toContain('orders:get #45');
+    expect(peerLine).not.toContain(peerText);
   });
 });
 
 describe('loop wake render (EI-11484) — directives ABOVE the loop contract', () => {
   const KICKOFF = '🔁 loop goal: drain the bug queue\nfull contract body here';
-  const block = renderOwnerDirectivesBlock([row({ id: 5 })], { nowMs: NOW })!;
+  const block = renderOwnerDirectivesBlock([row({ id: 5 })], {
+    nowMs: NOW,
+    viewerOwnerId: row().recordedBy,
+  })!;
 
   it('FULL form: the directives block renders above the walls and the checkpoint', () => {
     const out = renderLoopWakeText({

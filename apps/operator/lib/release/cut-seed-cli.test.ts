@@ -26,6 +26,7 @@ import {
   waitForOperatorDrain,
   openSourceStoreForCut,
   isTransientStoreOpenError,
+  HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS,
   RO_OPEN_RETRY_ATTEMPTS,
   CUT_SEED_DRAIN_STALL_MS,
   mergeReleaseSeedRedactionValues,
@@ -52,6 +53,7 @@ describe('head-snapshot timeout override', () => {
   });
 });
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
+import { HEAD_SNAPSHOT_PATH } from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
@@ -1244,6 +1246,7 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         sparse: true,
         openStore,
         findHolderImpl: noHolder,
+        detectWedgedListenerImpl: async () => null,
         // One look: this asserts the REFUSAL MESSAGE, not the recycle-waiting policy
         // (covered in live-head-snapshot-client.test.ts). Production waits out a recycle.
         holderWaitMs: 0,
@@ -1268,6 +1271,68 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       // Names the ports it looked at, so the verdict is diagnosable rather than bare.
       expect(err.message).toMatch(/3070 of probed 3070, 3170/);
       expect(ran).toEqual([]);
+    });
+
+    it('adds only confirmed passive accept-queue evidence to the refusal for unanswered ports', async () => {
+      const { openStore } = harness({ locked: true });
+      const samples = [
+        { wedged: true, pending: 4, backlog: 128, pid: 4170 },
+        { wedged: true, pending: 3, backlog: 128, pid: 4170 },
+      ];
+      const detectWedgedListenerImpl = vi.fn(async (url: string) => {
+        expect(url).toBe(`http://127.0.0.1:3170${HEAD_SNAPSHOT_PATH}`);
+        return samples.shift() ?? null;
+      });
+      const acceptQueueSamplePauseImpl = vi.fn(async (_ms: number) => {});
+
+      const err = (await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        findHolderImpl: noHolder,
+        headSnapshotImpl: noHolder,
+        holderWaitMs: 0,
+        detectWedgedListenerImpl,
+        acceptQueueSamplePauseImpl,
+      }).then(
+        () => new Error('expected a refusal, got a resolved cut'),
+        (e: unknown) => e,
+      )) as Error;
+
+      expect(detectWedgedListenerImpl).toHaveBeenCalledTimes(2);
+      expect(acceptQueueSamplePauseImpl).toHaveBeenCalledWith(HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS);
+      expect(err.message).toMatch(
+        /persistent unaccepted connections \(port 3170: pending 4 -> 3, backlog 128 -> 128, pid 4170\)/,
+      );
+      expect(err.message).toMatch(/queue evidence only; it does not establish the listener's root cause/i);
+    });
+
+    it('does not report a wedge when the second passive sample shows the accept queue drained', async () => {
+      const { openStore } = harness({ locked: true });
+      const samples = [
+        { wedged: true, pending: 2, backlog: 128, pid: 4170 },
+        { wedged: false, pending: 0, backlog: 128, pid: 4170 },
+      ];
+      const detectWedgedListenerImpl = vi.fn(async (_url: string) => samples.shift() ?? null);
+      const acceptQueueSamplePauseImpl = vi.fn(async (_ms: number) => {});
+
+      const err = (await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        findHolderImpl: noHolder,
+        headSnapshotImpl: noHolder,
+        holderWaitMs: 0,
+        detectWedgedListenerImpl,
+        acceptQueueSamplePauseImpl,
+      }).then(
+        () => new Error('expected a refusal, got a resolved cut'),
+        (e: unknown) => e,
+      )) as Error;
+
+      expect(detectWedgedListenerImpl).toHaveBeenCalledTimes(2);
+      expect(acceptQueueSamplePauseImpl).toHaveBeenCalledWith(HEAD_SNAPSHOT_ACCEPT_QUEUE_RECHECK_MS);
+      expect(err.message).not.toMatch(/persistent unaccepted connections/);
     });
 
     it('P-019: REFUSES (never silently degrades to FULL) when the holder cannot produce the snapshot', async () => {
@@ -1300,6 +1365,7 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         openStore,
         ...live,
         findHolderImpl: noHolder,
+        detectWedgedListenerImpl: async () => null,
         // One look: this asserts the REFUSAL MESSAGE, not the recycle-waiting policy
         // (covered in live-head-snapshot-client.test.ts). Production waits out a recycle.
         holderWaitMs: 0,

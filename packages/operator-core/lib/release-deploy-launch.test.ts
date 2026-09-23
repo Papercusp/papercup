@@ -54,8 +54,8 @@ function mkSnap(
         name: 'release-trigger',
         active: true,
         cron: '0 */15 * * * *',
-        lastFiredAtMs: null,
-        nextFireAtMs: null,
+        lastFiredAtMs: Date.now(),
+        nextFireAtMs: Date.now() + 15 * 60_000,
         pause: null,
       },
     },
@@ -237,6 +237,41 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true);
     expect(s.recommendation).toMatch(/trigger/i);
+  });
+
+  it('projects release-trigger timing and a stale-fire verdict into deploy status', () => {
+    const nowMs = Date.parse('2026-09-23T12:00:00.000Z');
+    const snap = mkSnap({}, { deployedBehindGreenPin: 4 });
+    snap.routines.releaseTrigger = {
+      ...snap.routines.releaseTrigger!,
+      lastFiredAtMs: nowMs - 31 * 60_000,
+      nextFireAtMs: nowMs + 14 * 60_000,
+    };
+
+    const status = computeDeployStatus(snap, null, undefined, null, nowMs);
+
+    expect(status.releaseTrigger).toMatchObject({
+      active: true,
+      cron: '0 */15 * * * *',
+      lastFiredAtMs: nowMs - 31 * 60_000,
+      nextFireAtMs: nowMs + 14 * 60_000,
+      fireStale: true,
+    });
+    expect(status.releaseTrigger.fireStaleReason).toContain('has not FIRED');
+  });
+
+  it('keeps a recently fired release-trigger healthy while green code is pending', () => {
+    const nowMs = Date.parse('2026-09-23T12:00:00.000Z');
+    const snap = mkSnap({}, { deployedBehindGreenPin: 4 });
+    snap.routines.releaseTrigger = {
+      ...snap.routines.releaseTrigger!,
+      lastFiredAtMs: nowMs - 5 * 60_000,
+    };
+
+    const status = computeDeployStatus(snap, null, undefined, null, nowMs);
+
+    expect(status.releaseTrigger.fireStale).toBe(false);
+    expect(status.releaseTrigger.fireStaleReason).toBeNull();
   });
 
   it('a deliberate release-trigger pause blocks and explains an otherwise green deploy', () => {

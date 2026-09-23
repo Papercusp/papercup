@@ -1538,9 +1538,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       string,
       { payload: unknown; cancelSiblingKeysFor?: string[] }
     > = {};
+    const writeExpectations: Array<{ expectedUpdatedAtMs: number | null }> = [];
     deps.runId = "reservation-blocked-run";
     deps.readFrozenRepairQueue = async () => null;
-    deps.writeFrozenRepairQueue = async () => {};
+    deps.writeFrozenRepairQueue = async (_queue, options) => {
+      writeExpectations.push(options);
+    };
     deps.reserveFrozenRepairFixer = async () => null;
     deps.finalizeFrozenRepairFixer = async () => null;
     deps.dispatchFrozenRepairFixer = async () => {
@@ -1560,6 +1563,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       noPush: true,
     });
 
+    expect(writeExpectations[0]).toEqual({ expectedUpdatedAtMs: null });
     const pipeline = pipelineName(repo);
     expect(result).toMatchObject({
       advanced: false,

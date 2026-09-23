@@ -3,9 +3,9 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { relative, resolve } from 'node:path';
 import {
-  bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot,
-  ADHOC_WORK_ITEM_SPEC_SCOPE, repoFilesEvidenceMeasurementSchema,
-  type BindSpecEvidenceInput, type RepoFilesEvidenceMeasurement,
+  bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot, measureAndPinRepoFilesEvidenceAtRoot, retractSpecEvidence,
+  ADHOC_WORK_ITEM_SPEC_SCOPE, MEASUREMENT_PIN_DETAILS_KEY, repoFilesEvidenceMeasurementSchema,
+  type BindSpecEvidenceInput, type MeasurementPin, type RepoFilesEvidenceMeasurement,
 } from '../plans/spec-evidence-store';
 import { readHarnessTestRunEvidence, countUnattributedTestRunRows, type HarnessTestRunEvidence } from '../../testing-run-store';
 import { resolveScenarioRerunScope } from './scenario-rerun-scope';
@@ -44,10 +44,13 @@ type Deps = {
    * real filesystem/git probe mixed into its fixture; the production defaults supply it.
    */
   pin?: typeof measureAndPinRepoFilesEvidenceAtRoot;
+  /** Used only by the re-measure path to withdraw a replaced stale predecessor. */
+  retract?: typeof retractSpecEvidence;
 };
 const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEvidenceAtRoot,
   ledger: readHarnessTestRunEvidence, list: listSpecEvidence,
-  unattributed: countUnattributedTestRunRows, pin: measureAndPinRepoFilesEvidenceAtRoot };
+  unattributed: countUnattributedTestRunRows, pin: measureAndPinRepoFilesEvidenceAtRoot,
+  retract: retractSpecEvidence };
 
 /**
  * The commit pin for a measurement, or null. The pin re-reads the files, so it is kept
@@ -104,6 +107,7 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     const measurement = repoFilesEvidenceMeasurementSchema.parse({ schemaVersion: 1, kind: 'repo-files',
       sourcePaths: binding.sourcePaths, testPaths: [testPath] });
     const fingerprints = await deps.measure(scope.root, measurement);
+    const pin = await pinFor(scope.root, measurement, fingerprints, deps);
     const normalized = { ...binding, testPath };
     const input: BindSpecEvidenceInput = {
       workItemId: request.workItemId, planSlug: request.planSlug,
@@ -112,6 +116,7 @@ export async function prepareTestEvidence(request: Request, runId: string, files
       evidenceKind: binding.counterexample ? 'counterexample' : 'test', evidenceRef: refFor(runId, index),
       ...fingerprints,
       details: { currentMeasurement: measurement,
+        ...(pin ? { [MEASUREMENT_PIN_DETAILS_KEY]: pin } : {}),
         testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId, binding: normalized },
         adequacy: { testLayer: binding.testLayer, outcome: 'pending', collected: false, executed: false,
           ...(binding.scenarioIds ? { scenarioIds: binding.scenarioIds } : {}),
@@ -299,6 +304,139 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
       workItemId: prepared[0]!.input.workItemId, planSlug: prepared[0]!.input.planSlug, originRunId, runId,
     } } },
   };
+}
+
+/**
+ * P-018 / P-011: re-measure ONLY the test proofs whose measured source or test files
+ * moved, in one call, from the recipes the bindings already persisted.
+ *
+ * The expensive part of a stale BAR was never the test run; it was the agent
+ * re-deriving every binding's specId / testPath / sourcePaths / testLayer by hand
+ * (~20 tool calls per BAR on turn-start-memory-two-class-2026-09-21). Every settled
+ * test binding already stores that exact recipe in `details.testExecution.binding`, so
+ * the re-measure is mechanical and needs no retyped fingerprints.
+ *
+ * NOTHING IS WEAKENED. A re-measured proof goes through the normal prepare → run →
+ * finish path: it is only `settled` if the test actually passes against the moved
+ * code, and a clause whose MEANING moved (spec-stale) is never re-measured here —
+ * that is a new contract, not drift.
+ */
+export const remeasureTestEvidenceSchema = z.object({
+  workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
+  specIds: z.array(z.string().min(1).max(200)).min(1).max(50).optional(),
+}).strict();
+type Remeasure = z.infer<typeof remeasureTestEvidenceSchema>;
+type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
+
+/** Stale reasons a fresh run of the SAME recipe can cure. Anything else needs a human. */
+const REMEASURABLE_STALE_REASONS = new Set(['source-stale', 'test-stale', 'testRun-stale']);
+/** One evidence request is capped at 20 bindings by `testEvidenceSchema`. */
+const MAX_REMEASURE_BINDINGS = 20;
+
+export type RemeasureSkip = { specId: string; testPath: string; bindingId: number;
+  reason: 'current' | 'clause-moved' | 'run-in-flight' | 'unmeasurable' | 'not-remeasurable' | 'cap';
+  detail?: string };
+export type RemeasureSelection = { specId: string; testPath: string; bindingId: number;
+  staleReasons: string[]; movedPaths?: unknown; binding: Request['bindings'][number];
+  /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
+  supersedes: number[] };
+
+/** Pure selection over one work-item's evidence rows: the latest test binding per (clause, test file). */
+export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
+  const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number]; phase?: string }>();
+  const members = new Map<string, number[]>();
+  for (const row of [...rows].sort((a, b) => b.id - a.id)) {
+    // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
+    // subject; re-running them against moved code is not the same claim.
+    if (row.evidenceKind !== 'test') continue;
+    const execution = row.details?.testExecution as { phase?: string; binding?: unknown } | undefined;
+    const parsed = bindingSchema.safeParse(execution?.binding);
+    if (!parsed.success) continue;
+    const key = `${row.specId}\0${parsed.data.testPath}`;
+    if (!latest.has(key)) latest.set(key, { row, binding: parsed.data, phase: execution?.phase });
+    if (row.specRevision === latest.get(key)!.row.specRevision) members.set(key, [...(members.get(key) ?? []), row.id]);
+  }
+  const selected: RemeasureSelection[] = [];
+  const skipped: RemeasureSkip[] = [];
+  for (const [key, { row, binding, phase }] of latest) {
+    const base = { specId: row.specId, testPath: binding.testPath, bindingId: row.id };
+    const { overall, dimensions, staleReasons } = row.currentness;
+    const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
+    if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
+    else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
+    else if (overall === 'current' && phase === 'settled') skipped.push({ ...base, reason: 'current' });
+    else if (
+      (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||
+      // A completed run whose sources moved WHILE it ran is the same drift, observed early.
+      (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
+    ) {
+      selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),
+        binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b) });
+    } else if (overall === 'unknown') skipped.push({ ...base, reason: 'unmeasurable', detail: row.currentness.unknownReasons.join(',').slice(0, 240) });
+    else skipped.push({ ...base, reason: 'not-remeasurable', detail: [...staleReasons, phase ?? 'no-phase'].join(',') });
+  }
+  const bySpec = (a: { specId: string; testPath: string }, b: { specId: string; testPath: string }) =>
+    a.specId.localeCompare(b.specId) || a.testPath.localeCompare(b.testPath);
+  selected.sort(bySpec);
+  for (const over of selected.splice(MAX_REMEASURE_BINDINGS)) skipped.push({ specId: over.specId, testPath: over.testPath, bindingId: over.bindingId, reason: 'cap' });
+  return { selected, skipped: skipped.sort(bySpec) };
+}
+
+/**
+ * Read one work-item's live test evidence and turn the stale-but-curable proofs into an
+ * ordinary `evidence` request plus the exact test files to run. `request` is null when
+ * nothing needs re-measuring, and the caller then starts no process at all.
+ */
+export async function buildTestEvidenceRemeasure(remeasure: Remeasure, scope: Pick<Scope, 'harnessSlug'>, deps: Pick<Deps, 'list'> = defaults) {
+  const rows = await deps.list({ harnessSlug: scope.harnessSlug,
+    planSlugs: [remeasure.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [remeasure.workItemId],
+    ...(remeasure.specIds ? { specIds: remeasure.specIds } : {}), evidenceKinds: ['test'], limit: 500 });
+  const plan = planTestEvidenceRemeasure(rows);
+  const request = plan.selected.length === 0 ? null : testEvidenceSchema.parse({
+    workItemId: remeasure.workItemId, ...(remeasure.planSlug ? { planSlug: remeasure.planSlug } : {}),
+    bindings: plan.selected.map((entry) => entry.binding) });
+  return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan,
+    summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length } };
+}
+
+/**
+ * After a re-measure run, withdraw the stale predecessors of each recipe whose FRESH
+ * proof settled as a current pass — and nothing else. The evaluator grades every live
+ * row at a revision, so a replaced stale row left live would keep failing freshness
+ * beside the new passing one. A recipe whose fresh run failed, errored or is still
+ * pending keeps its predecessors: the clause is then honestly red for a reason the
+ * caller can read, not quietly emptied. Retraction is D-011's stamp (never a delete),
+ * with a reason naming the replacement.
+ */
+export async function retireRemeasuredPredecessors(selected: readonly RemeasureSelection[], prepared: readonly Prepared[],
+  runId: string, scope: Scope, deps: Pick<Deps, 'list'> & { retract?: typeof retractSpecEvidence } = defaults) {
+  if (!deps.retract || prepared.length === 0) return [];
+  const fresh = await deps.list({ harnessSlug: scope.harnessSlug,
+    planSlugs: [prepared[0]!.input.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [prepared[0]!.input.workItemId],
+    evidenceRefs: prepared.map((row) => row.input.evidenceRef), limit: 200 });
+  const outcomes = [];
+  for (const [index, entry] of selected.entries()) {
+    const ref = prepared[index]?.input.evidenceRef;
+    const replacement = fresh.filter((row) => row.evidenceRef === ref).sort((a, b) => b.id - a.id)[0];
+    const execution = replacement?.details?.testExecution as { phase?: string } | undefined;
+    const outcome = (replacement?.details?.adequacy as { outcome?: string } | undefined)?.outcome;
+    const passed = replacement !== undefined && execution?.phase === 'settled' && outcome === 'pass'
+      && replacement.currentness.overall === 'current';
+    if (!passed) {
+      outcomes.push({ specId: entry.specId, testPath: entry.testPath, retired: [], kept: entry.supersedes,
+        reason: `fresh run not a current pass (${execution?.phase ?? 'absent'}/${outcome ?? 'unknown'})` });
+      continue;
+    }
+    const retired: number[] = [];
+    for (const bindingId of entry.supersedes) {
+      const result = await deps.retract({ harnessSlug: scope.harnessSlug, bindingId, actorId: scope.actorId,
+        reason: `superseded by re-measured binding ${replacement.id} (testing:run remeasureEvidence run ${runId}): measured paths moved since this proof` })
+        .catch(() => null);
+      if (result && result.status !== 'not_found') retired.push(bindingId);
+    }
+    outcomes.push({ specId: entry.specId, testPath: entry.testPath, replacementId: replacement.id, retired });
+  }
+  return outcomes;
 }
 
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */

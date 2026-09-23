@@ -133,6 +133,9 @@ import {
   recoverTestEvidence,
   testEvidenceSchema,
   recoverTestEvidenceSchema,
+  remeasureTestEvidenceSchema,
+  buildTestEvidenceRemeasure,
+  retireRemeasuredPredecessors,
 } from './evidence';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
@@ -2936,6 +2939,11 @@ export default defineTool({
       .describe(
         'Use the exact recovery args from an evidenceBundle to recover saved mappings and ledger outcomes; starts no new test process.',
       ),
+    remeasureEvidence: remeasureTestEvidenceSchema
+      .optional()
+      .describe(
+        "Re-run ONLY this work-item's test proofs whose measured source/test files moved, from their saved recipes; a replaced stale row is retracted only after its fresh run passes. Use instead of files/evidence.",
+      ),
     files: z
       .array(z.string().min(1))
       .min(1)
@@ -2984,7 +2992,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (args.recoverEvidence) {
-      if (args.files || args.changedPaths || args.evidence)
+      if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
       if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*')
@@ -3001,12 +3009,43 @@ export default defineTool({
         return { data: { ok: false, error: 'evidence_recovery_failed', message: String(error) } };
       }
     }
+    // P-018 / P-011: a re-measure derives BOTH the files and the evidence mapping from the
+    // work-item's persisted stale bindings, then runs through the ordinary evidence path
+    // below — so it inherits every guard that path already has instead of forking one.
+    let remeasure: Awaited<ReturnType<typeof buildTestEvidenceRemeasure>> | undefined;
+    if (args.remeasureEvidence) {
+      if (args.files || args.changedPaths || args.evidence)
+        return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
+      const remeasureHarness = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!remeasureHarness || !ctx.workspaceId || ctx.workspaceId === '*')
+        return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+      try {
+        remeasure = await buildTestEvidenceRemeasure(args.remeasureEvidence, { harnessSlug: remeasureHarness });
+      } catch (error) {
+        return { data: { ok: false, error: 'evidence_remeasure_plan_failed', message: String(error) } };
+      }
+      if (!remeasure.request) {
+        // Nothing curable is stale: start no process. `skipped` says why per binding —
+        // `current` is the good answer; `clause-moved` / `not-remeasurable` need a human.
+        return {
+          data: {
+            ok: true,
+            mode: 'evidence-remeasure',
+            ran: false,
+            summary: remeasure.summary,
+            skipped: remeasure.plan.skipped.slice(0, 20),
+          },
+        };
+      }
+    }
+    const evidenceRequest = args.evidence ?? remeasure?.request ?? undefined;
+    const selectedFiles = args.files ?? remeasure?.files;
     // Exactly one selector. Both branches REFUSE rather than defaulting, because every
     // default here is a silent wrong answer: picking `files` when both were sent would
     // ignore a radius the caller asked to see, and treating neither as "run everything"
     // is the zero/partial-match false-green this whole tool exists to refuse.
     const wantsPlan = args.changedPaths !== undefined;
-    if (wantsPlan && args.files !== undefined) {
+    if (wantsPlan && selectedFiles !== undefined) {
       return {
         data: {
           ok: false,
@@ -3016,7 +3055,7 @@ export default defineTool({
         },
       };
     }
-    if (!wantsPlan && args.files === undefined) {
+    if (!wantsPlan && selectedFiles === undefined) {
       return {
         data: {
           ok: false,
@@ -3039,7 +3078,7 @@ export default defineTool({
       });
       return { data: plan };
     }
-    const files = args.files as string[];
+    const files = selectedFiles as string[];
     // EI-1754, again: this tool must judge the tree the AGENT is editing, not the
     // one the operator happens to run from. `inferWorkspaceRoot()` walks up from
     // `process.cwd()`, and the :3070 operator runs FROM the release checkout
@@ -3066,7 +3105,7 @@ export default defineTool({
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     const runId = randomUUID();
     const evidenceScope =
-      args.evidence && harnessSlug && ctx.workspaceId && ctx.workspaceId !== '*'
+      evidenceRequest && harnessSlug && ctx.workspaceId && ctx.workspaceId !== '*'
         ? {
             root: rootSelection.root,
             harnessSlug,
@@ -3074,13 +3113,13 @@ export default defineTool({
             actorId: resolveAgentIdentity(ctx).ownerId,
           }
         : null;
-    if (args.evidence && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+    if (evidenceRequest && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
-    if (args.evidence) {
+    if (evidenceRequest) {
       try {
         const selected = normalizeTestFilePaths(files, rootSelection.root);
         if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
-        prepared = await prepareTestEvidence(args.evidence, runId, selected.files, evidenceScope!);
+        prepared = await prepareTestEvidence(evidenceRequest, runId, selected.files, evidenceScope!);
       } catch (error) {
         return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
       }
@@ -3147,8 +3186,8 @@ export default defineTool({
                 args: {
                   harness: harnessSlug,
                   recoverEvidence: {
-                    workItemId: args.evidence!.workItemId,
-                    planSlug: args.evidence!.planSlug,
+                    workItemId: evidenceRequest!.workItemId,
+                    planSlug: evidenceRequest!.planSlug,
                     originRunId: runId,
                     runId,
                   },
@@ -3158,10 +3197,29 @@ export default defineTool({
           }
         : {}),
     };
+    // Retire a replaced stale predecessor only once its fresh run has a known outcome; a
+    // detached/timed-out run is recovered later through the ordinary recovery path.
+    const remeasureReport =
+      remeasure && prepared && evidenceScope
+        ? {
+            summary: remeasure.summary,
+            selected: remeasure.plan.selected
+              .map(({ binding: _binding, supersedes: _supersedes, ...entry }) => entry)
+              .slice(0, 20),
+            skipped: remeasure.plan.skipped.slice(0, 20),
+            retired:
+              result.error === undefined
+                ? await retireRemeasuredPredecessors(remeasure.plan.selected, prepared, runId, evidenceScope).catch(
+                    (error) => [{ error: String(error) }],
+                  )
+                : [],
+          }
+        : undefined;
+    const finalResult = remeasureReport ? { ...surfacedResult, remeasure: remeasureReport } : surfacedResult;
     if (result.ok === false && result.error === 'timeout') {
       return {
         data: {
-          ...surfacedResult,
+          ...finalResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             testingRunTimeoutClampDisclosure(requestedTimeoutMs, timeoutMs) +
@@ -3173,6 +3231,6 @@ export default defineTool({
         },
       };
     }
-    return { data: surfacedResult };
+    return { data: finalResult };
   },
 });

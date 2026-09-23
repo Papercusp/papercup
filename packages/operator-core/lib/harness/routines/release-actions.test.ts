@@ -3692,7 +3692,12 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ['ws-42', 'my-harness'],
     );
 
-    await writeFrozenCandidateRepairQueue(target, queue);
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, queue, {
+      expectedUpdatedAtMs: queue.updatedAtMs,
+    });
     // P-021 (D-007 #1): the write path derives the repair manifest FIRST, and the only evidence
     // of a lint leg's subject paths is the last repair tick's per-leg output — read raw from the
     // same routine row, scoped exactly like the queue read above.
@@ -3733,6 +3738,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
         expect.stringMatching(
           /^\{"convergence":\{[\s\S]*"candidate":"a{40}","repairHead":"c{40}","phase":"ready-to-verify","observedAtMs":\d+\}\}$/,
         ),
+        String(queue.updatedAtMs),
       ],
     );
     // P-021: a first write is a signature change, so the manifest is published to the gate-red
@@ -3745,7 +3751,10 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ['ws-42', 'my-harness', expect.any(Array)],
     );
 
-    await writeFrozenCandidateRepairQueue(target, null);
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, null, {
+      expectedUpdatedAtMs: queue.updatedAtMs,
+    });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       5,
       // Retiring the cycle must ALSO clear the convergence projection (D-007). Leaving it
@@ -3756,11 +3765,11 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata = \(CASE[\s\S]+gate_health,inconclusive,status[\s\S]+repair-in-progress[\s\S]+repair-staging-mismatch[\s\S]+#- '\{gate_health,inconclusive\}'[\s\S]+END\)\s*#- '\{gate_health,convergence\}'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
       ),
-      ['ws-42', 'my-harness'],
+      ['ws-42', 'my-harness', String(queue.updatedAtMs)],
     );
   });
 
-  it('P-027 (D-014): a version-guarded write matches only the row version the caller read; a miss throws the FRESH row instead of overwriting it', async () => {
+  it('P-027 (D-014): every write requires an explicit expected version or absence; a miss throws the FRESH row instead of overwriting it', async () => {
     fakeSql.unsafe.mockClear();
     const advanced = { ...queue, repairHead: 'd'.repeat(40), updatedAtMs: 9 };
     fakeSql.unsafe
@@ -3813,14 +3822,11 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ['ws-42', 'my-harness', '2'],
     );
 
-    // The legacy unconditional write is byte-identical to before: no predicate, no RETURNING check.
     fakeSql.unsafe.mockClear();
-    await writeFrozenCandidateRepairQueue(target, queue);
-    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
-      2,
-      expect.not.stringMatching(/updatedAtMs' = \$/),
-      ['ws-42', 'my-harness', expect.any(String), expect.any(String)],
-    );
+    await expect(
+      writeFrozenCandidateRepairQueue(target, queue, undefined as never),
+    ).rejects.toThrow(/requires an explicit expectedUpdatedAtMs/);
+    expect(fakeSql.unsafe).not.toHaveBeenCalled();
   });
 
   it('P-027 (D-014): applyFrozenCandidateRepairQueueTransition reduces the FRESH row (not the caller\'s copy), bumps the version, absorbs a CAS miss by re-reading, and writes nothing for an identity or an absent row', async () => {

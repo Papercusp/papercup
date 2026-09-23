@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GitPipelineSnapshot, RoutineInfo } from './git-pipeline-stats';
 import { gitPipelineSnapshot, releaseTriggerControlBlockReason } from './git-pipeline-stats';
+import { evaluateReleaseTriggerFireStale } from './release/release-trigger-fire-stale';
 import { summarizeFreezeAndConverge } from './release/freeze-disposition';
 import {
   buildDeployTerminalShell,
@@ -356,9 +357,14 @@ export interface DeployStatus {
    *  must not route around it; force remains the explicit override. */
   releaseTrigger: {
     active: boolean | null;
+    cron: RoutineInfo['cron'];
+    lastFiredAtMs: RoutineInfo['lastFiredAtMs'];
+    nextFireAtMs: RoutineInfo['nextFireAtMs'];
     pause: RoutineInfo['pause'];
     blocked: boolean;
     blockReason: string | null;
+    fireStale: boolean;
+    fireStaleReason: string | null;
   };
   /** P-010: specialized live/federation qualification for the exact green pin.
    * Null only on pure legacy callers that did not supply a reader, or when no
@@ -615,6 +621,14 @@ export function computeDeployStatus(
   const releaseTriggerRow = snap.routines.releaseTrigger;
   const releaseTriggerBlockReason = releaseTriggerControlBlockReason(releaseTriggerRow);
   const releaseTriggerBlocked = releaseTriggerBlockReason !== null;
+  const releaseTriggerFireStale = evaluateReleaseTriggerFireStale(
+    {
+      active: releaseTriggerRow?.active ?? null,
+      lastFiredMs: releaseTriggerRow?.lastFiredAtMs ?? null,
+      deployedBehindGreenPin,
+    },
+    nowMs,
+  );
 
   // Green code ahead of the live deploy that we could ship right now.
   const hasGreenAhead = typeof deployedBehindGreenPin === 'number' && deployedBehindGreenPin > 0;
@@ -800,9 +814,14 @@ export function computeDeployStatus(
     manualRunAuthority,
     releaseTrigger: {
       active: releaseTriggerRow?.active ?? null,
+      cron: releaseTriggerRow?.cron ?? null,
+      lastFiredAtMs: releaseTriggerRow?.lastFiredAtMs ?? null,
+      nextFireAtMs: releaseTriggerRow?.nextFireAtMs ?? null,
       pause: releaseTriggerRow?.pause ?? null,
       blocked: releaseTriggerBlocked,
       blockReason: releaseTriggerBlockReason,
+      fireStale: releaseTriggerFireStale.stale,
+      fireStaleReason: releaseTriggerFireStale.reason,
     },
     liveCertification: liveCertification ?? null,
     canTriggerGreen,
