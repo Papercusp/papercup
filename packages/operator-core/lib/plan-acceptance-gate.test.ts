@@ -637,6 +637,43 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(mockRubrics).not.toHaveBeenCalled();
     });
 
+    // P-038 (review-system-rework-reduction-2026-09-23, R-9): measured friction on
+    // consult-expert-routing-2026-09-22 — six ship codes, while the one repair that unblocked
+    // was pre-grading's bar_snapshot_vetting_missing. The refusal must NAME that phase and carry
+    // its verdict, not make the caller re-probe.
+    it('names the blocking pre-grading phase, its codes per BAR, and its next repair (P-038)', async () => {
+      const shipCodes: AcceptanceBarLifecycleVerdict['codes'] = [
+        'bar_snapshot_evidence_plane_unmet', 'bar_snapshot_proof_stale', 'bar_snapshot_proof_depth_missing',
+        'bar_snapshot_vetting_missing', 'bar_snapshot_grading_missing', 'bar_snapshot_author_verdict_missing',
+      ];
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => phase === 'ship'
+        ? verdict('ship', shipCodes)
+        : {
+            ...verdict('pre-grading', ['bar_snapshot_vetting_missing']),
+            blockingBars: [{ barKey: 'R-1', codes: ['bar_snapshot_proof_stale'], contract: 'automated' as const }],
+            nextRepair: { code: 'bar_snapshot_vetting_missing', barKey: null, action: 'Vet the current rubric revision' },
+          });
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading' });
+      expect(v.blockingPhaseLifecycle?.codes).toEqual(['bar_snapshot_vetting_missing']);
+      expect(v.blockingPhaseLifecycle?.nextRepair?.code).toBe('bar_snapshot_vetting_missing');
+      expect(v.blockingPhaseLifecycle?.blockingBars).toEqual([
+        { barKey: 'R-1', codes: ['bar_snapshot_proof_stale'], contract: 'automated' },
+      ]);
+      // The ship-phase list is still carried in full; the message LEADS with the unblocking repair.
+      expect(v.acceptanceBarLifecycle?.codes).toEqual(shipCodes);
+      expect(v.message?.startsWith('BLOCKED AT PRE-GRADING')).toBe(true);
+      expect(v.message).toContain('NEXT REPAIR: Vet the current rubric revision');
+      expect(mockRubrics).not.toHaveBeenCalled();
+    });
+
+    it('a ship refusal that never deferred names the ship phase and carries no pre-grading verdict (P-038)', async () => {
+      mockBarLifecycle.mockResolvedValue(verdict('ship', ['bar_snapshot_evidence_plane_unmet']));
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: false, blockingPhase: 'ship' });
+      expect(v.blockingPhaseLifecycle).toBeUndefined();
+    });
+
     it('keeps a proof-only ship refusal at the BAR boundary', async () => {
       mockBarLifecycle.mockResolvedValue(verdict('ship', ['bar_snapshot_evidence_plane_unmet']));
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
