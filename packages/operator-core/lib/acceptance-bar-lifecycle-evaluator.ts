@@ -33,6 +33,20 @@ export interface AcceptanceBarLifecycleVerdict {
   contractCodes: AcceptanceBarSnapshotCode[];
   /** Every blocking code with the BAR keys that produced it; empty keys mean contract-level. */
   codeAttribution: Array<{ code: AcceptanceBarSnapshotCode; barKeys: string[] }>;
+  /**
+   * WI-10002509: the authoritative grading card that a `bar_snapshot_grading_stale`
+   * BAR has judged stale, or null when no gating BAR reports one.
+   *
+   * The ship door defers its refusal on a stale grading specifically so an
+   * independent re-grader gets recruited, but it re-derived "is this card current"
+   * from the rubric revision/criteriaHash alone. A BAR also goes stale when the
+   * EVIDENCE COHORT moved under an unchanged rubric (`cohortChangedSinceGrading`),
+   * and such a card passed that narrower test — so the door saw a complete grading,
+   * never reached `acceptance_ungraded`, and the re-grade the BAR lifecycle asks for
+   * was unreachable. Carrying the BAR's own verdict keeps ONE staleness judgment:
+   * the door must not re-implement the cohort fingerprint and drift from it.
+   */
+  staleGradingScorecardId: string | null;
   nextRepair: AcceptanceBarContractSnapshot['readiness']['nextRepair'];
   message: string | null;
   /** Same snapshot's exact current operational proof, shared with the activation join. */
@@ -305,6 +319,7 @@ export function evaluateAcceptanceBarLifecycle(
       contractCodes: [],
       codeAttribution: [],
       nextRepair: null,
+      staleGradingScorecardId: null,
       message: null,
     };
   }
@@ -372,6 +387,16 @@ export function evaluateAcceptanceBarLifecycle(
           ? 'grading'
           : 'ship';
   const { contractCodes, codeAttribution } = attributeCodes(snapshot, codes, blockingBars);
+  // WI-10002509: report the card the BAR judged stale, not merely THAT one is stale.
+  // `bar_snapshot_grading_stale` is emitted against the single authoritative grading
+  // (`authoritativeGrading` resolves one card per contract; only its per-BAR verdict
+  // varies), so that id is what the ship door must exclude to reach
+  // `acceptance_ungraded` and recruit the re-grade. A `not-pass` grading deliberately
+  // does NOT appear here: a genuine unchanged fail stays terminal rather than
+  // re-recruiting a grader on every ship attempt.
+  const staleGradingScorecardId = codes.includes('bar_snapshot_grading_stale')
+    ? snapshot.grading.authoritativeScorecardId
+    : null;
   return {
     phase,
     applicable: true,
@@ -381,6 +406,7 @@ export function evaluateAcceptanceBarLifecycle(
     contractCodes,
     codeAttribution,
     nextRepair,
+    staleGradingScorecardId,
     message:
       codes.length === 0
         ? null
@@ -417,6 +443,7 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
       contractCodes: [],
       codeAttribution: [],
       nextRepair: null,
+      staleGradingScorecardId: null,
       message: null,
     };
   }

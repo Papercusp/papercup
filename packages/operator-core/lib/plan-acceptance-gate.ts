@@ -446,6 +446,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // includes scorecard history.  Remember the stale reading so the recruitment
   // path cannot mistake the historical card for a current independent grade.
   let requireCurrentBarGrading = false;
+  // WI-10002509: the id of the card the BAR itself judged stale. `requireCurrentBarGrading`
+  // alone only licenses the rubric-revision test below, which a card graded against an
+  // UNCHANGED rubric passes even after the evidence cohort moved under it — leaving the
+  // deferred refusal permanent and the re-grade unrecruitable. Carry the BAR's verdict
+  // rather than re-deriving the cohort fingerprint here, so there is one staleness judgment.
+  let barStaleGradingScorecardId: string | null = null;
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -579,6 +585,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         });
         if (!preGrading.satisfied) return refusal;
         requireCurrentBarGrading = gradingStale;
+        if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
       }
     }
   } catch (error) {
@@ -1126,10 +1133,16 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       s.missingKeys.length === 0 &&
       !s.synthesized &&
       (!requireCurrentBarGrading ||
-        classifyRubricEvidenceCurrentness(
+        (classifyRubricEvidenceCurrentness(
           { revision: s.rubricRevision, criteriaHash: s.criteriaHash },
           { revision: rubric.revision, criteriaHash: rubric.criteriaHash },
-        ).state === 'current'),
+        ).state === 'current' &&
+          // WI-10002509: the rubric-revision test above cannot see a cohort-only
+          // staleness — the card was graded against THIS revision, so it reads
+          // current while the evidence it judged has since moved. The BAR already
+          // made that call; honour it here or the deferred ship refusal is permanent
+          // and the re-grade it defers for is never recruited.
+          s.issueId !== barStaleGradingScorecardId)),
   );
   // WI-2141007: `createdBy` FIRST, matching `scorecards:emit` and
   // `grader-eligibility.ts`. This file previously read `proposedBy ?? createdBy`
