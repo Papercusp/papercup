@@ -168,7 +168,10 @@ function menuSnapshot(owners: string[]) {
 function makeDeps(opts: { limit?: number; emitError?: boolean; withReach?: boolean } = {}) {
   const emits: Array<Parameters<ExpirySweepDeps['emitReplyEvent']>[0]> = [];
   const alerts: Array<Parameters<ExpirySweepDeps['notifyRequester']>[0]> = [];
-  const reachCalls: Array<Parameters<NonNullable<ExpirySweepDeps['reach']>>[0]> = [];
+  // D-002/D-011: the sweep's cascade advance DISPATCHES (fork/convert) — it has
+  // no wake seam at all. Kept under the old local name so the assertions below
+  // keep reading as "who did this advance deliver to".
+  const reachCalls: Array<Parameters<NonNullable<ExpirySweepDeps['dispatch']>>[0]> = [];
   const deps: ExpirySweepDeps = {
     getSql: () => rootSql,
     notifyRequester: async (alert) => { alerts.push(alert); },
@@ -180,9 +183,9 @@ function makeDeps(opts: { limit?: number; emitError?: boolean; withReach?: boole
     ...(opts.limit != null ? { limit: opts.limit } : {}),
     ...(opts.withReach
       ? {
-          reach: async (o) => {
+          dispatch: async (o) => {
             reachCalls.push(o);
-            return { woke: 1 };
+            return { woke: 1, answeringOwnerId: `${o.responder}-fork` };
           },
         }
       : {}),

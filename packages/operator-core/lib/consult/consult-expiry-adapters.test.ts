@@ -23,12 +23,10 @@ import {
   consultExpiryEmitReplyEvent,
   consultExpiryFindSilentResponders,
   consultExpiryNotifyRequester,
-  consultExpiryReach,
-  consultExpiryRevive,
+  consultExpiryDispatch,
   sweepIdentity,
-  type AgentNotifier,
   type AwaitedEventEmitter,
-  type ResponderReviver,
+  type ConsultDispatcherFactory,
 } from './consult-expiry-adapters';
 import { requesterAlertForRow, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
@@ -136,19 +134,19 @@ describe('consultExpiryEmitReplyEvent', () => {
   });
 });
 
-describe('consultExpiryReach', () => {
-  it('builds the notifying identity from the ROW workspace, not an ambient one', async () => {
-    // `AgentIdentity.workspaceId` is `string | null`, so widen rather than narrow —
-    // a `string | undefined` here would not compile.
-    let identityWs: string | null | undefined;
-    const notify = (async (identity) => {
-      expect(currentRequestWorkspaceId()).toBe(ROW_WS);
-      identityWs = identity.workspaceId;
-      return { notified: [], subscribed: [], woke: 1 } as never;
-    }) as AgentNotifier;
+describe('consultExpiryDispatch', () => {
+  it('builds the dispatcher from the ROW workspace, not an ambient one', async () => {
+    let ctxArg: Record<string, unknown> = {};
+    const makeDispatcher = ((ctx: Record<string, unknown>) => {
+      ctxArg = ctx;
+      return async () => {
+        expect(currentRequestWorkspaceId()).toBe(ROW_WS);
+        return { woke: 1, answeringOwnerId: 'su-next-fork' };
+      };
+    }) as ConsultDispatcherFactory;
 
     await runWithWorkspace('ambient-other', async () => {
-      await consultExpiryReach(notify)({
+      await consultExpiryDispatch(makeDispatcher)({
         responder: 'su-next',
         conversationId: 'conv-1',
         summary: 's',
@@ -158,17 +156,33 @@ describe('consultExpiryReach', () => {
       expect(currentRequestWorkspaceId()).toBe('ambient-other');
     });
 
-    expect(identityWs).toBe(ROW_WS);
+    expect(ctxArg.workspaceId).toBe(ROW_WS);
+    expect(ctxArg.launchedBy).toBe(CONSULT_EXPIRY_SWEEP_OWNER_ID);
+    expect(ctxArg.harnessSlug).toBeNull();
   });
 
-  it('subscribes the selectee to the conversation and wakes them (D-005 cascade advance)', async () => {
-    let opts: { addressees?: string[]; objectRef?: unknown; wake?: boolean } = {};
-    const notify = (async (_identity, o) => {
-      opts = o;
-      return { notified: [], subscribed: [], woke: 0 } as never;
-    }) as AgentNotifier;
+  it('builds the dispatcher PER ROW — a hoisted factory call would bind every launch to the first tenant', async () => {
+    const seen: string[] = [];
+    const makeDispatcher = ((ctx: { workspaceId: string }) => {
+      seen.push(ctx.workspaceId);
+      return async () => ({ woke: 1, answeringOwnerId: null });
+    }) as ConsultDispatcherFactory;
+    const dispatch = consultExpiryDispatch(makeDispatcher);
 
-    await consultExpiryReach(notify)({
+    await dispatch({ responder: 'a', conversationId: 'c1', summary: 's', body: 'b', workspaceId: ROW_WS });
+    await dispatch({ responder: 'b', conversationId: 'c2', summary: 's', body: 'b', workspaceId: 'ws-second' });
+
+    expect(seen).toEqual([ROW_WS, 'ws-second']);
+  });
+
+  it('passes the expert as the dispatch SOURCE and narrows the result to { woke, answeringOwnerId }', async () => {
+    let opts: { responder?: string; conversationId?: string } = {};
+    const makeDispatcher = (() => async (o: { responder: string; conversationId: string }) => {
+      opts = o;
+      return { queued: 1, woke: 1, pickupConfirmed: true, answeringOwnerId: 'su-next-fork', extra: 'ignored' };
+    }) as ConsultDispatcherFactory;
+
+    const out = await consultExpiryDispatch(makeDispatcher)({
       responder: 'su-next',
       conversationId: 'conv-42',
       summary: 's',
@@ -176,70 +190,9 @@ describe('consultExpiryReach', () => {
       workspaceId: ROW_WS,
     });
 
-    expect(opts.addressees).toEqual(['su-next']);
-    expect(opts.objectRef).toEqual({ kind: 'conversation', ref: 'conv-42' });
-    // An advance that does not WAKE leaves the cascade silently stalled.
-    expect(opts.wake).toBe(true);
-  });
-
-  it("narrows the notifier's richer result down to the core's { woke }", async () => {
-    const notify = (async () =>
-      ({ notified: ['a', 'b'], subscribed: ['a'], woke: 2 }) as never) as AgentNotifier;
-
-    const out = await consultExpiryReach(notify)({
-      responder: 'su-next',
-      conversationId: 'conv-1',
-      summary: 's',
-      body: 'b',
-      workspaceId: ROW_WS,
-    });
-
-    expect(out).toEqual({ woke: 2 });
-  });
-});
-
-describe('consultExpiryRevive', () => {
-  it('splits one flat opts across the reviver’s TWO parameters, workspace into the CONTEXT', async () => {
-    // The one-word mistake this pins: putting workspaceId in the consult triple (where
-    // it is ignored) instead of the context (where it selects the tenant). Both compile.
-    let firstArg: Record<string, unknown> = {};
-    let ctxArg: Record<string, unknown> = {};
-    const revive = (async (opts, ctx) => {
-      firstArg = opts as unknown as Record<string, unknown>;
-      ctxArg = ctx as unknown as Record<string, unknown>;
-      return { spawned: true, verified: null, detail: 'ok' } as never;
-    }) as ResponderReviver;
-
-    await consultExpiryRevive(revive)({
-      ownerId: 'su-dead',
-      conversationId: 'conv-9',
-      brief: 'come back',
-      workspaceId: ROW_WS,
-    });
-
-    expect(firstArg).toEqual({
-      ownerId: 'su-dead',
-      conversationId: 'conv-9',
-      brief: 'come back',
-    });
-    expect(firstArg.workspaceId).toBeUndefined();
-    expect(ctxArg.workspaceId).toBe(ROW_WS);
-    expect(ctxArg.launchedBy).toBe(CONSULT_EXPIRY_SWEEP_OWNER_ID);
-    expect(ctxArg.harnessSlug).toBeNull();
-  });
-
-  it('returns the reviver’s verdict unchanged', async () => {
-    const revive = (async () =>
-      ({ spawned: false, verified: false, detail: 'budget exhausted' }) as never) as ResponderReviver;
-
-    await expect(
-      consultExpiryRevive(revive)({
-        ownerId: 'su-dead',
-        conversationId: 'conv-9',
-        brief: 'b',
-        workspaceId: ROW_WS,
-      }),
-    ).resolves.toEqual({ spawned: false, verified: false, detail: 'budget exhausted' });
+    expect(opts.responder).toBe('su-next');
+    expect(opts.conversationId).toBe('conv-42');
+    expect(out).toEqual({ woke: 1, answeringOwnerId: 'su-next-fork' });
   });
 });
 

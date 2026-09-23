@@ -19,13 +19,7 @@
  * Schema: migration 844 (cascade_cursor + cascade_digest on consult_state).
  */
 import type { Sql } from 'postgres';
-import {
-  DEAD_RESPONDER_STATES,
-  HARD_BLOCKED_EXPIRY_MS,
-  PROCEED_EXPIRY_MS,
-  revivalBrief,
-  revivalBudgetSpent,
-} from './get-feedback-core';
+import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
@@ -213,15 +207,28 @@ export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWrit
   return grading ? gradingCascadeWakeCopy(grading) : consultCascadeWakeCopy;
 }
 
-/** The revival seam advanceCascade's refill-exhaustion leg calls
- * (EI-20864690354207496) — same contract as GetFeedbackDeps.revive: MUST
- * resolve, never throw; spawned:false on any failure. Prod binds the WI-39852
- * reviver (revive-responder.ts). */
-export type CascadeRevive = (opts: {
-  ownerId: string;
+/**
+ * The consult DELIVERY seam (D-002/D-010/D-011). Prod binds the fork/convert
+ * dispatcher (`makeConsultReachDispatcher`), NEVER a wake: `responder` names the
+ * expert whose TRANSCRIPT answers, and a non-zero `woke` means an answering
+ * session was launched from it. Zero means the whole allowlist was exhausted for
+ * that expert, which every caller already treats as "advance to the next".
+ *
+ * `answeringOwnerId` is who will actually post — it differs from `responder` on a
+ * fork, and `stampAnsweringOwner` persists it so the launched session's reply is
+ * not refused `not_a_participant`.
+ */
+export type CascadeDispatch = (opts: {
+  responder: string;
   conversationId: string;
-  brief: string;
-}) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  summary: string;
+  body: string;
+  /** Persist the answering identity AS SOON AS that session is running, rather
+   *  than when dispatch returns: the launched session can post during the
+   *  dispatcher's verification wait, and the reply gate refuses an author the
+   *  row does not name yet. The post-dispatch stamp stays as the backstop. */
+  onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+}) => Promise<{ woke: number; answeringOwnerId?: string | null }>;
 
 export interface AdvanceCascadeParams {
   workspaceId: string;
@@ -263,26 +270,19 @@ export interface AdvanceCascadeResult {
    * menu was extended from the untried route-time-live remainder of the
    * snapshot pool (selection.refill stamps the round). */
   refilled?: boolean;
-  /** EI-20864690354207496: a refill-exhaustion revival was ATTEMPTED this
-   * advance — the menu exhausted below selection.min with no live untried
-   * candidate left to fill it, and the persisted per-consult budget was
-   * unspent. spawned:true ⇒ the revived entry HEADS the menu extension and
-   * `next` points at them; spawned:false ⇒ see underFilled. */
-  revival?: {
-    ownerId: string;
-    trigger: 'refill-exhaustion';
-    spawned: boolean;
-    verified: boolean | null;
-    detail: string;
-  };
   /** EI-20864690354207496 honest terminal: the cascade ended with fewer
-   * substantive answers than selection.min and NO revival could close the gap
-   * — `reason` names why. Mirrored durably onto the persisted snapshot as
-   * selection.underFilled so the label survives the caller. */
+   * substantive answers than selection.min and the menu could not be extended
+   * to close the gap — `reason` names why. Mirrored durably onto the persisted
+   * snapshot as selection.underFilled so the label survives the caller.
+   *
+   * D-002/D-004 retired the revival-specific reasons: liveness is no longer a
+   * filter on the refill (dispatch forks a dead expert's transcript exactly as
+   * it forks a live one), so the only two ways to run out are a pool with no
+   * untried candidate left, and the ONE bounded refill round already spent. */
   underFilled?: {
     answers: number;
     min: number;
-    reason: 'no-revive-dep' | 'budget-spent' | 'no-revivable-candidate' | 'revival-failed';
+    reason: 'no-untried-candidate' | 'refill-spent';
   };
 }
 
@@ -332,14 +332,10 @@ async function stampAnsweringOwner(
 export async function advanceCascade(
   params: AdvanceCascadeParams,
   sql: Sql,
-  /** D-002/D-010: prod binds the fork/convert DISPATCHER here, not a wake.
-   *  `woke` counts answering sessions launched; `answeringOwnerId` is who will
-   *  post, which differs from `responder` on a fork. */
-  reach?: (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{
-    woke: number;
-    answeringOwnerId?: string | null;
-  }>,
-  revive?: CascadeRevive,
+  /** D-011: the DISPATCH seam — every advance launches a fresh answering
+   *  session from the next expert's transcript. Never a wake. Absent ⇒ the
+   *  cursor advances and nobody is dispatched (lower-level fixtures). */
+  dispatch?: CascadeDispatch,
 ): Promise<AdvanceCascadeResult> {
   const sourceAudit = sourceAuditCascadeMetaFromRouting(params.routing);
   if (sourceAudit) {
@@ -364,29 +360,21 @@ export async function advanceCascade(
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
   const nextIdx = params.cascadeCursor + 1;
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
-  // A refill-exhaustion revival reserves the next cursor before spawning so
-  // the spawned first turn can claim it. Other advance triggers must not
-  // consume that provisional head or send a second wake while the reviver is
-  // still resolving.
-  if (selected[params.cascadeCursor]?.revivalPending) {
-    return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
-  }
-
   if (!next) {
-    // WI-39861 min-ANSWERS refill + EI-20864690354207496 revival: the menu is
-    // exhausted. If fewer substantive ANSWERS than selection.min were
-    // collected (counting the just-appended event), try to extend the menu
-    // instead of going terminal — first from the snapshot pool's untried
-    // route-time-LIVE remainder (ONE bounded round; the selection.refill
-    // stamp is that round's guard), then, when min is still unreachable from
-    // live untried candidates, by REVIVING one dead ABOVE-FLOOR untried
-    // candidate if the persisted per-consult budget is unspent
-    // (revivalBudgetSpent over the selection's `revived` stamps — the budget,
-    // not the refill stamp, bounds revival, so the post-refill exhaustion is
-    // covered too). When neither can fill the gap, the terminal state
-    // honestly reports WHY the min stays unfilled (selection.underFilled).
-    // It all lives HERE — shared by all three triggers (reply/decline/expiry)
-    // — so the semantics cannot drift.
+    // WI-39861 min-ANSWERS refill: the menu is exhausted. If fewer substantive
+    // ANSWERS than selection.min were collected (counting the just-appended
+    // event), extend the menu from the snapshot pool's untried remainder
+    // instead of going terminal — ONE bounded round, guarded by the
+    // selection.refill stamp. When the round cannot fill the gap, the terminal
+    // state honestly reports WHY the min stays unfilled
+    // (selection.underFilled). It all lives HERE — shared by all three
+    // triggers (reply/decline/expiry) — so the semantics cannot drift.
+    //
+    // D-002/D-004 retired the separate revival leg this used to carry. Its job
+    // was reaching a DEAD above-floor candidate the live refill had to skip;
+    // dispatch forks that candidate's transcript whether or not the original is
+    // running, so liveness is no longer a filter here and the dead candidate is
+    // an ordinary refill pick.
     const snap =
       typeof params.routing === 'string'
         ? (JSON.parse(params.routing) as Record<string, unknown> | null)
@@ -435,132 +423,33 @@ export async function advanceCascade(
           ...extra,
         };
       };
-      // WI-39861 live refill (ONE bounded round — selection.refill guards it).
-      const liveAdds: CascadeSelectionEntry[] = !sel.refill
-        ? untried
-            .filter((c) => !DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')))
-            .slice(0, needed)
-            .map((c) => entryOf(c, { refill: true }))
+      // WI-39861 refill (ONE bounded round — selection.refill guards it).
+      //
+      // No liveness filter (D-002/D-004). The route-time `liveness` stamp is
+      // kept on the entry as provenance, but it no longer decides WHO is
+      // addable: dispatch answers from the candidate's transcript, so a dead
+      // expert is dispatchable on exactly the same terms as a live one. This is
+      // what retired the separate revival leg — its reserve-then-spawn dance
+      // existed only because a dead candidate could not be woken.
+      const add: CascadeSelectionEntry[] = !sel.refill
+        ? untried.slice(0, needed).map((c) => entryOf(c, { refill: true }))
         : [];
-
-      // EI-20864690354207496 revival leg. Liveness here is the ROUTE-TIME
-      // snapshot, up to PROCEED_EXPIRY_MS stale — an ACCEPTED bound, named
-      // deliberately: a stale-DEAD candidate who respawned meanwhile is
-      // refused by the reviver's live-collision rule (spawned:false, WI-3882),
-      // and a stale-LIVE pick who died since expires via the sweep and the
-      // cascade advances past them — both staleness directions recover
-      // without a liveness re-read here.
-      // Ordering: reserve the revived entry BEFORE the revive spawn. The
-      // spawned session can issue its first consult:reply before the reviver
-      // returns, so the reservation must be durable at the current cursor;
-      // otherwise the first turn sees the old responder (or a terminal
-      // no_qualified_responder state) and is refused. Finalization/fallback
-      // below are CAS-guarded on that reservation so a first-turn reply can
-      // claim and advance it without being overwritten by the reviver.
-      let revival: AdvanceCascadeResult['revival'];
-      let revivedEntry: CascadeSelectionEntry | null = null;
-      let pendingRevivalOwner: string | null = null;
-      let underFilledReason: NonNullable<AdvanceCascadeResult['underFilled']>['reason'] | null = null;
       const rawSelected = Array.isArray(sel.selected) ? (sel.selected as unknown[]) : [];
       const cursorIdx = selected.length;
-      if (liveAdds.length < needed) {
-        const revivable = untried.find(
-          (c) => DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')) && snapshotCandidateQualifies(snap, c),
-        );
-        if (!revive) underFilledReason = 'no-revive-dep';
-        else if (revivalBudgetSpent(selected)) underFilledReason = 'budget-spent';
-        else if (!revivable) underFilledReason = 'no-revivable-candidate';
-        else {
-          const pendingEntry = entryOf(revivable, { revivalPending: true });
-          const pendingSnap = {
-            ...snap,
-            selection: {
-              ...sel,
-              selected: [...rawSelected, pendingEntry, ...liveAdds],
-              // Reserve the same one-shot refill stamp that finalization will
-              // write. If the pending owner replies before revive resolves,
-              // advanceCascade must see the live fallback entries behind it.
-              ...(!sel.refill
-                ? {
-                    refill: {
-                      at: params.nowIso,
-                      added: liveAdds.map((a) => a.ownerId),
-                      reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
-                    },
-                  }
-                : {}),
-            },
-          };
-          const pendingExpiresAt = new Date(
-            Date.parse(params.nowIso) +
-              (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
-          ).toISOString();
-          const pendingWrote = (await sql`
-            UPDATE harness_shared.consult_state
-               SET cascade_cursor = ${cursorIdx},
-                   responder_id = ${pendingEntry.ownerId},
-                   state = ${params.stateOnAdvance},
-                   expires_at = ${pendingExpiresAt}::timestamptz,
-                   wakes_used = wakes_used + ${reach ? 1 : 0},
-                   cascade_digest = ${sql.json(digest as never)},
-                   routing = ${sql.json(pendingSnap as never)},
-                   updated_at = ${params.nowIso}::timestamptz
-             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-               AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
-               AND routing = ${sql.json(snap as never)}
-            RETURNING conversation_id
-          `) as unknown as Array<{ conversation_id: string }>;
-          if (pendingWrote.length === 0) {
-            return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
-          }
-          pendingRevivalOwner = revivable.ownerId;
-          const r = await revive({
-            ownerId: revivable.ownerId,
-            conversationId: params.conversationId,
-            brief: revivalBrief({
-              routing: params.routing,
-              requesterId: params.requesterId ?? 'the consult requester',
-              question: params.question,
-              conversationId: params.conversationId,
-              candidate: {
-                score: typeof revivable.score === 'number' ? revivable.score : 0,
-                relevance: qualifyingScoreOf(revivable),
-                signals: {
-                  similarity:
-                    typeof revivable.signals?.similarity === 'number' ? revivable.signals.similarity : 0,
-                },
-                evidence: Array.isArray(revivable.evidence) ? (revivable.evidence as never) : [],
-              },
-            }),
-          });
-          revival = { ownerId: revivable.ownerId, trigger: 'refill-exhaustion', ...r };
-          if (r.spawned) {
-            // The revived entry HEADS the extension: the cursor must land on
-            // them (their spawn brief says "reply now", and a non-cursor
-            // selectee's reply is refused as not_the_responder) — mirroring
-            // the creation site's revived-first menu.
-            revivedEntry = entryOf(revivable, { revived: true });
-          } else {
-            underFilledReason = 'revival-failed';
-          }
-        }
-      }
-      const add: CascadeSelectionEntry[] = revivedEntry ? [revivedEntry, ...liveAdds] : liveAdds;
       if (add.length > 0) {
         const updatedSnap = {
           ...snap,
           selection: {
             ...sel,
             selected: [...rawSelected, ...add],
-            // The refill stamp guards the ONE live round (WI-39861) — stamped
-            // whenever that round ran, even when it found nothing live (the
+            // The refill stamp guards the ONE round (WI-39861) — stamped
+            // whenever that round ran, even when it found nothing (the
             // snapshot pool is static, so a later re-scan cannot do better).
-            // A revival-only extension after the round keeps the old stamp.
             ...(!sel.refill
               ? {
                   refill: {
                     at: params.nowIso,
-                    added: liveAdds.map((a) => a.ownerId),
+                    added: add.map((a) => a.ownerId),
                     reason: `cascade exhausted with ${answers} answer(s) < min ${min}`,
                   },
                 }
@@ -574,42 +463,24 @@ export async function advanceCascade(
           Date.parse(params.nowIso) +
             (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
         ).toISOString();
-        const willAttempt = Boolean(reach);
-        const wrote = pendingRevivalOwner
-          ? ((await sql`
-              UPDATE harness_shared.consult_state
-                 SET cascade_cursor = ${cursorIdx},
-                     responder_id = ${first.ownerId},
-                     state = ${params.stateOnAdvance},
-                     expires_at = ${expiresAt}::timestamptz,
-                     wakes_used = wakes_used + ${willAttempt ? 1 : 0},
-                     cascade_digest = ${sql.json(digest as never)},
-                     routing = ${sql.json(updatedSnap as never)},
-                     updated_at = ${params.nowIso}::timestamptz
-               WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-                 AND cascade_cursor = ${cursorIdx}
-                 AND responder_id = ${pendingRevivalOwner}
-                 AND closed_at IS NULL
-                 AND routing #>> ARRAY['selection', 'selected', ${cursorIdx}::text, 'revivalPending'] = 'true'
-              RETURNING conversation_id
-            `) as unknown as Array<{ conversation_id: string }> )
-          : ((await sql`
-              UPDATE harness_shared.consult_state
-                 SET cascade_cursor = ${cursorIdx},
-                     responder_id = ${first.ownerId},
-                     state = ${params.stateOnAdvance},
-                     expires_at = ${expiresAt}::timestamptz,
-                     wakes_used = wakes_used + ${willAttempt ? 1 : 0},
-                     cascade_digest = ${sql.json(digest as never)},
-                     routing = ${sql.json(updatedSnap as never)},
-                     updated_at = ${params.nowIso}::timestamptz
-               WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-                 AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
-              RETURNING conversation_id
-            `) as unknown as Array<{ conversation_id: string }>);
+        const willAttempt = Boolean(dispatch);
+        const wrote = (await sql`
+          UPDATE harness_shared.consult_state
+             SET cascade_cursor = ${cursorIdx},
+                 responder_id = ${first.ownerId},
+                 state = ${params.stateOnAdvance},
+                 expires_at = ${expiresAt}::timestamptz,
+                 wakes_used = wakes_used + ${willAttempt ? 1 : 0},
+                 cascade_digest = ${sql.json(digest as never)},
+                 routing = ${sql.json(updatedSnap as never)},
+                 updated_at = ${params.nowIso}::timestamptz
+           WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+             AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+          RETURNING conversation_id
+        `) as unknown as Array<{ conversation_id: string }>;
         if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
         let woke = 0;
-        if (reach) {
+        if (dispatch) {
           const menuSize = selected.length + add.length;
           const copy = cascadeWakeCopyForRouting(params.routing)({
             question: params.question,
@@ -618,16 +489,22 @@ export async function advanceCascade(
             menuSize,
             next: first,
             digest,
-            extension: revivedEntry ? 'refill-exhaustion revival' : 'min-answers refill',
+            extension: 'min-answers refill',
           });
-          const r = await reach({
+          const r = await dispatch({
             responder: first.ownerId,
             conversationId: params.conversationId,
             summary: copy.summary,
             body: copy.body,
+            onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, cursorIdx, owner),
           });
           woke = r.woke;
-          if (woke > 0) await stampAnsweringOwner(sql, params, cursorIdx, r.answeringOwnerId);
+          // Backstop for a dispatcher that does not call the hook. Stamped on
+          // the ANSWERING IDENTITY, never on `woke`: a fork that launched but
+          // has not confirmed pickup reports woke:0 while already owning the
+          // keyboard, and without the stamp its first reply is refused
+          // not_a_participant. stampAnsweringOwner no-ops on absent.
+          await stampAnsweringOwner(sql, params, cursorIdx, r.answeringOwnerId);
         }
         return {
           advanced: true,
@@ -636,41 +513,29 @@ export async function advanceCascade(
           next: { ownerId: first.ownerId, via: first.via },
           woke,
           ...(sel.refill ? {} : { refilled: true }),
-          ...(revival ? { revival } : {}),
         };
       }
       // Nothing addable — HONEST terminal (EI-20864690354207496): the min
       // stays unfilled and the persisted snapshot says WHY, so "exhausted"
-      // can never silently paper over a revivable-but-unrevived expert. The
-      // caller still owns the terminal state transition. Written as a full
-      // rewrite of the parsed snapshot (same style as the extension write
-      // above, same CAS guard) — NOT jsonb_set on the column, which raises
-      // "cannot set path in scalar" when the row's routing round-tripped as
-      // a jsonb string scalar (the documented driver quirk
-      // selectionFromRouting tolerates on the read side).
+      // can never silently paper over an expert nobody tried. The caller still
+      // owns the terminal state transition. Written as a full rewrite of the
+      // parsed snapshot (same style as the extension write above, same CAS
+      // guard) — NOT jsonb_set on the column, which raises "cannot set path in
+      // scalar" when the row's routing round-tripped as a jsonb string scalar
+      // (the documented driver quirk selectionFromRouting tolerates on the
+      // read side).
       const underFilled = {
         answers,
         min,
-        reason: underFilledReason ?? 'no-revivable-candidate',
+        reason: (sel.refill ? 'refill-spent' : 'no-untried-candidate') as NonNullable<
+          AdvanceCascadeResult['underFilled']
+        >['reason'],
       };
       const terminalSnap = {
         ...snap,
         selection: { ...sel, underFilled: { at: params.nowIso, ...underFilled } },
       };
-      const wroteTerminal = pendingRevivalOwner
-        ? ((await sql`
-            UPDATE harness_shared.consult_state
-               SET cascade_digest = ${sql.json(digest as never)},
-                   routing = ${sql.json(terminalSnap as never)},
-                   updated_at = ${params.nowIso}::timestamptz
-             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-               AND cascade_cursor = ${cursorIdx}
-               AND responder_id = ${pendingRevivalOwner}
-               AND closed_at IS NULL
-               AND routing #>> ARRAY['selection', 'selected', ${cursorIdx}::text, 'revivalPending'] = 'true'
-            RETURNING conversation_id
-          `) as unknown as Array<{ conversation_id: string }> )
-        : ((await sql`
+      const wroteTerminal = ((await sql`
             UPDATE harness_shared.consult_state
                SET cascade_digest = ${sql.json(digest as never)},
                    routing = ${sql.json(terminalSnap as never)},
@@ -687,7 +552,6 @@ export async function advanceCascade(
         next: null,
         woke: 0,
         underFilled,
-        ...(revival ? { revival } : {}),
       };
     }
     const wrote = (await sql`
@@ -705,7 +569,7 @@ export async function advanceCascade(
   const expiresAt = new Date(
     Date.parse(params.nowIso) + (params.latencyContract === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
   ).toISOString();
-  const willAttempt = Boolean(reach);
+  const willAttempt = Boolean(dispatch);
   const wrote = (await sql`
     UPDATE harness_shared.consult_state
        SET cascade_cursor = ${nextIdx},
@@ -722,7 +586,7 @@ export async function advanceCascade(
   if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
 
   let woke = 0;
-  if (reach) {
+  if (dispatch) {
     const copy = cascadeWakeCopyForRouting(params.routing)({
       question: params.question,
       conversationId: params.conversationId,
@@ -731,14 +595,16 @@ export async function advanceCascade(
       next,
       digest,
     });
-    const r = await reach({
+    const r = await dispatch({
       responder: next.ownerId,
       conversationId: params.conversationId,
       summary: copy.summary,
       body: copy.body,
+      onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, nextIdx, owner),
     });
     woke = r.woke;
-    if (woke > 0) await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
+    // Backstop, on the answering identity and never on `woke` — as above.
+    await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
   }
   return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };
 }

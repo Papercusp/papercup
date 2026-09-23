@@ -224,7 +224,7 @@ const routeOf = (
 let convSeq = 0;
 function makeDeps(
   route: RouteResult,
-  options: { postQueueLiveness?: GetFeedbackDeps['postQueueLiveness'] } = {},
+  options: { answeringOwnerId?: string | null } = {},
 ) {
   const opened: Array<Parameters<GetFeedbackDeps['open']>[0]> = [];
   const reached: Array<Parameters<GetFeedbackDeps['reach']>[0]> = [];
@@ -243,10 +243,13 @@ function makeDeps(
     },
     reach: async (o) => {
       reached.push(o);
-      // The inbox wake pump reports durable queueing, not turn execution.
-      return { queued: 1, woke: 1, pickupConfirmed: false };
+      // D-002: the seam DISPATCHES. `queued:1` is a launched answering session;
+      // pickupConfirmed stays false because a launch is not yet a started turn.
+      const answeringOwnerId =
+        options.answeringOwnerId === undefined ? `${o.responder}-fork` : options.answeringOwnerId;
+      if (answeringOwnerId) await o.onAnsweringOwner?.(answeringOwnerId);
+      return { queued: 1, woke: 1, pickupConfirmed: false, answeringOwnerId };
     },
-    ...(options.postQueueLiveness ? { postQueueLiveness: options.postQueueLiveness } : {}),
     now: () => NOW,
   };
   return { deps, opened, reached, routeCalls };
@@ -527,20 +530,22 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     }, fixture.deps));
     await rootSql`INSERT INTO harness_shared.work_items (feature_id, payload) VALUES ('EI-settled', '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)`;
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${result.conversation_id}`;
-    const reach = vi.fn(async () => ({ woke: 1 }));
-    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, notifyRequester: async () => {}, reach });
+    const dispatch = vi.fn(async () => ({ woke: 1 }));
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, notifyRequester: async () => {}, dispatch });
     expect((await stateRow(result.conversation_id)).state).toBe('closed_answered');
-    expect(reach).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it('revival carries the audit brief instead of asking for a transcript answer', async () => {
+  it('a DEAD audit expert is dispatched (not revived) and carries the audit brief, not a transcript-answer brief', async () => {
     const fixture = makeDeps(routeOf([cand('audit-dead', { liveness: 'ended' })]));
-    const revive = vi.fn(async () => ({ spawned: true, verified: true, detail: 'fixture' }));
-    await getFeedbackCore({ ...baseReq, question: 'audit revival', archiveFloor: 2,
+    await getFeedbackCore({ ...baseReq, question: 'audit dispatch', archiveFloor: 2,
       cascade: { flavor: 'grading-integrity', issueId: 'EI-revived', reservationKey: 'revived', brief: 'Audit exact revival source.' },
-    }, { ...fixture.deps, revive });
-    expect(revive).toHaveBeenCalledWith(expect.objectContaining({ brief: expect.stringContaining('Audit exact revival source.') }));
-    expect(revive).not.toHaveBeenCalledWith(expect.objectContaining({ brief: expect.stringContaining('Answer FROM your transcript') }));
+    }, fixture.deps);
+    // Deadness is not a gate any more (R-2): the expert is dispatched like any other.
+    expect(fixture.reached).toHaveLength(1);
+    expect(fixture.reached[0]).toMatchObject({ responder: 'audit-dead' });
+    expect(fixture.reached[0].body).toContain('Audit exact revival source.');
+    expect(fixture.reached[0].body).not.toContain('Answer FROM your transcript');
   });
 
   it('excludes author/critic lineage from every pool, reuses the chain, declines then expires with exact audit copy, and settles once', async () => {
@@ -586,13 +591,13 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     await consultDeclineCore({ workspaceId: WS, conversationId, authorId: 'independent-a', reason: 'unavailable' }, {
       getSql: () => rootSql,
       post: async (input) => ({ post: { id: 99001, thread_id: 'audit-thread', author_id: 'independent-a', body: input.body, created_ts: NOW.toISOString() }, delivered: 0 }),
-      emitReplyEvent: async () => {}, reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; }, now: () => NOW,
+      emitReplyEvent: async () => {}, dispatch: async (input) => { fixture.reached.push(input); return { woke: 1 }; }, now: () => NOW,
     });
     expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-b', body: expect.stringContaining('frozen-source-bytes') });
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${conversationId}`;
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {},
       notifyRequester: async () => {},
-      reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
+      dispatch: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
     });
     expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-c', body: expect.stringContaining("ref:'EI-source-router'") });
     await closeSourceAuditConsults(WS, source.issueId, rootSql);
@@ -600,7 +605,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const deliveries = fixture.reached.length;
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => new Date(NOW.getTime() + 36e5), emitReplyEvent: async () => {},
       notifyRequester: async () => {},
-      reach: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
+      dispatch: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
     });
     expect(fixture.reached).toHaveLength(deliveries);
   });
@@ -1871,28 +1876,23 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
   });
 });
 
-// ── WI-39852 revival leg (plan consult-revival-and-honest-min-2026-08-18 P-001) ──
-describe('getFeedbackCore — revival leg (WI-39852)', () => {
-  /** Compose makeDeps with a recording revive fake. */
-  function makeReviveDeps(
-    route: RouteResult,
-    reviveResult: { spawned: boolean; verified: boolean | null; detail: string; reason?: 'live-collision' },
-    opts: { wokeOnReach?: number } = {},
-  ) {
+// ── D-002 fork/convert dispatch, against real PG (replaces the WI-39852 ──────
+//     revival leg: there is nothing to revive when delivery forks a transcript)
+describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
+  /** makeDeps with a dispatch seam whose per-call verdict the test controls.
+   *  `queued: 0` is the honest "every allowed model was exhausted for THIS
+   *  expert" — the signal the cascade failover reads. */
+  function makeDispatchDeps(route: RouteResult, queuedByCall: number[] = []) {
     const base = makeDeps(route);
-    const revived: Array<{ ownerId: string; conversationId: string; brief: string }> = [];
-    base.deps.revive = async (o) => {
-      revived.push(o);
-      return reviveResult;
+    let call = 0;
+    base.deps.reach = async (o) => {
+      base.reached.push(o);
+      const queued = queuedByCall[call++] ?? 1;
+      const answeringOwnerId = queued > 0 ? `${o.responder}-fork` : null;
+      if (answeringOwnerId) await o.onAnsweringOwner?.(answeringOwnerId);
+      return { queued, woke: queued, pickupConfirmed: false, answeringOwnerId };
     };
-    if (opts.wokeOnReach !== undefined) {
-      const woke = opts.wokeOnReach;
-      base.deps.reach = async (o) => {
-        base.reached.push(o);
-        return { queued: woke, woke, pickupConfirmed: false };
-      };
-    }
-    return { ...base, revived };
+    return base;
   }
 
   const deadExpert = cand('dead-x', { liveness: 'ended', score: 0.9 });
@@ -1901,78 +1901,63 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     signals: { similarity: 0.2, verification: 0.3, authorship: 0, freshness: 1 },
   });
 
-  it('dead-preempt: a dead ABOVE-FLOOR expert beats a live below-floor minimum-fill — revived, menu head, labeled', async () => {
-    const { deps, reached, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), {
-      spawned: true,
-      verified: true,
-      detail: 'live host registered',
-    });
+  it('a DEAD above-floor expert beats a live below-floor fill and is dispatched — liveness gates nothing (R-2)', async () => {
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }));
     const res = asOk(await getFeedbackCore(baseReq, deps));
     expect(res.verdict).toBe('routed');
     expect(res.responder?.ownerId).toBe('dead-x');
     expect(res.responder_via).toBe('floor');
-    expect(res.revival).toMatchObject({ ownerId: 'dead-x', trigger: 'dead-preempt', spawned: true, verified: true });
-    // The brief rode the revive seam and named the conversation + the question.
-    expect(revived).toHaveLength(1);
-    expect(revived[0].conversationId).toBe(res.conversation_id);
-    expect(revived[0].brief).toContain('REVIVED');
-    expect(revived[0].brief).toContain(baseReq.question);
-    // Reach went to the revived expert (redundant delivery; the brief is primary).
-    expect(reached[0]?.responder).toBe('dead-x');
-    // Persisted: responder_id = revived; selection snapshot revived-first + labeled.
+    // Delivered by dispatch, to the EXPERT as the transcript source.
+    expect(reached).toHaveLength(1);
+    expect(reached[0].responder).toBe('dead-x');
+    expect(reached[0].body).toContain(baseReq.question);
     const row = await stateRow(res.conversation_id);
     expect(row.responder_id).toBe('dead-x');
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', via: 'floor', revived: true });
-    // The pre-revival live fill stays on the menu behind the revived head.
+    // The fork's identity is persisted at the cursor — the participant key its
+    // first consult:reply is gated on.
+    expect(sel?.selected?.[0]).toMatchObject({
+      ownerId: 'dead-x',
+      via: 'floor',
+      answeringOwnerId: 'dead-x-fork',
+    });
+    expect(sel?.selected?.[0]?.revived).toBeUndefined();
+    // The below-floor fill stays on the menu behind the above-floor head.
     expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low' });
     expect(res.remaining_candidates[0]?.ownerId).toBe('live-low');
-    expect(res.hint).toContain('REVIVED');
   });
 
-  it('wakeable parked minimum-fill wins before dead-preempt revival', async () => {
-    const parkedMinimum = cand('parked-minimum', {
-      score: 0.3,
-      liveness: 'parked',
-      signals: { similarity: 0.2, verification: 0.3, authorship: 0, freshness: 1 },
-    });
-    const { deps, reached, revived } = makeReviveDeps(
-      routeOf([deadExpert], { all: [deadExpert, parkedMinimum] }),
-      { spawned: true, verified: true, detail: 'dead expert should not be revived' },
-    );
+  it('a parked expert is dispatched exactly like a live one — parked is not a selection signal either', async () => {
+    const parkedTop = cand('parked-top', { liveness: 'parked', score: 0.9 });
+    const { deps, reached } = makeDispatchDeps(routeOf([parkedTop], { all: [parkedTop, liveLow] }));
 
     const res = asOk(await getFeedbackCore(baseReq, deps));
 
     expect(res.verdict).toBe('routed');
-    expect(res.responder?.ownerId).toBe('parked-minimum');
-    expect(res.responder_via).toBe('minimum');
-    expect(res.revival).toBeUndefined();
-    expect(revived).toHaveLength(0);
-    expect(reached.map((wake) => wake.responder)).toEqual(['parked-minimum']);
+    expect(res.responder?.ownerId).toBe('parked-top');
+    expect(res.responder_via).toBe('floor');
+    expect(reached.map((d) => d.responder)).toEqual(['parked-top']);
     const row = await stateRow(res.conversation_id);
-    expect(row.responder_id).toBe('parked-minimum');
+    expect(row.responder_id).toBe('parked-top');
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'parked-minimum', via: 'minimum', liveness: 'parked' });
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'parked-top', via: 'floor', liveness: 'parked' });
   });
 
-  it('persists the provisional responder before revival so its kickoff can reply on the first turn', async () => {
-    let revivedReply: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
-    const { deps } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
-      spawned: true,
-      verified: null,
-      detail: 'booting',
-    });
-    deps.revive = async ({ conversationId }) => {
-      // The real reviver returns after spawn/host registration, not after the
-      // resumed CLI's first turn. Simulate that first turn arriving before the
-      // revive seam resolves; it must see a durable consult_state row.
-      revivedReply = await consultReplyCore(
+  it('the launched session may reply DURING dispatch: the early identity stamp makes its first turn a participant', async () => {
+    let firstTurn: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
+    const { deps } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert] }));
+    deps.reach = async ({ conversationId, onAnsweringOwner }) => {
+      // The real dispatcher announces the answering identity, then WAITS up to
+      // 15s for host registration. The launched session can post inside that
+      // window, and the reply gate refuses an author the row does not name.
+      await onAnsweringOwner?.('dead-x-fork');
+      firstTurn = await consultReplyCore(
         {
           workspaceId: WS,
-          authorId: deadExpert.ownerId,
+          authorId: 'dead-x-fork',
           conversationId,
           kind: 'answer',
-          body: 'the revived first-turn answer',
+          body: 'the dispatched first-turn answer',
           evidence: [{ session_id: 'sess-dead-x', turn_idx: 3 }],
         },
         {
@@ -1981,7 +1966,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
             post: {
               id: 91_001,
               thread_id: `thr-${input.conversation_id}`,
-              author_id: deadExpert.ownerId,
+              author_id: 'dead-x-fork',
               body: input.body,
               created_ts: NOW.toISOString(),
             },
@@ -1991,146 +1976,78 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
           now: () => NOW,
         },
       );
-      return { spawned: true, verified: null, detail: 'booting' };
+      return { queued: 1, woke: 1, pickupConfirmed: false, answeringOwnerId: 'dead-x-fork' };
     };
 
     const res = asOk(await getFeedbackCore(baseReq, deps));
 
-    expect(revivedReply).toMatchObject({ ok: true, role: 'responder', state: 'active' });
-    expect(res.revival).toMatchObject({ ownerId: 'dead-x', spawned: true });
+    // Without the early stamp this reads `{ error: 'not_a_participant' }` —
+    // the launcher refusing the session it just launched.
+    expect(firstTurn).toMatchObject({ ok: true, role: 'responder', state: 'active' });
     const row = await stateRow(res.conversation_id);
     expect(row.state).toBe('active');
     expect(row.responder_id).toBe('dead-x');
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', revived: true });
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', answeringOwnerId: 'dead-x-fork' });
   });
 
-  it('spawn-fail falls back to the pre-revival outcome — attempt still reported, nothing relabeled', async () => {
-    const { deps, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), {
-      spawned: false,
-      verified: null,
-      detail: 'no adv_sessions row',
-    });
+  it('an expert whose whole allowlist is exhausted fails over to the next selectee, digesting dispatch_failed', async () => {
+    // Call 1 (the head) launches nobody; call 2 (the failover) launches.
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), [0, 1]);
     const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(revived).toHaveLength(1);
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'live-low']);
     expect(res.verdict).toBe('routed');
     expect(res.responder?.ownerId).toBe('live-low');
     expect(res.responder_via).toBe('minimum');
-    expect(res.revival).toMatchObject({ ownerId: 'dead-x', trigger: 'dead-preempt', spawned: false });
     const row = await stateRow(res.conversation_id);
     expect(row.responder_id).toBe('live-low');
+    expect(row.cascade_cursor).toBe(1);
+    const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
+    // The reason is named on the row, not inferred from an empty advance.
+    expect(digest).toEqual([expect.objectContaining({ ownerId: 'dead-x', kind: 'dispatch_failed' })]);
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'live-low', via: 'minimum' });
-    expect(sel?.selected?.[0]?.revived).toBeUndefined();
-    expect(res.hint).toContain('FAILED to spawn');
+    expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low', answeringOwnerId: 'live-low-fork' });
+    // The head that launched nobody carries NO answering identity.
+    expect(sel?.selected?.[0]?.answeringOwnerId).toBeUndefined();
   });
 
-  it('live-collision: a refused in-place resume is treated as a live responder, not no_live_responder', async () => {
-    const { deps, reached, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
-      spawned: false,
-      verified: null,
-      reason: 'live-collision',
-      detail: 'su-dead-expert reads LIVE at the pty host — resume refused',
-    });
+  it('every selectee exhausted — the honest terminal is no_available_responder, settled NOW rather than left to expiry', async () => {
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), [0, 0]);
     const res = asOk(await getFeedbackCore(baseReq, deps));
-
-    expect(res.verdict).toBe('routed');
-    expect(res.reason).toBeUndefined();
-    expect(res.responder?.ownerId).toBe('dead-x');
-    expect(res.responder_via).toBe('floor');
-    expect(res.revival).toMatchObject({
-      ownerId: 'dead-x',
-      trigger: 'dead-preempt',
-      spawned: false,
-      reason: 'live-collision',
-    });
-    expect(revived).toHaveLength(1);
-    expect(reached[0]?.responder).toBe('dead-x');
-
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'live-low']);
+    expect(res.verdict).toBe('no_qualified_responder');
+    expect(res.reason).toBe('no_available_responder');
+    expect(res.expires_at).toBeNull();
     const row = await stateRow(res.conversation_id);
-    expect(row.state).toBe('awaiting_responder');
-    expect(row.responder_id).toBe('dead-x');
-    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', via: 'floor', liveness: 'live' });
-    expect(res.hint).toContain('already LIVE');
+    expect(row.state).toBe('no_qualified_responder');
+    expect(row.expires_at).toBeNull();
+    // The retrieval fallback survives: the refs are still the caller's next move.
+    expect(res.remaining_candidates.length).toBeGreaterThan(0);
   });
 
-  it('all-dead pool: revival turns the honest no_live_responder into a routed consult', async () => {
-    const { deps } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
-      spawned: true,
-      verified: null,
-      detail: 'booting',
-    });
+  it('an ALL-DEAD pool routes normally — `no_live_responder` is gone, because liveness no longer keeps anyone out', async () => {
+    const { deps } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert] }));
     const res = asOk(await getFeedbackCore(baseReq, deps));
     expect(res.verdict).toBe('routed');
     expect(res.responder?.ownerId).toBe('dead-x');
     expect(res.reason).toBeUndefined();
-    expect(res.revival).toMatchObject({ trigger: 'dead-preempt', spawned: true, verified: null });
     expect(res.state).toBe('awaiting_responder');
     expect(res.expires_at).not.toBeNull();
   });
 
-  it('no revive dep: the D-008 §5 retrieval-only behavior is exactly preserved', async () => {
-    const { deps } = makeDeps(routeOf([deadExpert], { all: [deadExpert] }));
+  it('a single-selectee menu whose dispatch launches nobody is no_available_responder, not a silent awaiting row', async () => {
+    const onlyOne = cand('sole-expert');
+    const { deps, reached } = makeDispatchDeps(routeOf([onlyOne]), [0]);
     const res = asOk(await getFeedbackCore(baseReq, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['sole-expert']);
     expect(res.verdict).toBe('no_qualified_responder');
-    expect(res.reason).toBe('no_live_responder');
-    expect(res.revival).toBeUndefined();
-  });
-
-  it('wake-failed: a live-read chosen whose wake reached NOBODY is revived in place (persisted marker stamped)', async () => {
-    const liveTop = cand('zombie-a');
-    const { deps, revived } = makeReviveDeps(
-      routeOf([liveTop]),
-      { spawned: true, verified: null, detail: 'booting' },
-      { wokeOnReach: 0 },
-    );
-    const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(res.verdict).toBe('routed');
-    expect(res.responder?.ownerId).toBe('zombie-a');
+    expect(res.reason).toBe('no_available_responder');
     expect(res.wake).toEqual({ attempted: true, queued: 0, woke: 0, pickupConfirmed: false });
-    expect(revived).toHaveLength(1);
-    expect(res.revival).toMatchObject({ ownerId: 'zombie-a', trigger: 'wake-failed', spawned: true });
-    // The row was persisted BEFORE reach — the marker lands via targeted update.
     const row = await stateRow(res.conversation_id);
-    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'zombie-a', revived: true });
+    expect(row.state).toBe('no_qualified_responder');
   });
 
-  it('wake-failed live-collision: preserves the live responder and labels the refused revival without retrying', async () => {
-    const liveTop = cand('live-collision-zombie');
-    const { deps, reached, revived } = makeReviveDeps(
-      routeOf([liveTop]),
-      {
-        spawned: false,
-        verified: null,
-        reason: 'live-collision',
-        detail: 'pty host is live; in-place resume refused',
-      },
-      { wokeOnReach: 0 },
-    );
-
-    const res = asOk(await getFeedbackCore(baseReq, deps));
-
-    expect(reached.map((wake) => wake.responder)).toEqual([liveTop.ownerId]);
-    expect(revived).toHaveLength(1);
-    expect(res.responder?.ownerId).toBe(liveTop.ownerId);
-    expect(res.revival).toMatchObject({
-      ownerId: liveTop.ownerId,
-      trigger: 'wake-failed',
-      spawned: false,
-      reason: 'live-collision',
-    });
-    expect(res.hint).toContain('already LIVE');
-    expect(res.hint).not.toContain('FAILED to spawn');
-    const row = await stateRow(res.conversation_id);
-    expect(row.state).toBe('awaiting_responder');
-    expect(row.responder_id).toBe(liveTop.ownerId);
-    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[0]?.revived).toBeUndefined();
-  });
-
-  it('wake-failed: advances to the next selected responder before attempting revival', async () => {
+  it('dispatch-failed: advances to the next selected responder', async () => {
     const first = cand('zombie-first');
     const second = cand('live-second', { score: 0.65 });
     const base = makeDeps(routeOf([first, second]));
@@ -2148,81 +2065,15 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(res.responder?.ownerId).toBe('live-second');
     expect(res.responder_via).toBe('floor');
     expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
-    expect(base.reached.map((wake) => wake.responder)).toEqual(['zombie-first', 'live-second']);
-    expect(res.revival).toBeUndefined();
+    expect(base.reached.map((d) => d.responder)).toEqual(['zombie-first', 'live-second']);
 
     const row = await stateRow(res.conversation_id);
     expect(row.responder_id).toBe('live-second');
     expect(row.cascade_cursor).toBe(1);
     const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
     expect(digest).toEqual([
-      expect.objectContaining({ ownerId: 'zombie-first', kind: 'wake_failed' }),
+      expect.objectContaining({ ownerId: 'zombie-first', kind: 'dispatch_failed' }),
     ]);
-  });
-
-  it.each(['ended', 'suspect'] as const)(
-    'post-queue confirmed %s: a queued wake advances to the next selected responder',
-    async (sessionState) => {
-      const first = cand('ended-after-queue');
-      const second = cand('next-reviewer', { score: 0.65 });
-      const postQueueLiveness = vi.fn(async (ownerId: string) => {
-        expect(ownerId).toBe(first.ownerId);
-        return { sessionState };
-      });
-      const base = makeDeps(routeOf([first, second]), { postQueueLiveness });
-
-      const res = asOk(await getFeedbackCore(baseReq, base.deps));
-
-      expect(postQueueLiveness).toHaveBeenCalledTimes(1);
-      expect(base.reached.map((wake) => wake.responder)).toEqual([first.ownerId, second.ownerId]);
-      expect(res.responder?.ownerId).toBe(second.ownerId);
-      expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
-      const row = await stateRow(res.conversation_id);
-      expect(row.cascade_cursor).toBe(1);
-      const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
-      expect(digest).toEqual([
-        expect.objectContaining({
-          ownerId: first.ownerId,
-          kind: 'wake_failed',
-          excerpt: expect.stringContaining(`sessionState=${sessionState}`),
-        }),
-      ]);
-    },
-  );
-
-  it.each([
-    ['parked', 'parked' as const],
-    ['unknown', null],
-  ] as const)('post-queue %s: pending queued wake is preserved without a cascade', async (_label, sessionState) => {
-    const first = cand('pending-reviewer');
-    const second = cand('must-not-run', { score: 0.65 });
-    const postQueueLiveness = vi.fn(async () => ({ sessionState }));
-    const base = makeDeps(routeOf([first, second]), { postQueueLiveness });
-
-    const res = asOk(await getFeedbackCore(baseReq, base.deps));
-
-    expect(postQueueLiveness).toHaveBeenCalledTimes(1);
-    expect(base.reached.map((wake) => wake.responder)).toEqual([first.ownerId]);
-    expect(res.responder?.ownerId).toBe(first.ownerId);
-    expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
-    const row = await stateRow(res.conversation_id);
-    expect(row.cascade_cursor).toBe(0);
-    expect(row.cascade_digest).toEqual([]);
-  });
-
-  it('cap 1 (MAX_REVIVALS_PER_CONSULT): dead-preempt spends the budget — a failed wake advances to the live next candidate without re-reviving', async () => {
-    const { deps, revived } = makeReviveDeps(
-      routeOf([deadExpert], { all: [deadExpert, liveLow] }),
-      { spawned: true, verified: null, detail: 'booting' },
-      { wokeOnReach: 0 },
-    );
-    const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(res.responder?.ownerId).toBe('live-low');
-    expect(res.wake.woke).toBe(0);
-    // ONE revival total — the wake-failed leg advanced to the selected live
-    // candidate and found the budget spent, so it did not re-revive.
-    expect(revived).toHaveLength(1);
-    expect(res.revival?.trigger).toBe('dead-preempt');
   });
 });
 

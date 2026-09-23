@@ -186,6 +186,9 @@ export interface GetFeedbackDeps {
     conversationId: string;
     summary: string;
     body: string;
+    /** Persist the answering identity AS SOON AS that session is running —
+     *  before the dispatcher's verification wait, which it can post during. */
+    onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   }) => Promise<{
     /** Answering sessions launched (0 or 1). Legacy bindings report `woke`. */
     queued?: number;
@@ -1255,6 +1258,12 @@ export async function getFeedbackCore(
     const r = await deps.reach({
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
+      // Stamp the answering identity the moment that session starts, not when
+      // the dispatcher returns: it can post during the verification wait, and
+      // the reply gate refuses an author the row does not name yet. The
+      // post-dispatch stamp below remains the backstop.
+      onAnsweringOwner: (owner) =>
+        stampAnsweringOwner(sql, req.workspaceId, opened.conversation_id, 0, owner),
       ...briefFor(finalChosen, finalChosenVia),
     });
     pickupConfirmed = r.pickupConfirmed ?? false;
@@ -1304,8 +1313,14 @@ export async function getFeedbackCore(
         },
         sql,
         async (opts) => {
+          // advanceCascade passes its own early-stamp hook; carry it through so
+          // the failover leg closes the same first-reply race the creation leg
+          // does, and report the identity back for the cascade's own stamp.
           failoverReach = await deps.reach(opts);
-          return { woke: failoverReach.queued ?? failoverReach.woke ?? 0 };
+          return {
+            woke: failoverReach.queued ?? failoverReach.woke ?? 0,
+            answeringOwnerId: failoverReach.answeringOwnerId ?? null,
+          };
         },
       );
       if (!advanced.advanced || !advanced.next) break;

@@ -130,6 +130,9 @@ function makeDeps(
   opts: {
     postError?: string;
     withReach?: boolean;
+    withDispatch?: boolean;
+    /** Force the dispatched session's identity (default: `<responder>-fork`). */
+    answeringOwnerId?: string;
     withMint?: boolean;
     mintError?: string;
     withSettlement?: boolean;
@@ -140,6 +143,11 @@ function makeDeps(
   const emits: Array<{ key: string; summary: string; payload: Record<string, unknown>; to: string[] }> = [];
   const reached: Array<{ responder: string; conversationId: string }> = [];
   const reachCalls: Array<{ responder: string; conversationId: string; summary: string; body: string }> = [];
+  /** D-011: the CASCADE's deliveries, kept apart from `reach` on purpose. The
+   * two seams address different parties — `reach` notifies the session already
+   * answering, `dispatch` launches a new one from the next expert's transcript
+   * — and a shared recorder would let a regression that swaps them pass. */
+  const dispatchCalls: Array<{ responder: string; conversationId: string; summary: string; body: string }> = [];
   const minted: Array<Parameters<NonNullable<ConsultVerbDeps['mintGraduationWorkItem']>>[0]> = [];
   const settlements: Array<Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[0]> = [];
   const deps: ConsultVerbDeps = {
@@ -190,6 +198,20 @@ function makeDeps(
             return { woke: 1 };
           },
         }),
+    ...(opts.withDispatch === false
+      ? {}
+      : {
+          dispatch: async (o) => {
+            dispatchCalls.push(o);
+            return {
+              woke: 1,
+              // A fork answers under a NEW identity — the shape production
+              // actually returns, so a fixture cannot accidentally pin the
+              // same-identity case that only a conversion produces.
+              answeringOwnerId: opts.answeringOwnerId ?? `${o.responder}-fork`,
+            };
+          },
+        }),
     ...(opts.withMint || opts.mintError
       ? {
           mintGraduationWorkItem: async (input) => {
@@ -201,7 +223,7 @@ function makeDeps(
       : {}),
     now: () => NOW,
   };
-  return { deps, posts, emits, reached, reachCalls, minted, settlements };
+  return { deps, posts, emits, reached, reachCalls, dispatchCalls, minted, settlements };
 }
 
 async function stateRow(conversationId: string) {
@@ -802,9 +824,9 @@ function menuSnapshot(owners: string[]) {
 }
 
 describe('cascade advance (D-005/P-013)', () => {
-  it('a perspective reply ADVANCES the chain: cursor+responder move, digest carries the reply, next selectee woken with the feedback so far', async () => {
+  it('a perspective reply ADVANCES the chain: cursor+responder move, digest carries the reply, next selectee DISPATCHED with the feedback so far', async () => {
     const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
-    const { deps, reachCalls } = makeDeps();
+    const { deps, reachCalls, dispatchCalls } = makeDeps();
     const r = await consultReplyCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
       deps,
@@ -823,12 +845,24 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(digest).toHaveLength(1);
     expect(digest[0]).toMatchObject({ ownerId: RESPONDER, kind: 'answer', excerpt: 'the answer' });
 
-    // The next selectee's wake body: position, question, and the digest line.
-    expect(reachCalls).toHaveLength(1);
-    expect(reachCalls[0].responder).toBe('resp-2');
-    expect(reachCalls[0].body).toContain('reviewer 2/3');
-    expect(reachCalls[0].body).toContain('QUESTION: q');
-    expect(reachCalls[0].body).toContain(`- ${RESPONDER} (answer): the answer`);
+    // The next selectee's dispatch body: position, question, and the digest line.
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0].responder).toBe('resp-2');
+    expect(dispatchCalls[0].body).toContain('reviewer 2/3');
+    expect(dispatchCalls[0].body).toContain('QUESTION: q');
+    expect(dispatchCalls[0].body).toContain(`- ${RESPONDER} (answer): the answer`);
+    // R-11/D-011: an ADVANCE dispatches and notifies NOBODY. `reach` is bound
+    // here, so a binding that slipped back to the wake seam would record a call.
+    expect(reachCalls).toEqual([]);
+    // …and the launched session's identity is persisted, or its first reply is
+    // refused not_a_participant (the fork answers under a new coord id).
+    const advancedRouting = (await stateRow(id)).routing as {
+      selection?: { selected?: Array<Record<string, unknown>> };
+    };
+    expect(advancedRouting.selection?.selected?.[1]).toMatchObject({
+      ownerId: 'resp-2',
+      answeringOwnerId: 'resp-2-fork',
+    });
   });
 
   it('a previously woken responder remains a participant and may close after advancing the cascade', async () => {
@@ -861,9 +895,10 @@ describe('cascade advance (D-005/P-013)', () => {
   // CURRENT responder, mid-menu, with no prior reply. This pins the property
   // the guidance now routes to, so a later refactor cannot quietly make
   // close advance and re-open the grader-burn.
-  it('the CURRENT responder may close a VOID consult mid-menu: terminal, cursor unmoved, NO next selectee woken, requester signalled (WI-1700133)', async () => {
+  it('the CURRENT responder may close a VOID consult mid-menu: terminal, cursor unmoved, NO next selectee dispatched, requester signalled (WI-1700133)', async () => {
     const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
-    const { deps, reachCalls, emits } = makeDeps(); // reach IS bound — a wake would be recorded
+    // BOTH seams are bound — either a wake or a dispatch would be recorded.
+    const { deps, reachCalls, dispatchCalls, emits } = makeDeps();
 
     const close = await consultCloseCore(
       {
@@ -878,9 +913,10 @@ describe('cascade advance (D-005/P-013)', () => {
     if ('error' in close) throw new Error(close.error);
     expect(close.state).toBe('closed_cant_help');
 
-    // The cascade did NOT advance: no selectee after this one was woken, and
-    // the cursor/responder never moved off the closer.
+    // The cascade did NOT advance: no selectee after this one was reached or
+    // dispatched, and the cursor/responder never moved off the closer.
     expect(reachCalls).toEqual([]);
+    expect(dispatchCalls).toEqual([]);
     const row = await stateRow(id);
     expect(row.state).toBe('closed_cant_help');
     expect(row.responder_id).toBe(RESPONDER);
@@ -912,7 +948,7 @@ describe('cascade advance (D-005/P-013)', () => {
 
   it('a mid-chain decline ADVANCES instead of closing — no park-key emit, digest records the decline', async () => {
     const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
-    const { deps, emits, reachCalls } = makeDeps();
+    const { deps, emits, dispatchCalls } = makeDeps();
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
       deps,
@@ -929,7 +965,7 @@ describe('cascade advance (D-005/P-013)', () => {
     const digest = row.cascade_digest as Array<{ ownerId: string; kind: string }>;
     expect((await jsonbShapes(id)).cascade_digest_type).toBe('array');
     expect(digest).toMatchObject([{ ownerId: RESPONDER, kind: 'decline' }]);
-    expect(reachCalls[0].body).toContain(`- ${RESPONDER} (decline): not my area`);
+    expect(dispatchCalls[0].body).toContain(`- ${RESPONDER} (decline): not my area`);
   });
 
   it('advanceCascade is CAS-guarded: a stale-cursor second call is a raced no-op (no duplicate wake, no duplicate digest)', async () => {
@@ -1059,7 +1095,7 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
       },
     };
     const id = await seedConsult({ state: 'active', routing });
-    const { deps, reachCalls } = makeDeps();
+    const { deps, dispatchCalls } = makeDeps();
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
       deps,
@@ -1077,19 +1113,22 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
     };
     expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'w-b', refill: true });
     expect(routingRow.selection?.refill?.added).toEqual(['w-b']);
-    expect(reachCalls.at(-1)?.responder).toBe('w-b');
+    expect(dispatchCalls.at(-1)?.responder).toBe('w-b');
   });
 });
 
-// ── EI-20864690354207496: refill-exhaustion revival + honest under-filled ──
+// ── D-002/D-004: the refill is LIVENESS-BLIND, and under-filled stays honest ──
 //
-// The probe both vetting reviewers demanded (conv-mszpqo7t posts 70130/70135):
-// drive a consult to refill exhaustion with ONLY dead untried above-floor
-// candidates in the snapshot and assert the DISJUNCTION — either a dead
-// above-floor candidate is revived within the persisted per-consult budget,
-// XOR the terminal state honestly reports why the min stays unfilled
-// (selection.underFilled). Silence is the one outcome these pin out.
-describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', () => {
+// These are the EI-20864690354207496 probes, rewritten for the model that
+// replaced the revival leg. The original drove a consult to refill exhaustion
+// with ONLY dead untried candidates and asserted a DISJUNCTION: either a dead
+// above-floor candidate is revived within the per-consult budget, XOR the
+// terminal state says why the min stays unfilled. Dispatch collapsed the first
+// branch into the ordinary one — a dead candidate is refilled and dispatched
+// like any other (R-2) — so what is pinned now is that deadness changes
+// NOTHING, and that the remaining ways to run out are still labeled rather than
+// silent. Silence is still the one outcome these pin out.
+describe('advanceCascade — liveness-blind refill + honest under-filled (D-002/D-004)', () => {
   type ParsedRouting = {
     selection?: {
       selected?: Array<Record<string, unknown>>;
@@ -1101,92 +1140,80 @@ describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', 
     (typeof raw === 'string' ? JSON.parse(raw) : raw) as ParsedRouting;
 
   /** min:1 snapshot whose untried pool holds ONLY a dead candidate. The dead
-   * candidate clears both floors unless lowScore drops it below them. */
-  function deadPoolRouting(opts: { revivedAlready?: boolean; lowScore?: boolean } = {}) {
+   * candidate clears both floors unless lowScore drops it below them;
+   * `noUntried` empties the pool entirely, and `refillSpent` stamps the one
+   * bounded round as already used. */
+  function deadPoolRouting(opts: { lowScore?: boolean; noUntried?: boolean; refillSpent?: boolean } = {}) {
+    const self = { ownerId: RESPONDER, score: 0.9, relevance: 0.9, signals: { similarity: 0.8 }, liveness: 'live' };
+    const dead = opts.lowScore
+      ? { ownerId: 'dead-low', score: 0.2, relevance: 0.2, signals: { similarity: 0.1 }, liveness: 'ended' }
+      : { ownerId: 'dead-x', score: 0.7, relevance: 0.7, signals: { similarity: 0.6 }, liveness: 'ended' };
     return {
       relevanceFloor: 0.5,
       simFloor: 0.4,
-      candidates: [
-        { ownerId: RESPONDER, score: 0.9, relevance: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
-        opts.lowScore
-          ? { ownerId: 'dead-low', score: 0.2, relevance: 0.2, signals: { similarity: 0.1 }, liveness: 'ended' }
-          : { ownerId: 'dead-x', score: 0.7, relevance: 0.7, signals: { similarity: 0.6 }, liveness: 'ended' },
-      ],
+      candidates: opts.noUntried ? [self] : [self, dead],
       selection: {
         min: 1,
         max: 1,
-        selected: [
-          {
-            ownerId: RESPONDER,
-            via: 'floor',
-            score: 0.9,
-            similarity: 0.8,
-            liveness: 'live',
-            ...(opts.revivedAlready ? { revived: true } : {}),
-          },
-        ],
+        selected: [{ ownerId: RESPONDER, via: 'floor', score: 0.9, similarity: 0.8, liveness: 'live' }],
+        ...(opts.refillSpent
+          ? { refill: { at: NOW.toISOString(), added: [], reason: 'the one bounded round already ran' } }
+          : {}),
       },
     };
   }
 
-  it('driven through consult:decline — exhaustion below min with only a dead above-floor untried candidate REVIVES them: menu extended revived-first, cursor lands on them, consult stays open', async () => {
+  it('driven through consult:decline — exhaustion below min with only a DEAD untried candidate refills and DISPATCHES them exactly like a live one (R-2)', async () => {
     const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
-    const { deps, reachCalls } = makeDeps();
-    const revived: Array<{ ownerId: string; conversationId: string; brief: string }> = [];
-    deps.revive = async (o) => {
-      revived.push(o);
-      return { spawned: true, verified: true, detail: 'live host registered' };
-    };
+    const { deps, reachCalls, dispatchCalls } = makeDeps();
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(r.state).toBe('awaiting_responder'); // NOT terminal — revival filled the slot
-    expect(r.cascade).toMatchObject({
-      advanced_to: 'dead-x',
-      exhausted: false,
-      revival: { ownerId: 'dead-x', spawned: true },
-    });
-    expect(r.hint).toContain('refill-exhaustion revival');
-    expect(revived).toHaveLength(1);
-    expect(revived[0].conversationId).toBe(id);
-    expect(revived[0].brief).toContain('REVIVED');
+    expect(r.state).toBe('awaiting_responder'); // NOT terminal — the refill filled the slot
+    expect(r.cascade).toMatchObject({ advanced_to: 'dead-x', exhausted: false, refilled: true });
     const row = await stateRow(id);
     expect(row.responder_id).toBe('dead-x');
     expect(row.closed_at).toBeNull();
     const routingRow = parseRouting(row.routing);
-    // Revived entry HEADS the extension, labeled with provenance (via floor +
-    // revived) — this persisted stamp IS the budget debit the next
-    // exhaustion reads.
-    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'dead-x', via: 'floor', revived: true });
+    // An ORDINARY refill entry — no `revived` stamp, no reservation, and the
+    // route-time liveness carried verbatim as provenance rather than as a gate.
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({
+      ownerId: 'dead-x',
+      via: 'floor',
+      refill: true,
+      liveness: 'ended',
+    });
+    expect(routingRow.selection?.selected?.[1]?.revived).toBeUndefined();
     expect(routingRow.selection?.underFilled).toBeUndefined();
-    // The revived head is reach-woken too (redundant delivery; the spawn
-    // brief is primary — same shape as the creation site).
-    expect(reachCalls.at(-1)?.responder).toBe('dead-x');
+    // Delivered by DISPATCH, and nothing was woken (R-11) — a dead expert has
+    // no session to wake, which is precisely why this used to need a revival.
+    expect(dispatchCalls.at(-1)?.responder).toBe('dead-x');
+    expect(reachCalls).toEqual([]);
   });
 
-  it('persists a pending revival head before spawning: its first reply claims the head and the finalizer cannot clobber it', async () => {
+  it('the answering session may reply DURING dispatch: the early identity stamp makes its first turn a participant', async () => {
     const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
     const { deps } = makeDeps();
-    let pendingAtSpawn: Record<string, unknown> | undefined;
-    let revivedReply: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
-    deps.revive = async () => {
-      const pendingRow = await stateRow(id);
-      const pendingRouting = parseRouting(pendingRow.routing);
-      pendingAtSpawn = pendingRouting.selection?.selected?.[1];
-      revivedReply = await consultReplyCore(
+    let firstTurn: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
+    // Production's dispatcher announces the answering identity BEFORE its
+    // verification wait, and the launched session can post during that wait.
+    // Replying from inside the hook reproduces exactly that window.
+    deps.dispatch = async (o) => {
+      await o.onAnsweringOwner?.('dead-x-fork');
+      firstTurn = await consultReplyCore(
         {
           workspaceId: WS,
-          authorId: 'dead-x',
+          authorId: 'dead-x-fork',
           conversationId: id,
           kind: 'answer',
-          body: 'revived first-turn answer',
+          body: 'dispatched first-turn answer',
           evidence: EVIDENCE,
         },
         deps,
       );
-      return { spawned: true, verified: true, detail: 'first turn replied before revive finalized' };
+      return { woke: 1, answeringOwnerId: 'dead-x-fork' };
     };
 
     const decline = await consultDeclineCore(
@@ -1194,90 +1221,85 @@ describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', 
       deps,
     );
     if ('error' in decline) throw new Error(decline.error);
-    expect(pendingAtSpawn).toMatchObject({ ownerId: 'dead-x', revivalPending: true });
-    expect(revivedReply).toMatchObject({ ok: true, role: 'responder', state: 'active' });
-    // The outer revival finalizer lost its reservation CAS after the first
-    // turn claimed it; it must not restore awaiting_responder or erase the
-    // reply's digest/state transition.
+    // Without the early stamp this is `{ error: 'not_a_participant' }` — the
+    // launcher refusing the session it just launched.
+    expect(firstTurn).toMatchObject({ ok: true, role: 'responder', state: 'active' });
     expect(decline.cascade.exhausted).toBe(false);
     const row = await stateRow(id);
     expect(row.state).toBe('active');
-    expect(row.responder_id).toBe('dead-x');
     expect(row.cascade_cursor).toBe(1);
     const routingRow = parseRouting(row.routing);
-    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'dead-x', revived: true });
-    expect(routingRow.selection?.selected?.[1]?.revivalPending).toBeUndefined();
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({
+      ownerId: 'dead-x',
+      answeringOwnerId: 'dead-x-fork',
+    });
     expect(row.cascade_digest).toMatchObject([
       { ownerId: RESPONDER, kind: 'decline' },
-      { ownerId: 'dead-x', kind: 'answer' },
+      { ownerId: 'dead-x-fork', kind: 'answer' },
     ]);
   });
 
-  it('budget already spent (persisted revived stamp) — NO second revival: honest terminal, selection.underFilled says budget-spent', async () => {
-    const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ revivedAlready: true }) });
-    const { deps } = makeDeps();
-    let reviveCalls = 0;
-    deps.revive = async () => {
-      reviveCalls += 1;
-      return { spawned: true, verified: true, detail: 'x' };
-    };
+  it('the ONE refill round is already spent — honest terminal, selection.underFilled says refill-spent', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ refillSpent: true }) });
+    const { deps, dispatchCalls } = makeDeps();
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(reviveCalls).toBe(0); // the persisted stamp, not a local flag, is the budget
+    expect(dispatchCalls).toEqual([]); // the persisted stamp, not a local flag, is the bound
     expect(r.state).toBe('declined');
     expect(r.cascade.exhausted).toBe(true);
     const routingRow = parseRouting((await stateRow(id)).routing);
-    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'budget-spent' });
+    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'refill-spent' });
   });
 
-  it('no revive seam bound — the disjunction still holds: honest under-filled terminal, never a silent exhaustion', async () => {
-    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
-    const { deps } = makeDeps(); // no revive dep
-    const r = await consultDeclineCore(
-      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
-      deps,
-    );
-    if ('error' in r) throw new Error(r.error);
-    expect(r.state).toBe('declined');
-    const routingRow = parseRouting((await stateRow(id)).routing);
-    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'no-revive-dep' });
-  });
-
-  it('spawn-fail with no live candidates — honest terminal labeled revival-failed (the attempt is reported, not papered over)', async () => {
-    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+  it('nobody untried left at all — honest terminal: no-untried-candidate, never a silent exhaustion', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ noUntried: true }) });
     const { deps } = makeDeps();
-    deps.revive = async () => ({ spawned: false, verified: null, detail: 'no adv_sessions row' });
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('declined');
-    expect(r.cascade.exhausted).toBe(true);
     const routingRow = parseRouting((await stateRow(id)).routing);
-    expect(routingRow.selection?.underFilled).toMatchObject({ reason: 'revival-failed' });
+    expect(routingRow.selection?.underFilled).toMatchObject({
+      answers: 0,
+      min: 1,
+      reason: 'no-untried-candidate',
+    });
   });
 
-  it('a dead BELOW-floor candidate is never revived (no costumed expert) — honest terminal: no-revivable-candidate', async () => {
+  it('no dispatch seam bound — the advance still happens and nobody is launched (fixtures only; prod always binds it)', async () => {
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps } = makeDeps({ withDispatch: false });
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.state).toBe('awaiting_responder');
+    expect(r.cascade).toMatchObject({ advanced_to: 'dead-x', woke: 0 });
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    // No answering identity, because nothing answered — the honest shape.
+    expect(routingRow.selection?.selected?.[1]?.answeringOwnerId).toBeUndefined();
+  });
+
+  it('a dead BELOW-floor candidate still fills the minimum, labeled via:minimum (D-003 honesty, not a costumed expert)', async () => {
     const id = await seedConsult({ state: 'active', routing: deadPoolRouting({ lowScore: true }) });
-    const { deps } = makeDeps();
-    let reviveCalls = 0;
-    deps.revive = async () => {
-      reviveCalls += 1;
-      return { spawned: true, verified: true, detail: 'x' };
-    };
+    const { deps, dispatchCalls } = makeDeps();
     const r = await consultDeclineCore(
       { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'no' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(reviveCalls).toBe(0);
-    expect(r.state).toBe('declined');
+    expect(r.state).toBe('awaiting_responder');
+    expect(dispatchCalls.at(-1)?.responder).toBe('dead-low');
     const routingRow = parseRouting((await stateRow(id)).routing);
-    expect(routingRow.selection?.underFilled).toMatchObject({ reason: 'no-revivable-candidate' });
+    // The LABEL is what keeps this honest: below both floors, so 'minimum'.
+    expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'dead-low', via: 'minimum' });
+    expect(routingRow.selection?.underFilled).toBeUndefined();
   });
 });
 

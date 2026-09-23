@@ -284,6 +284,14 @@ export async function dispatchConsultResponder(
      * string is the operation-independent case.
      */
     brief: string | ((operation: DispatchOperation) => string);
+    /**
+     * Called with the answering identity the INSTANT that session is running
+     * with its brief submitted — before the bounded verification wait, because
+     * the session can post during it and the consult's reply gate refuses an
+     * author the row does not name yet. The caller persists the identity here;
+     * the post-dispatch stamp remains the backstop, so a throw is swallowed.
+     */
+    onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   },
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
@@ -429,7 +437,12 @@ export async function dispatchConsultResponder(
 /** One rank's launch. Never throws — a thrown launcher error is this rank's
  *  failure, and the walk owns what happens next. */
 async function launchAnsweringSession(
-  opts: { sourceOwnerId: string; conversationId: string; brief: string | ((operation: DispatchOperation) => string) },
+  opts: {
+    sourceOwnerId: string;
+    conversationId: string;
+    brief: string | ((operation: DispatchOperation) => string);
+    onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+  },
   ctx: ConsultDispatchContext,
   d: ConsultDispatchDeps,
   target: ResumeTarget,
@@ -531,6 +544,18 @@ async function launchAnsweringSession(
       `spawn did not persist its kickoff in the native transcript ` +
         `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'})`,
     );
+  }
+
+  // The brief is submitted and the session is running, so from HERE it can post
+  // — and the reply gate refuses an author the consult row does not name yet.
+  // Announce the answering identity BEFORE the verification wait (up to
+  // DISPATCH_VERIFY_TIMEOUT_MS), not after it, or a fast first turn races the
+  // stamp and is refused `not_a_participant` by its own launcher. Best-effort
+  // by contract: a persistence failure here must not fail a live dispatch.
+  try {
+    await opts.onAnsweringOwner?.(answeringOwnerId);
+  } catch {
+    /* the post-verify stamp is the backstop */
   }
 
   // Race host registration against a durable child-death observation, so the
@@ -640,7 +665,16 @@ export function consultDispatchBrief(input: {
 export function makeConsultReachDispatcher(
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
-): (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{
+): (opts: {
+  responder: string;
+  conversationId: string;
+  summary: string;
+  body: string;
+  /** Persist the answering identity the moment the session starts — passed
+   *  straight through to `dispatchConsultResponder`, which calls it before the
+   *  verification wait so a fast first reply is not refused. */
+  onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+}) => Promise<{
   queued: number;
   woke: number;
   pickupConfirmed: boolean;
@@ -652,6 +686,7 @@ export function makeConsultReachDispatcher(
       {
         sourceOwnerId: opts.responder,
         conversationId: opts.conversationId,
+        ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
         // the two inherit history differently.
         brief: (operation) =>
