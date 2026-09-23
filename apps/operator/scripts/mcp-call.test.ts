@@ -13,6 +13,7 @@ import {
   resolveCandidatePorts,
   resolveMcpProxyPort,
   isRecoverableAuthorityDenial,
+  buildFallbackWarning,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -198,6 +199,52 @@ describe('mcp-call argument parsing', () => {
     expect(isRecoverableAuthorityDenial(stale)).toBe(true);
     expect(isRecoverableAuthorityDenial('authorization_denied: role is not allowed')).toBe(false);
     expect(isRecoverableAuthorityDenial('current session authority could not be read')).toBe(false);
+  });
+});
+
+describe('mcp-call fallback diagnostics', () => {
+  const fetchError = (code: string) => new TypeError('fetch failed', {
+    cause: Object.assign(new Error('socket failure'), { code }),
+  });
+
+  it('does not mistake a reset or timeout for a missing listener or stale port', () => {
+    for (const code of ['ECONNRESET', 'ETIMEDOUT']) {
+      const warning = buildFallbackWarning({
+        configuredPort: '3070',
+        port: '9071',
+        proxyPort: '9071',
+        configuredPortError: fetchError(code),
+      });
+
+      expect(warning).toContain('did not complete');
+      expect(warning).toContain('does not establish that the port is stale');
+      expect(warning).not.toMatch(/nothing was listening|no listener accepted|port is STALE/);
+    }
+  });
+
+  it('retains a no-listener diagnosis for ECONNREFUSED on a noncanonical port', () => {
+    const warning = buildFallbackWarning({
+      configuredPort: '3271',
+      port: '3070',
+      proxyPort: '9071',
+      configuredPortError: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+    });
+
+    expect(warning).toContain('no listener accepted a connection on PAPERCUSP_HONO_PORT=3271');
+    expect(warning).toContain('may be stale or restarting');
+    expect(warning).toContain('the canonical operator on port 3070');
+  });
+
+  it('does not call canonical :3070 stale after a connection refusal', () => {
+    const warning = buildFallbackWarning({
+      configuredPort: '3070',
+      port: '9071',
+      proxyPort: '9071',
+      configuredPortError: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+    });
+
+    expect(warning).toContain('The environment setting is canonical');
+    expect(warning).not.toMatch(/port is STALE|may be stale/);
   });
 });
 

@@ -1559,6 +1559,8 @@ export async function settlePendingGradingAuditAtomically(
        AND payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
        AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${expected.rubricRevision == null ? null : String(expected.rubricRevision)}
        AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${expected.criteriaHash ?? null}
+       AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ${expected.dispatchReservation?.key ?? null}
+       AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ${expected.dispatchReservation?.reservedAt ?? null}
      RETURNING feature_id`);
   return rows.length > 0;
 }
@@ -1586,6 +1588,7 @@ export async function recordGradingAudit(
     criteriaHash?: string;
     requireCurrentIdentity?: boolean;
     supersedesAuditIssueId?: string;
+    dispatchReservation?: { key: string; reservedAt: string };
   },
   deps: {
     getIssue?: typeof getIssue;
@@ -1635,6 +1638,21 @@ export async function recordGradingAudit(
         `'${issueId}' is already audited (${existing.state}) by '${existing.auditIssueId ?? 'unknown'}'; ` +
         'a replacement must explicitly supersede that audit card',
     };
+  }
+  if (existing.state === 'pending') {
+    const activeReservation = existing.dispatchReservation;
+    const suppliedReservation = input.dispatchReservation;
+    const reservationMatches = activeReservation
+      ? suppliedReservation?.key === activeReservation.key &&
+        suppliedReservation.reservedAt === activeReservation.reservedAt
+      : suppliedReservation == null;
+    if (!reservationMatches) {
+      return {
+        ok: false,
+        issueId,
+        error: `'${issueId}' grading-audit dispatch reservation no longer matches this auditor's lease`,
+      };
+    }
   }
   const recordedIdentityComplete = existing.rubricRevision != null && Boolean(existing.criteriaHash);
   const recordedIdentityAbsent = existing.rubricRevision == null && !existing.criteriaHash;

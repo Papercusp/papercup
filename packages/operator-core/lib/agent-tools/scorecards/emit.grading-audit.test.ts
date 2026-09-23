@@ -353,9 +353,51 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     terminal: true,
     subject: { kind: 'scorecard' as const, ref: 'EI-CARD' },
   };
+  const activeReservation = {
+    key: 'grading-audit:EI-CARD',
+    reservedAt: '2026-09-23T18:00:00.000Z',
+  };
+  const gradedCardWithReservation = () => ({
+    ...GRADED_CARD,
+    payload: {
+      observation: {
+        ...GRADED_CARD.payload.observation,
+        gradingAudit: {
+          ...GRADED_CARD.payload.observation.gradingAudit,
+          dispatchReservation: activeReservation,
+        },
+      },
+    },
+  });
   beforeEach(() => {
     getRubric.mockResolvedValue(mkRubric('grading-integrity', 'standard'));
     getIssue.mockResolvedValue(GRADED_CARD);
+  });
+
+  it('refuses a second auditor without the active dispatch lease before filing a card', async () => {
+    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+
+    const res = await emitScorecard(auditArgs, { createdBy: 'su-second-auditor', ctxHarness: 'papercusp' });
+
+    expect(res.ok).toBe(false);
+    expect((res as { error?: string }).error).toContain('active dispatch reservation');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('settles only when the emitter presents the exact active dispatch lease', async () => {
+    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-dispatched-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ dispatchReservation: activeReservation }),
+    );
   });
 
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {

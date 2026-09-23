@@ -26,10 +26,17 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       stampedAt: '2026-09-20T04:02:01.584Z',
       rubricRevision: 7,
       criteriaHash: 'hash-v7',
+      dispatchReservation: {
+        key: 'grading-audit:EI-TARGET',
+        reservedAt: '2026-09-20T04:02:01.600Z',
+      },
     };
     const settled = {
-      ...expected,
       state: 'passed' as const,
+      metaRubricRef: expected.metaRubricRef,
+      stampedAt: expected.stampedAt,
+      rubricRevision: expected.rubricRevision,
+      criteriaHash: expected.criteriaHash,
       auditIssueId: 'EI-AUDIT',
       auditor: 'su-auditor',
       auditedAt: '2026-09-20T04:05:00.000Z',
@@ -47,9 +54,55 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'stampedAt' = ?");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
     expect(write.values).toContain('ws-test');
     expect(write.values).toContain('EI-TARGET');
+    expect(write.values).toContain('grading-audit:EI-TARGET');
+    expect(write.values).toContain('2026-09-20T04:02:01.600Z');
     expect(write.values).toContain(JSON.stringify(settled));
+  });
+
+  it('refuses to settle after the dispatch reservation epoch changes', async () => {
+    const getIssue = vi.fn(async () => ({
+      payload: {
+        observation: {
+          rubricRef: 'spec-test-adequacy',
+          ratings: { coverage: { rating: 'pass', evidence: 'verified' } },
+          gradingAudit: {
+            state: 'pending' as const,
+            metaRubricRef: 'grading-integrity',
+            stampedAt: '2026-09-23T18:00:00.000Z',
+            rubricRevision: 7,
+            criteriaHash: 'hash-v7',
+            dispatchReservation: {
+              key: 'grading-audit:EI-TARGET',
+              reservedAt: '2026-09-23T18:05:00.000Z',
+            },
+          },
+        },
+      },
+    }));
+
+    const result = await recordGradingAudit(
+      'EI-TARGET',
+      {
+        auditIssueId: 'EI-AUDIT-STALE',
+        auditor: 'su-auditor',
+        verdict: 'passed',
+        rubricRevision: 7,
+        criteriaHash: 'hash-v7',
+        requireCurrentIdentity: true,
+        dispatchReservation: {
+          key: 'grading-audit:EI-TARGET',
+          reservedAt: '2026-09-23T18:00:00.000Z',
+        },
+      },
+      { getIssue: getIssue as never },
+    );
+
+    expect(result).toMatchObject({ ok: false, issueId: 'EI-TARGET' });
+    expect((result as { error?: string }).error).toContain('dispatch reservation');
   });
 
   it('replaces a settled failed stamp when a validated correction uses a new audit card', async () => {

@@ -63,6 +63,45 @@ export function isConnectionRefusedError(error) {
   return false;
 }
 
+export function buildFallbackWarning({
+  configuredPort,
+  port,
+  proxyPort,
+  configuredPortError,
+  authorityFallback = false,
+}) {
+  const endpoint = port === proxyPort
+    ? 'the resilient MCP proxy on port ' + port
+    : 'the canonical operator on port ' + port;
+
+  if (authorityFallback) {
+    const cause = 'PAPERCUSP_HONO_PORT=' + configuredPort +
+      ' answered with a stale session-authority denial; reached ';
+    const repair = port === proxyPort
+      ? 'unset PAPERCUSP_HONO_PORT or set it to the actual operator port'
+      : 'export PAPERCUSP_HONO_PORT=' + port + ' (or unset it)';
+    return 'mcp-call: WARNING — ' + cause + endpoint + ' instead. ' +
+      "Your environment's port is STALE: " + repair +
+      ', or every other tool deriving its URL from that variable will keep failing.';
+  }
+
+  if (isConnectionRefusedError(configuredPortError)) {
+    if (String(configuredPort) === '3070') {
+      return 'mcp-call: WARNING — connection to canonical PAPERCUSP_HONO_PORT=3070 ' +
+        'was refused at request time; reached ' + endpoint + ' instead. ' +
+        'The environment setting is canonical; verify operator health before changing it.';
+    }
+    return 'mcp-call: WARNING — no listener accepted a connection on PAPERCUSP_HONO_PORT=' +
+      configuredPort + ' at request time; reached ' + endpoint + ' instead. ' +
+      'The configured port may be stale or restarting; unset PAPERCUSP_HONO_PORT or set it ' +
+      'to the actual operator port only if it has been retired.';
+  }
+
+  return 'mcp-call: WARNING — the MCP request through PAPERCUSP_HONO_PORT=' +
+    configuredPort + ' did not complete; reached ' + endpoint + ' instead. ' +
+    'This does not establish that the port is stale; verify the transport before changing it.';
+}
+
 /**
  * Retry only a pre-connect refusal. Retrying resets, HTTP errors, or any other
  * fetch failure could duplicate a POST whose request reached the operator.
@@ -468,6 +507,7 @@ async function main() {
   let res;
   let raw;
   let authorityFallback = false;
+  let configuredPortError = null;
   const attempts = [];
   for (let index = 0; index < candidatePorts.length; index += 1) {
     const port = candidatePorts[index];
@@ -495,23 +535,17 @@ async function main() {
       res = candidateRes;
       raw = candidateRaw;
       if (!pinned && port !== String(configuredPort)) {
-        const endpoint = port === proxyPort
-          ? `the resilient MCP proxy on port ${port}`
-          : `the canonical operator on port ${port}`;
-        const cause = authorityFallback
-          ? `PAPERCUSP_HONO_PORT=${configuredPort} answered with a stale session-authority denial; reached `
-          : `nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; reached `;
-        const repair = port === proxyPort
-          ? `unset PAPERCUSP_HONO_PORT or set it to the actual operator port`
-          : `export PAPERCUSP_HONO_PORT=${port} (or unset it)`;
-        console.error(
-          `mcp-call: WARNING — ${cause}${endpoint} instead. ` +
-            `Your environment's port is STALE: ${repair}, ` +
-            'or every other tool deriving its URL from that variable will keep failing.',
-        );
+        console.error(buildFallbackWarning({
+          configuredPort,
+          port,
+          proxyPort,
+          configuredPortError,
+          authorityFallback,
+        }));
       }
       break;
     } catch (err) {
+      if (index === 0) configuredPortError = err;
       attempts.push(`${port} (${err?.cause?.code ?? err?.code ?? err?.message ?? 'unknown error'})`);
     }
   }

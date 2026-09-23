@@ -343,38 +343,58 @@ const REMEASURABLE_STALE_REASONS = new Set(['source-stale', 'test-stale', 'testR
 const MAX_REMEASURE_BINDINGS = 20;
 
 export type RemeasureSkip = { specId: string; testPath: string; bindingId: number;
-  reason: 'current' | 'clause-moved' | 'run-in-flight' | 'unmeasurable' | 'not-remeasurable' | 'cap';
+  reason: 'current' | 'clause-moved' | 'run-in-flight' | 'unmeasurable' | 'not-remeasurable' | 'cap'
+    /** A test proof bound by hand (plans:bind-spec-evidence): no stored recipe to re-run. */
+    | 'no-recipe'
+    /** A mutation proof: curing it means re-running the mutation probe, not a test file. */
+    | 'probe-required';
   detail?: string };
 export type RemeasureSelection = { specId: string; testPath: string; bindingId: number;
   staleReasons: string[]; movedPaths?: unknown; binding: Request['bindings'][number];
   /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
   supersedes: number[] };
 
-/** Pure selection over one work-item's evidence rows: the latest test binding per (clause, test file). */
+/** Evidence kinds a re-measure must ACCOUNT for, even when it cannot re-run them itself. */
+export const REMEASURE_EVIDENCE_KINDS = ['test', 'mutation'] as const;
+
+/**
+ * Pure selection over one work-item's evidence rows: the latest binding per (clause, kind,
+ * test file). Only a test proof with a stored recipe can be re-run here; every other stale
+ * proof is still REPORTED (`no-recipe` / `probe-required`), never silently dropped — a
+ * silent drop let the completion gate fail freshness on bindings this pass said nothing about.
+ */
 export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
-  const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number]; phase?: string }>();
+  const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
   const members = new Map<string, number[]>();
   for (const row of [...rows].sort((a, b) => b.id - a.id)) {
     // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
     // subject; re-running them against moved code is not the same claim.
-    if (row.evidenceKind !== 'test') continue;
+    if (!(REMEASURE_EVIDENCE_KINDS as readonly string[]).includes(row.evidenceKind)) continue;
     const execution = row.details?.testExecution as { phase?: string; binding?: unknown } | undefined;
-    const parsed = bindingSchema.safeParse(execution?.binding);
-    if (!parsed.success) continue;
-    const key = `${row.specId}\0${parsed.data.testPath}`;
-    if (!latest.has(key)) latest.set(key, { row, binding: parsed.data, phase: execution?.phase });
+    const parsed = row.evidenceKind === 'test' ? bindingSchema.safeParse(execution?.binding) : null;
+    const binding = parsed?.success ? parsed.data : null;
+    const recorded = (row.details?.currentMeasurement as { testPaths?: unknown } | undefined)?.testPaths;
+    const testPath = binding?.testPath
+      ?? (Array.isArray(recorded) && typeof recorded[0] === 'string' ? recorded[0] : '(unrecorded)');
+    const key = `${row.specId}\0${row.evidenceKind}\0${testPath}`;
+    if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) members.set(key, [...(members.get(key) ?? []), row.id]);
   }
   const selected: RemeasureSelection[] = [];
   const skipped: RemeasureSkip[] = [];
-  for (const [key, { row, binding, phase }] of latest) {
-    const base = { specId: row.specId, testPath: binding.testPath, bindingId: row.id };
+  for (const [key, { row, binding, testPath, phase }] of latest) {
+    const base = { specId: row.specId, testPath, bindingId: row.id };
     const { overall, dimensions, staleReasons } = row.currentness;
     const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
     if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
     else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
-    else if (overall === 'current' && phase === 'settled') skipped.push({ ...base, reason: 'current' });
-    else if (
+    else if (overall === 'current' && (phase === 'settled' || !binding)) skipped.push({ ...base, reason: 'current' });
+    else if (!binding) {
+      const why = (overall === 'unknown' ? row.currentness.unknownReasons : staleReasons).join(',') || overall;
+      skipped.push(row.evidenceKind === 'mutation'
+        ? { ...base, reason: 'probe-required', detail: `${why}: re-run scripts/mutation-probe.sh and re-bind the verdict`.slice(0, 240) }
+        : { ...base, reason: 'no-recipe', detail: `${why}: bound by hand, so re-prove via testing:run { evidence } (which stores the recipe)`.slice(0, 240) });
+    } else if (
       (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
@@ -399,7 +419,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
 export async function buildTestEvidenceRemeasure(remeasure: Remeasure, scope: Pick<Scope, 'harnessSlug'>, deps: Pick<Deps, 'list'> = defaults) {
   const rows = await deps.list({ harnessSlug: scope.harnessSlug,
     planSlugs: [remeasure.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [remeasure.workItemId],
-    ...(remeasure.specIds ? { specIds: remeasure.specIds } : {}), evidenceKinds: ['test'], limit: 500 });
+    ...(remeasure.specIds ? { specIds: remeasure.specIds } : {}), evidenceKinds: [...REMEASURE_EVIDENCE_KINDS], limit: 500 });
   const plan = planTestEvidenceRemeasure(rows);
   const request = plan.selected.length === 0 ? null : testEvidenceSchema.parse({
     workItemId: remeasure.workItemId, ...(remeasure.planSlug ? { planSlug: remeasure.planSlug } : {}),
