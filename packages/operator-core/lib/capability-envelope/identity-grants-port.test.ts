@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied,IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
@@ -116,6 +117,65 @@ describe('P-005 current identity grants at the common kernel seat', () => {
         obligations: { capabilityUnsatisfied: { cause: 'provider-unbound' } } });
     expect(io.replay).toHaveBeenCalledTimes(replayCount);
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds the pinned identity replay cache and replays an evicted row', async () => {
+    const cache = pinModuleState('@papercusp/operator-core.identity-resolution-cache',
+      () => new Map<string, { validatedAt: number; resolution: unknown }>());
+    cache.clear();
+    try {
+      const f = fixture();
+      const read = vi.fn(async () => f.policy);
+      const stateFor = (rowVersion: string) => ({
+        ...f.state, identityLaunchRecordVersion: { sessionId: 'cache-size-test', rowVersion },
+      });
+
+      expect(await checkIdentityGrantKernel(f.request, stateFor('0'), f.record, read))
+        .toMatchObject({ decision: 'allow' });
+      const firstReplayCount = io.replay.mock.calls.length;
+      expect(firstReplayCount).toBeGreaterThan(0);
+
+      for (let index = 1; index <= 128; index += 1) {
+        expect(await checkIdentityGrantKernel(f.request, stateFor(String(index)), f.record, read))
+          .toMatchObject({ decision: 'allow' });
+      }
+      expect(cache.size).toBeLessThanOrEqual(128);
+      const replayCountAfterEviction = io.replay.mock.calls.length;
+      expect(await checkIdentityGrantKernel(f.request, stateFor('0'), f.record, read))
+        .toMatchObject({ decision: 'allow' });
+      expect(io.replay.mock.calls.length).toBeGreaterThan(replayCountAfterEviction);
+    } finally {
+      cache.clear();
+    }
+  });
+
+  it('replays an unchanged launch row after the identity cache age bound', async () => {
+    const cache = pinModuleState('@papercusp/operator-core.identity-resolution-cache',
+      () => new Map<string, { validatedAt: number; resolution: unknown }>());
+    cache.clear();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const f = fixture();
+      const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'cache-ttl-test', rowVersion: '1' } };
+      const read = vi.fn(async () => f.policy);
+
+      expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+        .toMatchObject({ decision: 'allow' });
+      const firstReplayCount = io.replay.mock.calls.length;
+      expect(firstReplayCount).toBeGreaterThan(0);
+      expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+        .toMatchObject({ decision: 'allow' });
+      expect(io.replay).toHaveBeenCalledTimes(firstReplayCount);
+
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+        .toMatchObject({ decision: 'allow' });
+      expect(io.replay.mock.calls.length).toBeGreaterThan(firstReplayCount);
+    } finally {
+      vi.useRealTimers();
+      cache.clear();
+    }
   });
 
   it('revalidates on a launch-row or applied-revision change and denies a tampered artifact', async () => {
