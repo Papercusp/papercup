@@ -471,3 +471,15 @@ The recruitment reply names the canonical reservation work-item (`WI-10002634`),
 | 27 | When a rubric method names more mutants than the spec has one-to-one scenarios, `rubrics:propose`/`amend` warns and names the storage (check rows, or add the scenarios) | a full grade → degraded → rebind → re-grade cycle | the one-negative-per-pair contract is unchanged |
 | 28 | A newly ship-blocking BAR code is raised on plans already awaiting acceptance, at deploy time rather than at their ship call; and `evidence_plane_unmet`'s `NEXT REPAIR` names `details.evidencePlane` plus the exact rebind | a surprise refusal after grading and a source read to repair it | same code, same blocking |
 | 29 | The grading-recruitment reply returns the `scorecard:emitted:<rubricRef>` await key beside the reservation id | awaits on a key that never fires | the reservation is unchanged |
+
+# Follow-up comparison: completion-settlement liveness
+
+Author: su-eb1ce, 2026-09-23. Integrated under owner directives #259 and #262.
+
+This is a separate git-sync mechanism from the 02:39–03:00Z scheduler-dispatch starvation measured above (EI-22489500008234936). That finding concerns routines-tick HELD dispatch, a delayed completed outcome, and an unalerted missed-interval clock. A separate Sep 21 trace in EI-23899013908181315 shows a 19:40Z DBOS git-sync fire reaching its completion-settlement batch before timing out later in `git-sync:record`.
+
+**Measured:** the settlement pass warned that 8 of 200 candidate manifests were unreadable at 20:10:52.301Z, alongside a 600-second idle-timeout record at 20:10:52Z. The exact source vintage, `2e869d081b`, confirms that `completionHeadBlobMap` invoked `execFileSync('git', ['ls-tree', ...])` for each manifest (source lines 10, 147, 154, 224, 272). A synchronous child process blocks the event loop, preventing the timeout and heartbeat timers from running until the child returns. This supports a separate event-loop-blocking path in settlement; the trace does not establish that it was the sole contributor to the full fire duration.
+
+The completion path now uses the existing `streamGitFields` async helper for stamping, freshness reads, and settlement. Settlement runs under the post-legs idle/hard guard, passes its abort signal to Git, and reports per-candidate progress. The focused local regression suite passed 322 tests across 7 files; this verifies the staging working tree and is not a deployment claim. Implementation and test evidence are recorded on EI-23899013908181315 and in `review-system-rework-reduction-2026-09-23#D-013`.
+
+**Comparison boundary:** retain P-009's scheduler reservation, quarantine notice, and missed-interval alarm for the separate scheduler-starvation mechanism. The async settlement change does not replace those controls. Neither trace binds the 19:02 PG 57014 heartbeat failure to a particular fire/lease, so that historical attribution remains unresolved.
