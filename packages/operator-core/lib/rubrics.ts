@@ -3385,6 +3385,19 @@ type AcceptanceBarApproverEvaluation = {
   eligibleWithUnrelatedApplier: boolean;
 };
 
+type AcceptanceBarApproverPreview = (
+  | AcceptanceBarApproverEvaluation
+  | {
+      approvedBy: string;
+      eligible: null;
+      selfScreen: true;
+      note: string;
+    }
+) & {
+  approvalRequired?: boolean;
+  reason?: 'no bar meaning changed';
+};
+
 export interface AcceptanceBarAmendmentPreview {
   rubricRevision: number;
   subjectPlanRevision: number;
@@ -3460,22 +3473,11 @@ export interface AcceptanceBarAmendmentPreview {
    *
    * So `relatedVia` names WHICH identity blocked, and `eligibleWithUnrelatedApplier` answers
    * the question a router actually has: is this approver usable at all, given some other
-   * agent performs the apply? The apply rail is unchanged — this only stops a curable
-   * condition from reading as a permanent disqualification.
+   * agent performs the apply? When `approvedBy` is the caller, the preview instead returns
+   * `selfScreen: true` and `eligible: null`; that is no verdict, and a different requester
+   * must screen the candidate.
    */
-  approverEligibility?: {
-    approvedBy: string;
-    eligible: boolean;
-    relatedImplementer: string | null;
-    /** Which injected identity the approver is related to. `'caller'` ⇒ artifact, not history. */
-    relatedVia?: AcceptanceBarApproverRelationVia;
-    /** `eligible` recomputed over the population EXCLUDING the caller. */
-    eligibleWithUnrelatedApplier?: boolean;
-    /** Explicitly false on a no-op screen: no approval is needed when no BAR meaning changed. */
-    approvalRequired?: boolean;
-    /** Explains why a no-op preview reports eligibility without requesting approval. */
-    reason?: 'no bar meaning changed';
-  };
+  approverEligibility?: AcceptanceBarApproverPreview;
 }
 
 export type AcceptanceBarApproverEligibilityReason =
@@ -4271,11 +4273,18 @@ async function amendAcceptanceBarRubric(
           attribute(actorId, 'caller');
           if (changedBars.length > 0) previewImplementers = [...roles.keys()].sort();
           if (prospectiveApprover) {
-            const evaluation = await evaluateAcceptanceBarApproverEligibility(
-              prospectiveApprover,
-              roles,
-              { sql: tx as never, workspaceId: subjectScope.workspaceId },
-            );
+            const evaluation = prospectiveApprover === norm(actorId)
+              ? {
+                  approvedBy: prospectiveApprover,
+                  eligible: null,
+                  selfScreen: true as const,
+                  note: 'Self-screening cannot establish eligibility; have a different requester screen this candidate.',
+                }
+              : await evaluateAcceptanceBarApproverEligibility(
+                  prospectiveApprover,
+                  roles,
+                  { sql: tx as never, workspaceId: subjectScope.workspaceId },
+                );
             approverEligibility = changedBars.length > 0
               ? evaluation
               : { ...evaluation, approvalRequired: false, reason: 'no bar meaning changed' };
