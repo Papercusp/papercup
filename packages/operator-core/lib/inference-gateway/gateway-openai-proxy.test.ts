@@ -729,6 +729,23 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       cacheReadTokens: 1200, cacheWriteTokens: 100, reuse: 'partial-hit', shape: 'observed',
     });
   });
+
+  it('uses inclusive OpenAI input for token reuse without inventing missing writes or uncached input', async () => {
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response: {
+        id: 'missing-writes', usage: { input_tokens: 1500, input_tokens_details: { cached_tokens: 1200 } },
+      } })}\n\ndata: [DONE]\n\n`);
+    });
+    await (await postResponses({ model: 'gpt-5.6-sol', input: 'hi', stream: true })).text();
+    const stats = await (await ask('/stats')).json() as import('./gateway').GatewayStats;
+    expect(stats.cache).toMatchObject({ input: null, create: null, read: 1200, hitRate: 0.8,
+      tokenRateBasis: { read: 1200, inputTotal: 1500 },
+      coverage: { requests: 1, writeKnown: 0, uncachedInputKnown: 0, inputTotalKnown: 1, tokenRateRequests: 1 } });
+    expect(stats.cache.byAccount['cdx-1'].create).toBeNull();
+    expect(stats.requestStages?.recent.at(-1)?.cache.cacheWriteTokens).toBeNull();
+    expect(stats.requestStages?.recent.at(-1)?.cache.inputTokens).toBeNull();
+  });
 });
 
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
