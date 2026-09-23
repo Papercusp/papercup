@@ -200,6 +200,39 @@ export interface RecordOwnerDirectiveInput {
 }
 
 /**
+ * A newer, hook-verified instruction that explicitly resumes all agents after
+ * "the pause" lifts an earlier system-wide pause. Keep this matcher narrow:
+ * ordinary resume requests and pauses for a single project/session must not
+ * close unrelated owner directives.
+ */
+function explicitlyLiftsSystemWidePause(priorText: string, newerText: string): boolean {
+  const normalize = (text: string) =>
+    text.normalize('NFKC').toLowerCase().replace(/[‐‑‒–—]/g, '-').replace(/\s+/g, ' ');
+  const prior = normalize(priorText);
+  const allAgents = /\b(?:all|every)\s+(?:the\s+)?agents?\b/;
+  const systemWide = /\b(?:system|workspace|hive)[ -]wide\b/;
+  const pauseWithWork = /\bpause(?:d|s|ing)?\b/.test(prior) && /\bwork\b/.test(prior);
+
+  return (
+    allAgents.test(prior) &&
+    systemWide.test(prior) &&
+    pauseWithWork &&
+    isExplicitSystemWideResume(newerText)
+  );
+}
+
+function isExplicitSystemWideResume(text: string): boolean {
+  const newer = text.normalize('NFKC').toLowerCase().replace(/[‐‑‒–—]/g, '-').replace(/\s+/g, ' ');
+  return (
+    /\b(?:all|every)\s+(?:the\s+)?agents?\b/.test(newer) &&
+    /\bresume\b/.test(newer) &&
+    /\b(?:before|lift(?:s|ed|ing)?|end(?:s|ed|ing)?|cancel(?:s|ed|ling)?|supersed(?:es|ed|ing)?)\b.{0,60}\bthe\s+pause\b/.test(
+      newer,
+    )
+  );
+}
+
+/**
  * Insert a directive, OPEN. Idempotent on (workspace, owner, source_turn_ref):
  * a retried capture of the same turn returns the row that already exists,
  * whatever state it has reached since, instead of failing.
@@ -211,30 +244,75 @@ export async function recordOwnerDirective(
   const s = db(sql);
   const ws = resolveConcreteWorkspaceId(input.workspaceId);
   const text = input.verbatimText.slice(0, OWNER_DIRECTIVE_VERBATIM_MAX);
-  const rows = await s<RawRow[]>`
-    INSERT INTO harness_shared.owner_directives
-      (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, captured_by_hook)
-    SELECT ${ws}, ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}, ${input.sessionRef ?? null},
-       ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.capturedByHook === true}
-    WHERE NOT EXISTS (
-      SELECT 1 FROM harness_shared.owner_directives
-       WHERE workspace_id = ${ws}
-         AND owner_id = ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}
-         AND source_turn_ref = ${input.sourceTurnRef ?? null}
-    )
-    RETURNING *
-  `;
-  if (rows[0]) return rowOf(rows[0]);
-  const existing = await s<RawRow[]>`
-    SELECT * FROM harness_shared.owner_directives
-     WHERE workspace_id = ${ws}
-       AND owner_id = ${input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER}
-       AND source_turn_ref = ${input.sourceTurnRef ?? null}
-     ORDER BY id DESC
-     LIMIT 1
-  `;
-  if (existing[0]) return rowOf(existing[0]);
-  throw new Error('owner_directive_insert_conflict');
+  const ownerId = input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER;
+
+  // Insertion and supersession share a transaction: once a verified owner
+  // resume is visible to agents, its lifted pause must already read as closed.
+  return await s.begin(async (tx) => {
+    const rows = await tx<RawRow[]>`
+      INSERT INTO harness_shared.owner_directives
+        (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, captured_by_hook)
+      SELECT ${ws}, ${ownerId}, ${input.sessionRef ?? null},
+         ${input.sourceTurnRef ?? null}, ${text}, ${input.recordedBy}, ${input.capturedByHook === true}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM harness_shared.owner_directives
+         WHERE workspace_id = ${ws}
+           AND owner_id = ${ownerId}
+           AND source_turn_ref = ${input.sourceTurnRef ?? null}
+      )
+      RETURNING *
+    `;
+    if (!rows[0]) {
+      const existing = await tx<RawRow[]>`
+        SELECT * FROM harness_shared.owner_directives
+         WHERE workspace_id = ${ws}
+           AND owner_id = ${ownerId}
+           AND source_turn_ref = ${input.sourceTurnRef ?? null}
+         ORDER BY id DESC
+         LIMIT 1
+      `;
+      if (existing[0]) return rowOf(existing[0]);
+      throw new Error('owner_directive_insert_conflict');
+    }
+
+    const created = rows[0];
+    if (input.capturedByHook === true && isExplicitSystemWideResume(text)) {
+      const openRows = await tx<Array<{ id: string | number; verbatim_text: string }>>`
+        SELECT id, verbatim_text
+          FROM harness_shared.owner_directives
+         WHERE workspace_id = ${ws}
+           AND owner_id = ${ownerId}
+           AND dispositioned_at IS NULL
+           AND id < ${created.id}
+         ORDER BY id ASC
+         FOR UPDATE
+      `;
+      const matchingPauses = openRows.filter((prior) => explicitlyLiftsSystemWidePause(prior.verbatim_text, text));
+      // The owner's words refer to "the pause" (singular), so bind the lift to
+      // the most recent matching open state rather than closing older unrelated
+      // pause episodes that happen to use the same broad wording.
+      const superseded = matchingPauses[matchingPauses.length - 1];
+
+      if (superseded) {
+        const note =
+          'Superseded by owner directive #' +
+          created.id +
+          ': a newer verified all-agents resume lifts this system-wide pause.';
+        await tx`
+          UPDATE harness_shared.owner_directives
+             SET dispositioned_at = now(),
+                 disposition_status = 'done',
+                 disposition_note = ${note},
+                 dispositioned_by = ${input.recordedBy}
+           WHERE workspace_id = ${ws}
+             AND id = ${superseded.id}
+             AND dispositioned_at IS NULL
+        `;
+      }
+    }
+
+    return rowOf(created);
+  });
 }
 
 /** Shortest hand-recorded quote that may match inside a captured turn (shorter = too generic). */
