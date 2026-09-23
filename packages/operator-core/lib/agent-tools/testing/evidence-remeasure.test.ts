@@ -26,6 +26,7 @@ const recipe = (specId: string, testPath: string) => ({
 function row(id: number, opts: {
   specId?: string; testPath?: string; kind?: string; phase?: string; revision?: number;
   currentness?: Partial<Currentness>; moved?: unknown; outcome?: string; evidenceRef?: string;
+  adequacy?: Record<string, unknown>;
   /** Bound by hand (plans:bind-spec-evidence): no stored recipe, only the measured paths. */
   handBound?: boolean;
 }) {
@@ -38,12 +39,16 @@ function row(id: number, opts: {
   const handBound = opts.handBound ?? opts.kind === 'mutation';
   return {
     id, specId, specRevision: opts.revision ?? 3, evidenceKind: opts.kind ?? 'test',
-    evidenceRef: opts.evidenceRef ?? `test-run-group:old:${id}`,
+    evidenceRef: opts.evidenceRef ?? (
+      handBound
+        ? opts.kind === 'mutation' ? `mutation-probe:${testPath}:${id}` : testPath
+        : `test-run-group:old:${id}`
+    ),
     details: {
       ...(handBound
-        ? { currentMeasurement: { kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
+        ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
         : { testExecution: { phase: opts.phase ?? 'settled', binding: recipe(specId, testPath) } }),
-      adequacy: { outcome: opts.outcome ?? 'pass' },
+      adequacy: { outcome: opts.outcome ?? 'pass', ...(handBound ? { testLayer: 'unit' } : {}), ...opts.adequacy },
     },
     currentness,
     ...(opts.moved ? { serverMeasurement: { status: 'measured', movedPaths: opts.moved } } : {}),
@@ -53,6 +58,28 @@ function row(id: number, opts: {
 const sourceStale = { overall: 'stale' as const, dimensions: { spec: 'current', source: 'stale' }, staleReasons: ['source-stale'] };
 
 describe('planTestEvidenceRemeasure', () => {
+  it('recovers an exact hand-bound test recipe without replaying the old outcome or adequacy claims', () => {
+    const plan = planTestEvidenceRemeasure([
+      row(12, {
+        handBound: true,
+        currentness: sourceStale,
+        adequacy: { falsifiable: true, pathReachable: true, oracleIndependent: true },
+      }),
+    ]);
+
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.selected[0]).toMatchObject({
+      specId: 'S-1',
+      testPath: 'src/subject.test.ts',
+      bindingId: 12,
+      staleReasons: ['source-stale'],
+      binding: recipe('S-1', 'src/subject.test.ts'),
+      supersedes: [12],
+    });
+    expect(plan.selected[0]!.binding).not.toHaveProperty('falsifiable');
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('selects only the latest stale-by-drift binding per (clause, test file) and lists every live predecessor', () => {
     const moved = [{ path: 'src/subject.ts', dimension: 'source', change: 'changed' }];
     const plan = planTestEvidenceRemeasure([
@@ -90,7 +117,7 @@ describe('planTestEvidenceRemeasure', () => {
     // Measured 2026-09-23 on WI-10002643: the pass answered examined 1 / selected 0 /
     // skipped [] while the completion gate failed freshness on exactly these bindings.
     const plan = planTestEvidenceRemeasure([
-      row(10363, { specId: 'S-B', handBound: true, currentness: sourceStale }),
+      row(10363, { specId: 'S-B', handBound: true, evidenceRef: 'opaque:manual-proof', currentness: sourceStale }),
       row(10554, { specId: 'S-B', kind: 'mutation', currentness: sourceStale }),
       row(10435, { specId: 'S-B', kind: 'mutation', currentness: sourceStale }),
       row(7, { specId: 'S-C', kind: 'mutation' }),
@@ -102,7 +129,9 @@ describe('planTestEvidenceRemeasure', () => {
       'S-C:7:current:src/subject.test.ts',
     ]);
     expect(plan.skipped.find((entry) => entry.bindingId === 10363)!.detail).toMatch(/^source-stale: .*testing:run \{ evidence \}/);
-    expect(plan.skipped.find((entry) => entry.bindingId === 10554)!.detail).toMatch(/^source-stale: .*mutation-probe/);
+    expect(plan.skipped.find((entry) => entry.bindingId === 10554)!.detail).toMatch(/^source-stale: .*scripts\/mutation-probe\.sh/);
+    expect(plan.skipped.find((entry) => entry.bindingId === 10554)!.detail).toContain("source='mutation-probe'");
+    expect(plan.skipped.find((entry) => entry.bindingId === 10554)!.detail).toContain('test-only route cannot reproduce a mutant');
   });
 
   it('lets a newer recipe-bearing proof supersede a hand-bound one for the same clause and file', () => {
@@ -142,6 +171,29 @@ describe('buildTestEvidenceRemeasure', () => {
     const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' }, { harnessSlug: 'h' }, { list });
     expect(built.request).toEqual({ workItemId: 'WI-1', planSlug: 'p', bindings: [recipe('S-1', 'src/subject.test.ts')] });
     expect(built.files).toEqual(['src/subject.test.ts']);
+  });
+
+  it('builds a fresh test request from a hand-bound row without carrying forward its old pass or quality claims', async () => {
+    const list = vi.fn().mockResolvedValue([
+      row(1, {
+        handBound: true,
+        currentness: sourceStale,
+        adequacy: { falsifiable: true, fixtureCalibrated: true, pathReachable: true, oracleIndependent: true },
+      }),
+    ]);
+    const built = await buildTestEvidenceRemeasure(
+      { workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' },
+      { list },
+    );
+
+    expect(built.request).toEqual({
+      workItemId: 'WI-1',
+      planSlug: 'p',
+      bindings: [recipe('S-1', 'src/subject.test.ts')],
+    });
+    expect(built.files).toEqual(['src/subject.test.ts']);
+    expect(JSON.stringify(built.request)).not.toMatch(/outcome|falsifiable|fixtureCalibrated|pathReachable|oracleIndependent/);
   });
 });
 
