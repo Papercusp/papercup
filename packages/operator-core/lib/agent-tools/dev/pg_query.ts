@@ -235,6 +235,124 @@ function unionColumnCountHint(
  * operator that is actually present in the SQL; unrelated operator errors must
  * retain PostgreSQL's own diagnostic.
  */
+interface SqlWordToken {
+  value: string;
+  start: number;
+  end: number;
+}
+
+function topLevelSqlWords(sql: string): SqlWordToken[] {
+  const words: SqlWordToken[] = [];
+  let depth = 0;
+  for (let i = 0; i < sql.length; ) {
+    const character = sql[i];
+    if (character === '"') {
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          i += 2;
+          continue;
+        }
+        if (sql[i++] === '"') break;
+      }
+      continue;
+    }
+    if (character === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (character === ')') {
+      depth = Math.max(0, depth - 1);
+      i++;
+      continue;
+    }
+    if (depth === 0 && /[A-Za-z_]/.test(character)) {
+      const start = i++;
+      while (i < sql.length && /[A-Za-z0-9_$]/.test(sql[i])) i++;
+      words.push({ value: sql.slice(start, i).toLowerCase(), start, end: i });
+      continue;
+    }
+    i++;
+  }
+  return words;
+}
+
+function matchingSqlParenEnd(sql: string, openIndex: number): number {
+  let depth = 0;
+  for (let i = openIndex; i < sql.length; ) {
+    if (sql[i] === '"') {
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          i += 2;
+          continue;
+        }
+        if (sql[i++] === '"') break;
+      }
+      continue;
+    }
+    if (sql[i] === '(') depth++;
+    else if (sql[i] === ')' && --depth === 0) return i + 1;
+    i++;
+  }
+  return sql.length;
+}
+
+function nextSqlWord(sql: string, from: number): SqlWordToken | undefined {
+  let start = from;
+  while (start < sql.length && /\s/.test(sql[start])) start++;
+  if (start >= sql.length || !/[A-Za-z_]/.test(sql[start])) return undefined;
+  let end = start + 1;
+  while (end < sql.length && /[A-Za-z0-9_$]/.test(sql[end])) end++;
+  return { value: sql.slice(start, end).toLowerCase(), start, end };
+}
+
+function isWindowedCount(sql: string, countEnd: number): boolean {
+  let next = nextSqlWord(sql, countEnd);
+  if (next?.value === 'filter') {
+    let open = next.end;
+    while (open < sql.length && /\s/.test(sql[open])) open++;
+    if (sql[open] === '(') next = nextSqlWord(sql, matchingSqlParenEnd(sql, open));
+  }
+  return next?.value === 'over';
+}
+
+/**
+ * An ungrouped COUNT aggregate emits one SQL row for an empty input. That row
+ * is not a positive example for an absence control. Inspect only top-level
+ * SELECT branches: COUNT inside a CTE or scalar subquery does not invalidate a
+ * control whose outer SELECT returns concrete rows, and COUNT ... OVER is
+ * row-shaped rather than a scalar aggregate.
+ */
+function hasScalarCountPositiveControl(sql: string): boolean {
+  const body = stripSqlLiteralsAndComments(sql);
+  const words = topLevelSqlWords(body);
+  const selects = words.filter((word) => word.value === 'select');
+  for (const select of selects) {
+    const branchEndToken = words.find(
+      (word) => word.start >= select.end && ['union', 'intersect', 'except'].includes(word.value),
+    );
+    const branchEnd = branchEndToken?.start ?? body.length;
+    const from = words.find((word) => word.start >= select.end && word.start < branchEnd && word.value === 'from');
+    const projectionEnd = from?.start ?? branchEnd;
+    const projection = body.slice(select.end, projectionEnd);
+    const hasCount = topLevelSqlWords(projection).some((word) => {
+      if (word.value !== 'count') return false;
+      let open = word.end;
+      while (open < projection.length && /\s/.test(projection[open])) open++;
+      return projection[open] === '(' && !isWindowedCount(projection, matchingSqlParenEnd(projection, open));
+    });
+    if (!hasCount) continue;
+
+    const clauseStart = from?.end ?? projectionEnd;
+    const clauseWords = words.filter((word) => word.start >= clauseStart && word.start < branchEnd);
+    const grouped = clauseWords.some((word, index) => word.value === 'group' && clauseWords[index + 1]?.value === 'by');
+    if (!grouped) return true;
+  }
+  return false;
+}
+
 function jsonOperatorTypeHint(
   sql: string,
   info: { code?: string; message: string; detail?: string },
@@ -312,7 +430,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. Rubrics: `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. `dbos.workflow_status` uses BIGINT epoch-ms `created_at`/`updated_at`; compare `(extract(epoch from now()) * 1000)::bigint` and existing `name`/`updated_at`. For absence, use known-positive `positiveControlSql`, not `count(*)`. Raw `harness_shared.work_items`: `state` maps to table `status`, `id` maps to `feature_id`, completion uses `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`; set `allowUnboundedJsonSearch: true` deliberately. Regex `{m,n}` bounds are ≤255; use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
+      "Use `describe` before guessing schema. Rubrics: `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. `dbos.workflow_status` uses BIGINT epoch-ms `created_at`/`updated_at`; compare `(extract(epoch from now()) * 1000)::bigint` and existing `name`/`updated_at`. For absence, use a known-positive row-returning `positiveControlSql`, not an ungrouped scalar `count(*)`: it returns a row even when no source rows match. Raw `harness_shared.work_items`: `state` maps to table `status`, `id` maps to `feature_id`, completion uses `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`; set `allowUnboundedJsonSearch: true` deliberately. Regex `{m,n}` bounds are ≤255; use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
       'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
       `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +
@@ -380,7 +498,7 @@ export default defineTool({
         .min(1)
         .optional()
         .describe(
-          'Known-positive SELECT/WITH…SELECT expected to return at least one row through the same table/scope/instrument. Runs with the primary query in the same read-only transaction and whole-call deadline. Use when zero rows will support an absence claim; do not use count(*) because it always returns a row.',
+          'Known-positive row-returning SELECT/WITH…SELECT expected to return at least one row through the same table/scope/instrument. Runs with the primary query in the same read-only transaction and whole-call deadline. Use when zero rows will support an absence claim; ungrouped scalar COUNT aggregates are rejected because they return a row even when no source rows match.',
         ),
       allowUnscoped: z
         .boolean()
@@ -743,10 +861,17 @@ export default defineTool({
         timeoutMs: args.timeoutMs,
         ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
       });
+      const scalarCountControl = args.positiveControlSql
+        ? hasScalarCountPositiveControl(args.positiveControlSql)
+        : false;
       const positiveControl = result.positiveControl
         ? {
-            status: result.positiveControl.rowCount > 0 ? ('passed' as const) : ('failed' as const),
             ...result.positiveControl,
+            status:
+              !scalarCountControl && result.positiveControl.rowCount > 0
+                ? ('passed' as const)
+                : ('failed' as const),
+            ...(scalarCountControl ? { reason: 'scalar-aggregate' as const } : {}),
           }
         : undefined;
       const absence =
@@ -755,11 +880,17 @@ export default defineTool({
             ? { status: 'verified' as const, code: 'positive-control-passed' as const }
             : {
                 status: 'unverified' as const,
-                code: positiveControl ? ('positive-control-empty' as const) : ('positive-control-not-run' as const),
+                code: positiveControl
+                  ? scalarCountControl
+                    ? ('positive-control-scalar-aggregate' as const)
+                    : ('positive-control-empty' as const)
+                  : ('positive-control-not-run' as const),
               }
           : undefined;
       const positiveControlAdvisory =
-        result.rowCount === 0 && absence?.status === 'unverified'
+        scalarCountControl
+          ? '⚠ absence unverified: positiveControlSql is an ungrouped scalar COUNT aggregate. It returns a row even when no source rows match, so it cannot validate this absence; use a known-positive row-returning SELECT through the same table/scope/instrument.'
+          : result.rowCount === 0 && absence?.status === 'unverified'
           ? positiveControl
             ? '⚠ absence unverified: positiveControlSql also returned 0 rows, so the instrument/scope has not been shown capable of finding a known-positive row.'
             : '⚠ absence unverified: rowCount is 0 and no positiveControlSql was run. Re-run with a known-positive SELECT through the same table/scope/instrument before treating this as evidence of absence.'
