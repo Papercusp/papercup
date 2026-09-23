@@ -278,8 +278,9 @@ export interface AcceptanceBarTrace {
   proof: {
     state: 'current' | 'stale' | 'missing' | 'truncated';
     history?: Array<Pick<AcceptanceBarEvidenceSource,
-      'id' | 'workItemId' | 'specId' | 'specRevision' | 'currentRevision' | 'specFingerprint' | 'evidenceKind' |
+      'id' | 'workItemId' | 'specId' | 'specRevision' | 'specFingerprint' | 'evidenceKind' |
       'evidenceRef' | 'testRunId' | 'observedAt' | 'createdBy' | 'details' | 'currentness'> & {
+        currentRevision?: number;
         matchesCurrentSpec: boolean;
         activeAttempt?: boolean;
       }>;
