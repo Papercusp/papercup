@@ -65,7 +65,6 @@ function status(kind: DirectiveStatus['kind'], over: Partial<DirectiveStatus> = 
     kind,
     holders: [],
     activeWorkItemIds: [],
-    captureLagging: false,
     workedButUndispositioned: false,
     ...over,
   };
@@ -74,7 +73,6 @@ function status(kind: DirectiveStatus['kind'], over: Partial<DirectiveStatus> = 
 function directive(over: Partial<OrientationOwnerDirective> = {}): OrientationOwnerDirective {
   return {
     id: 17,
-    captureStatus: 'pending',
     verbatimText: 'green the gate before you refactor it',
     recordedBy: ME,
     capturedByHook: true,
@@ -93,18 +91,12 @@ function lines(...directives: OrientationOwnerDirective[]): string[] {
 
 describe('P-007 owner-directive buckets', () => {
   describe('bucket 1 — addressed to ME, so carry it out', () => {
-    it('a PENDING capture asks for resolve-pending first, because the row is not yet promoted', () => {
-      expect(lines(directive({ captureStatus: 'pending' }))[0]).toContain(
-        'YOURS — orders:resolve-pending, then carry out.',
-      );
-    });
-
-    it('an OPEN capture is already promoted, so it asks for disposition AFTER the work', () => {
-      const [line] = lines(directive({ captureStatus: 'open' }));
-      expect(line).toContain('YOURS — carry out, then orders:disposition.');
-      // The two mine-branches must not collapse into each other: an already
-      // promoted row re-asking for resolve-pending is the nag D-007 describes.
-      expect(line).not.toContain('orders:resolve-pending');
+    it('a captured owner turn is open at once, so it asks for disposition AFTER the work — no triage verb', () => {
+      const [line] = lines(directive());
+      expect(line).toContain('YOURS · owner directive #17');
+      expect(line).toContain('carry out, then orders:disposition { id: 17, status, note }.');
+      // D-001: there is no promote/dismiss step left to ask for.
+      expect(line).not.toMatch(/resolve-pending|promote|dismiss/);
     });
   });
 
@@ -134,7 +126,7 @@ describe('P-007 owner-directive buckets', () => {
           status: status('claimed', { claimedBy: 'su-14342fa6-a88a', holders: ['su-14342fa6-a88a'] }),
         }),
       );
-      expect(line).toContain('FYI only, do not act or resolve.');
+      expect(line).toContain('awareness only, already taken; do not act on or resolve it.');
       // 12-char truncation, same convention as the addressee handle: the holder
       // is NAMED (so the reader can go ask them) but not at full length.
       expect(line).toContain('claimed by su-14342fa6-');
@@ -167,24 +159,14 @@ describe('P-007 owner-directive buckets', () => {
   });
 
   describe('D-007 — a settled directive renders in NO imperative bucket', () => {
-    it('a DONE directive produces no row, even while its capture still reads pending', () => {
-      // The measured #86/#87 shape: dispositionStatus done while captureStatus
-      // is still pending, which made the banner nag [DUE] forever while
-      // orders:resolve-pending refused the row as not_pending.
-      expect(
-        lines(
-          directive({
-            captureStatus: 'pending',
-            status: status('done', { terminalSource: 'disposition', captureLagging: true }),
-          }),
-        ),
-      ).toEqual([]);
+    it('a DONE directive produces no row', () => {
+      // The measured #86/#87 shape was a finished directive that kept nagging
+      // [DUE]; only OPEN directives are injected (D-002).
+      expect(lines(directive({ status: status('done') }))).toEqual([]);
     });
 
     it('a DECLINED directive produces no row', () => {
-      expect(
-        lines(directive({ status: status('declined', { terminalSource: 'capture-dismissed' }) })),
-      ).toEqual([]);
+      expect(lines(directive({ status: status('declined') }))).toEqual([]);
     });
 
     it('CALIBRATION — the same fixture WITHOUT a terminal status does render', () => {

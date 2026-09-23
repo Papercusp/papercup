@@ -178,9 +178,9 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       carryBlindWindow: async () => null,
       contextEpoch: async () => epoch,
     };
-    const deliver = (budgetChars: number) => buildTurnStartOrientationBlock({
+    const deliver = async (budgetChars: number) => (await buildTurnStartOrientationBlock({
       ownerId: OWNER, workspaceId: WS, budgetChars, deps,
-    });
+    })).block;
     const cursor = async () => {
       const rows = await fx.admin`
         SELECT committed, pending FROM harness_shared.coord_read_cursors
