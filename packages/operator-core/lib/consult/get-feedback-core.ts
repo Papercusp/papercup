@@ -197,43 +197,36 @@ export interface GetFeedbackDeps {
     harness_slug?: string;
     direct_to: string[];
   }) => Promise<{ conversation_id: string; thread_id: string; delivered: number }>;
-  /** Directed ping + wake on the conversation (bound to notifyAgents in prod).
-   * `queued` is durable wake delivery, not proof of turn pickup. */
+  /**
+   * DELIVERY — get `responder`'s knowledge ANSWERING, by forking or converting
+   * their session (prod binds `makeConsultReachDispatcher`; D-002/D-010).
+   *
+   * ⚠ This seam used to mean "directed ping + wake" and no longer does. A
+   * consult never messages a live agent: `responder` names the expert whose
+   * TRANSCRIPT answers, and a non-zero `queued` means an answering session was
+   * launched from it. Zero means the whole ranked allowlist was exhausted for
+   * that expert, which this core treats as "advance to the next selectee".
+   *
+   * `answeringOwnerId` is the identity that will actually post. It differs from
+   * `responder` on a FORK (psu mints — here, pre-pins — a new coord id so the
+   * fork cannot collide with a still-live original) and equals it on a
+   * conversion. The core persists it so the answering session's first
+   * `consult:reply` has a participant gate to pass.
+   */
   reach: (opts: {
     responder: string;
     conversationId: string;
     summary: string;
     body: string;
   }) => Promise<{
-    /** Durable wake deliveries queued; not execution-confirmed. */
+    /** Answering sessions launched (0 or 1). Legacy bindings report `woke`. */
     queued?: number;
-    /** Legacy queue-count alias retained by older reach bindings. */
+    /** Execution-confirmed: a launch whose kickoff persisted AND whose host registered. */
     woke?: number;
-    /** True only after a later execution-confirming handshake. */
     pickupConfirmed?: boolean;
+    /** Who will post — the fork's new identity, or the source on a conversion. */
+    answeringOwnerId?: string | null;
   }>;
-  /**
-   * Fresh liveness read after a queued wake with no execution-confirming
-   * handshake. Bound to the shared liveness oracle in production. The read is
-   * deliberately optional so PG-free callers retain the durable queued-wake
-   * contract; failures/unknown are fail-soft and must not cascade.
-   */
-  postQueueLiveness?: (ownerId: string) => Promise<PostQueueLiveness | null | undefined>;
-  /** WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
-   * retrieval-only]: carry-respawn a DEAD expert's session (headless resume —
-   * the resumed session re-attaches its ORIGINAL coord identity) with `brief`
-   * delivered as its first turn. Optional: absent keeps the D-008 §5
-   * retrieval-only behavior exactly. MUST resolve (never throw) with
-   * spawned:false on any failure — the core then falls back to the
-   * pre-revival selection outcome. `verified` is three-state like the launch
-   * verifier (D-004): true = a live host registered; null = still booting
-   * within the wait window (NOT a failure — the cascade expiry guards the
-   * reply); spawned:false makes it meaningless. */
-  revive?: (opts: {
-    ownerId: string;
-    conversationId: string;
-    brief: string;
-  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string; reason?: 'live-collision' }>;
   now?: () => Date;
 }
 
@@ -258,7 +251,7 @@ export interface GetFeedbackResult {
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
    * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
    * other two accompany `no_qualified_responder`. */
-  reason?: 'below_floor' | 'no_live_responder' | 'embed_unavailable';
+  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
@@ -271,10 +264,10 @@ export interface GetFeedbackResult {
    * reply as a first-principles review). Null when no responder. */
   responder_via: SelectionVia | null;
   /** The rest of the SELECTED cascade menu, best first. The SERVER drains
-   * this menu itself (D-005 always-advance: reply/decline/expiry wake the
+   * this menu itself (D-005 always-advance: reply/decline/expiry dispatch the
    * next selectee); returned as retrieval refs, not a re-call worklist. On
-   * no_live_responder it falls back to the (dead) floor-qualified candidates
-   * so the retrieval path keeps its refs. */
+   * no_available_responder it falls back to the floor-qualified candidates so
+   * the retrieval path keeps its refs. */
   remaining_candidates: Array<{
     ownerId: string;
     score: number;
@@ -285,28 +278,31 @@ export interface GetFeedbackResult {
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
   expires_at: string | null;
+  /** D-002: no agent is woken, so these count ANSWERING-SESSION LAUNCHES. The
+   *  field keeps its name because every consumer reads it as "did delivery
+   *  happen", which is still exactly what it answers. */
   wake: {
     attempted: boolean;
-    /** Durable wake deliveries queued; this does not prove a turn started. */
+    /** Answering sessions launched for this consult (0 or 1). */
     queued: number;
-    /** Execution-confirmed turn pickups; remains 0 until the reach seam proves pickup. */
+    /** Launches whose kickoff persisted AND whose host registered — a started turn. */
     woke: number;
-    /** Whether a later execution-confirming handshake proved turn pickup. */
+    /** Whether that registration was observed within the dispatch wait window. */
     pickupConfirmed: boolean;
   };
   /** Latched park key for a hard-blocked requester (P-004 reply verbs emit). */
   park_key: string | null;
-  /** WI-39852: present when a revival was attempted this consult (cap 1).
-   * 'dead-preempt' = a dead above-floor expert beat a live below-floor fill /
-   * an unfillable minimum; 'wake-failed' = the chosen live-read responder's
-   * wake reached nobody (false-parked zombie) and was treated as dead. */
-  revival?: {
-    ownerId: string;
-    trigger: 'dead-preempt' | 'wake-failed';
-    spawned: boolean;
+  /** D-002 dispatch provenance: HOW the answer is being produced. The identity
+   *  that will post differs from `responder` on a fork — `responder` names whose
+   *  KNOWLEDGE was routed, `answering_owner_id` names who reasons over it. */
+  dispatch?: {
+    sourceOwnerId: string;
+    answeringOwnerId: string | null;
+    operation: 'fork' | 'convert' | null;
+    agent: string | null;
+    model: string | null;
     verified: boolean | null;
     detail: string;
-    reason?: 'live-collision';
   };
   /** P-006 archive-serve provenance — present only on served_from_archive. */
   archive?: {
@@ -1095,16 +1091,18 @@ export async function getFeedbackCore(
     allCandidates: route.snapshot.candidates,
     min: minResponders,
     max: maxResponders,
-    // warmIdle is deliberately distinct from "dead": a parked owner with a
-    // fresh heartbeat may still wake, but a long-silent owner must not consume
-    // the minimum-fill slot ahead of a live cascade candidate. Fresh parked
-    // responders remain selectable. An active owner pause is a separate,
-    // authoritative stop signal: it must suppress delivery even when the
-    // session's liveness oracle still reports it as live or parked.
-    isSelectable: (c) =>
-      !UNSELECTABLE_RESPONDER_STATES.has(c.liveness) &&
-      !(c.liveness === 'parked' && c.warmIdle === true) &&
-      c.ownerPaused !== true,
+    // D-002 REMOVED THE LIVENESS GATE. Delivery no longer needs the expert's
+    // session to be reachable — it forks or converts their TRANSCRIPT — so
+    // `ended`/`recorded`/`parked`/`warmIdle` stopped being reasons to pass over
+    // the best-matched expert. That gate existed only because delivery was a
+    // wake, and keeping it would now discard the best expert for a property
+    // dispatch does not depend on.
+    //
+    // An owner PAUSE is different in kind and stays: it is an authoritative
+    // "leave this identity alone" that the oracle reports independently of
+    // liveness, and a fork still spends that identity's transcript and fleet
+    // budget on work its owner has stood down.
+    isSelectable: (c) => c.ownerPaused !== true,
   });
   route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   const chosenSel = selected[0] ?? null;
@@ -1129,71 +1127,40 @@ export async function getFeedbackCore(
     );
     route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   }
-  // 3b) WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
-  //     retrieval-only]: a DEAD above-floor expert beats a live below-floor
-  //     minimum-fill AND beats an unfilled minimum. With a `revive` dep bound,
-  //     the top dead floor-qualified candidate is carry-respawned (headless
-  //     resume, cap MAX_REVIVALS_PER_CONSULT) and takes the head of the menu;
-  //     absent dep ⇒ exactly the old D-008 §5 retrieval-only behavior.
-  //
-  //     The consult row is persisted BEFORE the revive call. The revived
-  //     process receives its kickoff as its first turn and can issue
-  //     consult:reply before the reviver's host-registration wait returns;
-  //     a missing or provisional row therefore turns a valid first turn into
-  //     not_a_consult/not_a_participant. A provisional revived-first row gives
-  //     that turn a durable responder/selection gate. A failed spawn restores
-  //     the pre-revival selection before the normal wake.
-  const revive = deps.revive;
-  // A fresh parked minimum-fill candidate is already wakeable. Prefer that
-  // reachable fallback over reviving a higher-scoring dead expert: dead
-  // preemption is reserved for an unfilled minimum or a live below-floor pick,
-  // not a candidate the normal wake path can already reach.
-  const wakeableParkedMinimum =
-    chosenVia === 'minimum' &&
-    chosen?.liveness === 'parked' &&
-    chosen.warmIdle !== true &&
-    chosen.ownerPaused !== true;
-  const revivalCandidate =
-    revive && (!chosen || (chosenVia === 'minimum' && !wakeableParkedMinimum))
-      ? (route.qualified.find(
-          (c) => DEAD_RESPONDER_STATES.has(c.liveness) && !lineageOwners.includes(c.ownerId),
-        ) ?? null)
-      : null;
-  const revivalPending = Boolean(
-    revivalCandidate && revive && !revivalBudgetSpent(route.snapshot.selection?.selected),
-  );
-  const provisionalSelected = revivalPending
-    ? [{ candidate: revivalCandidate!, via: 'floor' as SelectionVia }, ...selected].slice(0, maxResponders)
-    : selected;
-  if (revivalPending) {
-    route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, provisionalSelected);
-    const pendingHead = route.snapshot.selection.selected[0];
-    if (pendingHead) pendingHead.revivalPending = true;
-  }
+  // 3b) D-002 retired the whole revival apparatus that used to live here. A
+  //     "dead above-floor expert beats a live below-floor fill" preemption only
+  //     made sense while delivery was a WAKE and death meant unreachable; the
+  //     dispatcher forks or converts the transcript either way, so the best
+  //     expert is simply the best expert and there is no liveness trade to make,
+  //     no per-consult revival budget to spend, and no live-collision case.
+  const provisionalSelected = selected;
 
   // 5) Open the conversation — ALWAYS (D-003 honesty feed + the PK row).
-  //    direct_to covers both the planned recipient and the fallback (a dead
-  //    recipient never sees the ping — the revival brief is their delivery).
+  //     ⚠ `direct_to` is EMPTY on purpose: openConversation fans a notification
+  //     out to its addressees, so naming the expert here would message a live
+  //     agent through the back door the wake seam just stopped using. Nobody
+  //     needs the subscription anyway — appendPost auto-joins a contributor, so
+  //     the answering session can post without being enrolled first.
   const opened = await deps.open({
     kind: 'consult',
     title: consultTitle(req.question),
     body: consultBody(req),
     ...(req.topics?.length ? { topics: req.topics } : {}),
     ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}),
-    direct_to: [
-      ...new Set([revivalCandidate?.ownerId, chosen?.ownerId].filter((o): o is string => Boolean(o))),
-    ],
+    direct_to: [],
   });
 
-  // The row is inserted before revival so the revived first turn has a
-  // consult_state participant gate to pass. When revival is pending, the
-  // provisional row points at the candidate that the kickoff will answer as;
-  // a failed spawn is repaired below before the fallback wake.
-  let revival: GetFeedbackResult['revival'] | undefined;
+  // The row is inserted BEFORE dispatch, and that ordering is load-bearing: the
+  // launched session receives its brief as its FIRST turn and can issue
+  // consult:reply before the dispatcher's host-registration wait even returns.
+  // A missing row turns that valid first turn into not_a_consult; a row without
+  // the answering identity turns it into not_a_participant. So the row lands
+  // first with the routed expert as its responder, and the answering identity is
+  // stamped onto the selection the moment dispatch reports it.
+  let dispatchProvenance: GetFeedbackResult['dispatch'] | undefined;
   let finalSelected = provisionalSelected;
-  let finalChosen = revivalPending ? revivalCandidate : chosen;
-  let finalChosenVia = revivalPending ? ('floor' as SelectionVia) : chosenVia;
-  let revivalFirstTurnObserved = false;
+  let finalChosen = chosen;
+  let finalChosenVia = chosenVia;
   const provisionalState: GetFeedbackResult['state'] = finalChosen
     ? 'awaiting_responder'
     : 'no_qualified_responder';
