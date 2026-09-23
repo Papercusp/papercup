@@ -95,6 +95,15 @@ export interface HostedDesktopBackendDeps {
    * Undefined means the desktop runs but has no row, so nothing can resolve it.
    */
   ensureDesktop: () => Promise<string | undefined>;
+  /**
+   * Retire registry rows no live lease backs — `reconcileLocalDesktopSessions` as
+   * sole owner. Run once, before the first roster or start: a row a previous
+   * operator incarnation left `ready` (a reboot, an upgrade's new boot disk, a plain
+   * restart) otherwise shows in the picker as openable AND blocks the next desktop's
+   * row on the live scope/display unique indexes, so `start` answers null
+   * (WI-10002797). A failure is warned and retried on the next call.
+   */
+  reconcile?: () => Promise<number>;
   /** Override the capture directory (tests, or a pack that relocates it). */
   captureDir?: string;
   /** Override the KasmVNC websocket path. */
@@ -342,6 +351,21 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
   const now = deps.now ?? Date.now;
   const warn = deps.onWarning ?? (() => {});
 
+  let reconciled: Promise<void> | null = null;
+  const reconcileOnce = (): Promise<void> => {
+    if (!deps.reconcile) return Promise.resolve();
+    reconciled ??= deps.reconcile().then(
+      (reaped) => {
+        if (reaped > 0) warn(`hosted-desktop-backend — retired ${reaped} desktop row(s) no live lease backs`);
+      },
+      (error) => {
+        reconciled = null;
+        warn(`hosted-desktop-backend — desktop reconcile failed: ${String(error)}`);
+      },
+    );
+    return reconciled;
+  };
+
   const displayFor = async (desktopSessionId: string): Promise<number | null> => {
     const leased = displayNumber(deps.leasedDesktop(desktopSessionId)?.display);
     if (leased !== null) return leased;
@@ -378,15 +402,23 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
     },
 
     async roster(): Promise<HostedDesktopRosterEntry[]> {
+      await reconcileOnce();
       return (await deps.listSessions()).map(rosterEntryForSession);
     },
 
     async start(): Promise<HostedDesktopRosterEntry | null> {
+      await reconcileOnce();
       const desktopSessionId = await deps.ensureDesktop();
       // Served only when BOTH halves hold: the row names it, and this process holds
       // the live lease `lookup` dials through. Either alone gives the viewer an id
       // that fails at open as `desktop_session_unknown`.
-      if (!desktopSessionId || !deps.leasedDesktop(desktopSessionId)) return null;
+      if (!desktopSessionId) {
+        // The lease's registry write is best-effort and swallows its own failure, so
+        // this line is the only trace of a desktop that runs but cannot be named.
+        warn('hosted-desktop-backend — desktop.start: the desktop has no registry row');
+        return null;
+      }
+      if (!deps.leasedDesktop(desktopSessionId)) return null;
       const session = (await deps.listSessions()).find((entry) => entry.id === desktopSessionId);
       return session ? rosterEntryForSession(session) : null;
     },

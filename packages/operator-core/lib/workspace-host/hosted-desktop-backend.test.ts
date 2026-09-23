@@ -324,6 +324,51 @@ describe('createHostedDesktopBackend', () => {
     expect(await backend({ listSessions: async () => [] }).start()).toBeNull();
   });
 
+  // WI-10002797: after an upgrade the pre-upgrade row still read `ready`, blocked the
+  // new desktop's row, and `start` answered null. Reconcile must precede the ensure.
+  it('reconciles stale rows ONCE, before the first start or roster touches the registry', async () => {
+    const order: string[] = [];
+    const reconcile = vi.fn(async () => {
+      order.push('reconcile');
+      return 1;
+    });
+    const b = backend({
+      reconcile,
+      ensureDesktop: async () => {
+        order.push('ensure');
+        return 'ds_1';
+      },
+      listSessions: async () => {
+        order.push('list');
+        return [session()];
+      },
+    });
+    await b.roster();
+    await b.start();
+    expect(order).toEqual(['reconcile', 'list', 'ensure', 'list']);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed reconcile is warned and retried on the next call, and never blocks start', async () => {
+    const warnings: string[] = [];
+    const reconcile = vi
+      .fn<() => Promise<number>>()
+      .mockRejectedValueOnce(new Error('pg down'))
+      .mockResolvedValueOnce(0);
+    const b = backend({ reconcile, onWarning: (m) => warnings.push(m) });
+    expect(await b.start()).toMatchObject({ desktopSessionId: 'ds_1' });
+    expect(warnings.some((w) => w.includes('reconcile failed'))).toBe(true);
+    await b.roster();
+    await b.roster();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it('warns when the desktop runs but has no registry row — the failure that was silent', async () => {
+    const warnings: string[] = [];
+    expect(await backend({ ensureDesktop: async () => undefined, onWarning: (m) => warnings.push(m) }).start()).toBeNull();
+    expect(warnings).toEqual(['hosted-desktop-backend — desktop.start: the desktop has no registry row']);
+  });
+
   it('start propagates a provisioning failure so the relay reports it', async () => {
     await expect(
       backend({
