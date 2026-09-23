@@ -46,6 +46,7 @@ const OPTS = {
   sourceOwnerId: 'su-expert',
   conversationId: 'conv-d-1',
   brief: '🧭 CONSULT — answer this.',
+  evidence: [{ session_id: 'sess-1', turn_idx: 1, sim: 0.8 }],
 };
 
 /** Only claude+codex ranks, so a three-step walk fits in one readable assertion. */
@@ -195,7 +196,8 @@ describe('dispatchConsultResponder — the fork leg', () => {
 
     // The brief rides the ENV (never the greeting one-liner), the launch lands in
     // the source's recorded cwd, and the task is keyed to the ANSWERING identity.
-    expect(calls.spawn[0]!.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toBe(OPTS.brief);
+    expect(calls.spawn[0]!.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain(OPTS.brief);
+    expect(calls.spawn[0]!.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('EXACT TRANSCRIPT EVIDENCE: sess-1#1');
     expect(calls.spawn[0]!.envelope.env.BASE).toBe('1');
     expect(calls.spawn[0]!.envelope.cwd).toBe('/recorded/cwd');
     expect(calls.spawn[0]!.coordOwnerId).toBe('su-answer-1');
@@ -235,6 +237,17 @@ describe('dispatchConsultResponder — the fork leg', () => {
       deps,
     );
     expect(seen).toEqual(['convert']);
+  });
+
+  it('refuses cross-backend conversion when no exact matched transcript turns exist', async () => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }] as AllowedExpertModel[],
+    });
+    const result = await dispatchConsultResponder({ ...OPTS, evidence: undefined }, CTX, deps);
+
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts).toMatchObject([{ reason: 'evidence-span-unavailable' }]);
+    expect(calls.spawn).toHaveLength(0);
   });
 });
 
@@ -310,7 +323,7 @@ describe('dispatchConsultResponder — the walk', () => {
       { loadRanks: async () => [...RANKS, { rank: 3, agent: 'omp', model: 'grok' }] as AllowedExpertModel[] },
       { source: { agent: 'omp', ompThreadId: 'thr-1', sessionId: null, resumeId: '9' } },
     );
-    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    const r = await dispatchConsultResponder({ ...OPTS, evidence: undefined }, CTX, deps);
     expect(r.dispatched).toBe(false);
     expect(r.attempts.map((a) => [a.agent, a.reason])).toEqual([
       ['claude', 'conversion-unavailable'],
