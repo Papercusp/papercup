@@ -17,6 +17,18 @@ describe('lintOwnerQuestionSlots', () => {
     expect(
       lintOwnerQuestionSlots('Finished the migration; 12/12 tests green; docs update next wake.').flagged,
     ).toBe(false);
+    expect(
+      lintOwnerQuestionSlots(
+        'VERIFY RUN IS GENUINELY IN FLIGHT against repairHead ecf20af2 - confirmed by direct OS measurement, not a status surface. pid 3000039 vitest run --passWithNoTests in papercusp-checkpoint at 7m11s/30',
+      ).flagged,
+    ).toBe(false);
+  });
+
+  it('treats explicit empty owner-wait status values as negative without masking a real wait', () => {
+    expect(
+      lintOwnerQuestionSlots('Owner-facing open threads: NONE. Waiting on owner: NOTHING.').flagged,
+    ).toBe(false);
+    expect(lintOwnerQuestionSlots('Waiting on owner: decide whether the release is safe.').flagged).toBe(true);
   });
 
   it('flags "need to ask the owner" / "question for the owner" prose', () => {

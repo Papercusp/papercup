@@ -1841,6 +1841,40 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(liveLockHoldingsStrictMock).toHaveBeenCalledTimes(2);
   });
 
+  it('P-009 / WI-10002596: a NESTED install maps parent-root lock paths into its own repo root (initial read and refresh)', async () => {
+    const parentRepo = join(tmpRoot, 'parent-repo');
+    const childRepo = join(parentRepo, 'libs', 'child');
+    mkdirSync(join(parentRepo, '.git'), { recursive: true });
+    mkdirSync(join(childRepo, '.git'), { recursive: true });
+    registryProjects = [
+      { slug: 'papercup', path: parentRepo },
+      { slug: 'papercup/libs/child', path: childRepo },
+    ];
+    const held = { path: 'libs/child/src/probe.ts', owner: 'su-prober', intent: 'mutation probe' };
+    const elsewhere = { path: 'packages/other.ts', owner: 'su-peer', intent: 'unrelated file in the parent' };
+    liveLockHoldingsStrictMock.mockResolvedValue([held, elsewhere]);
+    let observedRefresh: unknown;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      observedRefresh = await (opts.refreshLiveLockHoldings as () => Promise<unknown>)();
+      return {
+        status: 'nothing',
+        dirtyPathCount: 0,
+        committedCount: 0,
+        oversized: [],
+        contentErrors: [],
+        strandedSubmodules: [],
+      };
+    });
+
+    await fireGitSyncNow('papercup/libs/child', 'ws-42', childRepo);
+
+    // Unmapped, 'libs/child/src/probe.ts' matches nothing inside the child repo and the locked
+    // file is committed; mapped, it is excluded as 'src/probe.ts'.
+    const mapped = [{ ...held, path: 'src/probe.ts' }];
+    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ excludePaths: ['src/probe.ts'], liveLockHoldings: mapped });
+    expect(observedRefresh).toEqual(mapped);
+  });
+
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {
     let firstRunStarted!: () => void;
     const firstRunStartedPromise = new Promise<void>((resolve) => {

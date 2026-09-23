@@ -5,6 +5,7 @@ import {
   selectReconcilableConditions,
   selectAbsentConditions,
   readInfraLivenessHealthFromSharedSnapshot,
+  hasFreshSuccessfulGitSyncCompletion,
   verifiedGitSyncHealth,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
@@ -47,6 +48,61 @@ function mkHealthySystemHealth(): SystemHealth {
     panels,
   };
 }
+
+describe('git-sync recovery verification', () => {
+  const now = Date.parse('2026-09-23T07:00:00.000Z');
+  const fresh = { status: 'fresh', age_ms: 30_000, stale_after_ms: 9 * 60_000 };
+  const liveEngine = { stale: false, unknown: false };
+
+  it('only verifies a recent whole-fire success', () => {
+    const activity = {
+      active: false,
+      phase: 'complete',
+      completed_at: now - 20_000,
+      outcome_status: 'synced',
+    };
+    expect(hasFreshSuccessfulGitSyncCompletion(activity, fresh, now)).toBe(true);
+    expect(verifiedGitSyncHealth({ stalled: false }, liveEngine, true)).toBe(true);
+  });
+
+  it('does not clear a stall from an in-flight fire and an old local-sync receipt', () => {
+    const activity = {
+      active: true,
+      phase: 'local-sync',
+      completed_at: null,
+      outcome_status: null,
+    };
+    const staleReceipt = {
+      status: 'degraded',
+      age_ms: 57 * 60_000,
+      stale_after_ms: 9 * 60_000,
+    };
+    const freshProof = hasFreshSuccessfulGitSyncCompletion(activity, staleReceipt, now);
+    expect(freshProof).toBe(false);
+    expect(verifiedGitSyncHealth({ stalled: false }, liveEngine, freshProof)).toBeUndefined();
+  });
+
+  it('does not treat skipped or failed outcomes as recovery even when an older receipt is fresh', () => {
+    const skipped = {
+      active: false,
+      phase: 'complete',
+      completed_at: now - 20_000,
+      outcome_status: 'skipped-locked',
+    };
+    expect(hasFreshSuccessfulGitSyncCompletion(skipped, fresh, now)).toBe(false);
+  });
+
+  it('keeps a stalled watchdog verdict unhealthy after a fresh successful completion', () => {
+    const activity = {
+      active: false,
+      phase: 'complete',
+      completed_at: now - 20_000,
+      outcome_status: 'nothing',
+    };
+    expect(hasFreshSuccessfulGitSyncCompletion(activity, fresh, now)).toBe(true);
+    expect(verifiedGitSyncHealth({ stalled: true }, liveEngine, true)).toBe(false);
+  });
+});
 
 describe('readInfraLivenessHealthFromSharedSnapshot', () => {
   const key = 'infra-liveness:panel:overwatch';
@@ -151,6 +207,7 @@ describe('verifiedGitSyncHealth', () => {
       verifiedGitSyncHealth(
         { stalled: false },
         { stale: true, unknown: false },
+        true,
       ),
     ).toBeUndefined();
   });
@@ -160,13 +217,15 @@ describe('verifiedGitSyncHealth', () => {
       verifiedGitSyncHealth(
         { stalled: false },
         { stale: false, unknown: true },
+        true,
       ),
     ).toBeUndefined();
   });
 
-  it('returns the stall verdict only when routine-engine liveness is current', () => {
-    expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false })).toBe(true);
-    expect(verifiedGitSyncHealth({ stalled: true }, { stale: false, unknown: false })).toBe(false);
+  it('returns the stall verdict only when routine-engine liveness and completion proof are current', () => {
+    expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false }, true)).toBe(true);
+    expect(verifiedGitSyncHealth({ stalled: true }, { stale: false, unknown: false }, true)).toBe(false);
+    expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false }, false)).toBeUndefined();
   });
 });
 

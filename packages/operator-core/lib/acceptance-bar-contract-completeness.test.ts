@@ -1,0 +1,83 @@
+import { describe, expect, it } from 'vitest';
+import {
+  acceptanceBarContractGaps,
+  checkFileTestLayers,
+  isExplicitlyManualCheck,
+  type AcceptanceBarContractGapInput,
+} from './acceptance-bar-contract-completeness';
+
+const complete: AcceptanceBarContractGapInput = {
+  role: 'outcome',
+  method: 'Run the focused proof and read its verdict.',
+  check: { kind: 'tests', files: ['packages/operator-core/lib/foo.integration.test.ts'] },
+  requiredTestLayers: ['integration'],
+  automatedProofRequired: true,
+};
+
+const gapsOf = (input: Partial<AcceptanceBarContractGapInput>) =>
+  acceptanceBarContractGaps({ ...complete, ...input }).map((finding) => finding.gap);
+
+describe('checkFileTestLayers — the repo test taxonomy, from the path alone', () => {
+  it('classifies each canonical framework and refuses to guess for non-test paths', () => {
+    expect([...checkFileTestLayers('lib/a.test.ts')!]).toEqual(['unit']);
+    expect([...checkFileTestLayers('lib/a.integration.test.ts')!]).toEqual(['integration']);
+    expect([...checkFileTestLayers('lib/a.browser.test.tsx')!]).toEqual(['browser']);
+    expect([...checkFileTestLayers('apps/operator/e2e/flow.spec.ts')!]).toEqual(['e2e']);
+    expect([...checkFileTestLayers('lib/llm-testing/scenarios/su/a.test.ts')!].sort()).toEqual(['llm', 'unit']);
+    expect(checkFileTestLayers('lib/a.ts')).toBeNull();
+  });
+});
+
+describe('acceptanceBarContractGaps', () => {
+  it('passes a complete contract', () => {
+    expect(gapsOf({})).toEqual([]);
+  });
+
+  it('names METHOD, check and layers separately — the late-amendment shape of an unrefined seed', () => {
+    expect(gapsOf({ method: '  ', check: undefined, requiredTestLayers: undefined })).toEqual([
+      'method_missing',
+      'check_missing',
+      'test_layers_missing',
+    ]);
+  });
+
+  it('demands layers only from an outcome that owes automated proof', () => {
+    expect(gapsOf({ requiredTestLayers: [], automatedProofRequired: false })).toEqual([]);
+    expect(gapsOf({ requiredTestLayers: [], role: 'disclosure' })).toEqual([]);
+  });
+
+  // docs/evidence/review-system-time-audit-2026-09-23.md: R-6 declared integration while
+  // its check named a string-level unit test, and nothing flagged it until vetting.
+  it('refuses a check file that cannot satisfy a declared layer (the R-6 shape)', () => {
+    const findings = acceptanceBarContractGaps({
+      ...complete,
+      check: { kind: 'tests', files: ['lib/foo.test.ts'] },
+    });
+    expect(findings.map((finding) => finding.gap)).toEqual(['check_layer_mismatch']);
+    expect(findings[0]!.detail).toContain('integration');
+    expect(findings[0]!.detail).toContain('lib/foo.test.ts is unit');
+  });
+
+  it('accepts a check whose files jointly cover every declared layer', () => {
+    expect(
+      gapsOf({
+        check: { kind: 'tests', files: ['lib/a.test.ts', 'lib/a.integration.test.ts'] },
+        requiredTestLayers: ['unit', 'integration'],
+      }),
+    ).toEqual([]);
+  });
+
+  it('claims no mismatch when a file or a declared layer has no naming convention', () => {
+    expect(gapsOf({ check: { kind: 'tests', files: ['scripts/probe.mjs'] } })).toEqual([]);
+    expect(gapsOf({ check: { kind: 'tests', files: ['lib/a.test.ts'] }, requiredTestLayers: ['mutation'] })).toEqual([]);
+  });
+
+  // goal-agent-behavior-feedback-2026-09-06 carried seven BARs of exactly this shape.
+  it('refuses an explicitly manual check that still declares test layers', () => {
+    const manual = { kind: 'instrument', instrumentKey: 'none' } as const;
+    expect(isExplicitlyManualCheck(manual)).toBe(true);
+    expect(gapsOf({ check: manual, requiredTestLayers: ['llm', 'e2e'] })).toEqual(['check_layer_mismatch']);
+    // The truly manual BAR (no layers, no automated obligation) is complete.
+    expect(gapsOf({ check: manual, requiredTestLayers: [], automatedProofRequired: false })).toEqual([]);
+  });
+});

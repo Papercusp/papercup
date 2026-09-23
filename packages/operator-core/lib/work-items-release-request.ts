@@ -33,6 +33,9 @@
  *   - holder-declined     → work_items:decline_release_request — the holder explicitly
  *                           pushed back before the deadline: instant resolve, no
  *                           consequence (the requester must escalate manually).
+ *   - holder-progressed   → the deadline sweep observed fresh item progress since the
+ *                           request: the holder responded through work, so no silence
+ *                           consequence fires.
  *   - requester-withdrawn → work_items:withdraw_release_request — the requester
  *                           withdrew before the deadline: instant resolve, no
  *                           consequence.
@@ -53,6 +56,7 @@ export type ReleaseRequestOnSilence = 'reclaim' | 'escalate' | 'nothing';
 export type ReleaseRequestResolution =
   | 'holder-released'
   | 'holder-declined'
+  | 'holder-progressed'
   | 'requester-withdrawn'
   | 'consequence-reclaim'
   | 'consequence-escalate'
@@ -73,6 +77,18 @@ export interface WorkItemReleaseRequest {
   resolved: boolean;
   resolution: ReleaseRequestResolution | null;
   resolvedAt: number | null;
+}
+
+/** A held item's recorded progress after the request was filed is a response: the
+ * announced consequence applies only to silence, so it must not fire later merely
+ * because the holder's session has since parked or gone stale. */
+export function hasWorkItemProgressAfterReleaseRequest(
+  request: WorkItemReleaseRequest,
+  lastProgressAt: string | Date | null,
+): boolean {
+  if (lastProgressAt == null || !Number.isFinite(request.requestedAt)) return false;
+  const progressAt = lastProgressAt instanceof Date ? lastProgressAt.getTime() : Date.parse(lastProgressAt);
+  return Number.isFinite(progressAt) && progressAt > request.requestedAt;
 }
 
 /** Same located-row lookup `setWorkItemClaimHold` uses (work-items.ts) — prefer the
@@ -199,6 +215,8 @@ export async function resolveWorkItemReleaseRequest(
     /** CAS the exact announced deadline too. A requester may refresh their own
      *  request; an old sweep/manual force must never resolve the refreshed row. */
     expectedDeadlineAt?: number;
+    /** CAS the progress snapshot used to decide whether the holder responded. */
+    expectedLastProgressAt?: string | Date | null;
   },
 ): Promise<WorkItemReleaseRequest | null> {
   const { sql } = getOrgPg();
@@ -208,6 +226,7 @@ export async function resolveWorkItemReleaseRequest(
   const expectedBy = opts.expectedBy?.trim() || null;
   const expectedHolder = opts.expectedHolder?.trim() || null;
   const expectedDeadlineAt = Number.isFinite(opts.expectedDeadlineAt) ? opts.expectedDeadlineAt! : null;
+  const checkLastProgressAt = opts.expectedLastProgressAt !== undefined;
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
@@ -229,6 +248,7 @@ export async function resolveWorkItemReleaseRequest(
        AND (${expectedBy}::text IS NULL OR payload->>'release_request_by' = ${expectedBy})
        AND (${expectedHolder}::text IS NULL OR payload->>'release_request_holder' = ${expectedHolder})
        AND (${expectedDeadlineAt}::bigint IS NULL OR (payload->>'release_request_deadline_at')::bigint = ${expectedDeadlineAt})
+       AND (NOT ${checkLastProgressAt} OR last_progress_at IS NOT DISTINCT FROM ${opts.expectedLastProgressAt ?? null}::timestamptz)
      RETURNING payload`;
   if (!rows[0]) return null;
   return readWorkItemReleaseRequest(rows[0].payload);

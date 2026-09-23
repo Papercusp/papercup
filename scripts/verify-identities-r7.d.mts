@@ -15,4 +15,17 @@ export function appliesLayer(row: {
     phase: string;
     stack_refs: unknown;
 }, layerRef: string, afterId: number): boolean;
+/**
+ * The page URL a switch starts from. It deliberately carries NO `identityTab`, so the page opens
+ * on its default `library` tab: that is the only tab that renders the `.pc-identities__identity`
+ * rows and the `Inspect identity <id>` buttons the switch clicks. Review then moves to the agent
+ * tab itself. Pinning `identityTab=agent` here made the library assertion unsatisfiable, and it
+ * failed as a DOM timeout that read like a slow page.
+ *
+ * @param {string} owner
+ * @param {string} identityId
+ * @param {number} nonce
+ * @returns {string}
+ */
+export function identitiesUrl(owner: string, identityId: string, nonce: number): string;
 export function main(): Promise<void>;

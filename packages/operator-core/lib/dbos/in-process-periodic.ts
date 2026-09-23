@@ -903,7 +903,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
-    const { findDueReleaseRequests, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
+    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
     const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
@@ -916,6 +916,27 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       const resolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
       if (req.onSilence === 'reclaim') {
+        const holder = row.holderNow ?? req.holder;
+        if (holder === req.holder && hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt)) {
+          const responded = await resolveWorkItemReleaseRequest(row.id, {
+            harness: row.harness ?? undefined,
+            resolution: 'holder-progressed',
+            expectedBy: req.by,
+            expectedHolder: req.holder,
+            expectedDeadlineAt: req.deadlineAt,
+            expectedLastProgressAt: row.lastProgressAt,
+          }).catch(() => null);
+          if (!responded) continue;
+          if (responded.resolution === 'superseded') continue;
+          await commentWorkItem(
+            row.id,
+            `✅ Release request from ${req.by} resolved without reclaim: the holder recorded item progress after the request.`,
+            'release-request-sweep',
+            { harness: row.harness ?? undefined },
+          ).catch(() => {});
+          console.warn(`[release-request-sweep] ${row.id}: reclaim suppressed because the holder made progress after the request`);
+          continue;
+        }
         // EI-21377805080867612: a durable request is not proof its holder saw it.
         // A Codex session can spend the whole deadline inside one long turn while
         // making tool calls; the pty host safely defers mid-turn injection, so the
@@ -924,7 +945,6 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         // activity keeps the claim live and postpones the announced consequence;
         // once the holder truly goes idle/dead, the same still-unresolved request is
         // eligible on a later sweep. Caller authority remains a separate valid basis.
-        const holder = row.holderNow ?? req.holder;
         const releaseVerdict = await assessForceRelease({
           callerOwnerId: req.by,
           holderOwnerId: holder,
@@ -948,6 +968,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         expectedBy: req.by,
         expectedHolder: req.holder,
         expectedDeadlineAt: req.deadlineAt,
+        expectedLastProgressAt: row.lastProgressAt,
       }).catch(() => null);
       if (!resolved) continue;
 

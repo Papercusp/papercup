@@ -219,6 +219,20 @@ describe('assessForceRelease — liveness leg (a)', () => {
     },
   );
 
+  it('EI-23831380926942341: post-request item progress prevents the parked-session reclaim override', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(90_000), releaseRequest: expiredReclaimRequest },
+      deps({
+        holder: { heartbeatAt: iso(10_000), lastActiveAt: iso(10_000), agentRole: 'su' },
+        lastToolInvocationAt: iso(10_000),
+        oracleSessionState: 'parked',
+      }),
+    );
+
+    expect(v.allowed).toBe(false);
+    expect(v.holderLiveness).toMatchObject({ live: true, oracleSessionState: 'parked' });
+  });
+
   it('expired authority is bound to the original requester and holder', async () => {
     const v = await assessForceRelease(
       {

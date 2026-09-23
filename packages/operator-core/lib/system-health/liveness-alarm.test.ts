@@ -49,6 +49,33 @@ function mkHealth(over: {
   };
 }
 
+// P-009 (ex-P-010, EI-22489500008234936): a starved git-sync must alarm on missed intervals,
+// not only at the generic 10 to 20 minute dead-routine window.
+describe('git-sync missed-interval alarm', () => {
+  const withDeploy = (data: Record<string, unknown>) => mkHealth({ panels: { deploy: { data } } });
+
+  it('the threshold is the plan\'s "missed_intervals > 3"', () => {
+    expect(GIT_SYNC_MISSED_INTERVALS_ALARM).toBe(3);
+  });
+
+  it('raises a blocker naming the install once it has missed MORE than the threshold', () => {
+    const sigs = evaluateLivenessAlarm(
+      withDeploy({ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM + 1, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
+      null,
+    );
+    const s = sigs.find((x) => x.key === 'git-sync-missed-intervals');
+    expect(s?.severity).toBe('blocker');
+    expect(s?.summary).toContain('papercusp');
+    expect(s?.summary).toContain(`missed ${GIT_SYNC_MISSED_INTERVALS_ALARM + 1}`);
+  });
+
+  it('is silent at the threshold and when unmeasured', () => {
+    for (const data of [{ gitSyncMaxMissedIntervals: GIT_SYNC_MISSED_INTERVALS_ALARM }, { gitSyncMaxMissedIntervals: null }, {}]) {
+      expect(evaluateLivenessAlarm(withDeploy(data), null).map((x) => x.key)).not.toContain('git-sync-missed-intervals');
+    }
+  });
+});
+
 describe('evaluateLivenessAlarm (pure)', () => {
   it('a healthy snapshot computed fresh (age null) → no signals', () => {
     expect(evaluateLivenessAlarm(mkHealth(), null)).toEqual([]);

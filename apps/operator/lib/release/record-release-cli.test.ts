@@ -27,6 +27,7 @@ import {
   scanProvenancedAndroidArtifactSources,
   validateRecordChangelog,
   validateMobileProductName,
+  type MissingArtifactSlot,
 } from './record-release-cli';
 
 /**
@@ -191,7 +192,10 @@ describe('formatCompletenessAlert — names every missing slot and requires appr
 });
 
 describe('incompleteDesktopScopeRefusal — partial registry scopes require owner approval', () => {
-  const missing = [{ product: 'server' as const, platform: 'darwin-universal' }];
+  // Typed as the canonical slot rather than inferred: `platform` would otherwise
+  // widen to `string` and stop satisfying RequiredDesktopPlatform at every call
+  // site below.
+  const missing: MissingArtifactSlot[] = [{ product: 'server', platform: 'darwin-universal' }];
   const approval: OwnerDirectiveRow = {
     id: 123,
     workspaceId: 'papercusp-workspace',

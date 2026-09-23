@@ -97,6 +97,47 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it('fails atomicity for independently falsifiable outcomes joined across a clause', () => {
+    const behaviors = [
+      'orders:promote and orders:dismiss { reason } exist, dismiss refuses an empty reason, and a dismissed row stays queryable rather than being deleted.',
+      'Every declared orientation category reaches a rendered prompt for a live-shaped session fixture, a build-time guard turns red when any declared category does not render, and a permanent control entry declared but deliberately left unrendered keeps that guard from passing vacuously.',
+      'Class-A rows render exactly once per change and never on an unchanged turn, while class-B rows for walls-with-recheck and waiting-on render every turn until they are discharged.',
+      'Both the engineer and power su prompts carry that instruction in a live launch-context render, guarded by a Vitest test that fails when it is absent and is proven falsifiable against the pre-fix commit.',
+    ];
+    const clauses = behaviors.map((behavior, index) =>
+      clause({
+        specId: 'SPEC-BUNDLED-' + (index + 1),
+        sourceValId: 'VAL-BUNDLED-' + (index + 1),
+        planItemId: 'P-00' + (index + 1),
+        behavior,
+      }),
+    );
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: clauses.map(({ planItemId }) => planItemId),
+      clauses,
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    for (const { specId } of clauses) {
+      expect(result.ratings['atomic-observable-behavior'].evidence).toContain(specId + ':');
+    }
+  });
+
+  it('keeps a single outcome with a while-condition atomic', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'The button remains disabled while a request is pending.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+  });
+
   it('does not count byte-identical behavior text as independent coverage for multiple plan items', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

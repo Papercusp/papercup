@@ -61,6 +61,7 @@ import {
   readRoutineEngineLiveness,
   type RoutineEngineLiveness,
 } from '../release/routine-engine-liveness';
+import { deriveGitSyncFreshness } from '../agent-tools/routines/list';
 import type { SystemHealth } from './types';
 import type { BeesLivenessContext } from './liveness-alarm';
 
@@ -99,6 +100,8 @@ const GIT_SYNC_STALL_PREFIX = 'git-sync-stall:';
 
 interface GitSyncHealthRow {
   install_slug: string;
+  cron: string | null;
+  last_synced_at: string | number | null;
   last_fired_ms: string | number | null;
   head_sha: string | null;
   wd_head_sha: string | null;
@@ -110,6 +113,40 @@ interface GitSyncHealthRow {
   reaped_count: number | null;
   wd_error_sweeps: number | null;
   git_sync_activity: unknown;
+}
+
+/**
+ * A healthy-looking stall verdict is not enough to clear an open git-sync alarm:
+ * the watchdog intentionally reports not-stalled while a new fire is still within
+ * its observation window. Require the whole latest fire to have completed with a
+ * successful outcome, and require that completion plus its last local-sync receipt
+ * to fit inside the routine's canonical cadence-derived freshness window.
+ */
+export function hasFreshSuccessfulGitSyncCompletion(
+  activityValue: unknown,
+  freshness: Record<string, unknown>,
+  now: number,
+): boolean {
+  if (!activityValue || typeof activityValue !== 'object' || Array.isArray(activityValue)) return false;
+  const activity = activityValue as Record<string, unknown>;
+  const completedAt = Number(activity.completed_at);
+  const completionAgeMs = now - completedAt;
+  const lastSyncAgeMs = freshness.age_ms;
+  const staleAfterMs = freshness.stale_after_ms;
+  return activity.active === false &&
+    activity.phase === 'complete' &&
+    Number.isFinite(completedAt) &&
+    completionAgeMs >= 0 &&
+    (activity.outcome_status === 'synced' || activity.outcome_status === 'nothing') &&
+    freshness.status === 'fresh' &&
+    typeof lastSyncAgeMs === 'number' &&
+    Number.isFinite(lastSyncAgeMs) &&
+    lastSyncAgeMs >= 0 &&
+    typeof staleAfterMs === 'number' &&
+    Number.isFinite(staleAfterMs) &&
+    staleAfterMs > 0 &&
+    completionAgeMs <= staleAfterMs &&
+    lastSyncAgeMs <= staleAfterMs;
 }
 
 /**
@@ -125,8 +162,9 @@ interface GitSyncHealthRow {
 export function verifiedGitSyncHealth(
   verdict: Pick<GitSyncStallVerdict, 'stalled'>,
   routineEngine: Pick<RoutineEngineLiveness, 'stale' | 'unknown'>,
+  freshSuccessfulCompletion: boolean,
 ): boolean | undefined {
-  if (routineEngine.unknown || routineEngine.stale) return undefined;
+  if (routineEngine.unknown || routineEngine.stale || !freshSuccessfulCompletion) return undefined;
   return !verdict.stalled;
 }
 
@@ -158,6 +196,8 @@ async function defaultReadGitSyncHealth(
     const [rows, routineEngine] = await Promise.all([
       sql<GitSyncHealthRow[]>`
         SELECT install_slug,
+               trigger_config->>'cron' AS cron,
+               metadata->>'last_synced_at' AS last_synced_at,
                extract(epoch from last_fired_at) * 1000 AS last_fired_ms,
                COALESCE(metadata->>'local_sync_head_sha', metadata->>'head_sha') AS head_sha,
                metadata->>'wd_head_sha' AS wd_head_sha,
@@ -219,7 +259,18 @@ async function defaultReadGitSyncHealth(
         },
         now,
       );
-      const healthy = verifiedGitSyncHealth(verdict, routineEngine);
+      const freshness = deriveGitSyncFreshness(
+        { last_synced_at: row.last_synced_at, git_sync_activity: row.git_sync_activity },
+        row.cron,
+        true,
+        now,
+      );
+      const freshSuccessfulCompletion = hasFreshSuccessfulGitSyncCompletion(
+        row.git_sync_activity,
+        freshness,
+        now,
+      );
+      const healthy = verifiedGitSyncHealth(verdict, routineEngine, freshSuccessfulCompletion);
       if (healthy !== undefined) {
         out.set(`${GIT_SYNC_STALL_PREFIX}${row.install_slug}`, healthy);
       }

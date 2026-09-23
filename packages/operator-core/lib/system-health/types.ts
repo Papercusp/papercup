@@ -527,6 +527,12 @@ export interface DeployHealth {
   gitSyncLastSyncedAtMs: number | null;
   /** Oversized files git-sync EXCLUDED from the auto-commit (they will never push). */
   gitSyncOversizedCount: number;
+  /** P-009 (ex-P-010, EI-22489500008234936): the most scheduler intervals any active git-sync install
+   *  that is not failing (last_status not error/conflict, which the failure escalation already covers)
+   *  has missed, from deriveGitSyncFreshness.missed_intervals. Optional: absent/null = not measured. */
+  gitSyncMaxMissedIntervals?: number | null;
+  /** The install that holds `gitSyncMaxMissedIntervals`. */
+  gitSyncMissedIntervalsInstallSlug?: string | null;
   // ── RUNNING-CODE freshness (WI-1258129) ──────────────────────────────────────
   // Every field above measures GIT POSITIONS (staging→main→live) or git-sync
   // delivery. None of them can see the distinct failure where the refs are all

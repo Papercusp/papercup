@@ -38,6 +38,12 @@ import {
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
 import { requirementSections } from './requirement-contract';
+import {
+  ACCEPTANCE_BAR_REQUIREMENT_BLOCK_TEMPLATE,
+  acceptanceBarContractGaps,
+  isExplicitlyManualCheck,
+  type AcceptanceBarContractGap,
+} from './acceptance-bar-contract-completeness';
 
 export const ACCEPTANCE_BAR_CONTRACT_EPOCH = 1;
 export const MAX_REQUIREMENT_BARS = 200;
@@ -61,7 +67,13 @@ export type AcceptanceBarSeedCode =
   | 'bar_rubric_busy'
   | 'bar_amendment_required'
   | 'bar_projection_conflict'
-  | 'bar_seed_persistence_failed';
+  | 'bar_seed_persistence_failed'
+  // review-system-rework-reduction P-003/P-029: an activation seed refuses a BAR whose
+  // contract would force a later barHash-changing amendment (after proof is bound).
+  | 'bar_contract_method_missing'
+  | 'bar_contract_check_missing'
+  | 'bar_contract_test_layers_missing'
+  | 'bar_contract_check_layer_mismatch';
 
 export interface AcceptanceBarSeedProblem {
   code: AcceptanceBarSeedCode;
@@ -82,6 +94,8 @@ export interface AcceptanceBarSeedProblem {
    * shipped` independently refuses with `acceptance_bar_contract_not_ready`. */
   repairable?: 'invalid_template_data' | 'legacy_criteria_unmapped';
   rubricSlug?: string;
+  /** Every contract-completeness gap of this BAR; `code` names only the first. */
+  contractGaps?: AcceptanceBarContractGap[];
 }
 
 export interface ParsedRequirementBar {
@@ -127,6 +141,16 @@ export interface AcceptanceBarSeedBuildInput {
    *  compares the returned barSetHash against the stored one, so preservation can
    *  only ever produce the unchanged set it is meant to (WI-10000058). */
   preserveExistingBars?: boolean;
+  /**
+   * The activation door's shift-left policy (review-system-rework-reduction P-003):
+   * refuse any FRESHLY derived post-epoch BAR — no prior criterion, or its meaning
+   * changed — whose METHOD, structured check or test layers are missing, or whose
+   * check contradicts its layers. Opt-in, not a builder invariant: the legacy
+   * migration and the BAR-neutral subject-pin sync must keep re-deriving whatever
+   * the plan already holds, and preserved/legacy/unchanged BARs are never judged
+   * (they are the start door's and the amendment's business, not a re-audit's).
+   */
+  requireContractCompleteness?: boolean;
 }
 
 export type AcceptanceBarSeedBuildResult =
@@ -493,6 +517,68 @@ export function validateAcceptanceBarSource(planContent: string):
   return { ok: true, bars: requirements.bars, mappings: mappings.mappings };
 }
 
+const SEED_CODE_BY_CONTRACT_GAP: Record<AcceptanceBarContractGap, AcceptanceBarSeedCode> = {
+  method_missing: 'bar_contract_method_missing',
+  check_missing: 'bar_contract_check_missing',
+  test_layers_missing: 'bar_contract_test_layers_missing',
+  check_layer_mismatch: 'bar_contract_check_layer_mismatch',
+};
+
+/**
+ * The activation-seed contract-completeness verdict over PARSED source bars — the
+ * single computation both the writer (for its fresh bars) and the `plans:audit
+ * { dryRun:true }` preview call, so the preview cannot pass what the writer refuses.
+ *
+ * A fresh BAR's METHOD/check/layers come only from its ```requirement block (the
+ * seeded criterion spreads exactly that over neutral defaults), so judging the parsed
+ * source is judging what the writer would persist. One problem per BAR: `code` is the
+ * first gap, `contractGaps` all of them, and a prose record gets the conversion
+ * template once rather than once per BAR.
+ */
+export function acceptanceBarSourceContractProblems(
+  bars: readonly ParsedRequirementBar[],
+  mappings: readonly ParsedBarMapping[],
+): AcceptanceBarSeedProblem[] {
+  const planeByBar = new Map(mappings.map((mapping) => [mapping.barKey, mapping.evidencePlane]));
+  const problems: AcceptanceBarSeedProblem[] = [];
+  let templateShown = false;
+  for (const bar of bars) {
+    const criterion = bar.criterion;
+    const evidencePlane = criterion?.evidencePlane ?? planeByBar.get(bar.barKey) ?? 'tree';
+    const layers = criterion?.requiredTestLayers;
+    // Same derivation the projection makes: an explicitly manual BAR with no layers
+    // owes no automated proof; otherwise the clause class decides.
+    const explicitlyManual = isExplicitlyManualCheck(criterion?.check) && (layers?.length ?? 0) === 0;
+    const gaps = acceptanceBarContractGaps({
+      role: criterion?.role ?? 'outcome',
+      method: criterion?.method,
+      check: criterion?.check,
+      requiredTestLayers: layers,
+      automatedProofRequired:
+        !explicitlyManual && acceptanceBarBehaviorClass(evidencePlane, layers) !== 'non-automated',
+    });
+    if (gaps.length === 0) continue;
+    let repair: string;
+    if (criterion) {
+      repair = `Fix these fields in ${bar.barKey}'s \`\`\`requirement block, then re-run the activation audit.`;
+    } else if (!templateShown) {
+      templateShown = true;
+      repair =
+        `${bar.barKey} is authored as prose, which cannot carry a METHOD, check or test layers. Rewrite it as a ` +
+        `\`\`\`requirement block, then re-run the activation audit: ${ACCEPTANCE_BAR_REQUIREMENT_BLOCK_TEMPLATE}`;
+    } else {
+      repair = `${bar.barKey} is authored as prose; rewrite it as a \`\`\`requirement block (template above).`;
+    }
+    problems.push({
+      code: SEED_CODE_BY_CONTRACT_GAP[gaps[0]!.gap],
+      barKey: bar.barKey,
+      contractGaps: gaps.map((finding) => finding.gap),
+      detail: `${bar.barKey}: ${gaps.map((finding) => finding.detail).join('; ')}. ${repair}`,
+    });
+  }
+  return problems;
+}
+
 export interface AcceptanceBarProjectionIdentity {
   spec_id: string;
   source_bar_key: string | null;
@@ -606,6 +692,10 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     }]);
   }
 
+  // BARs whose criterion is derived from the plan body in THIS build, as opposed to
+  // preserved, legacy-adopted or unchanged-meaning ones. Only these are judged for
+  // contract completeness: an unchanged BAR was already judged when it was fresh.
+  const freshBarKeys = new Set<string>();
   const criteria = requirements.bars.map((bar) => {
     const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input, existing?.ratingScale);
     const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
@@ -626,7 +716,10 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     // with the original human seed. A changed plan revision still takes the
     // normal meaning-change guard below the builder.
     if (preserveCanonicalBars && prior) return { ...prior } as ProposeRubricCriterion;
-    if (!prior || prior.barHash !== seeded.barHash) return seeded;
+    if (!prior || prior.barHash !== seeded.barHash) {
+      freshBarKeys.add(bar.barKey);
+      return seeded;
+    }
     return {
       ...seeded,
       ...methodProjection(prior as unknown as Record<string, unknown>),
@@ -634,6 +727,16 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       barProvenance: prior.barProvenance ?? seeded.barProvenance,
     } as ProposeRubricCriterion;
   });
+  // P-003/P-029: shift the METHOD/check/layer contract left to activation, where the
+  // repair is a text edit of a draft instead of a barHash-changing amendment that
+  // discards bound proof. Legacy-backfilled BARs describe work that already exists.
+  if (input.requireContractCompleteness && input.cohort === 'post-epoch' && !input.backfilled) {
+    const contractProblems = acceptanceBarSourceContractProblems(
+      requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey)),
+      mappings.mappings,
+    );
+    if (contractProblems.length > 0) return refusal(contractProblems);
+  }
   const barSetHash = computeAcceptanceBarSetHash(criteria);
   const parsedPlan = parsePlan(input.planContent);
   const classRef = input.classRef ?? existing?.classRef;
@@ -762,6 +865,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   now: Date;
   /** Validate and describe the same canonical write without mutating any rows. */
   dryRun?: boolean;
+  /** Activation-door policy; see {@link AcceptanceBarSeedBuildInput.requireContractCompleteness}. */
+  requireContractCompleteness?: boolean;
 }
 
 export interface TransactionalAcceptanceBarSeedSuccess {
@@ -890,6 +995,7 @@ export async function seedAcceptanceBarsInTransaction(
     rubricSlug,
     rubricRevision: provisionalRevision,
     ...(existing ? { existingTemplateData: existing.template_data } : {}),
+    requireContractCompleteness: input.requireContractCompleteness,
   });
   if (!built.ok) return built;
 
@@ -953,6 +1059,7 @@ export async function seedAcceptanceBarsInTransaction(
       rubricSlug,
       rubricRevision,
       existingTemplateData: existing!.template_data,
+      requireContractCompleteness: input.requireContractCompleteness,
     });
     if (!built.ok) return built;
   }

@@ -78,6 +78,15 @@ describe('mode implications', () => {
     }
   });
 
+  it('uses the scoped goal-review duty when IDEATE is combined with GOAL', () => {
+    const text = modeById('ideate')!.contract.replace(/\s+/g, ' ');
+    expect(text.includes('GOAL-LOCAL GAP REVIEW fulfills this IDEATE duty')).toBe(true);
+    expect(text.includes('goalReview')).toBe(true);
+    expect(text.includes('justified zero-idea result')).toBe(true);
+    expect(text.includes('does not authorize the goal holder to implement')).toBe(true);
+    expect(text.includes('Standalone IDEATE keeps the ordinary grounded proposal loop')).toBe(true);
+  });
+
   /**
    * D-003's OTHER half: the contract states the implication as a FACT about the
    * agent's posture. The old wording — "if the autonomy axis is empty, also
@@ -400,6 +409,30 @@ describe('GOAL mode', () => {
 
   it('keeps its index one-liner to a single line (P-008)', () => {
     expect(goal!.oneLiner).not.toContain('\n');
+  });
+
+  it('requires scoped gap review without a new-idea production quota', () => {
+    const c = goal!.contract;
+    const text = c.replace(/\s+/g, ' ');
+    expect(text.includes('SCOPE-AWARE GOAL PLANNING')).toBe(true);
+    expect(text.includes('STAFF EXECUTABLE PLANS FIRST')).toBe(true);
+    expect(text.includes('GOAL-LOCAL GAP REVIEW')).toBe(true);
+    expect(text.includes('goalReview')).toBe(true);
+    expect(text.includes('existing-plans-sufficient')).toBe(true);
+    expect(/no minimum new-idea or feature count/i.test(text)).toBe(true);
+    expect(/at least once per reporting cycle/i.test(text)).toBe(true);
+    expect(text.includes('and FILE the result as improvements:capture')).toBe(false);
+    expect(text.includes('on any wake that would otherwise be a near-noop')).toBe(false);
+    expect(text.includes('GOAL implies AUTO and IDEATE')).toBe(true);
+  });
+
+  it('keeps goal-local planning alongside Blender while preserving execution evidence', () => {
+    const text = goal!.contract.replace(/\s+/g, ' ');
+    expect(/Blender.*workspace-level/.test(text)).toBe(true);
+    expect(text.includes('Both may originate plans')).toBe(true);
+    expect(text.includes('adopt or revise a suitable existing plan')).toBe(true);
+    expect(text.includes('an evidenced uncovered need')).toBe(true);
+    expect(text.includes('a review is not a worker claim')).toBe(true);
   });
 
   // ── goal-mode-hardening-2026-08-10 P-007: the decisions this contract applies ──

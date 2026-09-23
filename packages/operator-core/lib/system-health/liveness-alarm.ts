@@ -522,6 +522,19 @@ export function evaluateLivenessAlarm(
   //    reading is expected maintenance noise, not a restart-worthy outage. The
   //    advisory gets its own signature so old blocker rows can be reclassified
   //    explicitly rather than treated as recovered.
+  const gitSyncMissed = health.panels.deploy?.data?.gitSyncMaxMissedIntervals ?? null;
+  if (typeof gitSyncMissed === 'number' && gitSyncMissed > GIT_SYNC_MISSED_INTERVALS_ALARM) {
+    const slug = health.panels.deploy?.data?.gitSyncMissedIntervalsInstallSlug ?? null;
+    signals.push({
+      key: 'git-sync-missed-intervals',
+      severity: 'blocker',
+      summary:
+        `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals: ` +
+        `nothing written there is being committed. Read routines:list { name:'git-sync'` +
+        `${slug ? `, installSlug:'${slug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
+        `execution leg, and safe_to_restart) before restarting anything.`,
+    });
+  }
   const wf = health.panels.workFeed?.data;
   if (wf && wf.deadRoutines > 0) {
     if (d026QuiescenceIsActive(opts.d026Quiescence)) {

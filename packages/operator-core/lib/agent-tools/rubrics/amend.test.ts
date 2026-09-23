@@ -61,21 +61,17 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(rendered).toContain('omit legacy aliases');
   });
 
-  it('documents the durable handoff for approval JSON larger than the coord:send cap', () => {
+  it('documents a writable-thread handoff for outside-lineage approval JSON', () => {
     const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
 
     expect(rendered).toContain('600 characters');
-    // The durable surface is a THREAD POST, not the item payload. Superseded
-    // 2026-09-16 (73376ec7): the payload route needs payloadTier:'full', which a
-    // trimmed or judge-scoped reader never gets — so the reviewer was pointed at
-    // an approval they could not read back. Pin both halves: the surface we now
-    // prescribe, AND the reason the payload one was retired, so a future edit
-    // cannot quietly reinstate it.
     expect(rendered).toContain('work_items:comment');
-    expect(rendered).toContain('payloadTier');
-    expect(rendered).toContain('full');
+    expect(rendered).toContain('any existing thread they can write to');
+    expect(rendered).toContain('workspace and id');
+    expect(rendered).toContain('do not create a counter-sign work-item');
     expect(rendered).toContain("approvalRef:'thread-post:");
     expect(rendered).toContain('Never truncate or retype');
+    expect(rendered).not.toContain('point the reviewer at THAT thread post');
   });
 
   it('accepts a full criterion set with structured checks', () => {

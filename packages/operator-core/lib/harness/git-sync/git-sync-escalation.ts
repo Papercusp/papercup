@@ -262,3 +262,68 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
 
   return { escalate, reasons, clear, broadcast: parts.length > 0 ? parts.join('\n') : null };
 }
+
+/**
+ * P-009 (review-system-rework-reduction-2026-09-23; EI-24015486799447670): a content
+ * quarantine must never be SILENT. On 2026-09-23 a secret-shaped test sentinel held 29
+ * files out of the auto-commit for 18 ticks (~1h). Its author's session had already
+ * ended, the single needs-human message at the fixer-budget tick went to that dead
+ * inbox, and nothing re-alarmed. The only signal left was routine metadata. Three
+ * notices close that gap:
+ *  - `editor-first-tick`: the FIRST quarantined tick tells the file's last editor,
+ *    while they are most likely still live and can fix it with one edit.
+ *  - `alarm`: the tick the content-fixer budget runs out (the pre-existing
+ *    needs-human transition).
+ *  - `realarm`: every `realarmEveryTicks` ticks while the quarantine persists after
+ *    that, so a quarantine that outlives its first alarm is re-surfaced.
+ */
+export const CONTENT_QUARANTINE_REALARM_TICKS = 12;
+
+export type ContentQuarantineNotice = 'editor-first-tick' | 'alarm' | 'realarm';
+
+export function decideContentQuarantineNotice(i: {
+  /** Consecutive quarantined ticks INCLUDING this one. */
+  contentTicks: number;
+  /** The count one tick earlier (0 = this is the first quarantined tick). */
+  prevContentTicks: number;
+  /** The tick on which the content-fixer budget is exhausted. */
+  alarmTicks: number;
+  realarmEveryTicks?: number;
+}): ContentQuarantineNotice | null {
+  if (i.contentTicks <= 0) return null;
+  const every = Math.max(1, i.realarmEveryTicks ?? CONTENT_QUARANTINE_REALARM_TICKS);
+  if (i.contentTicks >= i.alarmTicks) {
+    if (i.prevContentTicks < i.alarmTicks) return 'alarm';
+    const since = i.contentTicks - i.alarmTicks;
+    return since > 0 && since % every === 0 ? 'realarm' : null;
+  }
+  return i.prevContentTicks === 0 ? 'editor-first-tick' : null;
+}
+
+/** Verdicts under which nobody will read the message. */
+const CONTENT_NOTICE_UNREACHABLE = new Set(['ended', 'recorded']);
+/** Verdicts that prove somebody will read it. */
+const CONTENT_NOTICE_REACHABLE = new Set(['live', 'parked', 'draining', 'suspect']);
+
+/**
+ * Who receives a content-quarantine notice. `editors` is the attribution result
+ * (`['*']` = unattributable) and `stateOf` is the liveness oracle's `sessionState`.
+ *
+ * A first-tick notice goes only to attributed editors who are not known to be gone,
+ * and is never a broadcast. A 1-tick quarantine is usually an agent mid-edit, so
+ * waking the fleet for it would be noise. An alarm needs a PROVEN-reachable
+ * editor. Otherwise it falls back to the broadcast, because an alarm addressed only
+ * to an ended session is the silent failure this exists to prevent.
+ */
+export function selectContentNoticeRecipients(
+  notice: ContentQuarantineNotice,
+  editors: readonly string[],
+  stateOf: (ownerId: string) => string | null | undefined,
+): string[] {
+  const attributed = [...new Set(editors.filter((e) => e && e !== '*'))];
+  if (notice === 'editor-first-tick') {
+    return attributed.filter((e) => !CONTENT_NOTICE_UNREACHABLE.has(stateOf(e) ?? ''));
+  }
+  const reachable = attributed.filter((e) => CONTENT_NOTICE_REACHABLE.has(stateOf(e) ?? ''));
+  return reachable.length > 0 ? reachable : ['*'];
+}

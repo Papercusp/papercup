@@ -3,9 +3,12 @@ import {
   CHRONIC_CUMULATIVE_PEEL_TICKS,
   CHRONIC_CUMULATIVE_REBROADCAST_TICKS,
   classifyGitSyncFailingLeg,
+  CONTENT_QUARANTINE_REALARM_TICKS,
+  decideContentQuarantineNotice,
   decideGitSyncEscalation,
   oversizedKey,
   PUSH_FAILURE_ESCALATION_TICKS,
+  selectContentNoticeRecipients,
 } from './git-sync-escalation';
 import {
   DEFAULT_MAX_BLOB_BYTES,
@@ -351,5 +354,70 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
   it('returns unknown rather than guessing "push" when nothing is decidable', () => {
     expect(classifyGitSyncFailingLeg(null, null)).toBe('unknown');
     expect(classifyGitSyncFailingLeg('something weird happened', 'push')).toBe('unknown');
+  });
+});
+
+// P-009 (EI-24015486799447670): a content quarantine held 29 files for 18 ticks with nobody
+// told. The author had ended, the one alarm went to that dead inbox, and it never re-alarmed.
+describe('decideContentQuarantineNotice', () => {
+  const alarmTicks = 5;
+  const at = (contentTicks: number, prevContentTicks = contentTicks - 1) =>
+    decideContentQuarantineNotice({ contentTicks, prevContentTicks, alarmTicks });
+
+  it('tells the editor on the FIRST quarantined tick only', () => {
+    expect(at(1, 0)).toBe('editor-first-tick');
+    expect(at(2)).toBeNull();
+    expect(at(4)).toBeNull();
+  });
+
+  it('alarms on the fixer-budget transition, once', () => {
+    expect(at(5)).toBe('alarm');
+    expect(at(6)).toBeNull();
+  });
+
+  it('re-alarms every CONTENT_QUARANTINE_REALARM_TICKS while the quarantine persists', () => {
+    const every = CONTENT_QUARANTINE_REALARM_TICKS;
+    // The 2026-09-23 incident reached tick 18; it must have re-alarmed at least once by then.
+    expect(alarmTicks + every).toBeLessThanOrEqual(18);
+    const fired = Array.from({ length: alarmTicks + 3 * every }, (_, k) => k + 1).filter((t) => at(t) === 'realarm');
+    expect(fired).toEqual([alarmTicks + every, alarmTicks + 2 * every, alarmTicks + 3 * every]);
+  });
+
+  it('alarms (not first-tick) when the counter jumps straight past the budget', () => {
+    expect(at(7, 0)).toBe('alarm');
+  });
+
+  it('is silent on a clean tick', () => {
+    expect(at(0, 3)).toBeNull();
+  });
+});
+
+describe('selectContentNoticeRecipients', () => {
+  const states: Record<string, string | null> = { alive: 'live', parked: 'parked', gone: 'ended', rec: 'recorded' };
+  const stateOf = (id: string) => states[id] ?? null;
+
+  it('first-tick notice: attributed editors not known to be gone, never a broadcast', () => {
+    expect(selectContentNoticeRecipients('editor-first-tick', ['alive', 'gone', 'rec', 'unknown'], stateOf)).toEqual([
+      'alive',
+      'unknown',
+    ]);
+    expect(selectContentNoticeRecipients('editor-first-tick', ['*'], stateOf)).toEqual([]);
+    expect(selectContentNoticeRecipients('editor-first-tick', ['gone'], stateOf)).toEqual([]);
+  });
+
+  it('alarm to an ENDED-only editor set falls back to the broadcast (the 2026-09-23 silent case)', () => {
+    expect(selectContentNoticeRecipients('alarm', ['gone'], stateOf)).toEqual(['*']);
+    expect(selectContentNoticeRecipients('realarm', ['gone', 'unknown'], stateOf)).toEqual(['*']);
+  });
+
+  it('alarm goes to proven-reachable editors only, deduplicated', () => {
+    expect(selectContentNoticeRecipients('alarm', ['alive', 'parked', 'gone', 'alive'], stateOf)).toEqual([
+      'alive',
+      'parked',
+    ]);
+  });
+
+  it('unattributable alarm stays a broadcast (attribution flag off)', () => {
+    expect(selectContentNoticeRecipients('alarm', ['*'], stateOf)).toEqual(['*']);
   });
 });

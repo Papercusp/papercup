@@ -2288,6 +2288,10 @@ export async function recordCurrentActivationAudit(
           actorId: input.createdBy,
           classRef: input.classRef,
           now: new Date(),
+          // P-003/P-029 (review-system-rework-reduction-2026-09-23): activation is the
+          // cheapest door to demand METHOD/check/layers — the plan is still a draft, so
+          // the repair is a text edit, not a co-signed barHash-changing amendment.
+          requireContractCompleteness: true,
         });
         // Catch-up may already have updated the derived pin in this transaction.
         if (!seeded.ok) {

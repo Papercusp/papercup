@@ -48,9 +48,9 @@ export const argsSchema = z.object({
   specFingerprint: z.string().trim().min(1).max(256).optional().describe(
     'Immutable clause fingerprint pin. Supply together with specRevision; both are required when replaySnapshot is true.',
   ),
-  /** Reuse an earlier snapshot without measuring current evidence. */
+  /** Replay a persisted recipe against its pinned immutable clause revision. */
   replaySnapshot: z.boolean().optional().describe(
-    'When true, reuse the pinned evidence snapshot without server-side remeasurement. Requires both specRevision and specFingerprint from the same immutable clause revision. Omit or set false to use the normal current-measurement path; caller-supplied current fingerprints remain replayed-snapshot evidence, never server-measured evidence.',
+    'When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Bindings with a persisted measurement recipe are still re-measured by the server, so a replay reports stale once the proven code moves; caller-supplied current fingerprints alone remain replayed-snapshot evidence, never server-measured evidence.',
   ),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
@@ -90,8 +90,10 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
   guidance: {
+    returns:
+      'On success { ok, rows, count, verdicts, wouldBlock } with ok:true. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. Do not assume rows[0].scorecardDraft exists.',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
@@ -104,6 +106,20 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
+  // Structural shape behind `guidance.returns` (guidance-output-schema-live-guard). Kept
+  // deliberately OPEN: the three reply arms (success, selection_empty, hit-limit) carry
+  // different optional fields, and MCP clients validate structuredContent against this,
+  // so only fields every arm types identically are declared.
+  result: z
+    .object({
+      ok: z.boolean(),
+      error: z.string().optional(),
+      rows: z.array(z.record(z.string(), z.unknown())).optional(),
+      count: z.number().int().nonnegative(),
+      verdicts: z.record(z.string(), z.number()).optional(),
+      wouldBlock: z.array(z.record(z.string(), z.unknown())).optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
@@ -130,10 +146,12 @@ export default defineTool({
       specRevision: args.specRevision,
       specFingerprint: args.specFingerprint,
       replaySnapshot: args.replaySnapshot === true,
-      // The replay path skips server measurement, so `current` here is entirely
-      // caller-supplied. Record it as a replayed snapshot rather than claiming the
-      // server measured it — otherwise any caller passing replaySnapshot:true plus
-      // self-authored fingerprints mints a 'server-measured' freshness verdict.
+      // `current` here is caller-supplied. Label it a replayed snapshot rather than
+      // claiming the server measured it — otherwise any caller passing
+      // replaySnapshot:true plus self-authored fingerprints mints a 'server-measured'
+      // freshness verdict. The store still re-measures every binding that carries a
+      // measurement recipe and prefers that result; this label applies only where it
+      // cannot (WI-10002320; round trip pinned by scorecards/emit.evaluator-round-trip.test.ts).
       ...(args.replaySnapshot === true && current !== undefined
         ? { currentProvenance: 'replayed-snapshot' as const }
         : {}),

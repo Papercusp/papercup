@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 903,
+  "count": 904,
   "tools": [
     {
       "name": "ablation:report",
@@ -5648,7 +5648,7 @@
           "POST"
         ]
       },
-      "description": "Open a new feedback consult for one unresolved question — this is a request/creation verb, not a reader for an existing conversation. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts. A fresh consult dispatches an isolated answer session by same-backend fork or supported cross-backend conversion; it does not wake the expert’s live session. The dispatcher walks the ranked allowed-model list and skips walled backends or failed launches. To read a known conversation or consult thread, use conversations:get { id }. Below the relevance floor, it reports the honest routing outcome instead of inventing expertise.",
+      "description": "Open a new feedback consult for one unresolved question — a request/creation verb, not a reader. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts; a fresh consult dispatches an isolated answer session and never wakes the expert’s live session. Below the relevance floor it reports the honest routing outcome instead of inventing expertise.",
       "capabilities": [
         "coord:write"
       ],
@@ -5672,9 +5672,9 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "A concrete, substantial technical question remains after a first-pass check of local code, docs, or search, and a peer may already have solved it in their transcript. Ask once before a long re-derivation; include what you tried, what you observed, and the decision the answer informs.",
-        "notWhen": "Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); assigning work; or anything local code, docs, or search already answer. Do not open duplicate consults or repeat an unchanged question after no_available_responder. A consult is advice, never a work handoff.",
-        "chaining": "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id }. Archive matches may answer without launching a model session. Otherwise the expert's transcript is answered by an isolated session; the dispatcher already walks allowed model ranks and skips walled backends, so do not manually retry. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer; otherwise proceed and reconcile later. Declines/expiries advance the existing cascade; do not open a new consult for a follow-up."
+        "when": "A concrete technical question survives a first-pass check of local code, docs and search, and a peer may already have solved it. Ask once before a long re-derivation; say what you tried, what you observed, and the decision it informs.",
+        "notWhen": "Reading an existing conversation or consult thread (conversations:get { id }); live state (query it); owner decisions (coord:ask-owner); a known agent (coord:send); or anything code, docs or search already answer. Never duplicate a consult or repeat an unchanged question after no_available_responder — a consult is advice, never a handoff.",
+        "chaining": "For a known id use conversations:get { id }. An archive match may answer without launching a session; otherwise the dispatcher walks the allowed model ranks and skips walled backends, so never retry manually. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer. Declines and expiries advance the existing cascade."
       }
     },
     {
@@ -21142,9 +21142,47 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance.",
+        "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (amend → vet → attest → bind → cards → grade).",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+      }
+    },
+    {
+      "name": "plans:certify-spec-clauses",
+      "http": {
+        "path": "/api/agent-tools/plans/certify-spec-clauses",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft unedited through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer",
+        "judge"
+      ],
+      "guidance": {
+        "when": "Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.",
+        "notWhen": "Reading one clause's ratings without filing — plans:evaluate-spec-test-adequacy. Filing any other rubric — scorecards:emit.",
+        "chaining": "plans:bind-spec-evidence → plans:certify-spec-clauses → work_items:complete."
       }
     },
     {
@@ -21477,7 +21515,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:\"selection_empty\", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.",
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
       "capabilities": [
         "plans:read"
       ],
@@ -27860,7 +27898,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true and post its returned approval JSON on a thread you can write to; send the outside-lineage reviewer a pointer. Have the reviewer re-post it verbatim on any thread they can write to, preferably an item they already hold, then apply approvalRef:'thread-post:<id>'. The lookup is workspace-wide by local post id, not tied to the requester's thread; do not create a counter-sign work-item just for the approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -27887,7 +27925,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → post preview.approval VERBATIM as its own work_items:comment, and point the reviewer at THAT thread post (cap: 600 characters). A thread post is readable on every surface; the item payload is not — it needs payloadTier:'full', which a trimmed or judge-scoped reader never gets, so the reviewer sees an approval they cannot copy. Reviewer re-posts that exact JSON as their own work_items:comment → amend { approvalRef:'thread-post:<their id>' }. Never truncate or retype approval JSON."
+        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval VERBATIM as a work_items:comment on a thread they can write to and sends the reviewer a pointer (cap: 600 characters). The reviewer re-posts that exact JSON as a work_items:comment on any existing thread they can write to, preferably an item they already hold, then returns the post id. `thread-post:<id>` resolves a local post by workspace and id; it is not bound to the requester's thread. Do not create a counter-sign work-item just for the approval. Apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Never truncate or retype approval JSON."
       }
     },
     {

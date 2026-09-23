@@ -35,7 +35,7 @@ describe('evaluateRoutineEngineLiveness', () => {
 });
 
 describe('readRoutineEngineLiveness', () => {
-  it('reads completed successful ticks, not merely newly enqueued workflows', async () => {
+  it('reads ticks that completed the due-routine step, not successful early returns', async () => {
     let queryText = '';
     const mockSql = (strings: TemplateStringsArray) => {
       queryText = strings.join(' ');
@@ -45,9 +45,25 @@ describe('readRoutineEngineLiveness', () => {
     const result = await readRoutineEngineLiveness(mockSql as unknown as Sql, { nowMs: NOW_MS });
 
     expect(result).toMatchObject({ stale: false, unknown: false, staleMs: 2_000 });
-    expect(queryText).toContain('MAX(completed_at)');
+    expect(queryText).toContain('MAX(tick.completed_at)');
     expect(queryText).toContain("status = 'SUCCESS'");
+    expect(queryText).toContain('dbos.operation_outputs');
+    expect(queryText).toContain("function_name = 'list-due-routines'");
+    expect(queryText).toContain('operation.error IS NULL');
     expect(queryText).not.toContain('MAX(created_at)');
+  });
+
+  it('keeps an early-return SUCCESS with no due-routine step unknown', async () => {
+    let queryText = '';
+    const mockSql = (strings: TemplateStringsArray) => {
+      queryText = strings.join(' ');
+      return Promise.resolve([{ last_tick_ms: null }]);
+    };
+
+    const result = await readRoutineEngineLiveness(mockSql as unknown as Sql, { nowMs: NOW_MS });
+
+    expect(result).toMatchObject({ stale: false, unknown: true, lastTickMs: null, staleMs: null });
+    expect(queryText).toContain("function_name = 'list-due-routines'");
   });
 
   it('keeps query failures unknown rather than inventing scheduler liveness', async () => {

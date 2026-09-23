@@ -9,8 +9,19 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 
 const findDueReleaseRequests = vi.fn();
 const resolveWorkItemReleaseRequest = vi.fn();
+const hasWorkItemProgressAfterReleaseRequest = vi.fn(
+  (request: { requestedAt: number }, lastProgressAt: string | Date | null) => {
+    if (lastProgressAt == null) return false;
+    const progressAt = lastProgressAt instanceof Date ? lastProgressAt.getTime() : Date.parse(lastProgressAt);
+    return Number.isFinite(progressAt) && progressAt > request.requestedAt;
+  },
+);
 vi.mock('../work-items-release-request', () => ({
   findDueReleaseRequests: (...a: unknown[]) => findDueReleaseRequests(...a),
+  hasWorkItemProgressAfterReleaseRequest: (
+    request: { requestedAt: number },
+    lastProgressAt: string | Date | null,
+  ) => hasWorkItemProgressAfterReleaseRequest(request, lastProgressAt),
   resolveWorkItemReleaseRequest: (...a: unknown[]) => resolveWorkItemReleaseRequest(...a),
 }));
 
@@ -121,6 +132,7 @@ describe('release-request-sweep check', () => {
       expectedBy: 'requester-1',
       expectedHolder: 'holder-1',
       expectedDeadlineAt: row.request.deadlineAt,
+      expectedLastProgressAt: row.lastProgressAt,
     });
     expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
       ownerId: 'holder-1',
@@ -160,6 +172,28 @@ describe('release-request-sweep check', () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it('EI-23831380926942341: progress since the request resolves it before the reclaim consequence', async () => {
+    const due = dueRow();
+    const row = { ...due, lastProgressAt: new Date(due.request.requestedAt + 1000) };
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'holder-progressed' });
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', {
+      harness: 'papercup',
+      resolution: 'holder-progressed',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+      expectedDeadlineAt: row.request.deadlineAt,
+      expectedLastProgressAt: row.lastProgressAt,
+    });
+    expect(assessForceRelease).not.toHaveBeenCalled();
+    expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(commentWorkItem.mock.calls[0]?.[1]).toContain('progress after the request');
+  });
+
   it('terminalized before the deadline — superseded CAS produces no consequence side effects', async () => {
     const row = dueRow({ onSilence: 'reclaim' });
     findDueReleaseRequests.mockResolvedValue([row]);
@@ -173,6 +207,7 @@ describe('release-request-sweep check', () => {
       expectedBy: 'requester-1',
       expectedHolder: 'holder-1',
       expectedDeadlineAt: row.request.deadlineAt,
+      expectedLastProgressAt: row.lastProgressAt,
     });
     expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
     expect(releaseWorkItem).not.toHaveBeenCalled();

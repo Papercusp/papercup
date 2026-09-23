@@ -11,6 +11,14 @@ SuccessExitStatus=75
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# WI-10002636: Nice alone is inert against sibling units under cgroup v2 — it only
+# ranks processes WITHIN this unit's cgroup. Without CPUWeight the backup ran at
+# the default weight 100 and was measured at 12.77 cores (2026-09-23 06:33Z) while
+# the P-203 fold VM (weight 20) was starved at 30% vCPU run-queue delay. Weight 10
+# still runs at full speed on an idle box and yields only under contention.
+# Guarded by packages/operator-core/lib/systemd-nice-cpuweight-guard.test.ts.
+CPUAccounting=yes
+CPUWeight=10
 # The hot sweep reached 12.6-20.3G while overlapping other scheduled heavy
 # work. Match the daily Kopia unit's proven envelope; snapshot-all.sh also pins
 # Kopia to --parallel=1 so the cgroup is a safety boundary, not the first brake.

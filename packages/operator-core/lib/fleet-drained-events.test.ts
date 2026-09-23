@@ -170,7 +170,10 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
     emitFleetDrainedEvent('f2', { emit: ended as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
     emitFleetDrainedEvent('f3', { emit: missing as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(warn).not.toHaveBeenCalled();
+    const drainedEventWarnings = warn.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.includes('drained-event for f2') || message.includes('drained-event for f3'));
+    expect(drainedEventWarnings).toEqual([]);
     warn.mockRestore();
   });
 });

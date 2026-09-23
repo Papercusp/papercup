@@ -61,6 +61,27 @@ describe('migration pre-apply lint', () => {
     ).not.toThrow();
   });
 
+  it('accepts migration 1188 additive partial uniqueness only with its forward-compat acknowledgement', () => {
+    const migrationPath = resolve(__dirname, '../../../libs/papercusp/libs/db/sql/1188-hosted-self-signup.sql');
+    const migrationText = readFileSync(migrationPath, 'utf8');
+    const migrationSqlDir = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
+    const lint = (sqlText: string) =>
+      assertMigrationPassesPreApplyLints({
+        filename: '1188-hosted-self-signup.sql',
+        sqlText,
+        sqlDir: migrationSqlDir,
+      });
+
+    expect(() => lint(migrationText)).not.toThrow();
+
+    const withoutAcknowledgement = migrationText.replace(
+      /^[ \t]*--[ \t]*FORWARD-COMPAT:[^\r\n]*(?:\r?\n|$)/m,
+      '',
+    );
+    expect(withoutAcknowledgement).not.toBe(migrationText);
+    expect(() => lint(withoutAcknowledgement)).toThrow(/narrowing-unique-index/);
+  });
+
   it('does not grandfather a newly pending file through frozen exemptions', () => {
     const dir = sqlDir();
     writeFileSync(join(dir, '972-completion-authority-content-identity-floor.sql'), 'BEGIN; SELECT 1; COMMIT;');

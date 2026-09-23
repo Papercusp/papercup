@@ -37,6 +37,7 @@ import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
 import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
@@ -1141,47 +1142,9 @@ function gitSyncPathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
 
-/**
- * Map root-relative live-lock holdings into one repository's coordinate space.
- *
- * The lock plane speaks in superproject-root-relative paths, while `git add`
- * inside a submodule speaks from that submodule's own root. Keep the mapping
- * beside the exclusion logic so commit-time refreshes cannot accidentally
- * reintroduce the old root/submodule path mismatch.
- */
-export function mapLiveLockHoldingsForRepo(
-  holdings: readonly GitSyncLockHolding[],
-  repoRelPrefix: string,
-  submodulePaths: readonly string[] = [],
-): GitSyncLockHolding[] {
-  const normalizedPrefix = repoRelPrefix.trim().replace(/^\.\/+|\/+$/g, '');
-  const prefix = normalizedPrefix ? `${normalizedPrefix}/` : '';
-  const normalizedSubmodulePaths = submodulePaths
-    .map((path) => path.trim().replace(/^\.\/+|\/+$/g, ''))
-    .filter(Boolean);
-  const normalized = holdings
-    .map((holding) => ({
-      path: holding.path.trim().replace(/^\.\/+|\/+$/g, ''),
-      owner: holding.owner,
-      intent: holding.intent,
-      ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
-    }))
-    .filter((holding) => holding.path.length > 0);
-
-  if (prefix) {
-    return normalized
-      .filter((holding) => holding.path.startsWith(prefix))
-      .map((holding) => ({ ...holding, path: holding.path.slice(prefix.length) }))
-      .filter((holding) => holding.path.length > 0);
-  }
-
-  return normalized.filter(
-    (holding) =>
-      !normalizedSubmodulePaths.some(
-        (submodulePath) => holding.path === submodulePath || holding.path.startsWith(`${submodulePath}/`),
-      ),
-  );
-}
+// P-009 / WI-10002596: moved to ./live-lock-coordinates (pure, dependency-free) so that
+// consumers mocking this module still exercise the real coordinate mapping.
+export { mapLiveLockHoldingsForRepo, nestedInstallRepoPrefix } from './live-lock-coordinates';
 
 /**
  * Expand a live-lock exclusion to the rest of the same edit cohort.

@@ -128,7 +128,16 @@ export async function checkPlanStartable(
   // P-003: every start/promotion door funnels through this function. A post-epoch
   // BAR contract may be METHOD-empty, but its identity/falsifier/provenance,
   // revision, mapping, and bounded-source invariants must already be complete.
-  const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', { harnessSlug: row.harnessSlug });
+  //
+  // P-003/P-029 (review-system-rework-reduction-2026-09-23): the `start` door ALSO
+  // demands a complete METHOD/check/layer contract while no proof is bound yet. Only
+  // this door: promotion and rubrics:propose share 'pre-start' and deliberately permit
+  // METHOD-empty BARs (propose is how a METHOD gets added), and fleet top-ups/run-now/
+  // scheduled doors act on plans that are already executing.
+  const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', {
+    harnessSlug: row.harnessSlug,
+    requireCompleteContractBeforeProof: door === 'start',
+  });
   if (!lifecycle.satisfied) {
     return {
       ok: false,
@@ -139,7 +148,12 @@ export async function checkPlanStartable(
         code: 'acceptance_bar_contract_not_ready',
         slug,
         missing: lifecycle.codes,
-        issues: lifecycle.blockingBars.flatMap((bar) => bar.codes.map((code) => `${bar.barKey}: ${code}`)),
+        issues: [
+          ...lifecycle.blockingBars.flatMap((bar) => bar.codes.map((code) => `${bar.barKey}: ${code}`)),
+          ...(lifecycle.contractGapsBlocking
+            ? (lifecycle.contractGaps ?? []).map((gap) => `${gap.barKey}: ${gap.detail}`)
+            : []),
+        ],
         source: 'acceptance-bar-contract',
         hint: lifecycle.message ?? 'repair the acceptance BAR contract before starting this plan',
       },

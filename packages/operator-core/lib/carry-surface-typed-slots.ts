@@ -89,6 +89,7 @@ const OWNER_QUESTION_RES: RegExp[] = [
  */
 const NEGATION_RE = /\b(?:no|not|n't|never|nothing|none|nobody|without)\b/i;
 const NEGATION_WINDOW_CHARS = 28;
+const EXPLICIT_EMPTY_STATUS_RE = /^\s*[:—–-]\s*(?:nothing|none|nobody|no one)\b/i;
 
 /**
  * An agent identifier (su-/claude- + hex) appearing as the line's subject
@@ -134,6 +135,8 @@ function clauseStartBefore(line: string, index: number): number {
  *  not the writer's own unrouted question. */
 function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   const matchIndex = match.index;
+  const afterMatch = line.slice(matchIndex + match[0].length);
+  if (EXPLICIT_EMPTY_STATUS_RE.test(afterMatch)) return true;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
   // Include the matched phrase: the `owner` in "peer owner to confirm" is

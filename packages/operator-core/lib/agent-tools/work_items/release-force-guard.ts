@@ -31,6 +31,7 @@ import type { Sql } from 'postgres';
 import type { LivenessVerdict } from '../coordination/liveness-oracle';
 import { agentToolInvocationPredicate } from '../sessions/automatic-tool-names';
 import type { WorkItemReleaseRequest } from '../../work-items-release-request';
+import { hasWorkItemProgressAfterReleaseRequest } from '../../work-items-release-request';
 
 export type ForceReleaseBasis =
   | 'holder-not-live'
@@ -393,8 +394,12 @@ export async function assessForceRelease(
   // long-turn safety rail from EI-21377805080867612: an oracle `live`/`draining`
   // session may still be inside the turn that has not received the request. But once
   // the shared oracle says `parked` or `recorded`, there is no turn in flight; the
-  // original requester may execute exactly the consequence they announced.
+  // original requester may execute exactly the consequence they announced unless
+  // the holder recorded item progress after the request, which is a response rather
+  // than silence.
   const releaseRequest = input.releaseRequest;
+  const holderProgressedSinceRequest =
+    releaseRequest != null && hasWorkItemProgressAfterReleaseRequest(releaseRequest, input.itemLastProgressAt);
   const announcedReclaimExpired =
     releaseRequest != null &&
     !releaseRequest.resolved &&
@@ -403,7 +408,7 @@ export async function assessForceRelease(
     releaseRequest.by === input.callerOwnerId &&
     releaseRequest.holder === input.holderOwnerId;
   const oracleBetweenTurns = oracleSessionState === 'parked' || oracleSessionState === 'recorded';
-  if (announcedReclaimExpired && oracleBetweenTurns) {
+  if (announcedReclaimExpired && oracleBetweenTurns && !holderProgressedSinceRequest) {
     return {
       allowed: true,
       basis: 'announced-release-request-expired',

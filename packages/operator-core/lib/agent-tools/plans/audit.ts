@@ -67,6 +67,7 @@ import {
   MAX_BAR_PROJECTION_EDGES,
   unexpectedAcceptanceBarProjectionIds,
   validateAcceptanceBarSource,
+  acceptanceBarSourceContractProblems,
 } from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
@@ -585,8 +586,12 @@ export default defineTool({
         // so a plan outside the contract requires no Bar-to-work map. Checking
         // unconditionally would refuse the ~94% of plans whose epoch is NULL
         // (measured 2026-09-20: 1916 of 2044) — the mirror-image false verdict.
-        const barGateRows = await sql<Array<{ acceptance_bar_epoch: string | null }>>`
-          SELECT acceptance_bar_epoch
+        const barGateRows = await sql<Array<{
+          acceptance_bar_epoch: string | null;
+          acceptance_bar_cohort: string | null;
+          acceptance_bar_rubric_slug: string | null;
+        }>>`
+          SELECT acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_rubric_slug
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug ?? ''}
              AND plan_slug = ${args.slug}
@@ -662,6 +667,30 @@ export default defineTool({
               }],
               message: `1 BAR seed problem(s): stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
             } };
+          }
+          // P-003/P-029: mirror the writer's activation contract-completeness refusal.
+          // The writer judges only FRESH BARs; on a never-seeded post-epoch plan every
+          // BAR is fresh, so the parsed source is exactly what it judges. A seeded plan
+          // re-derives nothing fresh on re-audit (a meaning change routes to amendment),
+          // so the preview stays silent there exactly as the writer does.
+          const barGate = barGateRows[0]!;
+          if (barGate.acceptance_bar_rubric_slug == null &&
+              (barGate.acceptance_bar_cohort ?? 'post-epoch') === 'post-epoch') {
+            const contractProblems = acceptanceBarSourceContractProblems(barSource.bars, barSource.mappings);
+            if (contractProblems.length > 0) {
+              return { data: {
+                ok: false as const,
+                slug: args.slug,
+                phase: 'activation' as const,
+                dryRun: true as const,
+                preview: true as const,
+                error: contractProblems[0]!.code,
+                problems: contractProblems,
+                message:
+                  `${contractProblems.length} BAR seed problem(s): ` +
+                  `${contractProblems.map((problem) => problem.detail).join('; ')}`,
+              } };
+            }
           }
         }
         return { data: {

@@ -12,6 +12,13 @@ Type=oneshot
 # also re-applies renice/ionice to itself so the settings reach kopia's children.
 Nice=19
 IOSchedulingClass=idle
+# WI-10002636: Nice only ranks processes inside this unit's own cgroup; against
+# sibling units the cgroup-v2 CPU share is set by CPUWeight (default 100). Without
+# it this "yield to everything" walk competes at full weight. Kept at 10, not 1,
+# so the daily walk still finishes on a box that is contended most of the day.
+# Guarded by packages/operator-core/lib/systemd-nice-cpuweight-guard.test.ts.
+CPUAccounting=yes
+CPUWeight=10
 # EI-21051850743783294: the previous full-home walk reached a measured 36.8G
 # before systemd-oomd killed it. Keep the service below the operator's shared
 # memory pressure envelope; the script also pins Kopia to --parallel=1.

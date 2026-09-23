@@ -246,6 +246,38 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(req?.resolution).toBe('holder-released');
   });
 
+  it('CAS: a stale progress snapshot cannot resolve a request after the holder made progress', async () => {
+    await seedIssue('WI-rr-progress-race', { takenBy: 'peer-b' });
+    await rr.setWorkItemReleaseRequest('WI-rr-progress-race', {
+      harness: H,
+      by: 'requester',
+      holder: 'peer-b',
+      reason: 'looks stalled',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() - 1,
+    });
+    const observed = await db.sql<{ last_progress_at: Date | null }[]>`
+      SELECT last_progress_at FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-rr-progress-race'`;
+    expect(observed[0]?.last_progress_at).toBeNull();
+
+    await db.sql`
+      UPDATE harness_shared.work_items SET last_progress_at = now()
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-rr-progress-race'`;
+
+    const resolved = await rr.resolveWorkItemReleaseRequest('WI-rr-progress-race', {
+      harness: H,
+      resolution: 'consequence-reclaim',
+      expectedLastProgressAt: observed[0]!.last_progress_at,
+    });
+
+    expect(resolved).toBeNull();
+    expect(rr.readWorkItemReleaseRequest(await readPayload('WI-rr-progress-race'))).toMatchObject({
+      resolved: false,
+      resolution: null,
+    });
+  });
+
   it('terminalized before the deadline → resolves the request as superseded, not as a consequence', async () => {
     await seedIssue('WI-rr-terminal', { takenBy: 'peer-b' });
     await rr.setWorkItemReleaseRequest('WI-rr-terminal', {

@@ -8,8 +8,10 @@
  * `diffHealth` is pure (unit-tested); `probeAll` does the I/O.
  */
 
+import { statSync } from 'node:fs';
 import { connect as netConnect } from 'node:net';
 import { hostname } from 'node:os';
+import { join } from 'node:path';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
@@ -904,7 +906,11 @@ export const BG_HOST_HOT_PATHS = [
   'packages/operator-core/lib/harness/git-sync',
   'packages/operator-core/lib/events',
   'packages/operator-core/lib/agent-tools/loop',
+  'packages/operator-core/lib/red-queen',
+  'packages/operator-core/lib/release/routine-engine-liveness.ts',
 ] as const;
+
+export const BG_HOST_ARTIFACT_PATHS = ['apps/operator/dist-host/hono-host.mjs'] as const;
 
 /**
  * The code the :9071 MCP proxy tsx-loads at import (EI-21390665295968159). The unit is
@@ -1169,6 +1175,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
       name: PORTLESS_PROBE_NAMES.bgHostCode,
       unit: process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercusp-bg-host',
       hotPaths: BG_HOST_HOT_PATHS,
+      artifactPaths: BG_HOST_ARTIFACT_PATHS,
       evaluate: evaluateBgHostCodeDrift,
       platformNote: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
       failedNote: 'bg-host code-drift unknown (probe failed)',
@@ -1219,6 +1226,7 @@ async function probeCodeDrift(
     name: string;
     unit: string;
     hotPaths: readonly string[];
+    artifactPaths?: readonly string[];
     evaluate: (
       bootMs: number | null,
       hotChangeMs: number | null,
@@ -1327,11 +1335,34 @@ async function probeCodeDrift(
             spec.hotPaths,
           )
         : null;
-    const { stdout: findOut } = await run(
-      'find',
-      [...spec.hotPaths, '-name', '*.ts', '-not', '-name', '*.test.ts', '-printf', '%T@ %p\n'],
-      { timeout: 5000, cwd: integrationRoot, maxBuffer: 4 * 1024 * 1024 },
-    );
+    const artifactPaths = (spec.artifactPaths ?? []).filter((artifactPath) => {
+      try {
+        return statSync(join(integrationRoot, artifactPath)).isFile();
+      } catch {
+        return false;
+      }
+    });
+    const findArgs = [
+      ...spec.hotPaths,
+      ...artifactPaths,
+      '-type',
+      'f',
+      '(',
+      '-name',
+      '*.ts',
+      '-not',
+      '-name',
+      '*.test.ts',
+      ...artifactPaths.flatMap((artifactPath) => ['-o', '-path', artifactPath]),
+      ')',
+      '-printf',
+      '%T@ %p\n',
+    ];
+    const { stdout: findOut } = await run('find', findArgs, {
+      timeout: 5000,
+      cwd: integrationRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    });
     let hotChangeMs: number | null = null;
     let newestFile: string | null = null;
     for (const line of findOut.split('\n')) {

@@ -52,10 +52,14 @@ async function record(goalId = GOAL, owner = OWNER) {
   const context: Parameters<typeof recordTool.handler>[1] = {
     isSuperuser: true, uiClientId: owner, workspaceId: WS, harnessSlug: 'papercusp',
     metadata: vi.fn(), log: vi.fn(), progress: vi.fn(),
+    signal: new AbortController().signal, emit: vi.fn(async () => {}),
   };
   const result = await recordTool.handler(args, context);
-  const payload = JSON.parse(result.content[0].text) as IdeatePassRecordResult;
-  return { result, payload };
+  if (!('content' in result) || !Array.isArray(result.content)) throw new Error('Expected the normal MCP result envelope');
+  const first = result.content[0];
+  if (!first || first.type !== 'text' || typeof first.text !== 'string') throw new Error('Expected a text result payload');
+  const payload = JSON.parse(first.text) as IdeatePassRecordResult;
+  return { payload, isError: 'isError' in result && result.isError === true };
 }
 
 describe('goal review production persistence', () => {
@@ -80,9 +84,9 @@ describe('goal review production persistence', () => {
   }, 90_000);
 
   it('does not persist a review for a different goal', async () => {
-    const { result, payload } = await record('another-goal');
+    const { isError, payload } = await record('another-goal');
     expect(payload).toMatchObject({ ok: false, reason: 'goal-review-scope-mismatch' });
-    expect(result.isError).toBe(true);
+    expect(isError).toBe(true);
     const rows = await fx.admin`SELECT id FROM harness_shared.scout_ticks WHERE workspace_id = ${WS} AND detail->>'owner' = ${OWNER}`;
     expect(rows).toHaveLength(0);
   }, 90_000);

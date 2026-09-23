@@ -967,9 +967,10 @@ function rerunRecipeFor(
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
       limit: SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
-      // Replay the exact immutable clause snapshot that produced this grade. The
-      // evaluator accepts these fields and, with replaySnapshot, reuses the persisted
-      // currentness tuple instead of measuring mutable live bindings again.
+      // Replay the exact immutable clause snapshot that produced this grade. The pin
+      // fixes WHICH clause revision is graded; it does not freeze freshness — the
+      // server re-measures each binding's persisted recipe, so this card replays
+      // 'pass' only while the proven code is unchanged (WI-10002320).
       specRevision: clause.revision,
       specFingerprint: clause.contentHash,
       replaySnapshot: true,

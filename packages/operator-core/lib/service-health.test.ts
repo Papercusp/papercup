@@ -17,6 +17,7 @@ import {
   MCP_PROXY_HOT_PATHS,
   probeBgHostCodeDrift,
   BG_HOST_HOT_PATHS,
+  BG_HOST_ARTIFACT_PATHS,
   BG_HOST_STALE_MS,
   compareCommittedHotPaths,
   SUPERVISED_PROCESSES,
@@ -762,6 +763,12 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
     expect(BG_HOST_HOT_PATHS).toContain('packages/operator-core/lib/harness/git-sync');
   });
 
+  it('tracks Red Queen sources and the compiled bg-host entrypoint', () => {
+    expect(BG_HOST_HOT_PATHS).toContain('packages/operator-core/lib/red-queen');
+    expect(BG_HOST_HOT_PATHS).toContain('packages/operator-core/lib/release/routine-engine-liveness.ts');
+    expect(BG_HOST_ARTIFACT_PATHS).toContain('apps/operator/dist-host/hono-host.mjs');
+  });
+
   it('hot-path change YOUNGER than the bg-host boot → drift flagged: up stays true (no alarm), note names the restart + the stale symptom', () => {
     const res = evaluateBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'packages/operator-core/lib/harness/routines/loop-fire.ts');
     expect(res.name).toBe('bg-host-code');
@@ -779,6 +786,16 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
     expect(res.up).toBe(true);
     expect(res.note).toMatch(/code current/);
     expect(res.note).not.toMatch(/DRIFT/);
+  });
+
+  it('a compiled host bundle rebuilt after startup is reported as drift', () => {
+    const res = evaluateBgHostCodeDrift(
+      NOW - 60 * 60_000,
+      NOW - 5_000,
+      'apps/operator/dist-host/hono-host.mjs',
+    );
+    expect(res.note).toMatch(/CODE DRIFT/);
+    expect(res.note).toMatch(/hono-host\.mjs/);
   });
 
   it('loaded runtime identity catches a stale bundle even when source mtime looks current', () => {

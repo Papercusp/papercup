@@ -159,6 +159,12 @@ observationsImpact, EI-10607), adding a bet/cheapExperiment when the idea is a
 real bet → ROUTE the broad ones onward via blender:route-idea → CLOSE with
 blender:ideate-pass-record (a measurable su-ideate tick). Grading an su idea wakes its
 originator to revise (see GRADE).
+When GOAL is also active, its GOAL-LOCAL GAP REVIEW fulfills this IDEATE duty:
+record the scoped evidence and disposition in goalReview, including a justified
+zero-idea result when existing plans suffice. Follow GOAL's execution-first and
+delegated-build rules; this overlay does not authorize the goal holder to implement
+work or manufacture a feature to satisfy a count. Standalone IDEATE keeps the
+ordinary grounded proposal loop above.
 (Overlay: stacks with anything — including DRAIN; ideating on why the drain
 itself isn't working is a legitimate combination.)`,
   },
@@ -575,21 +581,36 @@ weeks, and one that only builds what it was handed is not managing a portfolio;
 both contracts are binding on you NOW and mode:set returned them — read them.
 This is a statement about your current posture, not a pair of follow-up calls to
 remember. (Overlay: stacks with anything, including DRAIN and GRADE.)
-AND IDEATE IS AN OBLIGATION, NOT A POSTURE YOU MERELY HOLD. Holding the row
-and never running a pass is the default outcome, because ideating is the one
-duty here with no queue pushing it: work-items arrive, fleets die loudly,
-budgets tick — nothing ever tells you a pass is overdue. So RUN ONE ON A
-CADENCE YOU KEEP: at least once per reporting cycle, and on any wake that would
-otherwise be a near-noop. GROUND it first (curation:state-of-pot for the
-pattern digest your own filings feed, blender:ideation-feedback { scope:'mine' }
-for how your last ideas actually landed), then ask the portfolio question only
-you can ask — what should exist for this goal that does not — and FILE the
-result as improvements:capture { kind:'feature' }, routing the broad ones with
-blender:route-idea. CLOSE THE PASS with blender:ideate-pass-record. That call
-is not bookkeeping: it is the only durable evidence a pass happened at all, so
-an unrecorded pass is indistinguishable from the pass you kept deferring — and
-deferral, not bad ideas, is this mode's measured failure. A goal that files
-only the defects it tripped over is executing a queue, not managing a portfolio.`,
+SCOPE-AWARE GOAL PLANNING — Blender searches for workspace-level patterns and
+opportunities; you identify what is missing within your own goal. Both may
+originate plans. Search before creating: adopt or revise a suitable existing plan
+instead of cloning it, and route another goal's work to its accountable holder.
+Your own planning initiative remains required; do not wait for Blender to supply
+every necessary plan. Preserve original proposal and plan references when feeding
+recurring findings and observed outcomes back to Blender.
+STAFF EXECUTABLE PLANS FIRST — when a suitable existing plan lacks workers,
+materialize or repair its independent fleet before discretionary new ideation.
+When an evidenced uncovered need is not addressed by existing plans, create and
+start the necessary plan through the normal gates, then get its items claimed.
+Planning and placement are steps toward verified effects, not substitutes for them.
+GOAL-LOCAL GAP REVIEW — for a GOAL holder, the IDEATE duty is a meaningful scoped
+review, at least once per reporting cycle and when a changed outcome, recurring
+failure or uncovered need warrants a new decision. There is no minimum new-idea or
+feature count. Existing plans can be sufficient; a recent supported no-new-plan
+decision does not require another pass merely because the next wake is quiet.
+GROUND the review in the current goal, worklist, scoped frontier, and feedback
+(curation:state-of-pot and blender:ideation-feedback { scope:'mine' }). Choose an
+evidence-backed disposition: existing-plans-sufficient, plan-needed, adopt-plan,
+revise-plan, route-work, blocked, or no-eligible-work. Keep budget, admission,
+ownership and pause constraints explicit; missing evidence is not proof of no work.
+RECORD the review with blender:ideate-pass-record: ideasFiled is the actual count
+and may be zero; goalReview carries your actual goalId, disposition, rationale and
+evidenceRefs. Include planRefs for adoption/revision and uncoveredOutcome when a
+new plan is needed. The server binds the review to your current goal and portfolio.
+An unsupported checkbox is not a review; a review is not a worker claim or proof
+of completion. Follow an identified need through its plan and execution, and report
+the resulting effect or current accountable blocker rather than manufacturing an
+idea to satisfy a quota.`,
   },
   {
     id: 'test',

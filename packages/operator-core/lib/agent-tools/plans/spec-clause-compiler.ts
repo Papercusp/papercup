@@ -113,6 +113,20 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
 );
 const MULTI_SUBJECT_SHARED_PREDICATE_RE =
   /\b(?:[^,.;]+,\s*){2,}(?:and|or)\s+[^,.;]+\s+(?:is|are|was|were|has|have|accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)\b/i;
+const ADDITIONAL_OBSERVABLE_VERB =
+  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying))';
+const EXTENDED_OBSERVABLE_VERB = '(?:' + OBSERVABLE_VERB + '|' + ADDITIONAL_OBSERVABLE_VERB + ')';
+const EXTENDED_OBSERVABLE_PREDICATE_RE = new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'i');
+const MULTI_EXTENDED_CONJUNCTION_RE = new RegExp(
+  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\b(?:and|or)\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
+  'i',
+);
+const MULTI_EXTENDED_WHILE_RE = new RegExp(
+  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\bwhile\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
+  'i',
+);
+const INDEPENDENT_CLAUSE_SUBJECT_RE =
+  /^(?:a|an|the|both|each|every|this|that|these|those|class-[a-z0-9-]+)\b/i;
 const IMPLEMENTATION_PRESENCE_RE =
   /\b(?:(?:is|are|was|were)\s+)?(?:present|implemented|exists?)\s+in\s+(?:the\s+)?(?:current\s+)?(?:source(?:\s+code)?|code(?:base)?|repository|repo|tree|implementation)\b/i;
 const IMPLEMENTATION_CONTAINS_RE =
@@ -178,6 +192,14 @@ function deriveSpecId(sourceValId: string): string {
   return sourceValId.startsWith('VAL-') ? `SPEC-${sourceValId.slice('VAL-'.length)}` : `SPEC-${sourceValId}`;
 }
 
+function hasIndependentCommaClauseSeries(behavior: string): boolean {
+  const clauses = behavior.split(',').filter((fragment) => {
+    const clause = fragment.trim().replace(/^(?:and|or|while)\s+/i, '');
+    return INDEPENDENT_CLAUSE_SUBJECT_RE.test(clause) && EXTENDED_OBSERVABLE_PREDICATE_RE.test(clause);
+  });
+  return clauses.length > 1;
+}
+
 export function specBehaviorNonAtomicReason(rawBehavior: string): string | null {
   const lines = rawBehavior
     .split(/\r?\n/)
@@ -190,7 +212,12 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(behavior)) {
     return 'behavior groups multiple subjects under one predicate';
   }
-  if (MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior)) {
+  if (
+    MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior) ||
+    MULTI_EXTENDED_CONJUNCTION_RE.test(behavior) ||
+    MULTI_EXTENDED_WHILE_RE.test(behavior) ||
+    hasIndependentCommaClauseSeries(behavior)
+  ) {
     return 'behavior joins multiple independently observable outcomes';
   }
   return null;

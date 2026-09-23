@@ -188,7 +188,14 @@ import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-annou
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { resolveAuthorCommsTier } from '../../sync/hyperbee/comms-tier-gate';
 import { emitAwaitedEvent } from '../../events/await/engine';
-import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
+import {
+  decideContentQuarantineNotice,
+  decideGitSyncEscalation,
+  oversizedKey,
+  selectContentNoticeRecipients,
+  type ContentQuarantineNotice,
+  type EscalationReason,
+} from './git-sync-escalation';
 import { deriveGenesisBaselineSha } from './genesis-baseline';
 import { appendPipelineEvent } from './pipeline-events';
 import { DEFAULT_CONTENT_DETECTORS } from '../../content-lint/registry';
@@ -214,6 +221,7 @@ import {
   type ScopedContentError,
   type StrandedSubmodule,
 } from './run-git-sync';
+import { mapLiveLockHoldingsForRepo, nestedInstallRepoPrefix } from './live-lock-coordinates';
 import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
@@ -2560,6 +2568,52 @@ async function assigneesForContentErrors(
   }
 }
 
+/** P-009 / WI-10002596: the lock-plane prefix of a nested install (see nestedInstallRepoPrefix).
+ *  The parent install's project dir is the authority; a failed lookup falls back to the
+ *  slug tail, which is accepted only when the repo path actually ends with it. */
+async function nestedInstallLockPrefix(
+  slug: string,
+  workspaceId: string | null,
+  repoPath: string | null | undefined,
+): Promise<string> {
+  const slash = slug.indexOf('/');
+  if (slash <= 0 || !repoPath) return '';
+  let parentRoot: string | null = null;
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    parentRoot = (await projectDirForSlug(slug.slice(0, slash), workspaceId ?? undefined)) ?? null;
+  } catch {
+    parentRoot = null;
+  }
+  return nestedInstallRepoPrefix(slug, repoPath, parentRoot);
+}
+
+/** P-009 (EI-24015486799447670): recipients for a content-quarantine notice. Attribution
+ *  (above) plus the liveness oracle, so an alarm is never addressed only to an ended
+ *  session. The selection rule lives in `selectContentNoticeRecipients` (unit-tested).
+ *  Liveness is bounded and best-effort: a failed read leaves states unknown, which
+ *  makes an alarm fall back to the broadcast rather than go silent. */
+async function contentNoticeRecipients(
+  slug: string,
+  workspaceId: string | null,
+  contentErrors: ScopedContentError[],
+  notice: ContentQuarantineNotice,
+): Promise<string[]> {
+  const editors = await assigneesForContentErrors(slug, workspaceId, contentErrors);
+  const attributed = editors.filter((e) => e !== '*');
+  const states = new Map<string, string | null>();
+  if (attributed.length > 0) {
+    const { resolveSessionStates } = await import('../../agent-tools/coordination/liveness-oracle');
+    const { withBoundedTimeout } = await import('../../bounded-timeout');
+    const verdicts = await withBoundedTimeout(
+      () => resolveSessionStates(attributed.map((ownerId) => ({ ownerId })), { hydratePerId: true }),
+      { fallback: new Map(), timeoutMs: 5_000, label: 'git-sync content-notice liveness' },
+    );
+    for (const [id, v] of verdicts.value) states.set(id, v.sessionState);
+  }
+  return selectContentNoticeRecipients(notice, editors, (id) => states.get(id));
+}
+
 /**
  * EI-21743795611133311: tell the live edit-lock holders when git-sync had to
  * leave their dirty paths out of the commit. The lock TTL is only a backstop;
@@ -3180,6 +3234,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       }
       return { status: 'skipped', reason: 'live-lock-read-failed' };
     }
+    // P-009 / WI-10002596: a NESTED install receives lock paths in its parent's root
+    // coordinates; map them into this repo's own root so exclusion is not a silent no-op.
+    const lockRepoPrefix = await nestedInstallLockPrefix(slug, workspaceId, repoPath);
+    if (lockRepoPrefix) liveLockHoldingRows = mapLiveLockHoldingsForRepo(liveLockHoldingRows, lockRepoPrefix);
     const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
@@ -3229,7 +3287,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // initial census above protects setup, while this guarded callback closes
         // the longer submodule/guard window where a peer can acquire a lock.
         refreshLiveLockHoldings: () =>
-          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => liveLockHoldingsStrict())),
+          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => liveLockHoldingsStrict())).then(
+            (rows) => (lockRepoPrefix ? mapLiveLockHoldingsForRepo(rows, lockRepoPrefix) : rows),
+          ),
         loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
         // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
         // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
@@ -6261,24 +6321,46 @@ async function recordAndEscalateTick(a: {
   if (contentErrors.length > 0) {
     const needsHuman = contentTicks >= MAX_CONTENT_FIXER_ATTEMPTS;
     await writeGitSyncContentEscalation(slug, workspaceId, contentErrors, contentTicks, needsHuman);
+    // P-009 (EI-24015486799447670): editor notice on the FIRST quarantined tick, the alarm on
+    // the fixer-budget transition, and a periodic re-alarm while it persists.
+    const notice = decideContentQuarantineNotice({
+      contentTicks,
+      prevContentTicks: a.prevContentTicks,
+      alarmTicks: MAX_CONTENT_FIXER_ATTEMPTS,
+    });
     if (needsHuman) {
       // P-005: the fixer has had MAX_CONTENT_FIXER_ATTEMPTS ticks and the file is STILL
       // broken — STOP auto-dispatching (no infinite silent loop) and surface to a human
       // ONCE, on the transition. The file stays quarantined (never reaches staging), so
       // nothing is at risk while it waits for a human.
-      if (a.prevContentTicks < MAX_CONTENT_FIXER_ATTEMPTS) {
+      if (notice === 'alarm' || notice === 'realarm') {
         const summary =
+          (notice === 'realarm' ? `⚠ STILL QUARANTINED (re-alarm) — ` : '') +
           `git-sync: ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
           contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
         // P-006: ASSIGN to the agents who edited the quarantined files (derived from presence),
         // not a fleet broadcast. Falls back to ['*'] when attribution is off / unattributable.
-        const to = await assigneesForContentErrors(slug, workspaceId, contentErrors);
+        const to = await contentNoticeRecipients(slug, workspaceId, contentErrors, notice);
         await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
       }
     } else {
       const stillCurrent = await spawnContentFixer(slug, workspaceId, contentErrors, a.repoPath, contentTicks);
+      if (notice === 'editor-first-tick' && stillCurrent.length > 0) {
+        const to = await contentNoticeRecipients(slug, workspaceId, stillCurrent, notice);
+        if (to.length > 0) {
+          const summary =
+            `git-sync QUARANTINED file(s) you edited: they failed a content check, so they (and any file ` +
+            `importing them) are withheld from the auto-commit until they pass. Fix forward now; a ` +
+            `content-fixer was also dispatched. ` +
+            stillCurrent
+              .map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`)
+              .join(', ')
+              .slice(0, 600);
+          await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
+        }
+      }
       if (stillCurrent.length === 0) {
         await patchRoutineMetadata(slug, workspaceId, {
           consecutive_content_error_ticks: 0,

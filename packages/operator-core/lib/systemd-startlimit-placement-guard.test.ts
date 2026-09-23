@@ -78,4 +78,28 @@ describe('systemd StartLimit-placement guard predicate (EI-19381535849234617)', 
       expect(findMisplacedStartLimitKeys(unit), relativePath).toEqual([]);
     }
   });
+
+  it('keeps the staging API retryable after a temporary database outage', () => {
+    const dropIn = readFileSync(
+      fileURLToPath(new URL('../../../apps/operator/scripts/systemd/papercup-staging-api.service.d/97-bundle-stale-start.conf', import.meta.url)),
+      'utf8',
+    );
+    expect(findMisplacedStartLimitKeys(dropIn)).toEqual([]);
+
+    const sections = new Map<string, Map<string, string>>();
+    let section = '';
+    for (const raw of dropIn.split('\n')) {
+      const line = raw.trim();
+      if (line.startsWith('[') && line.endsWith(']')) {
+        section = line.slice(1, -1);
+        if (!sections.has(section)) sections.set(section, new Map());
+      } else if (line && !line.startsWith('#') && line.includes('=')) {
+        const at = line.indexOf('=');
+        sections.get(section)?.set(line.slice(0, at), line.slice(at + 1));
+      }
+    }
+    expect(sections.get('Unit')?.get('StartLimitIntervalSec')).toBe('0');
+    expect(sections.get('Service')?.get('RestartSteps')).toBe('5');
+    expect(sections.get('Service')?.get('RestartMaxDelaySec')).toBe('60');
+  });
 });

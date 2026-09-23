@@ -384,3 +384,57 @@ describe('acceptanceBarProjectedBehavior', () => {
     expect(acceptanceBarProjectedBehavior({})).toBe('');
   });
 });
+
+// review-system-rework-reduction-2026-09-23 P-003/P-029: the activation seed demands the
+// METHOD/check/layer contract while the repair is still a draft text edit.
+describe('activation seed contract completeness (requireContractCompleteness)', () => {
+  const block = (sections: Record<string, unknown>) =>
+    '**R-1 — Complete export.**\n```requirement\n' + JSON.stringify(sections) + '\n```';
+  const completeSections = {
+    intent: { request: 'Export every matching customer.' },
+    acceptance: { condition: 'Every matching ID appears exactly once.', falsifier: 'Any ID is missing.',
+      requiredTestLayers: ['integration'] },
+    verification: { method: 'Export a multi-page fixture and compare rows.',
+      check: { kind: 'tests', files: ['packages/operator-core/lib/export.integration.test.ts'] } },
+  };
+  const oneBarMap = '| R-1 | P-001 | tree |';
+
+  it('refuses prose BARs once each, with the conversion template shown a single time', () => {
+    const built = buildAcceptanceBarSeed({ ...input, planContent: plan(), requireContractCompleteness: true });
+    expect(built.ok).toBe(false);
+    if (built.ok) throw new Error('expected refusal');
+    expect(built.problems.map((problem) => [problem.barKey, problem.code])).toEqual([
+      ['R-1', 'bar_contract_method_missing'],
+      ['R-2', 'bar_contract_method_missing'],
+    ]);
+    // R-1 is tree-plane (owes automated proof); R-2 is live with no layers (manual delivery).
+    expect(built.problems[0]!.contractGaps).toEqual(['method_missing', 'check_missing', 'test_layers_missing']);
+    expect(built.problems[1]!.contractGaps).toEqual(['method_missing', 'check_missing']);
+    // The template (identified by its unique placeholder) appears once, not per BAR.
+    expect(built.message.split('<what was asked>').length - 1).toBe(1);
+  });
+
+  it('seeds a complete requirement block and refuses a check that cannot prove its declared layer', () => {
+    const ok = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(completeSections), map: oneBarMap }),
+      requireContractCompleteness: true });
+    expect(ok.ok).toBe(true);
+
+    const unitOnly = { ...completeSections, verification: { ...completeSections.verification,
+      check: { kind: 'tests', files: ['packages/operator-core/lib/export.test.ts'] } } };
+    const mismatch = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(unitOnly), map: oneBarMap }),
+      requireContractCompleteness: true });
+    expect(mismatch).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
+  });
+
+  it('judges only fresh post-epoch BARs: opt-out, legacy backfill and unchanged priors are untouched', () => {
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan() }).ok).toBe(true);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), cohort: 'legacy-backfilled',
+      requireContractCompleteness: true }).ok).toBe(true);
+    // A re-audit of an already-seeded contract re-derives nothing fresh, so it cannot be
+    // refused on a gap the start door (not a re-audit) owns.
+    const seeded = buildAcceptanceBarSeed({ ...input, planContent: plan() });
+    if (!seeded.ok) throw new Error(seeded.message);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: seeded.templateData,
+      requireContractCompleteness: true }).ok).toBe(true);
+  });
+});

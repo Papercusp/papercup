@@ -667,7 +667,7 @@ describe('specTestAdequacyCompletionGate', () => {
     }
   });
 
-  it('refuses evaluator capability gaps distinctly and never dispatches a grading audit', async () => {
+  it('explains evaluator unknown ratings without claiming a build outage and never dispatches a grading audit', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
       listedEvidence({
@@ -692,7 +692,11 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
     if (!result.ok) {
-      expect(result.reason).toContain('evaluator capability unavailable on build');
+      expect(result.reason).toMatch(/\d+ criterion\(s\) rated unknown/);
+      expect(result.reason).toContain('does not establish a build or evaluator-capability problem');
+      expect(result.reason).toContain('plans:evaluate-spec-test-adequacy');
+      expect(result.reason).toContain('testFingerprint omitted');
+      expect(result.reason).not.toContain('capability unavailable on build');
       expect(result.reason).toContain('freshness');
       expect(result.reason).toContain('grading-integrity audit');
       expect(result.pendingGradingAuditTargetIds).toBeUndefined();

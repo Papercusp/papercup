@@ -101,4 +101,81 @@ describe('kopia-home-snapshot bounded execution contract', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  testIfInstalled('cleanup kills a ROOT-owned Kopia child whose /proc exe link the user unit cannot read', () => {
+    // WI-10002636: the Kopia child runs as root, and /proc/<pid>/exe of a root process is
+    // unreadable to the user unit, so the unprivileged readlink returns nothing and the match
+    // never succeeded for the child this cleanup exists to kill. The user-visible proc dir
+    // below has a readable cmdline but NO exe; only the sudo path (a root-view mirror)
+    // resolves the link, exactly like the real /proc.
+    const root = mkdtempSync(join(tmpdir(), 'kopia-home-snapshot-rootview-'));
+    const stateDir = join(root, 'state');
+    const procRoot = join(root, 'proc');
+    const rootViewProcRoot = join(root, 'proc-as-root');
+    const rootPid = '5252';
+    const reusedRootPid = '5353';
+    const fakeKopia = join(root, 'kopia');
+    const fakeOther = join(root, 'other');
+    const sudoStub = join(root, 'sudo-stub.sh');
+    const killLog = join(root, 'kill.log');
+    const pidFile = join(stateDir, 'home-snapshot.kopia.pid');
+    const killLogText = () => (existsSync(killLog) ? readFileSync(killLog, 'utf8') : '');
+
+    try {
+      mkdirSync(stateDir);
+      writeFileSync(fakeKopia, 'fixture');
+      writeFileSync(fakeOther, 'fixture');
+      for (const [pid, target, argv] of [
+        [rootPid, fakeKopia, `${fakeKopia}\0snapshot\0create\0--parallel=1\0`],
+        [reusedRootPid, fakeOther, `${fakeOther}\0sleep\0`],
+      ] as const) {
+        mkdirSync(join(procRoot, pid), { recursive: true });
+        mkdirSync(join(rootViewProcRoot, pid), { recursive: true });
+        writeFileSync(join(procRoot, pid, 'cmdline'), Buffer.from(argv));
+        symlinkSync(target, join(rootViewProcRoot, pid, 'exe'));
+      }
+      // Models `sudo -n`: strips its flags, resolves readlink against the root view of /proc,
+      // and logs every other command (the kill) instead of running it.
+      writeFileSync(
+        sudoStub,
+        [
+          '#!/usr/bin/env bash',
+          '[ "$1" = -n ] && shift',
+          '[ "$1" = -- ] && shift',
+          'if [ "$1" = readlink ]; then',
+          '  shift',
+          '  args=()',
+          '  for a in "$@"; do args+=("${a/#"$KOPIA_TEST_PROC_ROOT"/"$KOPIA_TEST_ROOT_VIEW"}"); done',
+          '  exec readlink "${args[@]}"',
+          'fi',
+          'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(sudoStub, 0o755);
+
+      const env = {
+        ...process.env,
+        KOPIA_HOME_SNAPSHOT_LOG_DIR: stateDir,
+        KOPIA_HOME_SNAPSHOT_PROC_ROOT: procRoot,
+        KOPIA_HOME_SNAPSHOT_SUDO: sudoStub,
+        KOPIA_HOME_SNAPSHOT_BIN: fakeKopia,
+        KOPIA_TEST_KILL_LOG: killLog,
+        KOPIA_TEST_PROC_ROOT: procRoot,
+        KOPIA_TEST_ROOT_VIEW: rootViewProcRoot,
+      };
+
+      writeFileSync(pidFile, `${rootPid}\n`);
+      expect(spawnSync('bash', [SCRIPT, '--cleanup'], { encoding: 'utf8', env }).status).toBe(0);
+      expect(killLogText()).toContain(`-KILL ${rootPid}`);
+      expect(existsSync(pidFile)).toBe(false);
+
+      writeFileSync(pidFile, `${reusedRootPid}\n`);
+      expect(spawnSync('bash', [SCRIPT, '--cleanup'], { encoding: 'utf8', env }).status).toBe(0);
+      expect(killLogText()).not.toContain(`-KILL ${reusedRootPid}`);
+      expect(existsSync(pidFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

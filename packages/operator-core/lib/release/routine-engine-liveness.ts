@@ -32,11 +32,19 @@ export async function readRoutineEngineLiveness(
 ): Promise<RoutineEngineLiveness> {
   try {
     const rows = await sql<Array<{ last_tick_ms: string | number | null }>>`
-       SELECT MAX(completed_at) AS last_tick_ms
-        FROM dbos.workflow_status
-       WHERE name = 'routinesTick'
-         AND status = 'SUCCESS'
-         AND completed_at IS NOT NULL`;
+       SELECT MAX(tick.completed_at) AS last_tick_ms
+        FROM dbos.workflow_status tick
+       WHERE tick.name = 'routinesTick'
+         AND tick.status = 'SUCCESS'
+         AND tick.completed_at IS NOT NULL
+         AND EXISTS (
+           SELECT 1
+             FROM dbos.operation_outputs operation
+            WHERE operation.workflow_uuid = tick.workflow_uuid
+              AND operation.function_name = 'list-due-routines'
+              AND operation.completed_at_epoch_ms IS NOT NULL
+              AND operation.error IS NULL
+         )`;
     const raw = rows[0]?.last_tick_ms;
     const lastTickMs = raw == null ? null : Number(raw);
     return evaluateRoutineEngineLiveness(lastTickMs, opts.nowMs ?? Date.now(), opts);
