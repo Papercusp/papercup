@@ -263,14 +263,16 @@ describe('control-anchor kernel resolver (D-030)', () => {
       expect(bodyReads()).toBe(1);
     });
 
-    it('enforces the loaded body rather than a previously valid header when the row changes between reads', async () => {
+    it('refuses a tampered loaded body despite a previously valid header when the row changes between reads', async () => {
       const changedBody = {
-        ...anchorRow({}).launch_spec as Record<string, unknown>, workspaceId: 'ws-other',
+        ...anchorRow({}).launch_spec as Record<string, unknown>, specificationArtifact: { tampered: true },
       };
       db.rows.push([rowAt('810')]);
       db.loadOverrides.push([{ launch_spec: changedBody, launch_spec_xmin: '811' }]);
       const verdict = await controlAnchorKernelResolver(request());
-      expect(verdict?.decision).toBe('deny');
+      expect(verdict).toMatchObject({
+        decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      });
       expect(bodyReads()).toBe(1);
     });
 
