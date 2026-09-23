@@ -525,6 +525,7 @@ function desktopHarness(
 ) {
   const sent: HostedHostOutboundEnvelope[] = [];
   const audit = vi.fn();
+  const warnings = vi.fn();
   const sockets: FakeDesktopSocket[] = [];
   const dials: HostedDesktopDialInput[] = [];
   const beats: string[] = [];
@@ -561,6 +562,7 @@ function desktopHarness(
     workspaceRoot: '/nonexistent-desktop-root',
     send: (message) => sent.push(message),
     onAudit: audit,
+    onWarning: warnings,
     createPty: () => new FakePty(),
     desktop: backend,
   });
@@ -598,7 +600,7 @@ function desktopHarness(
       role,
     });
   const startCount = () => starts;
-  return { adapter, sent, audit, auditActions, sockets, dials, beats, openDesktop, openTerminal, relay, payloads, startCount };
+  return { adapter, sent, audit, warnings, auditActions, sockets, dials, beats, openDesktop, openTerminal, relay, payloads, startCount };
 }
 
 describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () => {
@@ -935,7 +937,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
   });
 
   it('turns a backend failure into a typed error instead of a dropped request', async () => {
-    const { openDesktop, relay, payloads } = desktopHarness({ rosterError: new Error('registry unavailable') });
+    const { openDesktop, relay, payloads, warnings } = desktopHarness({ rosterError: new Error('registry unavailable') });
     await openDesktop('channel-1', 'observer');
     await relay('channel-1', { type: 'desktop.roster', requestId: 'req-1' });
 
@@ -945,6 +947,8 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       operation: 'desktop.roster',
       code: 'desktop_query_failed',
     });
+    // The wire carries only the code; the cause must reach the host journal (D-405).
+    expect(warnings).toHaveBeenCalledWith('desktop.roster failed: Error: registry unavailable');
   });
 
   it('starts the workspace desktop for a controller on a terminal channel, before any desktop exists (D-405)', async () => {
@@ -1008,6 +1012,8 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       operation: 'desktop.start',
       code: 'desktop_start_failed',
     });
+    expect(failing.warnings).toHaveBeenCalledWith('desktop.start failed: Error: desktop pack socket refused');
+    expect(JSON.stringify(failing.payloads('term-1'))).not.toContain('socket refused');
 
     const bare = desktopHarness();
     await bare.openTerminal('term-1', 'controller');

@@ -223,6 +223,7 @@ export function createHostedWorkspaceHostRuntime(
           if (!client.send(message)) warn(`dropped outbound ${message.type} — connector down`);
         },
         onAudit,
+        onWarning: warn,
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
       });
