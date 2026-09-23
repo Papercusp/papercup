@@ -3752,7 +3752,15 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     } finally {
       try { process.kill(-(secondLeader.pid as number), 'SIGKILL'); } catch { /* already gone */ }
     }
-  }, 20_000);
+    // 60s, not 20s: this budget must EXCEED the sum of the budgets nested inside it, or vitest's
+    // timer pre-empts theirs and reports the wrong thing. The parts are the first real run (its
+    // cmd holds a `sleep 3`), the 2.1s ageing wait, `waitFor`'s 15s default, and the follower's
+    // replay run — already >20s before the box is loaded at all. So the outer timer always won,
+    // and a genuine "the second leader never started" surfaced as a bare `Test timed out in
+    // 20000ms` while the named diagnostic waitFor exists to print stayed unreachable. Measured as
+    // test_run 19111385; the same blob passed as 19107618 on a quiet box, which is the tell that
+    // the ceiling was the constraint rather than the invariant under test.
+  }, 60_000);
 
   it('leaves no .part temp files behind, even when a leader is hard-killed mid-run', async () => {
     const partCount = () => {
