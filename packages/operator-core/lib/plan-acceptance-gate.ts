@@ -183,6 +183,16 @@ export interface PlanAcceptanceGateVerdict {
   code?: PlanAcceptanceGateCode;
   /** Preserve the SAME lifecycle observation that refused; do not re-read to explain it. */
   acceptanceBarLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
+  /**
+   * P-038 (review-system-rework-reduction-2026-09-23, R-9): the lifecycle PHASE whose
+   * obligations actually block, and that phase's own verdict. The ship-phase
+   * `acceptanceBarLifecycle` lists every code owed by ship time — including grading and
+   * author-verdict codes that cannot be worked yet — so on its own it hides the one repair
+   * that unblocks. When the ship door defers to pre-grading and pre-grading fails, the
+   * repair belongs to pre-grading; `blockingPhaseLifecycle.nextRepair` is it.
+   */
+  blockingPhase?: AcceptanceBarLifecycleVerdict['phase'];
+  blockingPhaseLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
   /** Exact authoritative grading to read before recording an author verdict. */
   gradingRef?: string;
   repairAction?: PlanAcceptanceRepairAction;
@@ -272,6 +282,36 @@ export interface PlanAcceptanceGateVerdict {
 }
 
 type PlanAcceptanceGateVerdictWithoutBuildProvenance = Omit<PlanAcceptanceGateVerdict, 'buildProvenance'>;
+
+/**
+ * P-038 (review-system-rework-reduction-2026-09-23, R-9): the ship refusal when the ship door
+ * deferred to pre-grading (grading missing/stale) and pre-grading itself fails. Keeps the
+ * ship-phase lifecycle (every code owed by ship time) but names the phase that ACTUALLY blocks,
+ * carries its verdict, and leads the message with that phase's single next repair.
+ *
+ * Measured 2026-09-23 (Avi #302): an agent shipping consult-expert-routing-2026-09-22 was
+ * refused with six codes and had to re-probe by hand to learn only bar_snapshot_vetting_missing
+ * blocked — the gate had computed exactly that verdict here and thrown it away. Pure.
+ */
+export function preGradingBlockedRefusal(
+  shipRefusal: PlanAcceptanceGateVerdictWithoutBuildProvenance,
+  preGrading: AcceptanceBarLifecycleVerdict,
+): PlanAcceptanceGateVerdictWithoutBuildProvenance {
+  const { nonCodeItemProofs: _omit, ...phaseVerdict } = preGrading;
+  const repair = preGrading.nextRepair;
+  const lead =
+    `BLOCKED AT PRE-GRADING (${preGrading.codes.length} code(s): ${preGrading.codes.join(', ') || 'none'}). ` +
+    (repair
+      ? `NEXT REPAIR${repair.barKey ? ` (${repair.barKey})` : ''}: ${repair.action}. `
+      : '') +
+    'Grading and author-verdict codes in the ship list cannot be worked until this phase passes.';
+  return {
+    ...shipRefusal,
+    blockingPhase: 'pre-grading',
+    blockingPhaseLifecycle: phaseVerdict,
+    message: shipRefusal.message ? `${lead}\n${shipRefusal.message}` : lead,
+  };
+}
 
 export interface PlanAcceptanceGateOpts {
   /** Subject harness, distinct from the acceptance rubric's storage harness. */
@@ -565,6 +605,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           satisfied: false,
           code: 'acceptance_bar_contract_not_ready',
           acceptanceBarLifecycle: barLifecycle,
+          blockingPhase: 'ship',
           message:
             barLifecycle.message ?? `plan '${planSlug}' cannot be marked shipped: acceptance BAR contract is not ready`,
         };
@@ -583,7 +624,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           expectedApplicable: true,
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
         });
-        if (!preGrading.satisfied) return refusal;
+        // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
+        // codes include grading/author-verdict obligations nobody can work yet. Return it
+        // instead of discarding it, and lead the message with the repair that unblocks.
+        if (!preGrading.satisfied) return preGradingBlockedRefusal(refusal, preGrading);
         requireCurrentBarGrading = gradingStale;
         if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
       }
