@@ -4,14 +4,22 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   HOSTED_GCP_DELEGATION_SOURCE_ENV,
+  HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV,
+  ensureOrganizationDelegationAccount,
   hostedGcpDelegationSource,
+  hostedGcpOrganizationIdentityProject,
   keyFileDelegationSource,
+  organizationDelegationAccountId,
+  organizationDelegationEmail,
+  organizationDelegationPrincipal,
   resolveHostedGcpAuth,
   type HostedGcpDelegationSource,
 } from './hosted-gcp-auth';
 import type { HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 const CONTROLLER_EMAIL = 'controller@papercusp.iam.gserviceaccount.com';
+const IDENTITY_PROJECT = 'papercusp-identity';
+const ORG = 'org-a';
 
 function record(method: 'service-account-impersonation' | 'workload-identity' = 'service-account-impersonation'):
   HostedProviderDelegationRecord {
@@ -20,7 +28,7 @@ function record(method: 'service-account-impersonation' | 'workload-identity' = 
         method,
         projectId: 'papercusp-hosted-123',
         serviceAccountEmail: 'workspace-host@papercusp-hosted-123.iam.gserviceaccount.com',
-        trustedPrincipal: `serviceAccount:${CONTROLLER_EMAIL}`,
+        trustedPrincipal: organizationDelegationPrincipal(ORG, IDENTITY_PROJECT),
       } as const
     : {
         method,
@@ -30,7 +38,7 @@ function record(method: 'service-account-impersonation' | 'workload-identity' = 
         subject: 'workspace:workspace-1',
       } as const;
   return {
-    schemaVersion: 'hosted-provider-delegation-v1', workspaceId: 'workspace-1', connectionId: 'connection-1',
+    schemaVersion: 'hosted-provider-delegation-v1', organizationId: ORG, workspaceId: 'workspace-1', connectionId: 'connection-1',
     label: 'Hosted GCP', provider: 'gcp', credentialRef: 'delegation://workspace-1/gcp/connection-1/1',
     generation: 1, status: 'verified', configuration: { provider: 'gcp', source }, templateDigest: 'digest',
     createdAt: '2026-08-28T00:00:00.000Z', updatedAt: '2026-08-28T00:00:00.000Z',
@@ -56,10 +64,9 @@ const NEVER_EMIT_MARKER = 'never-emit-me';
 const MINTED_TOKEN = 'customer-token';
 
 describe('hosted GCP auth resolver', () => {
-  it('mints a short-lived impersonated token from the controller metadata identity without static keys', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+  it('mints a short-lived token through the organization account from the metadata identity', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
-      if (url.endsWith('/email')) return new Response(CONTROLLER_EMAIL);
       if (url.endsWith('/token')) return Response.json({ access_token: NEVER_EMIT_MARKER });
       if (url.includes(':generateAccessToken')) return Response.json({ accessToken: MINTED_TOKEN });
       return new Response('unexpected', { status: 500 });
@@ -68,15 +75,17 @@ describe('hosted GCP auth resolver', () => {
     await expect(resolveHostedGcpAuth({
       credentialRef: delegation.credentialRef,
       provider: { hostedDelegation: delegation },
-    }, { fetch: fetchImpl })).resolves.toEqual({
+    }, { fetch: fetchImpl, identityProject: IDENTITY_PROJECT })).resolves.toEqual({
       accessToken: MINTED_TOKEN,
       identity: 'workspace-host@papercusp-hosted-123.iam.gserviceaccount.com',
       projectId: 'papercusp-hosted-123',
     });
-    // principal (metadata email) → source token → impersonation.
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(String(fetchImpl.mock.calls[2]![0])).toContain('iamcredentials.googleapis.com');
-    expect(String(fetchImpl.mock.calls[2]![1]?.body)).toContain('3600s');
+    // source token → impersonation of the customer account, chained through the org account.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]![0])).toContain('iamcredentials.googleapis.com');
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as { delegates: string[]; lifetime: string };
+    expect(body.lifetime).toBe('3600s');
+    expect(body.delegates).toEqual([`projects/-/serviceAccounts/${organizationDelegationEmail(ORG, IDENTITY_PROJECT)}`]);
     expect(JSON.stringify(delegation)).not.toContain(NEVER_EMIT_MARKER);
   });
 
@@ -94,19 +103,36 @@ describe('hosted GCP auth resolver', () => {
     });
     const delegation = record();
     await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } },
-      { fetch: fetchImpl, source })).resolves.toMatchObject({ accessToken: MINTED_TOKEN });
+      { fetch: fetchImpl, source, identityProject: IDENTITY_PROJECT })).resolves.toMatchObject({ accessToken: MINTED_TOKEN });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses to impersonate as an identity the customer did not grant', async () => {
+  it.each([
+    ['the delegation source itself', { trustedPrincipal: `serviceAccount:${CONTROLLER_EMAIL}` }, 'not_organization_account'],
+    ["another organization's account", { trustedPrincipal: organizationDelegationPrincipal('org-b', IDENTITY_PROJECT) }, 'not_organization_account'],
+    ['the right account id in a foreign project', { trustedPrincipal: organizationDelegationPrincipal(ORG, 'attacker-project') }, 'not_organization_account'],
+  ])('refuses a grant naming %s, before any token is minted (D-397)', async (_label, override, code) => {
     const accessToken = vi.fn(async () => 'src');
     const fetchImpl = vi.fn<typeof fetch>();
-    const delegation = record();
+    const base = record();
+    const delegation = {
+      ...base,
+      configuration: { provider: 'gcp' as const, source: { ...base.configuration.source, ...override } },
+    } as HostedProviderDelegationRecord;
     await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } }, {
       fetch: fetchImpl,
-      source: { principal: async () => 'serviceAccount:someone-else@x.iam.gserviceaccount.com', accessToken },
-    })).rejects.toThrow('trusted_principal_mismatch');
+      identityProject: IDENTITY_PROJECT,
+      source: { principal: async () => `serviceAccount:${CONTROLLER_EMAIL}`, accessToken },
+    })).rejects.toThrow(code);
     expect(accessToken).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a record with no owning organization (written before D-397)', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { organizationId: _dropped, ...delegation } = record();
+    await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } },
+      { fetch: fetchImpl, identityProject: IDENTITY_PROJECT })).rejects.toThrow('organization_missing');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -129,18 +155,20 @@ describe('hosted GCP auth resolver', () => {
     expect(String(metadata.mock.calls[0]![0])).toContain('metadata.google.internal');
   });
 
-  it('exchanges a metadata identity token through STS before impersonation for workload identity', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
-      const url = String(input);
-      if (url.includes('/identity?')) return new Response('metadata-id-token');
-      if (url === 'https://sts.googleapis.com/v1/token') return Response.json({ access_token: 'sts-token' });
-      if (url.includes(':generateAccessToken')) return Response.json({ accessToken: 'customer-token' });
-      return new Response('unexpected', { status: 500 });
-    });
+  it('refuses workload identity, where every organization would federate as one subject (D-397)', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
     const delegation = record('workload-identity');
     await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } },
-      { fetch: fetchImpl })).resolves.toMatchObject({ accessToken: 'customer-token' });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+      { fetch: fetchImpl, identityProject: IDENTITY_PROJECT })).rejects.toThrow('method_not_organization_bound');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('needs an explicit, well-formed identity project', () => {
+    expect(() => hostedGcpOrganizationIdentityProject({})).toThrow('identity_project_unconfigured');
+    expect(() => hostedGcpOrganizationIdentityProject({ [HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV]: 'Bad_Project' }))
+      .toThrow('identity_project_invalid');
+    expect(hostedGcpOrganizationIdentityProject({ [HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV]: ` ${IDENTITY_PROJECT} ` }))
+      .toBe(IDENTITY_PROJECT);
   });
 
   it('fails closed before network access for a revoked or cross-reference record', async () => {
@@ -151,5 +179,52 @@ describe('hosted GCP auth resolver', () => {
     await expect(resolveHostedGcpAuth({ credentialRef: 'delegation://foreign', provider: { hostedDelegation: record() } },
       { fetch: fetchImpl })).rejects.toThrow('reference_mismatch');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-organization delegation accounts (D-397)', () => {
+  const source: HostedGcpDelegationSource = {
+    principal: async () => `serviceAccount:${CONTROLLER_EMAIL}`,
+    accessToken: async () => 'src',
+  };
+
+  it('derives a stable, valid, per-organization account id', () => {
+    const a = organizationDelegationAccountId(ORG);
+    expect(a).toMatch(/^[a-z][-a-z0-9]{4,28}[a-z0-9]$/);
+    expect(a).toBe(organizationDelegationAccountId(ORG));
+    expect(a).not.toBe(organizationDelegationAccountId('org-b'));
+    expect(organizationDelegationPrincipal(ORG, IDENTITY_PROJECT))
+      .toBe(`serviceAccount:${a}@${IDENTITY_PROJECT}.iam.gserviceaccount.com`);
+  });
+
+  it('reads an existing account and never re-creates it', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({}));
+    await expect(ensureOrganizationDelegationAccount({ organizationId: ORG, identityProject: IDENTITY_PROJECT, source, fetch: fetchImpl }))
+      .resolves.toBe(organizationDelegationPrincipal(ORG, IDENTITY_PROJECT));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![1]?.method ?? 'GET').toBe('GET');
+  });
+
+  it.each([200, 409])('creates a missing account in the identity project (create answers %i)', async (createStatus) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) =>
+      init?.method === 'POST' ? new Response('{}', { status: createStatus }) : new Response('', { status: 404 }));
+    await expect(ensureOrganizationDelegationAccount({ organizationId: ORG, identityProject: IDENTITY_PROJECT, source, fetch: fetchImpl }))
+      .resolves.toBe(organizationDelegationPrincipal(ORG, IDENTITY_PROJECT));
+    const [url, init] = fetchImpl.mock.calls[1]!;
+    expect(String(url)).toBe(`https://iam.googleapis.com/v1/projects/${IDENTITY_PROJECT}/serviceAccounts`);
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer src');
+    expect(JSON.parse(String(init?.body))).toMatchObject({ accountId: organizationDelegationAccountId(ORG) });
+  });
+
+  it('fails instead of guessing when the account can be neither read nor created', async () => {
+    await expect(ensureOrganizationDelegationAccount({
+      organizationId: ORG, identityProject: IDENTITY_PROJECT, source,
+      fetch: vi.fn<typeof fetch>(async () => new Response('', { status: 403 })),
+    })).rejects.toThrow('organization_account_read_failed:403');
+    await expect(ensureOrganizationDelegationAccount({
+      organizationId: ORG, identityProject: IDENTITY_PROJECT, source,
+      fetch: vi.fn<typeof fetch>(async (_input, init) =>
+        new Response('', { status: init?.method === 'POST' ? 403 : 404 })),
+    })).rejects.toThrow('organization_account_create_failed:403');
   });
 });
