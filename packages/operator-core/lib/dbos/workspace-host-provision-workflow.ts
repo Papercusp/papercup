@@ -231,7 +231,7 @@ async function bringUpWorkspaceHost(
       ),
     { name: 'workspace-host-bring-up-admit-initialize', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
   );
-  await runWorkspaceHostOperation({ ...initialization, action: 'initialize' });
+  await runWorkspaceHostOperation({ ...initialization, action: 'initialize' }, BRING_UP_STEP_RETRY);
 
   const desktopRequestedAt = await DBOS.runStep(async () => new Date().toISOString(), {
     name: 'workspace-host-bring-up-admit-desktop-pack',
@@ -242,7 +242,7 @@ async function bringUpWorkspaceHost(
     operationId: operationIds.desktopPack,
     requestedAt: desktopRequestedAt,
     action: 'install-desktop-pack',
-  });
+  }, BRING_UP_STEP_RETRY);
 
   const activated = await DBOS.runStep(
     () =>
@@ -260,16 +260,33 @@ async function bringUpWorkspaceHost(
   }
 }
 
+/** How often one operation's step may be re-run on a retryable error. */
+interface OperationStepRetry {
+  maxAttempts: number;
+  intervalSeconds: number;
+  backoffRate?: number;
+}
+
+const OPERATION_STEP_RETRY: OperationStepRetry = { maxAttempts: 3, intervalSeconds: 2 };
+
+/**
+ * The bring-up stages run against a machine only minutes out of its first boot. Measured on
+ * host-2f6a4b0c6dc222d8d20766ae (2026-09-23): the first local-inference check exited non-zero and
+ * the retry two seconds later passed, so the default three quick attempts had one to spare. A
+ * customer has no retry button for this chain, so it gets a wider, backed-off budget.
+ */
+const BRING_UP_STEP_RETRY: OperationStepRetry = { maxAttempts: 5, intervalSeconds: 10, backoffRate: 2 };
+
 async function runWorkspaceHostOperation(
   input: WorkspaceHostWorkflowInput,
+  retry: OperationStepRetry = OPERATION_STEP_RETRY,
 ): Promise<WorkspaceHostWorkflowResult> {
   try {
     for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
       const result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
         name: `workspace-host-${input.action}-${turn}`,
         retriesAllowed: true,
-        maxAttempts: 3,
-        intervalSeconds: 2,
+        ...retry,
         shouldRetry: (error) =>
           !(error instanceof WorkspaceHostProvisioningRequestError) &&
           !(error instanceof WorkspaceHostProvisioningConnectionError),
