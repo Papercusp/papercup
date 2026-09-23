@@ -960,6 +960,7 @@ export function assessGateVerdict(input: {
   if (input.verdictUnknownLegs.includes('gate.consecutiveReds')) return null;
   if (input.consecutiveReds > 0) return input.verdictStale ? 'red-stale' : 'red-current';
   if (input.fireStale) return 'not-firing';
+  if (input.verdictUnknownLegs.includes('gate.stalled')) return null;
   if (input.mainBehindStaging === null || input.verdictUnknownLegs.includes('verdictProvenance.mainFastForwarded'))
     return null;
   return input.mainBehindStaging ? 'passing-buffered' : 'passing-current';
@@ -5208,8 +5209,10 @@ function summarizePositionBody(p: Omit<PipelinePosition, 'summary'>): string {
   // nothing in the one-line summary told a reader "green" and "not advancing"
   // were BOTH true at once. Name the combination instead of staying silent on it.
   const gateNote =
-    !p.positions.inMain && p.gate.pause
-      ? ` (green gate DELIBERATELY PAUSED: ${p.gate.pause.reason ?? 'no pause reason recorded'})`
+    !p.positions.inMain && p.gate.stalled === null && p.gate.pause == null
+      ? ' (green gate STALL STATUS UNKNOWN — the condition or watchdog inputs were not fully measured)'
+      : !p.positions.inMain && p.gate.pause
+        ? ` (green gate DELIBERATELY PAUSED: ${p.gate.pause.reason ?? 'no pause reason recorded'})`
       : !p.positions.inMain && p.gate.fireStale
       ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
       : !p.positions.inMain && p.gate.stalled
@@ -6205,6 +6208,15 @@ export async function gitPipelinePosition(
   // treat only an explicit CellUnknown as a claim.
   if (snap.gate?.countersUnknown) {
     verdictUnknown.push({ leg: 'gate.consecutiveReds', unknown: snap.gate.countersUnknown });
+  }
+  if (snap.gate?.stalled === null) {
+    verdictUnknown.push({
+      leg: 'gate.stalled',
+      unknown: cellUnknown(
+        'insufficient-data',
+        'The stall condition or watchdog verdict was not measured or was suppressed; null is unknown, not an all-clear.',
+      ),
+    });
   }
 
   // P-005 leg — ownership could not be READ. Hoisted rather than left in-band
