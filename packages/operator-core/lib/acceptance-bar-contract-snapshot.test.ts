@@ -780,6 +780,38 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
   });
 
+  it('surfaces a missing declared evidence plane without blocking pre-start', () => {
+    const input = provedFixture(1);
+    const bar = input.rubrics.rows[0]!.criteria[0]!;
+    const clause = input.clauses.rows[0]!;
+    bar.evidencePlane = 'live';
+    bar.barHash = computeAcceptanceBarHash(bar);
+    const barSetHash = computeAcceptanceBarSetHash([bar]);
+    input.rubrics.rows[0]!.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    clause.sourceBar!.barHash = bar.barHash;
+    clause.sourceBar!.barSetHash = barSetHash;
+    clause.sourceBar!.evidencePlane = 'live';
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    const preStart = evaluateAcceptanceBarLifecycle(snapshot, 'pre-start');
+    const ship = evaluateAcceptanceBarLifecycle(snapshot, 'ship');
+
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_evidence_plane_unmet');
+    expect(snapshot.readiness.codes).toContain('bar_snapshot_evidence_plane_unmet');
+    expect(snapshot.readiness.nextRepair).toMatchObject({
+      code: 'bar_snapshot_evidence_plane_unmet',
+      barKey: 'R-1',
+    });
+    expect(preStart.codes).not.toContain('bar_snapshot_evidence_plane_unmet');
+    expect(ship.blockingBars).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        barKey: 'R-1',
+        codes: expect.arrayContaining(['bar_snapshot_evidence_plane_unmet']),
+      }),
+    ]));
+  });
+
   it.each([
     ['unreachable', { pathReachable: false }], ['skipped', { skipped: true }],
     ['failed', { outcome: 'failed' }], ['self-oracle', { oracleIndependent: false }],
