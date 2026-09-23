@@ -162,6 +162,9 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
       env: {
         ...inherited,
         PUI_BIN: installed,
+        // The store install.sh wrote. Suites run PUI under their own HOME, so a
+        // journey that reads the release store must be pointed at this one.
+        PUI_RELEASE_STORE: installRoot,
         PUI_RELEASE_PLATFORM: platform ?? '',
         PUI_RELEASE_EVIDENCE: evidence,
         ...(leg ? { PUI_REAL_ENGINE: '1', PUI_REAL_BACKEND: leg.backend, ...(leg.model ? { PUI_REAL_MODEL: leg.model } : {}), ...leg.env }
