@@ -116,6 +116,33 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
   };
 }
 
+const RECONNECT_FALSIFIER_SCENARIO = 'reconnect-failure';
+
+function caseScopedClause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
+  return clause({
+    ...over,
+    falsifier: {
+      observation: 'The reconnect promise is violated.',
+      requiredScenarios: [RECONNECT_FALSIFIER_SCENARIO],
+    },
+  });
+}
+
+function caseScopedNegativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+  const base = negativeEvidence(over);
+  return {
+    ...base,
+    details: {
+      ...base.details,
+      adequacy: {
+        ...(base.details.adequacy as Record<string, unknown>),
+        targeted: RECONNECT_FALSIFIER_SCENARIO,
+        scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+      },
+    },
+  };
+}
+
 function attempt(
   n: number,
   patch: {
@@ -192,8 +219,8 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     expect(JSON.stringify(rows)).toBe(unchanged);
     expect(
       evaluateSpecTestAdequacy({
-        clause: clause(),
-        evidence: [...rows, negativeEvidence()],
+        clause: caseScopedClause(),
+        evidence: [...rows, caseScopedNegativeEvidence()],
         classRef: 'plan-class-feature-ship',
       }).verdict,
     ).toBe('pass');
@@ -315,8 +342,8 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
       currentness: { ...rows[1]!.currentness, overall: 'stale' as const, staleReasons: ['source-stale'] },
     };
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
-      evidence: [...rows, historical, negativeEvidence()],
+      clause: caseScopedClause(),
+      evidence: [...rows, historical, caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -352,8 +379,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(latestLogicalEvidence([older, newer])).toEqual([newer]);
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
-      evidence: [older, newer, negativeEvidence()],
+      clause: caseScopedClause(),
+      evidence: [older, newer, caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -392,8 +419,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(latestLogicalEvidence([stale, rebound])).toEqual([rebound]);
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
-      evidence: [stale, rebound, negativeEvidence()],
+      clause: caseScopedClause(),
+      evidence: [stale, rebound, caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
@@ -402,8 +429,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
-      evidence: [evidence(), negativeEvidence()],
+      clause: caseScopedClause(),
+      evidence: [evidence(), caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -611,7 +638,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('surfaces a provisional scorecard proof base in every criterion evidence string', () => {
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
+      clause: caseScopedClause(),
       evidence: [
         evidence({
           provisionalProofBase: true,
@@ -621,7 +648,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
             violatableKeys: ['criterion-a'],
           },
         }),
-        negativeEvidence({
+        caseScopedNegativeEvidence({
           provisionalProofBase: true,
           provisionalScorecard: {
             issueId: 'EI-123',
@@ -768,10 +795,78 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(expired.ratings['plan-class-risk-floor'].rating).toBe('fail');
   });
 
-  it('counts a mutation probe caught verdict as successful negative proof', () => {
+  it('counts a mutation probe only when it targets a declared clause scenario', () => {
     const mutation = evidence({
       evidenceKind: 'mutation',
       evidenceRef: 'mutation-probe:drop-dedupe:caught',
+      details: {
+        adequacy: {
+          falsifiable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: 'promotion-readable',
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        behaviorClass: 'concurrency',
+        falsifier: {
+          observation: 'The promoted directive cannot be read from the open standing state.',
+          requiredScenarios: ['promotion-readable', 'refused-transition-preserved'],
+        },
+      }),
+      evidence: [evidence(), mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
+    expect(result.ratings.falsifiability.rating).toBe('pass');
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+  });
+
+  it('does not credit a sibling-case mutation failure to this clause', () => {
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:refused-transition:caught',
+      details: {
+        adequacy: {
+          falsifiable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: 'refused-transition-preserved',
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        behaviorClass: 'concurrency',
+        falsifier: {
+          observation: 'The promoted directive cannot be read from the open standing state.',
+          requiredScenarios: ['promotion-readable'],
+        },
+      }),
+      evidence: [evidence(), mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.ratings.falsifiability.evidence).toContain('do not name a scenario declared in falsifier.requiredScenarios');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  it('does not treat legacy boolean targeted=true as a clause-case link', () => {
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:unscoped:caught',
       details: {
         adequacy: {
           falsifiable: true,
@@ -786,17 +881,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
 
     const result = evaluateSpecTestAdequacy({
-      clause: clause({ behaviorClass: 'concurrency' }),
+      clause: clause({
+        behaviorClass: 'concurrency',
+        falsifier: {
+          observation: 'The promoted directive cannot be read from the open standing state.',
+          requiredScenarios: ['promotion-readable'],
+        },
+      }),
       evidence: [evidence(), mutation],
       classRef: 'plan-class-feature-ship',
     });
 
-    expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
-    expect(result.ratings.falsifiability.rating).toBe('pass');
-    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
   });
 
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
+    const scenarioId = 'reject-future-window';
     const counterexample = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'counterexample:reject-future-window',
@@ -811,13 +911,19 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           skipped: false,
           executed: true,
           outcome: 'pass',
-          targeted: true,
+          targeted: scenarioId,
+          scenarioIds: [scenarioId],
         },
       },
     });
 
     const result = evaluateSpecTestAdequacy({
-      clause: clause(),
+      clause: clause({
+        falsifier: {
+          observation: 'A future event window is rejected.',
+          requiredScenarios: [scenarioId],
+        },
+      }),
       evidence: [counterexample],
       classRef: 'plan-class-feature-ship',
     });
@@ -1016,10 +1122,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         unknownReasons: ['test_fingerprint_absent'],
       },
     });
-    const current = negativeEvidence({ evidenceRef: 'surface:current' });
+    const current = caseScopedNegativeEvidence({ evidenceRef: 'surface:current' });
 
     const passing = evaluateSpecTestAdequacy({
-      clause: clause(),
+      clause: caseScopedClause(),
       evidence: [staleHistorical, unknownHistorical, current],
       classRef: 'plan-class-feature-ship',
     });
