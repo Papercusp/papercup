@@ -212,6 +212,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             && app.wake_review.is_none()
             && app.fleet_launcher.is_none()
             && app.inbox_answer.is_none()
+            && app.lifecycle.is_none()
         {
             draw_toast(f, t);
         }
@@ -220,6 +221,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Overlays render on top of the body (tutorial wins on first run).
     if app.show_tutorial {
         draw_tutorial(f, app.tutorial_step);
+    } else if let Some(panel) = &app.lifecycle {
+        draw_lifecycle(f, panel);
     } else if app.show_notifs {
         draw_notifs(f, app);
     } else if app.show_help {
@@ -4589,6 +4592,24 @@ fn draw_notifs(f: &mut Frame, app: &App) {
 }
 
 /// The guided multi-step tutorial (P9). `step` is clamped to the last page.
+/// The install-lifecycle panel (P-011 / D-016): the exact preview of a change
+/// with its confirmation hint, or the read-only About / update / result text.
+fn draw_lifecycle(f: &mut Frame, panel: &crate::app::LifecyclePanel) {
+    let area = centered_rect(90, 80, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(panel.view.lines.join("\n"))
+            .wrap(Wrap { trim: false })
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(
+                " {}{} ",
+                panel.view.title,
+                if panel.busy { " …" } else { "" }
+            )))),
+        area,
+    );
+}
+
 fn draw_tutorial(f: &mut Frame, step: usize) {
     const STEPS: [(&str, &str); 4] = [
         (
@@ -5356,6 +5377,10 @@ fn draw_palette(f: &mut Frame, app: &App) {
             Theme::dim(),
         )),
         Line::from(Span::styled(layout_line, Theme::dim())),
+        Line::from(Span::styled(
+            "install — :about · :update [archive] · :rollback · :diagnostics · :uninstall [purge]",
+            Theme::dim(),
+        )),
     ]);
     f.render_widget(
         Paragraph::new(body)
