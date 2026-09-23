@@ -66,7 +66,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: () => ({ sql: vi.fn() }),
+    getOrgPg: () => ({ sql: vi.fn(async () => ({ count: 0 })) }),
     listDueCronRoutines: vi.fn(async () => []),
   };
 });
