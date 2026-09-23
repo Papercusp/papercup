@@ -6,8 +6,39 @@ import {
   readHostedWorkspaceHostConfig,
   __resetHostedWorkspaceHostRuntime,
 } from './hosted-workspace-host-runtime';
+import { EventEmitter } from 'node:events';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
-import type { HostedHostAuditEvent } from './hosted-session-host';
+import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
+
+class FakePty extends EventEmitter implements HostedHostPty {
+  killed = false;
+  write() {
+    return !this.killed;
+  }
+  resize() {
+    return !this.killed;
+  }
+  signal() {
+    return !this.killed;
+  }
+  kill() {
+    this.killed = true;
+  }
+  snapshot() {
+    return Promise.resolve(null);
+  }
+  onData(listener: (data: Buffer) => void) {
+    this.on('data', listener);
+    return () => this.off('data', listener);
+  }
+  onExit(listener: (code: number, signal: number) => void) {
+    this.on('exit', listener);
+    return () => this.off('exit', listener);
+  }
+  output(value: string) {
+    this.emit('data', Buffer.from(value));
+  }
+}
 
 class FakeSocket implements HostedConnectorClientSocket {
   readonly OPEN = 1;
@@ -283,6 +314,134 @@ describe('createHostedWorkspaceHostRuntime', () => {
     expect(ensureHostedWorkspaceHostRuntime(env, overrides)).toBe(first);
     expect(sockets).toHaveLength(1);
     __resetHostedWorkspaceHostRuntime();
+  });
+
+  describe('a control-plane outage does not kill the customer PTY (P-318 J5, D-392)', () => {
+    const openPty = (channelId: string) => ({
+      type: 'relay.open',
+      channelId,
+      userId: 'u',
+      hostedSessionId: 's',
+      audience: 'workspace-operator',
+      role: 'controller',
+    });
+
+    function withPtys(overrides: Record<string, unknown> = {}) {
+      const ptys: FakePty[] = [];
+      const harness = runtime({
+        createPty: () => {
+          const pty = new FakePty();
+          ptys.push(pty);
+          return pty;
+        },
+        ...overrides,
+      });
+      return { ...harness, ptys };
+    }
+
+    /** The control plane is DOWN: every reconnect attempt made during `ms` fails. */
+    function outage(sockets: FakeSocket[], ms: number): void {
+      sockets.at(-1)!.emitClose(1006);
+      for (let elapsed = 0; elapsed < ms; elapsed += 5_000) {
+        vi.advanceTimersByTime(5_000);
+        const latest = sockets.at(-1)!;
+        if (latest.readyState === 0) latest.emitClose(1006);
+      }
+    }
+
+    /** The control plane is back: the next attempt connects and is bound. */
+    function recover(sockets: FakeSocket[], binding: Record<string, unknown> = BINDING): FakeSocket {
+      const before = sockets.length;
+      for (let i = 0; i < 200 && sockets.length === before; i += 1) vi.advanceTimersByTime(1_000);
+      const socket = sockets.at(-1)!;
+      expect(sockets.length).toBeGreaterThan(before);
+      socket.emitOpen();
+      socket.emitMessage({ type: 'bound', role: 'connector', binding });
+      return socket;
+    }
+
+    it('keeps a running PTY alive through an outage longer than the idle window and resumes it', async () => {
+      const { value, sockets, ptys } = withPtys();
+      value.start();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+      await value.adapter!.accept(openPty('c1'));
+      expect(ptys).toHaveLength(1);
+
+      outage(sockets, HOSTED_HOST_SESSION_IDLE_MS * 4);
+      // The agent in the terminal kept working the whole time; its output has nowhere to go.
+      expect(() => ptys[0]!.output('still working')).not.toThrow();
+      expect(ptys[0]!.killed).toBe(false);
+
+      const socket = recover(sockets, { ...BINDING, generation: 4 });
+      await value.adapter!.accept(openPty('c2'));
+      // RESUMED, not respawned: the same process, re-attached under the new generation.
+      expect(ptys).toHaveLength(1);
+      const frames = () => socket.sent.map((raw) => JSON.parse(raw));
+      expect(frames()).toContainEqual(
+        expect.objectContaining({ type: 'relay', channelId: 'c2', payload: expect.objectContaining({ type: 'pty.ready', resumed: true }) }),
+      );
+      ptys[0]!.output('done');
+      expect(frames()).toContainEqual({
+        type: 'relay',
+        channelId: 'c2',
+        payload: { type: 'pty.output', data: Buffer.from('done').toString('base64') },
+      });
+    });
+
+    it('restarts the idle window on adoption: an unclaimed PTY expires idleMs after the control plane returns', async () => {
+      const { value, sockets, ptys } = withPtys();
+      value.start();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+      await value.adapter!.accept(openPty('c1'));
+      outage(sockets, HOSTED_HOST_SESSION_IDLE_MS * 2);
+      recover(sockets);
+      vi.advanceTimersByTime(HOSTED_HOST_SESSION_IDLE_MS - 1);
+      expect(ptys[0]!.killed).toBe(false);
+      vi.advanceTimersByTime(2);
+      expect(ptys[0]!.killed).toBe(true);
+    });
+
+    it('kills held PTYs when the returning binding names a DIFFERENT connector identity', async () => {
+      const { value, sockets, ptys } = withPtys();
+      value.start();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+      await value.adapter!.accept(openPty('c1'));
+      outage(sockets, 30_000);
+      recover(sockets, { ...BINDING, hostId: 'host_2' });
+      expect(ptys[0]!.killed).toBe(true);
+      await value.adapter!.accept(openPty('c2'));
+      expect(ptys).toHaveLength(2);
+    });
+
+    it('kills held PTYs when the binding is revoked during the outage', async () => {
+      const { value, sockets, ptys, terminal } = withPtys();
+      value.start();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+      await value.adapter!.accept(openPty('c1'));
+      sockets[0]!.emitClose(1006);
+      expect(ptys[0]!.killed).toBe(false);
+      vi.advanceTimersByTime(1_000);
+      sockets.at(-1)!.emitClose(4001);
+      expect(terminal).toEqual([{ reason: 'revoked', detail: '4001' }]);
+      expect(ptys[0]!.killed).toBe(true);
+    });
+
+    it('does not adopt a PTY that exited while nobody was bound', async () => {
+      const { value, sockets, ptys } = withPtys();
+      value.start();
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+      await value.adapter!.accept(openPty('c1'));
+      outage(sockets, 30_000);
+      ptys[0]!.emit('exit', 0, 0);
+      recover(sockets);
+      await value.adapter!.accept(openPty('c2'));
+      expect(ptys).toHaveLength(2);
+    });
   });
 
   it('stop() closes the adapter and never reconnects', () => {

@@ -40,6 +40,8 @@ import {
   HostedWorkspaceHostSessionAdapter,
   type HostedDesktopBackend,
   type HostedHostAuditEvent,
+  type HostedHostSessionHandoff,
+  type HostedWorkspaceHostOptions,
 } from './hosted-session-host';
 import {
   HostedWorkspaceConnectorClient,
@@ -64,6 +66,8 @@ export interface HostedWorkspaceHostRuntimeOptions {
   onWarning?: (message: string) => void;
   /** Test seam — swap the transport. */
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
+  /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
+  createPty?: HostedWorkspaceHostOptions['createPty'];
 }
 
 export interface HostedWorkspaceHostRuntime {
@@ -158,9 +162,22 @@ export function createHostedWorkspaceHostRuntime(
   const warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-workspace-host] ${message}`));
   let adapter: HostedWorkspaceHostSessionAdapter | null = null;
   let binding: HostedConnectorBinding | null = null;
+  // PTY sessions a dropped connector released ALIVE, waiting for the next `bound` to adopt them
+  // (P-318 J5, D-392). A Papercusp outage must not kill the customer's running processes.
+  let parked: HostedHostSessionHandoff[] = [];
 
+  // Terminal (revoked / stopped): access ends, so every PTY dies, held ones included.
   const teardown = (reason: string): void => {
     adapter?.close(reason);
+    adapter = null;
+    for (const handoff of parked) handoff.kill();
+    parked = [];
+  };
+
+  // Transient (connector dropped, or rebinding): channels close, PTYs survive.
+  const release = (reason: string): void => {
+    if (!adapter) return;
+    parked.push(adapter.release(reason));
     adapter = null;
   };
 
@@ -176,8 +193,9 @@ export function createHostedWorkspaceHostRuntime(
     onBound: (next) => {
       // Every (re)connect rebuilds. See the header: a binding carries a rotatable
       // generation, and an adapter outliving its binding would stamp channels with
-      // a superseded one.
-      teardown('rebinding');
+      // a superseded one. The PTY SESSIONS are not the adapter's to lose, though:
+      // the new adapter adopts them (same connector identity only).
+      release('rebinding');
       binding = next;
       adapter = new HostedWorkspaceHostSessionAdapter({
         binding: next,
@@ -187,9 +205,12 @@ export function createHostedWorkspaceHostRuntime(
         },
         onAudit,
         ...(options.desktop ? { desktop: options.desktop } : {}),
+        ...(options.createPty ? { createPty: options.createPty } : {}),
       });
+      for (const handoff of parked) adapter.adopt(handoff);
+      parked = [];
     },
-    onDisconnect: (reason) => teardown(`connector_closed: ${reason}`),
+    onDisconnect: (reason) => release(`connector_closed: ${reason}`),
     onTerminal: (reason, detail) => {
       teardown(`connector_${reason}`);
       binding = null;

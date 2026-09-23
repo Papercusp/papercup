@@ -274,6 +274,67 @@ type HostSession = {
   closed: boolean;
 };
 
+/**
+ * PTY sessions released ALIVE by an adapter whose connector dropped, waiting for the adapter the
+ * next `bound` builds (P-318 J5, plan decision D-392).
+ *
+ * Opaque on purpose: the only things a holder may do are adopt it into a new adapter or kill it.
+ */
+export interface HostedHostSessionHandoff {
+  /** The binding the sessions were served under; adoption requires the same connector identity. */
+  readonly binding: HostedConnectorBinding;
+  /** Live PTY sessions still held (a PTY that exits while held drops out). */
+  readonly size: number;
+  /** Kill every held PTY — revocation and host stop end access. Returns how many died. */
+  kill(): number;
+}
+
+class SessionHandoff implements HostedHostSessionHandoff {
+  private readonly held = new Map<string, HostSession>();
+
+  constructor(readonly binding: HostedConnectorBinding) {}
+
+  get size(): number {
+    return this.held.size;
+  }
+
+  hold(session: HostSession): void {
+    this.held.set(session.key, session);
+    // Nobody is bound to hear a PTY that exits now. It is simply gone, and must not be adopted
+    // as a live session the browser would then attach to.
+    session.removeData = () => {};
+    session.removeExit = session.pty.onExit(() => {
+      this.held.delete(session.key);
+      session.closed = true;
+    });
+  }
+
+  take(): HostSession[] {
+    const sessions = [...this.held.values()];
+    this.held.clear();
+    for (const session of sessions) session.removeExit();
+    return sessions;
+  }
+
+  kill(): number {
+    const sessions = this.take();
+    for (const session of sessions) {
+      session.closed = true;
+      session.pty.kill();
+    }
+    return sessions.length;
+  }
+}
+
+function sameConnectorIdentity(a: HostedConnectorBinding, b: HostedConnectorBinding): boolean {
+  return (
+    a.controlPlaneWorkspaceId === b.controlPlaneWorkspaceId &&
+    a.organizationId === b.organizationId &&
+    a.customerWorkspaceId === b.customerWorkspaceId &&
+    a.hostId === b.hostId
+  );
+}
+
 type PendingUpload = {
   path: string;
   encoding: 'base64' | 'utf8';
@@ -663,6 +724,65 @@ export class HostedWorkspaceHostSessionAdapter {
     this.channels.clear();
   }
 
+  /**
+   * Close this adapter's CHANNELS but hand its PTY sessions over ALIVE, for the adapter the next
+   * `bound` builds to {@link adopt} (P-318 J5, D-392).
+   *
+   * `close()` kills every PTY, which is right for a revocation or a host stop and wrong for a
+   * dropped connector. The relay is a Papercusp service; the PTY is the customer's process on the
+   * customer's host. Killing it because Papercusp's end of a socket went away made every agent
+   * running in a hosted terminal die with any control-plane outage or network blip, while a
+   * browser tab closing (detach) kept it for the idle window. An outage must never be treated
+   * worse than the user walking away.
+   *
+   * Held sessions run NO idle timer: the idle window measures the user's absence, and while the
+   * connector is down the user cannot attach at all. The clock starts again on adoption.
+   */
+  release(reason = 'connector_closed'): HostedHostSessionHandoff {
+    const handoff = new SessionHandoff(this.options.binding);
+    if (this.closed) return handoff;
+    this.closed = true;
+    for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
+    for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
+    for (const session of [...this.sessions.values()]) {
+      if (session.idleTimer) clearTimeout(session.idleTimer);
+      session.idleTimer = null;
+      session.removeData();
+      session.removeExit();
+      session.channels.clear();
+      this.audit('pty_released', session, undefined, reason);
+      handoff.hold(session);
+    }
+    this.sessions.clear();
+    this.desktopHeartbeat?.stop();
+    this.desktopHeartbeat = null;
+    this.channels.clear();
+    return handoff;
+  }
+
+  /**
+   * Take over PTY sessions a previous adapter {@link release}d. Only under the SAME connector
+   * identity (control plane, organization, customer workspace, host): a new generation of that
+   * binding re-stamps the channels opened from here on, but a different identity must never be
+   * handed a PTY another identity started, so those are killed instead.
+   */
+  adopt(handoff: HostedHostSessionHandoff): void {
+    if (!(handoff instanceof SessionHandoff)) throw new TypeError('adopt() accepts only a handoff from release()');
+    const identityHeld = sameConnectorIdentity(handoff.binding, this.options.binding);
+    for (const session of handoff.take()) {
+      if (this.closed || !identityHeld || this.sessions.has(session.key)) {
+        session.closed = true;
+        session.pty.kill();
+        this.audit('pty_closed', session, undefined, identityHeld ? 'adoption_refused' : 'binding_identity_changed');
+        continue;
+      }
+      this.wire(session);
+      this.sessions.set(session.key, session);
+      this.audit('pty_adopted', session);
+      this.startIdle(session);
+    }
+  }
+
   private async open(message: Record<string, unknown>): Promise<void> {
     const channelId = string(message.channelId, 256);
     const userId = string(message.userId);
@@ -716,11 +836,7 @@ export class HostedWorkspaceHostSessionAdapter {
         removeExit: () => {},
         closed: false,
       };
-      session.removeData = pty.onData((data) => this.broadcastOutput(session!, data));
-      session.removeExit = pty.onExit((code, signal) => {
-        this.broadcast(session!, { type: 'pty.exit', code, signal });
-        this.destroySession(session!, 'pty_exited', false);
-      });
+      this.wire(session);
       this.sessions.set(key, session);
       this.audit('pty_started', session);
     }
@@ -1289,10 +1405,21 @@ export class HostedWorkspaceHostSessionAdapter {
     if (!session) return;
     session.channels.delete(channelId);
     this.audit('channel_detached', session, channelId, reason);
-    if (session.channels.size === 0 && !session.closed) {
-      session.idleTimer = setTimeout(() => this.destroySession(session, 'session_idle_expired'), this.idleMs);
-      session.idleTimer.unref?.();
-    }
+    if (session.channels.size === 0 && !session.closed) this.startIdle(session);
+  }
+
+  /** Route one PTY's output and exit through THIS adapter (a fresh session, or an adopted one). */
+  private wire(session: HostSession): void {
+    session.removeData = session.pty.onData((data) => this.broadcastOutput(session, data));
+    session.removeExit = session.pty.onExit((code, signal) => {
+      this.broadcast(session, { type: 'pty.exit', code, signal });
+      this.destroySession(session, 'pty_exited', false);
+    });
+  }
+
+  private startIdle(session: HostSession): void {
+    session.idleTimer = setTimeout(() => this.destroySession(session, 'session_idle_expired'), this.idleMs);
+    session.idleTimer.unref?.();
   }
 
   private destroySession(session: HostSession, reason: string, kill = true): void {
