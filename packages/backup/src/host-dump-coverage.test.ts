@@ -79,8 +79,77 @@ describe('evaluateHostDumpCoverage', () => {
     expect(evaluate({ status: null })).toMatchObject({ covered: false });
   });
 
-  it('does not cover when the host run reported failure', () => {
-    expect(evaluate({ status: { ...goodStatus(), ok: false } })).toMatchObject({ covered: false });
+  it('does not cover when the host run reported failure and carries no run timing', () => {
+    const r = evaluate({ status: { ...goodStatus(), ok: false } });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('run timing');
+  });
+
+  describe('a partially failed host run (EI-24018312041976584)', () => {
+    // The tower's real receipt from 2026-09-22 21:19 EDT, verbatim in every field
+    // this decision reads. The state tier dumped, but the transcript tier was
+    // skipped for disk space, so the run wrote ok:false. The old rule rejected
+    // it outright. That made four workspace hooks each dump this cluster every
+    // hour, and nine of their ten dumps in three hours timed out or failed.
+    const towerReceipt = {
+      ok: false,
+      lastRunEpoch: 1_790_126_347,
+      lastSuccessEpoch: 1_790_088_192,
+      elapsedSec: 1087,
+      dumped: ['postgres', 'phone_app_test2', 'email_app', 'calendar_app', 'restart', 'papercusp_su', 'papercusp-state'],
+      failed: ['papercusp-transcript'],
+      systemIdentifier: SYSID,
+      tiersEnabled: true,
+      tierDumped: ['papercusp-state'],
+      tierFailed: ['papercusp-transcript'],
+    };
+    const HOOK_FIRED_AT = 1_790_131_691; // 2026-09-23T02:48:11Z, when that hour's workspace dump started
+
+    it('covers the state tier the failed run DID dump', () => {
+      const r = evaluate({ status: towerReceipt, nowEpoch: HOOK_FIRED_AT });
+      expect(r.covered).toBe(true);
+      expect(r.reason).toContain('artifact papercusp-state');
+      expect(r.reason).toContain('partially failed run');
+    });
+
+    it('dates the artifact from the run START, so the age is measured conservatively', () => {
+      const start = towerReceipt.lastRunEpoch - towerReceipt.elapsedSec;
+      const r = evaluate({ status: towerReceipt, nowEpoch: HOOK_FIRED_AT });
+      expect(r.reason).toContain(`${HOOK_FIRED_AT - start}s ago`);
+      // Just past the bound when measured from the start, while measuring from
+      // the run's END would still read as fresh: the start must win.
+      const justStale = start + HOST_DUMP_MAX_AGE_SEC + 1;
+      expect(justStale - towerReceipt.lastRunEpoch).toBeLessThan(HOST_DUMP_MAX_AGE_SEC);
+      const stale = evaluate({ status: towerReceipt, nowEpoch: justStale });
+      expect(stale.covered).toBe(false);
+      expect(stale.reason).toContain('stale');
+    });
+
+    it('does not cover when the artifact that failed IS the one the hook needs', () => {
+      const r = evaluate({
+        status: { ...towerReceipt, dumped: ['postgres', 'restart'] },
+        nowEpoch: HOOK_FIRED_AT,
+      });
+      expect(r.covered).toBe(false);
+      expect(r.reason).toContain('did not dump papercusp');
+    });
+
+    it.each([
+      ['missing lastRunEpoch', { lastRunEpoch: undefined }],
+      ['missing elapsedSec', { elapsedSec: undefined }],
+      ['negative elapsedSec', { elapsedSec: -5 }],
+      ['non-numeric lastRunEpoch', { lastRunEpoch: '1790126347' }],
+    ])('does not cover when the receipt has %s', (_label, perturbation) => {
+      const r = evaluate({ status: { ...towerReceipt, ...perturbation }, nowEpoch: HOOK_FIRED_AT });
+      expect(r.covered).toBe(false);
+      expect(r.reason).toContain('run timing');
+    });
+
+    it('still demands the same cluster identity', () => {
+      const r = evaluate({ status: towerReceipt, nowEpoch: HOOK_FIRED_AT, targetSystemIdentifier: '1111111111111111111' });
+      expect(r.covered).toBe(false);
+      expect(r.reason).toContain('different cluster');
+    });
   });
 
   it.each([

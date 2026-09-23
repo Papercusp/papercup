@@ -165,16 +165,37 @@ export function evaluateHostDumpCoverage(input: {
   const tieredStateArtifact = `${database}-state`;
   const tieredState = status.tiersEnabled === true && dumped.includes(tieredStateArtifact);
   if (!directArtifact && !tieredState) {
-    return { covered: false, reason: `database ${database} not in host-dump receipt` };
+    return {
+      covered: false,
+      reason: runOk
+        ? `database ${database} not in host-dump receipt`
+        : `host dump last reported not-ok and its last run did not dump ${database}`,
+    };
   }
 
-  const lastSuccess =
-    typeof status.lastSuccessEpoch === 'number' && Number.isFinite(status.lastSuccessEpoch)
-      ? status.lastSuccessEpoch
-      : 0;
-  if (lastSuccess <= 0) return { covered: false, reason: 'host-dump receipt has no success timestamp' };
+  let artifactEpoch: number;
+  let basis: string;
+  if (runOk) {
+    artifactEpoch = finiteNumber(status.lastSuccessEpoch) ?? 0;
+    if (artifactEpoch <= 0) return { covered: false, reason: 'host-dump receipt has no success timestamp' };
+    basis = 'dumped';
+  } else {
+    // `dumped` lists only artifacts the last run completed, so a not-ok run
+    // still proves them. Date them from the run's start, the earliest moment
+    // their data could reflect, so the freshness bound stays conservative.
+    const lastRun = finiteNumber(status.lastRunEpoch);
+    const elapsed = finiteNumber(status.elapsedSec);
+    if (lastRun === null || lastRun <= 0 || elapsed === null || elapsed < 0) {
+      return {
+        covered: false,
+        reason: 'host dump last reported not-ok and the receipt lacks the run timing needed to date its dumped artifacts',
+      };
+    }
+    artifactEpoch = lastRun - elapsed;
+    basis = 'dumped by a partially failed run that started';
+  }
 
-  const ageSec = nowEpoch - lastSuccess;
+  const ageSec = nowEpoch - artifactEpoch;
   // A receipt from the future is a clock fault, not evidence of coverage.
   if (ageSec < 0) return { covered: false, reason: 'host-dump receipt timestamp is in the future' };
   if (ageSec > maxAgeSec) {
@@ -183,8 +204,12 @@ export function evaluateHostDumpCoverage(input: {
 
   return {
     covered: true,
-    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, artifact ${directArtifact ? database : tieredStateArtifact}, dumped ${ageSec}s ago)`,
+    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, artifact ${directArtifact ? database : tieredStateArtifact}, ${basis} ${ageSec}s ago)`,
   };
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 /**
