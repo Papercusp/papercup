@@ -35,6 +35,9 @@ function summaryRow(row: EvaluatedRow) {
     verdict: row.verdict,
     requiredProofFloor: row.requiredProofFloor,
     wouldBlock: row.wouldBlock,
+    // P-019: the binding ids that drag each blocking criterion — ids only, so the compact
+    // read stays compact while naming exactly which rows to retract or supersede.
+    ...(Object.keys(row.draggingBindingIds).length > 0 ? { draggingBindingIds: row.draggingBindingIds } : {}),
     ratings: Object.fromEntries(
       Object.entries(row.ratings).map(([criterion, entry]) => [
         criterion,
