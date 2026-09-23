@@ -2756,12 +2756,23 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     let stage = 'launch';
     let pane: PuiPane | undefined;
     onTestFailed(() => console.info('PUI_TASK_FAILURE', JSON.stringify({ stage, ...(pane?.failureEvidence() ?? {}) })));
-    type TaskRow = { task_id: string; content: string; status: string; blocker_ref: string | null };
+    type TaskRow = { task_id: string; content: string; active_form: string; status: string; blocker_ref: string | null };
     const rows = (sessionId: string) => db.adminSql<TaskRow[]>`
-      SELECT task_id, content, status, blocker_ref FROM harness_shared.session_tasks
+      SELECT task_id, content, active_form, status, blocker_ref FROM harness_shared.session_tasks
        WHERE workspace_id = ${WORKSPACE} AND session_id = ${sessionId} ORDER BY position`;
+    type LinkRow = { task_id: string; relation: string; work_item_id: string };
+    const links = (sessionId: string) => db.adminSql<LinkRow[]>`
+      SELECT task_id, relation, work_item_id FROM harness_shared.session_task_work_item_links
+       WHERE workspace_id = ${WORKSPACE} AND session_id = ${sessionId}`;
     const settled = async (sessionId: string, check: (tasks: TaskRow[]) => void) => {
       await vi.waitFor(async () => check(await rows(sessionId)), { timeout: 15_000, interval: 150 });
+    };
+    // PUI ignores task keys while a mutation is in flight and says "saving…",
+    // so the next key waits for the canonical projection, as a person would.
+    const ownerKey = async (target: PuiPane, key: string, sessionId: string, check: (tasks: TaskRow[]) => void) => {
+      target.write(key);
+      await settled(sessionId, check);
+      await target.waitForGone('saving…');
     };
     const contextFocus = async (target: PuiPane) => {
       target.escape();
@@ -2831,8 +2842,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, content: 'Draft the public release notes' }));
 
       stage = 'owner-status';
-      pane.write('s');
-      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'in_progress' }));
+      await ownerKey(pane, 's', chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'in_progress' }));
       pane.write('b');
       await pane.waitFor('Block task on >');
       // Short enough to render on one row of the 100-column Context rail; a
@@ -2841,12 +2851,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter();
       await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ status: 'blocked', blocker_ref: 'owner review' }));
       await pane.waitFor('blocked on owner review');
-      pane.write('u');
-      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, blocker_ref: null }));
-      pane.write('x');
-      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'completed' }));
-      pane.write('r');
-      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'pending' }));
+      await pane.waitForGone('saving…');
+      await ownerKey(pane, 'u', chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, blocker_ref: null }));
+      await ownerKey(pane, 'x', chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'completed' }));
+      await ownerKey(pane, 'r', chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'pending' }));
 
       stage = 'agent-update';
       // The agent sees the owner's edits on the same stable ids, then updates one.
@@ -2860,12 +2868,32 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor('Agent is verifying the installer', { timeoutMs: 30_000 });
 
       stage = 'owner-reorder';
-      pane.write('J');
-      await settled(chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([installer, notes]));
+      await ownerKey(pane, 'J', chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([installer, notes]));
       // Selection stays on the row index, so step onto the moved task before K.
       pane.write('j');
-      pane.write('K');
-      await settled(chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([notes, installer]));
+      await ownerKey(pane, 'K', chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([notes, installer]));
+
+      stage = 'owner-promote';
+      // Selection stayed on row 1, the installer. No session claim seeds a
+      // link, so Shift-P is the only thing that can create one.
+      expect(await links(chat.id)).toEqual([]);
+      pane.write('P');
+      await vi.waitFor(async () => expect(await links(chat.id)).toEqual([
+        expect.objectContaining({ task_id: installer, relation: 'for' }),
+      ]), { timeout: 15_000, interval: 150 });
+      await pane.waitForGone('saving…');
+      const [promoted] = await links(chat.id);
+      const [workItem] = await db.adminSql<Array<{ item_kind: string; title: string }>>`
+        SELECT item_kind, title FROM harness_shared.work_items
+         WHERE workspace_id = ${WORKSPACE} AND feature_id = ${promoted.work_item_id}`;
+      expect(workItem).toMatchObject({ item_kind: 'task', title: 'Verify the installer' });
+      await pane.waitFor(`evidence ${promoted.work_item_id} (for)`);
+      // Promotion links the task; it keeps its id, place and status.
+      expect((await rows(chat.id)).map(({ task_id, status }) => ({ task_id, status }))).toEqual([
+        { task_id: notes, status: 'pending' },
+        { task_id: installer, status: 'in_progress' },
+      ]);
+      const promoteFrame = pane.screen();
 
       stage = 'owner-add-drop';
       pane.write('a');
@@ -2875,8 +2903,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitForGone('Add task >');
       await settled(chat.id, (tasks) => expect(tasks.map((task) => task.content)).toContain('Added entirely in PUI'));
       pane.write('kkkk');
-      pane.write('d');
-      await settled(chat.id, (tasks) => expect(tasks.find((task) => task.task_id === notes)?.status).toBe('dropped'));
+      await ownerKey(pane, 'd', chat.id, (tasks) => expect(tasks.find((task) => task.task_id === notes)?.status).toBe('dropped'));
       const final = await rows(chat.id);
       expect(final.map(({ content, status }) => ({ content, status }))).toEqual(expect.arrayContaining([
         { content: 'Draft the public release notes', status: 'dropped' },
@@ -2898,11 +2925,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await contextFocus(pane);
       await pane.waitFor('Added entirely in PUI', { timeoutMs: 30_000 });
       const reloaded = pane.screen();
-      const order = final.map((task) => reloaded.indexOf(task.content));
+      // Context labels an in-progress task by its active form (plans_board.rs).
+      const order = final.map((task) => reloaded.indexOf(task.status === 'in_progress' ? task.active_form : task.content));
       expect(order.every((at) => at >= 0), reloaded).toBe(true);
       expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(reloaded).toContain(`evidence ${promoted.work_item_id} (for)`);
+      expect(await links(chat.id)).toEqual([promoted]);
       console.info('PUI_TASK_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         suOwnerId: ownerId, tasks: final, frame, reloadedFrame: reloaded }));
+      console.info('PUI_TASK_PROMOTE_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
+        taskId: installer, link: promoted, workItem, promoteFrame, reloadedFrame: reloaded }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 
