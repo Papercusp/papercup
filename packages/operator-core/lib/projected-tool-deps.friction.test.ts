@@ -84,6 +84,22 @@ describe('committed invocation friction bridge (R-7)', () => {
     expect(JSON.parse(io.inserts[0][19] as string)).toMatchObject({ invalidInput: { registryRevision: 'schema-v1' } });
   });
 
+  it('persists the kernel identity row reference in the existing invocation metadata', async () => {
+    const serverAudit = { identityLaunchRecord: { advSessionId: '42', xmin: '9001' } };
+    await record({
+      status: 'ok',
+      errorCode: null,
+      errorMessage: null,
+      kernelEnforcement: { decision: 'allow', availability: 'available', applied: true, serverAudit },
+    });
+    await flushPendingTelemetry();
+
+    expect(io.inserts).toHaveLength(1);
+    expect(JSON.parse(io.inserts[0][19] as string)).toMatchObject({
+      kernel: { enforce: { decision: 'allow', serverAudit } },
+    });
+  });
+
   it.each(['ok', 'replayed', 'role-not-allowed', 'quota-exceeded', 'refused'])('does not capture %s as a new suspected failure', async (status) => {
     await record({ status });
     await flushPendingTelemetry();
