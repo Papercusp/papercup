@@ -295,7 +295,7 @@ describe('hosted browser route boundary', () => {
       new Request(`${ORIGIN}/api/hosted/browser/workspace-hosts/provision`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: ORIGIN },
-        body: JSON.stringify({ connectionId: 'gcp:connection', desired: { hostId, target: 'gcp' } }),
+        body: JSON.stringify({ connectionId: 'gcp:connection', name: 'My workspace', desired: { hostId, target: 'gcp' } }),
       }),
       context(),
     );
