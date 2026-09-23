@@ -403,3 +403,91 @@ describe('plans:set-status failed wip flips release new claims (WI-10002606)', (
     vi.resetModules();
   });
 });
+
+describe('plans:set-status claim-conflict guidance for linked claim holds', () => {
+  async function invokeWipRefusal(claimOutcome: unknown) {
+    vi.resetModules();
+    vi.doMock('../_harness-scope', async (orig) => ({
+      ...(await orig<typeof import('../_harness-scope')>()),
+      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
+    }));
+    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+    vi.doMock('./revisions', () => ({
+      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
+    }));
+    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: () => ({ ownerId: 'su-reader', ownerLabel: 'su · reader', source: 'omp-hook-session' }),
+      isEphemeralMcpCallIdentity: () => false,
+    }));
+    vi.doMock('./source', () => ({
+      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
+    }));
+    vi.doMock('../../plan-items/agent-names', () => ({
+      bestEffortOwnerUser: () => 'reader@example.com',
+      resolveAdoptedName: vi.fn(async () => null),
+    }));
+    vi.doMock('../../plan-items/claim-discipline', () => ({
+      claimForWork: vi.fn(async () => claimOutcome),
+      releaseOwnClaim: vi.fn(async () => false),
+    }));
+    vi.doMock('../coordination/holder-advisory', () => ({
+      holderContextReader: () => null,
+      resolveHolderAdvisory: vi.fn(async () => null),
+    }));
+
+    try {
+      const freshTool = (await import('./set-status')).default;
+      const response = (await freshTool.handler(
+        { slug: 'plan-a', item: 'P-001', status: 'wip' } as never,
+        {} as never,
+      )) as { data: any };
+      return response.data.results[0];
+    } finally {
+      vi.doUnmock('../_harness-scope');
+      vi.doUnmock('./_ctx-opts');
+      vi.doUnmock('./revisions');
+      vi.doUnmock('../coordination/plan-events');
+      vi.doUnmock('../coordination/identity');
+      vi.doUnmock('./source');
+      vi.doUnmock('../../plan-items/agent-names');
+      vi.doUnmock('../../plan-items/claim-discipline');
+      vi.doUnmock('../coordination/holder-advisory');
+      vi.resetModules();
+    }
+  }
+
+  it('names the hold_open repair instead of inventing a live peer for a holderless park', async () => {
+    const claimHold = {
+      workItemId: 'WI-anonymous-park',
+      provenance: { heldOpen: null, parked: null, attributed: false },
+    };
+    const result = await invokeWipRefusal({
+      ok: false,
+      reason: 'work item WI-anonymous-park is parked by claimHold',
+      claimHold,
+    });
+
+    expect(result).toMatchObject({
+      error: 'claim_conflict',
+      holder: null,
+      claimHold,
+    });
+    expect(result.hint).toContain('work_items:hold_open');
+    expect(result.hint).toContain('WI-anonymous-park');
+    expect(result.hint).not.toMatch(/live peer/i);
+  });
+
+  it('checks holder presence before peer coordination when the refusal returns a lease', async () => {
+    const result = await invokeWipRefusal({
+      ok: false,
+      reason: 'claimed by su · peer — coordinate with the holder or pick another item',
+      holder: { owner: 'su-peer', ownerLabel: 'su · peer', intent: 'working P-001', expiresTs: 'later' },
+    });
+
+    expect(result.hint).toContain('coord:presence');
+    expect(result.hint).toContain('coordinate with the holder if that session is live');
+    expect(result.hint).toContain('coord:send');
+    expect(result).not.toHaveProperty('claimHold');
+  });
+});

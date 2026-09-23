@@ -1052,9 +1052,9 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     });
     if (!outcome.ok) {
       // P-027 / D-055 A5 — the PLAN-ITEM analog of the work-item claim conflict.
-      // Today this reports only THAT a live peer holds the item; the reader's
-      // actual question is whether to wait for them. Advisory + total: the
-      // refusal above is already decided and cannot be changed here.
+      // Holder context explains an actual plan-item lease; a linked _claimHold
+      // refusal is a different floor and must not be presented as a live peer.
+      // Advisory + total: the refusal above is already decided and cannot be changed here.
       //
       // D-094: the plan-item ref is the subject, so the holder is never reported
       // as also competing on the very item whose refusal is being explained.
@@ -1071,6 +1071,39 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         // picks both sides of the comparison.
         subjectRef: planItemRef(it.slug, it.itemId),
       });
+      let hint: string;
+      if (outcome.holder) {
+        const holderLabel = outcome.holder.ownerLabel ?? outcome.holder.owner;
+        hint =
+          'the item has a plan-item claim lease for ' + holderLabel + '; check coord:presence { owner: "' +
+          outcome.holder.owner + '" } and coordinate with the holder if that session is live (coord:send), or pick another item; ' +
+          'fleet:assignments { plan } shows who holds what';
+      } else if (outcome.claimHold) {
+        const provenanceNotes: string[] = [];
+        if (outcome.claimHold.provenance.heldOpen) {
+          const lease = outcome.claimHold.provenance.heldOpen;
+          provenanceNotes.push(
+            'held_open lease by ' + lease.by + '; reason=' + (lease.reason ?? 'not recorded') + '; at=' + (lease.at ?? 'not recorded'),
+          );
+        }
+        if (outcome.claimHold.provenance.parked) {
+          const park = outcome.claimHold.provenance.parked;
+          provenanceNotes.push(
+            'durable park by ' + park.by + '; reason=' + (park.reason ?? 'not recorded') + '; at=' + (park.at ?? 'not recorded'),
+          );
+        }
+        const provenanceNote =
+          provenanceNotes.length > 0 ? provenanceNotes.join('; ') : 'no hold holder, reason, or timestamp is recorded';
+        hint =
+          'the linked work item ' + outcome.claimHold.workItemId + ' is excluded by _claimHold (' + provenanceNote + '); ' +
+          'this refusal did not identify a plan-item lease holder. Inspect the hold state, then clear it only if it is no longer needed with ' +
+          'work_items:hold_open { id: "' + outcome.claimHold.workItemId + '", clear: true, force: true }; ' +
+          'a policy-tier reason also requires ownerOverride: true';
+      } else {
+        hint =
+          'the claim was refused without a plan-item holder: ' + outcome.reason +
+          '; check the assignment or work-group requirement before retrying';
+      }
       return {
         ok: false,
         slug: it.slug,
@@ -1079,7 +1112,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         reason: outcome.reason,
         holder: outcome.holder ?? null,
         ...(holderContext ? { holderContext } : {}),
-        hint: 'the item is being worked by a live peer — coordinate with the holder (coord:send) or pick another item; fleet:assignments { plan } shows who holds what',
+        ...(outcome.claimHold ? { claimHold: outcome.claimHold } : {}),
+        hint,
       };
     }
     claim = { claimId: outcome.claimId, autoClaimed: !outcome.alreadyHeld };
@@ -1981,7 +2015,7 @@ export default defineTool({
     notWhen:
       'You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.',
     chaining:
-      'plans:items { actionable: true } → plans:set-status { item, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item.',
+      'plans:items { actionable: true } → plans:set-status { item, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict, coordinate only when a holder is returned; if claimHold is present, inspect its provenance and use work_items:hold_open only when clearing the park is appropriate.',
     seeAlso: [
       'plans:set-now (narrate the state change for the human-facing Now)',
       'plans:add-item (add a brand-new item rather than flip an existing one)',
