@@ -78,6 +78,7 @@ import {
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
 import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
+import { claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
 // Type-only: the placement compiler reads a closure VERDICT, it never resolves
 // one. Keeping this erased leaves the acceptance gate out of the portfolio
 // read's runtime graph.
@@ -660,6 +661,8 @@ export interface GoalPlanPlacement {
     leaderLive: boolean;
     liveMembers: number;
     target: number | null;
+    /** Measured positive plan/plan_item targeting, not ownership authority. */
+    planScoped?: boolean;
   } | null;
   activeLane: {
     itemId: string;
@@ -667,6 +670,8 @@ export interface GoalPlanPlacement {
     ownerFleet: string | null;
     holderLive: boolean;
     expiresAt: string | null;
+    /** Matching non-terminal work item actually claimed by this lease holder. */
+    workItemId?: string | null;
   } | null;
   launchTransaction: {
     transactionId: string | null;
@@ -836,10 +841,18 @@ export function compileGoalPlanPlacement(args: {
         ownerFleet: portfolioString(laneRaw.fleetSlug),
         holderLive: portfolioBoolean(laneRaw.holderLive),
         expiresAt: portfolioString(laneRaw.expiresAt),
+        workItemId: portfolioString(laneRaw.workItemId),
       }
     : null;
   const fleetRaw = portfolioObject(source.fleet);
   const fleetSlug = portfolioString(fleetRaw?.slug);
+  const claimSpec = validateClaimSpec(portfolioJsonObject(fleetRaw?.claimSpec));
+  const planScoped = claimSpec.ok && Boolean(claimSpec.spec) && (
+    claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan', args.plan.slug) ||
+    (args.actionableItemId !== null && claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan_item', args.actionableItemId))
+  );
+  const holderIdentityMeasured = Array.isArray(source.goalHolderOwnerIds);
+  const goalHolderOwnerIds = portfolioArray(source.goalHolderOwnerIds).map(String);
   const fleet =
     fleetRaw && fleetSlug
       ? {
@@ -848,7 +861,8 @@ export function compileGoalPlanPlacement(args: {
           leaderOwnerId: portfolioString(fleetRaw.leaderOwnerId),
           leaderLive: portfolioBoolean(fleetRaw.leaderLive),
           liveMembers: portfolioNumber(fleetRaw.liveMembers),
-          target: fleetRaw.target == null ? null : portfolioNumber(fleetRaw.target),
+            target: fleetRaw.target == null ? null : portfolioNumber(fleetRaw.target),
+            planScoped,
         }
       : null;
   const transactionRaw = portfolioJsonObject(fleetRaw?.launchTransaction);
@@ -945,7 +959,7 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'resolve-plan-blockers';
     reason = 'The plan has non-terminal work but no dependency-free todo item.';
-  } else if (!activeLane) {
+  } else if (!activeLane && !fleet) {
     state = 'unplaced';
     action = 'launch-plan-fleet';
     reason =
@@ -955,7 +969,7 @@ export function compileGoalPlanPlacement(args: {
   } else if (!fleet) {
     state = 'admitting';
     action = 'launch-spawned-leader';
-    reason = `The ${activeLane.itemId} lease is held; launch its independently led fleet with leader:'spawn'.`;
+    reason = `The ${activeLane!.itemId} lease is held; launch its independently led fleet with leader:'spawn'.`;
   } else if (launchTransaction?.state === 'launching' || launchTransaction?.state === 'partial') {
     state = 'admitting';
     action = 'resume-partial-launch';
@@ -965,10 +979,27 @@ export function compileGoalPlanPlacement(args: {
     state = 'admitting';
     action = 'restore-spawned-leader';
     reason = `Fleet ${fleet.slug} has no live delegated leader; restore one without moving the GOAL steward.`;
+  } else if (fleet.controlState !== 'active' || !holderIdentityMeasured || !fleet.leaderOwnerId || goalHolderOwnerIds.includes(fleet.leaderOwnerId)) {
+    state = 'blocked';
+    action = 'reconcile-plan-lane-holder';
+    reason = `Verify active, independent leadership for ${fleet.slug}; a GOAL steward or unmeasured holder identity cannot certify delegated execution. Preserve any fleet pause and repair through its existing authority.`;
+  } else if (!planScoped) {
+    state = 'blocked';
+    action = 'reconcile-plan-lane-holder';
+    reason = `Restore a valid positive plan/plan_item claim filter for ${fleet.slug} before crediting member pickup; do not create a replacement fleet.`;
+  } else if (!activeLane) {
+    state = 'admitting';
+    action = 'reconcile-plan-lane-holder';
+    reason = `Fleet ${fleet.slug} already exists. Have its leader advance a member claim on ${args.actionableItemId} through the existing scheduler/lease rails; a launch receipt is not pickup and does not warrant a duplicate fleet.`;
   } else if (!activeLane.holderLive) {
     state = 'blocked';
     action = 'reconcile-plan-lane-holder';
     reason = `The ${activeLane.itemId} lease holder is not live; restore it or reclaim the lane through the canonical lease authority.`;
+  } else if (activeLane.ownerFleet !== fleet.slug || activeLane.ownerId === fleet.leaderOwnerId ||
+    goalHolderOwnerIds.includes(activeLane.ownerId) || !activeLane.workItemId || !activeLane.expiresAt) {
+    state = 'admitting';
+    action = 'reconcile-plan-lane-holder';
+    reason = `Verify an actual live ${fleet.slug} member claim, matching work item and unexpired ${activeLane.itemId} lease. Leader-only, steward, or other-fleet leases and WIP labels are not productive member pickup. Reconcile through the existing scheduler; do not launch a duplicate fleet.`;
   } else {
     const hasWip = normalizedItems.some((status) => status === 'wip');
     state = hasWip ? 'working' : 'independently-led';
@@ -1224,6 +1255,7 @@ export async function readGoalPortfolioBrief(args: {
   }
   const sql = pg(args.sql);
   let liveHolderOwnerIds: string[] = [];
+  let goalHolderOwnerIds: string[] | null = null;
   try {
     // A durable GOAL mode row is not evidence that its session is still alive.
     // Reuse the canonical holder+liveness fold before attributing current
@@ -1235,6 +1267,9 @@ export async function readGoalPortfolioBrief(args: {
       goalId: args.goalId,
     });
     liveHolderOwnerIds = holders.live.map((holder) => holder.ownerId);
+    // Independence uses the elected identity even if its liveness is unknown;
+    // presence is not authority. A failed read remains null, not a known empty set.
+    goalHolderOwnerIds = holders.elected ? [holders.elected.ownerId] : [];
     if (holders.liveness === 'unknown') {
       degradedReasons.push(
         'goal holder liveness unavailable; holder-scoped report and Blender counts may be incomplete',
@@ -1279,11 +1314,24 @@ export async function readGoalPortfolioBrief(args: {
                                 AND pi.plan_slug = p.plan_slug
                            ), '[]'::jsonb),
                            'placement', jsonb_build_object(
+                             'goalHolderOwnerIds', ${goalHolderOwnerIds}::text[],
                              'claims', COALESCE((
                                SELECT jsonb_agg(jsonb_build_object(
                                         'itemId', pic.item_id,
                                         'ownerId', pic.owner,
                                         'expiresAt', pic.expires_ts,
+                                        'workItemId', (
+                                          SELECT wi.feature_id FROM harness_shared.work_items wi
+                                           WHERE wi.workspace_id = g.workspace_id
+                                             AND wi.harness_slug = p.harness_slug
+                                             AND wi.taken_by = pic.owner
+                                             AND wi.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])
+                                             AND COALESCE(wi.source_plan_slug, wi.payload->'plan_item'->>'plan_slug') = p.plan_slug
+                                             AND (CASE WHEN wi.source_plan_item_ids IS NOT NULL
+                                               THEN pic.item_id = ANY(wi.source_plan_item_ids)
+                                               ELSE wi.payload->'plan_item'->>'item_id' = pic.item_id END)
+                                           ORDER BY wi.feature_id LIMIT 1
+                                        ),
                                         'fleetSlug', claim_presence.fleet_slug,
                                         'holderLive', claim_presence.heartbeat_at >= now() - interval '10 minutes'
                                       ) ORDER BY pic.item_id)
@@ -1315,6 +1363,12 @@ export async function readGoalPortfolioBrief(args: {
                                              AND member_presence.heartbeat_at >= now() - interval '10 minutes'
                                         ),
                                         'target', af.headcount_target,
+                                        'claimSpec', (
+                                          SELECT cs.spec FROM harness_shared.cup_claim_specs cs
+                                           WHERE cs.workspace_id = g.workspace_id
+                                             AND cs.bee_id = 'fleet:' || af.fleet_slug
+                                           LIMIT 1
+                                        ),
                                         'launchTransaction', af.last_launch_transaction
                                       )
                                  FROM harness_shared.agent_fleets af
