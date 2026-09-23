@@ -1339,6 +1339,9 @@ import './plans/set-specs';
 // proof fingerprints and computed (never stored) currentness.
 import './plans/bind-spec-evidence';
 import './plans/get-spec-evidence';
+// review-system-rework-reduction-2026-09-23 P-040 — which live repo-files proof measures a
+// path; the PostToolUse proof-stale nudge calls it after every edit.
+import './plans/evidence-measuring-paths';
 // P-006 — reusable per-clause proof-quality rubric evaluator. It returns exact
 // scorecards:emit drafts; P-007 consumes current emitted rows at completion.
 import './plans/evaluate-spec-test-adequacy';

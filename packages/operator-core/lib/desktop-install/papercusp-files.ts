@@ -872,6 +872,9 @@ export const CC_HOOK_FILES = [
   // run's "clean" verdict, so the hook says so at the edit instead of hours later at
   // the gate (the hook file shipped without this allowlist entry — install parity 3/3).
   'posttooluse-tsc-verdict-stale-nudge.mjs',
+  // review-system-rework-reduction-2026-09-23 P-040: tells the editor, at the edit, which
+  // live repo-files proof the edit staled, and tells each peer holder once per edit burst.
+  'posttooluse-proof-stale-nudge.mjs',
   // Claude native edit batches defer the union-lock release until this
   // matcher-less PostToolBatch hook sees the complete batch.
   'posttoolbatch-locks-release.sh',
@@ -3061,6 +3064,16 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-tsc-verdict-stale-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-tsc-verdict-stale-nudge.mjs'),
+    });
+  // merge_proof_stale_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit' (P-040 of
+  // review-system-rework-reduction-2026-09-23). Advisory only: after an edit it asks
+  // plans:evidence-measuring-paths which live repo-files proof measured the file, names the
+  // clauses/BARs, holders and the re-measure call, and sends each peer holder one coord
+  // notice per edit burst. Fails open with a bounded timeout and a 60s circuit breaker.
+  if (has('posttooluse-proof-stale-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-proof-stale-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-proof-stale-nudge.mjs'),
     });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
