@@ -4,6 +4,7 @@
  * escalation body that decide WHEN the silent-stall alarm fires.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import type { Sql } from 'postgres';
 
 // EI-9922: stub `execFileSync` itself so the stderr-suppression assertion below is
 // deterministic regardless of what git checkout (or non-repo) the test runs inside —
@@ -180,23 +181,119 @@ describe('wakeAbandonedCheckpointAwaits (WI-6989)', () => {
     }
   });
 
+  it('records the lost run and clears only its DBOS dedup row in one transaction', async () => {
+    const order: string[] = [];
+    const sqlCalls: Array<{ text: string; values: unknown[] }> = [];
+    const transaction = {
+      unsafe: async (text: string, values: unknown[] = []) => {
+        sqlCalls.push({ text, values });
+        order.push(text.includes('UPDATE dbos.workflow_status') ? 'dedup-clear' : 'lost-run-record');
+        return text.includes('UPDATE dbos.workflow_status')
+          ? [{ workflow_uuid: 'routine-fire-workflow-42' }]
+          : [];
+      },
+    };
+    const dbosSql = {
+      begin: async (run: (tx: typeof transaction) => Promise<unknown>) => {
+        order.push('transaction-begin');
+        const result = await run(transaction);
+        order.push('transaction-commit');
+        return result;
+      },
+    } as unknown as Sql;
+    const emit = vi.fn(async (opts: EmitAwaitedEventOpts) => {
+      order.push(`emit:${opts.key}`);
+      return { ok: true };
+    });
+    const clearIfUnchanged = vi.fn(async () => {
+      order.push('marker-clear');
+      return true;
+    });
+    const marker = {
+      ...deadCheckpointMarker(),
+      routineId: 'rt_papercusp_green_checkpoint',
+      routineFireWorkflowId: 'routine-fire-workflow-42',
+    };
+
+    await expect(
+      wakeAbandonedCheckpointAwaits(
+        { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', rawMarker: marker },
+        { nowMs: NOW, selfPid: 7, pidAlive: () => false, dbosSql, emit, clearIfUnchanged },
+      ),
+    ).resolves.toEqual({ status: 'woken', candidate: marker.candidate, markerCleared: true });
+
+    expect(order).toEqual([
+      'transaction-begin',
+      'lost-run-record',
+      'dedup-clear',
+      'transaction-commit',
+      'emit:green-checkpoint:inconclusive',
+      'emit:green-checkpoint:inconclusive:papercusp',
+      'marker-clear',
+    ]);
+    expect(sqlCalls[1]?.text).toContain('workflow_uuid = $1');
+    expect(sqlCalls[1]?.text).toContain('deduplication_id = $2');
+    expect(sqlCalls[1]?.values).toEqual([
+      marker.routineFireWorkflowId,
+      `routine:${marker.routineId}`,
+      marker.observedAtMs,
+      marker.routineId,
+      'papercusp',
+      'papercusp-workspace',
+    ]);
+  });
+
+  it('keeps the dead marker for retry when the lost-run/dedup transaction fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn();
+    const clearIfUnchanged = vi.fn();
+    const dbosSql = {
+      begin: async () => {
+        throw new Error('transaction unavailable');
+      },
+    } as unknown as Sql;
+    const marker = {
+      ...deadCheckpointMarker(),
+      routineId: 'rt_papercusp_green_checkpoint',
+      routineFireWorkflowId: 'routine-fire-workflow-42',
+    };
+
+    await expect(
+      wakeAbandonedCheckpointAwaits(
+        { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', rawMarker: marker },
+        { nowMs: NOW, selfPid: 7, pidAlive: () => false, dbosSql, emit, clearIfUnchanged },
+      ),
+    ).resolves.toEqual({ status: 'dedup-clear-failed', candidate: marker.candidate });
+    expect(emit).not.toHaveBeenCalled();
+    expect(clearIfUnchanged).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('will retry'));
+    warn.mockRestore();
+  });
+
   it('leaves a live checkpoint marker and all await registrations untouched', async () => {
     const emit = vi.fn();
     const recordLostRun = vi.fn();
     const clearIfUnchanged = vi.fn();
+    const dbosSql = { begin: vi.fn() } as unknown as Sql;
+    const marker = {
+      ...deadCheckpointMarker(),
+      routineId: 'rt_papercusp_green_checkpoint',
+      routineFireWorkflowId: 'routine-fire-workflow-42',
+    };
     await expect(
       wakeAbandonedCheckpointAwaits(
         {
           installSlug: 'papercusp',
           workspaceId: 'papercusp-workspace',
-          rawMarker: deadCheckpointMarker(),
+          rawMarker: marker,
         },
-        { nowMs: NOW, selfPid: 7, pidAlive: () => true, emit, recordLostRun, clearIfUnchanged },
+        { nowMs: NOW, selfPid: 7, pidAlive: () => true, emit, recordLostRun, clearIfUnchanged, dbosSql },
       ),
     ).resolves.toEqual({ status: 'not-abandoned', reason: 'pid-alive' });
     expect(emit).not.toHaveBeenCalled();
     expect(recordLostRun).not.toHaveBeenCalled();
     expect(clearIfUnchanged).not.toHaveBeenCalled();
+    expect(dbosSql.begin).not.toHaveBeenCalled();
   });
 
   it('retains the dead marker when event delivery fails so the next watchdog pass retries', async () => {

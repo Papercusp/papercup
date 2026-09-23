@@ -91,6 +91,7 @@ import {
 } from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
+import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
@@ -804,6 +805,8 @@ export interface CheckpointDeps {
     tipAtSelection: string | null;
     refireDepth: number;
     pid: number;
+    routineId?: string;
+    routineFireWorkflowId?: string;
   }): Promise<void>;
   /** Cheap quiet-cut detector: source/test sibling commits outside the candidate. */
   detectSplitSourceTestPairs?(input: {
@@ -1336,6 +1339,10 @@ export interface CheckpointDeps {
   qualificationAttemptId?: string;
   /** Stable identity shared by this fire's anchor and terminal/pending outcome rows. */
   gateFireId?: string;
+  /** Scheduled routine row that launched this checkpoint child, if any. */
+  routineId?: string;
+  /** Exact DBOS workflow_status.workflow_uuid of the scheduled routineFire. */
+  routineFireWorkflowId?: string;
 }
 
 export interface CheckpointResult {
@@ -11477,6 +11484,8 @@ async function runGreenCheckpointInner(
     // charged/total bookkeeping above uses.
     refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
     pid: process.pid,
+    ...(deps.routineId ? { routineId: deps.routineId } : {}),
+    ...(deps.routineFireWorkflowId ? { routineFireWorkflowId: deps.routineFireWorkflowId } : {}),
   });
 
   const candidateMigrationInput: CheckpointMigrationInput = {
@@ -17316,6 +17325,7 @@ export function realCheckpointDeps(
     workspaceRerun,
     runId,
     gateFireId,
+    ...routineFireIdentityFromEnv(),
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
     async routeFrozenRepairToAgents(input) {
