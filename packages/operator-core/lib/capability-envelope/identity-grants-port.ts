@@ -651,5 +651,12 @@ export async function checkIdentityGrantKernel(
   return {
     decision: 'allow', availability: 'available', applied: true,
     policyRevision: policy.policyRevision, executionRevision: applied, revisionSource: 'applied',
+    // R1 needs every invocation receipt to identify the exact adv_sessions row
+    // whose immutable identity artifact this decision evaluated. `sessionId`
+    // is the database row id here; `rowVersion` is the xmin actually used after
+    // any lazy body read, not necessarily the earlier header's xmin.
+    ...(version?.sessionId && version.rowVersion
+      ? { serverAudit: { identityLaunchRecord: { advSessionId: version.sessionId, xmin: version.rowVersion } } }
+      : {}),
   };
 }
