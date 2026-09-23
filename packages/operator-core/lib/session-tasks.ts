@@ -673,6 +673,28 @@ export async function acquireSessionTaskLock(
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${sessionTaskLockKey(workspaceId, sessionId)}, 981))`;
 }
 
+/**
+ * The task-list session an owner operates. A PUI conversation's list is keyed
+ * on its chat id (pui-first-party-public-release-2026-09-07 D-019), so an SU
+ * coord owner attached to one (adv_sessions.su_agent_chat_id, unique per
+ * workspace) reads and writes that chat's list; any other owner keeps its own.
+ */
+export async function taskSessionIdForOwner(
+  sql: SqlLike,
+  workspaceId: string,
+  ownerId: string,
+): Promise<string> {
+  const rows = await sql<Array<{ su_agent_chat_id: string }>>`
+    SELECT su_agent_chat_id
+      FROM harness_shared.adv_sessions
+     WHERE workspace_id = ${workspaceId}
+       AND coord_owner_id = ${ownerId}
+       AND su_agent_chat_id IS NOT NULL
+     ORDER BY started_at DESC
+     LIMIT 1`;
+  return rows[0]?.su_agent_chat_id ?? ownerId;
+}
+
 export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArgs): Promise<SessionTaskResult> {
   const workspaceId = present(args.workspaceId, 'workspace_id', 240);
   const sessionId = present(args.sessionId, 'session_id', 240);

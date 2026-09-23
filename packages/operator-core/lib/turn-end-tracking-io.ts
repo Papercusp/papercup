@@ -312,12 +312,14 @@ export async function sweepOpenTaskReminder(input: {
     ]);
     const { sql } = db.getOrgPg();
     const [view, loop, awaits, priorRows] = await Promise.all([
-      tasksMod.applySessionTaskOp(sql, {
-        op: 'view',
-        workspaceId: input.workspaceId,
-        sessionId: input.ownerId,
-        idFactory: () => 'turn-end-task-view',
-      }),
+      // D-019: an SU attached to a PUI conversation keeps its list under the chat id.
+      tasksMod.taskSessionIdForOwner(sql, input.workspaceId, input.ownerId).then((sessionId) =>
+        tasksMod.applySessionTaskOp(sql, {
+          op: 'view',
+          workspaceId: input.workspaceId,
+          sessionId,
+          idFactory: () => 'turn-end-task-view',
+        })),
       loopMod.getLoopStatus(input.ownerId).catch(() => null),
       awaitMod.listActiveAwaits(input.ownerId).catch(() => []),
       journalMod.recentTurnJournal({ ownerId: input.ownerId, limit: 1 }).catch(() => []),
