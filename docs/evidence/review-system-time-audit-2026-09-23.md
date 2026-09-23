@@ -445,3 +445,29 @@ My first report to Avi said the program's criteria were "reworded 106 times". Th
 | 24 | The handoff brief lists the mutating verbs that succeeded on the item's plan (P-035) | rediscovery and false "no such verb" conclusions | extends the existing `priorAttemptBrief` |
 | 25 | `orders:disposition` refuses to close another live session's directive without `force`; add `orders:reopen`; `orders:list mine:true` (P-036) | wrong-session closes when one message is pasted to many sessions | each session still closes its own |
 | 26 | Per-plan efficiency read, then before/after on the next five ships (P-032; changed from two by D-005 to match Acceptance) | audits like this one needing 30+ ad-hoc queries | read-only |
+
+# Sixth pass (original author, su-1bb6850b, 09:35Z): the last mile from graded to shipped
+
+The plan shipped at 09:27Z (`awaiting-acceptance` → `shipped`, no force or waiver). Between the first independent card (07:03Z) and the ship there were 2h24m and three more repair cycles. None was caused by a behaviour defect. Sources: the cards `EI-24034772495454328`, `EI-24036936348852993`, `EI-24042920914796564` and `EI-24043051671018046`; bindings 10047–10051, 10057, 10058, 10102 and 10103; and the `WI-10002580` completion.
+
+## New finding 1 — the method asked for proof the pairing rule cannot store as a mutation row (≈2h, two graders)
+
+Rubric rev 4 (D-005) requires mutants M13–M16 to be caught by a bound file, but spec `AUTO-BAR-R-6-P-003` names three one-to-one scenarios. `spec-test-adequacy.ts` (the causal-pair block) allows **exactly one** negative binding per `causalPairId`, and M10–M12 already fill those slots. A fourth mutation row would therefore fail proof adequacy. I put M13–M16 in an attestation's prose instead. Both graders independently rated R-6 `degraded` because "none is bound as spec evidence". R-4 had the same problem with M4b, bound only to a retired bar. `degraded` is not pass-equivalent (`expectedInstrumentVerdict`), so the author's verdict cannot override it.
+
+**What worked:** each extra caught mutant goes in as `evidenceKind:'check'` with no `causalPairIds`. Each expected survivor (M13u/M14u) goes in as `'manual'` with no `details.adequacy`, because an executable row with outcome `survived` counts as a failed relied-on binding. Recorded as fact `guard-rail:one-to-one-spec-supplementary-probes-bind-as-check-rows`.
+
+## New finding 2 — a build moved the ship door after grading was complete (1 extra cycle)
+
+After the all-healthy card and the author's accept verdict, the ship call on `:3170` (build `ee617c6363`) refused with `acceptance_bar_contract_not_ready`: R-1 and R-2 `bar_snapshot_evidence_plane_unmet`. That code had just joined the ship-blocking list in `acceptance-bar-contract-snapshot.ts`. At 07:55Z, on build `80521d598f`, the same plan reported only `acceptance_bar_not_met`. The live-plane rows had been bound before `details.evidencePlane` existed. The refusal's `NEXT REPAIR`, "Record current evidence on the BAR's declared evidence plane", does not name the field, so finding it took a source read. The repair was a metadata-only rebind (same ref, kind and run, plus `evidencePlane:'live'`). It did not stale the independent grading, because a passing rating is decided before the cohort-change check.
+
+## New finding 3 — the obvious await for "grader filed" never fires
+
+The recruitment reply names the canonical reservation work-item (`WI-10002634`), so I awaited `work-item:done:WI-10002634`. The reservation stays open when a card is filed. The await timed out, and the carry-note's "check WI-10002634" pointed at a key that never fires. The correct key is `scorecard:emitted:<rubricRef>` (`events/await/catalog.ts`). It fired within seconds of the re-grade.
+
+## Added improvements
+
+| # | change | removes | functionality kept |
+|---|---|---|---|
+| 27 | When a rubric method names more mutants than the spec has one-to-one scenarios, `rubrics:propose`/`amend` warns and names the storage (check rows, or add the scenarios) | a full grade → degraded → rebind → re-grade cycle | the one-negative-per-pair contract is unchanged |
+| 28 | A newly ship-blocking BAR code is raised on plans already awaiting acceptance, at deploy time rather than at their ship call; and `evidence_plane_unmet`'s `NEXT REPAIR` names `details.evidencePlane` plus the exact rebind | a surprise refusal after grading and a source read to repair it | same code, same blocking |
+| 29 | The grading-recruitment reply returns the `scorecard:emitted:<rubricRef>` await key beside the reservation id | awaits on a key that never fires | the reservation is unchanged |
