@@ -103,6 +103,7 @@ export function declaredEmitterPaths(emitter: string): string[] {
  */
 export const DYNAMIC_KEY_FAMILIES: Readonly<Record<string, string>> = {
   'fleet-member-dead': 'fleetTransitionKey() interpolates the KIND segment: `fleet:${kind}:${slug}`',
+  'fleet-member-left': 'fleetTransitionKey() interpolates the KIND segment',
   'fleet-context-critical': 'fleetTransitionKey() interpolates the KIND segment',
   'fleet-claim-released': 'fleetTransitionKey() interpolates the KIND segment',
   'fleet-item-completed': 'fleetTransitionKey() interpolates the KIND segment',

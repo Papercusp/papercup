@@ -729,6 +729,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling fleet:leader-brief / fleet:assignments for member liveness',
   },
   {
+    family: 'fleet-member-left',
+    keyTemplate: 'fleet:member-left:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'A member crossed into a recorded, non-wakeable state while still holding active claims. This signals a clean departure with work to inspect; it does not assert that any claim is orphaned or reclaimable. Crossing-only, and not emitted for claimless departures.',
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
+    exists: true,
+    replacesPoll: 'waiting for the fallback heartbeat to notice a clean departure with claims',
+  },
+  {
     family: 'fleet-context-critical',
     keyTemplate: 'fleet:context-critical:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],

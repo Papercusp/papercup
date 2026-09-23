@@ -15,7 +15,8 @@
  *
  * RELATIONSHIP TO `fleet-transition-sweep` — adjacent, deliberately NOT merged.
  * That sweep publishes FLEET-SCOPED awaitable event keys for a LEADER who has
- * explicitly parked on them (`events:await { event: 'fleet:member-dead:<slug>' }`),
+ * explicitly parked on them (`events:await { event: 'fleet:member-dead:<slug>' }`
+ * or `fleet:member-left:<slug>`),
  * and it drops every agent with no fleet. This one writes COMMITMENT-SCOPED coord
  * lines to whoever is blocked, fleet or not, with no registration at all. Same
  * observation source, different audience, different transport, different

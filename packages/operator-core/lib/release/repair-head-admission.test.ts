@@ -228,6 +228,30 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(out.entry.blobs).toEqual({ 'docs/x.md': null });
   });
 
+  it('refuses a never-tracked path absent from the candidate, source, and repairHead', () => {
+    const { root, candidate } = repo();
+    const path = 'lib/never-existed.ts';
+    const out = admit(root, candidate, candidate, [path]);
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'path-not-found',
+      detail: expect.stringContaining(path),
+    });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+
+  it('keeps an already-reflected deletion idempotent', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'docs/x.md': null }, 'delete');
+    const first = admit(root, candidate, candidate, ['docs/x.md']);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const again = admit(root, candidate, first.commit, ['docs/x.md']);
+    expect(again).toMatchObject({ ok: false, code: 'nothing-to-admit' });
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(first.commit);
+  });
+
   it('is idempotent: an already-admitted path is nothing-to-admit alone and `unchanged` beside a real change', () => {
     const { root, candidate } = repo();
     sweep(root, { 'lib/a.ts': 'a2\n', 'lib/b.ts': 'b2\n' }, 'sweep');

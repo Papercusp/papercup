@@ -73,6 +73,7 @@ function releasedItem(overrides: Partial<WorkItem> = {}): WorkItem {
 describe('fleetTransitionKey', () => {
   it('builds the fleet-scoped key shape the catalog advertises', () => {
     expect(fleetTransitionKey('push-not-poll', 'member-dead')).toBe('fleet:member-dead:push-not-poll');
+    expect(fleetTransitionKey('push-not-poll', 'member-left')).toBe('fleet:member-left:push-not-poll');
     expect(fleetTransitionKey('push-not-poll', 'item-completed')).toBe('fleet:item-completed:push-not-poll');
     expect(fleetTransitionKey('push-not-poll', 'repeated-recovery')).toBe('fleet:repeated-recovery:push-not-poll');
   });
@@ -82,7 +83,7 @@ describe('fleetTransitionKey', () => {
     // template at its first placeholder, so `fleet:<slug>:member-dead` would
     // register the prefix `fleet:` and silently disarm the orphan guard for the
     // whole namespace. Uniform with the pre-existing `fleet:drained:<slug>`.
-    for (const kind of ['member-dead', 'context-critical', 'claim-released', 'item-completed'] as const) {
+    for (const kind of ['member-dead', 'member-left', 'context-critical', 'claim-released', 'item-completed'] as const) {
       expect(fleetTransitionKey('any-slug', kind).startsWith(`fleet:${kind}:`)).toBe(true);
     }
   });
@@ -95,6 +96,39 @@ describe('detectFleetTransitions', () => {
     expect(edges).toEqual([
       { kind: 'member-dead', fleetSlug: 'push-not-poll', agentId: 'su-a', to: 'ended', from: 'live' },
     ]);
+  });
+
+  it('fires member-left when a recorded, non-wakeable member still holds claims', () => {
+    const prev = indexObservations([member({ sessionState: 'live', wakeable: true, claimCount: 3 })]);
+    const edges = detectFleetTransitions(
+      prev,
+      [member({ sessionState: 'recorded', wakeable: false, claimCount: 3 })],
+    );
+    expect(edges).toEqual([
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        to: 'recorded',
+        from: 'live',
+        claimCount: 3,
+      },
+    ]);
+  });
+
+  it('does not fire member-left for claimless or wakeable recorded members', () => {
+    const prev = indexObservations([member({ sessionState: 'live', wakeable: true, claimCount: 2 })]);
+    expect(
+      detectFleetTransitions(prev, [member({ sessionState: 'recorded', wakeable: false, claimCount: 0 })]),
+    ).toEqual([]);
+    expect(
+      detectFleetTransitions(prev, [member({ sessionState: 'recorded', wakeable: true, claimCount: 2 })]),
+    ).toEqual([]);
+  });
+
+  it('does not repeat member-left while the recorded claim-bearing state persists', () => {
+    const recorded = member({ sessionState: 'recorded', wakeable: false, claimCount: 2 });
+    expect(detectFleetTransitions(indexObservations([recorded]), [recorded])).toEqual([]);
   });
 
   it('fires context-critical on the high → critical crossing', () => {
@@ -110,6 +144,11 @@ describe('detectFleetTransitions', () => {
     // leader for every historically-dead row still in the roster.
     expect(detectFleetTransitions(new Map(), [member({ sessionState: 'ended' })])).toEqual([]);
     expect(detectFleetTransitions(new Map(), [member({ contextPressure: 'critical' })])).toEqual([]);
+    expect(
+      detectFleetTransitions(new Map(), [
+        member({ sessionState: 'recorded', wakeable: false, claimCount: 1 }),
+      ]),
+    ).toEqual([]);
   });
 
   it('does NOT re-fire while the member STAYS dead or STAYS critical', () => {
@@ -251,6 +290,62 @@ describe('emitFleetTransitionEdge', () => {
     expect(arg.key).toBe('fleet:member-dead:push-not-poll');
     expect(arg.payload).toMatchObject({ fleetSlug: 'push-not-poll', agentId: 'su-a', from: 'live', to: 'ended' });
     expect(arg.to).toBeUndefined();
+  });
+
+  it('emits member-left with claim count after last-moment revalidation', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'recorded' as const,
+      wakeable: false,
+      claimCount: 2,
+    }));
+    emitFleetTransitionEdge(
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        from: 'live',
+        to: 'recorded',
+        claimCount: 2,
+      },
+      { emit, currentMemberObservation },
+    );
+    await settle();
+    expect(currentMemberObservation).toHaveBeenCalledWith('push-not-poll', 'su-a');
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'fleet:member-left:push-not-poll',
+      payload: {
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        transition: 'member-left',
+        claimCount: 2,
+      },
+    });
+  });
+
+  it('suppresses member-left if claims are gone before delivery', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    emitFleetTransitionEdge(
+      {
+        kind: 'member-left',
+        fleetSlug: 'f',
+        agentId: 'su-a',
+        from: 'live',
+        to: 'recorded',
+        claimCount: 2,
+      },
+      {
+        emit,
+        currentMemberObservation: vi.fn(async () => ({
+          sessionState: 'recorded' as const,
+          wakeable: false,
+          claimCount: 0,
+        })),
+      },
+    );
+    await settle();
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('never throws when the emit rejects — a monitor emit can never break its caller', async () => {

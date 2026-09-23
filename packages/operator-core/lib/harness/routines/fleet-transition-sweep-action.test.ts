@@ -129,6 +129,16 @@ describe('runFleetTransitionSweep', () => {
     expect(rounds[1]).toEqual(['fleet:member-dead:push-not-poll']);
   });
 
+  it('wakes once for a recorded, non-wakeable member while claims remain', async () => {
+    const rounds = await sweepRounds([
+      [member({ sessionState: 'live', wakeable: true, claimCount: 2 })],
+      [member({ sessionState: 'recorded', wakeable: false, claimCount: 2 })],
+      [member({ sessionState: 'recorded', wakeable: false, claimCount: 2 })],
+      [member({ sessionState: 'recorded', wakeable: false, claimCount: 0 })],
+    ]);
+    expect(rounds).toEqual([[], ['fleet:member-left:push-not-poll'], [], []]);
+  });
+
   it('does not fire on the FIRST sweep even when a member is already dead — the restart-storm guard', async () => {
     const rounds = await sweepRounds([[member({ sessionState: 'ended', contextPressure: 'critical' })]]);
     expect(rounds[0]).toEqual([]);

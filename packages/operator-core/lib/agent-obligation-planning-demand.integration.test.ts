@@ -66,7 +66,8 @@ async function existingPlan(status: 'draft' | 'ready') {
   await fx.admin.begin(async (tx) => {
     await tx`UPDATE harness_shared.harness_plans SET title = ${idx.title}, status = ${idx.status}
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
-    await writePlanIndexRows(tx, { workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }, idx);
+    await writePlanIndexRows(tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+      { workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }, idx);
   });
   expect((await setWorklist([PLAN], 0)).ok).toBe(true);
 }
@@ -86,9 +87,11 @@ async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') 
 async function agenda() {
   return (await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Scope, portfolio, review, ownership, index and ordering are real. Launch admissibility
-    // is a controlled input: this test proves priority, not the launch boundary itself.
+    // and unrelated final acceptance are controlled inputs: this proves priority,
+    // not launch admission or a plan acceptance verdict.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
       ownerReport: async () => null,
+      planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },
         budget: null, refusal: null, degraded: false, degradedReasons: [] }),
@@ -141,7 +144,7 @@ describe('goal planning demand and execution priority from PostgreSQL', () => {
     await existingPlan('ready');
     await record('plan-needed');
     const rejected = await setWorklist([`plan:${HARNESS}/replacement`], 0);
-    expect(rejected).toMatchObject({ ok: false, code: 'version_conflict' });
+    expect(rejected).toMatchObject({ ok: false, code: 'stale' });
     expect((await readGoalPortfolioBrief({ workspaceId: WS, goalId: GOAL }))?.worklist.map((p) => p.ref)).toEqual([PLAN]);
     expect((await agenda()).primary[0]?.action?.targetRef).toBe(PLAN);
   }, 90_000);

@@ -1302,13 +1302,14 @@ describe('fleet:leader-brief — unowned critical age filter (EI-202284881709651
 describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)', () => {
   const expectedKeys = [
     'fleet:member-dead:alpha',
+    'fleet:member-left:alpha',
     'fleet:drained:alpha',
     'fleet:context-critical:alpha',
     'fleet:claim-released:alpha',
     'fleet:admission-blocked:alpha',
   ];
 
-  it('reads the exact five standard profile keys and stays absent when every key has a live awaiter', async () => {
+  it('reads the exact six standard profile keys and stays absent when every key has a live awaiter', async () => {
     const seen: string[] = [];
     const advisory = await readLeaderMonitoringBlindAdvisory('alpha', async (eventKey) => {
       seen.push(eventKey);
@@ -1325,7 +1326,7 @@ describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)'
     );
 
     expect(advisory).toMatchObject({
-      line: expect.stringMatching(/monitoring blind.*1\/5.*live_awaiters:0/i),
+      line: expect.stringMatching(/monitoring blind.*1\/6.*live_awaiters:0/i),
       missingEventKeys: ['fleet:drained:alpha'],
       arm: {
         tool: 'events:await',

@@ -94,7 +94,9 @@ function activeWatches() {
     once: false,
     wakeHandle: { kind: 'psu-socket' },
     boundTo: { kind: 'fleet-leadership', ref: 'alpha' },
-    ...(eventKey === 'fleet:member-dead:alpha' || eventKey === 'fleet:context-critical:alpha'
+    ...(eventKey === 'fleet:member-dead:alpha' ||
+      eventKey === 'fleet:member-left:alpha' ||
+      eventKey === 'fleet:context-critical:alpha'
       ? { payloadFilter: { not: { agentId: { equals: input.ownerId } } } }
       : {}),
   }));
@@ -158,9 +160,10 @@ describe('ensureFleetLeaderControl', () => {
     expect(shouldMaintainFleetLeaderControl(undefined)).toBe(true);
   });
 
-  it('derives the exact five standard event keys from the fleet-leader auto-arm profile', () => {
+  it('derives the exact six standard event keys from the fleet-leader auto-arm profile', () => {
     expect(standardEventKeys()).toEqual([
       'fleet:member-dead:alpha',
+      'fleet:member-left:alpha',
       'fleet:drained:alpha',
       'fleet:context-critical:alpha',
       'fleet:claim-released:alpha',
@@ -207,18 +210,18 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [1, 2, 3, 4, 5] },
+      args: { await_ids: [1, 2, 3, 4, 5, 6] },
     });
   });
 
   it('honours the flag-off kill switch by retiring lifecycle-bound profile watches', async () => {
     getFlag.mockResolvedValue(false);
-    retireLifecycleBoundWatches.mockResolvedValue({ awaits: 4, predicateWatches: 1 });
+    retireLifecycleBoundWatches.mockResolvedValue({ awaits: 5, predicateWatches: 1 });
 
     const out = await ensureFleetLeaderControl(input);
 
     expect(out.healthy).toBe(true);
-    expect(out.watches).toMatchObject({ enabled: false, healthy: true, removed: 5, cancel: null });
+    expect(out.watches).toMatchObject({ enabled: false, healthy: true, removed: 6, cancel: null });
     expect(retireLifecycleBoundWatches).toHaveBeenCalledWith(
       { kind: 'fleet-leadership', ref: 'alpha' },
       { ownerIds: ['leader-1'] },
@@ -273,11 +276,11 @@ describe('ensureFleetLeaderControl', () => {
         onlyIfInactive: true,
       }),
     );
-    expect(registerAwait).toHaveBeenCalledTimes(5);
+    expect(registerAwait).toHaveBeenCalledTimes(6);
     expect(out.watches.added).toEqual(standardEventKeys());
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [101, 102, 103, 104, 105] },
+      args: { await_ids: [101, 102, 103, 104, 105, 106] },
     });
 
     const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
@@ -394,7 +397,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(cancelAwait).not.toHaveBeenCalled();
     expect(out.watches.active).toEqual(standardEventKeys());
-    expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5]);
+    expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it('preserves an active deliberately retuned work loop instead of overwriting its cadence and goal', async () => {
@@ -429,10 +432,15 @@ describe('ensureFleetLeaderControl', () => {
     const out = await ensureFleetLeaderControl(input);
 
     expect(out.healthy).toBe(true);
-    expect(out.watches.repaired).toEqual(['fleet:member-dead:alpha', 'fleet:context-critical:alpha']);
-    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(out.watches.repaired).toEqual([
+      'fleet:member-dead:alpha',
+      'fleet:member-left:alpha',
+      'fleet:context-critical:alpha',
+    ]);
+    expect(registerAwait).toHaveBeenCalledTimes(3);
     expect(registerAwait.mock.calls.map(([args]) => args.eventKey)).toEqual([
       'fleet:member-dead:alpha',
+      'fleet:member-left:alpha',
       'fleet:context-critical:alpha',
     ]);
     expect(registerAwait.mock.calls.every(([args]) => args.payloadFilter?.not?.agentId?.equals === 'leader-1')).toBe(

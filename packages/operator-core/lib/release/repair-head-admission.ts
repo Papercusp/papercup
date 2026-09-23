@@ -95,6 +95,7 @@ export type AdmissionRefusalCode =
   | 'invalid-paths'
   | 'repair-head-unresolvable'
   | 'source-unresolvable'
+  | 'path-not-found'
   | 'nothing-to-admit'
   | 'stray-paths'
   | 'admission-incomplete'
@@ -399,7 +400,22 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       const s = atSource.get(path)!;
       const h = atHead.get(path)!;
       if (s.kind === 'absent') {
-        if (h.kind === 'absent') continue; // absent on both sides: nothing to do, reported as unchanged
+        if (h.kind === 'absent') {
+          // An absent path on both sides is a valid already-reflected deletion only when the
+          // frozen candidate proves the path existed. Otherwise a typo would become a false-green.
+          const c = lsTree(input.candidate, path);
+          if (!c.ok) return c.refusal;
+          if (c.entry.kind === 'absent') {
+            return {
+              ok: false,
+              code: 'path-not-found',
+              detail:
+                `${path} is absent from source ${JSON.stringify(input.source.ref)}, repairHead ` +
+                `${repairHeadSha.slice(0, 12)}, and frozen candidate ${input.candidate.slice(0, 12)}`,
+            };
+          }
+          continue;
+        }
         const rm = run(['update-index', '--force-remove', '--', path], indexEnv);
         if (rm.status !== 0) return gitFailed(`update-index --force-remove ${path}`, rm);
         continue;

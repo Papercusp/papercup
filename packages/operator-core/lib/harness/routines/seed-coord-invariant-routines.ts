@@ -43,7 +43,7 @@ const ROUTINES = [
   // double-placement risk, not a slow leak, so it needs a short detection window.
   { name: 'claim-integrity-sweep', target: 'system:claim-integrity-sweep', cron: '0 */10 * * * *', payload: {} },
   // fleet-leadership-continuity-and-actuation-2026-08-01 P-009 / D-008: the derived
-  // half of the leader transition feed (member-dead + context-critical). EVERY
+  // half of the leader transition feed (member-dead + member-left + context-critical). EVERY
   // MINUTE — unlike the invariant monitors above, this is not a slow-leak watcher
   // but the mechanism a sleeping fleet leader depends on to be told anything at
   // all, so its interval IS the leader's detection latency. The prior polled

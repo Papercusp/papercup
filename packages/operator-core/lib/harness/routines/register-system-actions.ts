@@ -441,7 +441,7 @@ import './token-report-action';
 import './hive-canary-action';
 import './coord-invariant-actions';
 // P-009 / D-008: the derived half of the fleet leader transition feed
-// (member-dead + context-critical), so a leader parks on an event instead of
+// (member-dead + member-left + context-critical), so a leader parks on an event instead of
 // polling leader-brief on a 60s loop.
 import './fleet-transition-sweep-action';
 import './presence-transition-sweep-action';

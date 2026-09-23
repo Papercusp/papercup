@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 904,
+  "count": 905,
   "tools": [
     {
       "name": "ablation:report",
@@ -27898,7 +27898,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change: amend { dryRun:true } → requester posts preview.approval once with work_items:comment and sends its thread-post id to an outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread → apply with approvalRef:'thread-post:<reviewer-post-id>'. The resolver loads the immutable preview within the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post. Do not create a counter-sign work-item just for approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. A started BAR meaning change needs outside-lineage approval first (guidance.chaining has the steps). Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -27926,6 +27926,44 @@
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
         "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval once as a work_items:comment and sends its post id to the outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread, preferably an item they already hold → apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Both posts are immutable and resolved by workspace/id. The compact pointer avoids hash transcription; the server compares the referenced preview to the full applied delta. Do not create a counter-sign work-item for approval."
+      }
+    },
+    {
+      "name": "rubrics:amend-status",
+      "http": {
+        "path": "/api/agent-tools/rubrics/amend-status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Poll a rubrics:amend receipt: running, committed (with the amend result), failed (with the error), or not_found. not_found means nothing is running and no committed amendment carries the key; re-issuing the same amend with the same idempotencyKey is then safe.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A rubrics:amend returned { pending:true, receipt } and you need its outcome.",
+        "notWhen": "You have no receipt — read the rubric with rubrics:get instead."
       }
     },
     {

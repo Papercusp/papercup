@@ -11,6 +11,7 @@ import { createPgTelemetryStore } from './activity-pg-store';
 
 export const FLEET_ACTIVITY_TRANSITIONS = [
   'member-dead',
+  'member-left',
   'claim-released',
   'item-completed',
   'context-critical',

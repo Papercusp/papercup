@@ -158,6 +158,46 @@ const ANCHOR_DF_BUDGET = 0;
 const LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS = 8_000;
 
 /**
+ * EI-24045346484356708 — how many of the caller's NEWEST in-scope transcript
+ * turns the literal-substring FILL may examine.
+ *
+ * The fill exists for EI-23237047797741772: a pasted compact token such as
+ * `furnishedfinder` lives inside a hostname lexeme (`www.furnishedfinder.com`),
+ * so no dictionary lookup can find it and only a raw substring match can. No
+ * index serves a substring match (a trigram index would, but the migration
+ * runner cannot build one CONCURRENTLY, and a blocking build on the 13 GB ingest
+ * table is the same objection that keeps migration 1163 parked). Unbounded, the
+ * match was a parallel seq scan of the whole table on EVERY call — 6.4s, 6
+ * processes, 2.78M buffers — and it ran for every query, including the fleet's
+ * per-turn memory recall, whose derived multi-term queries it could never help.
+ *
+ * Bounded to the newest N rows (served by `session_turns_ingested_idx`, run
+ * serially) it measured 431ms at 20,000 rows and 806ms at 50,000 on the live
+ * table. At ~33k turns/day this window is ~1.5 days workspace-wide; a caller
+ * that narrows scope (session / owner / since) gets the window INSIDE that
+ * narrower population, so a session-scoped search still covers that session's
+ * history. Dictionary-matchable terms are unaffected — they never needed it.
+ */
+export const LITERAL_FALLBACK_WINDOW_ROWS = 50_000;
+
+/** Shorter literals are substring noise over transcripts (`ok` ⊂ `token`). */
+const LITERAL_FALLBACK_MIN_CHARS = 3;
+
+/**
+ * EI-24045346484356708 — the literal fill runs only for a SINGLE compact token
+ * (no internal whitespace, ≥ 3 chars): the case EI-23237047797741772 was filed
+ * for. A multi-word query already reaches every word through the AND tsquery,
+ * so a whole-phrase substring could only re-find what the index found — and its
+ * cost was the full-table scan above. Returns the trimmed token, or `null` when
+ * the fill must not run.
+ */
+export function compactLiteralToken(query: string): string | null {
+  const token = query.trim();
+  if (token.length < LITERAL_FALLBACK_MIN_CHARS || /\s/.test(token)) return null;
+  return token;
+}
+
+/**
  * P-017 / D-062 — the lexical leg's term-combination mode, as SQL fragments.
  *
  * Both modes share ONE query shape (`ORDER BY coverage DESC, rank DESC`), which
@@ -196,19 +236,23 @@ function lexicalSql(
   table: ReturnType<SearchSourceParams['sql']>,
   /** Optional exact-token vector used only for fallback-only transcript rows. */
   simpleTsv?: ReturnType<SearchSourceParams['sql']>,
-  /** Optional bounded raw text used for literal substring fallback rows. */
-  literalText?: ReturnType<SearchSourceParams['sql']>,
 ) {
   const sql = p.sql;
   // `?? ` and not `||`: a caller passing 0 is asking for the argmin-only
   // control arm, not for the default.
   const anchorDfBudget = p.lexicalAnchorDfBudget ?? ANCHOR_DF_BUDGET;
   const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
-  const literalMatch = literalText
-    ? sql`(length(btrim(${p.query})) > 0
-            AND position(lower(${p.query}) in lower(left(${literalText}, 20000))) > 0)`
-    : sql`FALSE`;
 
+  // EI-24045346484356708: there is deliberately NO literal-substring arm in
+  // `match` here any more. It used to be `(tsv @@ q.andq OR position(...) > 0)`,
+  // and an OR whose second arm no index can serve turns the whole predicate into
+  // a PARALLEL SEQ SCAN of the table. Measured on the 1.4M-row session_turns:
+  // a rare term took 1.0ms via the GIN index without the arm and 6,365ms with
+  // it (2.78M buffers, 6 processes); a common term 769ms vs 4,850ms. That one
+  // query shape was 146k CPU-seconds in pg_stat_statements. The literal fallback
+  // now lives in `session_turn.lexical` as a separately-bounded FILL query
+  // (see `compactLiteralToken` / `LITERAL_FALLBACK_WINDOW_ROWS`), so this
+  // function only ever emits index-served predicates.
   if (p.lexicalMode !== 'coverage-graded') {
     return {
       with: sql`WITH q AS (
@@ -217,17 +261,9 @@ function lexicalSql(
       )`,
       join: sql`, q`,
       coverage: sql`1`,
-      literalMatch,
-      // EI-23737056070911495: these arms must key off `literalMatch` as well as
-      // `simpleTsv`. They used to collapse to the english-only form whenever
-      // `simpleTsv` was absent, which silently DISCARDED the literal-substring
-      // fallback even when the caller supplied `literalText` — so a caller that
-      // dropped only the simple vector lost literal recall too. `literalMatch` is
-      // already `FALSE` when `literalText` is absent, so these degrade correctly
-      // for callers (e.g. engineer_issues) that pass neither.
       fallbackOnly: simpleTsv
         ? sql`NOT (${tsv} @@ q.andq) AND NOT (${simpleTsv} @@ q.simpleq)`
-        : sql`NOT (${tsv} @@ q.andq) AND ${literalMatch}`,
+        : sql`FALSE`,
       rank: simpleTsv
         ? sql`CASE WHEN ${tsv} @@ q.andq
                    THEN ts_rank_cd(${tsv}, q.andq)
@@ -238,9 +274,8 @@ function lexicalSql(
         : sql`ts_rank_cd(${tsv}, q.andq)`,
       match: simpleTsv
         ? sql`(${tsv} @@ q.andq
-               OR ((${simpleTsv} @@ q.simpleq OR ${literalMatch})
-                   AND NOT (${tsv} @@ q.andq)))`
-        : sql`(${tsv} @@ q.andq OR ${literalMatch})`,
+               OR (${simpleTsv} @@ q.simpleq AND NOT (${tsv} @@ q.andq)))`
+        : sql`${tsv} @@ q.andq`,
       headlineQuery: simpleTsv
         ? sql`CASE WHEN ${tsv} @@ q.andq THEN q.andq ELSE q.simpleq END`
         : sql`q.andq`,
@@ -282,7 +317,6 @@ function lexicalSql(
             OR (n < ${DF_PROBE_CAP} AND prior + n <= ${anchorDfBudget})
       )`,
     join: sql`, q, anchor`,
-    literalMatch,
     fallbackOnly: simpleTsv
       ? sql`NOT (${tsv} @@ anchor.a) AND NOT (${simpleTsv} @@ q.simpleq)`
       : sql`FALSE`,
@@ -310,8 +344,7 @@ function lexicalSql(
     // reasoned about as a disjunctive leg when it never was one.
     match: simpleTsv
       ? sql`(${tsv} @@ anchor.a
-             OR ((${simpleTsv} @@ q.simpleq OR ${literalMatch})
-                 AND NOT (${tsv} @@ anchor.a)))`
+             OR (${simpleTsv} @@ q.simpleq AND NOT (${tsv} @@ anchor.a)))`
       : sql`${tsv} @@ anchor.a`,
     // Highlight against the DISJUNCTIVE query on purpose: a four-of-five
     // document has no fragment matching all five terms, and highlighting it
@@ -863,15 +896,35 @@ const sessionTurn: SearchSource = {
     // `simpleTsv` is optional by construction (see lexicalSql) and the
     // engineer_issues source at ~line 670 already runs without it, so passing
     // `undefined` is the supported degradation: literal-token recall falls back
-    // to the bounded `literalText` substring match below. RE-ARM ORDER if this is
-    // ever revisited: apply migration 1163 FIRST, then restore this argument.
+    // to the bounded substring FILL below. RE-ARM ORDER if this is ever
+    // revisited: apply migration 1163 FIRST, then restore this argument.
     const lex = lexicalSql(
       p,
       p.sql`text_tsv`,
       p.sql`harness_shared.session_turns`,
       undefined,
-      p.sql`text`,
     );
+    // The caller's scope + filter bag as ONE predicate, shared by the primary
+    // query and the literal fill so the two can never disagree about scope —
+    // workspace isolation above all. A function, so each query embeds a fresh
+    // fragment.
+    const scoped = () => p.sql`
+          (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
+      AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
+      AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
+      AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+      AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
+      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
+      AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
+      AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
+      AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)`;
+    // EI-24045346484356708: the coverage-graded branch never admitted literal
+    // rows (its match is the anchor alone), so the fill stays 'and'-mode only.
+    const literalToken =
+      p.lexicalMode === 'coverage-graded' ? null : compactLiteralToken(p.query);
+    type SessionTurnLexicalRow = { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string };
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. Same
     // bare-`getOrgPg()`-pool exposure as `workItem.lexical` above — this tool's
     // `ctx.tx` also bypasses `withWorkspace`'s ambient bound (`crossWorkspace:
@@ -879,35 +932,59 @@ const sessionTurn: SearchSource = {
     // `SET LOCAL` pattern.
     const rows = (await p.sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
-      return tx`
+      // PRIMARY — index-served only (`lex.match` carries no substring arm).
+      const primary = (await tx`
       ${lex.with}
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
              ${lex.coverage} AS coverage,
              ${lex.rank} AS rank,
              ${p.wantHighlight === false
                ? p.sql`''`
-               : p.sql`CASE WHEN ${lex.literalMatch} AND ${lex.fallbackOnly}
+               : p.sql`CASE WHEN ${lex.fallbackOnly}
                        THEN left(text, 4000)
                        ELSE ts_headline(${lex.headlineConfig}, left(text, 4000),
                          ${lex.headlineQuery},
                          ${HEADLINE_OPTS})
                    END`} AS highlight
         FROM harness_shared.session_turns ${lex.join}
-       WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
-         AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
-         AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
-         AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
-         AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
-         AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-         AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
-         AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
-         AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
-         AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
-         AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+       WHERE ${scoped()}
          AND ${lex.match}
     ORDER BY coverage DESC, rank DESC LIMIT ${p.limit}
-    `;
-    })) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string }>;
+    `) as unknown as SessionTurnLexicalRow[];
+
+      // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,
+      // so under the old single OR query it could only ever occupy slots the
+      // dictionary match left empty. Running it ONLY for those slots, only for
+      // a compact token, and only over the newest LITERAL_FALLBACK_WINDOW_ROWS
+      // in-scope turns keeps that recall while removing the full-table scan
+      // from every other call. Newest-first among the fill rows.
+      const need = p.limit - primary.length;
+      if (literalToken === null || need <= 0) return primary;
+      // Fail-soft: the fill is a recall supplement, so if it errors (its own
+      // statement bound, a cancel) the SAVEPOINT rolls back just the fill and
+      // the index-served rows are still returned rather than the whole leg.
+      const fill = await tx
+        .savepoint(async (sp) => {
+          await sp.unsafe('SET LOCAL max_parallel_workers_per_gather = 0');
+          return (await sp`
+      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
+             0 AS rank,
+             ${p.wantHighlight === false ? p.sql`''` : p.sql`left(text, 4000)`} AS highlight
+        FROM (SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug,
+                     ts, text, text_tsv, ingested_at
+                FROM harness_shared.session_turns
+               WHERE ${scoped()}
+            ORDER BY ingested_at DESC
+               LIMIT ${LITERAL_FALLBACK_WINDOW_ROWS}) w
+       WHERE NOT COALESCE(text_tsv @@ plainto_tsquery('english', ${p.query}), false)
+         AND position(lower(${literalToken}) in lower(left(text, 20000))) > 0
+    ORDER BY ingested_at DESC
+       LIMIT ${need}
+    `) as unknown as SessionTurnLexicalRow[];
+        })
+        .catch(() => [] as SessionTurnLexicalRow[]);
+      return [...primary, ...fill];
+    })) as unknown as SessionTurnLexicalRow[];
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.rank,

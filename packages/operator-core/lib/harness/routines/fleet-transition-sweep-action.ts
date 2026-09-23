@@ -11,6 +11,9 @@
  *   - context-critical — pressure is DERIVED from self-reported token counts, so
  *                        the bucket changes without any event of its own.
  *
+ * member-left is a companion derived edge for a recorded, non-wakeable member
+ * that still holds claims; it does not assert those claims are reclaimable.
+ *
  * So they need a sweep, exactly as `fleet-drained-events.ts` documents for its own
  * computed condition. This is the sweep. It is deliberately thin: it gathers
  * observations through the SAME pipeline `fleet:assignments` uses (so a sweep

@@ -12,6 +12,7 @@
  * them via `events:catalog` and sleeps instead of polling:
  *
  *   events:await { event: "fleet:member-dead:<my-fleet>" }      // a member died
+ *   events:await { event: "fleet:member-left:<my-fleet>" }      // a clean exit left claims
  *   events:await { event: "fleet:context-critical:<my-fleet>" } // a member is about to compact
  *   events:await { event: "fleet:member-stalled:<my-fleet>" }  // a held claim stopped advancing
  *   events:await { event: "fleet:admission-blocked:<my-fleet>" } // the fleet spec refused work
@@ -71,6 +72,7 @@ import type { WorkItem } from './work-items';
 /** The transition families this module publishes, as they appear in the key. */
 export type FleetTransitionKind =
   | 'member-dead'
+  | 'member-left'
   | 'context-critical'
   | 'member-stalled'
   | 'repeated-recovery'
@@ -154,6 +156,10 @@ interface FleetTransitionEdgeBase {
 export type FleetTransitionEdge =
   | (FleetTransitionEdgeBase & {
       kind: Extract<FleetTransitionKind, 'member-dead' | 'context-critical' | 'member-stalled'>;
+    })
+  | (FleetTransitionEdgeBase & {
+      kind: 'member-left';
+      claimCount: number;
     })
   | (FleetTransitionEdgeBase & {
       kind: 'repeated-recovery';
@@ -318,6 +324,21 @@ export function detectFleetTransitions(
         from: before.sessionState,
       });
       deadLatch?.set(key, { firedAtMs: nowMs, aliveSinceMs: null });
+    }
+
+    const hasUnwakeableClaims =
+      o.sessionState === 'recorded' && o.wakeable === false && (o.claimCount ?? 0) > 0;
+    const hadUnwakeableClaims =
+      before.sessionState === 'recorded' && before.wakeable === false && (before.claimCount ?? 0) > 0;
+    if (hasUnwakeableClaims && !hadUnwakeableClaims && !deadLatch?.has(key)) {
+      edges.push({
+        kind: 'member-left',
+        fleetSlug: o.fleetSlug,
+        agentId: o.agentId,
+        to: 'recorded',
+        from: before.sessionState,
+        claimCount: o.claimCount ?? 0,
+      });
     }
 
     // Rule 3 — an UNKNOWN previous bucket is not a crossing. `null` means the
@@ -577,6 +598,14 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
   const summary =
     edge.kind === 'member-dead'
       ? `fleet ${edge.fleetSlug}: member ${edge.agentId} is DEAD (${edge.from ?? 'unknown'} → ${edge.to})`
+      : edge.kind === 'member-left'
+        ? 'fleet ' +
+          edge.fleetSlug +
+          ': member ' +
+          edge.agentId +
+          ' is recorded and unwakeable with ' +
+          edge.claimCount +
+          ' active claim(s); inspect assignments before reclaiming'
       : edge.kind === 'context-critical'
         ? `fleet ${edge.fleetSlug}: member ${edge.agentId} context pressure is CRITICAL (${edge.from ?? 'unknown'} → ${edge.to})`
         : edge.kind === 'repeated-recovery'
@@ -589,6 +618,7 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       // cannot wake a leader after it has become non-actionable.
       if (
         (edge.kind === 'member-dead' ||
+          edge.kind === 'member-left' ||
           edge.kind === 'context-critical' ||
           edge.kind === 'member-stalled' ||
           edge.kind === 'repeated-recovery') &&
@@ -612,6 +642,15 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           currentMember !== undefined &&
           currentMember.sessionState !== null &&
           currentMember.sessionState !== 'ended'
+        ) {
+          return;
+        }
+        if (
+          edge.kind === 'member-left' &&
+          currentMember !== undefined &&
+          (currentMember.sessionState !== 'recorded' ||
+            currentMember.wakeable !== false ||
+            (currentMember.claimCount ?? 0) === 0)
         ) {
           return;
         }
@@ -681,6 +720,7 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
                 takeoverAuthorized: edge.takeoverAuthorized,
               }
             : {}),
+          ...(edge.kind === 'member-left' ? { claimCount: edge.claimCount } : {}),
           ...(contextEpoch === null ? {} : { contextEpoch }),
         },
         source: 'fleet',

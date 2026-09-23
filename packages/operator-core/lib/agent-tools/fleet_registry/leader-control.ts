@@ -298,7 +298,11 @@ export async function retireFleetLeaderWatches(ownerId: string, fleetSlug: strin
 }
 
 function selfExcludingPayloadFilter(eventKey: string, fleetSlug: string, ownerId: string): unknown | undefined {
-  if (eventKey !== `fleet:member-dead:${fleetSlug}` && eventKey !== `fleet:context-critical:${fleetSlug}`) {
+  if (
+    eventKey !== `fleet:member-dead:${fleetSlug}` &&
+    eventKey !== `fleet:member-left:${fleetSlug}` &&
+    eventKey !== `fleet:context-critical:${fleetSlug}`
+  ) {
     return undefined;
   }
   return { not: { agentId: { equals: ownerId } } };

@@ -336,6 +336,13 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
   },
   {
     context: 'fleet-leader',
+    watch: { kind: 'event', family: 'fleet-member-left' },
+    tier: 'auto-arm',
+    of: ['fleet.slug'],
+    why: 'A cleanly departed, non-wakeable member can still hold claims; the leader must inspect assignments before deciding whether any work is reclaimable.',
+  },
+  {
+    context: 'fleet-leader',
     watch: { kind: 'event', family: 'fleet-drained' },
     tier: 'auto-arm',
     of: ['fleet.slug'],

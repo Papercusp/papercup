@@ -176,6 +176,10 @@ describe('the leniency tier 2 buys, and its stated bound', () => {
     expect(DYNAMIC_KEY_FAMILIES['fleet-repeated-recovery']).toContain('fleetTransitionKey');
   });
 
+  it('registers member-left as the same dynamic fleet-transition key family', () => {
+    expect(DYNAMIC_KEY_FAMILIES['fleet-member-left']).toContain('fleetTransitionKey');
+  });
+
   it('does NOT fire on a key BUILDER that interpolates the family segment', () => {
     // `fleet:${kind}:${slug}` — "fleet:member-dead" is nowhere in the file, so only
     // the prose mention keeps this attributable at all. This is the case that would
