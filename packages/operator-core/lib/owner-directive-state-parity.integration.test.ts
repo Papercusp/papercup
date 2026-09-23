@@ -142,4 +142,90 @@ describe('owner-directive lifecycle state: SQL filter vs TS derivation (P-005)',
     expect(unfiltered).toHaveLength(1);
     expect(ownerDirectiveState(unfiltered[0])).not.toBe('declined');
   });
+
+  it('a hook-verified all-agents resume closes only the system-wide pause it explicitly lifts', async () => {
+    const supersessionWorkspace = 'owner-directive-resume-supersession-ws';
+    const olderPause = await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-older-system-pause',
+        verbatimText: 'pause all agents system-wide, and pause their work until the previous maintenance ends.',
+        recordedBy: 'su-older-pause-capture',
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+    const pause = await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-system-pause',
+        verbatimText: 'tell all agents system wide to get to a good stopping point and then to pause their work.',
+        recordedBy: 'su-pause-capture',
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+    const unrelatedPause = await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-project-pause',
+        verbatimText: 'pause the release agent work until the packaging check finishes.',
+        recordedBy: 'su-project-pause-capture',
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+    const resume = await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-system-resume',
+        verbatimText: 'Tell all agents that were active before the pause to resume their work.',
+        recordedBy: 'su-resume-capture',
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+
+    const rows = await listOwnerDirectives({ workspaceId: supersessionWorkspace, limit: 200 }, db.adminSql);
+    const lifted = rows.find((row) => row.id === pause.id)!;
+    const older = rows.find((row) => row.id === olderPause.id)!;
+    const unrelated = rows.find((row) => row.id === unrelatedPause.id)!;
+    const newDirective = rows.find((row) => row.id === resume.id)!;
+
+    expect(lifted.dispositionStatus).toBe('done');
+    expect(lifted.dispositionNote).toContain('Superseded by owner directive #' + resume.id);
+    expect(lifted.dispositionedBy).toBe('su-resume-capture');
+    expect(ownerDirectiveState(lifted)).toBe('done');
+    expect(ownerDirectiveState(older)).toBe('open');
+    expect(unrelated.dispositionedAtMs).toBeNull();
+    expect(newDirective.dispositionedAtMs).toBeNull();
+    expect(ownerDirectiveState(newDirective)).toBe('open');
+  });
+
+  it('does not let a manually recorded, non-hook directive supersede a system-wide pause', async () => {
+    const supersessionWorkspace = 'owner-directive-unverified-resume-ws';
+    const pause = await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-unverified-pause',
+        verbatimText: 'tell all agents system wide to pause their work.',
+        recordedBy: 'su-pause-capture',
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+    await recordOwnerDirective(
+      {
+        workspaceId: supersessionWorkspace,
+        sourceTurnRef: 'turn-unverified-resume',
+        verbatimText: 'Tell all agents that were active before the pause to resume their work.',
+        recordedBy: 'su-manual-record',
+        capturedByHook: false,
+      },
+      db.adminSql,
+    );
+
+    const rows = await listOwnerDirectives({ workspaceId: supersessionWorkspace, limit: 200 }, db.adminSql);
+    expect(ownerDirectiveState(rows.find((row) => row.id === pause.id)!)).toBe('open');
+  });
 });

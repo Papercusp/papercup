@@ -9,7 +9,10 @@ const { sqlMock, fleetMock, measuredWindowMock, modelSpecMock } = vi.hoisted(() 
   measuredWindowMock: vi.fn(),
   modelSpecMock: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
 vi.mock('./presence-fleet', () => ({ fetchPresenceFleet: fleetMock }));
 vi.mock('../../compaction-usage', () => ({
   estimateContextWindowForOwner: measuredWindowMock,

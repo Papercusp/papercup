@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
-import { modelClassForModel, parseTranscriptChunk, readFileDelta } from './ingest-claude-transcripts';
+import { mergeTranscriptUsage, modelClassForModel, parseTranscriptChunk, readFileDelta, transcriptEventTime } from './ingest-claude-transcripts';
 
 const turn = (model: string, usage: Record<string, number>, type = 'assistant', id?: string): string =>
   JSON.stringify({ type, message: { ...(id ? { id } : {}), model, usage } });
@@ -99,6 +99,29 @@ describe('parseTranscriptChunk', () => {
     }) + '\n').perModel.get('claude-opus-4-8')!;
     expect(usage.cacheCreationTierUnknown).toBe(true);
     expect(costFromTokens('claude-opus-4-8', usage)).toEqual({ priced: false, usd: 0 });
+  });
+
+  it('retains stable source identity and timestamp separately from chunk-relative offsets', () => {
+    const event = JSON.stringify({ type: 'assistant', timestamp: '2026-09-23T10:00:00Z',
+      message: { id: 'native-request', model: 'claude-opus-4-8', usage: { input_tokens: 1 } } }) + '\n';
+    const first = parseTranscriptChunk(event);
+    const second = parseTranscriptChunk('garbage\n' + event);
+    expect(first.events?.[0].sourceId).toBe(second.events?.[0].sourceId);
+    expect(second.events?.[0].relativeOffset).toBe(8);
+    expect(second.events?.[0].eventTime).toBe(Date.parse('2026-09-23T10:00:00Z'));
+    expect(transcriptEventTime('not-a-time')).toBeNull();
+    expect(transcriptEventTime(undefined)).toBeNull();
+  });
+
+  it('preserves known tiers on a repeat, but does not assume them when total writes grow', () => {
+    const known = { turns: 1, inputTokens: 1, outputTokens: 10, cacheReadTokens: 50,
+      cacheCreationTokens: 100, cacheCreation5mTokens: 0, cacheCreation1hTokens: 100 };
+    const repeated = { turns: 1, inputTokens: 1, outputTokens: 12, cacheReadTokens: 50,
+      cacheCreationTokens: 100, cacheCreationTierUnknown: true };
+    expect(mergeTranscriptUsage(known, repeated)).toEqual({ ...known, outputTokens: 12 });
+    expect(mergeTranscriptUsage(known, { ...repeated, cacheCreationTokens: 200 })).toEqual({
+      ...repeated, cacheCreationTokens: 200,
+    });
   });
 });
 

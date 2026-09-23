@@ -99,6 +99,7 @@ import {
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { SCRATCH_SCHEME } from '../../../scratch-uri';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import {
   dispatchNeedsTx,
@@ -4418,19 +4419,64 @@ export function registerMcpHost(server: McpServer): void {
    * already-validated spawn context and hand off its narrow resource principal;
    * ordinary bearer-only callers retain the legacy resolution path.
    */
-  const resourceAuthFromExtra = async (extra: unknown): Promise<{ bearer: string } | { principal: Principal }> => {
+  const synthesizeScratchResourcePrincipal = (ctx: BuiltSpawnContext): Principal | null => {
+    if (ctx.authenticatedPrincipal) return ctx.authenticatedPrincipal;
+    if (!ctx.workspaceId || ctx.workspaceId === '*') return null;
+
+    let ownerId: string;
+    try {
+      ownerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      return null;
+    }
+
+    if (ctx.isPowerUser) {
+      return {
+        kind: 'system',
+        slug: ownerId,
+        workspaceId: ctx.workspaceId,
+        authMethod: 'bearer-token',
+        trust: 'trusted',
+        capabilities: new Set(),
+      };
+    }
+    if (ctx.sigVerifiedSpawn === true) {
+      return {
+        kind: 'harness',
+        slug: ownerId,
+        workspaceId: ctx.workspaceId,
+        authMethod: 'spawn-url',
+        trust: 'trusted',
+        capabilities: new Set(),
+      };
+    }
+    return null;
+  };
+
+  const resourceAuthFromExtra = async (
+    extra: unknown,
+    resourceUri?: string,
+  ): Promise<{ bearer: string } | { principal: Principal }> => {
     const url = urlFromExtra(extra);
     const usesTransportPrincipal =
       url?.searchParams.get('superuser') === '1' || url?.searchParams.get('principal') === 'pi';
-    if (!usesTransportPrincipal) return { bearer: bearerFromExtra(extra) };
+    const usesScopedScratchPrincipal =
+      resourceUri?.startsWith(`${SCRATCH_SCHEME}/`) === true &&
+      (url?.searchParams.get('power_user') === '1' || url?.searchParams.has('role') === true);
+    if (!usesTransportPrincipal && !usesScopedScratchPrincipal) return { bearer: bearerFromExtra(extra) };
 
     const spawnRes = await tryBuildSpawnContext(extra);
     if (spawnRes.kind === 'failed') {
       throw new Error(`mcp_auth_failed: ${spawnRes.reason}`);
     }
     if (spawnRes.kind === 'ok') {
-      const principal = synthesizeResourcePrincipal(spawnRes.ctx);
+      const principal = usesTransportPrincipal
+        ? synthesizeResourcePrincipal(spawnRes.ctx)
+        : synthesizeScratchResourcePrincipal(spawnRes.ctx);
       if (principal) return { principal };
+    }
+    if (usesScopedScratchPrincipal) {
+      throw new Error('mcp_auth_failed: scratch_resource_requires_verified_identity');
     }
     return { bearer: bearerFromExtra(extra) };
   };
@@ -4442,7 +4488,7 @@ export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(
     sdk.ReadResourceRequestSchema,
     async (req: { params: { uri: string } }, extra: unknown) => {
-      const auth = await resourceAuthFromExtra(extra);
+      const auth = await resourceAuthFromExtra(extra, req.params.uri);
       const r = await readResource({ uri: req.params.uri, ...auth });
       if (!r.ok) throw new Error(`${r.error?.code}: ${r.error?.message}`);
       return { contents: [r.contents!] };

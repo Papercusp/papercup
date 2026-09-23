@@ -29,8 +29,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { codexHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
-import type { ParsedChunk, TranscriptDelta, TranscriptParserState } from './ingest-claude-transcripts';
-import { parseTranscriptChunk } from './ingest-claude-transcripts';
+import type { ParsedChunk, TranscriptDelta, TranscriptParserState, TranscriptUsageEvent } from './ingest-claude-transcripts';
+import { parseTranscriptChunk, transcriptEventTime } from './ingest-claude-transcripts';
 
 const emptyDelta = (): TranscriptDelta => ({
   turns: 0,
@@ -53,11 +53,15 @@ export const UNKNOWN_CODEX_MODEL = 'unknown-openai';
 /** Parse a codex rollout chunk. Exported for unit tests. */
 export function parseCodexChunk(chunk: string, priorState: TranscriptParserState = {}): ParsedChunk {
   const perModel = new Map<string, TranscriptDelta>();
+  const events: TranscriptUsageEvent[] = [];
   const parserState = { ...priorState };
   const { text, bytes } = completeLines(chunk);
   if (bytes === 0) return { perModel, consumedBytes: 0, parserState };
   let model = typeof parserState.model === 'string' && parserState.model ? parserState.model : UNKNOWN_CODEX_MODEL;
+  let relativeOffset = 0;
   for (const line of text.split('\n')) {
+    const lineOffset = relativeOffset;
+    relativeOffset += Buffer.byteLength(line + '\n', 'utf8');
     if (!line.trim()) continue;
     let j: unknown;
     try {
@@ -67,6 +71,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     }
     const evt = j as {
       type?: string;
+      timestamp?: unknown;
       payload?: {
         type?: string;
         model?: string;
@@ -98,8 +103,12 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     const u = evt.payload?.info?.last_token_usage;
     if (!u) continue; // rate-limit-only token_count update
     const cumulative = evt.payload?.info?.total_token_usage;
-    if (cumulative && typeof cumulative === 'object') {
-      const fingerprint = JSON.stringify(Object.keys(cumulative).sort().map((key) => [key, cumulative[key]]));
+    // Ignore non-usage metadata; an empty/invalid object is NOT a request id.
+    const fields = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
+    const entries = cumulative && fields.filter((key) => cumulative[key] !== undefined).map((key) => [key, cumulative[key]] as const);
+    const fingerprint = entries?.length && entries.every(([, n]) => Number.isFinite(n) && n >= 0) && entries.some(([, n]) => n > 0)
+      ? JSON.stringify(entries) : null;
+    if (fingerprint) {
       if (fingerprint === parserState.lastCumulativeUsage) continue;
       parserState.lastCumulativeUsage = fingerprint;
     }
@@ -109,6 +118,11 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     const written = count(u.cache_write_input_tokens);
     const output = count(u.output_tokens);
     if (input + cached + written + output === 0) continue; // compaction/reset notification, not a request
+    const usage: TranscriptDelta = { turns: 1, inputTokens: Math.max(0, input - cached - written),
+      cacheReadTokens: cached, cacheCreationTokens: written, outputTokens: output };
+    events.push({ model, usage, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
+      sourceId: fingerprint ? `cumulative:${parserState.contextGeneration ?? 0}:${fingerprint}` : `line:${lineOffset}`,
+      contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId });
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;
     acc.inputTokens += Math.max(0, input - cached - written); // input INCLUDES both cache subsets
@@ -117,7 +131,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     acc.outputTokens += output;
     perModel.set(model, acc);
   }
-  return { perModel, consumedBytes: bytes, parserState };
+  return { perModel, events, consumedBytes: bytes, parserState };
 }
 
 interface OmpUsage {
@@ -133,9 +147,11 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
   const { text, bytes } = completeLines(chunk);
   if (bytes === 0) return { perModel, consumedBytes: 0 };
   // line id → max-merged usage (the Claude parser's message.id discipline).
-  const byMsg = new Map<string, { model: string; u: Required<OmpUsage> }>();
-  let anonSeq = 0;
+  const byMsg = new Map<string, { model: string; u: Required<OmpUsage>; relativeOffset: number; eventTime: number | null }>();
+  let relativeOffset = 0;
   for (const line of text.split('\n')) {
+    const lineOffset = relativeOffset;
+    relativeOffset += Buffer.byteLength(line + '\n', 'utf8');
     if (!line.trim()) continue;
     let j: unknown;
     try {
@@ -146,15 +162,16 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
     const evt = j as {
       type?: string;
       id?: string;
+      timestamp?: unknown;
       message?: { role?: string; model?: string; usage?: OmpUsage };
     };
     if (evt?.type !== 'message' || evt.message?.role !== 'assistant') continue;
     const model = evt.message?.model;
     const u = evt.message?.usage;
     if (!model || !u) continue;
-    const key = evt.id ?? `anon-${anonSeq++}`;
+    const key = evt.id ? `message:${evt.id}` : `line:${lineOffset}`;
     const acc = byMsg.get(key) ?? {
-      model,
+      model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
       u: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };
     acc.u.input = Math.max(acc.u.input, u.input ?? 0);
@@ -163,16 +180,23 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
     acc.u.cacheWrite = Math.max(acc.u.cacheWrite, u.cacheWrite ?? 0);
     byMsg.set(key, acc);
   }
-  for (const { model, u } of byMsg.values()) {
+  const events: TranscriptUsageEvent[] = [];
+  for (const [sourceId, { model, u, relativeOffset, eventTime }] of byMsg) {
+    const usage: TranscriptDelta = { turns: 1, inputTokens: u.input, outputTokens: u.output,
+      cacheReadTokens: u.cacheRead, cacheCreationTokens: u.cacheWrite };
+    // OMP does not report Claude's TTL split; never assume five-minute writes.
+    if (/^claude/i.test(model) && u.cacheWrite > 0) usage.cacheCreationTierUnknown = true;
+    events.push({ model, usage, sourceId, relativeOffset, eventTime });
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;
     acc.inputTokens += u.input;
     acc.outputTokens += u.output;
     acc.cacheReadTokens += u.cacheRead;
     acc.cacheCreationTokens += u.cacheWrite;
+    if (usage.cacheCreationTierUnknown) acc.cacheCreationTierUnknown = true;
     perModel.set(model, acc);
   }
-  return { perModel, consumedBytes: bytes };
+  return { perModel, events, consumedBytes: bytes };
 }
 
 /** Provider bucket for a model id (drives `provider` + `bucket_key`). */
@@ -188,6 +212,8 @@ export interface TranscriptAdapter {
   root: string;
   /** Chunk parser (complete-lines-only; returns the watermark advance). */
   parse: (chunk: string, state?: TranscriptParserState) => ParsedChunk;
+  /** Stateful formats may reconstruct legacy empty parser state from consumed bytes. */
+  replayStateFromPrefix?: boolean;
   /**
    * Native session id for a transcript file — the value written to
    * `agent_usage_samples.session_id`, which MUST equal `adv_sessions.session_id`
@@ -318,6 +344,7 @@ export function defaultAdapters(): TranscriptAdapter[] {
       name: 'codex',
       root: path.join(home, '.codex', 'sessions'),
       parse: parseCodexChunk,
+      replayStateFromPrefix: true,
       sessionIdForFile: codexSessionIdForFile,
     },
     {

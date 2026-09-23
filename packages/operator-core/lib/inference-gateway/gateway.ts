@@ -3643,7 +3643,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       x.create += create;
       x.input += input;
       // HIT = reused a cached prefix. MISS = processed a non-trivial prefix with NO cache read (a cold
-      // (re)write — first-time, expired, or wrong-account). A miss that FOLLOWED a failover is routing-induced.
+      // (re)write — first-time, expired, or wrong-account). A miss AFTER failover is correlated,
+      // not proof that routing caused the miss (prefix drift/expiry are not observed here).
       if (read > 0) x.hits++;
       else if (input + create >= CACHE_MISS_MIN_TOKENS) {
         x.misses++;
@@ -3661,6 +3662,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     didFailover: boolean,
     /** The route key (`affinityKey ?? wantOwner`) whose entry receives the exact usage reading. */
     routeKey?: string,
+    stageSpan?: GatewayRequestSpan,
   ): void {
     let buf = '';
     let done = false;
@@ -3672,9 +3674,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         done = true;
         stream.off('data', onData);
         try {
-          const u = (
+          const message = (
             JSON.parse(m[1]) as {
               message?: {
+                id?: string;
                 usage?: {
                   input_tokens?: number;
                   cache_read_input_tokens?: number;
@@ -3682,12 +3685,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 };
               };
             }
-          ).message?.usage;
+          ).message;
+          const u = message?.usage;
           if (u) {
             const inputTokens = u.input_tokens ?? 0;
             const cacheRead = u.cache_read_input_tokens ?? 0;
             const cacheCreate = u.cache_creation_input_tokens ?? 0;
             recordCacheUsage(accountId, inputTokens, cacheRead, cacheCreate, didFailover);
+            if (typeof u.input_tokens === 'number') stageSpan?.recordCacheUsage(inputTokens, cacheRead, cacheCreate, message?.id);
             recordOwnerUsage(routeKey, {
               inputTotal: inputTokens + cacheRead + cacheCreate,
               inputTokens,
@@ -3708,7 +3713,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Responses API twin of `observeCacheUsage`. Streaming usage arrives on a late
    *  `response.completed` SSE event as `response.usage`; non-streaming responses expose `usage`
    *  at the top level. Parse incrementally so a long agent stream never needs to be buffered. */
-  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean): void {
+  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean, stageSpan?: GatewayRequestSpan): void {
     let carry = '';
     let done = false;
     const detach = () => {
@@ -3720,11 +3725,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!text || text === '[DONE]') return false;
       try {
         const parsed = JSON.parse(text) as {
+          id?: string;
           usage?: {
             input_tokens?: number;
             input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
           };
           response?: {
+            id?: string;
             usage?: {
               input_tokens?: number;
               input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
@@ -3737,6 +3744,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const create = usage.input_tokens_details?.cache_write_tokens ?? 0;
         const input = Math.max(0, (usage.input_tokens ?? 0) - read - create);
         recordCacheUsage(accountId, input, read, create, didFailover);
+        if (typeof usage.input_tokens === 'number') stageSpan?.recordCacheUsage(input, read, create, parsed.response?.id ?? parsed.id);
         return true;
       } catch {
         return false;
@@ -4788,6 +4796,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     stageSpan?.setModel(model);
     stageSpan?.setStreaming(isStream);
+    stageSpan?.setCacheShape(bodyBuf);
     /** The caller's native session id — what a per-owner served-route reading is bound to. */
     const nativeSessionId = nativeSessionIdFromMetaUserId(bodyMetaUserId);
     // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
@@ -6175,6 +6184,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 }
 
                 // ── forwarding for real ──────────────────────────────────────────
+                stageSpan?.setServingAccount(metadata.accountId);
                 if (status >= 200 && status < 300) {
                   // Cache instrumentation: a PASSIVE observer tallying this
                   // request's prompt-cache read/write from `message_start`, without
@@ -6183,7 +6193,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   cacheProbe = new PassThrough();
                   cacheProbe.on('data', () => undefined);
                   cacheProbe.on('error', () => undefined);
-                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1, affinityKey ?? wantOwner);
+                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1, affinityKey ?? wantOwner, stageSpan);
                 } else if (status === 429 || status === 529) {
                   // The DOMINANT "nothing goes through" exit. Record a stall so the
                   // stall-waker re-wakes an IDENTIFIED bee when this account recovers
@@ -7188,6 +7198,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     stageSpan?.setModel(bodyModel || null);
     stageSpan?.setStreaming(wantStream);
+    stageSpan?.setCacheShape(bodyBuf);
     if (!wantStream && !codexOAuthNonStreamEnabled) {
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(providerAdapters.codex.lane, 'cli-exec'),
@@ -7570,6 +7581,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 );
               }
               recordRoute(routing.ownerId, metadata.accountId, 'codex');
+              stageSpan?.setServingAccount(metadata.accountId);
               recordOwnerOutcome(
                 routing.ownerId,
                 status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
@@ -7585,6 +7597,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 cacheProbe,
                 metadata.accountId,
                 attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
+                stageSpan,
               );
 
               // Do not expose the transport detail that a non-streaming request was
@@ -8253,7 +8266,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // when present (a bee is pinned for its whole life). The adapter memoizes this to exactly
       // one call per request, so the counters cannot double-count across a failover.
       shapeRequestBody: (body, context) => {
-        if (!cachePolicyEnabled || !body.length) return body;
+        if (!cachePolicyEnabled || !body.length) { stageSpan?.setCacheShape(body); return body; }
         const shardSeed = wantOwner || context.accountId;
         const cached = rewriteOpenAiCacheBody(body, {
           cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
@@ -8262,6 +8275,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           recordCachePolicy('codex', cached.stats);
           stageSpan?.setCacheRouting('rewritten');
         }
+        stageSpan?.setCacheShape(cached.body);
         return cached.body;
       },
       // Fires ONCE, on the first attempt, immediately after the body is shaped and
@@ -8413,6 +8427,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           inFlight: { register: () => ({ unregister: () => undefined }) },
           downstream: {
             start: ({ status, metadata }) => {
+              stageSpan?.setServingAccount(metadata.accountId);
               const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
               for (const [key, value] of Object.entries(metadata.headers)) {
                 if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
@@ -8518,7 +8533,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // the rest of a long agent stream in memory.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null);
+              observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null, stageSpan);
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);

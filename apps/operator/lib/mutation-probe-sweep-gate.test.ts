@@ -43,7 +43,7 @@
  * exists to prevent (EI-21430792829614962).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,8 +65,17 @@ const PROBE = process.env.MUTATION_PROBE_SCRIPT
   ? resolve(process.env.MUTATION_PROBE_SCRIPT)
   : join(repoRoot(), 'scripts', 'mutation-probe.sh');
 
+function git(repo: string, args: string[]): string {
+  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 30_000 });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr ?? ''}`);
+  return (result.stdout ?? '').trim();
+}
+
 let scratch: string;
 let subject: string;
+let fakeBin: string;
+let lockLog: string;
+let submoduleSource: string;
 
 /**
  * Run the probe inside the scratch repo. `cwd` matters: the script resolves the
@@ -99,6 +108,24 @@ function runProbe(args: string[], extraEnv: Record<string, string> = {}) {
 }
 
 const GOOD = 'value = GOOD\n';
+
+function runLockedProbe(
+  args: string[],
+  mode: 'all' | 'no-file' | 'no-resource' | 'heartbeat-refused' = 'all',
+): { code: number; out: string } {
+  writeFileSync(lockLog, '');
+  const result = runProbe(args, {
+    ...process.env,
+    PATH: fakeBin + ':' + (process.env.PATH ?? ''),
+    PAPERCUSP_SID: 'mutation-probe-test-session',
+    PAPERCUSP_TEST_RUN_HARNESS: 'probe-harness',
+    MUTATION_PROBE_WINDOW_MAX_SEC: '600',
+    MUTATION_PROBE_LOCK_MODE: mode,
+    MUTATION_PROBE_LOCK_LOG: lockLog,
+  });
+  // spawnSync reports null when the child died on a signal; -1 keeps that distinct from every real exit code.
+  return { code: result.status ?? -1, out: result.out };
+}
 
 let mjsSubject: string;
 let shSubject: string;
@@ -146,8 +173,83 @@ beforeAll(() => {
   expect(init.status, `git init failed: ${init.stderr}`).toBe(0);
 });
 
+beforeAll(() => {
+  fakeBin = join(scratch, 'fake-bin');
+  mkdirSync(fakeBin);
+  lockLog = join(scratch, 'ptool.log');
+  writeFileSync(lockLog, '');
+  const fakePtool = join(fakeBin, 'ptool');
+  writeFileSync(fakePtool, [
+    '#!/usr/bin/env node',
+    "const fs = require('node:fs');",
+    "let input = '';",
+    'process.stdin.on("data", (chunk) => input += chunk);',
+    'process.stdin.on("end", () => {',
+    '  const argv = process.argv.slice(2);',
+    '  const tool = argv[0];',
+    '  const args = input ? JSON.parse(input) : {};',
+    '  const mode = process.env.MUTATION_PROBE_LOCK_MODE;',
+    "  const projectionAt = argv.indexOf('--projection');",
+    "  const projectionRaw = projectionAt >= 0 ? argv[projectionAt + 1] : undefined;",
+    '  if (process.env.MUTATION_PROBE_LOCK_LOG) {',
+    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw }) + "\\n");',
+    '  }',
+    // Mirror the real dispatch contract (WI-10002758): a projection must name
+    // pick or pipe. The fake used to ignore --projection, so a probe sending
+    // '{}' passed here while every real in-tree run was refused.
+    '  if (projectionRaw !== undefined) {',
+    '    let projection;',
+    '    try { projection = JSON.parse(projectionRaw); } catch { projection = null; }',
+    '    const valid = projection && typeof projection === "object" && (Array.isArray(projection.pick) && projection.pick.length > 0 || Array.isArray(projection.pipe) && projection.pipe.length > 0);',
+    '    if (!valid) {',
+    '      process.stderr.write("projection_invalid: projection needs a non-empty pick or pipe");',
+    '      process.exitCode = 1;',
+    '      return;',
+    '    }',
+    '  }',
+    "  if (mode === 'heartbeat-refused' && tool === 'locks:heartbeat') {",
+    '    process.stderr.write("lock_not_owned: fake heartbeat refusal for the stderr-surfacing case");',
+    '    process.exitCode = 1;',
+    '    return;',
+    '  }',
+    '  const expires = new Date(Date.now() + 3600000).toISOString();',
+    "  if (tool === 'coord:presence') {",
+    "    process.stdout.write(JSON.stringify({ self: { ownerId: 'probe-owner' } }));",
+    "  } else if (tool === 'locks:queue') {",
+    "    const active = mode === 'no-file' ? [] : [{ path: args.paths[0], owner: 'probe-owner', intent: 'mutation probe', lock_id: '33333333-3333-4333-8333-333333333333' }];",
+    '    process.stdout.write(JSON.stringify({ active_locks: active }));',
+    "  } else if (tool === 'locks:heartbeat') {",
+    "    const extended = mode !== 'file-heartbeat-fails';",
+    '    process.stdout.write(JSON.stringify({ results: [{ lock_id: args.lock_id, extended, ok: extended }] }));',
+    "  } else if (tool === 'locks:list') {",
+    "    const holders = mode === 'no-resource' ? [] : [{ resource: args.resource, owner: 'probe-owner', mode: 'exclusive', status: 'held', expires_ts: expires }];",
+    '    process.stdout.write(JSON.stringify({ holders }));',
+    "  } else if (tool === 'locks:heartbeat_resource') {",
+    '    process.stdout.write(JSON.stringify({ results: [{ lock_id: args.lock_id, extended: true, ok: true }] }));',
+    '  } else {',
+    '    process.stderr.write("unexpected fake ptool request: " + tool);',
+    '    process.exitCode = 2;',
+    '  }',
+    '});',
+    '',
+  ].join('\n'));
+  chmodSync(fakePtool, 0o755);
+
+  submoduleSource = mkdtempSync(join(tmpdir(), 'mutation-probe-submodule-'));
+  git(submoduleSource, ['init', '-q']);
+  git(submoduleSource, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+  git(submoduleSource, ['config', 'user.name', 'mutation-probe-test']);
+  writeFileSync(join(submoduleSource, 'subject.txt'), GOOD);
+  git(submoduleSource, ['add', 'subject.txt']);
+  git(submoduleSource, ['commit', '-qm', 'subject baseline']);
+  git(scratch, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+  git(scratch, ['config', 'user.name', 'mutation-probe-test']);
+  git(scratch, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', submoduleSource, 'nested']);
+});
+
 afterAll(() => {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
+  if (submoduleSource) rmSync(submoduleSource, { recursive: true, force: true });
 });
 
 describe('mutation-probe.sh --in-tree sweep-race gate', () => {
@@ -193,7 +295,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     // from the repo it is standing in, not copied from a doc that can drift.
     expect(out).toContain("paths: ['subject.txt']");
     expect(out).toContain('locks:acquire');
-    expect(out).not.toContain('locks:acquire_resource');
+    expect(out).toContain('locks:acquire_resource');
     expect(out).toContain("intent: 'mutation probe'");
     expect(out).toContain('locks:heartbeat');
     expect(out).toContain('locks:release');
@@ -229,8 +331,23 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
-  it('runs under --sweep-lock-held and records THAT choice distinctly', () => {
-    const { status, out } = runProbe([
+  it('requires a live caller-owned lock with the probe intent before --sweep-lock-held mutates', () => {
+    const { code, out } = runLockedProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ], 'no-file');
+
+    expect(code).toBe(2);
+    expect(out).toContain("no live file lock for 'subject.txt'");
+    expect(out).not.toContain('mutant applied:');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('verifies and extends the caller-owned file lock before mutation', () => {
+    const { code, out } = runLockedProbe([
       '--file', subject,
       '--mutate', 's/GOOD/BAD/',
       '--test', 'grep -q GOOD {}',
@@ -238,12 +355,66 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
       '--sweep-lock-held',
     ]);
 
-    expect(status).toBe(0);
+    expect(code).toBe(0);
+    expect(out).toContain("verified this session's live file lock for subject.txt");
     expect(out).toContain('target=in-tree:lock-held');
-    // The script cannot verify the lock from a shell, and must say so rather
-    // than let a declared lock read as a confirmed one.
-    expect(out).toContain('NOT verified from here');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
+    expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
+    // Every call must send a projection the real dispatch accepts (WI-10002758).
+    for (const call of calls) {
+      const projection = JSON.parse(call.projection);
+      expect(Array.isArray(projection.pick) && projection.pick.length > 0, `${call.tool} projection ${call.projection}`).toBe(true);
+    }
+  });
+
+  it("surfaces the tool's own refusal text when a lock call fails", () => {
+    const { code, out } = runLockedProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ], 'heartbeat-refused');
+
+    expect(code).toBe(2);
+    // The refusal reason reaches the operator; it used to be discarded, leaving
+    // only the generic "could not extend" line.
+    expect(out).toContain('ptool locks:heartbeat failed (exit 1)');
+    expect(out).toContain('lock_not_owned: fake heartbeat refusal');
+    expect(out).toContain('could not extend the verified file lock');
+    expect(out).not.toContain('mutant applied:');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('requires an exclusive harness git-sync lock when probing a submodule', () => {
+    const nestedSubject = join(scratch, 'nested', 'subject.txt');
+    const refused = runLockedProbe([
+      '--file', nestedSubject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ], 'no-resource');
+
+    expect(refused.code).toBe(2);
+    expect(refused.out).toContain("must hold an exclusive 'git-sync:probe-harness' lock");
+    expect(refused.out).not.toContain('mutant applied:');
+    expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
+
+    const accepted = runLockedProbe([
+      '--file', nestedSubject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ]);
+
+    expect(accepted.code).toBe(0);
+    expect(accepted.out).toContain("verified this session's exclusive git-sync:probe-harness lock");
+    expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
   });
 
   it('leaves copy-out mode ungated and never dirties the tracked file', () => {

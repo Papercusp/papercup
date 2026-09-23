@@ -36,6 +36,59 @@ function completeCloudSpan(telemetry: GatewayRequestTelemetry, advance: (ms: num
 }
 
 describe('GatewayRequestTelemetry', () => {
+  it('reports observed account/cache usage with explicit unknown miss cause and bounded coverage', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    expect(telemetry.snapshot().requests.cacheUsageCoverage).toBeNull();
+    const span = telemetry.begin({ provider: 'claude', protocol: 'anthropic-messages' });
+    span.setServingAccount('actually-served');
+    span.recordFailover();
+    span.recordCacheUsage(10, 0, 20, 'msg-native');
+    span.finish('ok', 200);
+    telemetry.begin({ provider: 'codex', protocol: 'openai-responses' }).finish('shed', 503);
+    const snapshot = telemetry.snapshot();
+    expect(snapshot.requests).toMatchObject({ finalized: 2, cacheUsageObserved: 1, cacheUsageCoverage: 0.5 });
+    expect(snapshot.recent[0].cache).toMatchObject({ servingAccountId: 'actually-served', providerRequestId: 'msg-native',
+      inputTokens: 10, cacheWriteTokens: 20, cacheReadTokens: 0, reuse: 'zero-read', missReason: 'unknown' });
+    expect(snapshot.recent[1].cache.reuse).toBe('unobserved');
+    expect(snapshot.recent[1].cache.servingAccountId).toBeNull();
+  });
+
+  it('fingerprints tools and instructions without retaining their content or the dynamic conversation', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const body = (message: string) => Buffer.from(JSON.stringify({ tools: [{ name: 'private-tool', description: 'not-for-logs' }],
+      instructions: 'secret-instructions', input: message }));
+    const first = telemetry.begin({ ownerId: 'su-test', provider: 'codex', protocol: 'openai-responses' });
+    first.setCacheShape(body('first dynamic message'));
+    first.recordCacheUsage(20, 80, 0);
+    first.finish('ok', 200);
+    const second = telemetry.begin({ ownerId: 'su-test', provider: 'codex', protocol: 'openai-responses' });
+    second.setCacheShape(body('different dynamic message'));
+    second.recordCacheUsage(0, 100, 0);
+    second.finish('ok', 200);
+    const snapshot = telemetry.snapshot();
+    expect(snapshot.recent[0].cache.tools).toEqual(snapshot.recent[1].cache.tools);
+    expect(snapshot.recent[0].cache.instructions).toEqual(snapshot.recent[1].cache.instructions);
+    expect(snapshot.recent[0].cache.reuse).toBe('partial-hit');
+    expect(snapshot.recent[1].cache.reuse).toBe('full-hit');
+    expect(snapshot.recent[1].previousObservedRequestGapMs).not.toBeNull();
+    expect(JSON.stringify(snapshot)).not.toMatch(/private-tool|not-for-logs|secret-instructions|dynamic message/);
+    snapshot.recent[0].cache.tools!.sha256 = 'corrupted-caller-copy';
+    expect(telemetry.snapshotForOwner('su-test').recent[0].cache.tools!.sha256).not.toBe('corrupted-caller-copy');
+  });
+
+  it('bounds fingerprint work and does not call partial or missing observations exact', () => {
+    const telemetry = new GatewayRequestTelemetry({ recentCapacity: 1 });
+    const capped = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+    capped.setCacheShape(Buffer.from(JSON.stringify({ instructions: 'x'.repeat(100_000) })));
+    const first = capped.finish('ok', 200)!;
+    expect(first.cache.instructions).toMatchObject({ bytes: 100_002, hashedBytes: 65_536 });
+    const oversized = telemetry.begin({ provider: 'claude', protocol: 'anthropic-messages' });
+    oversized.setCacheShape(Buffer.alloc(2_097_153));
+    oversized.recordCacheUsage(Number.NaN, 0, 0);
+    expect(oversized.finish('ok', 200)?.cache).toMatchObject({ shape: 'oversized', reuse: 'unobserved', instructions: null });
+    expect(telemetry.snapshot().recent).toHaveLength(1);
+  });
+
   it('publishes bounded p50/p95/p99 samples with exact request/outcome reconciliation', () => {
     let now = 1_000;
     const telemetry = new GatewayRequestTelemetry({ now: () => now, sampleCapacity: 3, recentCapacity: 2 });

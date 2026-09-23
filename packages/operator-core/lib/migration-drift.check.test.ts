@@ -14,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const appliedRows: Array<{ filename: string; sha256: string | null }> = [];
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([...appliedRows]),
-  }),
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => {
+    const sql = (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([...appliedRows]);
+    return { sql: Object.assign(sql, { begin: vi.fn() }) };
+  },
 }));
 
 vi.mock('node:fs', async (importOriginal) => {

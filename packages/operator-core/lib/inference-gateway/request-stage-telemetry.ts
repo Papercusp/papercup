@@ -6,6 +6,45 @@
  * only enumerated dimensions plus bounded owner/model identifiers. Request bodies, prompt text,
  * credentials, headers, URLs, and raw error strings are deliberately absent from the contract.
  */
+import { createHash } from 'node:crypto';
+
+export interface GatewayCacheFingerprint {
+  sha256: string;
+  bytes: number;
+  hashedBytes: number;
+}
+
+export interface GatewayCacheObservation {
+  servingAccountId: string | null;
+  providerRequestId: string | null;
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reuse: 'unobserved' | 'zero-read' | 'partial-hit' | 'full-hit';
+  /** A zero read alone cannot distinguish eviction, expiry, prefix drift or cold start. */
+  missReason: 'unobserved' | 'unknown' | 'none';
+  shape: 'unobserved' | 'observed' | 'oversized' | 'invalid';
+  tools: GatewayCacheFingerprint | null;
+  instructions: GatewayCacheFingerprint | null;
+}
+
+const emptyCacheObservation = (): GatewayCacheObservation => ({
+  servingAccountId: null, providerRequestId: null, inputTokens: null, cacheReadTokens: null,
+  cacheWriteTokens: null, reuse: 'unobserved', missReason: 'unobserved', shape: 'unobserved',
+  tools: null, instructions: null,
+});
+const cloneCacheObservation = (cache: GatewayCacheObservation): GatewayCacheObservation => ({
+  ...cache, tools: cache.tools ? { ...cache.tools } : null,
+  instructions: cache.instructions ? { ...cache.instructions } : null,
+});
+
+/** Fingerprints are diagnostics, never cache keys. A capped digest is explicitly partial. */
+function cacheFingerprint(value: unknown): GatewayCacheFingerprint | null {
+  if (value === undefined || value === null) return null;
+  const bytes = Buffer.from(JSON.stringify(value));
+  const prefix = bytes.subarray(0, 65_536);
+  return { sha256: createHash('sha256').update(prefix).digest('hex'), bytes: bytes.length, hashedBytes: prefix.length };
+}
 
 export const GATEWAY_REQUEST_STAGE_NAMES = [
   'routeSelection',
@@ -99,6 +138,9 @@ export interface GatewayRequestTimeline {
   transport: GatewayTelemetryTransport;
   model: string | null;
   cacheRouting: GatewayCacheRoutingDecision;
+  cache: GatewayCacheObservation;
+  /** Gap to this owner's prior completed request in the bounded process-local ring; null is unknown. */
+  previousObservedRequestGapMs: number | null;
   startedAt: number;
   finalizedAt: number;
   attempts: number;
@@ -138,6 +180,8 @@ export interface GatewayRequestTelemetrySnapshot {
     /** Exact outcome guard: every finalized request has one and only one classified outcome. */
     outcomeReconciled: boolean;
     missingStageTimelines: number;
+    cacheUsageObserved: number;
+    cacheUsageCoverage: number | null;
   };
   outcomes: Record<GatewayRequestOutcome, number>;
   stages: Record<GatewayRequestStageName, GatewayPercentileSummary>;
@@ -282,6 +326,8 @@ export class GatewayRequestSpan {
   private transport: GatewayTelemetryTransport;
   private model: string | null = null;
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
+  private readonly cache = emptyCacheObservation();
+  private readonly previousObservedRequestGapMs: number | null;
   private attempts = 0;
   private failovers = 0;
   private streaming = false;
@@ -298,6 +344,7 @@ export class GatewayRequestSpan {
     readonly startedAt: number,
   ) {
     this.transport = transport;
+    this.previousObservedRequestGapMs = collector.previousRequestGap(ownerId, startedAt);
     this.beginStage('routeSelection');
   }
 
@@ -391,6 +438,32 @@ export class GatewayRequestSpan {
     this.cacheRouting = decision;
   }
 
+  /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */
+  setCacheShape(body: Uint8Array): void {
+    if (this.finished) return;
+    if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
+    try {
+      const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as { tools?: unknown; system?: unknown; instructions?: unknown };
+      this.cache.tools = cacheFingerprint(parsed.tools);
+      this.cache.instructions = cacheFingerprint(parsed.system ?? parsed.instructions);
+      this.cache.shape = 'observed';
+    } catch { this.cache.shape = 'invalid'; }
+  }
+
+  setServingAccount(accountId: string): void {
+    if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
+  }
+
+  recordCacheUsage(input: number, read: number, write: number, requestId?: string): void {
+    if (this.finished || [input, read, write].some((n) => !Number.isFinite(n) || n < 0)) return;
+    this.cache.inputTokens = input;
+    this.cache.cacheReadTokens = read;
+    this.cache.cacheWriteTokens = write;
+    this.cache.providerRequestId = boundedIdentifier(requestId, 160);
+    this.cache.reuse = read === 0 ? 'zero-read' : input + write === 0 ? 'full-hit' : 'partial-hit';
+    this.cache.missReason = read === 0 ? 'unknown' : 'none';
+  }
+
   setStreaming(streaming: boolean): void {
     this.streaming = streaming;
   }
@@ -443,6 +516,8 @@ export class GatewayRequestSpan {
       transport: this.transport,
       model: this.model,
       cacheRouting: this.cacheRouting,
+      cache: cloneCacheObservation(this.cache),
+      previousObservedRequestGapMs: this.previousObservedRequestGapMs,
       startedAt: this.startedAt,
       finalizedAt,
       attempts: this.attempts,
@@ -466,6 +541,7 @@ export class GatewayRequestTelemetry {
   private finalized = 0;
   private sampled = 0;
   private missingStageTimelines = 0;
+  private cacheUsageObserved = 0;
   private readonly active = new Set<number>();
   private readonly outcomes = emptyOutcomes();
   private readonly missingStageByName = emptyMissingStages();
@@ -486,6 +562,14 @@ export class GatewayRequestTelemetry {
 
   clock(): number {
     return this.now();
+  }
+
+  previousRequestGap(ownerId: string | null, at: number): number | null {
+    if (!ownerId) return null;
+    for (let i = this.recent.length - 1; i >= 0; i--) {
+      if (this.recent[i].ownerId === ownerId) return Math.max(0, at - this.recent[i].startedAt);
+    }
+    return null;
   }
 
   begin(seed: {
@@ -513,6 +597,7 @@ export class GatewayRequestTelemetry {
     if (!this.active.delete(timeline.requestId)) return;
     this.finalized++;
     this.sampled++;
+    if (timeline.cache.reuse !== 'unobserved') this.cacheUsageObserved++;
     this.outcomes[timeline.outcome]++;
     if (timeline.missingStages.length) {
       this.missingStageTimelines++;
@@ -544,6 +629,8 @@ export class GatewayRequestTelemetry {
         outcomeReconciled:
           this.finalized === OUTCOMES.reduce((sum, outcome) => sum + this.outcomes[outcome], 0),
         missingStageTimelines: this.missingStageTimelines,
+        cacheUsageObserved: this.cacheUsageObserved,
+        cacheUsageCoverage: this.finalized ? this.cacheUsageObserved / this.finalized : null,
       },
       outcomes: { ...this.outcomes },
       stages,
@@ -552,6 +639,7 @@ export class GatewayRequestTelemetry {
       recentCapacity: this.recentCapacity,
       recent: this.recent.map((timeline) => ({
         ...timeline,
+        cache: cloneCacheObservation(timeline.cache),
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
@@ -584,6 +672,7 @@ export class GatewayRequestTelemetry {
       stages,
       recent: timelines.map((timeline) => ({
         ...timeline,
+        cache: cloneCacheObservation(timeline.cache),
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),

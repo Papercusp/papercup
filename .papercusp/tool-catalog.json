@@ -32903,7 +32903,7 @@
           "POST"
         ]
       },
-      "description": "Completion-integrity metric for one harness: terminalTotal (every done/closed work-item, both families) vs genuineCompletions (terminal AND carrying an owner PLUS either a completion_ref or an authority judgement — the only rows the gate would accept without a skip) vs dedupOrUnverified (the difference — watchdog/hygiene/revert dedup flips, or pre-gate historical rows), plus gateJudged (P-013: terminal rows the P-004 evidence gate actually JUDGED). gateJudged/terminalTotal is instrument COVERAGE, not a compliance score — only work_items:complete stamps a judgement, so a close made via the bare state-write path is unjudged however well evidenced it was.",
+      "description": "Completion-integrity and declared-outcome counts for one harness. genuineCompletions means terminal owner plus completion ref or authority judgement; it does NOT mean a new change landed. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes across terminal rows. gateJudged is evidence-gate coverage, not a compliance score.",
       "capabilities": [
         "work_items:read"
       ],
@@ -32928,7 +32928,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Reporting progress on a harness and the question is \"how much REAL work landed\", not just the raw done/closed count — a watchdog dedup sweep or hygiene close inflates the raw terminal count without any owner doing the work.",
+        "when": "Reporting harness completion-integrity coverage or the exact split of declared work outcomes; do not equate a committed authority judgement with a new change.",
         "notWhen": "Per-item detail — that is work_items:get. A live roster of who is doing what — that is fleet:status / fleet:assignments."
       }
     },

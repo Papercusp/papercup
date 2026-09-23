@@ -3864,12 +3864,18 @@ test('[#0 cache] the passive observer tallies prompt-cache READ/WRITE per accoun
   await r.text();
   const s = (await (await ask('/stats')).json()) as {
     cache: { read: number; create: number; hits: number; misses: number; hitRate: number };
+    requestStages: import('./request-stage-telemetry').GatewayRequestTelemetrySnapshot;
   };
   assert.equal(s.cache.read, 29000, 'cache_read tokens tallied from message_start');
   assert.equal(s.cache.create, 100, 'cache_creation tokens tallied');
   assert.equal(s.cache.hits, 1, 'a cache_read>0 request is a HIT');
   assert.equal(s.cache.misses, 0, 'a hit is not a miss');
   assert.ok(s.cache.hitRate > 0.9, `hit rate reflects the big cache read (got ${s.cache.hitRate})`);
+  const cache = s.requestStages.recent.at(-1)!.cache;
+  assert.equal(cache.providerRequestId, 'm');
+  assert.equal(cache.servingAccountId, r.headers.get('x-papercusp-routed-account'));
+  assert.equal(cache.cacheReadTokens, 29000);
+  assert.equal(cache.reuse, 'partial-hit');
 });
 
 test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', async () => {

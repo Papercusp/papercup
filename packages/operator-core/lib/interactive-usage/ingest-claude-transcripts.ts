@@ -6,7 +6,7 @@
  * yet wrote NO telemetry — `agent_usage_samples` only saw orchestrator spawns +
  * stateless anthropic-direct calls. This module tails the local Claude Code transcripts
  * (`~/.claude/projects`, recursive `*.jsonl`), sums each file's assistant-message `usage`
- * deltas, and persists one sample per (file-delta × model) with
+ * observations, and persists one sample per source request with
  * `source='interactive'`, so the spend rollups and the weekly token report see the
  * whole picture.
  *
@@ -22,6 +22,7 @@
  * consumption — the budget the fleet competes with — not real dollars.
  */
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
@@ -47,9 +48,55 @@ export interface ParsedChunk {
   consumedBytes: number;
   /** State committed together with the byte watermark; never inferred from a default model. */
   parserState?: TranscriptParserState;
+  /** Full source-request observations. Persistence max-merges repeat observations. */
+  events?: TranscriptUsageEvent[];
+}
+
+export interface TranscriptUsageEvent {
+  model: string;
+  usage: TranscriptDelta;
+  /** Native request/message identity, or a byte-relative identity for id-less lines. */
+  sourceId: string;
+  relativeOffset: number;
+  eventTime: number | null;
+  contextGeneration?: number;
+  predecessorSessionId?: string;
+}
+
+export function transcriptEventTime(value: unknown): number | null {
+  const parsed = typeof value === 'string' ? Date.parse(value) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Max-merge one request, including streaming growth, without guessing missing TTLs. */
+export function mergeTranscriptUsage(a: TranscriptDelta, b: TranscriptDelta): TranscriptDelta {
+  const merged: TranscriptDelta = {
+    turns: Math.max(a.turns, b.turns),
+    inputTokens: Math.max(a.inputTokens, b.inputTokens),
+    outputTokens: Math.max(a.outputTokens, b.outputTokens),
+    cacheReadTokens: Math.max(a.cacheReadTokens, b.cacheReadTokens),
+    cacheCreationTokens: Math.max(a.cacheCreationTokens, b.cacheCreationTokens),
+  };
+  const tiers = [b, a].find((u) => !u.cacheCreationTierUnknown &&
+    u.cacheCreation5mTokens !== undefined && u.cacheCreation1hTokens !== undefined &&
+    u.cacheCreation5mTokens + u.cacheCreation1hTokens === merged.cacheCreationTokens);
+  if (tiers) {
+    merged.cacheCreation5mTokens = tiers.cacheCreation5mTokens;
+    merged.cacheCreation1hTokens = tiers.cacheCreation1hTokens;
+  } else if (merged.cacheCreationTokens > 0 && (a.cacheCreationTierUnknown || b.cacheCreationTierUnknown ||
+    a.cacheCreation5mTokens !== undefined || a.cacheCreation1hTokens !== undefined ||
+    b.cacheCreation5mTokens !== undefined || b.cacheCreation1hTokens !== undefined)) {
+    merged.cacheCreationTierUnknown = true;
+  }
+  return merged;
 }
 
 export interface TranscriptParserState {
+  initialized?: boolean;
+  /** Recovery cursor only; byte_offset remains the already-accounted frontier. */
+  bootstrapOffset?: number;
+  bootstrapSource?: 'transcript-prefix';
+  fileGeneration?: number;
   model?: string;
   lastCumulativeUsage?: string;
   predecessorSessionId?: string;
@@ -95,8 +142,8 @@ interface UsageLine {
  * (one per content block), each repeating the message's `usage` — counting every line
  * inflates ~1.3×. One message = one turn: usage is max-merged per `message.id` within
  * the chunk (max also absorbs a streaming usage that grows across the lines). An
- * id-less line counts individually. A message split across two chunk reads (watermark
- * landing mid-message) double-counts once — rare enough to accept.
+ * id-less line counts individually. Full source observations are also returned for
+ * durable max-merging across chunks/restarts in the existing usage ledger.
  */
 export function parseTranscriptChunk(chunk: string): ParsedChunk {
   const perModel = new Map<string, TranscriptDelta>();
@@ -107,9 +154,13 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
   const byMsg = new Map<string, {
     model: string;
     u: Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'>;
+    relativeOffset: number;
+    eventTime: number | null;
   }>();
-  let anonSeq = 0;
+  let relativeOffset = 0;
   for (const line of consumed.split('\n')) {
+    const lineOffset = relativeOffset;
+    relativeOffset += Buffer.byteLength(line + '\n', 'utf8');
     if (!line.trim()) continue;
     let j: unknown;
     try {
@@ -117,15 +168,16 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     } catch {
       continue; // torn/garbage line — consumed, contributes nothing
     }
-    const evt = j as { type?: string; message?: { id?: string; model?: string; usage?: UsageLine } };
+    const evt = j as { type?: string; timestamp?: unknown; message?: { id?: string; model?: string; usage?: UsageLine } };
     if (evt?.type !== 'assistant') continue;
     const model = evt.message?.model;
     const u = evt.message?.usage;
     // `<synthetic>` rows are harness-injected error placeholders, not API calls.
     if (!model || model.startsWith('<') || !u) continue;
-    const key = evt.message?.id ?? `anon-${anonSeq++}`;
-    const acc: { model: string; u: Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'> } =
-      byMsg.get(key) ?? { model, u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+    const key = evt.message?.id ? `message:${evt.message.id}` : `line:${lineOffset}`;
+    const acc = byMsg.get(key) ?? { model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
+      u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } as
+        Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'> };
     acc.u.input_tokens = Math.max(acc.u.input_tokens, u.input_tokens ?? 0);
     acc.u.output_tokens = Math.max(acc.u.output_tokens, u.output_tokens ?? 0);
     acc.u.cache_read_input_tokens = Math.max(acc.u.cache_read_input_tokens, u.cache_read_input_tokens ?? 0);
@@ -139,13 +191,10 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     }
     byMsg.set(key, acc);
   }
-  for (const { model, u } of byMsg.values()) {
-    const acc = perModel.get(model) ?? emptyDelta();
-    acc.turns += 1;
-    acc.inputTokens += u.input_tokens;
-    acc.outputTokens += u.output_tokens;
-    acc.cacheReadTokens += u.cache_read_input_tokens;
-    acc.cacheCreationTokens += u.cache_creation_input_tokens;
+  const events: TranscriptUsageEvent[] = [];
+  for (const [sourceId, { model, u, relativeOffset, eventTime }] of byMsg) {
+    const acc: TranscriptDelta = { turns: 1, inputTokens: u.input_tokens, outputTokens: u.output_tokens,
+      cacheReadTokens: u.cache_read_input_tokens, cacheCreationTokens: u.cache_creation_input_tokens };
     const fiveMinute = u.cache_creation?.ephemeral_5m_input_tokens;
     const oneHour = u.cache_creation?.ephemeral_1h_input_tokens;
     if (
@@ -158,9 +207,15 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     } else if (u.cache_creation_input_tokens > 0) {
       acc.cacheCreationTierUnknown = true;
     }
-    perModel.set(model, acc);
+    events.push({ sourceId, model, usage: acc, relativeOffset, eventTime });
+    const total = perModel.get(model) ?? emptyDelta();
+    for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) total[key] += acc[key];
+    if (acc.cacheCreation5mTokens !== undefined) total.cacheCreation5mTokens = (total.cacheCreation5mTokens ?? 0) + acc.cacheCreation5mTokens;
+    if (acc.cacheCreation1hTokens !== undefined) total.cacheCreation1hTokens = (total.cacheCreation1hTokens ?? 0) + acc.cacheCreation1hTokens;
+    if (acc.cacheCreationTierUnknown) total.cacheCreationTierUnknown = true;
+    perModel.set(model, total);
   }
-  return { perModel, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
+  return { perModel, events, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
 }
 
 /** Read `[offset, min(size, offset+cap))` of a file as a utf8 string. */
@@ -215,6 +270,7 @@ export interface IngestResult {
   ingestedFiles: number;
   samples: number;
   skippedUnchanged: number;
+  bootstrapPending: number;
   totals: TranscriptDelta;
   errors: Array<{ file: string; error: string }>;
 }
@@ -225,7 +281,7 @@ const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
 /**
  * One ingest tick: walk every adapter's transcript root (P-015: claude +
  * codex + OMP by default), read each file's delta past its watermark, and
- * persist one `source='interactive'` usage sample per (file-delta × model).
+ * persist one `source='interactive'` usage sample per source request.
  * Safe to re-run (the system-actions contract). All adapters share the one
  * watermark table — file paths are absolute, so roots can't collide.
  *
@@ -323,6 +379,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
         name: `codex-iso-${i}`,
         root,
         parse: parseCodexChunk,
+        replayStateFromPrefix: true,
         sessionIdForFile: codexSessionIdForFile,
         advSessionId: advSessionIdFromCodexHome(root),
       })),
@@ -335,6 +392,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     ingestedFiles: 0,
     samples: 0,
     skippedUnchanged: 0,
+    bootstrapPending: 0,
     totals: emptyDelta(),
     errors: [],
   };
@@ -389,16 +447,45 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
           result.skippedUnchanged += 1;
           continue;
         }
+        let fileState: TranscriptParserState = size < stored.offset
+          ? { fileGeneration: (stored.parserState.fileGeneration ?? 0) + 1 } : stored.parserState;
+        if (adapter.replayStateFromPrefix && offset > 0 && !fileState.initialized &&
+          (fileState.bootstrapOffset !== undefined || !fileState.model)) {
+          // Replay at most the normal per-file byte budget per tick, discarding
+          // all historical usage. Persist progress without advancing its paid
+          // frontier; never infer a legacy model from the current launcher.
+          const replayOffset = fileState.bootstrapOffset ?? 0;
+          const prefix = await readFileDelta(file, replayOffset, Math.min(capBytes, offset - replayOffset));
+          const replay = adapter.parse(prefix, fileState);
+          if (replay.consumedBytes === 0) throw new Error('Legacy parser-state replay cannot advance within maxBytesPerFile');
+          fileState = { ...fileState, ...replay.parserState, bootstrapSource: 'transcript-prefix' };
+          const replayEnd = replayOffset + replay.consumedBytes;
+          if (replayEnd < offset) {
+            fileState.bootstrapOffset = replayEnd;
+            const advanced = await sql`
+              UPDATE harness_shared.interactive_usage_files
+                 SET parser_state = ${JSON.stringify(fileState)}::jsonb, updated_at = now()
+               WHERE workspace_id = ${ws} AND file_path = ${file} AND byte_offset = ${stored.offset}
+                 AND parser_state = ${JSON.stringify(stored.parserState)}::jsonb
+              RETURNING file_path
+            `;
+            if (advanced.length) result.bootstrapPending += 1;
+            continue;
+          }
+          delete fileState.bootstrapOffset;
+        }
+        fileState = { ...fileState, initialized: true };
         const chunk = await readFileDelta(file, offset, capBytes);
-        const { perModel, consumedBytes, parserState } = adapter.parse(
-          chunk, size < stored.offset ? {} : stored.parserState,
+        const { perModel, consumedBytes, parserState, events } = adapter.parse(
+          chunk, fileState,
         );
+        const nextParserState = parserState ?? fileState;
         if (consumedBytes === 0) continue; // no complete line yet — retry next tick
         // The value every spend join keys on (= adv_sessions.session_id); codex
         // rollouts need the adapter's extractor, see TranscriptAdapter.sessionIdForFile.
         const sessionId = adapter.sessionIdForFile ? adapter.sessionIdForFile(file) : path.basename(file, '.jsonl');
 
-        const committed = await sql.begin(async (tx) => {
+        const committedDeltas = await sql.begin(async (tx) => {
           // Two ticks may scan the same old watermark. Serialize only this file
           // and compare the observed offset before writing any usage samples.
           await tx`
@@ -406,16 +493,57 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             VALUES (${ws}, ${file}, 0, now())
             ON CONFLICT (workspace_id, file_path) DO NOTHING
           `;
-          const [head] = await tx<Array<{ byte_offset: string }>>`
-            SELECT byte_offset FROM harness_shared.interactive_usage_files
+          const [head] = await tx<Array<{ byte_offset: string; state_matches: boolean }>>`
+            SELECT byte_offset, parser_state = ${JSON.stringify(stored.parserState)}::jsonb AS state_matches
+              FROM harness_shared.interactive_usage_files
              WHERE workspace_id = ${ws} AND file_path = ${file} FOR UPDATE
           `;
-          if (Number(head.byte_offset) !== stored.offset) return false;
-          for (const [model, d] of perModel) {
-            if (d.turns === 0) continue;
+          if (Number(head.byte_offset) !== stored.offset || !head.state_matches) return null;
+          const deltas: TranscriptDelta[] = [];
+          // Keep custom adapters compatible, but label their coarser grain explicitly.
+          const observations: TranscriptUsageEvent[] = events ?? [...perModel].map(([model, usage]) => ({
+            model, usage, sourceId: `aggregate:${offset}:${model}`, relativeOffset: 0, eventTime: null,
+          } satisfies TranscriptUsageEvent));
+          for (const event of observations) {
+            const { model } = event;
+            const sourceId = event.sourceId.startsWith('line:') ? `line:${offset + event.relativeOffset}` : event.sourceId;
+            const eventKey = createHash('sha256').update(JSON.stringify([file, fileState.fileGeneration ?? 0, model, sourceId])).digest('hex');
+            const [previous] = await tx<Array<{
+              input_tokens: string | null; output_tokens: string | null; cache_read_tokens: string | null;
+              cache_creation_tokens: string | null; cache_creation_5m_tokens: string | null;
+              cache_creation_1h_tokens: string | null; turn_count: number | null; event_ts: string | null;
+            }>>`
+              SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count, event_ts
+                FROM harness_shared.agent_usage_samples WHERE workspace_id = ${ws} AND usage_event_key = ${eventKey}
+            `;
+            const before: TranscriptDelta = previous ? {
+              turns: previous.turn_count ?? 0, inputTokens: Number(previous.input_tokens ?? 0),
+              outputTokens: Number(previous.output_tokens ?? 0), cacheReadTokens: Number(previous.cache_read_tokens ?? 0),
+              cacheCreationTokens: Number(previous.cache_creation_tokens ?? 0),
+              cacheCreation5mTokens: previous.cache_creation_5m_tokens === null ? undefined : Number(previous.cache_creation_5m_tokens),
+              cacheCreation1hTokens: previous.cache_creation_1h_tokens === null ? undefined : Number(previous.cache_creation_1h_tokens),
+              cacheCreationTierUnknown: providerForModel(model) === 'anthropic' && Number(previous.cache_creation_tokens) > 0 &&
+                (previous.cache_creation_5m_tokens === null || previous.cache_creation_1h_tokens === null),
+            } : emptyDelta();
+            const d = previous ? mergeTranscriptUsage(before, event.usage) : event.usage;
+            const change = emptyDelta();
+            for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
+            if (previous && Object.values(change).every((n) => n === 0) &&
+              d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
+              (previous.event_ts !== null || event.eventTime === null)) continue;
             const modelClass = modelClassForModel(model);
             const provider = providerForModel(model);
-            const est = costFromTokens(model, d);
+            const est = costFromTokens(model, { ...d, requestInputTokens: events
+              ? d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens : undefined });
+            const ingestedAt = Date.now();
+            const eventTime = previous?.event_ts != null ? Number(previous.event_ts) : event.eventTime;
+            const provenance = { parserVersion: 2, adapter: adapter.name, sourceFile: file, fileGeneration: fileState.fileGeneration ?? 0,
+              sourceId, byteOffset: offset + event.relativeOffset, grain: events ? 'request' : 'file-model-delta',
+              modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
+              parserStateSource: fileState.bootstrapSource ?? 'incremental',
+              accountSource: 'unavailable', triggerSource: 'unavailable',
+              predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null };
             // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
             // as their strongest key. harness_slug: migration 1120 (WI-2144763).
             // goal_id: migration 1121 (WI-2145149) — the 3-arg overload, same defect,
@@ -431,9 +559,10 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 (workspace_id, ts, bucket_key, provider, model_class, source,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
                  model, cost_source, harness_slug, run_id, role, session_id, goal_id,
-                 cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count)
+                 cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count,
+                 usage_event_key, event_ts, ingested_at, usage_provenance)
               VALUES (
-                ${ws}, ${Date.now()}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
+                ${ws}, ${eventTime ?? ingestedAt}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
                 ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model === 'unknown-openai' ? null : model}, ${est.priced ? 'estimated' : null},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
@@ -442,22 +571,30 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 (SELECT harness_shared.goal_id_for_usage_session(
                    ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})),
                 ${d.cacheCreationTierUnknown ? null : d.cacheCreation5mTokens ?? null},
-                ${d.cacheCreationTierUnknown ? null : d.cacheCreation1hTokens ?? null}, ${d.turns}
+                ${d.cacheCreationTierUnknown ? null : d.cacheCreation1hTokens ?? null}, ${d.turns},
+                ${eventKey}, ${eventTime}, ${ingestedAt}, ${JSON.stringify(provenance)}::jsonb
               )
+              ON CONFLICT (workspace_id, usage_event_key) WHERE usage_event_key IS NOT NULL
+              DO UPDATE SET input_tokens = EXCLUDED.input_tokens, output_tokens = EXCLUDED.output_tokens,
+                cache_read_tokens = EXCLUDED.cache_read_tokens, cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                cache_creation_5m_tokens = EXCLUDED.cache_creation_5m_tokens, cache_creation_1h_tokens = EXCLUDED.cache_creation_1h_tokens,
+                cost_usd = EXCLUDED.cost_usd, cost_source = EXCLUDED.cost_source, turn_count = EXCLUDED.turn_count,
+                event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
+                ingested_at = EXCLUDED.ingested_at, usage_provenance = EXCLUDED.usage_provenance
             `;
+            deltas.push(change);
           }
           await tx`
             INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, parser_state, updated_at)
-            VALUES (${ws}, ${file}, ${offset + consumedBytes}, ${JSON.stringify(parserState ?? stored.parserState)}::jsonb, now())
+            VALUES (${ws}, ${file}, ${offset + consumedBytes}, ${JSON.stringify(nextParserState)}::jsonb, now())
             ON CONFLICT (workspace_id, file_path)
             DO UPDATE SET byte_offset = EXCLUDED.byte_offset, parser_state = EXCLUDED.parser_state, updated_at = now()
           `;
-          return true;
+          return deltas;
         });
-        if (!committed) continue; // the winning tick owns these source bytes
-        watermarks.set(file, { offset: offset + consumedBytes, parserState: parserState ?? stored.parserState });
-        for (const d of perModel.values()) {
-          if (d.turns === 0) continue;
+        if (!committedDeltas) continue; // the winning tick owns these source bytes
+        watermarks.set(file, { offset: offset + consumedBytes, parserState: nextParserState });
+        for (const d of committedDeltas) {
           result.samples += 1;
           result.totals.turns += d.turns;
           result.totals.inputTokens += d.inputTokens;

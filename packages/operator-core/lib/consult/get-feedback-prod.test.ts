@@ -21,7 +21,10 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: h.getOrgPg }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: h.getOrgPg,
+}));
 vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
 vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult }));
 vi.mock('../agent-tools/search/embedder', () => ({

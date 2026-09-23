@@ -12,10 +12,10 @@
  * through to an unmanaged native compaction.
  *
  * ONE exception (WI-10002522): a thread that is a native FORK and has not
- * sampled a single model turn since it was cut. A managed Codex carry successor
- * IS such a fork (psu-launcher mintCarryRespawnArgs forks the predecessor so the
- * conversation stays visible), so its model context is the predecessor's,
- * inherited whole. When that inherited context is what trips auto-compaction,
+ * sampled a single model turn since it was cut. Legacy managed carry successors
+ * and explicit user forks can inherit the predecessor's whole model context.
+ * Current managed carry starts fresh (EI-24046655564306940), but older hosts
+ * and explicit forks still need this recovery guard. When inherited context trips auto-compaction,
  * another managed boundary cannot shed it — the next successor forks the same
  * context and trips again before its first sample. Measured 2026-09-23: 13 cuts
  * in 10 minutes with zero model turns for one agent at 784140/784800 tokens.

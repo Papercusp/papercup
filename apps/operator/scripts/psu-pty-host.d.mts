@@ -1710,20 +1710,40 @@ export function startupOutputReady(agent: any, output: any): boolean;
  * request is the earliest byte that is unambiguously the Codex TUI rather than
  * the psu launcher's own banner. Pure and exported for tests. */
 export function codexTuiStartObserved(output: any): boolean;
+/** WI-10002745 (reopened): the probe above marks when the Codex TUI STARTS,
+ * not when it is READY. Codex keeps reading stdin for the probe replies until
+ * it schedules its first frame, and that wait is bimodal. Its own log line
+ * `tui startup initial frame scheduled duration_ms=` measured min 33ms, p50
+ * 698ms, p90 13.9s and max 14.1s over 41 launches on 2026-09-23. A fixed 15s
+ * window measured from the probe therefore fired 0.3s and 0.6s BEFORE the
+ * first frame on two grading auditors: each kickoff lost its leading
+ * provenance marker, the native proof timed out, and the host tore down the
+ * working session. The first frame Codex PAINTS after its latest probe (the
+ * `OpenAI Codex` header or the `›` composer glyph) is positive proof that the
+ * reply wait is over.
+ *
+ * `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
+ * has already trimmed away: the whole buffer then counts as post-probe.
+ * Pure and exported for tests. */
+export function codexInitialFrameObserved(output: any, { probeAlreadySeen }?: {
+    probeAlreadySeen?: boolean | undefined;
+}): boolean;
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from
- * the Codex TUI's OWN start: the PTY child is the psu launcher, which prints
- * its banner and then bootstraps the role (minting CODEX_HOME, etc.) for ~20s
- * under load before Codex execs. Measured from the banner, the 15s window had
- * already expired before Codex existed, so the output-quiet gate read Codex's
- * silent capability-probe wait as "settled at a prompt" and typed the kickoff
- * into it — losing the provenance marker, after which the host tore the
- * working session down (WI-10002745). Pure and exported for tests. */
-export function startupFallbackElapsed({ agent, nowMs, firstOutputAt, backendTuiStartedAt, fallbackMs }: {
+ * the first frame the Codex TUI paints (see codexInitialFrameObserved). It is
+ * not measured from the launcher banner: the PTY child is the psu launcher,
+ * which bootstraps the role for ~20s under load before Codex execs. It is not
+ * measured from Codex's startup probe either, because Codex can then read
+ * stdin for up to ~14s more and swallow whatever is typed (WI-10002745).
+ * Without a frame, the widened window runs from the probe when one was seen:
+ * the launcher's own bootstrap time must not eat into Codex's swallow margin.
+ * Pure and exported for tests. */
+export function startupFallbackElapsed({ agent, nowMs, firstOutputAt, backendTuiStartedAt, backendFirstFrameAt, fallbackMs, }: {
     agent: any;
     nowMs: any;
     firstOutputAt: any;
-    backendTuiStartedAt: any;
+    backendTuiStartedAt?: number | undefined;
+    backendFirstFrameAt?: number | undefined;
     fallbackMs: any;
 }): boolean;
 /** A fresh Claude child can repaint continuously (spinner/elapsed chrome), so
@@ -2490,11 +2510,12 @@ export const CLAUDE_RESUME_COMPACTION_RECOVERY_MS: 30000;
  *  Pure factory — exported for tests.
  */
 export const SCROLLBACK_ERASE_RE: RegExp;
-/** If the Codex TUI-start probe is never observed (a future Codex that stops
- * sending it, or bytes that landed before the listener attached), the host
- * still delivers — but only after this multiple of the ordinary fallback, so
- * a detector miss degrades to "slower" rather than to "typed into a booting
- * TUI". */
+/** If the Codex first frame is never observed (a future Codex that stops
+ * painting the header, or bytes that landed before the listener attached),
+ * the host still delivers, but only after this multiple of the ordinary
+ * fallback. It is measured from the startup probe when one was seen, otherwise
+ * from the first output byte. A detector miss then makes delivery slower
+ * instead of typing into a booting TUI. */
 export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER: 4;
 /** Default TTL a delivery id is remembered as "already accepted" (EI-19311270129974785).
  *  Sized comfortably above the client's own retry envelope — `markDeliveryFailed`'s

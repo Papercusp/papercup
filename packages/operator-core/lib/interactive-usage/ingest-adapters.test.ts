@@ -96,6 +96,23 @@ describe('parseCodexChunk (P-015)', () => {
     expect(parsed.parserState?.model).toBeUndefined();
   });
 
+  it('does not treat empty or invalid cumulative metadata as a request identity', () => {
+    for (const total of [{}, { unrelated: 1 }, { input_tokens: -1 }, { input_tokens: 'bad' }]) {
+      const event = JSON.parse(tokenCount(1000, 600, 40));
+      event.payload.info.total_token_usage = total;
+      const parsed = parseCodexChunk(turnCtx + codexLine(event) + codexLine(event));
+      expect(parsed.perModel.get('gpt-5.5')?.turns).toBe(2);
+      expect(parsed.events?.map((e) => e.sourceId)[0]).not.toBe(parsed.events?.map((e) => e.sourceId)[1]);
+    }
+  });
+
+  it('ignores changing non-token metadata in a repeated cumulative notification', () => {
+    const event = JSON.parse(tokenCount(1000, 600, 40));
+    const first = parseCodexChunk(turnCtx + codexLine(event));
+    event.payload.info.total_token_usage.received_at = 123;
+    expect(parseCodexChunk(codexLine(event), first.parserState).events).toEqual([]);
+  });
+
   it('incomplete trailing line is not consumed', () => {
     const { consumedBytes } = parseCodexChunk('{"type":"event_msg"'); // no newline
     expect(consumedBytes).toBe(0);

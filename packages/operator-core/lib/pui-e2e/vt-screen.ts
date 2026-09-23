@@ -265,11 +265,14 @@ export function screenHasAssistantReply(screen: string, needle: string | RegExp)
     needle.lastIndex = 0;
     return needle.test(line);
   };
+  // The transcript is a list with a two-column highlight gutter, so a role
+  // label renders as `  agent`, or `▸ agent` on the focused message.
+  const roleOf = (line: string): string | undefined => /^(?:▸ | {2})?(agent|you)$/.exec(line)?.[1];
   for (let index = 0; index < lines.length; index++) {
-    if (lines[index] !== 'agent') continue;
+    if (roleOf(lines[index]) !== 'agent') continue;
     for (let replyIndex = index + 1; replyIndex < lines.length; replyIndex++) {
       const line = lines[replyIndex];
-      if (line === 'agent' || line === 'you') break;
+      if (roleOf(line)) break;
       // Reasoning/tool detail rows are indented; the rendered final answer is
       // top-level even when it follows those sections in the same bubble.
       if (line.trim() && !/^\s/.test(line) && matches(line)) return true;

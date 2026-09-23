@@ -917,7 +917,7 @@ export function mintCarryRespawnArgs(args?: string[], { systemPromptAddendum, ow
     codexHome?: string | null;
     model?: string | null;
 }): {
-    args: any[];
+    args: string[];
     nativeId: null;
     launchContextPath: string;
     codexAgentsPath: string;

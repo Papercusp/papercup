@@ -2618,13 +2618,14 @@ export function codexCarryLineageMarker(predecessorId) {
   if (predecessorId) {
     return (
       `⟦codex-carry-lineage predecessor:${predecessorId}⟧\n` +
-      "This is a managed continuation fork. The predecessor conversation remains available above; " +
-      "its turns were not deleted."
+      "This is a fresh managed continuation. The predecessor transcript is preserved on disk, " +
+      `not loaded into this context. Recover earlier detail with sessions:read { session:'${predecessorId}' } ` +
+      "or sessions:search; the saved carry document supplies the current task state."
     );
   }
   return (
     "⟦codex-carry-lineage predecessor:unresolved⟧\n" +
-    "This is a managed continuation, but the predecessor rollout was not available to fork; " +
+    "This is a fresh managed continuation, but the predecessor rollout was not resolved; " +
     "the prior turns remain in the predecessor session and are not deleted."
   );
 }
@@ -3433,7 +3434,7 @@ export function mintCarryRespawnArgs(
   // per-cut names do not accumulate.
   // Codex does not expose a pre-minted successor id. Use a private cut token
   // for the delivery filename so successive Codex cuts cannot overwrite one
-  // another while the native fork is creating its new rollout.
+  // another while Codex is creating its fresh rollout.
   const cutId = sanitizeCarrySegment(
     rotated.nativeId || (normalizedAgent === "codex" ? mintId() : null),
   );
@@ -3465,7 +3466,7 @@ export function mintCarryRespawnArgs(
           ownerId: ownerId || null,
           predecessorSessionId: codexPredecessor?.id ?? null,
           predecessorPath: codexPredecessor?.path ?? null,
-          successorMode: codexPredecessor ? "fork" : "fresh",
+          successorMode: "fresh",
           carryPath: launchContextPath,
         },
         null,
@@ -3526,21 +3527,15 @@ export function mintCarryRespawnArgs(
     const subcommandAt = strippedKickoff.findIndex(
       (arg) => arg === "resume" || arg === "fork",
     );
-    const forkArgs = codexPredecessor
-      ? [
-          ...(
-            subcommandAt >= 0
-              ? strippedKickoff.slice(0, subcommandAt)
-              : strippedKickoff
-          ),
-          "fork",
-          codexPredecessor.id,
-        ]
-      : subcommandAt >= 0
-        ? strippedKickoff.slice(0, subcommandAt)
-        : strippedKickoff;
+    // A native fork preserves the entire context window: it is a branching
+    // operation, not compaction. Keep the predecessor archived and addressable
+    // via the lineage marker/sidecar, but never feed it back into managed carry.
+    // Explicit user resume/fork remains owned by resumeArgsFor, unchanged.
+    const freshArgs = subcommandAt >= 0
+      ? strippedKickoff.slice(0, subcommandAt)
+      : strippedKickoff;
     return {
-      args: forkArgs,
+      args: freshArgs,
       nativeId: null,
       launchContextPath,
       codexAgentsPath: agentsPath,

@@ -1,7 +1,8 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
@@ -11,6 +12,7 @@ import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-re
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
+import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
   buildMeasurementPin,
@@ -166,16 +168,56 @@ export interface DetailedRepoEvidenceMeasurement extends MeasuredRepoEvidenceFin
   files: MeasuredRepoFile[];
 }
 
+async function nearestRepositoryRoot(root: string, file: string): Promise<string> {
+  let current = dirname(file);
+  while (containedBy(root, current)) {
+    if (existsSync(join(current, '.git'))) return realpath(current);
+    if (current === root) break;
+    current = dirname(current);
+  }
+  return root;
+}
+
+async function refuseMutationProbePaths(root: string, declaredPaths: readonly string[]): Promise<void> {
+  const groups = new Map<string, Set<string>>();
+  for (const path of new Set(declaredPaths)) {
+    const candidate = resolve(root, path);
+    if (!containedBy(root, candidate)) throw new Error(`repo_measurement_path_outside_root:${path}`);
+    const canonical = await realpath(candidate);
+    if (!containedBy(root, canonical)) throw new Error(`repo_measurement_symlink_outside_root:${path}`);
+    const domain = await nearestRepositoryRoot(root, canonical);
+    const repoPath = relative(domain, canonical).split(sep).join('/');
+    const paths = groups.get(domain) ?? new Set<string>();
+    paths.add(repoPath);
+    groups.set(domain, paths);
+  }
+
+  await ensureBootstrap();
+  for (const [coordinationDomain, paths] of groups) {
+    const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths] });
+    const activeProbe = queue.active_locks.find(
+      (lock) => String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe',
+    );
+    if (activeProbe) {
+      throw new Error(`repo_measurement_mutation_probe_active:${coordinationDomain}:${activeProbe.path}`);
+    }
+  }
+}
+
 /** Measure a repo-files recipe and keep the per-file hashes, in ONE read of each file. */
 export async function measureRepoFilesEvidenceDetailedAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  const root = await realpath(repoRoot);
+  const measuredPaths = [...parsed.sourcePaths, ...(parsed.testPaths ?? [])];
+  await refuseMutationProbePaths(root, measuredPaths);
   const [source, test] = await Promise.all([
-    fingerprintRepoFileSet(repoRoot, parsed.sourcePaths),
-    parsed.testPaths ? fingerprintRepoFileSet(repoRoot, parsed.testPaths) : Promise.resolve(null),
+    fingerprintRepoFileSet(root, parsed.sourcePaths),
+    parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
   ]);
+  await refuseMutationProbePaths(root, measuredPaths);
   return {
     sourceFingerprint: source.fingerprint,
     testFingerprint: test?.fingerprint ?? null,
