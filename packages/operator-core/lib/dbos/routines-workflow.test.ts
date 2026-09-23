@@ -4,7 +4,7 @@
  * the fire delivered or was withheld, which made a parked-loop incident look
  * like a healthy workflow completion in DBOS forensics.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -17,6 +17,8 @@ const state = vi.hoisted(() => ({
   } as const,
   dbosStarted: true,
   startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => undefined),
+  createDbosClient: vi.fn(),
+  clientEnqueue: vi.fn(),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -40,6 +42,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
       registerScheduled: vi.fn(),
       startWorkflow: state.startWorkflow,
     },
+    DBOSClient: { create: state.createDbosClient },
   };
 });
 
@@ -50,7 +53,14 @@ vi.mock('./idempotent-register-workflow', () => ({
 
 vi.mock('./queue-concurrency', () => ({ queueConcurrency: (ceiling: number) => ceiling }));
 
-vi.mock('./bootstrap', () => ({ dbosStarted: () => state.dbosStarted }));
+vi.mock('./bootstrap', () => ({
+  dbosStarted: () => state.dbosStarted,
+  withDbosIdleTxGrace: (url: string) => `${url}?test-idle-grace`,
+}));
+
+vi.mock('../embedded-pg-discovery', () => ({
+  getHarnessAdminUrlWithSource: () => ({ url: 'postgres://system-db' }),
+}));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
@@ -112,6 +122,13 @@ import { CaplessAdaptiveController } from '../resource-governor/controller';
 beforeEach(() => {
   state.stepOutputs.length = 0;
   vi.clearAllMocks();
+  state.dbosStarted = true;
+  state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
+  state.clientEnqueue.mockResolvedValue({ workflowID: 'routine:rt_home_git_sync' });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (EI-224330)', () => {
@@ -502,13 +519,71 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
     });
   });
 
-  it('reports DBOS unavailable without attempting an enqueue', async () => {
+  it('uses a pinned DBOS client when the request host has no local DBOS runtime', async () => {
     state.dbosStarted = false;
+    vi.stubEnv('PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION', '');
+    vi.stubEnv('DBOS__APPVERSION', '');
 
     await expect(enqueueRoutineFire(routine)).resolves.toMatchObject({
-      ok: false,
-      status: 'unavailable',
-      reason: 'dbos-not-started',
+      ok: true,
+      status: 'enqueued',
+      deduplicationId: `routine:${routine.id}`,
+    });
+    expect(state.createDbosClient).toHaveBeenCalledWith({
+      systemDatabaseUrl: 'postgres://system-db?test-idle-grace',
+      systemDatabaseSchemaName: 'dbos',
+    });
+    expect(state.clientEnqueue).toHaveBeenCalledWith(
+      {
+        queueName: ROUTINES_CRITICAL_QUEUE,
+        workflowName: 'routineFire',
+        deduplicationID: `routine:${routine.id}`,
+        workflowTimeoutMS: routineFireTimeoutMs(routine.targetRole),
+        appVersion: 'bg-host-v1',
+      },
+      routine.id,
+      routine.workspaceId,
+      routine.installSlug,
+      routine.targetRole,
+      routine.triggerConfig,
+      routine.payloadTemplate,
+      routine.name,
+      routine.rescheduleIntervalSec,
+      routine.targetOwnerId,
+    );
+    expect(state.startWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured DBOS primary version when present', async () => {
+    state.dbosStarted = false;
+    vi.stubEnv('PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION', 'primary-v2');
+
+    await enqueueRoutineFire(routine);
+
+    expect(state.clientEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ appVersion: 'primary-v2' }),
+      routine.id,
+      routine.workspaceId,
+      routine.installSlug,
+      routine.targetRole,
+      routine.triggerConfig,
+      routine.payloadTemplate,
+      routine.name,
+      routine.rescheduleIntervalSec,
+      routine.targetOwnerId,
+    );
+  });
+
+  it('treats a DBOS client deduplication conflict as already queued', async () => {
+    state.dbosStarted = false;
+    state.clientEnqueue.mockRejectedValueOnce(
+      Object.assign(new Error('duplicate workflow'), { dbosErrorCode: 28 }),
+    );
+
+    await expect(enqueueRoutineFire(routine)).resolves.toMatchObject({
+      ok: true,
+      status: 'deduplicated',
+      deduplicationId: `routine:${routine.id}`,
     });
     expect(state.startWorkflow).not.toHaveBeenCalled();
   });
