@@ -102,4 +102,12 @@ describe('systemd StartLimit-placement guard predicate (EI-19381535849234617)', 
     expect(sections.get('Service')?.get('RestartSteps')).toBe('5');
     expect(sections.get('Service')?.get('RestartMaxDelaySec')).toBe('60');
   });
+
+  it('keeps the Type=notify staging startup deadline beyond the measured five-minute timeout', () => {
+    const dropIn = readFileSync(
+      fileURLToPath(new URL('../../../apps/operator/scripts/systemd/papercup-staging-api.service.d/97-bundle-stale-start.conf', import.meta.url)),
+      'utf8',
+    );
+    expect(dropIn.split('\n')).toContain('TimeoutStartSec=15min');
+  });
 });
