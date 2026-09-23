@@ -926,6 +926,50 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(marker)).toBe(true);
   });
 
+  it('hands the lock to a stale scheduled dump before starving behind a hot sweep', () => {
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'db-dump', 25_200);
+    const hotReady = join(dir, 'hot-ready');
+    const dbRan = join(dir, 'db-ran');
+    const hotLog = join(dir, 'hot.log');
+    const dbLog = join(dir, 'db.log');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -uo pipefail',
+          '"$GUARD" --mode scheduled --label hot -- bash -c \'touch "$1"; for _ in $(seq 1 500); do [ -e "$2" ] && break; sleep 0.01; done\' _ "$HOT_READY" "$DB_RAN" >"$HOT_LOG" 2>&1 &',
+          'hot=$!',
+          'for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done',
+          '[ -e "$HOT_READY" ] || exit 91',
+          '"$GUARD" --mode scheduled --label db-dump --no-restart-safe -- touch "$DB_RAN" >"$DB_LOG" 2>&1 &',
+          'db=$!',
+          'wait "$db"',
+          'db_rc=$?',
+          'wait "$hot"',
+          'hot_rc=$?',
+          '[ "$db_rc" -eq 0 ] && [ -e "$DB_RAN" ] && [ "$hot_rc" -eq 75 ] && grep -q \'result=stopping-during-run reason=priority-waiter\' "$HOT_LOG" && grep -q \'result=waiting reason=staleness-override-lock\' "$DB_LOG"',
+        ].join('\n'),
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, HOT_READY: hotReady, DB_RAN: dbRan, HOT_LOG: hotLog, DB_LOG: dbLog },
+        timeout: 10_000,
+      },
+    );
+
+    const evidence =
+      scenario.stdout +
+      '\n' +
+      scenario.stderr +
+      '\nhot guard:\n' +
+      (existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing') +
+      '\ndb guard:\n' +
+      (existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing');
+    expect(scenario.status, evidence).toBe(0);
+  });
+
   it('does not ignore pressure again on the very next tick after an escalation', () => {
     const { dir, env } = fixture(23.84);
     seedDeadlineBase(dir, 'retry', 25_200);
