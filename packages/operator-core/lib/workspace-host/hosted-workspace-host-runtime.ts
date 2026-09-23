@@ -26,7 +26,11 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from '../workspace-registry';
 import { listDesktopSessions, touchDesktopSession } from '../desktop/desktop-session-registry';
-import { leasedDesktopBySessionId } from '../agent-tools/computer/desktop-lease';
+import {
+  ensureHiveDesktop,
+  hiveDesktopSessionId,
+  leasedDesktopBySessionId,
+} from '../agent-tools/computer/desktop-lease';
 import {
   desktopAuditAction,
   desktopAuditSubject,
@@ -135,6 +139,15 @@ export function defaultHostedAudit(event: HostedHostAuditEvent): void {
 }
 
 /**
+ * The lease key of the one desktop a hosted workspace host serves (D-404).
+ *
+ * One key, not one per viewer: the connector binding scopes this host to ONE
+ * customer workspace, so every viewer of it shares a desktop, and a second
+ * `desktop.start` coalesces onto `ensureHiveDesktop`'s existing lease.
+ */
+export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
+
+/**
  * The desktop plane wired to this operator's real registry and lease map.
  *
  * Separate from `createHostedWorkspaceHostRuntime` so a host with no desktop pack —
@@ -151,6 +164,12 @@ export function createDefaultDesktopBackend(
     // authorization boundary. A second, weaker filter here would imply it is not.
     listSessions: () => listDesktopSessions({ workspaceId }),
     touchSession: (id) => touchDesktopSession(id),
+    // The desktop pack's socket service (D-363) is what `ensureHiveDesktop`
+    // provisions through on a workspace host, so this needs no pack-specific code.
+    ensureDesktop: async () => {
+      await ensureHiveDesktop(HOSTED_WORKSPACE_DESKTOP_LEASE);
+      return hiveDesktopSessionId(HOSTED_WORKSPACE_DESKTOP_LEASE);
+    },
     ...overrides,
   });
 }
