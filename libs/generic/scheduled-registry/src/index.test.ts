@@ -562,6 +562,40 @@ describe('the Vitest inertness guard distinguishes REAL timers from FAKE ones (W
   // The control for the ORIGINAL defect (EI-21209553211440005): with genuinely REAL timers the
   // default backend must still be inert, or that unhandled-rejection class returns. If this ever
   // fails, the fix above has been over-applied.
+  // WI-10002781: a CHILD process a test spawns inherits VITEST=true through its env, but it is
+  // not a Vitest worker: no test files, no factory mocks, and it needs its production intervals
+  // (a perf peer's merge poll). When the guard keyed on the env var alone, those children ran
+  // with every managed interval inert and substrate-compaction.integration.test.ts hung to its
+  // 600s timeout. Simulate that child in-process: env var present, worker-state global absent.
+  it('ARMS the default backend in a spawned child that inherited VITEST but is not a worker', () => {
+    resetScheduledRegistry();
+    expect(process.env.VITEST, 'precondition: the inherited env var is present').toBeTruthy();
+    const g = globalThis as { __vitest_worker__?: unknown };
+    expect(g.__vitest_worker__, 'precondition: this test runs inside a real worker').toBeDefined();
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const savedWorkerState = g.__vitest_worker__;
+    let handle: { stop(): void } | undefined;
+    try {
+      // Only the managedSetInterval call runs without the worker global; it is restored before
+      // any assertion, since Vitest's own APIs read it.
+      delete g.__vitest_worker__;
+      try {
+        handle = managedSetInterval('wi-10002781-spawned-child', 60_000, () => undefined, {
+          category: 'watchdog',
+        });
+      } finally {
+        g.__vitest_worker__ = savedWorkerState;
+      }
+      expect(setIntervalSpy).toHaveBeenCalledOnce();
+      expect(managedCount()).toBe(1);
+      expect(getManaged('wi-10002781-spawned-child')).toBeDefined();
+    } finally {
+      handle?.stop();
+      setIntervalSpy.mockRestore();
+      resetScheduledRegistry();
+    }
+  });
+
   it('still keeps the default backend inert when timers are REAL', () => {
     resetScheduledRegistry();
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');

@@ -147,6 +147,29 @@ function timersAreFaked(): boolean {
   return (globalThis.setInterval as unknown as { clock?: unknown } | undefined)?.clock !== undefined;
 }
 
+/**
+ * True only INSIDE a Vitest worker, where test files and their factory mocks load.
+ *
+ * `process.env.VITEST` alone does not answer that. An environment variable is inherited by
+ * every child process a test spawns (`spawn` copies `process.env` by default), so a real
+ * standalone child, such as a perf peer booting the substrate, also reads `VITEST=true`. It
+ * has no test files and no mocks, and needs its production intervals. When the guard keyed on
+ * the env var alone, such a child's `hyperbee-merge-poll` never armed: its reader never
+ * merged past the first pass, and `substrate-compaction.integration.test.ts` hung to its 600s
+ * timeout on every run from 2026-08-23 (WI-10002781).
+ *
+ * Vitest installs its per-process worker state on `globalThis.__vitest_worker__`
+ * (`getWorkerState()` reads it). A global is not inherited across `spawn`, so it marks the
+ * worker process precisely. The env var is still required, so a stray global outside Vitest
+ * never disarms anything.
+ */
+function inVitestWorker(): boolean {
+  return (
+    Boolean(process.env.VITEST) &&
+    (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__ !== undefined
+  );
+}
+
 const defaultSetIntervalImpl: SetIntervalImpl = (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle;
 const defaultClearIntervalImpl: ClearTimerImpl = (h) => clearInterval(h as unknown as ReturnType<typeof setInterval>);
 const defaultSetTimeoutImpl: SetTimeoutImpl = (cb, ms) => setTimeout(cb, ms) as unknown as TimerHandle;
@@ -328,8 +351,12 @@ export function managedSetInterval(
   // "Deterministic seam" means BOTH an injected setIntervalImpl AND `vi.useFakeTimers()` — see
   // timersAreFaked(). Treating only the injected case as deterministic silently disarms every
   // fake-timer test over a managedSetInterval call site (WI-40841).
+  //
+  // "Under Vitest" means inside a Vitest WORKER, not "VITEST is in the env": a child process a
+  // test spawns inherits the env var but is a real process that needs real intervals
+  // (WI-10002781). See inVitestWorker().
   if (
-    process.env.VITEST &&
+    inVitestWorker() &&
     !opts.allowInTest &&
     state.resolved.setIntervalImpl === defaultSetIntervalImpl &&
     !timersAreFaked()
