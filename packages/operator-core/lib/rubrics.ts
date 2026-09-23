@@ -331,27 +331,43 @@ export interface Rubric {
 export interface RubricEvidenceIdentity {
   revision?: number | string | null;
   criteriaHash?: string | null;
+  meaningRevision?: number | null;
 }
 
 export type RubricEvidenceCurrentness =
   | { state: 'current'; reason: 'current' }
-  | { state: 'stale'; reason: 'criteria-hash-mismatch' | 'revision-mismatch' }
+  | { state: 'stale'; reason: 'criteria-hash-mismatch' | 'revision-mismatch' | 'meaning-revision-mismatch' }
   | { state: 'unknown'; reason: 'recorded-identity-missing' | 'live-identity-missing' };
 
 /**
  * Compare a persisted rubric-backed proof with the rubric in force now.
  *
- * `revision` is a storage/event counter: harmless plan-row or formatting edits can
- * advance it. `criteriaHash` is the dependency identity over the fields that actually
- * grade (including criterion methods and delegated class revision), so two complete
- * hashes are authoritative even when the counters differ. Legacy rows that predate the
- * hash retain the conservative exact-revision fallback. A one-sided/missing identity is
- * UNKNOWN, never silently current.
+ * `revision` is a storage/event counter and `criteriaHash` includes probe methods.
+ * For acceptance BARs, matching recorded/live `meaningRevision` takes precedence:
+ * method-only edits leave the judged contract intact, while a changed epoch is stale.
+ * Rows without both epochs retain the conservative hash/revision comparison. A
+ * one-sided/missing identity is UNKNOWN, never silently current.
  */
 export function classifyRubricEvidenceCurrentness(
   recorded: RubricEvidenceIdentity,
   live: RubricEvidenceIdentity,
 ): RubricEvidenceCurrentness {
+  const recordedMeaningRevision =
+    typeof recorded.meaningRevision === 'number' &&
+    Number.isInteger(recorded.meaningRevision) &&
+    recorded.meaningRevision > 0
+      ? recorded.meaningRevision
+      : null;
+  const liveMeaningRevision =
+    typeof live.meaningRevision === 'number' && Number.isInteger(live.meaningRevision) && live.meaningRevision > 0
+      ? live.meaningRevision
+      : null;
+  if (recordedMeaningRevision !== null && liveMeaningRevision !== null) {
+    return recordedMeaningRevision === liveMeaningRevision
+      ? { state: 'current', reason: 'current' }
+      : { state: 'stale', reason: 'meaning-revision-mismatch' };
+  }
+
   const recordedHash = recorded.criteriaHash?.trim() || null;
   const liveHash = live.criteriaHash?.trim() || null;
   if (recordedHash !== null || liveHash !== null) {
@@ -1251,6 +1267,20 @@ export async function getRubric(rubricId: string, revision?: number): Promise<Ru
 export async function getRubricCriteriaHash(rubricId: string): Promise<string | null> {
   const rubric = await getRubric(rubricId);
   return rubric?.criteriaHash ?? null;
+}
+
+/** Read the complete currentness identity from one rubric snapshot. */
+export async function getRubricEvidenceIdentity(rubricId: string): Promise<{
+  revision: number | null;
+  criteriaHash: string | null;
+  meaningRevision: number | null;
+}> {
+  const rubric = await getRubric(rubricId);
+  return {
+    revision: rubric?.revision ?? null,
+    criteriaHash: rubric?.criteriaHash ?? null,
+    meaningRevision: rubric?.barContract?.meaningRevision ?? null,
+  };
 }
 
 /**
@@ -3962,6 +3992,17 @@ async function amendAcceptanceBarRubric(
           reason,
         },
       });
+      if (stored.barContract) {
+        const meaningRevision = nextAcceptanceBarMeaningRevision({
+          priorCriteria: stored.criteria,
+          nextCriteria: amended.criteria,
+          priorMeaningRevision: stored.barContract.meaningRevision ?? null,
+          priorRevision: oldRubricRevision,
+          nextRevision: nextRubricRevision,
+        });
+        const contract = (guard.data as { barContract?: Record<string, unknown> }).barContract;
+        if (contract && meaningRevision !== undefined) contract.meaningRevision = meaningRevision;
+      }
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
@@ -4900,17 +4941,17 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
 }
 
 /**
- * Retire the acceptance rubric of a completed plan (acceptance-rubrics-on-every-plan-
- * 2026-08-11 P-005 lifecycle: an acceptance rubric archives WITH its subject plan —
- * one-shot, never a lingering library entry). Best-effort BY DESIGN: returns the retired
- * rubricId, or null when there is nothing to do (no rubric / already retired / write
- * busy) or on any failure — a ship must never be failed by its lifecycle tidy-up.
+ * Retire the acceptance rubric with its terminal subject plan. P-005 requires this for
+ * shipped and superseded plans. Best-effort BY DESIGN: returns the retired rubricId, or
+ * null when there is nothing to do (no active rubric / write busy) or on any failure.
+ * Omit terminalStatus for the historical shipped call; supersede callers pass it explicitly.
  */
 export async function retireAcceptanceRubricForPlan(
   planSlug: string,
   by?: string,
-  options: { harnessSlug?: string } = {},
+  options: { harnessSlug?: string; terminalStatus?: 'shipped' | 'superseded' } = {},
 ): Promise<string | null> {
+  const terminalStatus = options.terminalStatus ?? 'shipped';
   try {
     const rubric = await getAcceptanceRubricForPlan(planSlug, options);
     if (!rubric || rubric.status === 'retired') return null;
@@ -4919,12 +4960,12 @@ export async function retireAcceptanceRubricForPlan(
       null,
       {
         slug: rubric.rubricId,
-        intent: `acceptance-rubric retire (subject plan '${planSlug}' shipped)`,
+        intent: `acceptance-rubric retire (subject plan '${planSlug}' ${terminalStatus})`,
         ...scope,
         afterWrite: rubricRevisionAfterWrite(
           rubric.rubricId,
           by,
-          'acceptance rubric retired with its shipped subject plan',
+          `acceptance rubric retired with its ${terminalStatus} subject plan`,
         ),
       },
       async (current) => {

@@ -187,9 +187,11 @@ export interface GitSpawnOptions {
   /** The git executable. Tests point it at a slow wrapper to prove the probe never blocks. */
   gitBinary?: string;
   timeoutMs?: number;
+  /** Cancel a running child when its owning operation has exceeded its liveness budget. */
+  signal?: AbortSignal;
 }
 
-type GitStreamOutcome = 'complete' | 'failed' | 'timeout';
+export type GitStreamOutcome = 'complete' | 'failed' | 'timeout';
 
 /**
  * Run `git <args>` WITHOUT blocking the event loop and hand each NUL-separated stdout field
@@ -199,7 +201,7 @@ type GitStreamOutcome = 'complete' | 'failed' | 'timeout';
  * or an early stop, `'failed'` on a spawn error or non-zero exit, `'timeout'` past the
  * deadline. Never rejects.
  */
-function streamGitFields(
+export function streamGitFields(
   args: readonly string[],
   onField: (field: string) => boolean | void,
   opts: GitSpawnOptions = {},
@@ -209,18 +211,32 @@ function streamGitFields(
     let carry = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
     let child: ReturnType<typeof spawn>;
+    let onAbort: (() => void) | undefined;
     const finish = (outcome: GitStreamOutcome): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (onAbort) opts.signal?.removeEventListener('abort', onAbort);
       if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       resolve(outcome);
     };
+    if (opts.signal?.aborted) {
+      resolve('failed');
+      return;
+    }
     try {
       child = spawn(opts.gitBinary ?? 'git', [...args], { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
       resolve('failed');
       return;
+    }
+    if (opts.signal) {
+      onAbort = () => finish('failed');
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+      if (opts.signal.aborted) {
+        finish('failed');
+        return;
+      }
     }
     timer = setTimeout(() => finish('timeout'), opts.timeoutMs ?? GIT_PROBE_TIMEOUT_MS);
     child.on('error', () => finish('failed'));

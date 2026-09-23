@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 // WI-1393208: criteriaHash is read via a SEPARATE exported function
 // (getRubricCriteriaHash) whose own internal call to getRubric is NOT routed
 // through this file's `getRubric` mock (a same-module function-to-function call
@@ -58,6 +59,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+    getRubricEvidenceIdentity: (...a: unknown[]) => getRubricEvidenceIdentity(...a),
     getRubricCriteriaHash: (...a: unknown[]) => getRubricCriteriaHash(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
   };
@@ -137,6 +139,7 @@ const ACCEPTANCE_RUBRIC = {
   rubricId: 'ar-some-plan',
   kind: 'acceptance',
   subjectPlan: 'some-plan-2026-08-17',
+  barContract: { meaningRevision: 4 },
   title: 'Acceptance: some plan',
   status: 'active',
 };
@@ -167,6 +170,11 @@ beforeEach(() => {
     return null;
   });
   getRubricPlanRevision.mockReset().mockResolvedValue(7);
+  getRubricEvidenceIdentity.mockReset().mockImplementation(async (...a: unknown[]) => ({
+    revision: await getRubricPlanRevision(...a),
+    criteriaHash: await getRubricCriteriaHash(...a),
+    meaningRevision: null,
+  }));
   // WI-1393208: default null so every pre-existing assertion in this file (which
   // predates criteriaHash and does not expect the key) is unaffected; tests below
   // override this explicitly to exercise the pinning behavior.
@@ -230,6 +238,64 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res).toMatchObject({ ok: true, created: true });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the vetted acceptance rubric meaning revision on the attestation', async () => {
+    getRubricEvidenceIdentity.mockImplementation(async (id: unknown) => ({
+      revision: id === 'ar-some-plan' ? 9 : 7,
+      criteriaHash: id === 'ar-some-plan' ? 'acceptance-hash' : null,
+      meaningRevision: id === 'ar-some-plan' ? 4 : null,
+    }));
+
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = captureImprovement.mock.calls[0]?.[0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting?.rubricMeaningRevision).toBe(4);
+  });
+
+  it('records the acceptance-BAR meaning revision on an independent grading scorecard', async () => {
+    getRubricEvidenceIdentity.mockResolvedValue({
+      revision: 7,
+      criteriaHash: 'acceptance-hash',
+      meaningRevision: 4,
+    });
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-vetting',
+        createdAt: '2026-09-23T00:00:00.000Z',
+        createdBy: 'su-reviewer',
+        rubricRef: 'meta-acceptance-rubric',
+        subject: { kind: 'rubric', ref: 'ar-some-plan' },
+        ratings: META_RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        linkedItems: [],
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          rubricMeaningRevision: 4,
+          critiquePosts: 1,
+          critics: ['su-reviewer'],
+        },
+      } as never,
+    ]);
+
+    const res = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: true, created: true });
+    const payload = captureImprovement.mock.calls[0]?.[0] as {
+      payloadExtra: { observation: Record<string, unknown> };
+    };
+    expect(payload.payloadExtra.observation.rubricMeaningRevision).toBe(4);
   });
 
   it('refuses vetting from a live non-author instead of taking the author seat', async () => {

@@ -37,6 +37,7 @@ import {
 import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
+  recordWorkspaceHostSignals,
   updateWorkspaceHostOperation,
 } from './observability-store';
 
@@ -165,6 +166,8 @@ export interface HostedConnectorEnrollmentDependencies {
   beginOperation: typeof beginWorkspaceHostOperation;
   updateOperation: typeof updateWorkspaceHostOperation;
   appendEvent: typeof appendWorkspaceHostEvent;
+  /** Publish the connector on the host's tunnel status, where the desktop surface reads it. */
+  recordSignals: typeof recordWorkspaceHostSignals;
 }
 
 async function readBoundOrganizationId(input: {
@@ -203,6 +206,7 @@ function defaultConnectorEnrollmentDependencies(): HostedConnectorEnrollmentDepe
     beginOperation: beginWorkspaceHostOperation,
     updateOperation: updateWorkspaceHostOperation,
     appendEvent: appendWorkspaceHostEvent,
+    recordSignals: recordWorkspaceHostSignals,
   };
 }
 
@@ -247,6 +251,13 @@ export async function enrollHostedWorkspaceConnector(
           `${enrollment.binding.generation} was enrolled`,
       );
     }
+    // The shape `readHostedWorkspaceConnector` (cloud-workspaces) reads: without it the desktop
+    // surface has no route label and cannot mint a viewer ticket.
+    await dependencies.recordSignals({
+      workspaceId,
+      hostId,
+      tunnelStatus: { hostedConnector: { routeLabel, transport: 'websocket', generation: registered.generation } },
+    });
     await dependencies.appendEvent({
       workspaceId,
       hostId,

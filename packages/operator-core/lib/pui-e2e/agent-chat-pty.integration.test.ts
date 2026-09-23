@@ -583,6 +583,7 @@ class PuiPane {
         LANG: process.env.LANG ?? 'en_US.UTF-8',
         PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`,
         ...(options.operatorToken ? { PUI_OPERATOR_TOKEN: options.operatorToken } : {}),
+        ...options.env,
         PAPERCUSP_TUI_OWNER: OWNER,
         // Keep this direct-PTY test out of any ambient zellij/tmux session.
         ZELLIJ: '',
