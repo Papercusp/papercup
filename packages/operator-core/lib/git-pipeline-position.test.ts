@@ -1693,6 +1693,37 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).not.toContain('STALLED');
   });
 
+  it('WI-10002316: an unknown stalled condition is not rendered as healthy', async () => {
+    const git = fakeGit({
+      pathCommit: 'unknown123456',
+      contains: {
+        HEAD: ['unknown123456'],
+        'origin/staging': ['unknown123456'],
+        'origin/main': [],
+        deployedsha0: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/unknown-stall.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap({
+            stalled: null,
+            consecutiveReds: 0,
+            fireStale: false,
+            verdictStale: false,
+            qualification: NO_QUALIFICATION,
+          }),
+      },
+    );
+
+    expect(res.gate.stalled).toBeNull();
+    expect(res.verdictUnknown.map((entry) => entry.leg)).toContain('gate.stalled');
+    expect(res.summary).toContain('STALL STATUS UNKNOWN');
+  });
+
   it('EI-18719549079738452: 0 reds + not-fast-forwarded reads as a held gate, not a silent all-clear', async () => {
     // The torn-candidate incident this guards: green-checkpoint's retriage recognizes
     // a stale red and works to auto-refire, but while that plays out the LAST
@@ -7906,6 +7937,11 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
       name: 'not-firing',
       input: { ...verdictBase, fireStale: true },
       expected: 'not-firing',
+    },
+    {
+      name: 'unknown stall condition is not a passing verdict',
+      input: { ...verdictBase, verdictUnknownLegs: ['gate.stalled'] },
+      expected: null,
     },
     {
       name: 'passing-buffered',
