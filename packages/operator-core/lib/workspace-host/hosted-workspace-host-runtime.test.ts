@@ -285,6 +285,7 @@ describe('createHostedWorkspaceHostRuntime', () => {
         heartbeat: () => {},
         roster: async () => [],
         thumbnail: async () => null,
+        start: async () => null,
       },
       createClient: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) =>
         new HostedWorkspaceConnectorClient({
