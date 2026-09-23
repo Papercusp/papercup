@@ -25,6 +25,9 @@ import {
 } from './owner-directives';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+// R-5 drives the VERB's own schema: the mandatory-reason guard is declared there,
+// not in the store, so importing the tool is what makes the guard reachable.
+const dispositionTool = (await import('./agent-tools/orders/disposition')).default;
 
 describe('owner-directive disposition + summary read-back', () => {
   let db: OrgTestDb;
@@ -107,6 +110,82 @@ describe('owner-directive disposition + summary read-back', () => {
     );
     expect(second).toMatchObject({ ok: false, error: 'already_dispositioned' });
     expect(await getOwnerDirective(id, db.adminSql)).toEqual(before);
+  });
+
+  // R-4 (turn-start-memory-two-class-2026-09-21, rev-9 bar set) grades the FIRST
+  // clause only: that no writer OTHER than an explicit disposition moves a captured
+  // directive out of the open standing state. The cases above all drive the
+  // disposition path itself, so none of them can fail for the reason this one does.
+  it('R-4: no writer other than an explicit disposition moves a captured directive out of open', async () => {
+    const id = await capture('turn-r4-other-writers', 'review the acceptance bars');
+
+    // (a) a capture RE-RUN for the same source turn.
+    await capture('turn-r4-other-writers', 'review the acceptance bars');
+    let row = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(row!)).toBe('open');
+    expect(row!.dispositionedAtMs).toBeNull();
+
+    // (b) the orientation / re-injection READS that run on every wake.
+    await listOwnerDirectives({ workspaceId, open: true, limit: 200 }, db.adminSql);
+    await getOwnerDirective(id, db.adminSql);
+    row = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(row!)).toBe('open');
+    expect(row!.dispositionedAtMs).toBeNull();
+
+    // (c) the SWEEP path. Migration 1196 (owner-directive-unstick-dispositioned-
+    // pending-captures) is the one real non-disposition WRITER against this table:
+    // it force-moves capture_status to 'open'. Its WHERE excludes unresolved rows,
+    // so against an open directive it must be a no-op.
+    await db.adminSql`
+      UPDATE harness_shared.owner_directives
+         SET capture_status = 'open',
+             capture_promoted_at = COALESCE(capture_promoted_at, dispositioned_at, now()),
+             capture_promoted_by = COALESCE(capture_promoted_by, dispositioned_by, 'migration-1196')
+       WHERE capture_status = 'pending' AND dispositioned_at IS NOT NULL
+    `;
+    row = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(row!)).toBe('open');
+    expect(row!.dispositionedAtMs).toBeNull();
+
+    // CALIBRATION — without this the three assertions above would also pass on a
+    // row that can never leave 'open' at all, which is not what the bar claims.
+    const closed = await dispositionOwnerDirective(
+      { id, status: 'done', note: 'carried out', dispositionedBy: 'su-closer' },
+      db.adminSql,
+    );
+    expect(closed.ok).toBe(true);
+    row = await getOwnerDirective(id, db.adminSql);
+    expect(ownerDirectiveState(row!)).toBe('done');
+    expect(row!.dispositionedAtMs).not.toBeNull();
+  });
+
+  // R-5 (same bar set). The mandatory-reason guard lives on the VERB
+  // (agent-tools/orders/disposition.ts: `.trim().min(4)`, plus a refine that
+  // requires note on the single form) — NOT on the store. A store-level
+  // dispositionOwnerDirective call bypasses it entirely, so this drives the
+  // verb's own schema object and then proves the row was never written.
+  it('R-5: a close with an absent, empty, or whitespace-only reason is refused and writes nothing', async () => {
+    const id = await capture('turn-r5-reason-guard', 'explain the routing change');
+    const before = await getOwnerDirective(id, db.adminSql);
+
+    for (const note of [undefined, '', '    ']) {
+      const parsed = dispositionTool.args.safeParse({ id, status: 'declined', note });
+      expect(parsed.success, `reason ${JSON.stringify(note)} must be refused`).toBe(false);
+      // A refusal that wrote first and reported an error afterwards is the
+      // regression that matters, so read the row back independently each time.
+      expect(await getOwnerDirective(id, db.adminSql)).toEqual(before);
+    }
+
+    // CALIBRATION — a real reason clears the SAME guard and does close the row.
+    // Without it, every assertion above would also hold for a guard that refuses
+    // everything, which would make this test vacuous.
+    const reason = 'declined: superseded by the successor plan';
+    expect(dispositionTool.args.safeParse({ id, status: 'declined', note: reason }).success).toBe(true);
+    await dispositionOwnerDirective(
+      { id, status: 'declined', note: reason, dispositionedBy: 'su-closer' },
+      db.adminSql,
+    );
+    expect(ownerDirectiveState((await getOwnerDirective(id, db.adminSql))!)).toBe('declined');
   });
 
   it('P-003: a long directive persists its summary with author and time; the verbatim is untouched', async () => {
