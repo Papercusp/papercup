@@ -75,8 +75,9 @@ vi.mock('../../../identity/keychain', () => ({
 }));
 
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
-import { WORKSPACE_ID, HIVE_SLUG, setupHivePeerSchema, seedHive } from './_hive-substrate-rig';
+import type { FreshPgDb } from '../../../../test/_pg-helpers';
+import { createOrgTestDb } from '../../../../test/_org-test-db';
+import { WORKSPACE_ID, HIVE_SLUG, seedHive } from './_hive-substrate-rig';
 import { resolveHiveEpochCrypto } from '../hive-epoch-serving';
 import {
   buildEpochEncryptCapability,
@@ -120,88 +121,6 @@ afterEach(async () => {
   mem.clear();
 });
 
-/** Minimal, prod-faithful DDL for the three content/key tables this test writes —
- *  exactly the columns the projections + wrapped-key store touch, no RLS / triggers
- *  / generated cols (the same superset-only stance as test/_work-items-schema.ts).
- *  The hive_* tables (hives / pot_members / pot_settings) come from the rig's
- *  setupHivePeerSchema (the real migrations). */
-const CONTENT_AND_KEY_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.pot_epoch_keys (
-    workspace_id         text NOT NULL,
-    harness_slug         text NOT NULL,
-    epoch                integer NOT NULL,
-    member_device_pubkey text NOT NULL,
-    wrapped_key          text NOT NULL,
-    author_pubkey        text,
-    origin               text NOT NULL DEFAULT 'local',
-    fed_ts               bigint,
-    fed_hlc              text,
-    created_at           bigint,
-    updated_at           bigint,
-    PRIMARY KEY (workspace_id, harness_slug, epoch, member_device_pubkey)
-  );
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
-    workspace_id   text NOT NULL,
-    harness_slug   text NOT NULL,
-    plan_slug      text NOT NULL,
-    content        text,
-    content_hash   text,
-    version        bigint DEFAULT 0,
-    title          text,
-    status         text,
-    created        text,
-    updated        text,
-    owner          text,
-    initiative     text,
-    template       text,
-    template_data  jsonb,
-    promote_policy jsonb,
-    supersedes     text[] DEFAULT '{}'::text[],
-    superseded_by  text,
-    archived       boolean DEFAULT false,
-    is_legacy      boolean DEFAULT false,
-    author_pubkey  text,
-    owner_author_pubkey text,
-    origin         text DEFAULT 'local',
-    fed_ts         bigint,
-    fed_hlc        text,
-    PRIMARY KEY (workspace_id, harness_slug, plan_slug)
-  );
-  CREATE TABLE IF NOT EXISTS harness_shared.work_items (
-    -- WI-38326: FEATURE_COLS projects these five claim-spec filter columns; a fixture
-    -- missing them fails that projection with "column does not exist" (D-014 debt).
-    tags jsonb,
-    source_plan_slug text,
-    source_plan_item_ids text[],
-    redundancy integer,
-    expected_cost_cents bigint,
-    harness_slug  text NOT NULL,
-    feature_id    text NOT NULL,
-    item_kind     text,
-    title         text,
-    summary       text,
-    status        text,
-    taken_by      text,
-    taken_at      timestamptz,
-    payload       jsonb,
-    author_pubkey text,
-    origin        text DEFAULT 'local',
-    fed_ts        bigint,
-    fed_hlc       text,
-    workspace_id  text,
-    created_ts    bigint,
-    updated_ts    bigint,
-    ts            bigint,
-    -- engineer-issues projection writeToPg INSERTs these (P-010 work_items unification);
-    -- the minimal DDL must carry them or the epoch-decrypted work_item INSERT throws
-    -- (swallowed by the drain's best-effort try/catch → the row silently never lands).
-    terminal_owner          text,
-    terminal_completion_ref text,
-    admission text, admitted_at timestamptz, admitted_by text,
-    PRIMARY KEY (harness_slug, feature_id)
-  );
-`;
-
 interface TestDevice {
   keychainId: string;
   pubkeyBase64: string;
@@ -215,12 +134,19 @@ async function makeDevice(keychainId: string): Promise<TestDevice> {
   return { keychainId, pubkeyBase64 };
 }
 
-async function freshDb(name: string): Promise<FreshPgDb> {
-  const db = await createFreshPgDb(name);
+/**
+ * WI-10002487 — each peer is a clone of the FULLY-MIGRATED org template (real head
+ * schema, near-instant `CREATE DATABASE … TEMPLATE`), not a hand-rolled DDL subset.
+ * The previous inline CREATE TABLEs for harness_plans / work_items silently fell behind
+ * the migrations (missing harness_plans.input_schema from mig 714 and
+ * work_items.terminal_reason), so every decrypted re-apply threw "column … does not
+ * exist" — and the drain swallowed it, so the test reported a bare "0 of 2" instead.
+ * A clone of the real schema cannot drift from what the projections write.
+ */
+async function freshDb(_name: string): Promise<Pick<FreshPgDb, 'sql' | 'cleanup'>> {
+  const db = await createOrgTestDb();
   cleanups.push(() => db.cleanup());
-  await setupHivePeerSchema(db.sql); // hives / pot_members / pot_settings (real migrations)
-  await db.sql.unsafe(CONTENT_AND_KEY_DDL); // + the three tables this test writes
-  return db;
+  return { sql: db.adminSql, cleanup: db.cleanup };
 }
 
 const PLAN_SLUG = 'lane-c-federation-demo';
@@ -398,7 +324,17 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
           : tag === 'engineer-issues'
             ? (issuesProj as TableProjection<unknown>)
             : null;
-      const joinerGate = buildEpochDecryptGate({ crypto, resolveKey: joinerResolveKey, potId: HIVE_SLUG, pending });
+      // WI-10002487: the gate's defer / decrypt-fail / applied verdicts are otherwise silent,
+      // so a drain that re-applies 0 ops cannot say WHICH of them it hit. Carry the trace
+      // into the drain assertion's message.
+      const gateTrace: string[] = [];
+      const joinerGate = buildEpochDecryptGate({
+        crypto,
+        resolveKey: joinerResolveKey,
+        potId: HIVE_SLUG,
+        pending,
+        onTrace: (phase, detail) => gateTrace.push(`${phase}: ${detail}`),
+      });
       const joinerApply = joinerGate((op) => applyOpVia(contentLookup, op, { ownLogKeyHex: JOINER_LOG_HEX }));
 
       // ── 3a. NEGATIVE CONTROL (the regression state): content arrives BEFORE the
@@ -453,8 +389,19 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
 
       // ── 6. DRAIN: re-run the deferred content through the SAME gate — the joiner can
       //       now unwrap epoch-1 → decrypt → the real projections land the plaintext rows. ──
-      const reapplied = await drainQueuedEpochContent({ pending, drainQueue, applyImpl: joinerApply });
-      expect(reapplied, 'both deferred content ops re-applied + converged').toBe(2);
+      const reapplyErrors: string[] = [];
+      const reapplied = await drainQueuedEpochContent({
+        pending,
+        drainQueue,
+        applyImpl: joinerApply,
+        onReapplyError: (op, err) =>
+          reapplyErrors.push(`${op.table}/${op.hbKey}: ${err instanceof Error ? err.message : String(err)}`),
+      });
+      expect(
+        reapplied,
+        `both deferred content ops re-applied + converged; reapplyErrors=${JSON.stringify(reapplyErrors)} ` +
+          `pendingAfter=${pending.size()} gate trace (last 8): ${gateTrace.slice(-8).join(' | ')}`,
+      ).toBe(2);
       expect(pending.size(), 'the defer buffer drained — no silent loss').toBe(0);
 
       // ── ACCEPTANCE: the joiner's PG holds the DECRYPTED plan + work_item. ──

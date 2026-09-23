@@ -425,6 +425,13 @@ export async function drainQueuedEpochContent(deps: {
   pending: PendingEpochContent;
   drainQueue: DrainedEpoch[];
   applyImpl: (op: OpEnvelope) => Promise<boolean>;
+  /**
+   * WI-10002487 — a re-apply that THROWS is caught so it cannot abort the merge pass,
+   * but it must never be SILENT: the merge cursor already advanced past this op when it
+   * deferred, so nothing re-reads it and a swallowed throw is unrecoverable content loss
+   * that looks exactly like a successful drain. Defaults to a console.warn naming the op.
+   */
+  onReapplyError?: (op: OpEnvelope, err: unknown) => void;
 }): Promise<number> {
   if (deps.drainQueue.length === 0) return 0;
   // Take + clear: a later pass re-queues on the next key apply. Snapshot so a re-apply
@@ -435,8 +442,22 @@ export async function drainQueuedEpochContent(deps: {
     for (const deferred of deps.pending.drainEpoch(potHomeSlug, epoch)) {
       try {
         if (await deps.applyImpl(deferred.op)) reapplied++;
-      } catch {
-        // best-effort — a re-apply failure must not abort the merge pass.
+      } catch (err) {
+        // best-effort — a re-apply failure must not abort the merge pass — but it is
+        // reported, never swallowed (see onReapplyError).
+        try {
+          if (deps.onReapplyError) deps.onReapplyError(deferred.op, err);
+          else
+            console.warn(
+              `[hive-epoch-op-gate] deferred epoch-content re-apply FAILED for ` +
+                `${deferred.op.table ?? '?'}/${(deferred.op.hbKey ?? '?').slice(0, 48)} ` +
+                `(hive=${potHomeSlug} epoch=${epoch}); the merge cursor is already past this op, ` +
+                `so it will not re-apply by itself:`,
+              err instanceof Error ? err.message : String(err),
+            );
+        } catch {
+          // reporting must never abort the drain
+        }
       }
     }
   }

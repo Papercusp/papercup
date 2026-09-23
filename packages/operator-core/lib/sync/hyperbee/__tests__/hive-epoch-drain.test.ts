@@ -126,7 +126,7 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
     expect(applyImpl).not.toHaveBeenCalled();
   });
 
-  it('TEETH (best-effort): a re-apply throw is swallowed and does not abort the rest of the drain', async () => {
+  it('TEETH (best-effort): a re-apply throw does not abort the rest of the drain, and is REPORTED with its op', async () => {
     const pending = new PendingEpochContent();
     pending.defer(contentOp('queue', 'A', 5, '5:1'), 'hive-x', 5);
     pending.defer(contentOp('queue', 'B', 5, '5:2'), 'hive-x', 5);
@@ -138,14 +138,40 @@ describe('drainQueuedEpochContent — the re-key drain hook', () => {
       applied.push(o);
       return true;
     };
+    const reported: Array<{ hbKey: string | undefined; message: string }> = [];
     const n = await drainQueuedEpochContent({
       pending,
       drainQueue: [{ potHomeSlug: 'hive-x', epoch: 5 }],
       applyImpl,
+      onReapplyError: (op, err) => reported.push({ hbKey: op.hbKey, message: (err as Error).message }),
     });
     expect(calls).toBe(2); // both attempted — the first threw but didn't abort
     expect(applied.map((o) => o.hbKey)).toEqual(['B']); // the second still applied
     expect(n).toBe(1); // only the successful one counted
+    // WI-10002487: the cursor is already past a deferred op, so a swallowed throw is
+    // silent, unrecoverable loss. The failure must surface, naming the op that was lost.
+    expect(reported).toEqual([{ hbKey: 'A', message: 'transient apply error' }]);
+  });
+
+  it('WI-10002487: without an onReapplyError hook a re-apply throw is still reported (console.warn), never silent', async () => {
+    const pending = new PendingEpochContent();
+    pending.defer(contentOp('queue', 'A', 5, '5:1'), 'hive-x', 5);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const n = await drainQueuedEpochContent({
+        pending,
+        drainQueue: [{ potHomeSlug: 'hive-x', epoch: 5 }],
+        applyImpl: async () => {
+          throw new Error('projection write failed');
+        },
+      });
+      expect(n).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('queue/A');
+      expect(String(warn.mock.calls[0]?.[1])).toContain('projection write failed');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('multiple queued (hive, epoch) buckets all drain', async () => {
