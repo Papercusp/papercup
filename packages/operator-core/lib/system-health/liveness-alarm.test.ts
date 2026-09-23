@@ -19,6 +19,7 @@ import {
   type BeesLivenessContext,
   type FlapState,
   type FlapMutationResult,
+  GIT_SYNC_MISSED_INTERVALS_ALARM,
 } from './liveness-alarm';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';

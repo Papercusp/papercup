@@ -66,6 +66,64 @@ WIRE_BYTES       full=1,599,477  compact=649,761  savedByCompact=949,716   (-59.
 GUIDANCE_BYTES   full=334,797    summary=81,030   savedBySummary=253,767   (-75.8%)
 ```
 
+### ⚠ Those are BYTES. The context you actually save is smaller.
+
+A byte ratio is not a context saving. The provider bills **tokens**, and a tokenizer does
+not compress English prose and JSON punctuation at the same rate — compacting a definition
+strips proportionally more bytes than it strips tokens. So a byte percentage is always the
+more flattering number, and it is only ever an **UPPER BOUND** on what is actually saved.
+
+Measured on the 63 definitions that actually ship (`buildShippingSeedCatalog`), counted
+with the provider's own tokenizer:
+
+```
+DEFINITION_BYTES  full=369,616  compact=100,418  savedByCompact=269,198   (-72.8%)
+DEFINITION_TOKENS full=109,945  compact=38,329   savedByCompact=71,616    (-65.1%) provenance=measured
+```
+
+**65.1%, not 72.8%, is the realised saving on this subject** — and an independent
+tokenizer (cl100k) put it at 70.3%, also below the byte figure. Quote the byte number as a
+ceiling or not at all.
+
+⚠ **Measuring this is harder than it looks, and the obvious method is wrong.** The local
+gateway's `count_tokens` silently collapses on large tool payloads — 148,346 B came back
+as 1,166 tokens, HTTP 200 and well-formed — which inverts the sign of the very comparison
+above (filed as WI-10002467). The figures here are counted **one tool per request**, with
+the per-request tool overhead measured by regression (496.0 tokens/request) and
+subtracted; that summation was then validated against a known-good whole count to 0.00%
+error. If you re-measure, characterise the instrument before trusting it.
+
+### ⚠ Part of that saving is a NET LOSS at N=1 — the limit travels with the figure
+
+Some of the compact byte saving comes from `$defs`/`$ref` factoring: a sub-schema repeated
+N times is sent ONCE and pointed at. **That trade only pays from `N>1`.** At `N=1` the
+`$ref` buys nothing and the `$defs` wrapper is pure overhead, so factoring a sub-schema
+used once is strictly WORSE than inlining it:
+
+```
+DEFS_N1_BYTES  refs=1  inlined=800   referenced=855  addedByFactoring=55
+DEFS_N2_BYTES  refs=2  inlined=1526  referenced=941  savedByFactoring=585
+```
+
+At one reference that is **-6.9% of bytes and -2.8% of tokens — a net loss.** It turns
+positive at two (+38.3% bytes, +16.2% tokens) and keeps climbing: +62.6% at four, +75.2%
+at eight, +81.5% at sixteen. Measured 2026-09-22 over two semantically identical schemas in
+`packages/operator-core/lib/agent-tools/provider-ref-expansion.test.ts`, which also
+establishes that the provider does NOT re-expand the refs before the model sees them
+(marginal cost 30.0 tokens/duplicate referenced against 207.0 inlined, ratio 0.145) — so
+the saving is realised rather than merely advertised. The two byte lines above are
+recomputable offline from that file's own builders; the token halves came from the same
+sweep through the provider's tokenizer.
+
+Quote the headline saving without this limit and the next reader factors a single-use
+sub-schema and makes the artifact **bigger**. ⚠ The converse misreading costs just as much:
+the 2026-09-22 budget repair that took the derived seed from 100,189 B (over) to 99,945 B
+was itself a `$defs` factoring — of `specAdequacyCompletionSpec` in
+`packages/operator-core/lib/agent-tools/work_items/complete.ts`, which was being inlined
+TWICE. **That is the N=2 case, the paying side of this very curve, not an exception to it.**
+The N=1 limit is what tells those two situations apart; it is not a blanket warning against
+`$defs`.
+
 ⚠ **COMPACT does not ship zero prose.** A partial-guidance projection (keep `when`,
 drop `notWhen`/`chaining`) was built and measured, and it saves **2,784 B — 0.8%**.
 That negative result is recorded as D-011 so it is not re-proposed: the prose saving

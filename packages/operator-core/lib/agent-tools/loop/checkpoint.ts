@@ -211,7 +211,7 @@ function priorChecksOverCapCount(priorNote: string | null | undefined): number {
  * peer's seed re-cut had quiesced bg-host for the whole window).
  */
 type LoopNextWakeInput =
-  | Pick<
+  | (Pick<
       LoopStatus,
       | 'active'
       | 'armedAt'
@@ -222,9 +222,33 @@ type LoopNextWakeInput =
       | 'nextFireAt'
       | 'parked'
       | 'expectedFiresSinceArm'
-    >
+    > &
+      // Optional so hand-built inputs (and older fixtures) stay valid; getLoopStatus
+      // always populates both from the loop's newest wake-delivery row.
+      Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>>)
   | null
   | undefined;
+
+/**
+ * P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: did this
+ * loop's most recent fire PARK undelivered on a path that will park again?
+ *
+ * Measured: a cold loop re-armed and was told `rewakeGuaranteed:true` while its previous
+ * fire had parked with "eligible cold loop wake has no injectable psu host"; the next
+ * fire parked the same way and the session went dark until a peer woke it by hand. An
+ * active, in-bounds loop is not a guarantee when its delivery path is the thing that is
+ * broken.
+ *
+ * Two park shapes are EXCLUDED because they already carry a durable retry on a path that
+ * demonstrably works: a psu host that accepted the delivery but has not yet proven turn
+ * start, and a quota-recovery operation retry. Their reasons end "retry remains durable".
+ */
+export function lastLoopFireParked(
+  loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
+): boolean {
+  if (loop?.lastWakeStatus !== 'parked') return false;
+  return !/retry remains durable/i.test(loop.lastWakeError ?? '');
+}
 
 export type LoopNextWakeVerdict =
   | { guaranteed: true; reason: null }
@@ -269,6 +293,10 @@ export function classifyLoopNextWake(
       return { guaranteed: false, reason: 'fire-starved' };
     }
   }
+
+  // P-013 / EI-24023838400909760: the last fire parked undelivered — the next one on the
+  // same delivery path is expected to park too, so this loop does not guarantee a wake.
+  if (lastLoopFireParked(loop)) return { guaranteed: false, reason: 'last-fire-parked' };
 
   return { guaranteed: true, reason: null };
 }

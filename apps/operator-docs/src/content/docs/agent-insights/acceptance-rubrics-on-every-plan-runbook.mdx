@@ -20,11 +20,14 @@ documents:
   - "packages/operator-core/lib/agent-tools/plans/acceptance-drain-sweep.ts"
   - "packages/operator-core/lib/agent-obligation-providers.ts"
   - "packages/operator-core/lib/acceptance-seat-succession.ts"
+  - "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
+  - "packages/operator-core/lib/agent-tools/plans/bind-vetting-advisory.ts"
 plans:
   - "acceptance-rubrics-on-every-plan-2026-08-11"
   - "consult-min-max-and-rubric-vetting-2026-08-17"
   - "plan-completion-audit-and-acceptance-verdict-2026-08-13"
   - "ship-main-greening-program-2026-09-15"
+  - "review-system-rework-reduction-2026-09-23"
 ---
 
 ## The completion contract
@@ -117,6 +120,23 @@ rubrics:propose {
 ```
 
 Use the matching plan class (`plan-class-feature-ship`, `plan-class-bugfix`, `plan-class-migration`, or `plan-class-investigation`). Vet the current revision with a `consult:get_feedback` critique and emit the meta-scorecard. Any later rubric edit invalidates both the attestation and independent grading because the gate pins scorecards to the plan revision; batch intended edits before requesting grading.
+
+For a started BAR meaning change, use `rubrics:amend { dryRun:true, ... }` and follow the authenticated outside-lineage approval path. The reviewer posts the exact approval JSON as a `work_items:comment` on any existing thread they can write to, preferably an item they already hold. The `thread-post:<id>` lookup is workspace-wide by local post id, not tied to the requester's thread, so no separate counter-sign work-item is needed. See `agent-insights/unified-requirement-contract` for the full amendment contract.
+
+### The order: amend → vet → attest → bind → cards → grade
+
+Do these steps in exactly this order. A vetting critique should cost a text edit, not a proof cycle:
+
+1. **amend** — get the BAR text complete first: METHOD, falsifier, structured check, `requiredTestLayers`. Every one of these is a `rubrics:amend`.
+2. **vet** — `consult:get_feedback { policy:'rubric-vetting' }` on the current revision. Fold every critique into ONE further amendment.
+3. **attest** — `scorecards:emit` against `meta-acceptance-rubric` for that final revision.
+4. **bind** — only now bind proof with `plans:bind-spec-evidence`.
+5. **cards** — run `plans:evaluate-spec-test-adequacy` and emit the adequacy cards.
+6. **grade** — independent grading, then the author's verdict (section 4).
+
+Why this order: an amendment re-revisions the clauses it touches. Proof, adequacy cards and grading bound to the old revision then no longer cover those clauses, and must be redone. Vetting is where amendments come from. So vetting after proof reliably pays for proof twice. The audit behind `review-system-rework-reduction-2026-09-23` measured a whole "vetting after proof" re-proof cycle on one plan.
+
+The gate follows this order. The acceptance gate's `NEXT REPAIR` line ranks contract-text codes first, then `bar_snapshot_vetting_missing` / `bar_snapshot_vetting_stale`, then proof, adequacy and grading codes (`ACCEPTANCE_BAR_REPAIR_ORDER`). `plans:bind-spec-evidence` still writes BAR proof bound to an unvetted revision, but its result carries an `acceptance_rubric_unvetted_before_proof` advisory. Treat that advisory as the cue to stop binding and vet first. Binding early stays legal; it is just the expensive order.
 
 ## 4. Independent grading, then the implementer's verdict
 

@@ -77,6 +77,8 @@ A Verification-only amendment preserves the BAR identity/hash while advancing th
 
 A change to the success condition, falsifier, scope, evidence plane, required proof depth, mandatory role or passing thresholds changes the BAR. Use the existing recorded amendment path: preview with `rubrics:amend { dryRun:true, ... }`, obtain the authenticated approval required by that path, then apply its exact revision-bound transaction. The server updates the existing projections atomically. Re-proposing the rubric, editing template data or revising a method cannot bypass these guards.
 
+For a started BAR meaning change, share the preview approval JSON with the outside-lineage reviewer. The reviewer must post the exact receipt as a `work_items:comment` on any existing thread they can write to, preferably a work-item they already hold, then return that post id. `thread-post:<id>` is resolved by workspace and local post id, not by the requester's thread; do not create a separate counter-sign work-item just for this comment.
+
 Whole-criterion-set replacement remains a whole replacement: first read the current rubric and retain every criterion and its procedure unless its removal is explicit and authorized. Do not use a partial resubmission to erase outcomes.
 
 ## Validation, implementation and evidence stay distinct
@@ -95,9 +97,9 @@ The snapshot's completeness and applicability are part of the result. An unavail
 
 **Crash recovery.** If the promise is that acknowledged updates survive a crash, interrupt the actual application after acknowledgment, restart it using its normal recovery path, and compare recovered state. A helper's serialization test alone does not demonstrate recovery. A better crash-injection method can preserve the BAR; permitting loss of acknowledged writes changes it.
 
-**A narrow-screen interaction.** If the promise includes a 390-pixel viewport, drive the real app at that measured width. Open the requirement, inspect its sections, follow a work reference, and close the popup without losing the parent. Check keyboard access and content overflow. A screenshot of an unopened panel or a wide viewport cannot satisfy that narrower promise.
+**A narrow-screen (mobile) interaction.** If the promise includes a mobile viewport — 390 pixels wide — drive the real app at that measured width. Open the requirement, inspect its sections, follow a work reference, and close the popup without losing the parent. Check keyboard access and content overflow. A screenshot of an unopened panel or a wide viewport cannot satisfy that narrower promise.
 
-For this integration, the actual Tauri journey checked 1280×800 and 390×844, real evidence history, Enter/Space expansion, scoped work-item popups and returning to the plan with Escape. It found and fixed two navigation defects that rendered component tests alone had not caught. The durable evidence is on `unified-requirement-contract-2026-09-05#P-005` / `WI-2146792`.
+For this integration, the actual Tauri journey checked 1280×800 and 390×844 (the mobile viewport), real evidence history, Enter/Space expansion, scoped work-item popups and returning to the plan with Escape. It found and fixed two navigation defects that rendered component tests alone had not caught. The durable evidence is on `unified-requirement-contract-2026-09-05#P-005` / `WI-2146792`.
 
 ## Independent judgment and final release
 

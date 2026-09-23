@@ -460,6 +460,14 @@ export function formatD026QuiescedSummary(wf: {
  * `snapshotAgeMs` is the age of `lastSystemHealth` at evaluation (null = the
  * snapshot was computed fresh this tick, so staleness is not a signal).
  */
+/**
+ * P-009 (ex-P-010, EI-22489500008234936): git-sync is fleet-blocking. While it is starved, nothing
+ * any agent writes reaches a commit. The generic dead-routine alarm fires only once a routine is
+ * 10 to 20 minutes overdue. This one fires on the cadence-relative measure
+ * (deriveGitSyncFreshness.missed_intervals) once it EXCEEDS this count.
+ */
+export const GIT_SYNC_MISSED_INTERVALS_ALARM = 3;
+
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
