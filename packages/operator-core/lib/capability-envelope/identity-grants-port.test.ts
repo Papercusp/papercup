@@ -236,6 +236,22 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       expect(read).toHaveBeenCalledTimes(2);
     });
 
+    it('audits the exact adv_sessions xmin returned with the lazily loaded record', async () => {
+      const f = fixture();
+      const state = {
+        ...f.state,
+        identityLaunchRecordVersion: { sessionId: 'audit-row-id-test', rowVersion: 'header-xmin' },
+      };
+      const read = vi.fn(async () => f.policy);
+      const { handle, load } = lazyFor(f.record, 'loaded-xmin');
+
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({
+        decision: 'allow',
+        serverAudit: { identityLaunchRecord: { advSessionId: 'audit-row-id-test', xmin: 'loaded-xmin' } },
+      });
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
     it('derives the same cache key from the header as from the full record', async () => {
       const f = fixture();
       const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-key-test', rowVersion: '62' } };
