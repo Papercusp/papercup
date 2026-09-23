@@ -39,7 +39,8 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
-  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream' | 'approval',
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream' | 'approval'
+    | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
   successText: 'PUI structured engine replied',
   // Approval fixture (mode:'approval'). TWO isolated requests, raised at once,
   // because both approval clauses are about ISOLATION: answering one must not
@@ -158,6 +159,25 @@ vi.mock('../su-session-claude-engine', async (original) => {
             if (scriptedEngine.mode === 'failure') {
               output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
                 is_error: true, errors: ['PUI-E2E engine failed visibly'] });
+              continue;
+            }
+            // P-009 terminal failures AFTER durable acceptance. Death and stream
+            // loss end the native stream mid-turn (thrown vs clean EOF); expired
+            // auth and a rate limit are the SDK's own form for an API refusal: a
+            // `success` result with is_error and the API error text as `result`.
+            if (scriptedEngine.mode === 'engine-death' || scriptedEngine.mode === 'stream-loss') {
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'text', text: 'PUI partial reply before the failure' },
+              ] } });
+              if (scriptedEngine.mode === 'engine-death') output.destroy(new Error('PUI-E2E engine process died mid-turn'));
+              else output.end();
+              return;
+            }
+            if (scriptedEngine.mode === 'auth-expired' || scriptedEngine.mode === 'rate-limit') {
+              output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: true,
+                result: scriptedEngine.mode === 'auth-expired'
+                  ? 'API Error: 401 authentication_error: PUI-E2E OAuth token has expired · Please run /login'
+                  : 'API Error: 429 rate_limit_error: PUI-E2E request would exceed the rate limit' });
               continue;
             }
             if (scriptedEngine.mode === 'approval') {
@@ -2139,6 +2159,116 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
   }, 300_000);
 });
 
+describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clauses)', () => {
+  // AUTO-BAR-R-06-P-009 — "Every terminal session failure exposes a usable
+  // recovery action in PUI within the declared startup deadline." Probe: inject
+  // engine death, startup failure, expired auth and stream loss; inspect state
+  // transitions and composer access by 15 seconds. Falsifier: "A dead executor
+  // or failed stream leaves an indefinite Running/input-locked state."
+  const RECOVERY_DEADLINE_MS = 15_000;
+  const faults = [
+    { mode: 'engine-death', cause: /PUI-E2E engine process died mid-turn/ },
+    { mode: 'stream-loss', cause: /event stream closed unexpectedly/ },
+    { mode: 'auth-expired', cause: /OAuth token has expired/ },
+    { mode: 'rate-limit', cause: /rate_limit_error/ },
+  ] as const;
+  test.for(faults)('AUTO-BAR-R-06-P-009: $mode after acceptance leaves a usable composer within 15s', { timeout: 180_000 }, async ({ mode, cause }, { onTestFailed }) => {
+    const prompt = `P9 ${mode} ${randomUUID().slice(0, 8)}`;
+    const followUp = `P9 ${mode} follow-up ${randomUUID().slice(0, 8)}`;
+    let stage = 'compose';
+    let recoveredAfterMs: number | undefined;
+    const pane = new PuiPane(bin, operatorPort, home);
+    onTestFailed(() => console.info('PUI_R06_RECOVERY_FAILURE', JSON.stringify({
+      mode, stage, recoveredAfterMs, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await openComposer(pane);
+      scriptedEngine.mode = mode;
+      pane.write(prompt);
+      pane.enter();
+      // t0 is durable acceptance: the engine has the exact prompt.
+      stage = 'accepted';
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([prompt]), { timeout: 60_000, interval: 50 });
+      const acceptedAt = Date.now();
+
+      stage = 'recovery-deadline';
+      await vi.waitFor(() => {
+        const frame = pane.screen();
+        expect(frame).toMatch(cause);
+        expect(frame).toContain('Message — Enter send');
+        expect(frame).not.toContain('Sending — awaiting acceptance');
+      }, { timeout: RECOVERY_DEADLINE_MS, interval: 100 });
+      recoveredAfterMs = Date.now() - acceptedAt;
+      expect(recoveredAfterMs).toBeLessThanOrEqual(RECOVERY_DEADLINE_MS);
+
+      // The recovery action is usable, not merely rendered: a new message is
+      // accepted and executed exactly once, and the failed prompt is never
+      // dispatched again (no automatic re-execution of an accepted turn).
+      stage = 'use-recovery';
+      scriptedEngine.mode = 'success';
+      pane.write(followUp);
+      await pane.waitFor(followUp);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([prompt, followUp]), { timeout: 30_000 });
+      const saved = await waitForSavedTurn(followUp);
+      expect(saved.transcript.filter((turn) => turn.role === 'user' && turn.content === prompt)).toHaveLength(1);
+      console.info('PUI_R06_RECOVERY_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, mode, recoveredAfterMs, deadlineMs: RECOVERY_DEADLINE_MS,
+        chatId: saved.id, requests: scriptedEngine.requests, frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  // The probe's fourth fault. Nothing was accepted, so the clock starts at
+  // Enter and the recovery action is the retained draft itself.
+  test('AUTO-BAR-R-06-P-009: startup failure leaves the exact draft retryable within 15s', async ({ onTestFailed }) => {
+    const prompt = `P9 startup-exit ${randomUUID().slice(0, 8)}`;
+    let stage = 'compose';
+    let recoveredAfterMs: number | undefined;
+    scriptedEngine.mode = 'startup-exit';
+    const pane = new PuiPane(bin, operatorPort, home);
+    onTestFailed(() => console.info('PUI_R06_RECOVERY_FAILURE', JSON.stringify({
+      mode: 'startup-exit', stage, recoveredAfterMs, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      await pane.waitFor(prompt);
+      const sentAt = Date.now();
+      pane.enter();
+
+      stage = 'recovery-deadline';
+      await vi.waitFor(() => {
+        const frame = pane.screen();
+        expect(frame).toMatch(/PUI-E2E engine exited during initialization|event stream closed unexpectedly/);
+        expect(frame).toContain('Message not accepted — draft retained');
+        expect(frame).toContain(`> ${prompt}`);
+        expect(frame).not.toContain('Sending — awaiting acceptance');
+      }, { timeout: RECOVERY_DEADLINE_MS, interval: 100 });
+      recoveredAfterMs = Date.now() - sentAt;
+      expect(recoveredAfterMs).toBeLessThanOrEqual(RECOVERY_DEADLINE_MS);
+      expect(scriptedEngine.requests).toEqual([]);
+
+      stage = 'retry';
+      scriptedEngine.mode = 'success';
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      const saved = await waitForSavedTurn(prompt);
+      expect(saved.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      console.info('PUI_R06_RECOVERY_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, mode: 'startup-exit', recoveredAfterMs, deadlineMs: RECOVERY_DEADLINE_MS,
+        chatId: saved.id, requests: scriptedEngine.requests, frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 180_000);
+});
+
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
   test('cleanup reports its own failure without replacing an earlier semantic failure', async () => {
     const primary = new Error('same-native identity mismatch');
@@ -2663,8 +2793,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop(); }
   });
 
+  // AUTO-BAR-R-02-P-009 — "Recovery reconciles an uncertain accepted turn
+  // without automatically dispatching another execution." Falsifier: "Losing
+  // the acceptance response produces duplicate model turns or tool execution."
   test.each(['lost-ack', 'wrong-command-ack', 'wrong-session-ack'] as const)(
-    '%s keeps the draft and retries the exact persisted command without a second execution', async (fault) => {
+    'AUTO-BAR-R-02-P-009: %s keeps the draft and replays the exact persisted command without a second model turn or tool execution', async (fault) => {
       transportFault = fault;
       const prompt = `  PUI ${fault} λ  `;
       const pane = new PuiPane(bin, operatorPort, home);
@@ -2687,6 +2820,14 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(commandReplies[1]).toEqual({ status: 202, replayed: true });
         expect(scriptedEngine.requests).toEqual([prompt]);
         expect((await persistedChats(db))[0].transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+        // Tool identity: the accepted turn's one scripted Read ran exactly once
+        // across the loss AND the replay — one start, one completion, one callId.
+        const toolEvents = scriptedEngine.events.filter(
+          (event): event is Extract<SuSessionEvent, { type: 'tool' }> => event.type === 'tool');
+        const started = toolEvents.filter((event) => event.phase === 'started');
+        expect(started.map((event) => event.name)).toEqual(['Read']);
+        expect(toolEvents.filter((event) => event.phase === 'completed').map((event) => event.callId))
+          .toEqual([started[0].callId]);
       } finally { await pane.stop(); }
     },
   );
