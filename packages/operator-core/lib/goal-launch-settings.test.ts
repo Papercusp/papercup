@@ -22,6 +22,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
+import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 
 // P-006: the budget gate reads its flag and opens its escalation through
 // DYNAMIC imports (the module keeps heavyweight deps out of the launch path's
@@ -1295,6 +1296,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         recovery: { retryOwnerIds: [], nextAction: 'none' },
       },
     };
+    const memberSource = {
+      goalHolderOwnerIds: ['su-goal'],
+      claims: [{ ...lane, ownerId: 'su-member', workItemId: 'WI-alpha-member' }],
+      fleet: { ...fleet, claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'alpha' } } } },
+    };
 
     expect(compileGoalPlanPlacement({ ...base, source: {} })).toMatchObject({
       state: 'unplaced',
@@ -1359,14 +1365,14 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(
       compileGoalPlanPlacement({
         ...base,
-        source: { claims: [lane], fleet },
+        source: memberSource,
       }),
     ).toMatchObject({ state: 'independently-led', reconciliation: { action: 'none', consistent: true } });
     expect(
       compileGoalPlanPlacement({
         ...base,
         itemStatuses: ['done', 'wip'],
-        source: { claims: [lane], fleet },
+        source: memberSource,
       }),
     ).toMatchObject({ state: 'working', reconciliation: { action: 'none', consistent: true } });
     expect(
