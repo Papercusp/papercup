@@ -51,6 +51,8 @@ export type HostedProviderDelegationConfiguration =
   | { provider: 'azure'; cloud?: AzureCloudEnvironment; source: HostedAzureCredentialSource };
 
 export interface HostedProviderDelegationOnboardingInput {
+  /** The owning organization. {@link HostedProviderDelegationManager} overwrites it from its binding. */
+  organizationId: string;
   workspaceId: string;
   connectionId: string;
   label: string;
@@ -67,6 +69,8 @@ export interface HostedProviderDelegationTemplate {
 
 export interface HostedProviderDelegationRecord {
   schemaVersion: typeof HOSTED_PROVIDER_DELEGATION_VERSION;
+  /** Absent only on records written before D-397; those never resolve GCP credentials. */
+  organizationId?: string;
   workspaceId: string;
   connectionId: string;
   label: string;
@@ -109,6 +113,40 @@ export interface HostedProviderDelegationAdapter {
 export interface HostedProviderDelegationStore {
   read(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null>;
   save(record: HostedProviderDelegationRecord, expectedGeneration?: number): Promise<void>;
+}
+
+/**
+ * The organization a manager writes delegations FOR (D-397), taken from the authenticated
+ * session and never from a request body. For GCP it also names the principal customers grant
+ * impersonation to: that organization's own Papercusp service account, never a shared one.
+ */
+export interface HostedDelegationOrganization {
+  readonly organizationId: string;
+  /** IAM member form; implementations create the account on first use. */
+  gcpTrustedPrincipal(): Promise<string>;
+}
+
+/**
+ * Stamp an onboarding input with its organization and, for GCP, the organization's own
+ * trusted principal — whatever the caller supplied for either is discarded. GCP workload
+ * identity is refused: every organization would federate as the same Papercusp subject.
+ */
+export async function bindDelegationToOrganization<
+  T extends Pick<HostedProviderDelegationOnboardingInput, 'configuration'>,
+>(input: T, organization: HostedDelegationOrganization): Promise<T & { organizationId: string }> {
+  const organizationId = requirePattern(organization.organizationId, SAFE_ID, 'organizationId');
+  const configuration = input.configuration as HostedProviderDelegationConfiguration | undefined;
+  if (configuration?.provider !== 'gcp') return { ...input, organizationId };
+  const source = configuration.source as { method?: unknown } | undefined;
+  if (source?.method !== 'service-account-impersonation') {
+    throw new Error('hosted_provider_delegation_gcp_method_not_organization_bound');
+  }
+  const trustedPrincipal = await organization.gcpTrustedPrincipal();
+  return {
+    ...input,
+    organizationId,
+    configuration: { ...configuration, source: { ...configuration.source, trustedPrincipal } },
+  };
 }
 
 export type HostedProviderDelegationSqlRunner = <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>;
@@ -420,6 +458,7 @@ export function buildHostedProviderDelegationOnboarding(
   input: HostedProviderDelegationOnboardingInput,
 ): HostedProviderDelegationOnboarding {
   assertWorkspaceHostSecretIsolation(input, 'hostedProviderDelegation.onboarding');
+  const organizationId = requirePattern(input.organizationId, SAFE_ID, 'organizationId');
   const workspaceId = requirePattern(input.workspaceId, SAFE_ID, 'workspaceId');
   const connectionId = requirePattern(input.connectionId, SAFE_ID, 'connectionId');
   const label = requireString(input.label, 'label');
@@ -438,6 +477,7 @@ export function buildHostedProviderDelegationOnboarding(
     template,
     record: {
       schemaVersion: HOSTED_PROVIDER_DELEGATION_VERSION,
+      organizationId,
       workspaceId,
       connectionId,
       label,
@@ -474,11 +514,15 @@ export class HostedProviderDelegationManager {
   constructor(
     private readonly store: HostedProviderDelegationStore,
     private readonly adapters: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>,
+    /** Every delegation this manager writes or reads belongs to this organization (D-397). */
+    private readonly organization: HostedDelegationOrganization,
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
   async onboard(input: HostedProviderDelegationOnboardingInput): Promise<HostedProviderDelegationOnboarding> {
-    const onboarding = buildHostedProviderDelegationOnboarding(input);
+    const onboarding = buildHostedProviderDelegationOnboarding(
+      await bindDelegationToOrganization(input, this.organization),
+    );
     await this.store.save(onboarding.record);
     return onboarding;
   }
@@ -531,12 +575,12 @@ export class HostedProviderDelegationManager {
   async rotate(
     workspaceId: string,
     connectionId: string,
-    next: Omit<HostedProviderDelegationOnboardingInput, 'workspaceId' | 'connectionId' | 'generation'>,
+    next: Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'workspaceId' | 'connectionId' | 'generation'>,
   ): Promise<HostedProviderDelegationRecord> {
     const current = await this.requireRecord(workspaceId, connectionId);
     if (current.status !== 'verified') throw new Error('hosted_provider_delegation_rotation_requires_verified_current');
     const onboarding = buildHostedProviderDelegationOnboarding({
-      ...next,
+      ...(await bindDelegationToOrganization(next, this.organization)),
       workspaceId,
       connectionId,
       generation: current.generation + 1,
@@ -582,7 +626,10 @@ export class HostedProviderDelegationManager {
 
   private async requireRecord(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord> {
     const record = await this.store.read(workspaceId, connectionId);
-    if (!record) throw new Error('hosted_provider_delegation_not_found');
+    // Another organization's delegation is indistinguishable from a missing one.
+    if (!record || record.organizationId !== this.organization.organizationId) {
+      throw new Error('hosted_provider_delegation_not_found');
+    }
     return record;
   }
 }

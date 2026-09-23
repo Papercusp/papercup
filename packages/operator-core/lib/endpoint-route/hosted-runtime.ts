@@ -43,7 +43,7 @@ import {
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
-import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { gcpDelegationOrganization, resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
@@ -355,6 +355,8 @@ export async function createHostedRuntime(
         principal.workspaceId,
       ),
       delegationAdapters,
+      // The session's organization, never the request body's (D-397).
+      gcpDelegationOrganization(principal.activeOrganizationId),
     );
 
   const provider = createWorkOSHostedIdentityProvider({

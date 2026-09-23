@@ -25,9 +25,10 @@ import { HostedSessionStore } from '../hosted-session';
 import {
   HostedProviderDelegationManager,
   PostgresHostedProviderDelegationStore,
+  type HostedDelegationOrganization,
   type HostedProviderDelegationAdapter,
 } from '../../workspace-host/hosted-provider-delegation';
-import { hostedGcpDelegationSource } from '../../workspace-host/hosted-gcp-auth';
+import { gcpDelegationOrganization } from '../../workspace-host/hosted-gcp-auth';
 import type { HostedFirstWorkspaceDependencies } from './first-workspace';
 import { createHostedWorkspaceAdmission } from './workspace-admission';
 import { createDefaultHostedWorkspaceAdmissionDependencies } from './workspace-admission-dependencies';
@@ -63,8 +64,8 @@ export interface HostedFirstWorkspaceRuntimeOptions {
    */
   readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
   readonly provisioningAvailable?: () => boolean;
-  /** Default: the configured GCP delegation source (D-386), the same one the resolver uses. */
-  readonly delegationSourcePrincipal?: () => Promise<string>;
+  /** Default: the organization's own account in the GCP identity project (D-397). */
+  readonly delegationOrganization?: (organizationId: string) => HostedDelegationOrganization;
 }
 
 export function createHostedFirstWorkspaceDependencies(
@@ -75,13 +76,17 @@ export function createHostedFirstWorkspaceDependencies(
     (fn) => withWorkspace(controlPlaneWorkspaceId, fn),
     controlPlaneWorkspaceId,
   );
-  const manager = new HostedProviderDelegationManager(store, options.delegationAdapters);
+  const delegationOrganization = options.delegationOrganization ?? ((organizationId: string) =>
+    gcpDelegationOrganization(organizationId));
+  // One manager per organization: it stamps and checks the owner of every record it touches.
+  const manager = (organizationId: string) =>
+    new HostedProviderDelegationManager(store, options.delegationAdapters, delegationOrganization(organizationId));
   const provisioning = options.provisioning;
 
   return {
     isEnabledFor: (organizationId) => options.enabledOrganizations.has(organizationId),
     provisioningAvailable: options.provisioningAvailable ?? (provisioning ? () => true : dbosStarted),
-    delegationSourcePrincipal: options.delegationSourcePrincipal ?? (() => hostedGcpDelegationSource().principal()),
+    delegationOrganization,
 
     organizationWorkspaceIds(organizationId) {
       return withWorkspace(controlPlaneWorkspaceId, async (sql) => {
@@ -97,8 +102,9 @@ export function createHostedFirstWorkspaceDependencies(
     },
 
     readDelegation: (workspaceId, connectionId) => store.read(workspaceId, connectionId),
-    onboardDelegation: (input) => manager.onboard(input),
-    verifyDelegation: (workspaceId, connectionId) => manager.verify(workspaceId, connectionId),
+    onboardDelegation: (input) => manager(input.organizationId).onboard(input),
+    verifyDelegation: (organizationId, workspaceId, connectionId) =>
+      manager(organizationId).verify(workspaceId, connectionId),
 
     createAdmission: (resolveDesiredSpec) =>
       createHostedWorkspaceAdmission({

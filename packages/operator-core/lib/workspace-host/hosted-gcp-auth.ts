@@ -8,18 +8,131 @@
  * runs the hosted control plane and the bg-host), so the source is the service-account key
  * file named by {@link HOSTED_GCP_DELEGATION_SOURCE_ENV}, set on every process that verifies
  * or provisions. It is deliberately NOT the ambient GOOGLE_APPLICATION_CREDENTIALS and never
- * a user login: every customer's grant trusts this identity, so it is chosen explicitly.
+ * a user login.
+ *
+ * NO CUSTOMER GRANTS THE SOURCE ITSELF (D-397). If every customer granted the one source, any
+ * signed-up organization could name ANOTHER customer's service account and Papercusp would
+ * impersonate it on the attacker's behalf. Each organization instead gets its OWN Papercusp
+ * service account in a dedicated identity project ({@link HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV});
+ * the customer grants THAT account, and every token is minted through the chain
+ * source -> organization account -> customer account. The source holds token-creator on the
+ * identity project only, so it can reach a customer account solely through the organization
+ * account that customer named, and a delegation recorded for one organization can never
+ * resolve through another's account.
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { GoogleAuth, type JWTInput } from 'google-auth-library';
 import type { GcpResolvedAuth } from '../cloud-workspaces/gcp-preflight';
-import type { HostedProviderDelegationRecord } from './hosted-provider-delegation';
+import type { HostedDelegationOrganization, HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 const METADATA_ROOT = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default';
 const IAM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const IAM_ROOT = 'https://iam.googleapis.com/v1';
 
 /** Path to the delegation source's service-account key file. Unset = the GCE metadata identity. */
 export const HOSTED_GCP_DELEGATION_SOURCE_ENV = 'PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS';
+
+/** The GCP project that holds one Papercusp service account per organization (D-397). */
+export const HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV = 'PAPERCUSP_HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT';
+
+const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+export function hostedGcpOrganizationIdentityProject(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const project = env[HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV]?.trim();
+  if (!project) throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
+  if (!GCP_PROJECT_ID.test(project)) throw new Error('gcp_workspace_host_organization_identity_project_invalid');
+  return project;
+}
+
+/**
+ * The organization's service-account id: a digest, so it is stable, fits GCP's 6-30 character
+ * limit, and reveals nothing about the organization to the customer who sees it in a grant.
+ */
+export function organizationDelegationAccountId(organizationId: string): string {
+  const id = organizationId.trim();
+  if (!id) throw new Error('gcp_workspace_host_organization_required');
+  return `pco-${createHash('sha256').update(id).digest('hex').slice(0, 24)}`;
+}
+
+export function organizationDelegationEmail(organizationId: string, identityProject: string): string {
+  return `${organizationDelegationAccountId(organizationId)}@${identityProject}.iam.gserviceaccount.com`;
+}
+
+/** The IAM member a customer grants token-creator to, for THIS organization only. */
+export function organizationDelegationPrincipal(organizationId: string, identityProject: string): string {
+  return `serviceAccount:${organizationDelegationEmail(organizationId, identityProject)}`;
+}
+
+export interface EnsureOrganizationDelegationAccountInput {
+  organizationId: string;
+  identityProject: string;
+  source: HostedGcpDelegationSource;
+  fetch?: typeof fetch;
+}
+
+/**
+ * Create the organization's service account if it does not exist yet, and return its IAM
+ * member. It must exist BEFORE the customer applies the grant: GCP rejects a policy binding
+ * that names a nonexistent service account. Idempotent — an existing account (200 on read,
+ * or 409 when a concurrent call created it first) is success.
+ */
+export async function ensureOrganizationDelegationAccount(
+  input: EnsureOrganizationDelegationAccountInput,
+): Promise<string> {
+  const fetchImpl = input.fetch ?? fetch;
+  const accountId = organizationDelegationAccountId(input.organizationId);
+  const email = organizationDelegationEmail(input.organizationId, input.identityProject);
+  const headers = { authorization: `Bearer ${await input.source.accessToken()}`, 'content-type': 'application/json' };
+  const project = encodeURIComponent(input.identityProject);
+  const existing = await fetchImpl(`${IAM_ROOT}/projects/${project}/serviceAccounts/${encodeURIComponent(email)}`, { headers });
+  if (!existing.ok) {
+    if (existing.status !== 404) throw new Error(`gcp_workspace_host_organization_account_read_failed:${existing.status}`);
+    const created = await fetchImpl(`${IAM_ROOT}/projects/${project}/serviceAccounts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        accountId,
+        serviceAccount: {
+          displayName: `Papercusp organization ${accountId.slice('pco-'.length, 'pco-'.length + 8)}`,
+          description: 'Papercusp workspace-host delegation identity for one organization (D-397).',
+        },
+      }),
+    });
+    if (!created.ok && created.status !== 409) {
+      throw new Error(`gcp_workspace_host_organization_account_create_failed:${created.status}`);
+    }
+  }
+  return `serviceAccount:${email}`;
+}
+
+/**
+ * The GCP half of an organization's delegation binding: the account customers of THIS
+ * organization grant, created on first use.
+ */
+export function gcpDelegationOrganization(
+  organizationId: string,
+  options: {
+    env?: Readonly<Record<string, string | undefined>>;
+    fetch?: typeof fetch;
+    source?: HostedGcpDelegationSource;
+  } = {},
+): HostedDelegationOrganization {
+  return {
+    organizationId,
+    gcpTrustedPrincipal() {
+      const fetchImpl = options.fetch ?? fetch;
+      return ensureOrganizationDelegationAccount({
+        organizationId,
+        identityProject: hostedGcpOrganizationIdentityProject(options.env ?? process.env),
+        source: options.source ?? hostedGcpDelegationSource(options.env ?? process.env, fetchImpl),
+        fetch: fetchImpl,
+      });
+    },
+  };
+}
 
 /** The Papercusp identity that impersonates customer service accounts. */
 export interface HostedGcpDelegationSource {
@@ -36,6 +149,8 @@ export interface HostedGcpAuthResolverInput {
 export interface HostedGcpAuthResolverDependencies {
   fetch?: typeof fetch;
   source?: HostedGcpDelegationSource;
+  /** Default: {@link HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV}. */
+  identityProject?: string;
 }
 
 type GcpDelegationRecord = HostedProviderDelegationRecord & {
@@ -71,17 +186,6 @@ async function metadataToken(fetchImpl: typeof fetch): Promise<string> {
   });
   if (!response.access_token) throw new Error('gcp_workspace_host_metadata_access_token_missing');
   return response.access_token;
-}
-
-async function metadataIdentity(fetchImpl: typeof fetch, audience: string): Promise<string> {
-  const response = await fetchImpl(
-    `${METADATA_ROOT}/identity?audience=${encodeURIComponent(audience)}&format=full`,
-    { headers: { 'metadata-flavor': 'Google' } },
-  );
-  if (!response.ok) throw new Error(`gcp_workspace_host_metadata_identity_failed:${response.status}`);
-  const token = (await response.text()).trim();
-  if (!token) throw new Error('gcp_workspace_host_metadata_identity_missing');
-  return token;
 }
 
 /** The GCE metadata service account as the delegation source. */
@@ -149,42 +253,33 @@ export function hostedGcpDelegationSource(
   return configuredSource.source;
 }
 
-async function workloadAccessToken(
-  fetchImpl: typeof fetch,
-  source: Extract<HostedProviderDelegationRecord['configuration'], { provider: 'gcp' }>['source'],
-  delegationSource: HostedGcpDelegationSource,
-): Promise<string> {
-  if (source.method !== 'workload-identity') {
-    // The customer granted the principal recorded in the delegation. Authenticating as any
-    // other identity can only fail at IAM with an opaque 403, so name the mismatch instead.
-    const principal = await delegationSource.principal();
-    if (principal !== source.trustedPrincipal) {
-      throw new Error('gcp_workspace_host_delegation_trusted_principal_mismatch');
-    }
-    return delegationSource.accessToken();
+/**
+ * The organization account a service-account-impersonation delegation must chain through.
+ * The recorded grant has to name EXACTLY the owning organization's account: a principal of
+ * any other shape — the source itself above all, or another organization's account — is
+ * refused before any token is minted.
+ */
+function organizationDelegate(record: GcpDelegationRecord, identityProject: string): string {
+  const organizationId = record.organizationId?.trim();
+  if (!organizationId) throw new Error('gcp_workspace_host_delegation_organization_missing');
+  const source = record.configuration.source;
+  if (source.method !== 'service-account-impersonation') {
+    throw new Error('gcp_workspace_host_delegation_method_not_organization_bound');
   }
-  const subjectToken = await metadataIdentity(fetchImpl, source.audience);
-  const exchanged = await json<{ access_token?: string }>(fetchImpl, 'https://sts.googleapis.com/v1/token', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      audience: source.audience,
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      requested_token_type: 'urn:ietf:params:oauth:token-type:access_token',
-      scope: IAM_SCOPE,
-      subject_token: subjectToken,
-      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-    }),
-  });
-  if (!exchanged.access_token) throw new Error('gcp_workspace_host_sts_access_token_missing');
-  return exchanged.access_token;
+  if (source.trustedPrincipal !== organizationDelegationPrincipal(organizationId, identityProject)) {
+    throw new Error('gcp_workspace_host_delegation_trusted_principal_not_organization_account');
+  }
+  return organizationDelegationEmail(organizationId, identityProject);
 }
 
 /**
- * Resolve a verified delegation to a one-hour IAM Credentials token. The
- * persisted record contains metadata and an opaque reference only; both the
- * metadata identity token and returned access token exist in memory for this
- * call and are never written to the connection store.
+ * Resolve a verified delegation to a one-hour IAM Credentials token, minted through the owning
+ * organization's account. The persisted record contains metadata and an opaque reference
+ * only; the source token and returned access token exist in memory for this call and are
+ * never written to the connection store.
+ *
+ * Workload identity is refused: every organization would federate as the same Papercusp
+ * subject, which is exactly the shared identity D-397 removes.
  */
 export async function resolveHostedGcpAuth(
   input: HostedGcpAuthResolverInput,
@@ -193,11 +288,12 @@ export async function resolveHostedGcpAuth(
   const record = delegation(input);
   const source = record.configuration.source;
   const fetchImpl = dependencies.fetch ?? fetch;
-  const sourceToken = await workloadAccessToken(
-    fetchImpl,
-    source,
-    dependencies.source ?? hostedGcpDelegationSource(process.env, fetchImpl),
+  const delegate = organizationDelegate(
+    record,
+    dependencies.identityProject ?? hostedGcpOrganizationIdentityProject(),
   );
+  const delegates = [`projects/-/serviceAccounts/${delegate}`];
+  const sourceToken = await (dependencies.source ?? hostedGcpDelegationSource(process.env, fetchImpl)).accessToken();
   const serviceAccount = encodeURIComponent(source.serviceAccountEmail);
   const minted = await json<{ accessToken?: string }>(
     fetchImpl,
@@ -205,7 +301,7 @@ export async function resolveHostedGcpAuth(
     {
       method: 'POST',
       headers: { authorization: `Bearer ${sourceToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ delegates: [], scope: [IAM_SCOPE], lifetime: '3600s' }),
+      body: JSON.stringify({ delegates, scope: [IAM_SCOPE], lifetime: '3600s' }),
     },
   );
   if (!minted.accessToken) throw new Error('gcp_workspace_host_impersonated_access_token_missing');

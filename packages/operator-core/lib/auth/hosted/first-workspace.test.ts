@@ -22,8 +22,10 @@ const GCP: HostedProviderDelegationConfiguration = {
   },
 };
 
-/** The server's own delegation source identity — deliberately NOT the GCP fixture's value. */
-const SERVER_PRINCIPAL = 'serviceAccount:papercusp-delegation@papercusp.iam.gserviceaccount.com';
+/** Each organization's own Papercusp account (D-397) — deliberately NOT the GCP fixture's value. */
+const orgPrincipal = (organizationId: string) =>
+  `serviceAccount:pco-${organizationId}@papercusp-identity.iam.gserviceaccount.com`;
+const SERVER_PRINCIPAL = orgPrincipal('org-a');
 
 const REQUEST: HostedFirstWorkspaceRequest = {
   organizationId: 'org-a',
@@ -46,7 +48,10 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
   const deps: HostedFirstWorkspaceDependencies = {
     isEnabledFor: (organizationId) => organizationId === 'org-a',
     provisioningAvailable: () => true,
-    delegationSourcePrincipal: async () => SERVER_PRINCIPAL,
+    delegationOrganization: (organizationId) => ({
+      organizationId,
+      gcpTrustedPrincipal: async () => orgPrincipal(organizationId),
+    }),
     organizationWorkspaceIds: async () => [],
     readDelegation: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
     onboardDelegation: vi.fn(async (input) => {
@@ -54,9 +59,9 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
       records.set(`${input.workspaceId}/${input.connectionId}`, onboarding.record);
       return onboarding;
     }),
-    verifyDelegation: vi.fn(async (workspaceId: string, connectionId: string) => {
+    verifyDelegation: vi.fn(async (organizationId: string, workspaceId: string, connectionId: string) => {
       const record = records.get(`${workspaceId}/${connectionId}`);
-      if (!record) throw new Error('missing');
+      if (!record || record.organizationId !== organizationId) throw new Error('missing');
       return { ...record, status: 'verified' as const };
     }),
     createAdmission: (resolveDesiredSpec) => ({
@@ -160,6 +165,20 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect(other).toMatchObject({ ok: false, code: 'organization_already_has_workspace', status: 409 });
   });
 
+  it('refuses, not fails, when a concurrent attempt took the organization\'s one slot (D-397)', async () => {
+    const { deps } = harness({
+      createAdmission: () => ({
+        ensureProvisioned: async () => {
+          throw new HostedWorkspaceAdmissionError('organization already has a live workspace', 'organization_has_live_workspace');
+        },
+        resolveSelectable: async () => true,
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'organization_already_has_workspace', status: 409, retryable: false });
+    expect(deps.selectWorkspace).not.toHaveBeenCalled();
+  });
+
   it('does not admit a workspace that cannot be provisioned', async () => {
     const { deps, ensureProvisioned } = harness({ provisioningAvailable: () => false });
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
@@ -167,7 +186,7 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect(ensureProvisioned).not.toHaveBeenCalled();
   });
 
-  it('grants to the SERVER principal, whatever trustedPrincipal the browser sent (D-386)', async () => {
+  it("grants to the ORGANIZATION's own principal, whatever trustedPrincipal the browser sent (D-397)", async () => {
     const { deps, records } = harness({
       verifyDelegation: vi.fn(async () => {
         throw new Error('hosted_provider_delegation_verification_failed');
@@ -176,17 +195,48 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
     const recorded = records.get(`${identity.workspaceId}/${identity.connectionId}`);
+    expect(recorded?.organizationId).toBe('org-a');
     expect(recorded?.configuration.source).toMatchObject({ trustedPrincipal: SERVER_PRINCIPAL });
     expect(JSON.stringify(result.ok === false && result.template)).toContain(SERVER_PRINCIPAL);
     // The browser-sent principal (the GCP fixture's) never reaches the grant.
     expect(JSON.stringify(result)).not.toContain('control-plane@papercusp');
   });
 
-  it('fails closed, before recording anything, when the delegation source is unavailable', async () => {
+  it('gives two organizations naming the SAME customer account two different grants', async () => {
+    const both = harness({
+      isEnabledFor: () => true,
+      verifyDelegation: vi.fn(async () => {
+        throw new Error('hosted_provider_delegation_verification_failed');
+      }),
+    });
+    const bootstrap = createHostedFirstWorkspace(both.deps);
+    const a = await bootstrap.run(REQUEST);
+    const b = await bootstrap.run({ ...REQUEST, organizationId: 'org-b' });
+    const grantA = JSON.stringify(a.ok === false && a.template);
+    const grantB = JSON.stringify(b.ok === false && b.template);
+    expect(grantA).toContain(orgPrincipal('org-a'));
+    expect(grantB).toContain(orgPrincipal('org-b'));
+    expect(grantB).not.toContain(orgPrincipal('org-a'));
+  });
+
+  it('refuses workload identity, which every organization would share (D-397)', async () => {
+    const { deps } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...REQUEST,
+      configuration: { provider: 'gcp', source: { ...GCP.source, method: 'workload-identity' } } as never,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'provider_not_supported', status: 422 });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+
+  it("fails closed, before recording anything, when the organization's account cannot be prepared", async () => {
     const { deps } = harness({
-      delegationSourcePrincipal: async () => {
-        throw new Error('gcp_workspace_host_delegation_source_unreadable');
-      },
+      delegationOrganization: (organizationId) => ({
+        organizationId,
+        gcpTrustedPrincipal: async () => {
+          throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
+        },
+      }),
     });
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
@@ -204,6 +254,7 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
 
   it('builds a GCP spec only from a GCP delegation', () => {
     const record = buildHostedProviderDelegationOnboarding({
+      organizationId: 'org-a',
       workspaceId: 'ws-1',
       connectionId: 'conn-1',
       label: 'x',
