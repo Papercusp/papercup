@@ -89,7 +89,6 @@ function status(kind: DirectiveStatus['kind'], over: Partial<DirectiveStatus> = 
     kind,
     holders: [],
     activeWorkItemIds: [],
-    captureLagging: false,
     workedButUndispositioned: false,
     ...over,
   };
@@ -119,9 +118,11 @@ function statesAddressing(line: string): boolean {
  * bucket suite pins, and a line that does not exist cannot lack addressing.
  */
 const REACHABLE: Array<{ name: string; row: OrientationOwnerDirective }> = [];
-for (const captureStatus of ['pending', 'open'] as const) {
+// D-001 (owner-directive-delivery-redesign-2026-09-22): every captured turn is
+// open, so the lifecycle axis has one undispositioned value.
+for (const captureStatus of ['open'] as const) {
   for (const capturedByHook of [true, false]) {
-    const base = { id: 96, captureStatus, verbatimText: 'pause the 0.0.22 release', capturedByHook } as const;
+    const base = { id: 96, verbatimText: 'pause the 0.0.22 release', capturedByHook } as const;
     REACHABLE.push({
       name: `mine · ${captureStatus} · hook=${capturedByHook}`,
       row: { ...base, recordedBy: READER, addressedToMe: true, status: status('unclaimed') },
@@ -161,7 +162,7 @@ describe('doc-claim: no owner-directive line reaches an agent without stating it
   });
 
   it('CALIBRATION: the sweep is non-vacuous — every case really did produce a line', () => {
-    expect(REACHABLE.length).toBeGreaterThan(15);
+    expect(REACHABLE.length).toBeGreaterThanOrEqual(10);
     for (const { name, row } of REACHABLE) expect(directiveLines(row), name).toHaveLength(1);
   });
 
@@ -181,7 +182,6 @@ describe('doc-claim: no owner-directive line reaches an agent without stating it
     const of = (recordedBy: string) =>
       directiveLines({
         id: 96,
-        captureStatus: 'pending',
         verbatimText: 'pause the 0.0.22 release',
         capturedByHook: true,
         recordedBy,
@@ -207,7 +207,6 @@ describe('doc-claim: no owner-directive line reaches an agent without stating it
 describe('doc-claim: the same foreign directive is un-imperative in the banner AND refused at the write verb', () => {
   const FOREIGN_ROW: OrientationOwnerDirective = {
     id: 96,
-    captureStatus: 'pending',
     verbatimText: 'pause the 0.0.22 release',
     capturedByHook: true,
     recordedBy: ADDRESSEE,
