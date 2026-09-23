@@ -686,7 +686,17 @@ function conflictingSnapshotExclusion(
 
 async function findLatestProducerSnapshot(
   log: Pick<OwnLog, 'length' | 'get'>,
-  opts: { readBudgetMs?: number; describe?: string } = {},
+  opts: {
+    readBudgetMs?: number;
+    describe?: string;
+    /**
+     * A set the caller already knows it wrote (P-003). Verified FIRST at exactly
+     * this span; a torn, missing or out-of-range hint falls through to the bounded
+     * tail scan. Needed because the proportional cadence (`snapshotCompactThreshold`)
+     * puts the previous set far outside `PRODUCER_SNAPSHOT_SCAN_LOOKBACK`.
+     */
+    hint?: { coversUpTo: number; chunkCount: number };
+  } = {},
 ): Promise<ProducerSnapshotSeed | null> {
   const length = log.length;
   const floor = Math.max(0, length - PRODUCER_SNAPSHOT_SCAN_LOOKBACK);
@@ -761,30 +771,21 @@ async function findLatestProducerSnapshot(
     return null;
   };
 
-  for (let index = length - 1; index >= floor; index--) {
-    const candidate = await readAt(index);
-    if (abandonedAt !== null) return abandon();
-    if (!candidate || !isSnapshotOp(candidate)) continue;
+  const validSpan = (coversUpTo: unknown, chunkCount: unknown): coversUpTo is number =>
+    typeof coversUpTo === 'number' &&
+    Number.isInteger(coversUpTo) &&
+    coversUpTo >= 0 &&
+    typeof chunkCount === 'number' &&
+    Number.isInteger(chunkCount) &&
+    chunkCount >= 1 &&
+    coversUpTo + chunkCount <= length;
 
-    const payload = candidate.value as SnapshotPayload | undefined;
-    const coversUpTo = payload?.coversUpTo;
-    const chunkCount = payload?.chunkCount ?? 1;
-    if (
-      typeof coversUpTo !== 'number' ||
-      !Number.isInteger(coversUpTo) ||
-      coversUpTo < 0 ||
-      !Number.isInteger(chunkCount) ||
-      chunkCount < 1 ||
-      coversUpTo + chunkCount > length
-    ) {
-      continue;
-    }
-
+  /** Every chunk of `[coversUpTo, coversUpTo + chunkCount)`, or null when the set is torn. */
+  const readCompleteSet = async (coversUpTo: number, chunkCount: number): Promise<PeerLogOp[] | null> => {
     const chunks: PeerLogOp[] = [];
-    let complete = true;
     for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
       const chunk = await readAt(coversUpTo + chunkIdx);
-      if (abandonedAt !== null) return abandon();
+      if (abandonedAt !== null) return null;
       const chunkPayload = chunk?.value as SnapshotPayload | undefined;
       if (
         !chunk ||
@@ -794,12 +795,33 @@ async function findLatestProducerSnapshot(
         (chunkPayload.chunkCount ?? 1) !== chunkCount ||
         (chunkPayload.chunkIdx ?? 0) !== chunkIdx
       ) {
-        complete = false;
-        break;
+        return null;
       }
       chunks.push(chunk);
     }
-    if (complete) return { coversUpTo, chunkCount, chunks };
+    return chunks;
+  };
+
+  const hint = opts.hint;
+  if (hint && validSpan(hint.coversUpTo, hint.chunkCount)) {
+    const chunks = await readCompleteSet(hint.coversUpTo, hint.chunkCount);
+    if (abandonedAt !== null) return abandon();
+    if (chunks) return { coversUpTo: hint.coversUpTo, chunkCount: hint.chunkCount, chunks };
+  }
+
+  for (let index = length - 1; index >= floor; index--) {
+    const candidate = await readAt(index);
+    if (abandonedAt !== null) return abandon();
+    if (!candidate || !isSnapshotOp(candidate)) continue;
+
+    const payload = candidate.value as SnapshotPayload | undefined;
+    const coversUpTo = payload?.coversUpTo;
+    const chunkCount = payload?.chunkCount ?? 1;
+    if (!validSpan(coversUpTo, chunkCount)) continue;
+
+    const chunks = await readCompleteSet(coversUpTo, chunkCount);
+    if (abandonedAt !== null) return abandon();
+    if (chunks) return { coversUpTo, chunkCount, chunks };
 
     // Skip the rest of a known candidate span when it is torn. Keep the loop
     // strictly moving backward even for malformed metadata that points ahead.
@@ -891,6 +913,95 @@ export function shouldCompactOwnLog(
 ): boolean {
   if (threshold <= 0) return false;
   return currentLength - lastCoversUpTo >= threshold;
+}
+
+/**
+ * Ops-per-row ratio of the proportional compaction cadence (p2p-join-catchup-speed
+ * P-003, bar R-6). A tunable, not a constant of correctness.
+ *
+ * Each snapshot re-writes the whole live state (≈ its row count, one row per live
+ * key), so spacing snapshots at least `ratio × rowCount` ops apart bounds snapshot
+ * volume to `1 / ratio` of the log growth between them, counted in rows vs ops (a
+ * snapshot row is one op's payload). At 1 the snapshot stream at most doubles the
+ * log's growth, and a joiner seeded from the newest snapshot replays at most about
+ * one live-state's worth of tail: its join cost tracks LIVE STATE, not history.
+ *
+ * Why this replaced the fixed 1,000-op cadence (endgame D-058): the tower's
+ * papercusp pot holds 214,821 live work_items, so a fixed cadence would re-write
+ * ~234 MB of state every 1,000 ops.
+ */
+export const SNAPSHOT_COMPACT_ROWS_RATIO = 1;
+
+/**
+ * How many ops the own log must grow past its last snapshot before the next one
+ * (R-6): `max(SNAPSHOT_COMPACT_EVERY_OPS, ceil(ratio × priorRowCount))`. A missing
+ * or unknown prior row count (0, negative, NaN) keeps the historical floor, so a
+ * never-snapshotted log still compacts after `SNAPSHOT_COMPACT_EVERY_OPS` ops.
+ */
+export function snapshotCompactThreshold(
+  priorRowCount: number,
+  opts: { minOps?: number; ratio?: number } = {},
+): number {
+  const minOps = opts.minOps ?? SNAPSHOT_COMPACT_EVERY_OPS;
+  const ratio = opts.ratio ?? SNAPSHOT_COMPACT_ROWS_RATIO;
+  const rows = Number.isFinite(priorRowCount) && priorRowCount > 0 ? priorRowCount : 0;
+  const scaled = Number.isFinite(ratio) && ratio > 0 ? Math.ceil(ratio * rows) : 0;
+  return Math.max(minOps, scaled);
+}
+
+/**
+ * Size and provenance of one complete snapshot set, read from its FIRST chunk only.
+ *
+ * `rowEstimate` is chunk 0's row count × `chunkCount`. Chunks are cut on a byte
+ * budget, so every chunk but the last is about the same size and the estimate runs
+ * slightly high. It only feeds the cadence (`snapshotCompactThreshold`), where an
+ * overestimate just spaces snapshots a little wider. `excludesTables` is true when
+ * the set was produced with an exclusion list (the release-cut head snapshot), which
+ * the unfiltered own compaction must not seed from (`conflictingSnapshotExclusion`).
+ *
+ * Returns null when chunk 0 is unreadable within `readBudgetMs` or is not chunk 0 of
+ * that set. Never throws.
+ */
+export async function describeSnapshotSet(
+  log: Pick<OwnLog, 'get'>,
+  set: { coversUpTo: number; chunkCount: number },
+  readBudgetMs: number = FILTERED_SNAPSHOT_SCAN_STALL_MS,
+): Promise<{ rowEstimate: number; excludesTables: boolean } | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = Promise.resolve(log.get(set.coversUpTo));
+    read.catch(() => {});
+    const first = await Promise.race([
+      read,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), Math.max(0, readBudgetMs));
+        timer.unref?.();
+      }),
+    ]);
+    if (!first || !isSnapshotOp(first)) return null;
+    const payload = first.value as SnapshotPayload | undefined;
+    if (!payload || payload.coversUpTo !== set.coversUpTo || (payload.chunkIdx ?? 0) !== 0) return null;
+    if (!Array.isArray(payload.rows)) return null;
+    return {
+      rowEstimate: payload.rows.length * Math.max(1, set.chunkCount),
+      excludesTables: Array.isArray(payload.excludeTables) && payload.excludeTables.length > 0,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Thrown by `produceLogSnapshot` when `shouldAbort()` reports true just before the
+ * append: the fold is discarded and nothing is written to the log.
+ */
+export class SnapshotAbortedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SnapshotAbortedError';
+  }
 }
 
 export interface ProduceSnapshotResult {
@@ -1034,6 +1145,19 @@ export async function produceLogSnapshot(
      * the seed cut, which must not ship runtime/identity-bearing rows.
      */
     excludeTables?: Iterable<string>;
+    /**
+     * The set this caller last appended (P-003). The seek verifies it first, so a
+     * proportional-cadence gap wider than the tail-scan window still seeds instead
+     * of folding the whole history. Correctness does not depend on it: seeding from
+     * ANY complete set and folding forward yields the same rows.
+     */
+    priorSnapshotHint?: { coversUpTo: number; chunkCount: number };
+    /**
+     * Checked once, after the fold and immediately before the append. True ⇒ throw
+     * `SnapshotAbortedError` and append nothing. The off-gate own compaction passes
+     * `() => stopped` so a closing engine never appends into a store it is tearing down.
+     */
+    shouldAbort?: () => boolean;
   },
 ): Promise<ProduceSnapshotResult> {
   // Re-anchored after the read by the ANCHOR CONVERGENCE below (WI-37526), so `let`.
@@ -1078,6 +1202,7 @@ export async function produceLogSnapshot(
   const priorSnapshot = await findLatestProducerSnapshot(ownLog, {
     readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
     describe: 'own compaction',
+    ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
   });
   let foldedUpTo = 0;
   if (priorSnapshot) {
@@ -1167,6 +1292,12 @@ export async function produceLogSnapshot(
     maxChunkBytes: opts.maxChunkBytes,
     excludeTables: [...ownExcluded],
   });
+  if (opts.shouldAbort?.()) {
+    throw new SnapshotAbortedError(
+      `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
+        `${snapshotOps.length} chunk(s) discarded): the caller is stopping`,
+    );
+  }
   // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
   // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
   // only seeds a cursor once every chunk is present (crash-consistency guard).

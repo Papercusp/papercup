@@ -71,14 +71,21 @@ import {
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
   persistCursor,
-  findLatestSnapshotIndex,
+  findLatestCompleteSnapshot,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
   type MergeApplyFailure,
 } from './read-merge';
-import { produceLogSnapshot, shouldCompactOwnLog, type ProduceSnapshotResult } from './log-snapshot';
+import {
+  describeSnapshotSet,
+  produceLogSnapshot,
+  shouldCompactOwnLog,
+  snapshotCompactThreshold,
+  SnapshotAbortedError,
+  type ProduceSnapshotResult,
+} from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps, type HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
@@ -2386,9 +2393,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // 12 min) does NOT re-compact a log that hasn't grown a threshold since.
   const snapshotReaderEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER, 'system').catch(() => false);
   const snapshotProducerEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT, 'system').catch(() => false);
-  let lastSnapshotCoversUpTo = snapshotProducerEnabled
-    ? ((await findLatestSnapshotIndex(ownLog).catch(() => null)) ?? 0)
-    : 0;
+  // p2p-join-catchup-speed P-003: the cadence is PROPORTIONAL to the prior snapshot's
+  // row count (`snapshotCompactThreshold`, bar R-6), so the anchor carries that set's
+  // size too. `lastOwnCompactionSet` is the unfiltered set this engine may seed its
+  // next compaction from; a filtered (release-cut head) set is never a seed for it.
+  let lastSnapshotCoversUpTo = 0;
+  let lastSnapshotRowCount = 0;
+  let lastOwnCompactionSet: { coversUpTo: number; chunkCount: number } | null = null;
+  /** The off-gate periodic compaction, when one is running (`runOwnCompaction`). */
+  let ownCompactionInFlight: Promise<void> | null = null;
+  if (snapshotProducerEnabled) {
+    const seed = await findLatestCompleteSnapshot(ownLog).catch(() => null);
+    if (seed) {
+      lastSnapshotCoversUpTo = seed.seedIndex;
+      const size = await describeSnapshotSet(ownLog, seed);
+      if (size) {
+        lastSnapshotRowCount = size.rowEstimate;
+        if (!size.excludesTables) {
+          lastOwnCompactionSet = { coversUpTo: seed.coversUpTo, chunkCount: seed.chunkCount };
+        }
+      }
+    }
+  }
 
   // P-019 (D-012) — the ON-DEMAND head snapshot. A release cut taken on a box where
   // THIS process holds the corestore (the WI-4487 no-outage path) cannot append the
@@ -3313,8 +3339,62 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     await storage.flush();
   }
 
+  /**
+   * p2p-join-catchup-speed P-003 (bar R-7) — the periodic own-log compaction, run OFF
+   * the merge gate. Started by the merge pass, never awaited by it; `close()` awaits it
+   * after the store is torn down (the WI-1631 discipline for in-flight work).
+   *
+   * Never rejects: a failure is a boot event, as it was when this ran inline. A
+   * failure caused by the engine stopping underneath it is not recorded at all.
+   */
+  async function runOwnCompaction(): Promise<void> {
+    const startedAt = Date.now();
+    const previousCoversUpTo = lastSnapshotCoversUpTo;
+    try {
+      const snap = await produceLogSnapshot(ownLog, {
+        now: Date.now(),
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
+        shouldAbort: () => stopped,
+      });
+      if (!snap.appended) return;
+      lastSnapshotCoversUpTo = snap.coversUpTo;
+      lastSnapshotRowCount = snap.rowCount;
+      lastOwnCompactionSet = { coversUpTo: snap.coversUpTo, chunkCount: snap.chunkCount };
+      try {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_capped',
+          `own log compaction: coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount} ` +
+            `grewBy=${snap.coversUpTo - previousCoversUpTo} nextThreshold=${snapshotCompactThreshold(snap.rowCount)} ` +
+            `elapsedMs=${Date.now() - startedAt} mergeGateHeld=false`,
+        );
+      } catch {
+        // observability must never fail the compaction
+      }
+    } catch (e) {
+      if (stopped || e instanceof SnapshotAbortedError) return;
+      try {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_capped',
+          `log compaction failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      } catch {
+        // observability must never fail the compaction
+      }
+    }
+  }
+
   async function servicePendingHeadSnapshot(): Promise<void> {
     if (!pendingHeadSnapshot) return;
+    // Two producers must never append to the own log at once (each verifies its own
+    // anchor, and the loser would fail as an anchor race). A release cut asking for a
+    // head snapshot therefore waits for an in-flight periodic compaction; this is the
+    // one place the merge gate still waits on a compaction, and only during a cut.
+    if (ownCompactionInFlight) await ownCompactionInFlight;
     const waiter = pendingHeadSnapshot;
     pendingHeadSnapshot = null;
     const startedAt = Date.now();
@@ -3342,7 +3422,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // ./seed-excluded-tables.
         excludeTables: SEED_EXCLUDED_TABLES,
       });
-      if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
+      if (snap.appended) {
+        // The cadence restarts from this set. It is filtered, so it never becomes
+        // `lastOwnCompactionSet` (the unfiltered compaction cannot seed from it).
+        lastSnapshotCoversUpTo = snap.coversUpTo;
+        lastSnapshotRowCount = snap.rowCount;
+      }
 
       // EI-20019309044931698 — flush the just-appended snapshot to SSTs BEFORE the
       // waiter is resolved, so `appended:true` cannot be observed by a release cut
@@ -4078,30 +4163,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
 
       // P-005 (design A, flag-gated): compact the OWN log once it has grown past
-      // the threshold since its last snapshot — append ONE additive snapshot op
-      // (no fork). Runs inside the serialized merge block so it can't race a pass;
-      // fires only every ~SNAPSHOT_COMPACT_EVERY_OPS ops (the O(history) own-log
-      // read is amortized). Best-effort: a failed compaction must NEVER abort the
-      // merge pass. OFF ⇒ never runs (no snapshot ops ever produced).
-      if (snapshotProducerEnabled && shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo)) {
-        try {
-          const snap = await produceLogSnapshot(ownLog, {
-            now: Date.now(),
-            schemaVersion: CURRENT_SCHEMA_VERSION,
-          });
-          if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
-        } catch (e) {
-          try {
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'peer_capped',
-              `log compaction failed: ${e instanceof Error ? e.message : String(e)}`,
-            );
-          } catch {
-            // observability must never abort the merge pass
-          }
-        }
+      // the threshold since its last snapshot — append ONE additive snapshot set
+      // (no fork). The threshold is proportional to the prior set's row count
+      // (p2p-join-catchup-speed P-003, bar R-6).
+      //
+      // KICKED OFF, NOT AWAITED (bar R-7). The first compaction of a long log folds
+      // its whole history (7.75M ops on the tower's papercusp pot), and awaiting it
+      // here held the merge gate for that entire read. A merge pass never appends
+      // to the own log (see servicePendingHeadSnapshot), ordinary writes already
+      // append outside this gate, and produceLogSnapshot re-anchors to appends that
+      // land during its read (WI-37526) — so the gate bought no safety for this
+      // read. The in-flight guard keeps one compaction at a time; the head-snapshot
+      // path waits for it so two producers never append concurrently.
+      if (
+        snapshotProducerEnabled &&
+        !ownCompactionInFlight &&
+        !stopped &&
+        shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))
+      ) {
+        ownCompactionInFlight = runOwnCompaction().finally(() => {
+          ownCompactionInFlight = null;
+        });
       }
 
       // ── Merge-refresh (D-002): the revocation refresh now runs at the TOP of
@@ -6100,6 +6182,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // P-006: the scoped store is a separate Corestore instance — close +
       // evict it the same way (it was only opened if a swarm join ran).
       try { await closeHarnessScopedStore(storeOpts); } catch {}
+      // P-003: an off-gate compaction may still be folding. Awaited AFTER the store
+      // closes so its reads fail fast instead of finishing an O(history) fold; it saw
+      // `stopped` and appends nothing (`shouldAbort`). It never rejects.
+      if (ownCompactionInFlight) await ownCompactionInFlight;
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };
