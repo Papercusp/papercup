@@ -145,7 +145,7 @@ function describeIdentity(revision: number | null | undefined, criteriaHash: str
  */
 function classifyVettingCandidate(
   card: ScorecardRow,
-  live: { revision: number | null; criteriaHash?: string | null },
+  live: { revision: number | null; criteriaHash?: string | null; meaningRevision?: number | null },
 ): { rejectedBy: AcceptanceRubricVettingRejection | null; detail: string } {
   if (!card.rubricResolved) {
     return {
@@ -180,8 +180,12 @@ function classifyVettingCandidate(
     };
   }
   const currentness = classifyRubricEvidenceCurrentness(
-    { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-    { revision: live.revision, criteriaHash: live.criteriaHash },
+    {
+      revision: card.vetting?.rubricRevision,
+      criteriaHash: card.vetting?.criteriaHash,
+      meaningRevision: card.vetting?.rubricMeaningRevision,
+    },
+    { revision: live.revision, criteriaHash: live.criteriaHash, meaningRevision: live.meaningRevision },
   );
   if (currentness.state !== 'current') {
     return {
@@ -261,6 +265,7 @@ export async function getAcceptanceRubricVettingStatus(
     const { rejectedBy, detail } = classifyVettingCandidate(card, {
       revision: currentRevision,
       criteriaHash: rubric.criteriaHash,
+      meaningRevision: rubric.barContract?.meaningRevision,
     });
     candidates.push({
       issueId: card.issueId,
