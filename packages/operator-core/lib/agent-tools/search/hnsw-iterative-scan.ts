@@ -139,6 +139,12 @@ export async function withIterativeScan<T>(
   sql: PgHandle,
   body: (sql: PgHandle) => Promise<T>,
 ): Promise<T> {
+  // A transaction-scoped handle (postgres.js TransactionSql, e.g. the one
+  // sessions:search hands runHybridSearch) has no `begin`. Probing it threw
+  // `sql.begin is not a function` on EVERY call and warned as if transient
+  // (WI-10002536). Run the body on the caller's transaction with the legacy
+  // capped scan — the same fallback that failed probe always produced.
+  if (typeof (sql as { begin?: unknown }).begin !== 'function') return body(sql);
   if (!(await probeIterativeScan(sql))) return body(sql);
   return sql.begin(async (tx) => {
     // READ ONLY keeps it honest: these are search reads, and the marker makes an
