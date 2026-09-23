@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Papercusp rig macOS VM watchdog every minute (WI-10002582)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=papercusp-mac-vm-watchdog.service
+
+[Install]
+WantedBy=timers.target
