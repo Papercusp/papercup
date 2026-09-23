@@ -22,6 +22,7 @@ import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
+import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 
 const amendmentCriterionSchema = requirementCriterionInputSchema;
 
@@ -279,6 +280,8 @@ export default defineTool({
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     const methodLint =
       rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+    // acceptance-runtime-plane P-004: same non-blocking vetting finding as rubrics:propose.
+    const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
     void trackDetached(import('../../sync-sse'))
       .then((m) => {
@@ -288,7 +291,17 @@ export default defineTool({
       .catch(() => {});
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, methodLint }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            rubric,
+            completeness,
+            replicationSqlCheck,
+            methodLint,
+            ...(runtimeFindings.length ? { runtimeFindings } : {}),
+          }),
+        },
       ],
     };
   },
