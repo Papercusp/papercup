@@ -1239,6 +1239,114 @@ function priorRowForIncoming<T extends { id?: string; claim: string }>(
   return prior.find((candidate) => !sanitizeCarryRowId(candidate.id) && candidate.claim.trim() === claim);
 }
 
+/**
+ * P-025 (review-system-rework-reduction-2026-09-23) — does `ref` name this carried row?
+ * A ref is the row's stable id (bare, `#id` or `[#id]`, exactly as the note renders it)
+ * or its exact trimmed claim text. Claim text is accepted because most carried rows
+ * have no id: requiring one would leave exactly the rows this exists for unreachable.
+ */
+function carryRowMatchesRef(row: { id?: string; claim: string }, ref: string): boolean {
+  const trimmed = ref.trim();
+  if (!trimmed) return false;
+  const id = sanitizeCarryRowId(row.id);
+  const refAsId = trimmed.replace(/^\[?#/, '').replace(/\]$/, '');
+  return (id !== null && id === refAsId) || row.claim.trim() === trimmed;
+}
+
+/** A stable id for a row that is being edited by `replaces` and has none. Derived from
+ *  the claim it replaces so the same edit mints the same id; suffixed on collision. */
+function mintCarryRowId(claim: string, taken: ReadonlySet<string>): string {
+  const base = `r-${createHash('sha256').update(claim.trim(), 'utf8').digest('hex').slice(0, 8)}`;
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/**
+ * P-025 — resolve one-row edit (`replaces`) and retire (`retire`) references against the
+ * carried set BEFORE the merge runs.
+ *
+ * Why: measured 2026-09-23, 1,675 `checkpoint_merge_would_evict_rows` refusals in 7 days.
+ * An id-less carried row is keyed by its claim text, so re-wording it is a NET ADDITION
+ * and at the cap it evicts the carried tail; the only recovery was re-sending all 12 rows.
+ *
+ * How: a supplied row carrying `replaces` is bound to its target by giving BOTH the same
+ * stable id — the caller's id, else the target's id, else a minted one — after which the
+ * existing id-keyed upsert edits it in place, inherits its evidence and age, and leaves
+ * every other row untouched. The minted id stays on the row, so the next edit can key on
+ * it directly. `retire` removes the named rows from the carried set; they are returned
+ * as retired rather than dropped, because a named retirement is not an unintended loss.
+ * A ref that names no carried row is returned in `unmatched`, never silently ignored.
+ */
+export function resolveCarryRowRefs<
+  W extends { id?: string; claim: string; replaces?: string },
+  C extends { id?: string; claim: string; replaces?: string },
+  PW extends { id?: string; claim: string },
+  PC extends { id?: string; claim: string },
+>(opts: {
+  priorWalls: ReadonlyArray<PW>;
+  priorChecks: ReadonlyArray<PC>;
+  walls?: ReadonlyArray<W>;
+  checks?: ReadonlyArray<C>;
+  retire?: ReadonlyArray<string>;
+}): {
+  priorWalls: PW[];
+  priorChecks: PC[];
+  walls?: Array<Omit<W, 'replaces'>>;
+  checks?: Array<Omit<C, 'replaces'>>;
+  retiredWalls: string[];
+  retiredChecks: string[];
+  unmatched: string[];
+} {
+  const unmatched: string[] = [];
+  const retire = (opts.retire ?? []).map((r) => r.trim()).filter(Boolean);
+  const retiredWalls: string[] = [];
+  const retiredChecks: string[] = [];
+  const keep = <P extends { id?: string; claim: string }>(rows: ReadonlyArray<P>, retired: string[]): P[] =>
+    rows.filter((row) => {
+      if (!retire.some((ref) => carryRowMatchesRef(row, ref))) return true;
+      retired.push(row.claim.trim());
+      return false;
+    });
+  const priorWalls = keep(opts.priorWalls, retiredWalls);
+  const priorChecks = keep(opts.priorChecks, retiredChecks);
+
+  const taken = new Set<string>();
+  for (const row of [...opts.priorWalls, ...opts.priorChecks, ...(opts.walls ?? []), ...(opts.checks ?? [])]) {
+    const id = sanitizeCarryRowId(row.id);
+    if (id) taken.add(id);
+  }
+  const bind = <S extends { id?: string; claim: string; replaces?: string }, P extends { id?: string; claim: string }>(
+    supplied: ReadonlyArray<S> | undefined,
+    prior: P[],
+  ): Array<Omit<S, 'replaces'>> | undefined => {
+    if (supplied === undefined) return undefined;
+    const bound = new Set<number>();
+    return supplied.map((row) => {
+      const { replaces, ...rest } = row;
+      if (replaces === undefined || !replaces.trim()) return rest;
+      const index = prior.findIndex((p, i) => !bound.has(i) && carryRowMatchesRef(p, replaces));
+      if (index < 0) {
+        unmatched.push(replaces.trim());
+        return rest;
+      }
+      bound.add(index);
+      const target = prior[index]!;
+      const id = sanitizeCarryRowId(rest.id) ?? sanitizeCarryRowId(target.id) ?? mintCarryRowId(target.claim, taken);
+      taken.add(id);
+      prior[index] = { ...target, id };
+      return { ...rest, id };
+    });
+  };
+  const walls = bind(opts.walls, priorWalls);
+  const checks = bind(opts.checks, priorChecks);
+  for (const ref of retire) {
+    const hit = [...opts.priorWalls, ...opts.priorChecks].some((row) => carryRowMatchesRef(row, ref));
+    if (!hit) unmatched.push(ref);
+  }
+  return { priorWalls, priorChecks, walls, checks, retiredWalls, retiredChecks, unmatched };
+}
+
 /** One wall as a parseable single line: `- [#id] <claim> — re-check: <cmd> (since <ISO>)`.
  *  The `[#…]` prefix, " — re-check: " and trailing " (since …)" markers are the
  *  round-trip anchors. */
@@ -1861,11 +1969,13 @@ export function mergeCarryRows(opts: {
   priorNote: string | null | undefined;
   /** The note this write proposes (rendered structured fields, or the raw string). */
   baseNote: string | null | undefined;
-  /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior. */
-  walls?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number }>;
+  /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior.
+   *  P-025: a row's `replaces` names the carried row it edits (see {@link resolveCarryRowRefs}). */
+  walls?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number; replaces?: string }>;
   /** An EXPLICIT checks arg — `[]` clears; `undefined` defers to the note/prior. */
   checks?: ReadonlyArray<{
     id?: string;
+    replaces?: string;
     claim: string;
     recheck?: string;
     verified?: string;
@@ -1912,12 +2022,26 @@ export function mergeCarryRows(opts: {
    * last, so a ? PREDICTED row is evicted before a ✓ VERIFIED one.
    */
   mode?: 'replace' | 'merge';
+  /**
+   * P-025 — carried rows to RETIRE in this same write, named by `[#id]` or exact claim,
+   * across walls and checks. Valid under either mode, so dropping one row no longer
+   * requires a full `'replace'` re-send. Retired rows are reported in
+   * `retiredWalls`/`retiredChecks`, NOT in `droppedWalls`/`droppedChecks`.
+   */
+  retire?: ReadonlyArray<string>;
   nowMs?: number;
 }): {
   note: string;
   narrativeBody: string;
   walls: WallEntry[];
   checks: CheckEntry[];
+  /** P-025 — prior WALL claims removed because the caller named them in `retire`. */
+  retiredWalls: string[];
+  /** P-025 — prior CHECK claims removed because the caller named them in `retire`. */
+  retiredChecks: string[];
+  /** P-025 — `replaces`/`retire` refs that named no carried row. A `replaces` row whose
+   *  ref is unmatched is treated as the new row it then is. */
+  unmatchedRowRefs: string[];
   /** Prior WALL claims this write did not carry forward (see the EI-19463731740128181
    *  note above). Empty when nothing was lost — including the carry-forward path,
    *  where `undefined` preserves every prior row by construction. */
@@ -1940,8 +2064,20 @@ export function mergeCarryRows(opts: {
   /** Supplied CHECK claims the row cap cut. Same contract as {@link overflowWalls}. */
   overflowChecks: string[];
 } {
-  const priorParts = splitCarryNoteWalls(opts.priorNote ?? null);
-  const priorCheckParts = splitCarryNoteChecks(priorParts.body);
+  const storedWallParts = splitCarryNoteWalls(opts.priorNote ?? null);
+  const storedCheckParts = splitCarryNoteChecks(storedWallParts.body);
+  // P-025: bind `replaces` rows to their targets and remove `retire`d rows up front, so
+  // everything below sees an ordinary id-keyed upsert against the remaining carried set.
+  const refs = resolveCarryRowRefs({
+    priorWalls: storedWallParts.walls,
+    priorChecks: storedCheckParts.checks,
+    walls: opts.walls,
+    checks: opts.checks,
+    retire: opts.retire,
+  });
+  opts = { ...opts, walls: refs.walls, checks: refs.checks };
+  const priorParts = { ...storedWallParts, walls: refs.priorWalls };
+  const priorCheckParts = { ...storedCheckParts, checks: refs.priorChecks };
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
   const rawCheckParts = splitCarryNoteChecks(rawParts.body);
   const merging = opts.mode === 'merge';
@@ -2004,6 +2140,9 @@ export function mergeCarryRows(opts: {
     droppedChecks: droppedClaims(priorCheckParts.checks, checks),
     overflowWalls: suppliedWalls ? droppedClaims(suppliedWalls, walls) : [],
     overflowChecks: suppliedChecks ? droppedClaims(suppliedChecks, checks) : [],
+    retiredWalls: refs.retiredWalls,
+    retiredChecks: refs.retiredChecks,
+    unmatchedRowRefs: refs.unmatched,
   };
 }
 
