@@ -2951,6 +2951,53 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(projections[1]!.evidence_plane).toBe('tree');
   });
 
+  it('screens a reviewer from durable lineage without reconstructing the amendment candidate', async () => {
+    const seeded = await seedBarContract('approver-route-precheck');
+    const [audit] = await db.adminSql<Array<{ next_seq: number }>>`
+      SELECT COALESCE(MAX(audit_seq), 0)::int + 1 AS next_seq
+        FROM harness_shared.plan_audits
+       WHERE workspace_id = ${seeded.workspaceId}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.subject}`;
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_audits
+        (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
+         activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash)
+      VALUES (${seeded.workspaceId}, 'papercusp', ${seeded.subject}, ${audit!.next_seq},
+              'su-precheck-implementer', 'completion', NULL, NULL, NULL, NULL)`;
+
+    const implementer = await rubrics.checkAcceptanceBarApproverEligibility({
+      rubricId: seeded.rubricSlug,
+      ownerId: 'su-precheck-implementer',
+    });
+    expect(implementer).toMatchObject({
+      eligible: false,
+      reason: 'related_to_plan_implementer',
+      eligibleWithUnrelatedApplier: false,
+    });
+
+    const external = await rubrics.checkAcceptanceBarApproverEligibility({
+      rubricId: seeded.rubricSlug,
+      ownerId: 'su-precheck-external-reviewer',
+    });
+    expect(external).toMatchObject({
+      eligible: true,
+      reason: 'eligible',
+      eligibleWithUnrelatedApplier: true,
+    });
+
+    const sameAsApplier = await rubrics.checkAcceptanceBarApproverEligibility({
+      rubricId: seeded.rubricSlug,
+      ownerId: 'su-precheck-applier',
+      applierId: 'su-precheck-applier',
+    });
+    expect(sameAsApplier).toMatchObject({
+      eligible: false,
+      reason: 'related_to_applier',
+      eligibleWithUnrelatedApplier: true,
+    });
+  });
+
   it('validates a supplied approval receipt during dry-run preview', async () => {
     const seeded = await seedBarContract('dry-run-approval-receipt-subject', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
