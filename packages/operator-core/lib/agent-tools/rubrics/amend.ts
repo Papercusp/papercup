@@ -12,11 +12,15 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   amendRubric,
+  getRubric,
+  mintAmendmentIdempotencyKey,
   previewAcceptanceBarAmendment,
   rubricCompleteness,
   AMENDABLE_CRITERION_FIELDS,
   type AmendRubricInput,
 } from '../../rubrics';
+import { trackAmendRun } from './amend-receipts';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
@@ -26,8 +30,10 @@ import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 
 const amendmentCriterionSchema = requirementCriterionInputSchema;
 
-export const rubricsAmendArgs = z
-  .object({
+// RSR-P-008-A: refineEvenWithShapeIssues so a request with a shape defect AND an
+// invalid field combination is refused naming both, not one per round-trip.
+export const rubricsAmendArgs = refineEvenWithShapeIssues(
+  z.object({
     rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
     requirement: requirementAmendmentSchema
       .optional()
@@ -154,8 +160,8 @@ export const rubricsAmendArgs = z
       .enum(['after-decision', 'after-rubric', 'after-projection', 'after-rebind'])
       .optional()
       .describe('test-only rollback probe'),
-  })
-  .superRefine((args, ctx) => {
+  }),
+  (args, ctx) => {
     if (args.requirement && (args.criteria || args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -188,14 +194,17 @@ export const rubricsAmendArgs = z
           'nothing to amend — include at least one amendment field; approvalRef authorizes a patch but does not supply one',
       });
     }
-  });
+  },
+);
 
 export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change: amend { dryRun:true } → requester posts preview.approval once with work_items:comment and sends its thread-post id to an outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread → apply with approvalRef:'thread-post:<reviewer-post-id>'. The resolver loads the immutable preview within the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post. Do not create a counter-sign work-item just for approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+    'Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. A started BAR meaning change needs outside-lineage approval first (guidance.chaining has the steps). Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.',
   guidance: {
+    returns:
+      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). An amend still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
@@ -212,6 +221,21 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: rubricsAmendArgs,
+  // Structural shape behind `guidance.returns` (guidance-output-schema-live-guard).
+  // OPEN on purpose: the dry-run, applied and receipt arms carry different fields.
+  result: z
+    .object({
+      ok: z.boolean(),
+      error: z.string().optional(),
+      rubric: z.record(z.string(), z.unknown()).optional(),
+      completeness: z.record(z.string(), z.unknown()).optional(),
+      replicationSqlCheck: z.unknown().optional(),
+      methodLint: z.array(z.record(z.string(), z.unknown())).optional(),
+      idempotencyKey: z.string().optional(),
+      pending: z.boolean().optional(),
+      receipt: z.record(z.string(), z.unknown()).optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     // ⚠ DO NOT pass `by: id.ownerId` here. AMENDING IS NOT AUTHORING (EI-10746 follow-on,
     // 2026-07-12). A rubric persists as a PLAN, and a plan has ONE `owner` — so
@@ -348,36 +372,27 @@ async function settleWithin<T>(run: Promise<T>, budgetMs: number): Promise<Settl
 
 /** The synchronous amend: apply, then build the response payload. */
 async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise<Record<string, unknown>> {
-    const rubric = await amendRubric(input);
-    if (!rubric) return { ok: false, error: `no rubric '${rubricRef}' — rubrics:list to see refs` };
-    const completeness = rubricCompleteness(rubric);
-    // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
-    const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
-    const methodLint =
-      rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
-    // acceptance-runtime-plane P-004: same non-blocking vetting finding as rubrics:propose.
-    const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
-    // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
-    void trackDetached(import('../../sync-sse'))
-      .then((m) => {
-        m.notifySyncInvalidate('rubrics.list');
-        m.notifySyncInvalidate('rubrics.trend');
-      })
-      .catch(() => {});
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            rubric,
-            completeness,
-            replicationSqlCheck,
-            methodLint,
-            ...(runtimeFindings.length ? { runtimeFindings } : {}),
-          }),
-        },
-      ],
-    };
-  },
-});
+  const rubric = await amendRubric(input);
+  if (!rubric) return { ok: false, error: `no rubric '${rubricRef}' — rubrics:list to see refs` };
+  const completeness = rubricCompleteness(rubric);
+  // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
+  const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+  const methodLint = rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+  // acceptance-runtime-plane P-004: same non-blocking vetting finding as rubrics:propose.
+  const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
+  // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
+  void trackDetached(import('../../sync-sse'))
+    .then((m) => {
+      m.notifySyncInvalidate('rubrics.list');
+      m.notifySyncInvalidate('rubrics.trend');
+    })
+    .catch(() => {});
+  return {
+    ok: true,
+    rubric,
+    completeness,
+    replicationSqlCheck,
+    methodLint,
+    ...(runtimeFindings.length ? { runtimeFindings } : {}),
+  };
+}
