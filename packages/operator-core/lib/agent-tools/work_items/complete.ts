@@ -674,6 +674,35 @@ function reportRootCauseVerificationInputShape(
   inspect(raw, []);
 }
 
+type PreflightIssue = { code: 'custom'; message: string; path: Array<string | number> };
+
+/**
+ * RSR-P-008-A (review-system-rework-reduction-2026-09-23): an issue added inside a
+ * `z.preprocess` ABORTS the schema stage behind it, so once the preflight above
+ * reports (say) an incomplete rootCauseVerification, a second defect elsewhere —
+ * a prose filesChanged entry — was never reported, and the caller learned about it
+ * one round-trip later. The preprocess now runs that stage itself and forwards its
+ * issues, minus the ones a preflight issue already explains (same path or
+ * beneath it — the preflight exists to REPLACE the schema's generic message
+ * there, not to sit beside it). Union branch issues are filtered the same way.
+ */
+function issuesNotCoveredByPreflight(issues: readonly z.core.$ZodIssue[], preflight: readonly PreflightIssue[]) {
+  const covered = preflight.map((issue) => issue.path.join('.'));
+  const isCovered = (path: PropertyKey[]) => {
+    const joined = path.map(String).join('.');
+    return covered.some((prefix) => joined === prefix || joined.startsWith(`${prefix}.`));
+  };
+  const filter = (list: readonly z.core.$ZodIssue[]): z.core.$ZodIssue[] =>
+    list.flatMap((issue): z.core.$ZodIssue[] => {
+      if (isCovered(issue.path)) return [];
+      if (issue.code === 'invalid_union' && Array.isArray(issue.errors)) {
+        return [{ ...issue, errors: issue.errors.map((branch) => filter(branch)) } as z.core.$ZodIssue];
+      }
+      return [issue];
+    });
+  return filter(issues);
+}
+
 function firstRootCauseVerificationInputError(value: unknown): string | undefined {
   if (Array.isArray(value)) {
     for (const nested of value) {
@@ -3899,7 +3928,7 @@ async function completeOne(
   // landing `proposed` cannot be lowered further, so the git work buys nothing there.
   const untouchedPaths =
     authorityByEvidence === 'committed'
-      ? untouchedPathsInCompletion(
+      ? await untouchedPathsInCompletion(
           completionEvidenceForGate,
           [existing.createdAt, existing.takenAt]
             .map((value) => (value ? Date.parse(String(value)) : NaN))
@@ -4015,8 +4044,11 @@ async function completeOne(
         `unknown to git history, so they have never existed in this checkout: ` +
         `${fabricatedPaths.neverExisted.join(', ')}. This is NOT triggered by deleting a file — a path ` +
         `git has any record of, on any branch, is treated as a legitimate deletion and does not affect ` +
-        `the grade; nor by a glob, an absolute path, a submodule path, or any case the probe cannot ` +
-        `judge, all of which are silent. Measured 2026-08-10 (EI-20093150500083378): an agent filed 12 ` +
+        `the grade; nor by a glob, an absolute path outside all managed checkouts (recorded as ` +
+        `outOfRepoArtifact and excluded from Git identity checks; external contents are not hashed), a ` +
+        `submodule path, or any case the probe cannot judge. For an out-of-tree deliverable, use its ` +
+        `absolute path instead of a repo-relative alias; do not use this exception for a missing repo file. ` +
+        `Measured 2026-08-10 (EI-20093150500083378): an agent filed 12 ` +
         `paths across two closes and 8 were fabricated — an \`agent-tools/\` segment and a \`__tests__/\` ` +
         `dir this repo does not use — and both closes still landed 'committed'. The fabricated paths ` +
         `were MORE conventional than the real ones, which is why review does not catch them. To fix: ` +
@@ -4613,8 +4645,11 @@ async function completeOne(
       `\`agent-tools/\` segment and a \`__tests__/\` dir that this repo does not use — and both closes still ` +
       `landed authority:'committed'. The fabricated paths were MORE conventional than the real ones, which is ` +
       `exactly why review does not catch them. If you DELETED these files, or they live in a submodule that is ` +
-      `not checked out, ignore this. If \`filesChanged\` was a scalar/comma-separated string or any entry ` +
-      `contains a prose annotation, re-call work_items:complete with an ARRAY of bare repo-relative paths, ` +
+      `not checked out, ignore this. For an out-of-tree deliverable, use its absolute path instead of a ` +
+      `repo-relative alias; it is recorded as outOfRepoArtifact and excluded from Git identity checks, so ` +
+      `external contents are not hashed. For repo-backed files, if \`filesChanged\` was a scalar/comma-separated ` +
+      `string or any entry contains a prose annotation, re-call work_items:complete with an ARRAY of bare ` +
+      `repo-relative paths, ` +
       `for example \`filesChanged: ["path/to/file.ts", "path/to/test.ts"]\`. Otherwise verify the paths on disk ` +
       `before re-calling. For a workspace-qualified \`.papercusp/apps/<app>/...\` entry with an absolute repair ` +
       `shown above, re-call with an ARRAY containing that absolute filesChanged path instead.`
@@ -5081,7 +5116,8 @@ async function completeOne(
   };
 }
 
-export default defineTool({
+// Named so the args preprocess can reach its own inner schema at parse time (RSR-P-008-A).
+const workItemsCompleteTool = defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
@@ -5247,10 +5283,20 @@ export default defineTool({
   },
   args: z.preprocess(
     (raw, ctx) => {
-      reportRootCauseVerificationInputShape(raw, (issue) => ctx.addIssue(issue));
+      const preflight: PreflightIssue[] = [];
+      reportRootCauseVerificationInputShape(raw, (issue) => preflight.push(issue));
       const hoisted = hoistMisplacedCompletionFields(raw);
       const gathered = gatherFlatCompletion(hoisted);
-      reportMalformedCompletionCoverage(gathered, (issue) => ctx.addIssue(issue));
+      reportMalformedCompletionCoverage(gathered, (issue) => preflight.push(issue));
+      for (const issue of preflight) ctx.addIssue(issue);
+      if (preflight.length > 0) {
+        // RSR-P-008-A: this preprocess's issues abort the stage below, so report
+        // that stage's OTHER issues now (see issuesNotCoveredByPreflight).
+        const rest = (workItemsCompleteTool.args as unknown as { out: z.ZodType }).out.safeParse(gathered);
+        if (!rest.success) {
+          for (const issue of issuesNotCoveredByPreflight(rest.error.issues, preflight)) ctx.addIssue(issue as never);
+        }
+      }
       return gathered;
     },
     z.union(
@@ -5425,3 +5471,5 @@ export default defineTool({
     return bulkContent(env);
   },
 });
+
+export default workItemsCompleteTool;
