@@ -60,7 +60,6 @@ const OBSERVED_AT = '2026-09-21T16:00:00.000Z';
  * while the thing it guards has moved.
  */
 const UNDISPOSITIONED: Record<OwnerDirectiveObligationRow['state'], { verb: string }> = {
-  pending: { verb: 'orders:resolve-pending' },
   open: { verb: 'orders:disposition' },
 };
 
@@ -70,7 +69,7 @@ function row(state: OwnerDirectiveObligationRow['state'], id: number): OwnerDire
   return {
     id,
     state,
-    excerpt: `owner turn held in ${state}`,
+    displayText: `"owner turn held in ${state}"`,
     recordedAt: '2026-09-21T15:27:44.000Z',
     recordedBy: 'su-c03852cb',
     capturedByHook: true,
@@ -92,9 +91,9 @@ describe('R-26 (rescoped by D-062): a pending directive is never RENDERED as dis
     // Without this, a union that collapsed to a single member — or a map that
     // lost an entry — would leave every per-state assertion below trivially
     // satisfied by one case, and the exhaustiveness claim would be a fiction.
-    expect(UNDISPOSITIONED_STATES.length).toBeGreaterThanOrEqual(2);
-    expect(UNDISPOSITIONED_STATES).toContain('pending');
-    expect(UNDISPOSITIONED_STATES).toContain('open');
+    // D-001 of owner-directive-delivery-redesign-2026-09-22 removed the pending
+    // triage, so exactly one undispositioned state remains — pinned, not assumed.
+    expect(UNDISPOSITIONED_STATES).toEqual(['open']);
   });
 
   it('renders EVERY undispositioned state as due and actionable — never discharged', () => {
@@ -160,11 +159,11 @@ describe('R-26 (rescoped by D-062): a pending directive is never RENDERED as dis
     expect(agentObligationIsActionable(discharged!)).toBe(false);
   });
 
-  it('CONTROL: mixing a pending row into the queue removes the discharged render entirely', () => {
+  it('CONTROL: mixing open rows into the queue removes the discharged render entirely', () => {
     // The two branches are mutually exclusive by construction. If a build ever
     // emitted both, an agent could be told "nothing applies" alongside a live
     // directive and would be entitled to believe either one.
-    const obligations = ownerDirectiveObligations(known([row('pending', 17), row('open', 18)]));
+    const obligations = ownerDirectiveObligations(known([row('open', 17), row('open', 18)]));
     expect(obligations).toHaveLength(2);
     expect(obligations.every((entry) => entry.status === 'due')).toBe(true);
     expect(obligations.some((entry) => entry.status === 'not-applicable')).toBe(false);
