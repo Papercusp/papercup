@@ -21,8 +21,11 @@ import {
   type WorkspaceHostCanaryRunInput,
   type WorkspaceHostCanaryRunResult,
 } from '../../../workspace-host/canary-runner';
+import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+// Same grammar as the initialize route's releaseTaskId, so the two entry points accept one set.
+const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 interface CanaryBody extends Record<string, unknown> {
   runId?: unknown;
@@ -31,6 +34,7 @@ interface CanaryBody extends Record<string, unknown> {
   credentials?: unknown;
   requestedAgents?: unknown;
   destroyFinalization?: unknown;
+  releaseTaskId?: unknown;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -158,6 +162,10 @@ export function createWorkspaceHostCanaryRoute(
       }
       const agentScopeProblem = requestedAgentsProblem(body.requestedAgents);
       if (agentScopeProblem) return requestError(agentScopeProblem, 400);
+      if (body.releaseTaskId !== undefined && (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId))) {
+        return requestError('releaseTaskId has an invalid value', 400);
+      }
+      const releaseTaskId = typeof body.releaseTaskId === 'string' ? body.releaseTaskId : undefined;
       if (body.destroyFinalization !== undefined && !hasDestroyFinalization(body.destroyFinalization)) {
         return requestError(
           'destroyFinalization requires operationId, credentialTeardown, teardown, and destroyEvidence',
@@ -233,6 +241,7 @@ export function createWorkspaceHostCanaryRoute(
           workspaceId,
           hostId,
           requestedAt: body.requestedAt,
+          ...(releaseTaskId !== undefined ? { releaseTaskId } : {}),
           source: body.source as never,
           credentials: body.credentials as never,
           ...(body.requestedAgents !== undefined
@@ -254,6 +263,7 @@ export function createWorkspaceHostCanaryRoute(
           workspaceId: result.workspaceId,
           hostId: result.hostId,
           requestedAt: result.requestedAt,
+          releaseTaskId: releaseTaskId ?? null,
           operationIds: result.operationIds,
           phases: summarize(result),
           evidence: result.assembly.evidence,
@@ -267,6 +277,12 @@ export function createWorkspaceHostCanaryRoute(
         }
         if (error instanceof WorkspaceHostCanaryRunError) {
           return requestError('workspace-host canary request rejected', 422, { problems: error.problems });
+        }
+        // Thrown by the initialize phase BEFORE any row exists: the named release is not what this
+        // host runs (or cannot take the stage). Its message names journal facts, never credential
+        // material, so it is surfaced exactly as the initialize route surfaces it.
+        if (error instanceof WorkspaceHostReleaseBindingError) {
+          return requestError(error.message, error.reason === 'task-not-found' ? 404 : 409, { reason: error.reason });
         }
         if (!phaseStarted) {
           // The RESPONSE stays opaque deliberately: an untyped preflight error may carry

@@ -12,6 +12,7 @@ import {
   type WorkspaceHostCanaryRunResult,
 } from '../../../workspace-host/canary-runner';
 import { createWorkspaceHostCanaryRoute, type WorkspaceHostCanaryRouteDependencies } from './canary';
+import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
 
 /**
  * What the provision route persists for this run. Built by the PRODUCTION synthesizer rather than
@@ -322,6 +323,49 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
     // Must be ABSENT, not an explicit undefined/empty: the driver's resolver keys all-three
     // coverage off `=== undefined`, so leaking the key through would change the default.
     expect(runCanary.mock.calls[0]?.[0]).not.toHaveProperty('requestedAgents');
+  });
+
+  // WI-10002510: the canary route is how a release host is initialized, so it is the one entry
+  // point that can record root-bootstrap + fixed-agent-initialization against a release task.
+  it('forwards a releaseTaskId to the controller and echoes it; omits it when absent', async () => {
+    const bound = harness();
+    const response = await post(bound.dependencies, { ...requestBody(), releaseTaskId: '0mudid6hj1kyckhk5ri' });
+    expect(response.status).toBe(200);
+    expect(bound.runCanary).toHaveBeenCalledWith(expect.objectContaining({ releaseTaskId: '0mudid6hj1kyckhk5ri' }));
+    expect(await response.json()).toMatchObject({ ok: true, releaseTaskId: '0mudid6hj1kyckhk5ri' });
+
+    const unbound = harness();
+    const plain = await post(unbound.dependencies, requestBody());
+    expect(plain.status).toBe(200);
+    expect(unbound.runCanary.mock.calls[0]?.[0]).not.toHaveProperty('releaseTaskId');
+    expect(await plain.json()).toMatchObject({ ok: true, releaseTaskId: null });
+  });
+
+  it('refuses a malformed releaseTaskId before controller or host resolution', async () => {
+    for (const releaseTaskId of ['', 'has space', '../etc', 7, 'x'.repeat(65)]) {
+      const { dependencies, runCanary, resolveOperationsForHost } = harness();
+      const response = await post(dependencies, { ...requestBody(), releaseTaskId });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ ok: false, error: 'releaseTaskId has an invalid value' });
+      expect(runCanary).not.toHaveBeenCalled();
+      expect(resolveOperationsForHost).not.toHaveBeenCalled();
+    }
+  });
+
+  it('surfaces a release binding refusal with its reason instead of an opaque preflight 422', async () => {
+    for (const [reason, status] of [['bundle-mismatch', 409], ['task-not-found', 404]] as const) {
+      const { dependencies, runCanary } = harness();
+      runCanary.mockRejectedValueOnce(
+        new WorkspaceHostReleaseBindingError(reason, 'workspace.root-bootstrap', 'host runs a different bundle'),
+      );
+      const response = await post(dependencies, { ...requestBody(), releaseTaskId: '0mudid6hj1kyckhk5ri' });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: 'Cannot record workspace.root-bootstrap: host runs a different bundle',
+        reason,
+      });
+    }
   });
 
   it('refuses a malformed agent scope before controller or host resolution', async () => {
