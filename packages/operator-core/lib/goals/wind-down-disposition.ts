@@ -290,6 +290,7 @@ export interface GoalAcceptanceRubricRef {
   rubricId: string;
   revision?: number | null;
   criteriaHash?: string | null;
+  barContract?: { meaningRevision?: number | null } | null;
   criteria: unknown[];
   proposedBy?: string | null;
   createdBy?: string | null;
@@ -299,6 +300,7 @@ export interface GoalAcceptanceRubricRef {
 export interface GoalAcceptanceCard {
   createdBy?: string | null;
   rubricRevision?: number | null;
+  rubricMeaningRevision?: number | null;
   criteriaHash?: string | null;
   rubricResolved: boolean;
   missingKeys: string[];
@@ -307,6 +309,7 @@ export interface GoalAcceptanceCard {
     consultId?: string | null;
     workItemId?: string | null;
     rubricRevision?: number | null;
+    rubricMeaningRevision?: number | null;
     criteriaHash?: string | null;
   } | null;
 }
@@ -405,8 +408,16 @@ export async function evaluateGoalAcceptanceGate(
       const current = vettedCards.find(
         (card) =>
           deps.classifyRubricCurrentness(
-            { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-            { revision: rubricRevision, criteriaHash: rubric.criteriaHash },
+            {
+              revision: card.vetting?.rubricRevision,
+              criteriaHash: card.vetting?.criteriaHash,
+              meaningRevision: card.vetting?.rubricMeaningRevision,
+            },
+            {
+              revision: rubricRevision,
+              criteriaHash: rubric.criteriaHash,
+              meaningRevision: rubric.barContract?.meaningRevision,
+            },
           ).state === 'current',
       );
       if (!current) {
@@ -441,8 +452,16 @@ export async function evaluateGoalAcceptanceGate(
         card.missingKeys.length === 0 &&
         !card.synthesized &&
         deps.classifyRubricCurrentness(
-          { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
-          { revision: rubricRevision, criteriaHash: rubric.criteriaHash },
+          {
+            revision: card.rubricRevision,
+            criteriaHash: card.criteriaHash,
+            meaningRevision: card.rubricMeaningRevision,
+          },
+          {
+            revision: rubricRevision,
+            criteriaHash: rubric.criteriaHash,
+            meaningRevision: rubric.barContract?.meaningRevision,
+          },
         ).state === 'current',
     );
     if (cards.length === 0) {

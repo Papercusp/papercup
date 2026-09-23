@@ -100,7 +100,7 @@ fi
 
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
-import json, os, sys, urllib.request, urllib.parse
+import json, os, re, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token_path, owner, agent, harness_slug, hook_dir = sys.argv[1:7]
@@ -163,6 +163,43 @@ if role:
     args['role'] = role
 if harness_slug:
     args['harness_slug'] = harness_slug
+
+# ── Minimum interval (P-012, review-system-rework-reduction-2026-09-23) ──
+# This report exists so a LONG call renews its plan-item claim at dispatch (EI-8997). The
+# server already renews at most once per 60s against a >=20m lease
+# (plan-items/activity-claim-renewal.ts), so a dispatch report sent within
+# PRE_MIN_INTERVAL_SEC of ANY report (pre or post) from this session adds nothing but load.
+# Measured before this: 92% of pre reports followed another report by <30s (~2k calls/hour).
+# The marker is shared with posttooluse-activity-report.sh (same file names, same key).
+PRE_MIN_INTERVAL_SEC = float(os.environ.get('PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC') or '30')
+
+
+def _report_marker(phase):
+    cache_dir = os.environ.get('PAPERCUSP_LOCKS_CACHE_DIR') or os.path.join(
+        os.path.expanduser('~'), '.papercusp', 'locks-cache')
+    key = re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('PAPERCUSP_SID') or owner)[:120]
+    return os.path.join(cache_dir, f'activity-last-{phase}-{key}')
+
+
+def _within(path, window):
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except Exception:
+        return False
+    return 0 <= age < window
+
+
+if PRE_MIN_INTERVAL_SEC > 0 and any(
+        _within(_report_marker(p), PRE_MIN_INTERVAL_SEC) for p in ('pre', 'post')):
+    sys.exit(0)
+try:
+    _m = _report_marker('pre')
+    os.makedirs(os.path.dirname(_m), mode=0o700, exist_ok=True)
+    with open(_m, 'a'):
+        pass
+    os.utime(_m, None)
+except Exception:
+    pass  # an unwritable cache never suppresses the report
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',

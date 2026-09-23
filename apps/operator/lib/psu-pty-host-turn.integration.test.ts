@@ -94,10 +94,11 @@ it('classifies an interactive Codex capacity wall without retrying or hiding the
       '-e',
       [
         "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
-        "let turns=0;process.stdout.write('READY\\n');",
-        "process.stdin.on('data',d=>{if(d.includes('\\\\x04')){process.exit(0);return;}",
-        "if(d.includes('\\\\r')){turns++;process.stdout.write('Selected model is at capacity. Please try again in 90 seconds.\\n');",
+        "let turns=0;process.stdout.write('READY\\n');setTimeout(()=>process.stdout.write('100% context left\\n'),100);",
+        "process.stdin.on('data',d=>{if(d.includes('\\x04')){process.exit(0);return;}",
+        "if(d.includes('\\r')){turns++;process.stdout.write('Selected model is at capacity. Please try again in 90 seconds.\\n');",
         "process.stdout.write('TURN-COUNT:'+turns+'\\n');}});",
+        "setTimeout(()=>process.exit(0),20000);",
       ].join(''),
     ],
     cwd: '/tmp',
@@ -109,6 +110,7 @@ it('classifies an interactive Codex capacity wall without retrying or hiding the
   });
   try {
     expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, '100% context left', 5000)).toBe(true);
     expect(await injectIntoHost(sock, { mode: 'turn', data: 'trigger-capacity' })).toBe(true);
     expect(await waitForOutput(captured, 'Selected model is at capacity', 5000)).toBe(true);
     expect(await waitForOutput(captured, 'TURN-COUNT:1', 5000)).toBe(true);
@@ -144,7 +146,7 @@ it('classifies an interactive Codex capacity wall without retrying or hiding the
     await done;
   }
   expect(exitCode).toBe(0);
-});
+}, 25_000);
 
 describe('Codex carry first turn on a continuously repainting fresh composer', () => {
   it.each(['ready', 'launch-ready', 'terminal-reply', 'owner-input', 'not-ready'] as const)(

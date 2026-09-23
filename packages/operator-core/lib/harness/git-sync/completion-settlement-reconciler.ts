@@ -5,7 +5,7 @@ import {
   type CompletionSettlementManifest,
   type CompletionTreeStamp,
 } from '../../coord-lifecycle/records';
-import { completionHeadBlobMap } from '../../agent-tools/work_items/completion-freshness';
+import { completionHeadBlobMap, type HeadBlobResolution } from '../../agent-tools/work_items/completion-freshness';
 import { emitAwaitedEvent } from '../../events/await/engine';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
@@ -13,6 +13,12 @@ const MAX_CANDIDATES = 200;
 
 export type SettlementResidualReason = 'identity-unavailable' | 'missing-from-commit' | 'content-mismatch';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
+type CompletionHeadBlobLookup = (
+  repoRoot: string,
+  headSha: string,
+  paths: readonly string[],
+  opts?: { signal?: AbortSignal },
+) => ReadonlyMap<string, HeadBlobResolution> | undefined | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
 
 /** EI-22344624691081449: manifest entries may describe an intentional deletion. */
 type SettlementIdentity = CompletionSettlementManifest['contentIdentity'][number] & {
@@ -52,15 +58,19 @@ export function normalizeStoredSettlementManifest(raw: unknown): unknown {
   };
 }
 
-export function residualPathsForCommit(
+export async function residualPathsForCommit(
   manifest: unknown,
   commitSha: string,
-  lookup: typeof completionHeadBlobMap = completionHeadBlobMap,
-): SettlementResidualPath[] | undefined {
+  lookup: CompletionHeadBlobLookup = completionHeadBlobMap,
+  signal?: AbortSignal,
+): Promise<SettlementResidualPath[] | undefined> {
   const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
   const receipt = parsed.data;
-  const committed = lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths);
+  const committed = await (signal
+    ? lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths, { signal })
+    : lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths));
+  if (signal?.aborted) return undefined;
   if (!committed) {
     return receipt.normalizedPaths.map((path) => ({ path, reason: 'identity-unavailable' }));
   }
@@ -146,11 +156,15 @@ function confirmedTreeStampForSettlement(
 
 export interface CompletionSettlementReconcilerDeps {
   /** Exact-tree lookup seam used by focused reconciliation tests. */
-  lookup?: typeof completionHeadBlobMap;
+  lookup?: CompletionHeadBlobLookup;
   /** Await-event seam; production uses the durable, per-key latched emitter. */
   emit?: typeof emitAwaitedEvent;
   /** Database seam for focused tests. */
   sql?: ReturnType<typeof getOrgPg>['sql'];
+  /** Called once per candidate so the action liveness timer can observe batch progress. */
+  onProgress?: (progress: { completed: number; total: number; featureId: string }) => void | Promise<void>;
+  /** Cancels an in-flight Git child and prevents late settlement writes after timeout. */
+  signal?: AbortSignal;
 }
 
 /** Reconcile a bounded batch of proposed code completions against the exact emitted commit. */
@@ -175,6 +189,8 @@ export async function reconcileProposedCompletionsAtCommit(
      ORDER BY updated_ts ASC, feature_id ASC
      LIMIT ${MAX_CANDIDATES}`;
 
+  if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
+
   const upgraded: string[] = [];
   let residualCount = 0;
   // WI-1409142: a candidate this pass could not READ is the failure mode that hurts
@@ -184,43 +200,47 @@ export async function reconcileProposedCompletionsAtCommit(
   // four days with not one line of output. Skipping is still correct — one malformed
   // row must not stall the batch — but it must never again be SILENT.
   const unreadable: string[] = [];
-  for (const row of rows) {
-    let payload: Record<string, unknown>;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
     try {
-      payload = typeof row.payload === 'string'
-        ? JSON.parse(row.payload) as Record<string, unknown>
-        : row.payload as Record<string, unknown>;
-    } catch {
-      unreadable.push(row.feature_id);
-      continue;
-    }
-    const evidence = payload?.[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
-    const manifest = evidence?.settlementManifest;
-    const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
-    if (!parsed.success) {
-      unreadable.push(row.feature_id);
-      continue;
-    }
-    const residualPaths = residualPathsForCommit(parsed.data, commitSha, lookup);
-    if (!residualPaths) continue;
-    residualCount += residualPaths.length;
-    const nextManifest = { ...parsed.data, residualPaths };
-    // WI-1053550: only when settlement is COMPLETE (about to set authority='committed'
-    // below) does the trigger's floor apply to this write — refresh treeStamp so the
-    // upgrade survives it instead of being downgraded straight back. See
-    // confirmedTreeStampForSettlement's doc for why this is a sound proof, not a bypass.
-    const confirmedTreeStamp = residualPaths.length === 0
-      ? confirmedTreeStampForSettlement(parsed.data, commitSha)
-      : undefined;
-    const nextPayload = {
-      ...payload,
-      [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
-        ...evidence,
-        settlementManifest: nextManifest,
-        ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
-      },
-    };
-    const result = await sql<{ feature_id: string }[]>`
+      if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
+      let payload: Record<string, unknown>;
+      try {
+        payload =
+          typeof row.payload === 'string'
+            ? (JSON.parse(row.payload) as Record<string, unknown>)
+            : (row.payload as Record<string, unknown>);
+      } catch {
+        unreadable.push(row.feature_id);
+        continue;
+      }
+      const evidence = payload?.[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
+      const manifest = evidence?.settlementManifest;
+      const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
+      if (!parsed.success) {
+        unreadable.push(row.feature_id);
+        continue;
+      }
+      const residualPaths = await residualPathsForCommit(parsed.data, commitSha, lookup, deps.signal);
+      if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
+      if (!residualPaths) continue;
+      residualCount += residualPaths.length;
+      const nextManifest = { ...parsed.data, residualPaths };
+      // WI-1053550: only when settlement is COMPLETE (about to set authority='committed'
+      // below) does the trigger's floor apply to this write — refresh treeStamp so the
+      // upgrade survives it instead of being downgraded straight back. See
+      // confirmedTreeStampForSettlement's doc for why this is a sound proof, not a bypass.
+      const confirmedTreeStamp =
+        residualPaths.length === 0 ? confirmedTreeStampForSettlement(parsed.data, commitSha) : undefined;
+      const nextPayload = {
+        ...payload,
+        [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+          ...evidence,
+          settlementManifest: nextManifest,
+          ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
+        },
+      };
+      const result = await sql<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = ${sql.json(nextPayload)},
              authority = CASE WHEN ${residualPaths.length} = 0 THEN 'committed' ELSE authority END,
@@ -233,24 +253,27 @@ export async function reconcileProposedCompletionsAtCommit(
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        RETURNING feature_id`;
-    if (residualPaths.length === 0 && result[0]) {
-      const id = result[0].feature_id;
-      upgraded.push(id);
-      // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
-      // Replays and stale generations miss RETURNING and therefore cannot re-fire.
-      await emit({
-        key: `work-item:settled:${id}`,
-        summary: `${id} settlement committed at ${commitSha.slice(0, 12)}`,
-        payload: {
-          id,
-          harness: row.harness_slug,
-          commitSha,
-          generation: parsed.data.generation,
-          evidenceHash: parsed.data.evidenceHash,
-        },
-        source: 'git-sync-completion-settlement',
-        workspaceId: scope.workspaceId,
-      });
+      if (residualPaths.length === 0 && result[0]) {
+        const id = result[0].feature_id;
+        upgraded.push(id);
+        // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
+        // Replays and stale generations miss RETURNING and therefore cannot re-fire.
+        await emit({
+          key: `work-item:settled:${id}`,
+          summary: `${id} settlement committed at ${commitSha.slice(0, 12)}`,
+          payload: {
+            id,
+            harness: row.harness_slug,
+            commitSha,
+            generation: parsed.data.generation,
+            evidenceHash: parsed.data.evidenceHash,
+          },
+          source: 'git-sync-completion-settlement',
+          workspaceId: scope.workspaceId,
+        });
+      }
+    } finally {
+      await deps.onProgress?.({ completed: index + 1, total: rows.length, featureId: row.feature_id });
     }
   }
   if (unreadable.length > 0) {

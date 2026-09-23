@@ -266,8 +266,12 @@ type CompletionSettlementScope = {
   workspaceId: string;
   repositoryRoot: string;
 };
+type CompletionSettlementProgress = {
+  signal: AbortSignal;
+  onProgress: (progress: { completed: number; total: number; featureId: string }) => void | Promise<void>;
+};
 const reconcileProposedCompletionsAtCommitMock = vi.fn(
-  async (_commitSha: string, _scope: CompletionSettlementScope) => ({
+  async (_commitSha: string, _scope: CompletionSettlementScope, _progress: CompletionSettlementProgress) => ({
     inspected: 0,
     upgraded: [],
     residual: 0,
@@ -275,8 +279,11 @@ const reconcileProposedCompletionsAtCommitMock = vi.fn(
   }),
 );
 vi.mock('./completion-settlement-reconciler', () => ({
-  reconcileProposedCompletionsAtCommit: (commitSha: string, scope: CompletionSettlementScope) =>
-    reconcileProposedCompletionsAtCommitMock(commitSha, scope),
+  reconcileProposedCompletionsAtCommit: (
+    commitSha: string,
+    scope: CompletionSettlementScope,
+    progress: CompletionSettlementProgress,
+  ) => reconcileProposedCompletionsAtCommitMock(commitSha, scope, progress),
 }));
 
 const runDependencyGenerationPrebuildMock = vi.fn(async (_request: Record<string, unknown>) => 'ready');
@@ -901,11 +908,15 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
     await action(ctx);
 
-    expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(syncedOutcome.headSha, {
-      installSlug: 'papercup',
-      workspaceId: 'ws-42',
-      repositoryRoot: realpathSync(repoDir),
-    });
+    expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(
+      syncedOutcome.headSha,
+      {
+        installSlug: 'papercup',
+        workspaceId: 'ws-42',
+        repositoryRoot: realpathSync(repoDir),
+      },
+      expect.objectContaining({ signal: expect.anything(), onProgress: expect.any(Function) }),
+    );
   });
 
   it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {

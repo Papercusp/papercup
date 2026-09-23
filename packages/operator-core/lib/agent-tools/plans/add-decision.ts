@@ -522,22 +522,27 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   // P-031 (merged into P-030 by D-005): a Decision is a SCOPE write — it can re-scope the
   // plan so a complete BAR no longer holds. Re-read the live BAR readiness in this same call
   // and restamp the plan's Now (which orient folds). A deduped retry returned above, so this
-  // runs once per real decision. Never throws into the decision write.
-  let actor = 'system:scope-write-cascade';
-  try {
-    actor = resolveAgentIdentity(ctx).ownerId;
-  } catch {
-    /* unattributable caller: the Now stamp falls back to the system actor */
+  // runs once per real decision. Never throws into the decision write: building the input
+  // is guarded too (a lock result without a resolved scope skips the re-evaluation).
+  let barReadiness: BarReadinessResult | undefined;
+  const lockScope = result.scope as typeof result.scope | undefined;
+  if (lockScope) {
+    let actor = 'system:scope-write-cascade';
+    try {
+      actor = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      /* unattributable caller: the Now stamp falls back to the system actor */
+    }
+    barReadiness = await reevaluateBarReadinessOnScopeWrite(
+      {
+        workspaceId: lockScope.workspaceId,
+        harnessSlug: lockScope.harnessSlug,
+        planSlug: it.slug,
+        cause: 'decision-added',
+      },
+      defaultBarReadinessDeps(ctx, actor),
+    );
   }
-  const barReadiness: BarReadinessResult = await reevaluateBarReadinessOnScopeWrite(
-    {
-      workspaceId: result.scope.workspaceId,
-      harnessSlug: result.scope.harnessSlug,
-      planSlug: it.slug,
-      cause: 'decision-added',
-    },
-    defaultBarReadinessDeps(ctx, actor),
-  );
 
   return {
     ...result.value,
@@ -550,7 +555,9 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
     // Only the blocked / cleared / unmeasured cases: a plan with no BAR contract keeps the
     // exact prior result shape.
-    ...(barReadiness.state === 'blocked' || barReadiness.nowStamped || barReadiness.error ? { barReadiness } : {}),
+    ...(barReadiness && (barReadiness.state === 'blocked' || barReadiness.nowStamped || barReadiness.error)
+      ? { barReadiness }
+      : {}),
     ...(measurementAdvisory ? { measurementAdvisory } : {}),
     ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
     // WI-42142: advisory provenance fields — absent on the clean common case, so a

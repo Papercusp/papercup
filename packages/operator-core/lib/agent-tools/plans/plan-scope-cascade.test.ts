@@ -12,10 +12,14 @@
 import { describe, expect, it } from 'vitest';
 import { isClaimHoldParked } from '../../work-items';
 import {
+  BAR_READINESS_NOW_MARK,
   MOOT_CARRIER_NOW_MARK,
   isMootCarrierTitle,
   propagatePlanScopeWrite,
+  reevaluateBarReadinessOnScopeWrite,
+  stampBarReadinessNowBlock,
   stampMootCarrierNowBlock,
+  type BarReadinessReading,
   type CarrierCandidate,
   type GateReading,
   type PlanScopeCascadeDeps,
@@ -256,5 +260,101 @@ describe('stampMootCarrierNowBlock', () => {
     });
     expect(out).toContain('not measured (timeout)');
     expect(out).not.toContain('acceptance gate satisfied');
+  });
+});
+
+// P-031 (merged into P-030 by D-005): every scope write re-evaluates BAR readiness and keeps
+// ONE banner in the plan's Now. The end-to-end guard that drives the REAL snapshot projection
+// lives beside its fixture in acceptance-bar-contract-snapshot.test.ts; these pin the banner
+// rules and the never-throw contract.
+describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
+  const day = new Date('2026-09-23T12:00:00.000Z');
+  const blocked = (codes: string[]): BarReadinessReading => ({
+    state: 'blocked',
+    codes,
+    nextRepair: { code: codes[0]!, barKey: 'R-1', action: 'Map the outstanding BAR to a live replacement item or amend the BAR.' },
+  });
+  const count = (body: string) => body.split(BAR_READINESS_NOW_MARK).length - 1;
+
+  it('stamps the blocking codes at the top of the State and keeps the author Now beneath', () => {
+    const out = stampBarReadinessNowBlock(planBody(), blocked(['bar_snapshot_mapping_dropped_only']), 'item-dropped', day);
+    expect(out).not.toBeNull();
+    expect(out!).toMatch(/\*\*State:\*\* ⚠ BAR READINESS BLOCKED \(2026-09-23, after item-dropped\): bar_snapshot_mapping_dropped_only\./);
+    expect(out!).toContain('Next repair: Map the outstanding BAR');
+    expect(out!).toContain('Greening in progress.');
+    expect(out!).toContain('**Next:** Land the repair queue.');
+  });
+
+  it('is idempotent for an unchanged verdict and REPLACES (never stacks) a changed one', () => {
+    const first = stampBarReadinessNowBlock(planBody(), blocked(['bar_snapshot_mapping_dropped_only']), 'item-dropped', day)!;
+    const later = new Date('2026-09-24T09:00:00.000Z');
+    expect(stampBarReadinessNowBlock(first, blocked(['bar_snapshot_mapping_dropped_only']), 'decision-added', later)).toBeNull();
+    const changed = stampBarReadinessNowBlock(
+      first,
+      blocked(['bar_snapshot_mapping_dropped_only', 'bar_snapshot_mapping_missing']),
+      'decision-added',
+      later,
+    );
+    expect(changed).not.toBeNull();
+    expect(count(changed!)).toBe(1);
+    expect(changed!).toContain('bar_snapshot_mapping_missing');
+  });
+
+  it('clears the banner once readiness is ready, and never erases it on an unmeasured read', () => {
+    const stamped = stampBarReadinessNowBlock(planBody(), blocked(['bar_snapshot_mapping_dropped_only']), 'item-dropped', day)!;
+    expect(stampBarReadinessNowBlock(stamped, { state: null, codes: [], nextRepair: null, error: 'x' }, 'decision-added')).toBeNull();
+    const cleared = stampBarReadinessNowBlock(stamped, { state: 'ready', codes: [], nextRepair: null }, 'decision-added');
+    expect(cleared).not.toBeNull();
+    expect(count(cleared!)).toBe(0);
+    expect(cleared!).toContain('Greening in progress.');
+    // Ready with no banner present: nothing to write.
+    expect(stampBarReadinessNowBlock(planBody(), { state: 'ready', codes: [], nextRepair: null }, 'item-dropped')).toBeNull();
+  });
+
+  it('coexists with a moot-carrier banner in the same Now', () => {
+    const moot = stampMootCarrierNowBlock(planBody(), {
+      subjectSlug: SUBJECT,
+      cause: 'superseded',
+      carriers: ['WI-1 (P-022)'],
+      gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' },
+      today: day,
+    })!;
+    const both = stampBarReadinessNowBlock(moot, blocked(['bar_snapshot_mapping_dropped_only']), 'item-dropped', day)!;
+    expect(both).toContain(MOOT_CARRIER_NOW_MARK);
+    expect(count(both)).toBe(1);
+  });
+
+  it('never throws: a failed read is NOT measured and skips the stamp; a failed stamp keeps the codes', async () => {
+    let stampCalls = 0;
+    const failedRead = await reevaluateBarReadinessOnScopeWrite(
+      { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'decision-added' },
+      {
+        async readBarReadiness() {
+          throw new Error('pool exhausted');
+        },
+        async restampNow() {
+          stampCalls += 1;
+          return true;
+        },
+      },
+    );
+    expect(failedRead.state).toBeNull();
+    expect(failedRead.error).toContain('pool exhausted');
+    expect(stampCalls).toBe(0);
+
+    const failedStamp = await reevaluateBarReadinessOnScopeWrite(
+      { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'item-dropped' },
+      {
+        async readBarReadiness() {
+          return blocked(['bar_snapshot_mapping_dropped_only']);
+        },
+        async restampNow() {
+          throw new Error('plan lock busy');
+        },
+      },
+    );
+    expect(failedStamp.codes).toEqual(['bar_snapshot_mapping_dropped_only']);
+    expect(failedStamp.nowStamped).toBe(false);
+    expect(failedStamp.error).toContain('plan lock busy');
   });
 });

@@ -7,6 +7,8 @@ import {
   DUP_THRESHOLD,
   CONTAINMENT_THRESHOLD,
   CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
+  TOOL_FAILURE_SIGNATURE_MAX_CLASSES,
+  tallyToolFailureClass,
   type CaptureDeps,
 } from './capture-core';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -3919,5 +3921,125 @@ describe('captureImprovement — goal provenance stamp (WI-2140701 (b))', () => 
     expect(d.created).toHaveLength(0);
     expect(calls).toEqual([]);
     expect(res.goalId).toBeUndefined();
+  });
+});
+
+describe('captureToolInvocationFriction — one row per signature (review-system-rework-reduction D-010)', () => {
+  /** A stateful issue store: every capture reads what the previous one wrote. */
+  function signatureStore() {
+    const rows: EngineerIssue[] = [];
+    const occurrences: RecordIssueOccurrenceInput[] = [];
+    const payloadOf = (row: EngineerIssue) => (row.payload as Record<string, any>) ?? {};
+    const d: CaptureDeps = {
+      searchIssues: async () => [],
+      recordIssueOccurrence: async (input) => { occurrences.push(input); return null; },
+      findIssuesByWatchdogKeys: async (keys) => rows.filter((row) => keys.includes(payloadOf(row).watchdogKey)),
+      findIssuesByToolFailureClassKeys: async (keys) =>
+        rows.filter((row) => keys.includes(payloadOf(row).toolFailureProbation?.classKey)),
+      createIssue: async (input) => {
+        const row = existing({ id: `EI-S${rows.length + 1}`, title: input.title,
+          kind: (input.kind as 'bug' | 'change') ?? 'bug', scope: input.scope ?? 'operator',
+          payload: structuredClone(input.payload ?? {}) as EngineerIssue['payload'] });
+        rows.push(row);
+        return row;
+      },
+      mergeIssuePayload: async (id, patch, opts) => {
+        const row = rows.find((r) => r.id === id);
+        if (!row) return null;
+        const next: Record<string, unknown> = { ...payloadOf(row), ...structuredClone(patch) };
+        for (const key of opts?.unset ?? []) delete next[key];
+        row.payload = next as EngineerIssue['payload'];
+        return row;
+      },
+      updateIssuePatch: async (id, patch) => {
+        const row = rows.find((r) => r.id === id);
+        return row ? Object.assign(row, patch) : null;
+      },
+      tagIssue: async () => {},
+      untagIssue: async () => {},
+    };
+    const capture = (ownerId: string, runtimeVersion: string, failure: Partial<typeof metadataToolFailure> = {}) =>
+      captureToolInvocationFriction({
+        workspaceId: 'ws', harnessSlug: 'papercusp', ownerId, invokedAt: '2026-09-23T12:00:00Z',
+        failure: { ...metadataToolFailure, runtimeVersion, ...failure },
+      }, d);
+    return { rows, occurrences, capture, payloadOf };
+  }
+  const SIGNATURE = 'tool-failure-signature:coord:send:caller:invalid_args:body';
+
+  it('P-023: 100 identical refusals across two builds produce ONE row whose count is 100', async () => {
+    const store = signatureStore();
+    for (let i = 0; i < 100; i++) await store.capture('su-a', i < 50 ? 'build-1' : 'build-2');
+    expect(store.rows).toHaveLength(1);
+    const payload = store.payloadOf(store.rows[0]);
+    expect(payload.repeatCount).toBe(100);
+    expect(payload.watchdogKey).toBe(SIGNATURE);
+    const classes = Object.values(payload.toolFailureSignature.classes) as Array<{ count: number }>;
+    expect(classes.map((c) => c.count)).toEqual([50, 50]);
+    // One reporter never corroborates, whichever build it reports from.
+    expect(payload.lane).toBe('observation');
+    expect(payload.toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-a'],
+      deployedRevision: 'build-1' });
+    expect(store.occurrences).toHaveLength(99);
+  });
+
+  it('a report on another build counts onto the row but neither corroborates nor rewrites it', async () => {
+    const store = signatureStore();
+    await store.capture('su-a', 'build-1');
+    const before = structuredClone(store.payloadOf(store.rows[0]).toolFailureProbation);
+    const result = await store.capture('su-b', 'build-2');
+    expect(result).toMatchObject({ created: false, reason: 'coalesced', issue: { id: 'EI-S1' } });
+    expect(store.rows).toHaveLength(1);
+    const payload = store.payloadOf(store.rows[0]);
+    expect(payload.toolFailureProbation).toEqual(before);
+    expect(payload.lane).toBe('observation');
+    expect(payload.repeatCount).toBe(2);
+  });
+
+  it('two independent reporters of ONE new-build class promote the row to that class', async () => {
+    const store = signatureStore();
+    await store.capture('su-a', 'build-1');
+    await store.capture('su-b', 'build-2');
+    const result = await store.capture('su-c', 'build-2');
+    expect(result).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-S1' } });
+    expect(store.rows).toHaveLength(1);
+    const payload = store.payloadOf(store.rows[0]);
+    expect(payload).not.toHaveProperty('lane');
+    expect(payload.toolFailureProbation).toMatchObject({ state: 'promoted', deployedRevision: 'build-2' });
+    expect([...payload.toolFailureProbation.reporters].sort()).toEqual(['su-b', 'su-c']);
+    expect(payload.watchdogKey).toBe(SIGNATURE);
+    expect(payload.repeatCount).toBe(3);
+  });
+
+  it('the same class still corroborates exactly as before D-010', async () => {
+    const store = signatureStore();
+    await store.capture('su-a', 'build-1');
+    expect(await store.capture('su-b', 'build-1')).toMatchObject({ reason: 'promoted', issue: { id: 'EI-S1' } });
+    expect(store.payloadOf(store.rows[0]).toolFailureProbation).toMatchObject({ state: 'promoted',
+      deployedRevision: 'build-1' });
+  });
+
+  it('a different error code, field or tool is a different signature and a different row', async () => {
+    const store = signatureStore();
+    await store.capture('su-a', 'build-1');
+    await store.capture('su-a', 'build-1', { errorCode: 'timeout' });
+    await store.capture('su-a', 'build-1', { fieldPath: 'expects' });
+    await store.capture('su-a', 'build-1', { toolName: 'coord:inbox' });
+    expect(store.rows).toHaveLength(4);
+    expect(new Set(store.rows.map((row) => store.payloadOf(row).watchdogKey)).size).toBe(4);
+  });
+
+  it('bounds the per-class tally but always keeps the class the probation is about', () => {
+    let tally = null as ReturnType<typeof tallyToolFailureClass> | null;
+    for (let i = 0; i < TOOL_FAILURE_SIGNATURE_MAX_CLASSES + 8; i++) {
+      tally = tallyToolFailureClass(tally, SIGNATURE, { classKey: `class-${i}`, ownerId: 'su-a',
+        at: `2026-09-23T12:${String(i).padStart(2, '0')}:00Z`, contractFingerprint: 'c', deployedRevision: `b-${i}` },
+        'class-0');
+    }
+    const keys = Object.keys(tally!.classes);
+    expect(keys).toHaveLength(TOOL_FAILURE_SIGNATURE_MAX_CLASSES);
+    expect(keys).toContain('class-0');
+    expect(keys).toContain(`class-${TOOL_FAILURE_SIGNATURE_MAX_CLASSES + 7}`);
+    expect(keys).not.toContain('class-1');
   });
 });

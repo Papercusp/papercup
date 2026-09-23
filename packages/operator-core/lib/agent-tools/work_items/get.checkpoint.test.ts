@@ -239,7 +239,7 @@ beforeEach(() => {
   getPresence.mockResolvedValue(null);
   getClaimTimePriorWorkHint.mockReset();
   getClaimTimePriorWorkHint.mockResolvedValue(null);
-  completionFreshnessForEvidence.mockReset().mockReturnValue(undefined);
+  completionFreshnessForEvidence.mockReset().mockResolvedValue(undefined);
   deploymentPositionForEvidence.mockReset().mockResolvedValue(undefined);
 });
 
@@ -455,7 +455,7 @@ describe('work_items:get — checkpoint field', () => {
       state: 'done',
       terminalCompletionEvidence: evidence,
     });
-    completionFreshnessForEvidence.mockReturnValue(completionFreshness);
+    completionFreshnessForEvidence.mockResolvedValue(completionFreshness);
 
     const r = await one({ id: 'WI-completion-freshness' });
 

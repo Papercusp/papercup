@@ -4152,8 +4152,8 @@ async function completeOne(
   // key came from the server, which a later reader could mistake for caller-supplied proof.
   const treeStamp = completionEvidenceBeforeStamp
     ? registeredRepoRoots
-      ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
-      : completionTreeStamp({
+      ? await completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
+      : await completionTreeStamp({
           repoRoot: completionRoot(),
           filesChanged: completionEvidenceBeforeStamp.filesChanged,
           filesDeleted: completionEvidenceBeforeStamp.filesDeleted,

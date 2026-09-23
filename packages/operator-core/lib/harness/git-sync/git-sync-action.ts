@@ -2126,7 +2126,7 @@ async function patchRoutineMetadata(
   );
 }
 
-type GitSyncActivityPhase = 'local-sync' | 'post-legs' | 'complete' | 'error';
+type GitSyncActivityPhase = 'local-sync' | 'post-legs' | 'completion-settlement' | 'complete' | 'error';
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -3468,17 +3468,60 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // selecting manifests so a Portal commit can settle Papercusp-owned rows.
       const repositoryRoot = repoPath ? await realpath(repoPath).catch(() => resolve(repoPath)) : null;
       if (repositoryRoot) {
-        await reconcileProposedCompletionsAtCommit(outcome.headSha, {
-          installSlug: slug,
-          workspaceId,
-          repositoryRoot,
-        }).catch((error) => {
+        let lastSettlementProgressAt = 0;
+        let settlementProgressWrite = Promise.resolve();
+        let settlementTimeout: GitSyncActionTimeoutError | undefined;
+        await guardedPostLegs('git-sync:completion-settlement', () =>
+          runCheckpointedStep('git-sync:completion-settlement', () =>
+            reconcileProposedCompletionsAtCommit(
+              outcome.headSha,
+              {
+                installSlug: slug,
+                workspaceId,
+                repositoryRoot,
+              },
+              {
+                signal: postLegsLiveness.signal,
+                onProgress: ({ completed, total }) => {
+                  if (postLegsLiveness.signal.aborted) return;
+                  postLegsLiveness.touch();
+                  const now = Date.now();
+                  if (completed !== total && now - lastSettlementProgressAt < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS) {
+                    return settlementProgressWrite;
+                  }
+                  lastSettlementProgressAt = now;
+                  settlementProgressWrite = settlementProgressWrite
+                    .catch(() => {})
+                    .then(() =>
+                      writeGitSyncActivity(slug, workspaceId, {
+                        active: true,
+                        phase: 'completion-settlement',
+                        started_at: activityStartedAt,
+                        updated_at: now,
+                        completed_at: null,
+                        outcome_status: outcome.status,
+                      }),
+                    )
+                    .catch(() => {});
+                  return settlementProgressWrite;
+                },
+              },
+            ),
+          ),
+        ).catch((error) => {
           console.warn(
             `[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+          if (error instanceof GitSyncActionTimeoutError) settlementTimeout = error;
         });
+        // The emitted commit remains independently observable even when completion
+        // settlement timed out; after emitting it, let the outer action handler record
+        // the timeout and end the fire instead of overwriting it with a success marker.
+        emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+        if (settlementTimeout) throw settlementTimeout;
+      } else {
+        emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
       }
-      emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
     }
 
     // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,

@@ -90,6 +90,24 @@ describe('committed invocation friction bridge (R-7)', () => {
     expect(io.capture).not.toHaveBeenCalled();
   });
 
+  it('D-010: records but does not file a refusal that already returned the corrected call', async () => {
+    const correctedCall = { tool: 'coord:send', args: { body: [{ text: 'x' }] }, rendered: 'coord:send({…})' };
+    await record({ metadataJson: { invalidInput: { source: 'projected-tool-registry', toolName: 'coord:send',
+      registryRevision: 'schema-v1', correctedCall } } });
+    // Control: the same refusal WITHOUT a corrected call is still filed.
+    await record({ metadataJson: { invalidInput: { source: 'projected-tool-registry', toolName: 'coord:send',
+      registryRevision: 'schema-v1', corrections: [] } } });
+    await flushPendingTelemetry();
+    await drainDetached();
+    expect(io.inserts).toHaveLength(2);
+    const corrected = JSON.parse(io.inserts[0][19] as string);
+    expect(corrected).toMatchObject({ invalidInput: { correctedCall } });
+    expect(corrected).not.toHaveProperty('frictionCapture');
+    expect(JSON.parse(io.inserts[1][19] as string)).toHaveProperty('frictionCapture', 'pending');
+    expect(io.capture).toHaveBeenCalledTimes(1);
+    expect(io.capture.mock.calls[0][0]).toEqual({ workspaceId: 'ws-test', id: '2' });
+  });
+
   it('excludes the capture loop and unknown reporters', async () => {
     await record({ toolName: 'improvements:capture' });
     await record({ toolName: 'system:improvement-watchdog' });

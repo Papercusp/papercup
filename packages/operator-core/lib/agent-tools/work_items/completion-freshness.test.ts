@@ -21,18 +21,17 @@ const stored = { repositoryRoot: '/repo', headSha: 'a'.repeat(40), contentIdenti
 const current = { repositoryRoot: '/repo', headSha: 'b'.repeat(40), contentIdentity: identity };
 
 describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
-  it('returns no signal when terminal evidence has no valid tree stamp', () => {
-    expect(completionFreshnessForEvidence({ verifiedHow: 'unit' })).toBeUndefined();
-    expect(completionFreshnessForEvidence({ treeStamp: { repositoryRoot: '/repo', headSha: 'short' } })).toBeUndefined();
+  it('returns no signal when terminal evidence has no valid tree stamp', async () => {
+    expect(await completionFreshnessForEvidence({ verifiedHow: 'unit' })).toBeUndefined();
+    expect(
+      await completionFreshnessForEvidence({ treeStamp: { repositoryRoot: '/repo', headSha: 'short' } }),
+    ).toBeUndefined();
   });
 
-  it('reports fresh when the stored and current stamps match', () => {
+  it('reports fresh when the stored and current stamps match', async () => {
     const currentStamp = vi.fn(() => stored);
 
-    const result = completionFreshnessForEvidence(
-      { treeStamp: stored },
-      { currentStamp },
-    );
+    const result = await completionFreshnessForEvidence({ treeStamp: stored }, { currentStamp });
 
     expect(currentStamp).toHaveBeenCalledWith(stored);
     expect(result).toMatchObject({
@@ -42,11 +41,8 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     });
   });
 
-  it('reports fresh when a peer advanced HEAD without changing declared path content', () => {
-    const result = completionFreshnessForEvidence(
-      { treeStamp: stored },
-      { currentStamp: () => current },
-    );
+  it('reports fresh when a peer advanced HEAD without changing declared path content', async () => {
+    const result = await completionFreshnessForEvidence({ treeStamp: stored }, { currentStamp: () => current });
 
     expect(result).toMatchObject({
       verdict: 'fresh',
@@ -56,19 +52,14 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.reason).toMatch(/remains fresh across HEAD movement/);
   });
 
-  it('reports stale when the declared path content changed across HEADs', () => {
+  it('reports stale when the declared path content changed across HEADs', async () => {
     const changedCurrent = {
       repositoryRoot: '/repo',
       headSha: 'b'.repeat(40),
-      contentIdentity: [
-        { path: 'src/fix.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: 'd'.repeat(40) },
-      ],
+      contentIdentity: [{ path: 'src/fix.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: 'd'.repeat(40) }],
     };
 
-    const result = completionFreshnessForEvidence(
-      { treeStamp: stored },
-      { currentStamp: () => changedCurrent },
-    );
+    const result = await completionFreshnessForEvidence({ treeStamp: stored }, { currentStamp: () => changedCurrent });
 
     expect(result).toMatchObject({
       verdict: 'stale',
@@ -78,37 +69,29 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.reason).toMatch(/Committed content for src\/fix\.ts changed/);
   });
 
-  it('reports stale when the declared path set changes', () => {
+  it('reports stale when the declared path set changes', async () => {
     const changedCurrent = {
       repositoryRoot: '/repo',
       headSha: 'b'.repeat(40),
-      contentIdentity: [
-        { path: 'src/other.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: 'c'.repeat(40) },
-      ],
+      contentIdentity: [{ path: 'src/other.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: 'c'.repeat(40) }],
     };
 
-    const result = completionFreshnessForEvidence(
-      { treeStamp: stored },
-      { currentStamp: () => changedCurrent },
-    );
+    const result = await completionFreshnessForEvidence({ treeStamp: stored }, { currentStamp: () => changedCurrent });
 
     expect(result?.verdict).toBe('stale');
     expect(result?.reason).toMatch(/different declared path set/);
   });
 
-  it('reports unavailable rather than falsely calling evidence fresh', () => {
-    const result = completionFreshnessForEvidence(
-      { treeStamp: stored },
-      { currentStamp: () => undefined },
-    );
+  it('reports unavailable rather than falsely calling evidence fresh', async () => {
+    const result = await completionFreshnessForEvidence({ treeStamp: stored }, { currentStamp: () => undefined });
 
     expect(result).toMatchObject({ verdict: 'unavailable', storedTreeStamp: stored });
     expect(result?.currentTreeStamp).toBeUndefined();
     expect(result?.reason).toMatch(/not established/);
   });
 
-  it('is fail-soft when the injected current-stamp probe throws', () => {
-    const result = completionFreshnessForEvidence(
+  it('is fail-soft when the injected current-stamp probe throws', async () => {
+    const result = await completionFreshnessForEvidence(
       { treeStamp: stored },
       {
         currentStamp: () => {
@@ -120,8 +103,8 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.verdict).toBe('unavailable');
   });
 
-  it('fails closed when a legacy stamp has no committed-content identity', () => {
-    const result = completionFreshnessForEvidence(
+  it('fails closed when a legacy stamp has no committed-content identity', async () => {
+    const result = await completionFreshnessForEvidence(
       { treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
       { currentStamp: () => stored },
     );
@@ -130,13 +113,13 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.reason).toMatch(/No changed files.*not applicable/);
   });
 
-  it('reports pathless verification as not-applicable for explicit and legacy-empty path lists', () => {
+  it('reports pathless verification as not-applicable for explicit and legacy-empty path lists', async () => {
     for (const evidence of [
       { filesChanged: [], treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
       { treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
     ]) {
       const currentStamp = vi.fn(() => current);
-      const result = completionFreshnessForEvidence(evidence, { currentStamp });
+      const result = await completionFreshnessForEvidence(evidence, { currentStamp });
 
       expect(result).toMatchObject({
         verdict: 'not-applicable',
@@ -147,8 +130,8 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     }
   });
 
-  it('keeps a file-bearing stamp without content identity unavailable', () => {
-    const result = completionFreshnessForEvidence(
+  it('keeps a file-bearing stamp without content identity unavailable', async () => {
+    const result = await completionFreshnessForEvidence(
       { filesChanged: ['src/fix.ts'], treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
       { currentStamp: () => current },
     );
@@ -157,8 +140,8 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.reason).toMatch(/content identity/);
   });
 
-  it('reports stale when a dirty worktree file exists but HEAD has no blob for it', () => {
-    const result = completionFreshnessForEvidence(
+  it('reports stale when a dirty worktree file exists but HEAD has no blob for it', async () => {
+    const result = await completionFreshnessForEvidence(
       { treeStamp: stored },
       {
         currentStamp: () => ({
@@ -181,9 +164,9 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
    * both tests assert on the same field, so an implementation that collapses the two
    * verdicts fails one of them whichever way it collapses.
    */
-  it('reports unavailable, not stale, when a declared path could not be resolved', () => {
+  it('reports unavailable, not stale, when a declared path could not be resolved', async () => {
     const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
-    const result = completionFreshnessForEvidence(
+    const result = await completionFreshnessForEvidence(
       { treeStamp: stored },
       {
         currentStamp: () => ({

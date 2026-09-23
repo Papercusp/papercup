@@ -221,20 +221,20 @@ function probeOver(files: Record<string, string>, repoRoot: string | null = ROOT
 
 describe('completionTreeStamp (EI-18682004530991057)', () => {
   describe('RESOLVES the head sha', () => {
-    it('follows a symbolic HEAD to a loose ref', () => {
+    it('follows a symbolic HEAD to a loose ref', async () => {
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('reads a detached HEAD directly', () => {
+    it('reads a detached HEAD directly', async () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': `${SHA}\n` });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('falls back to packed-refs when the loose ref has been packed away', () => {
+    it('falls back to packed-refs when the loose ref has been packed away', async () => {
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/packed-refs':
@@ -242,72 +242,72 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
           `${OTHER_SHA} refs/heads/main\n` +
           `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('follows a `.git` FILE to its gitdir (a worktree or submodule checkout)', () => {
+    it('follows a `.git` FILE to its gitdir (a worktree or submodule checkout)', async () => {
       const { probe } = probeOver({
         '/repo/.git': 'gitdir: /elsewhere/worktrees/wt1\n',
         '/elsewhere/worktrees/wt1/HEAD': 'ref: refs/heads/feature\n',
         '/elsewhere/worktrees/wt1/refs/heads/feature': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('accepts a 64-char sha256 object id', () => {
+    it('accepts a 64-char sha256 object id', async () => {
       const sha256 = 'f'.repeat(64);
       const { probe } = probeOver({ '/repo/.git/HEAD': `${sha256}\n` });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: sha256 });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: sha256 });
     });
   });
 
   describe('stays SILENT when it cannot observe (fail-open — absence never means "clean")', () => {
-    it('when there is no repo root', () => {
+    it('when there is no repo root', async () => {
       const { probe } = probeOver({}, null);
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when HEAD is absent', () => {
+    it('when HEAD is absent', async () => {
       const { probe } = probeOver({});
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when HEAD is present but empty', () => {
+    it('when HEAD is present but empty', async () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': '   \n' });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when HEAD holds neither a sha nor a ref', () => {
+    it('when HEAD holds neither a sha nor a ref', async () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': 'something unexpected\n' });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when the ref resolves nowhere — no loose ref and no packed-refs', () => {
+    it('when the ref resolves nowhere — no loose ref and no packed-refs', async () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': 'ref: refs/heads/staging\n' });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when the loose ref exists but is not shaped like a sha', () => {
+    it('when the loose ref exists but is not shaped like a sha', async () => {
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': 'not-a-sha\n',
       });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when a truncated/short sha is offered — a partial id must not be stamped as full', () => {
+    it('when a truncated/short sha is offered — a partial id must not be stamped as full', async () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': 'a1b2c3d\n' });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when `.git` is a readable FILE that is not a gitdir pointer', () => {
+    it('when `.git` is a readable FILE that is not a gitdir pointer', async () => {
       const { probe } = probeOver({ '/repo/.git': 'total nonsense\n' });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('when the probe throws — evidence-stamping must never fail a close', () => {
+    it('when the probe throws — evidence-stamping must never fail a close', async () => {
       expect(
-        completionTreeStamp({
+        await completionTreeStamp({
           repoRoot: ROOT,
           readFile: () => {
             throw new Error('EIO');
@@ -316,17 +316,17 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
       ).toBeUndefined();
     });
 
-    it('when repoRoot is EXPLICITLY null, without falling back to detection', () => {
+    it('when repoRoot is EXPLICITLY null, without falling back to detection', async () => {
       // Distinct from omitting the key: an explicit null means "I could not resolve a
       // root, do not guess". Collapsing the two would judge against the wrong tree.
       const { probe, reads } = probeOver({ '/repo/.git/HEAD': `${SHA}\n` }, null);
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
       expect(reads).toEqual([]);
     });
   });
 
   describe('controls — a WRONG stamp is worse than none', () => {
-    it('matches packed-refs by EXACT ref name, never by suffix', () => {
+    it('matches packed-refs by EXACT ref name, never by suffix', async () => {
       // The killer case: a suffix/`includes` matcher binds refs/heads/staging to the
       // REMOTE-tracking ref and stamps a commit the local tree is not on. origin/staging
       // is listed FIRST so a naive scan hits it before any correct entry.
@@ -334,46 +334,45 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/packed-refs': `${OTHER_SHA} refs/remotes/origin/staging\n` + `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('does NOT stamp the remote ref when the local branch is absent entirely', () => {
+    it('does NOT stamp the remote ref when the local branch is absent entirely', async () => {
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/packed-refs': `${OTHER_SHA} refs/remotes/origin/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toBeUndefined();
+      expect(await completionTreeStamp(probe)).toBeUndefined();
     });
 
-    it('prefers the loose ref over a stale packed-refs entry for the same name', () => {
+    it('prefers the loose ref over a stale packed-refs entry for the same name', async () => {
       // Git's own precedence. Inverting it stamps the commit the branch used to be on.
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
         '/repo/.git/packed-refs': `${OTHER_SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('ignores the peeled-tag (`^`) continuation lines in packed-refs', () => {
+    it('ignores the peeled-tag (`^`) continuation lines in packed-refs', async () => {
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/packed-refs':
           `${OTHER_SHA} refs/tags/v1\n` + `^${'b'.repeat(40)}\n` + `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
-    it('resolves within a tight read budget — the spawn-free contract', () => {
-      // Not a style preference: EI-18808838427010743 measures each `git` spawn from the
-      // bg-host at ~165ms of BLOCKED event loop, and this runs on every completion
-      // fleet-wide. An implementation that shelled out would resolve HEAD without
-      // reading these files at all, failing this assertion.
+    it('reads HEAD within a tight budget before async content identity lookup', async () => {
+      // This case has no declared paths, so reading the current HEAD stays a direct
+      // filesystem observation. Content identities use the separate nonblocking Git
+      // stream covered by completion-head-blob-resolution.test.ts.
       const { probe, reads } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
+      expect(await completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
       expect(reads).toEqual(['/repo/.git', '/repo/.git/HEAD', '/repo/.git/refs/heads/staging']);
       expect(reads.length).toBeLessThanOrEqual(3);
     });
@@ -381,7 +380,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
 });
 
 describe('completionTreeStamp — committed submodule content identity', () => {
-  it('resolves a declared descendant through the superproject gitlink', () => {
+  it('resolves a declared descendant through the superproject gitlink', async () => {
     const root = mkdtempSync(join(tmpdir(), 'completion-submodule-'));
     TEMP_ROOTS.push(root);
     const submodule = join(root, 'libs', 'nested');
@@ -410,7 +409,7 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     git(root, ['update-index', '--add', '--cacheinfo', `160000,${submoduleHead},libs/nested`]);
     git(root, ['commit', '-qm', 'pin nested repo']);
 
-    const stamp = completionTreeStamp({ repoRoot: root, filesChanged: ['libs/nested/src/fix.ts'] });
+    const stamp = await completionTreeStamp({ repoRoot: root, filesChanged: ['libs/nested/src/fix.ts'] });
     expect(stamp?.contentIdentity).toEqual([
       expect.objectContaining({
         path: 'libs/nested/src/fix.ts',
@@ -421,7 +420,7 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     expect(stamp?.contentIdentity?.[0]?.workingTreeBlobSha).toBe(stamp?.contentIdentity?.[0]?.headBlobSha);
   });
 
-  it('resolves a nested descendant when the superproject recursive tree exceeds the read buffer', () => {
+  it('resolves a nested descendant when the superproject recursive tree exceeds the read buffer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'completion-large-submodule-'));
     TEMP_ROOTS.push(root);
     const submodule = join(root, 'libs', 'nested');
@@ -456,7 +455,7 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     git(root, ['commit', '-qm', 'pin nested repo and wide tree']);
     expect(Buffer.byteLength(git(root, ['ls-tree', '-r', '-z', 'HEAD']), 'utf8')).toBeGreaterThan(256 * 1024);
 
-    const stamp = completionTreeStamp({ repoRoot: root, filesChanged: ['libs/nested/src/fix.ts'] });
+    const stamp = await completionTreeStamp({ repoRoot: root, filesChanged: ['libs/nested/src/fix.ts'] });
     expect(stamp?.contentIdentity).toEqual([
       expect.objectContaining({
         path: 'libs/nested/src/fix.ts',
@@ -479,7 +478,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
   };
   const readFile = (abs: string): string | undefined => files[abs as keyof typeof files];
 
-  it('discovers and stamps an unregistered independent sibling checkout', () => {
+  it('discovers and stamps an unregistered independent sibling checkout', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-sibling-'));
     TEMP_ROOTS.push(workspaceRoot);
     const operatorRoot = join(workspaceRoot, 'papercusp');
@@ -498,13 +497,13 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     const roots = completionRepoRootsFromRegistry(operatorRoot, { projects: [] }, [], { homeRoot: workspaceRoot });
     expect(roots).toEqual([operatorRoot, sidestageRoot]);
     expect(
-      completionTreeStampForEvidence({ filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] }, roots),
+      await completionTreeStampForEvidence({ filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] }, roots),
     ).toEqual({ repositoryRoot: sidestageRoot, headSha: SIDESTAGE_SHA });
   });
 
-  it('stamps the registered sibling checkout that owns the declared changed file', () => {
+  it('stamps the registered sibling checkout that owns the declared changed file', async () => {
     expect(
-      completionTreeStampForEvidence(
+      await completionTreeStampForEvidence(
         { filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] },
         [OPERATOR_ROOT, SIDESTAGE_ROOT],
         {
@@ -515,7 +514,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
-  it('resolves the conventional `<repoName>/`-prefixed cross-repo form against its own root (EI-21850619651553189)', () => {
+  it('resolves the conventional `<repoName>/`-prefixed cross-repo form against its own root (EI-21850619651553189)', async () => {
     // The measured incident shape: `sidestage/apps/web/...` (the prose/plan-title
     // convention) rather than a path already relative to the sidestage checkout. A plain
     // `resolve(root, declaredPath)` can never escape ANY root for a relative path, so this
@@ -523,7 +522,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     // sidestage root itself (wrongly `/sidestage/sidestage/...`) — and the completion never
     // reached authority:'committed'.
     expect(
-      completionTreeStampForEvidence(
+      await completionTreeStampForEvidence(
         { filesChanged: ['sidestage/apps/web/src/BuyerTab.thumbnail.test.tsx'] },
         [OPERATOR_ROOT, SIDESTAGE_ROOT],
         {
@@ -534,12 +533,12 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
-  it('does NOT let a prefixed path resolve against an UNRELATED root merely because the prefix parses', () => {
+  it('does NOT let a prefixed path resolve against an UNRELATED root merely because the prefix parses', async () => {
     // The stripped candidate exists nowhere (neither its plain nor stripped form), so this
     // must stay a genuine zero-match tie — falling back to the primary root, never silently
     // latching onto the sidestage root just because the string happens to start with its name.
     expect(
-      completionTreeStampForEvidence(
+      await completionTreeStampForEvidence(
         { filesChanged: ['sidestage/apps/web/src/does-not-exist.tsx'] },
         [OPERATOR_ROOT, SIDESTAGE_ROOT],
         { exists: () => false, readFile },
@@ -547,17 +546,17 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 
-  it('stamps the owning checkout when filesChanged uses an absolute path', () => {
+  it('stamps the owning checkout when filesChanged uses an absolute path', async () => {
     const absolutePath = `${SIDESTAGE_ROOT}/apps/web/src/BuyerTab.thumbnail.test.tsx`;
     expect(
-      completionTreeStampForEvidence({ filesChanged: [absolutePath] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+      await completionTreeStampForEvidence({ filesChanged: [absolutePath] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
         exists: (abs) => abs === absolutePath,
         readFile,
       }),
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
-  it('prefers the nested submodule for an absolute path despite an unrelated dirty file', () => {
+  it('prefers the nested submodule for an absolute path despite an unrelated dirty file', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-nested-'));
     TEMP_ROOTS.push(workspaceRoot);
     const operatorRoot = join(workspaceRoot, 'papercusp');
@@ -575,7 +574,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
 
     expect(completionCheckoutRootForPath(changedPath)).toBe(submoduleRoot);
     expect(
-      completionTreeStampForEvidence({ filesChanged: [changedPath] }, [operatorRoot, submoduleRoot], {
+      await completionTreeStampForEvidence({ filesChanged: [changedPath] }, [operatorRoot, submoduleRoot], {
         exists: (abs) => abs === changedPath || abs === unrelatedDirtyPath,
         readFile: (abs) => {
           if (abs === join(operatorRoot, '.git', 'HEAD')) return `${OPERATOR_SHA}\n`;
@@ -586,7 +585,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toMatchObject({ repositoryRoot: submoduleRoot });
   });
 
-  it('resolves a relative path to an independent nested repository', () => {
+  it('resolves a relative path to an independent nested repository', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-relative-nested-'));
     TEMP_ROOTS.push(workspaceRoot);
     const operatorRoot = join(workspaceRoot, 'papercusp');
@@ -614,7 +613,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     git(nestedRoot, ['add', 'bin/mac-vm-health.sh']);
     git(nestedRoot, ['commit', '-qm', 'nested fix']);
 
-    const stamp = completionTreeStampForEvidence({ filesChanged: ['papercusp-desktop/bin/mac-vm-health.sh'] }, [
+    const stamp = await completionTreeStampForEvidence({ filesChanged: ['papercusp-desktop/bin/mac-vm-health.sh'] }, [
       operatorRoot,
     ]);
 
@@ -629,37 +628,37 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     expect(stamp?.contentIdentity?.[0]?.workingTreeBlobSha).toBe(stamp?.contentIdentity?.[0]?.headBlobSha);
   });
 
-  it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
+  it('keeps the primary checkout on a tie so legacy completions do not change repositories', async () => {
     expect(
-      completionTreeStampForEvidence({ filesChanged: ['shared/path.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+      await completionTreeStampForEvidence({ filesChanged: ['shared/path.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
         exists: (abs) => abs.endsWith('/shared/path.ts'),
         readFile,
       }),
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 
-  it('keeps the primary checkout when the completion declares no resolvable files', () => {
+  it('keeps the primary checkout when the completion declares no resolvable files', async () => {
     expect(
-      completionTreeStampForEvidence({ filesChanged: ['missing.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+      await completionTreeStampForEvidence({ filesChanged: ['missing.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
         exists: () => false,
         readFile,
       }),
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 
-  it('fails closed when any declared changed path is invalid', () => {
+  it('fails closed when any declared changed path is invalid', async () => {
     expect(
-      completionTreeStampForEvidence({ filesChanged: ['src/fix.ts', '*.ts'] }, [OPERATOR_ROOT], {
+      await completionTreeStampForEvidence({ filesChanged: ['src/fix.ts', '*.ts'] }, [OPERATOR_ROOT], {
         exists: () => true,
         readFile,
       }),
     ).toBeUndefined();
   });
 
-  it('records per-path working-tree and HEAD blob identities', () => {
+  it('records per-path working-tree and HEAD blob identities', async () => {
     const workingTree = Buffer.from('dirty-but-present\n');
     const headBlob = '3'.repeat(40);
-    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+    const result = await completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
       exists: () => true,
       readFile,
       readBytes: () => workingTree,
@@ -678,9 +677,9 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBeUndefined();
   });
 
-  it('carries the reason forward when the HEAD side could not be resolved (WI-42441)', () => {
+  it('carries the reason forward when the HEAD side could not be resolved (WI-42441)', async () => {
     const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
-    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+    const result = await completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
       exists: () => true,
       readFile,
       readBytes: () => Buffer.from('present\n'),
@@ -691,8 +690,8 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBe(reason);
   });
 
-  it('leaves a genuinely absent path with no reason, so it stays the closer‑side case', () => {
-    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+  it('leaves a genuinely absent path with no reason, so it stays the closer‑side case', async () => {
+    const result = await completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
       exists: () => true,
       readFile,
       readBytes: () => Buffer.from('present\n'),
@@ -703,8 +702,8 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBeUndefined();
   });
 
-  it('records a null HEAD blob when a dirty worktree path is absent from HEAD', () => {
-    const result = completionTreeStampForEvidence({ filesChanged: ['src/new-fix.ts'] }, [OPERATOR_ROOT], {
+  it('records a null HEAD blob when a dirty worktree path is absent from HEAD', async () => {
+    const result = await completionTreeStampForEvidence({ filesChanged: ['src/new-fix.ts'] }, [OPERATOR_ROOT], {
       exists: () => true,
       readFile,
       readBytes: () => Buffer.from('new fix\n'),
@@ -805,8 +804,8 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
   // Every repository's working tree agrees with its own HEAD.
   const matching = probe(() => MATCHING_BLOB);
 
-  it('stamps EVERY owning checkout instead of discarding the whole stamp', () => {
-    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
+  it('stamps EVERY owning checkout instead of discarding the whole stamp', async () => {
+    const stamp = await completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
 
     // The regression itself: this used to be `undefined`.
     expect(stamp).toBeDefined();
@@ -840,15 +839,15 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
     });
   });
 
-  it('lets a clean mixed-class completion reach committed authority', () => {
-    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
+  it('lets a clean mixed-class completion reach committed authority', async () => {
+    const stamp = await completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
 
     expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
     expect(committedCloseDowngradedForUnprovenContentIdentity('committed', declared, stamp)).toBe(false);
   });
 
-  it('allows an artifacts-only completion to qualify as committed', () => {
-    const stamp = completionTreeStampForEvidence({ filesChanged: [ARTIFACT] }, [PAPERCUSP], matching);
+  it('allows an artifacts-only completion to qualify as committed', async () => {
+    const stamp = await completionTreeStampForEvidence({ filesChanged: [ARTIFACT] }, [PAPERCUSP], matching);
 
     // The explicit out-of-repo classification is the proof for this non-code
     // deliverable; there is no repository settlement receipt to wait for.
@@ -857,10 +856,10 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
     expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [ARTIFACT], stamp)).toBe(false);
   });
 
-  it('CONTROL: an artifact citation does not excuse a real content mismatch elsewhere', () => {
+  it('CONTROL: an artifact citation does not excuse a real content mismatch elsewhere', async () => {
     // The phone-app checkout's working tree no longer matches its HEAD.
     const drifted = probe((repoRoot) => (repoRoot === PHONE ? 'a'.repeat(40) : MATCHING_BLOB));
-    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], drifted);
+    const stamp = await completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], drifted);
 
     expect(stamp?.contentIdentity).toHaveLength(4);
     expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);

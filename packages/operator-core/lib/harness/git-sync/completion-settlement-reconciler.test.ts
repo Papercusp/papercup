@@ -38,40 +38,57 @@ const absent = (): HeadBlobResolution => ({ status: 'absent' });
 const unresolvable = (reason: string): HeadBlobResolution => ({ status: 'unresolvable', reason });
 
 describe('residualPathsForCommit', () => {
-  it('settles only when every close-time blob is present in the exact commit', () => {
-    expect(residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', resolved('e'.repeat(40))],
-    ]))).toEqual([]);
+  it('settles only when every close-time blob is present in the exact commit', async () => {
+    expect(
+      await residualPathsForCommit(
+        manifest,
+        SHA,
+        () =>
+          new Map([
+            ['a.ts', resolved('d'.repeat(40))],
+            ['nested/b.ts', resolved('e'.repeat(40))],
+          ]),
+      ),
+    ).toEqual([]);
   });
 
-  it('reads identities from the emitted commit SHA, independent of later working-tree edits', () => {
-    const lookup = vi.fn(() => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', resolved('e'.repeat(40))],
-    ]));
+  it('reads identities from the emitted commit SHA, independent of later working-tree edits', async () => {
+    const lookup = vi.fn(
+      () =>
+        new Map([
+          ['a.ts', resolved('d'.repeat(40))],
+          ['nested/b.ts', resolved('e'.repeat(40))],
+        ]),
+    );
     const laterWorkingTreeIdentity = new Map([
       ['a.ts', resolved('f'.repeat(40))],
       ['nested/b.ts', resolved('f'.repeat(40))],
     ]);
 
-    expect(residualPathsForCommit(manifest, SHA, lookup)).toEqual([]);
+    expect(await residualPathsForCommit(manifest, SHA, lookup)).toEqual([]);
     expect(lookup).toHaveBeenCalledWith('/repo', SHA, ['a.ts', 'nested/b.ts']);
     expect(laterWorkingTreeIdentity).not.toEqual(lookup.mock.results[0]?.value);
   });
 
-  it('persists deterministic residue for partial and mismatched commits', () => {
-    expect(residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', resolved('f'.repeat(40))],
-      ['nested/b.ts', absent()],
-    ]))).toEqual([
+  it('persists deterministic residue for partial and mismatched commits', async () => {
+    expect(
+      await residualPathsForCommit(
+        manifest,
+        SHA,
+        () =>
+          new Map([
+            ['a.ts', resolved('f'.repeat(40))],
+            ['nested/b.ts', absent()],
+          ]),
+      ),
+    ).toEqual([
       { path: 'a.ts', reason: 'content-mismatch' },
       { path: 'nested/b.ts', reason: 'missing-from-commit' },
     ]);
   });
 
-  it('fails closed when the exact-tree lookup is unavailable', () => {
-    expect(residualPathsForCommit(manifest, SHA, () => undefined)).toEqual([
+  it('fails closed when the exact-tree lookup is unavailable', async () => {
+    expect(await residualPathsForCommit(manifest, SHA, () => undefined)).toEqual([
       { path: 'a.ts', reason: 'identity-unavailable' },
       { path: 'nested/b.ts', reason: 'identity-unavailable' },
     ]);
@@ -87,29 +104,39 @@ describe('residualPathsForCommit', () => {
    * test against the SAME path, so an implementation that collapses them cannot pass —
    * whichever single reason it picks, one of the two expectations fails.
    */
-  it('separates an unreadable submodule from a path the commit really lacks', () => {
+  it('separates an unreadable submodule from a path the commit really lacks', async () => {
     const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
-    const unreadable = residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', unresolvable(reason)],
-    ]));
+    const unreadable = await residualPathsForCommit(
+      manifest,
+      SHA,
+      () =>
+        new Map([
+          ['a.ts', resolved('d'.repeat(40))],
+          ['nested/b.ts', unresolvable(reason)],
+        ]),
+    );
     // CONTROL: identical shape, the one difference being a tree that was actually read.
-    const genuinelyMissing = residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', absent()],
-    ]));
+    const genuinelyMissing = await residualPathsForCommit(
+      manifest,
+      SHA,
+      () =>
+        new Map([
+          ['a.ts', resolved('d'.repeat(40))],
+          ['nested/b.ts', absent()],
+        ]),
+    );
 
     expect(unreadable).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
     expect(genuinelyMissing).toEqual([{ path: 'nested/b.ts', reason: 'missing-from-commit' }]);
     expect(unreadable).not.toEqual(genuinelyMissing);
   });
 
-  it('fails closed — never `missing-from-commit` — for a path the lookup did not answer at all', () => {
+  it('fails closed — never `missing-from-commit` — for a path the lookup did not answer at all', async () => {
     // A map that simply omits a requested path is an INCOMPLETE answer, not a verdict
     // that the commit lacks it. Absence must never be promoted to a finding about the tree.
-    expect(residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-    ]))).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
+    expect(await residualPathsForCommit(manifest, SHA, () => new Map([['a.ts', resolved('d'.repeat(40))]]))).toEqual([
+      { path: 'nested/b.ts', reason: 'identity-unavailable' },
+    ]);
   });
 });
 
@@ -140,6 +167,62 @@ function settlementEmitMock() {
     waiters: 0,
   }));
 }
+
+describe('reconcileProposedCompletionsAtCommit — liveness', () => {
+  const scope = {
+    installSlug: 'papercusp',
+    workspaceId: 'papercusp-workspace',
+    repositoryRoot: manifest.repositoryRoot,
+  };
+  const matchingLookup = () =>
+    new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
+    ]);
+
+  it('reports progress once per candidate, including the inspected total', async () => {
+    const onProgress = vi.fn();
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql: settlementSql({ updateHits: [true] }),
+      lookup: matchingLookup,
+      emit: settlementEmitMock(),
+      onProgress,
+    });
+
+    expect(result.inspected).toBe(1);
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith({ completed: 1, total: 1, featureId: 'WI-42476' });
+  });
+
+  it('stops before a late settlement write when the action signal aborts', async () => {
+    const controller = new AbortController();
+    const sql = settlementSql({ updateHits: [true] });
+    const lookup = vi.fn(async () => {
+      controller.abort(new Error('settlement timeout'));
+      return matchingLookup();
+    });
+    const onProgress = vi.fn();
+
+    await expect(
+      reconcileProposedCompletionsAtCommit(SHA, scope, {
+        sql,
+        lookup,
+        emit: settlementEmitMock(),
+        signal: controller.signal,
+        onProgress,
+      }),
+    ).rejects.toThrow('settlement timeout');
+
+    expect(
+      vi
+        .mocked(sql)
+        .mock.calls.some(([strings]) =>
+          (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'),
+        ),
+    ).toBe(false);
+    expect(onProgress).toHaveBeenCalledWith({ completed: 1, total: 1, featureId: 'WI-42476' });
+  });
+});
 
 describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh', () => {
   const scope = {
@@ -415,18 +498,32 @@ describe('normalizeStoredSettlementManifest — WI-1409142 stripped-null toleran
     ],
   };
 
-  it('settles a stripped manifest whose blobs are all present in the commit', () => {
-    expect(residualPathsForCommit(stripped, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', resolved('e'.repeat(40))],
-    ]))).toEqual([]);
+  it('settles a stripped manifest whose blobs are all present in the commit', async () => {
+    expect(
+      await residualPathsForCommit(
+        stripped,
+        SHA,
+        () =>
+          new Map([
+            ['a.ts', resolved('d'.repeat(40))],
+            ['nested/b.ts', resolved('e'.repeat(40))],
+          ]),
+      ),
+    ).toEqual([]);
   });
 
-  it('still reports honest residue for a stripped manifest that does not match', () => {
-    expect(residualPathsForCommit(stripped, SHA, () => new Map([
-      ['a.ts', resolved('d'.repeat(40))],
-      ['nested/b.ts', resolved('f'.repeat(40))],
-    ]))).toEqual([{ path: 'nested/b.ts', reason: 'content-mismatch' }]);
+  it('still reports honest residue for a stripped manifest that does not match', async () => {
+    expect(
+      await residualPathsForCommit(
+        stripped,
+        SHA,
+        () =>
+          new Map([
+            ['a.ts', resolved('d'.repeat(40))],
+            ['nested/b.ts', resolved('f'.repeat(40))],
+          ]),
+      ),
+    ).toEqual([{ path: 'nested/b.ts', reason: 'content-mismatch' }]);
   });
 
   it('fills ONLY a missing key — an explicit null and a real sha both survive', () => {

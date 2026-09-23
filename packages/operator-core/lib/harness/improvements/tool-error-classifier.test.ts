@@ -30,6 +30,7 @@ import {
   TOOL_ERROR_RULES,
   FINGERPRINTED_TOOL_ERROR_CLASSES,
   normalizeSuspectedToolFailure,
+  toolFailureSignatureKey,
   matchKnownExternalToolFailure,
   KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
@@ -97,6 +98,24 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(malformed.class).toBe('structural');
     expect(saturated.classKey).not.toBe(malformed.classKey);
     expect(saturated.watchdogKey).not.toBe(malformed.watchdogKey);
+  });
+
+  it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
+    const original = normalizeSuspectedToolFailure(metadataToolFailure);
+    const signature = toolFailureSignatureKey(metadataToolFailure, original.class);
+    expect(signature).toBe('tool-failure-signature:coord:send:caller:invalid_args:body');
+    for (const change of [{ schemaRevision: 'metadata-schema-v2' }, { runtimeVersion: 'metadata-runtime-v2' }]) {
+      const changed = normalizeSuspectedToolFailure({ ...metadataToolFailure, ...change });
+      // The class (corroboration identity) moves; the filing signature does not.
+      expect(changed.classKey).not.toBe(original.classKey);
+      expect(toolFailureSignatureKey({ ...metadataToolFailure, ...change }, changed.class)).toBe(signature);
+    }
+    for (const change of [{ errorCode: 'timeout' }, { fieldPath: 'expects' }, { toolName: 'coord:inbox' }]) {
+      expect(toolFailureSignatureKey({ ...metadataToolFailure, ...change }, original.class)).not.toBe(signature);
+    }
+    expect(toolFailureSignatureKey(metadataToolFailure, 'structural')).not.toBe(signature);
+    expect(toolFailureSignatureKey({ toolName: 'ptool' }, 'structural'))
+      .toBe('tool-failure-signature:ptool:structural:error-code-unknown:field-unknown');
   });
 
   it('a repeated caller rejection does not become direct evidence through legacy booleans', () => {

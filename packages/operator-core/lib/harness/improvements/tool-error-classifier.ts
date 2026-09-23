@@ -491,6 +491,26 @@ export function toolFailureClassIdentity(
   };
 }
 
+/**
+ * The FILING identity for automatically captured tool failures
+ * (review-system-rework-reduction-2026-09-23 D-010): one tracker row per tool,
+ * failure family, error code and field path. It deliberately OMITS the contract
+ * and deployed revision. Those stay in `classKey`, which remains the
+ * corroboration identity and is tallied per class inside the row, so a failure on
+ * build N+1 counts onto the same row without corroborating build N's report. Keyed
+ * on the class, one live defect minted a new row per build (~27 a day). Unknown
+ * dimensions stay explicit, exactly as in `classKey`.
+ */
+export function toolFailureSignatureKey(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'fieldPath'>,
+  failureFamily: ToolErrorClass,
+): string {
+  const tool = correlationSegment(input.toolName, 'unknown-tool');
+  const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
+  const fieldPath = correlationSegment(input.fieldPath, 'field-unknown');
+  return `tool-failure-signature:${tool}:${failureFamily}:${errorCode}:${fieldPath}`;
+}
+
 /** Convenience key builder used by callers that already know the failure family. */
 export function toolFailureClassKey(
   input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,

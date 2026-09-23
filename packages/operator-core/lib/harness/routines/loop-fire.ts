@@ -64,6 +64,7 @@ import {
   checkLoopDeadMan as defaultCheckLoopDeadMan,
   incrementLoopFireCount as defaultIncrementLoopFireCount,
   readLoopFireCount as defaultReadLoopFireCount,
+  readLoopLastDeliveredAtMs as defaultReadLoopLastDeliveredAtMs,
 } from './loop-dead-man';
 import { recordLoopTransition } from './loop-transition-log';
 import {
@@ -219,6 +220,15 @@ export interface SuppressedLoopRearmInput {
  *  `loopCheckpointStaleMs` 30-minute floor used elsewhere in this file). */
 export const LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS = 30 * 60_000;
 
+/** P-024 (review-system-rework-reduction-2026-09-23): once the max-quiet window has
+ *  elapsed and a heartbeat fire has been DELIVERED during the await, the next fire is held
+ *  until `lastDeliveredAt + LOOP_AWAIT_HEARTBEAT_MS` (still capped by the await's own
+ *  deadline). Before this, the max-quiet window lifted suppression outright: su-77b3a99d
+ *  (2026-09-23) was quiet 01:46→02:16Z, then took 8 full loop turns by 04:22Z while its
+ *  owner-answer await stayed open until 09:12Z. The heartbeat keeps the stuck-await
+ *  safety the max-quiet bound exists for — the agent still wakes, just once per period. */
+export const LOOP_AWAIT_HEARTBEAT_MS = 60 * 60_000;
+
 export interface LoopAwaitSuppressionDecision {
   suppress: boolean;
   /** Earliest moment (ms epoch) suppression is expected to lift — null when not suppressed. */
@@ -234,16 +244,33 @@ export interface LoopAwaitSuppressionDecision {
  *  while ANY await's resumeAtMs is still in the future; the reported `resumeAtMs` is
  *  the EARLIEST such threshold (a self-correcting re-check — if another await is
  *  still fresh, the next tick simply re-suppresses). No awaits ⇒ never suppress
- *  (today's behavior, byte-identical). */
+ *  (today's behavior, byte-identical).
+ *
+ *  P-024 heartbeat: when `lastDeliveredAtMs` shows a loop fire already REACHED the owner
+ *  during this await (at/after its creation), the quiet ceiling stretches to
+ *  `max(createdAt + maxQuiet, lastDelivered + heartbeat)` — one liveness fire per
+ *  heartbeat period for as long as the await stays open. A delivery before the await was
+ *  created, or an unknown (`null`/absent) delivery time, keeps the pre-heartbeat ceiling. */
 export function decideLoopAwaitSuppression(input: {
   awaits: ReadonlyArray<BlockingAwaitLike>;
   nowMs: number;
   maxQuietMs?: number;
+  /** Epoch ms the loop last reached its owner; null/absent = unknown. */
+  lastDeliveredAtMs?: number | null;
+  heartbeatMs?: number;
 }): LoopAwaitSuppressionDecision {
   const maxQuietMs =
     typeof input.maxQuietMs === 'number' && Number.isFinite(input.maxQuietMs) && input.maxQuietMs > 0
       ? input.maxQuietMs
       : LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS;
+  const heartbeatMs =
+    typeof input.heartbeatMs === 'number' && Number.isFinite(input.heartbeatMs) && input.heartbeatMs > 0
+      ? input.heartbeatMs
+      : LOOP_AWAIT_HEARTBEAT_MS;
+  const lastDeliveredAtMs =
+    typeof input.lastDeliveredAtMs === 'number' && Number.isFinite(input.lastDeliveredAtMs)
+      ? input.lastDeliveredAtMs
+      : null;
   let earliestResumeAtMs = Infinity;
   let drivingEventKey: string | undefined;
   for (const a of input.awaits) {
@@ -253,7 +280,9 @@ export function decideLoopAwaitSuppression(input: {
     if (a.boundTo?.kind === 'work-item-blocked') continue;
     const createdAtMs = Date.parse(a.createdAt);
     if (!Number.isFinite(createdAtMs)) continue; // malformed row — never suppress on it
-    const quietCeilingMs = createdAtMs + maxQuietMs;
+    const heartbeatCeilingMs =
+      lastDeliveredAtMs != null && lastDeliveredAtMs >= createdAtMs ? lastDeliveredAtMs + heartbeatMs : -Infinity;
+    const quietCeilingMs = Math.max(createdAtMs + maxQuietMs, heartbeatCeilingMs);
     const deadlineMs = a.expiresTs ? Date.parse(a.expiresTs) : NaN;
     const resumeAtMs = Number.isFinite(deadlineMs) ? Math.min(deadlineMs, quietCeilingMs) : quietCeilingMs;
     if (input.nowMs < resumeAtMs && resumeAtMs < earliestResumeAtMs) {

@@ -18,7 +18,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { readPlanBySlug } from './source';
+import { readPlanBySlug, resolvePlanScope } from './source';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { harnessMismatchForMiss, recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
@@ -235,6 +235,12 @@ const argsSchema = z
       .optional()
       .describe(
         "Ask for the side-effect-free activation readiness preview. Returns `activationReadiness.consult` with the same selected candidates, evidence, selection provenance, and honest no-responder/degraded outcome that `plans:start` would evaluate — without opening a consult or changing the plan. Use this before `plans:audit { phase:'activation' }` or plans:start so feedback can shape first-class clauses early.",
+      ),
+    efficiency: z
+      .boolean()
+      .optional()
+      .describe(
+        "Add `efficiency`: the plan's agent MCP calls (goal_ref in its work items) by purpose, failed calls by class, calls on dropped items, holder changes, and holders' active/idle wall-clock. Counts are floors (native tools write no row).",
       ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
@@ -1301,6 +1307,29 @@ export default defineTool({
             message: `Ship readiness could not be evaluated (${
               error instanceof Error ? error.message : String(error)
             }).`,
+          };
+        }
+      }
+    }
+    // review-system-rework-reduction-2026-09-23 P-032: the opt-in per-plan efficiency read.
+    // Time-varying (it reads the call ledger), so like shipReadiness it stays outside cachedRead,
+    // and it fails soft into an explicit unavailableReason rather than an absent field.
+    if (args.efficiency) {
+      const { readPlanEfficiency } = await import('../../plan-efficiency');
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
+        if (!slug) continue;
+        try {
+          const scope = await resolvePlanScope({
+            harnessSlug: typeof result.harness === 'string' ? result.harness : undefined,
+          });
+          result.efficiency = await readPlanEfficiency({ ...scope, planSlug: slug });
+        } catch (error) {
+          result.efficiency = {
+            planSlug: slug,
+            unavailableReason: 'reader-unavailable',
+            message: `Plan efficiency could not be read (${error instanceof Error ? error.message : String(error)}).`,
           };
         }
       }

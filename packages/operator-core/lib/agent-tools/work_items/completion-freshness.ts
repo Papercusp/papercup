@@ -1,5 +1,5 @@
 /**
- * Spawn-free completion tree stamps and the read-side freshness detector.
+ * Async completion tree stamps and the read-side freshness detector.
  *
  * Completion evidence is only useful when a later reader can tell whether the
  * verification still describes the checkout it is looking at.  Keep HEAD
@@ -7,11 +7,11 @@
  * the same exact observation, without importing the complete tool into reads.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
+import { streamGitFields, type GitSpawnOptions } from './untouched-paths';
 import type {
   CompletionSettlementManifest,
   CompletionTreeStamp,
@@ -97,7 +97,10 @@ export interface CompletionTreeStampProbe {
     repoRoot: string,
     headSha: string,
     paths: readonly string[],
-  ) => ReadonlyMap<string, HeadBlobResolution> | undefined;
+  ) =>
+    | ReadonlyMap<string, HeadBlobResolution>
+    | undefined
+    | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
 }
 
 /**
@@ -144,15 +147,23 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
   return createHash(algorithm).update(header).update(bytes).digest('hex');
 }
 
-export function completionHeadBlobMap(
+/** Read exact commit blob identities through the shared nonblocking Git stream. */
+export async function completionHeadBlobMap(
   repoRoot: string,
   headSha: string,
   paths: readonly string[],
-): ReadonlyMap<string, HeadBlobResolution> | undefined {
+  opts: GitSpawnOptions = {},
+): Promise<ReadonlyMap<string, HeadBlobResolution> | undefined> {
+  if (opts.signal?.aborted) return Promise.resolve(undefined);
   try {
-    const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) =>
-      execFileSync(
-        'git',
+    const runLsTree = async (
+      root: string,
+      sha: string,
+      selected?: readonly string[],
+      recursive = true,
+    ): Promise<string[] | undefined> => {
+      const fields: string[] = [];
+      const outcome = await streamGitFields(
         [
           '-C',
           root,
@@ -162,18 +173,17 @@ export function completionHeadBlobMap(
           sha,
           ...(selected?.length ? ['--', ...selected] : []),
         ],
-        {
-          encoding: 'utf8',
-          maxBuffer: 256 * 1024,
-          timeout: 5000,
-          stdio: ['ignore', 'pipe', 'ignore'],
+        (field) => {
+          if (field) fields.push(field);
         },
+        { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
       );
-    const parseTree = (output: string) => {
+      return outcome === 'complete' ? fields : undefined;
+    };
+    const parseTree = (records: readonly string[]) => {
       const blobs = new Map<string, string>();
       const gitlinks = new Map<string, string>();
-      for (const record of output.split('\0')) {
-        if (!record) continue;
+      for (const record of records) {
         const tab = record.indexOf('\t');
         if (tab < 0) continue;
         const [mode, type, sha] = record.slice(0, tab).split(/\s+/);
@@ -185,7 +195,10 @@ export function completionHeadBlobMap(
       return { blobs, gitlinks };
     };
 
-    const direct = parseTree(runLsTree(repoRoot, headSha, paths));
+    if (paths.length === 0) return new Map();
+    const directTree = await runLsTree(repoRoot, headSha, paths);
+    if (!directTree || opts.signal?.aborted) return undefined;
+    const direct = parseTree(directTree);
     const result = new Map<string, HeadBlobResolution>();
     for (const [path, sha] of direct.blobs) result.set(path, { status: 'resolved', sha });
 
@@ -196,11 +209,10 @@ export function completionHeadBlobMap(
       // then resolve each descendant against the exact submodule commit pinned
       // by this HEAD. Grouping keeps the lookup bounded to one recursive call
       // per referenced submodule, and recursion covers nested submodules too.
-      // A full recursive tree can exceed maxBuffer on the production superproject (the
-      // Papercusp tree is several MiB), which used to make every nested-submodule stamp
-      // fail open as "identity unavailable". Query only the ancestor prefixes of the
-      // missing paths; a non-recursive ls-tree returns the exact gitlink records while
-      // keeping the lookup bounded by the declared path set.
+      // A full recursive tree would retain unrelated records for the whole superproject.
+      // Query only the ancestor prefixes of the missing paths; a non-recursive ls-tree
+      // returns the exact gitlink records while keeping the lookup bounded by the declared
+      // path set.
       const gitlinkPrefixes = [
         ...new Set(
           missing.flatMap((path) => {
@@ -209,7 +221,9 @@ export function completionHeadBlobMap(
           }),
         ),
       ];
-      const allGitlinks = parseTree(runLsTree(repoRoot, headSha, gitlinkPrefixes, false)).gitlinks;
+      const gitlinkTree = await runLsTree(repoRoot, headSha, gitlinkPrefixes, false);
+      if (!gitlinkTree || opts.signal?.aborted) return undefined;
+      const allGitlinks = parseTree(gitlinkTree).gitlinks;
       const grouped = new Map<string, { sha: string; paths: string[] }>();
       for (const path of missing) {
         const prefix = [...allGitlinks.keys()]
@@ -221,7 +235,8 @@ export function completionHeadBlobMap(
         grouped.set(prefix, group);
       }
       for (const [prefix, group] of grouped) {
-        const nested = completionHeadBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths);
+        const nested = await completionHeadBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths, opts);
+        if (opts.signal?.aborted) return undefined;
         for (const path of group.paths) {
           // A submodule we could not read answers NOTHING about the commit's contents.
           // Reporting it as absent is the WI-42441 conflation: it blames the closer for
@@ -229,7 +244,7 @@ export function completionHeadBlobMap(
           result.set(
             `${prefix}/${path}`,
             nested
-              ? nested.get(path) ?? { status: 'absent' }
+              ? (nested.get(path) ?? { status: 'absent' })
               : {
                   status: 'unresolvable',
                   reason:
@@ -249,13 +264,13 @@ export function completionHeadBlobMap(
   }
 }
 
-function contentIdentity(
+async function contentIdentity(
   repositoryRoot: string,
   headSha: string,
   filesChanged: readonly string[],
   filesDeleted: readonly string[],
   probe: CompletionTreeStampProbe,
-): CompletionTreeContentIdentityWithDeletion[] | undefined {
+): Promise<CompletionTreeContentIdentityWithDeletion[] | undefined> {
   const normalizedChanged = filesChanged
     .slice(0, MAX_PATHS_PROBED)
     .map((path) => normalizedRepoPath(repositoryRoot, path));
@@ -269,7 +284,7 @@ function contentIdentity(
   if ([...deletedSet].some((path) => changedSet.has(path))) return undefined;
   const paths = [...new Set([...changedSet, ...deletedSet])];
   if (paths.length === 0 || paths.some((path) => !path)) return undefined;
-  const head = (probe.headBlobs ?? completionHeadBlobMap)(repositoryRoot, headSha, paths);
+  const head = await (probe.headBlobs ?? completionHeadBlobMap)(repositoryRoot, headSha, paths);
   if (!head) return undefined;
   const readBytes =
     probe.readBytes ??
@@ -531,13 +546,16 @@ export function committedCloseDowngradedForUnprovenContentIdentity(
 }
 
 /**
- * Read the current checkout HEAD without spawning git.
+ * Read the current checkout HEAD ref from the filesystem. When declared paths are present,
+ * their exact blob identities are resolved by the nonblocking Git stream above.
  *
  * This is deliberately fail-open: an absent or unreadable stamp means "not
  * observed", never "fresh".  The completion hot path must not turn a local
  * filesystem problem into a failed close or a false verification verdict.
  */
-export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): CompletionTreeStamp | undefined {
+export async function completionTreeStamp(
+  probe: CompletionTreeStampProbe = {},
+): Promise<CompletionTreeStamp | undefined> {
   const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
   if (!repoRoot) return undefined;
 
@@ -552,10 +570,15 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     });
 
   const hasDeclaredPaths = probe.filesChanged !== undefined || probe.filesDeleted !== undefined;
-  const stampIdentity = (repositoryRoot: string, headSha: string) =>
+  const stampIdentity = async (repositoryRoot: string, headSha: string) =>
     hasDeclaredPaths
-      ? contentIdentity(repositoryRoot, headSha, probe.filesChanged ?? [], probe.filesDeleted ?? [], probe)
+      ? await contentIdentity(repositoryRoot, headSha, probe.filesChanged ?? [], probe.filesDeleted ?? [], probe)
       : undefined;
+  const createStamp = async (repositoryRoot: string, headSha: string): Promise<CompletionTreeStamp> => {
+    const stamp: CompletionTreeStamp = { repositoryRoot, headSha };
+    const identity = await stampIdentity(repositoryRoot, headSha);
+    return identity ? { ...stamp, contentIdentity: identity } : stamp;
+  };
 
   try {
     const repositoryRoot = nodePath.resolve(repoRoot);
@@ -570,9 +593,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     const head = readFile(nodePath.join(gitDir, 'HEAD'))?.trim();
     if (!head) return undefined;
     if (SHA_RE.test(head)) {
-      const stamp: CompletionTreeStamp = { repositoryRoot, headSha: head };
-      const identity = stampIdentity(repositoryRoot, head);
-      return identity ? { ...stamp, contentIdentity: identity } : stamp;
+      return await createStamp(repositoryRoot, head);
     }
 
     const ref = /^ref:\s*(.+)$/.exec(head)?.[1]?.trim();
@@ -580,9 +601,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
 
     const loose = readFile(nodePath.join(gitDir, ref))?.trim();
     if (loose && SHA_RE.test(loose)) {
-      const stamp: CompletionTreeStamp = { repositoryRoot, headSha: loose };
-      const identity = stampIdentity(repositoryRoot, loose);
-      return identity ? { ...stamp, contentIdentity: identity } : stamp;
+      return await createStamp(repositoryRoot, loose);
     }
 
     const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
@@ -591,9 +610,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
       if (!line || line.startsWith('#') || line.startsWith('^')) continue;
       const [sha, name] = line.trim().split(/\s+/, 2);
       if (name === ref && sha && SHA_RE.test(sha)) {
-        const stamp: CompletionTreeStamp = { repositoryRoot, headSha: sha };
-        const identity = stampIdentity(repositoryRoot, sha);
-        return identity ? { ...stamp, contentIdentity: identity } : stamp;
+        return await createStamp(repositoryRoot, sha);
       }
     }
     return undefined;
@@ -614,7 +631,10 @@ export interface CompletionTreeStampForEvidenceProbe {
     repoRoot: string,
     headSha: string,
     paths: readonly string[],
-  ) => ReadonlyMap<string, HeadBlobResolution> | undefined;
+  ) =>
+    | ReadonlyMap<string, HeadBlobResolution>
+    | undefined
+    | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
 }
 
 /**
@@ -622,11 +642,11 @@ export interface CompletionTreeStampForEvidenceProbe {
  * then stamp that checkout's HEAD.  Stable ties preserve the first/root
  * checkout for backwards compatibility.
  */
-export function completionTreeStampForEvidence(
+export async function completionTreeStampForEvidence(
   evidence: CompletionVerificationEvidence,
   repoRoots: string[],
   probe: CompletionTreeStampForEvidenceProbe = {},
-): CompletionTreeStamp | undefined {
+): Promise<CompletionTreeStamp | undefined> {
   const roots = [
     ...new Set(
       repoRoots
@@ -844,8 +864,7 @@ export function completionTreeStampForEvidence(
       if (!resolved) continue;
       try {
         const plainExists = exists(resolved.absolutePath);
-        const strippedExists =
-          !plainExists && resolved.strippedAbsolutePath && exists(resolved.strippedAbsolutePath);
+        const strippedExists = !plainExists && resolved.strippedAbsolutePath && exists(resolved.strippedAbsolutePath);
         if (!(plainExists || strippedExists)) continue;
       } catch {
         continue;
@@ -889,7 +908,7 @@ export function completionTreeStampForEvidence(
     targetGroups.set(owner, group);
   }
 
-  const primaryStamp = completionTreeStamp({
+  const primaryStamp = await completionTreeStamp({
     repoRoot: selectedRoot,
     readFile: probe.readFile,
     readBytes: probe.readBytes,
@@ -904,7 +923,7 @@ export function completionTreeStampForEvidence(
     if (repoRoot === selectedRoot) continue;
     const files = groups.get(repoRoot) ?? [];
     const deletedFiles = deletedGroups.get(repoRoot) ?? [];
-    const stamp = completionTreeStamp({
+    const stamp = await completionTreeStamp({
       repoRoot,
       readFile: probe.readFile,
       readBytes: probe.readBytes,
@@ -941,9 +960,7 @@ export function completionTreeStampForEvidence(
     });
   }
 
-  return identity.length
-    ? { ...primaryStamp, contentIdentity: identity.slice(0, MAX_PATHS_PROBED) }
-    : primaryStamp;
+  return identity.length ? { ...primaryStamp, contentIdentity: identity.slice(0, MAX_PATHS_PROBED) } : primaryStamp;
 }
 
 export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable' | 'not-applicable';
@@ -956,7 +973,9 @@ export interface CompletionFreshness {
 }
 
 export interface CompletionFreshnessProbe {
-  currentStamp?: (stored: CompletionTreeStamp) => CompletionTreeStamp | undefined;
+  currentStamp?: (
+    stored: CompletionTreeStamp,
+  ) => CompletionTreeStamp | undefined | Promise<CompletionTreeStamp | undefined>;
 }
 
 function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
@@ -1028,10 +1047,10 @@ function identityByPath(
  * that same repository.  No tree stamp means no signal; an unobservable current
  * stamp is explicit `unavailable`, never a false `fresh` result.
  */
-export function completionFreshnessForEvidence(
+export async function completionFreshnessForEvidence(
   evidence: unknown,
   probe: CompletionFreshnessProbe = {},
-): CompletionFreshness | undefined {
+): Promise<CompletionFreshness | undefined> {
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return undefined;
   const record = evidence as Record<string, unknown>;
   const stored = storedTreeStamp(record.treeStamp);
@@ -1063,13 +1082,17 @@ export function completionFreshnessForEvidence(
 
   let current: CompletionTreeStamp | undefined;
   try {
-    current = (
+    current = await (
       probe.currentStamp ??
       ((stamp) =>
-      completionTreeStamp({
+        completionTreeStamp({
           repoRoot: stamp.repositoryRoot,
-          filesChanged: stamp.contentIdentity?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion !== true).map((entry) => entry.path),
-          filesDeleted: stamp.contentIdentity?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion === true).map((entry) => entry.path),
+          filesChanged: stamp.contentIdentity
+            ?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion !== true)
+            .map((entry) => entry.path),
+          filesDeleted: stamp.contentIdentity
+            ?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion === true)
+            .map((entry) => entry.path),
         }))
     )(stored);
   } catch {
@@ -1100,19 +1123,17 @@ export function completionFreshnessForEvidence(
    * may be perfectly current, which is the same misattribution this item fixed at the
    * close path. `unavailable` is the honest verdict for "could not check".
    */
-  const unresolvable = [
-    ...unresolvableContentIdentityPaths(current),
-    ...unresolvableContentIdentityPaths(stored),
-  ];
+  const unresolvable = [...unresolvableContentIdentityPaths(current), ...unresolvableContentIdentityPaths(stored)];
   if (unresolvable.length > 0) {
     return {
       verdict: 'unavailable',
       storedTreeStamp: stored,
       currentTreeStamp: current,
-      reason:
-        `Committed content could not be resolved for ${unresolvable
-          .map((entry) => `${entry.path} (${entry.headBlobUnresolvable})`)
-          .join('; ')}; completion freshness is not established. This is a resolution failure, not evidence of staleness.`,
+      reason: `Committed content could not be resolved for ${unresolvable
+        .map((entry) => `${entry.path} (${entry.headBlobUnresolvable})`)
+        .join(
+          '; ',
+        )}; completion freshness is not established. This is a resolution failure, not evidence of staleness.`,
     };
   }
 

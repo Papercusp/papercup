@@ -234,6 +234,16 @@ export interface HostedDesktopBackend {
    * That is what P-013's "no JPEG-over-SSH" clause asks for.
    */
   thumbnail(desktopSessionId: string): Promise<Buffer | null>;
+  /**
+   * Start this workspace's desktop, or return the one already running (D-404).
+   *
+   * Idempotent: a host serves ONE desktop per customer workspace, so a second call
+   * (a double click, two tabs) returns the same entry instead of a second desktop.
+   * Null means a desktop started but this host cannot serve it (no registry row to
+   * name it by), which the relay reports as `desktop_unavailable` rather than
+   * handing the viewer an id nothing can resolve.
+   */
+  start(): Promise<HostedDesktopRosterEntry | null>;
 }
 
 export interface HostedWorkspaceHostOptions {
@@ -361,8 +371,8 @@ type PendingUpload = {
  * the same reason: there is nothing here for it to update.
  */
 type Channel =
-  | { kind: 'pty'; sessionKey: string }
-  | { kind: 'desktop'; desktopSessionId: string };
+  | { kind: 'pty'; sessionKey: string; role: HostedHostTabRole }
+  | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole };
 
 type DesktopChannel = {
   channelId: string;

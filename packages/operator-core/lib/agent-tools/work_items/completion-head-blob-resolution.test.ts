@@ -18,7 +18,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -85,7 +85,7 @@ function buildSuperprojectWithSubmodule(): {
 }
 
 describe('completionHeadBlobMap — submodule-interior paths (WI-42441)', () => {
-  it('resolves a path inside a submodule to the blob the pinned commit carries', () => {
+  it('resolves a path inside a submodule to the blob the pinned commit carries', async () => {
     const { root, superSha, innerPath, innerBlob } = buildSuperprojectWithSubmodule();
 
     // CONTROL — the exact read the prover used to do, and why it could never succeed:
@@ -93,7 +93,7 @@ describe('completionHeadBlobMap — submodule-interior paths (WI-42441)', () => 
     // permanent: if it ever starts succeeding, the premise of this whole file changed.
     expect(() => git(root, 'rev-parse', '--verify', `${superSha}:${innerPath}`)).toThrow();
 
-    const map = completionHeadBlobMap(root, superSha, [innerPath, 'top.ts']);
+    const map = await completionHeadBlobMap(root, superSha, [innerPath, 'top.ts']);
     expect(map?.get(innerPath)).toEqual({ status: 'resolved', sha: innerBlob });
     expect(headBlobShaOf(map?.get(innerPath))).toBe(innerBlob);
     // CALIBRATION — an ordinary superproject path must still work, or a resolver that
@@ -101,14 +101,14 @@ describe('completionHeadBlobMap — submodule-interior paths (WI-42441)', () => 
     expect(headBlobShaOf(map?.get('top.ts'))).toBe(git(root, 'rev-parse', `${superSha}:top.ts`));
   });
 
-  it('reports an UNREADABLE submodule as unresolvable, never as absent from the commit', () => {
+  it('reports an UNREADABLE submodule as unresolvable, never as absent from the commit', async () => {
     const { root, superSha, innerPath } = buildSuperprojectWithSubmodule();
     // Exactly the state `git worktree add` leaves behind (WI-40231): the gitlink is still
     // committed, but nothing can be read out of the submodule in THIS checkout.
     rmSync(join(root, 'sub'), { recursive: true, force: true });
     rmSync(join(root, '.git', 'modules', 'sub'), { recursive: true, force: true });
 
-    const entry = completionHeadBlobMap(root, superSha, [innerPath])?.get(innerPath);
+    const entry = (await completionHeadBlobMap(root, superSha, [innerPath]))?.get(innerPath);
 
     expect(entry?.status).toBe('unresolvable');
     // The reason must NAME the submodule, or a reader cannot act on it.
@@ -118,23 +118,43 @@ describe('completionHeadBlobMap — submodule-interior paths (WI-42441)', () => 
     expect(headBlobShaOf(entry)).toBeNull();
   });
 
-  it('reports a path the commit genuinely lacks as absent — the case that IS a verdict', () => {
+  it('reports a path the commit genuinely lacks as absent — the case that IS a verdict', async () => {
     const { root, superSha } = buildSuperprojectWithSubmodule();
 
-    const map = completionHeadBlobMap(root, superSha, ['never/written.ts']);
+    const map = await completionHeadBlobMap(root, superSha, ['never/written.ts']);
 
     expect(map?.get('never/written.ts')).toEqual({ status: 'absent' });
   });
 
-  it('answers EVERY requested path, so absence from the map is never a verdict', () => {
+  it('answers EVERY requested path, so absence from the map is never a verdict', async () => {
     const { root, superSha, innerPath } = buildSuperprojectWithSubmodule();
     const paths = [innerPath, 'top.ts', 'never/written.ts'];
 
-    const map = completionHeadBlobMap(root, superSha, paths);
+    const map = await completionHeadBlobMap(root, superSha, paths);
 
     // The pre-fix contract signalled "not in the commit" by OMITTING the path, which is
     // what let an unreadable submodule masquerade as a missing file downstream.
     for (const path of paths) expect(map?.has(path)).toBe(true);
+  });
+
+  it('keeps the event loop responsive while a bounded Git tree read is in flight', async () => {
+    const { root, superSha } = buildSuperprojectWithSubmodule();
+    const slowGit = join(root, 'slow-git');
+    writeFileSync(slowGit, '#!/bin/sh\nsleep 0.15\nexec git "$@"\n');
+    chmodSync(slowGit, 0o755);
+
+    let timerFired = false;
+    const timer = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timerFired = true;
+        resolve();
+      }, 10);
+    });
+    const lookup = completionHeadBlobMap(root, superSha, ['top.ts'], { gitBinary: slowGit, timeoutMs: 2_000 });
+    await timer;
+
+    expect(timerFired).toBe(true);
+    expect((await lookup)?.get('top.ts')?.status).toBe('resolved');
   });
 });
 

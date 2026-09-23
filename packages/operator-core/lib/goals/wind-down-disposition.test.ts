@@ -452,6 +452,45 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
     expect(v.message).toContain('scorecards:emit');
   });
 
+  it('keeps goal vetting and grading current across method-only changes within the same BAR meaning epoch', async () => {
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        getRubricForGoal: async () => ({
+          rubricId: 'ship-a-paid-app-acceptance',
+          revision: 4,
+          criteriaHash: 'criteria-hash-after-method-edit',
+          barContract: { meaningRevision: 3 },
+          criteria: [{ key: 'outcome-1' }],
+          proposedBy: 'su-goal-owner',
+        }),
+        getRubricRevision: async () => 4,
+        listCards: cardsByRef(
+          [
+            vettedCard({
+              vetting: {
+                consultId: 'conv-vet-1',
+                rubricRevision: 3,
+                criteriaHash: 'criteria-hash-before-method-edit',
+                rubricMeaningRevision: 3,
+              },
+            }),
+          ],
+          [
+            card({
+              createdBy: 'su-peer',
+              rubricRevision: 3,
+              criteriaHash: 'criteria-hash-before-method-edit',
+              rubricMeaningRevision: 3,
+            }),
+          ],
+        ),
+      }),
+    );
+
+    expect(v).toMatchObject({ satisfied: true, rubricId: 'ship-a-paid-app-acceptance' });
+  });
+
   it('incomplete / synthesized cards do not count as a grading', async () => {
     const incomplete = card({ createdBy: 'su-peer', missingKeys: ['outcome-1'] });
     const synthesized = card({ createdBy: 'su-peer', synthesized: true });

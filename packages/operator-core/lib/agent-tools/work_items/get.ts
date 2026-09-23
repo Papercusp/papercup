@@ -1222,7 +1222,9 @@ export default defineTool({
         // become stale when a peer advances the shared checkout. Compare against
         // the current HEAD on the read path; the helper is fail-soft so a local
         // filesystem/read problem never makes work_items:get fail.
-        const completionFreshness = needsCompletionFreshness ? completionFreshnessForEvidence(workItem.terminalCompletionEvidence) : null;
+        const completionFreshness = needsCompletionFreshness
+          ? await completionFreshnessForEvidence(workItem.terminalCompletionEvidence)
+          : null;
         const deploymentPosition = needsDeploymentPosition ? await deploymentPositionForEvidence(workItem.terminalCompletionEvidence) : null;
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it

@@ -229,6 +229,36 @@ def emit_context(*parts):
     sys.exit(0)
 
 
+# ── Minimum interval (P-012, review-system-rework-reduction-2026-09-23) ──
+# Measured before this: 48% of post reports followed this session's previous report by <10s
+# (bursts of quick calls), ~2.9k calls/hour. Skipping one delays this report's coordination
+# fold (inbox delivery, glance refresh) to the next call at most POST_MIN_INTERVAL_SEC later;
+# the local nudges above still fire. Throttled against the previous POST only — never against
+# the same call's dispatch report (pretooluse-activity-report.sh), or every post after a pre
+# would be skipped and the fold would never land. Shares its marker files with that hook.
+POST_MIN_INTERVAL_SEC = float(os.environ.get('PAPERCUSP_ACTIVITY_POST_MIN_INTERVAL_SEC') or '10')
+
+
+def _report_marker(phase):
+    key = re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('PAPERCUSP_SID') or owner)[:120]
+    return os.path.join(cache_dir, f'activity-last-{phase}-{key}')
+
+
+try:
+    _post_age = time.time() - os.path.getmtime(_report_marker('post'))
+except Exception:
+    _post_age = None
+if POST_MIN_INTERVAL_SEC > 0 and _post_age is not None and 0 <= _post_age < POST_MIN_INTERVAL_SEC:
+    sys.exit(0)
+try:
+    _m = _report_marker('post')
+    with open(_m, 'a'):
+        pass
+    os.utime(_m, None)
+except Exception:
+    pass  # an unwritable cache never suppresses the report
+
+
 args = {
     'owner': owner,
     'phase': 'post',

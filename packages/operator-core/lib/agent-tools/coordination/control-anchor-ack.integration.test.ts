@@ -20,11 +20,22 @@ const REV_B = { specificationRevision: 'b'.repeat(64), stateRevision: 'state-b' 
 
 async function seed(owner: string, activation: unknown) {
   const controlState = { modes: ['auto'], carry: 'warm', ...(activation === undefined ? {} : { activation }) };
+  // `::text::jsonb`, as control-anchor.ts writes it: a bare `${string}::jsonb` makes
+  // postgres.js type the parameter jsonb and JSON-encode the string AGAIN, storing
+  // a JSON string scalar. Every `->'activation'` then reads NULL and the guard is
+  // exercised on nothing — which is how the first run of this file passed its
+  // converged/none/null cases vacuously.
   await fx.admin`
     INSERT INTO harness_shared.session_briefs
       (owner_id, workspace_id, control_generation, control_delivered_generation, control_state)
-    VALUES (${owner}, ${fx.workspaceId}, 5, 4, ${JSON.stringify(controlState)}::jsonb)
+    VALUES (${owner}, ${fx.workspaceId}, 5, 4, ${JSON.stringify(controlState)}::text::jsonb)
   `;
+  const stored = await fx.admin<Array<{ kind: string; has_activation: boolean }>>`
+    SELECT jsonb_typeof(control_state) AS kind, control_state ? 'activation' AS has_activation
+      FROM harness_shared.session_briefs WHERE owner_id = ${owner} AND workspace_id = ${fx.workspaceId}
+  `;
+  // Positive control: the fixture really is the object shape the guard reads.
+  expect(stored[0]).toEqual({ kind: 'object', has_activation: activation !== undefined });
 }
 
 async function delivered(owner: string): Promise<number> {
