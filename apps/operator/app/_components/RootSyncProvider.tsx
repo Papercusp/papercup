@@ -8,6 +8,7 @@ import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/t
 import { installOriginSchedulerFetch } from '@papercusp/operator-core/lib/transport-adapters/origin-scheduler-fetch';
 import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-resolver';
 import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
+import HostedWorkspaceSelectionGate from './HostedWorkspaceSelectionGate';
 import UpdateMismatchNotifier from './UpdateMismatchNotifier';
 import { VoicePrefsSyncBridge } from './voice/VoicePrefsSyncBridge';
 
@@ -62,11 +63,13 @@ if (typeof window !== 'undefined') {
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {
   return (
-    <HarnessSyncProvider>
-      {/* P-013: surface a post-update stale-operator mismatch (EI-9002) to the user. */}
-      <UpdateMismatchNotifier />
-      <VoicePrefsSyncBridge />
-      {children}
-    </HarnessSyncProvider>
+    <HostedWorkspaceSelectionGate>
+      <HarnessSyncProvider>
+        {/* P-013: surface a post-update stale-operator mismatch (EI-9002) to the user. */}
+        <UpdateMismatchNotifier />
+        <VoicePrefsSyncBridge />
+        {children}
+      </HarnessSyncProvider>
+    </HostedWorkspaceSelectionGate>
   );
 }

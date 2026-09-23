@@ -22,6 +22,8 @@ export const LOCAL_WORKSPACE_HOST_ENDPOINTS = Object.freeze({
 
 export const HOSTED_BROWSER_REST_ENDPOINT = "/api/hosted/browser" as const;
 export const HOSTED_BROWSER_SSE_ENDPOINT = "/api/hosted/browser/sse" as const;
+export const HOSTED_WORKSPACE_SELECTION_ENDPOINT =
+  "/api/hosted/browser/onboarding/select-workspace" as const;
 export const HOSTED_WORKSPACE_HOST_ENDPOINTS = Object.freeze({
   connection: "/api/hosted/browser/workspace-hosts/connection",
   provision: "/api/hosted/browser/workspace-hosts/provision",
@@ -181,4 +183,44 @@ export function resolveBrowserApiTransport(): BrowserApiTransport {
     restEndpoint: LOCAL_BROWSER_REST_ENDPOINT,
     workspaceHostEndpoints: LOCAL_WORKSPACE_HOST_ENDPOINTS,
   };
+}
+
+export type HostedWorkspaceSelectionBootstrapResult =
+  | "not-hosted"
+  | "selected"
+  | "no-workspace"
+  | "already-selected"
+  | "unavailable";
+
+/**
+ * On a hosted sign-in, select the organization's sole existing workspace before
+ * the app mounts sync queries. The server derives organization and workspace
+ * from the authenticated session, and returns a rotated session cookie. A
+ * missing workspace is an ordinary first-run state, so it must not block the
+ * app from rendering its onboarding UI.
+ */
+export async function bootstrapHostedWorkspaceSelection(
+  fetcher: typeof fetch = fetch,
+): Promise<HostedWorkspaceSelectionBootstrapResult> {
+  if (!readHostedBrowserApiMarker()) return "not-hosted";
+  try {
+    const response = await fetcher(HOSTED_WORKSPACE_SELECTION_ENDPOINT, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (response.ok) return "selected";
+    const payload: unknown = await response.json().catch(() => null);
+    const code =
+      isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : null;
+    if (code === "no_workspace") return "no-workspace";
+    if (code === "workspace_already_selected") return "already-selected";
+    return "unavailable";
+  } catch {
+    // An auth/network failure must not deadlock the shell; the normal route
+    // authorization surfaces the underlying issue after sync mounts.
+    return "unavailable";
+  }
 }
