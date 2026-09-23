@@ -180,6 +180,41 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(startLifecycle).not.toHaveBeenCalled();
   });
 
+  it('checks a release census receipt before admission and binds it to the operation id it fixes', async () => {
+    const { dependencies, startDestroy } = harness();
+    const openTeardownRelease = vi.fn(async () => ({}) as never);
+    dependencies.openTeardownRelease = openTeardownRelease;
+    const { operationId: _operationId, ...withoutOperation } = destroyBody;
+
+    const response = await post(dependencies, { ...withoutOperation, releaseTaskId: 'release-task-1' });
+
+    expect(response.status).toBe(200);
+    expect(openTeardownRelease).toHaveBeenCalledOnce();
+    const checked = (openTeardownRelease.mock.calls[0] as unknown as [{ operationId: string; releaseTaskId: string }])[0];
+    expect(checked.releaseTaskId).toBe('release-task-1');
+    // The admission check and the durable run must name the SAME destroy, so the route fixes the id.
+    expect(startDestroy).toHaveBeenCalledWith(
+      expect.objectContaining({ releaseTaskId: 'release-task-1', operationId: checked.operationId }),
+    );
+  });
+
+  it('refuses a release task on a non-destroy action or with a malformed id, and a receipt that cannot be written', async () => {
+    const { dependencies, startDestroy, startLifecycle } = harness();
+    const restart = await post(dependencies, { action: 'restart', workspaceId: 'host-1', releaseTaskId: 'release-task-1' });
+    expect(restart.status).toBe(400);
+    expect((await post(dependencies, { ...destroyBody, releaseTaskId: '../x' })).status).toBe(400);
+
+    const { WorkspaceHostReleaseBindingError } = await import('../../../workspace-host/release-stage-receipt');
+    dependencies.openTeardownRelease = vi.fn(async () => {
+      throw new WorkspaceHostReleaseBindingError('bundle-mismatch', 'teardown.resource-census', 'other bytes');
+    });
+    const conflict = await post(dependencies, { ...destroyBody, releaseTaskId: 'release-task-1' });
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({ reason: 'bundle-mismatch' });
+    expect(startDestroy).not.toHaveBeenCalled();
+    expect(startLifecycle).not.toHaveBeenCalled();
+  });
+
   it('admits discard through the stored connection and returns provider-read receipts', async () => {
     const { dependencies, startDestroy } = harness();
     const response = await post(dependencies, destroyBody);

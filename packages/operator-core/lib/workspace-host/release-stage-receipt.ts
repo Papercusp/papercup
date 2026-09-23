@@ -36,6 +36,7 @@ import {
   taskReleaseJournalFromDetail,
   type TaskReleaseJournal,
 } from '../task-manager/store';
+import { readWorkspaceHostRuntimeRelease } from './soak-store';
 
 /** Journal channel label for digest-identified workspace-host releases (hash preimage only). */
 export const WORKSPACE_HOST_RELEASE_CHANNEL = 'workspace-host';
@@ -298,4 +299,91 @@ export async function settleWorkspaceHostReleaseStage(input: {
       ...input.evidenceRefs,
     ],
   });
+}
+
+/**
+ * The stages ONE host operation records on one release, keyed by the operation's own names for them.
+ * Opened read-only BEFORE the operation touches anything (`openWorkspaceHostReleaseRecorder`), so a
+ * receipt that could never be written refuses the request instead of surfacing after the work.
+ *
+ * Every settle names the operation first (`runRef`). That ref is also how a durable step that
+ * re-executes the same operation after its settle landed finds its committed receipt: such a stage is
+ * `recorded`, and begin/settle leave it alone instead of refusing the operation's own work.
+ */
+export class WorkspaceHostReleaseRecorder<Slot extends string> {
+  private readonly open = new Map<Slot, string>();
+
+  constructor(
+    readonly binding: WorkspaceHostReleaseBinding,
+    private readonly stages: Readonly<Record<Slot, WorkspaceHostReleaseStage>>,
+    private readonly recorded: ReadonlySet<Slot>,
+    private readonly runRef: string,
+    private readonly ledger?: ReleaseTaskLedger,
+  ) {}
+
+  stage(slot: Slot): WorkspaceHostReleaseStage {
+    return this.stages[slot];
+  }
+
+  /** Record the stage's intent. A stage this operation already committed is left alone. */
+  async begin(slot: Slot): Promise<void> {
+    if (this.recorded.has(slot) || this.open.has(slot)) return;
+    const begun = await beginWorkspaceHostReleaseStage(this.binding, this.stages[slot], this.ledger);
+    this.open.set(slot, begun.requestIdentity);
+  }
+
+  async settle(slot: Slot, outcome: 'committed' | 'refused', evidenceRefs: readonly string[]): Promise<void> {
+    const requestIdentity = this.open.get(slot);
+    if (!requestIdentity) return;
+    await settleWorkspaceHostReleaseStage({
+      binding: this.binding,
+      stage: this.stages[slot],
+      requestIdentity,
+      outcome,
+      evidenceRefs: [this.runRef, ...evidenceRefs],
+      ...(this.ledger ? { ledger: this.ledger } : {}),
+    });
+    this.open.delete(slot);
+  }
+
+  /**
+   * Settle every still-open stage `refused` after the operation failed. Best effort by design: a
+   * settle that cannot land leaves a pending intent, which the next attempt of this operation adopts.
+   */
+  async refuseOpen(evidenceRefs: readonly string[]): Promise<void> {
+    for (const slot of [...this.open.keys()]) {
+      await this.settle(slot, 'refused', evidenceRefs).catch(() => undefined);
+    }
+  }
+}
+
+export async function openWorkspaceHostReleaseRecorder<Slot extends string>(input: {
+  releaseTaskId: string;
+  workspaceId: string;
+  hostId: string;
+  stages: Readonly<Record<Slot, WorkspaceHostReleaseStage>>;
+  /** Evidence ref naming the operation, e.g. `initialize-operation:<id>`. */
+  runRef: string;
+  ledger?: ReleaseTaskLedger;
+  readHostRuntimeRelease?: (workspaceId: string, hostId: string) => Promise<unknown>;
+}): Promise<WorkspaceHostReleaseRecorder<Slot>> {
+  const slots = Object.keys(input.stages) as Slot[];
+  const binding = await resolveWorkspaceHostReleaseBinding({
+    releaseTaskId: input.releaseTaskId,
+    stage: input.stages[slots[0]!].stage,
+    hostRuntimeRelease: await (input.readHostRuntimeRelease ?? readWorkspaceHostRuntimeRelease)(
+      input.workspaceId,
+      input.hostId,
+    ),
+    ...(input.ledger ? { ledger: input.ledger } : {}),
+  });
+  const recorded = new Set<Slot>();
+  for (const slot of slots) {
+    const readiness = await workspaceHostReleaseStageReadiness(binding, input.stages[slot], {
+      recordedBy: input.runRef,
+      ...(input.ledger ? { ledger: input.ledger } : {}),
+    });
+    if (readiness === 'recorded') recorded.add(slot);
+  }
+  return new WorkspaceHostReleaseRecorder(binding, input.stages, recorded, input.runRef, input.ledger);
 }

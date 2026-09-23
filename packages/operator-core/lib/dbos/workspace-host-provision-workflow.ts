@@ -69,6 +69,8 @@ export interface StartWorkspaceHostDestroyInput {
   };
   /** Present only for the canary wrapper; ordinary customer teardown does not manufacture it. */
   canary?: WorkspaceHostDestroyCanaryEvidence;
+  /** Record the terminal census on this release's journal (`teardown.resource-census`, WI-10002510). */
+  releaseTaskId?: string;
   operationId?: string;
   actorId?: string;
 }

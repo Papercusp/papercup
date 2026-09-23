@@ -66,6 +66,12 @@ import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostProvisionBootstrapProfile,
 } from './provision-bootstrap';
+import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
+import {
+  openWorkspaceHostTeardownRelease,
+  workspaceHostResourceCensusOutcome,
+  type WorkspaceHostTeardownReleaseRecorder,
+} from './teardown-release-receipt';
 
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
@@ -405,6 +411,14 @@ export interface RunWorkspaceHostDestroyInput {
   };
   /** Canary-only admission/economic evidence. Ordinary customer teardown omits it. */
   canary?: WorkspaceHostDestroyCanaryEvidence;
+  /**
+   * The release this host runs, when the destroy is acceptance evidence for it: the terminal census
+   * is then recorded as `teardown.resource-census` on that release's journal
+   * (teardown-release-receipt.ts). Explicit, never discovered from the host's digest.
+   */
+  releaseTaskId?: string;
+  /** Test seam for the census release recorder. */
+  openRelease?: typeof openWorkspaceHostTeardownRelease;
   operationId?: string;
   actorId?: string;
   signal?: AbortSignal;
@@ -1678,6 +1692,24 @@ export async function runWorkspaceHostDestroy(
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
   }
+  // A census receipt that could never be written refuses the destroy here, read-only, before any
+  // provider call — as a request error, so the durable workflow does not retry a refusal.
+  let release: WorkspaceHostTeardownReleaseRecorder | undefined;
+  if (input.releaseTaskId !== undefined) {
+    try {
+      release = await (input.openRelease ?? openWorkspaceHostTeardownRelease)({
+        releaseTaskId: input.releaseTaskId,
+        workspaceId,
+        hostId,
+        operationId,
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceHostReleaseBindingError) {
+        throw new WorkspaceHostProvisioningRequestError([error.message]);
+      }
+      throw error;
+    }
+  }
   const controllerAuthority =
     input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
   const desiredRevision = input.desiredRevision ?? target.desiredRevision + 1;
@@ -1929,6 +1961,7 @@ export async function runWorkspaceHostDestroy(
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
       try {
+        await release?.begin('resource-census');
         const evidence = canaryInput
           ? await finalizeDestroyEvidence(
               canaryInput,
@@ -1948,6 +1981,16 @@ export async function runWorkspaceHostDestroy(
           label: 'Discarded without a recovery point',
           updatedAt: completedAt,
         };
+        if (release) {
+          // Judged from the terminal census itself; one that did not cover every kind refuses the
+          // RECEIPT, while the teardown it measured still completes.
+          const census = workspaceHostResourceCensusOutcome({
+            subject: { workspaceId, hostId },
+            disposition: input.disposition,
+            census: evidence?.providerCensus ?? ordinaryEvidence!.providerCensus,
+          });
+          await release.settle('resource-census', census.outcome, census.evidenceRefs);
+        }
         await store.appendEvent({
           workspaceId,
           hostId,
@@ -1984,6 +2027,9 @@ export async function runWorkspaceHostDestroy(
           ...(evidence ? { evidence } : {}),
         };
       } catch (error) {
+        // Only the error's class name reaches the release journal: an unclean-census message names
+        // provider resources, which belong in the host timeline, not in release evidence.
+        await release?.refuseOpen([`destroy-failure:${error instanceof Error ? error.name : 'unknown'}`]);
         await store.updateOperation({
           workspaceId,
           operationId,

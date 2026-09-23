@@ -1,4 +1,5 @@
 /** POST /workspace-hosts/action — durable lifecycle admission used by the cloud-workspaces UI. */
+import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   isWorkspaceHostOperationAcceptance,
@@ -32,8 +33,11 @@ import {
   defaultWorkspaceHostRequestForwarder,
   type WorkspaceHostRequestForwarder,
 } from '../../../workspace-host/controller-forwarding';
+import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
+import { openWorkspaceHostTeardownRelease } from '../../../workspace-host/teardown-release-receipt';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 interface WorkspaceHostActionBody {
   action?: unknown;
@@ -47,6 +51,8 @@ interface WorkspaceHostActionBody {
   rollbackImage?: unknown;
   snapshot?: unknown;
   desired?: unknown;
+  /** Destroy only: record the terminal census on this release's journal (WI-10002510). */
+  releaseTaskId?: unknown;
 }
 
 const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart', 'repair', 'snapshot', 'upgrade', 'restore'] as const;
@@ -154,6 +160,8 @@ export interface WorkspaceHostActionRouteDependencies {
   startDestroy: (input: StartWorkspaceHostDestroyInput) => ReturnType<typeof startWorkspaceHostDestroyWorkflow>;
   startLifecycle: (input: StartWorkspaceHostLifecycleInput) => ReturnType<typeof startWorkspaceHostLifecycleWorkflow>;
   forwardRequest?: WorkspaceHostRequestForwarder;
+  /** Read-only admission check for a destroy's census receipt; defaults to the real journal. */
+  openTeardownRelease?: typeof openWorkspaceHostTeardownRelease;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
@@ -195,6 +203,12 @@ export function createWorkspaceHostActionRoute(
       if (!SAFE_ID.test(hostId)) return requestError('invalid workspaceId');
       if (body.operationId !== undefined && (typeof body.operationId !== 'string' || !SAFE_ID.test(body.operationId))) {
         return requestError('invalid operationId');
+      }
+      if (body.releaseTaskId !== undefined) {
+        if (action !== 'destroy') return requestError('releaseTaskId is recorded only by a destroy');
+        if (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId)) {
+          return requestError('releaseTaskId has an invalid value');
+        }
       }
       let destroyAdmission:
         | {
@@ -264,11 +278,24 @@ export function createWorkspaceHostActionRoute(
       }
 
       try {
+        const releaseTaskId = typeof body.releaseTaskId === 'string' ? body.releaseTaskId : undefined;
+        // A census receipt names the destroy it came from, so the operation id is fixed HERE when
+        // one is recorded: the admission check and the durable run must agree on it.
+        const operationId =
+          typeof body.operationId === 'string' ? body.operationId : releaseTaskId !== undefined ? randomUUID() : undefined;
+        if (releaseTaskId !== undefined) {
+          await (dependencies.openTeardownRelease ?? openWorkspaceHostTeardownRelease)({
+            releaseTaskId,
+            workspaceId,
+            hostId,
+            operationId: operationId!,
+          });
+        }
         const common = {
           workspaceId,
           hostId,
           connection: { ...stored.connection, scope: target.desired.scope },
-          ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
+          ...(operationId !== undefined ? { operationId } : {}),
         };
         const result = action === 'destroy'
           ? await dependencies.startDestroy({
@@ -281,6 +308,7 @@ export function createWorkspaceHostActionRoute(
                 confirmedAt: destroyAdmission!.confirmedAt,
               },
               ...(destroyAdmission!.canary ? { canary: destroyAdmission!.canary } : {}),
+              ...(releaseTaskId !== undefined ? { releaseTaskId } : {}),
               actorId: destroyAdmission!.confirmedBy,
             })
           : await dependencies.startLifecycle({
@@ -345,6 +373,9 @@ export function createWorkspaceHostActionRoute(
           status: result.status === 'succeeded' ? 200 : result.status === 'in-progress' ? 202 : 500,
         });
       } catch (error) {
+        if (error instanceof WorkspaceHostReleaseBindingError) {
+          return requestError(error.message, error.reason === 'task-not-found' ? 404 : 409, { reason: error.reason });
+        }
         if (error instanceof WorkspaceHostProvisioningConflictError) {
           return requestError('workspace host already has an operation in progress', 409);
         }

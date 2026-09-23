@@ -24,6 +24,16 @@ import {
   type WorkspaceHostDestroyStore,
   WorkspaceHostProvisioningRequestError,
 } from './provisioning-runner';
+import {
+  BUNDLE,
+  OTHER_BUNDLE,
+  TASK_ID,
+  builtReceipts,
+  labelJournal,
+  memoryReleaseLedger,
+  receipt,
+} from './release-journal-test-support';
+import { WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, openWorkspaceHostTeardownRelease } from './teardown-release-receipt';
 
 const NOW = '2026-08-25T00:00:00.000Z';
 const LATER = '2026-08-25T00:10:00.000Z';
@@ -796,6 +806,74 @@ describe('runWorkspaceHostDestroy', () => {
     // CONTROL: the reclaim verdict must be ADDITIVE to the survivor list, never a relabelling of it.
     // Without both assertions a regression that merely renamed `provider.untracked` would pass.
     expect(reason).toContain('provider.untracked=[');
+  });
+});
+
+// WI-10002510: the terminal census IS the `teardown.resource-census` release evidence, so a destroy
+// named as acceptance evidence records it — from the census it actually took, never from "succeeded".
+describe('runWorkspaceHostDestroy release census receipt', () => {
+  function releaseStore() {
+    return memoryReleaseLedger(
+      labelJournal([...builtReceipts(), receipt('publish.finalize', 'committed', [`provider:bundle:${BUNDLE}`], 2)]),
+    );
+  }
+
+  function recorded(store: ReturnType<typeof releaseStore>, bundle = BUNDLE): Pick<
+    RunWorkspaceHostDestroyInput,
+    'releaseTaskId' | 'openRelease'
+  > {
+    return {
+      releaseTaskId: TASK_ID,
+      openRelease: (input) =>
+        openWorkspaceHostTeardownRelease({ ...input, ledger: store, readHostRuntimeRelease: async () => ({ bundleSha256: bundle }) }),
+    };
+  }
+
+  it('commits teardown.resource-census from the clean eight-kind terminal census, naming the destroy', async () => {
+    const { provider } = providerHarness();
+    const { store } = storeHarness({ ...desired, labels: undefined });
+    const journal = releaseStore();
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), ...recorded(journal) });
+
+    expect(result.status).toBe('succeeded');
+    expect(journal.journal.receipts.at(-1)).toMatchObject({
+      stage: WORKSPACE_HOST_RESOURCE_CENSUS_STAGE,
+      state: 'committed',
+      evidenceRefs: expect.arrayContaining([
+        'destroy-operation:op-destroy-1',
+        'census-disposition:discard',
+        'census-kind:nat:deterministic-name:gcp://inventory/nat',
+      ]),
+    });
+  });
+
+  it('settles the census receipt refused when the terminal census is unclean, and names only the failure class', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store } = storeHarness();
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot());
+    const journal = releaseStore();
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 0, ...recorded(journal) });
+
+    expect(result.status).toBe('failed');
+    const settled = journal.journal.receipts.at(-1)!;
+    expect(settled).toMatchObject({ stage: WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, state: 'refused' });
+    expect(settled.evidenceRefs).toEqual(['reconcile:confirmed-absent', 'destroy-operation:op-destroy-1', 'destroy-failure:Error']);
+  });
+
+  it('refuses the destroy before any provider call when the host runs other bytes than the release', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness({ ...desired, labels: undefined });
+    const journal = releaseStore();
+    const cursor = journal.journal.cursor;
+
+    await expect(
+      runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), ...recorded(journal, OTHER_BUNDLE) }),
+    ).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(store.beginOperation).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(journal.journal.cursor).toBe(cursor);
   });
 });
 

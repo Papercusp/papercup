@@ -20,6 +20,7 @@ vi.mock('../../../dbos/workspace-host-provision-workflow', () => ({
 }));
 
 import route from './initialize';
+import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
 
 const ctx: RouteContext = {
   principal: null, input: undefined, params: { hostId: 'host-1' }, log: () => {}, signal: new AbortController().signal,
@@ -69,6 +70,30 @@ describe('workspace-host initialize agent coverage', () => {
   it('refuses without dispatch when the durable executor is unavailable', async () => {
     h.available.mockReturnValueOnce(false);
     expect((await route.handler(post(), ctx)).status).toBe(503);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('carries an explicit release task into admission and reports it back', async () => {
+    const response = await route.handler(post({ releaseTaskId: 'release-task-1' }), ctx);
+    expect(response.status).toBe(202);
+    expect(h.prepare).toHaveBeenCalledWith(expect.objectContaining({ releaseTaskId: 'release-task-1' }));
+    expect(h.start).toHaveBeenCalledWith(expect.objectContaining({ releaseTaskId: 'release-task-1' }));
+    expect(await response.json()).toMatchObject({ releaseTaskId: 'release-task-1' });
+  });
+
+  it.each([42, '', '../task', 'x'.repeat(65)])('refuses a malformed release task before anything else: %j', async (releaseTaskId) => {
+    expect((await route.handler(post({ releaseTaskId }), ctx)).status).toBe(400);
+    expect(h.forward).not.toHaveBeenCalled();
+    expect(h.prepare).not.toHaveBeenCalled();
+  });
+
+  it('answers a receipt that could never be written as a conflict, and an unknown task as not found', async () => {
+    h.prepare.mockRejectedValueOnce(new WorkspaceHostReleaseBindingError('bundle-mismatch', 'workspace.root-bootstrap', 'other bytes'));
+    const conflict = await route.handler(post({ releaseTaskId: 'release-task-1' }), ctx);
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ reason: 'bundle-mismatch' });
+    h.prepare.mockRejectedValueOnce(new WorkspaceHostReleaseBindingError('task-not-found', 'workspace.root-bootstrap', 'no task'));
+    expect((await route.handler(post({ releaseTaskId: 'nope' }), ctx)).status).toBe(404);
     expect(h.start).not.toHaveBeenCalled();
   });
 

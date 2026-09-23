@@ -124,7 +124,7 @@ function admissionEvidence(
   };
 }
 
-const DEFAULT_TEST_DEPENDENCIES: WorkspaceHostInitializationRunnerDependencies = {
+const DEFAULT_TEST_DEPENDENCIES: Pick<WorkspaceHostInitializationRunnerDependencies, 'verifyAgentCredentialAdmission'> = {
   verifyAgentCredentialAdmission: async (input) => admissionEvidence(input),
 };
 
