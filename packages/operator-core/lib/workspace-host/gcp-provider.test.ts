@@ -14,8 +14,10 @@ import {
   GCP_DATA_DISK_RESIZE_POLICY,
   GCP_DATA_MOUNT_POINT,
   GCP_IAP_TCP_FORWARDING_RANGE,
+  GCP_WORKSPACE_HOST_TRANSPORTS,
   buildGcpWorkspaceHostTransportProfile,
   createGcpWorkspaceHostProvider,
+  gcpInstanceInsertPermissions,
   gcpWorkspaceHostRequestUuid,
   type GcpComputeInstanceStatus,
   type GcpDiskInsertInput,
@@ -40,8 +42,11 @@ import {
   type GcpWorkspaceHostInventoryRequest,
   type GcpWorkspaceHostInventorySnapshot,
 } from './gcp-provider';
+import { GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS } from '../cloud-workspaces/gcp-preflight';
+import { gcpFirstWorkspaceDesiredSpec } from '../auth/hosted/first-workspace';
+import { PAPERCUSP_HOSTED_HOST_PERMISSIONS, PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS } from './hosted-gcp-hosting';
 
-const NOW = '2026-08-22T08:30:00.000Z';
+const NOW ='2026-08-22T08:30:00.000Z';
 
 describe('GCP workspace-host transport compatibility profiles', () => {
   it('declares IAP prerequisites, corporate-proxy allowlisting, audit limits, and a bulk-transfer fallback', () => {
@@ -1929,5 +1934,82 @@ describe('GCP workspace-host provider created-resource reporting', () => {
     // already gone. Re-closing is safe — the ledger write is idempotent.
     expect(reconciled.state).toBe('destroyed');
     expect(destroyedResources.slice(beforeReconcile)).toHaveLength(1);
+  });
+});
+
+describe('every role that creates a host holds what GCP checks on the instance insert', () => {
+  async function instanceInsert(spec: WorkspaceHostDesiredSpec): Promise<GcpInstanceInsertInput> {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'iam-pin', idempotencyKey: 'iam-pin', desired: spec },
+      context(),
+    );
+    return (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+  }
+
+  /** Project-level permissions the request needs that `granted` lacks. actAs is checked on the account. */
+  function missing(request: GcpInstanceInsertInput, granted: Iterable<string>): string[] {
+    const held = new Set(granted);
+    return gcpInstanceInsertPermissions(request).filter((p) => !p.startsWith('iam.') && !held.has(p));
+  }
+
+  it('derives the permission for every field the request sets', async () => {
+    const direct = desired();
+    direct.provider = { ...direct.provider, transportPreference: 'gcp-direct-ssh', directSshSourceRanges: ['203.0.113.0/24'] };
+    expect(gcpInstanceInsertPermissions(await instanceInsert(direct))).toEqual([
+      'compute.disks.create',
+      'compute.disks.use',
+      'compute.images.useReadOnly',
+      'compute.instances.create',
+      'compute.instances.setLabels',
+      'compute.instances.setMetadata',
+      'compute.instances.setServiceAccount',
+      'compute.instances.setTags',
+      'compute.subnetworks.use',
+      'compute.subnetworks.useExternalIp',
+      'iam.serviceAccounts.actAs',
+    ]);
+  });
+
+  it('BYOC: the preflight list covers the insert on every transport', async () => {
+    for (const transportPreference of GCP_WORKSPACE_HOST_TRANSPORTS) {
+      const spec = desired();
+      spec.provider = {
+        ...spec.provider,
+        transportPreference,
+        ...(transportPreference === 'gcp-direct-ssh' ? { directSshSourceRanges: ['203.0.113.0/24'] } : {}),
+      };
+      expect(missing(await instanceInsert(spec), GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS), transportPreference).toEqual(
+        [],
+      );
+    }
+  });
+
+  it("Papercusp-hosted: the host and observer roles cover the real first-workspace spec, which holds no identity", async () => {
+    const spec = gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com',
+            hostId: 'host-gcp-1',
+          },
+        },
+      } as never,
+    });
+    const request = await instanceInsert(spec);
+    const granted = [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS];
+    expect(missing(request, granted)).toEqual([]);
+    expect(gcpInstanceInsertPermissions(request)).not.toContain('iam.serviceAccounts.actAs');
+    // Control: the list as it stood when every hosted create was refused 403 is caught.
+    expect(missing(request, granted.filter((p) => p !== 'compute.instances.setTags'))).toEqual([
+      'compute.instances.setTags',
+    ]);
   });
 });
