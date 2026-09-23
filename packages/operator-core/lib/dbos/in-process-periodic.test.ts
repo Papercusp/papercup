@@ -191,6 +191,24 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
+  it('feeds performance history from the active system-health tick', async () => {
+    const flags = await import('@papercusp/flags/server');
+    const registry = await import('../workspace-registry');
+    const health = await import('../system-health');
+    const perf = await import('../system-health/perf-regression-rig');
+    vi.spyOn(flags, 'getFlag').mockResolvedValue(true);
+    vi.spyOn(registry, 'readRegistry').mockReturnValue({ workspaces: [{ id: 'perf-test-ws' }] } as ReturnType<typeof registry.readRegistry>);
+    const healthTick = vi.spyOn(health, 'runSystemHealthTick').mockResolvedValue({} as Awaited<ReturnType<typeof health.runSystemHealthTick>>);
+    const perfSample = vi.spyOn(perf, 'collectPerfRegressionWhenDue').mockResolvedValue({
+      attempted: true, persisted: true, overdue: false, lastCapturedAt: null,
+    });
+
+    await byName.get('system-health')!.tick();
+
+    expect(healthTick).toHaveBeenCalledWith('perf-test-ws');
+    expect(perfSample).toHaveBeenCalledWith('perf-test-ws');
+  });
+
   it('carries exactly the expected ephemeral probe set (the EI-1622 conversions + later additions)', () => {
     expect([...byName.keys()].sort()).toEqual(
       [

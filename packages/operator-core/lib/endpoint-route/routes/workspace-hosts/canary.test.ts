@@ -235,6 +235,14 @@ function harness(adapted = false, storedLabels: Readonly<Record<string, string>>
       desired: (storedLabels ? { labels: storedLabels } : {}) as never,
       operations,
       deliveryCapabilities: { fileTransfer: true },
+      transport: {
+        projectId: 'papercusp-test',
+        zone: 'us-central1-a',
+        instanceName: 'workspace-host-1',
+        instanceId: '1234567890',
+        sshUser: 'papercusp',
+        knownHostsFile: '/known-hosts',
+      },
     }),
   );
   const dependencies: WorkspaceHostCanaryRouteDependencies = {
