@@ -1,0 +1,19 @@
+[Unit]
+Description=Papercusp rig macOS VM watchdog: QMP reset-loop / guest-liveness probe with a guarded cold restart (WI-10002582, EI-24019740313758959)
+Documentation=file://%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/README.md
+After=papercusp-vm-mac.service
+
+[Service]
+Type=oneshot
+Nice=5
+# One check is ~10s; a cold restart adds QMP quit (<=30s) + settle (<=60s) + start (<=180s).
+TimeoutStartSec=420
+Environment=MAC_VM_WATCHDOG_REMEDY=cold-restart
+# Boot grace 1800s, not the 600s code default: the measured post-crash boot on
+# 2026-09-23 took ~18 min from verbose boot to the login window (APFS purgatory
+# cleanup after the reset loop), with guest ARP unreachable for most of it. A
+# 600s grace would cold-restart a legitimately slow recovery boot mid-way.
+Environment=MAC_VM_WATCHDOG_BOOT_GRACE_SEC=1800
+# P-203 fold cursor (alert-only signal). Remove this line once the fold is finished.
+Environment=MAC_VM_WATCHDOG_CURSOR_PREFIX=5b00878b
+ExecStart=%h/.local/node25/bin/node %h/papercupai-workspace/papercusp/papercusp-desktop/bin/mac-vm-watchdog.mjs
