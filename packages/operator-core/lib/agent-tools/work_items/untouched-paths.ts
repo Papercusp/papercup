@@ -71,7 +71,7 @@
  *
  * PURE via injected probes, so every branch above is unit-testable without a real tree.
  */
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import nodePath from 'node:path';
 
@@ -131,17 +131,27 @@ export type GitLastCommitProbe = (repoRoot: string, relPath: string) => number |
  */
 export type GitDirtyProbe = (repoRoot: string, relPath: string) => boolean | undefined;
 
-/** Batch form used by the default probes so one checkout costs one git read per signal. */
+/**
+ * Batch form used by the default probes so one checkout costs one git read per signal.
+ *
+ * Batch probes MAY be async, and the defaults ARE: this runs inside `work_items:complete`
+ * on the shared operator process, where a synchronous git spawn freezes EVERY request on
+ * the host for as long as git runs (WI-10002704: an unbounded `git log` under
+ * `execFileSync` held the :3070 main thread for up to 5s per completion — 74.6% of one
+ * event-loop cpuprofile). Never reintroduce a `*Sync` child_process call in this module.
+ */
 export type GitDirtyBatchProbe = (
   repoRoot: string,
   relPaths: readonly string[],
-) => ReadonlyMap<string, boolean | undefined>;
+) => ReadonlyMap<string, boolean | undefined> | Promise<ReadonlyMap<string, boolean | undefined>>;
 
 /** Batch form used by the default probes so one checkout costs one history read. */
 export type GitLastCommitBatchProbe = (
   repoRoot: string,
   relPaths: readonly string[],
-) => ReadonlyMap<string, number | null | undefined>;
+) =>
+  | ReadonlyMap<string, number | null | undefined>
+  | Promise<ReadonlyMap<string, number | null | undefined>>;
 
 export interface UntouchedPathProbe {
   /** Candidate checkout roots. An explicit empty list means "cannot judge", never "guess". */
@@ -170,78 +180,169 @@ function normalizedRepoPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\/+/, '');
 }
 
-/** One `git status` read for every candidate path in a checkout. */
-const defaultIsDirtyMany: GitDirtyBatchProbe = (repoRoot, relPaths) => {
+/** Upper bound on one git probe; past it the probe answers "cannot judge" (`undefined`). */
+export const GIT_PROBE_TIMEOUT_MS = 5_000;
+
+export interface GitSpawnOptions {
+  /** The git executable. Tests point it at a slow wrapper to prove the probe never blocks. */
+  gitBinary?: string;
+  timeoutMs?: number;
+}
+
+type GitStreamOutcome = 'complete' | 'failed' | 'timeout';
+
+/**
+ * Run `git <args>` WITHOUT blocking the event loop and hand each NUL-separated stdout field
+ * to `onField` as it arrives (the trailing fragment after the last NUL is delivered too, so
+ * the field sequence is exactly `stdout.split('\0')`). `onField` returning `true` stops the
+ * read and kills git — that is what bounds a history walk. Resolves `'complete'` on exit 0
+ * or an early stop, `'failed'` on a spawn error or non-zero exit, `'timeout'` past the
+ * deadline. Never rejects.
+ */
+function streamGitFields(
+  args: readonly string[],
+  onField: (field: string) => boolean | void,
+  opts: GitSpawnOptions = {},
+): Promise<GitStreamOutcome> {
+  return new Promise<GitStreamOutcome>((resolve) => {
+    let settled = false;
+    let carry = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let child: ReturnType<typeof spawn>;
+    const finish = (outcome: GitStreamOutcome): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      resolve(outcome);
+    };
+    try {
+      child = spawn(opts.gitBinary ?? 'git', [...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      resolve('failed');
+      return;
+    }
+    timer = setTimeout(() => finish('timeout'), opts.timeoutMs ?? GIT_PROBE_TIMEOUT_MS);
+    child.on('error', () => finish('failed'));
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      if (settled) return;
+      const fields = (carry + chunk).split('\0');
+      carry = fields.pop() ?? '';
+      for (const field of fields) {
+        if (onField(field) === true) {
+          finish('complete');
+          return;
+        }
+      }
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish('failed');
+        return;
+      }
+      onField(carry);
+      finish('complete');
+    });
+  });
+}
+
+/** One `git status` read for every candidate path in a checkout. Async — see GitDirtyBatchProbe. */
+export async function isDirtyManyViaGit(
+  repoRoot: string,
+  relPaths: readonly string[],
+  opts: GitSpawnOptions = {},
+): Promise<Map<string, boolean | undefined>> {
   const result = new Map<string, boolean | undefined>();
   const paths = [...new Set(relPaths)];
   for (const path of paths) result.set(normalizedRepoPath(path), undefined);
-  try {
-    const out = execFileSync(
-      'git',
-      ['-C', repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-      },
-    );
-    for (const path of paths) result.set(normalizedRepoPath(path), false);
-    const fields = out.split('\0');
-    for (let index = 0; index < fields.length; index += 1) {
-      const record = fields[index];
-      if (record.length < 4) continue;
-      const status = record.slice(0, 2);
-      const changedPath = record.slice(3);
-      if (changedPath) result.set(normalizedRepoPath(changedPath), true);
-      // Porcelain -z emits the old and new names as adjacent NUL fields for renames/copies.
-      if (/[RC]/.test(status)) {
-        const secondPath = fields[index + 1];
-        if (secondPath) result.set(normalizedRepoPath(secondPath), true);
-        index += 1;
-      }
+  const fields: string[] = [];
+  const outcome = await streamGitFields(
+    ['-C', repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths],
+    (field) => {
+      fields.push(field);
+    },
+    opts,
+  );
+  // not a repo, git missing, timeout → cannot judge every path
+  if (outcome !== 'complete') return result;
+  for (const path of paths) result.set(normalizedRepoPath(path), false);
+  for (let index = 0; index < fields.length; index += 1) {
+    const record = fields[index];
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2);
+    const changedPath = record.slice(3);
+    if (changedPath) result.set(normalizedRepoPath(changedPath), true);
+    // Porcelain -z emits the old and new names as adjacent NUL fields for renames/copies.
+    if (/[RC]/.test(status)) {
+      const secondPath = fields[index + 1];
+      if (secondPath) result.set(normalizedRepoPath(secondPath), true);
+      index += 1;
     }
-  } catch {
-    // not a repo, git missing, timeout → cannot judge every path
   }
   return result;
-};
+}
 
-/** One `git log` read maps each requested path to its newest touching commit. */
-const defaultLastCommitAtMany: GitLastCommitBatchProbe = (repoRoot, relPaths) => {
+const defaultIsDirtyMany: GitDirtyBatchProbe = (repoRoot, relPaths) => isDirtyManyViaGit(repoRoot, relPaths);
+
+/**
+ * One `git log` read maps each requested path to its newest touching commit. Async — see
+ * GitLastCommitBatchProbe.
+ *
+ * git walks newest-first and only the FIRST sighting of a path is kept, so once every
+ * requested path has been seen the rest of the walk cannot change the answer: stop there
+ * and kill git. Without that stop the walk covered the repo's whole history on every
+ * completion. A `--since` bound would NOT be equivalent — it would turn a path last
+ * committed before the window (the exact finding this guard reports) into `null`.
+ *
+ * Outcomes: exit 0 or an early stop → unseen paths stay `null` (no history). A spawn error
+ * or non-zero exit → every path `undefined` (unknown). A timeout → paths already seen keep
+ * their commit time (a newest-first sighting is final), unseen paths are `undefined`.
+ */
+export async function lastCommitAtManyViaGit(
+  repoRoot: string,
+  relPaths: readonly string[],
+  opts: GitSpawnOptions = {},
+): Promise<Map<string, number | null | undefined>> {
   const result = new Map<string, number | null | undefined>();
   const paths = [...new Set(relPaths)];
   for (const path of paths) result.set(normalizedRepoPath(path), null);
   const marker = '__PAPERCUSP_LAST_COMMIT__';
-  try {
-    const out = execFileSync(
-      'git',
-      ['-C', repoRoot, 'log', `--pretty=format:${marker}%ct%x00`, '--name-only', '-z', '--', ...paths],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-      },
-    );
-    const requested = new Set(paths.map(normalizedRepoPath));
-    let commitSec: number | undefined;
-    for (const field of out.split('\0')) {
+  const requested = new Set(paths.map(normalizedRepoPath));
+  let unseen = requested.size;
+  let commitSec: number | undefined;
+  const outcome = await streamGitFields(
+    ['-C', repoRoot, 'log', `--pretty=format:${marker}%ct%x00`, '--name-only', '-z', '--', ...paths],
+    (field) => {
       const record = field.trim();
       if (record.startsWith(marker)) {
         const parsed = Number.parseInt(record.slice(marker.length), 10);
         commitSec = Number.isFinite(parsed) ? parsed : undefined;
-        continue;
+        return false;
       }
-      if (commitSec === undefined || !record) continue;
+      if (commitSec === undefined || !record) return false;
       const path = normalizedRepoPath(record);
-      if (requested.has(path) && result.get(path) === null) result.set(path, commitSec);
-    }
-  } catch {
+      if (requested.has(path) && result.get(path) === null) {
+        result.set(path, commitSec);
+        unseen -= 1;
+      }
+      return unseen === 0;
+    },
+    opts,
+  );
+  if (outcome === 'failed') {
     // Keep undefined distinct from null: git failure is unknown, while null is a valid
     // successful answer for a path with no history.
-    for (const path of paths) result.set(normalizedRepoPath(path), undefined);
+    for (const path of requested) result.set(path, undefined);
+  } else if (outcome === 'timeout') {
+    for (const path of requested) if (result.get(path) === null) result.set(path, undefined);
   }
   return result;
-};
+}
+
+const defaultLastCommitAtMany: GitLastCommitBatchProbe = (repoRoot, relPaths) =>
+  lastCommitAtManyViaGit(repoRoot, relPaths);
 
 /** Submodule prefixes parsed from `.gitmodules`. Failure yields [] — see the caller. */
 const defaultSubmodulePrefixes = (repoRoot: string): readonly string[] => {
@@ -285,11 +386,11 @@ function epochSeconds(value: unknown): number | undefined {
  * treat a returned finding as grade-bearing; `undefined` must always mean "grade as
  * before".
  */
-export function untouchedPathsInCompletion(
+export async function untouchedPathsInCompletion(
   evidence: CompletionVerificationEvidence | null | undefined,
   since: unknown,
   probe: UntouchedPathProbe = {},
-): { untouched: UntouchedPathHit[]; since: string } | undefined {
+): Promise<{ untouched: UntouchedPathHit[]; since: string } | undefined> {
   const declared = evidence?.filesChanged;
   if (!declared?.length) return undefined;
 
@@ -363,11 +464,11 @@ export function untouchedPathsInCompletion(
 
   const dirtyByRoot = new Map<string, ReadonlyMap<string, boolean | undefined>>();
   const commitsByRoot = new Map<string, ReadonlyMap<string, number | null | undefined>>();
-  const dirtyAt = (repoRoot: string, path: string): boolean | undefined => {
+  const dirtyAt = async (repoRoot: string, path: string): Promise<boolean | undefined> => {
     if (probe.isDirty) return probe.isDirty(repoRoot, path);
     if (!dirtyByRoot.has(repoRoot)) {
       try {
-        dirtyByRoot.set(repoRoot, isDirtyMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
+        dirtyByRoot.set(repoRoot, await isDirtyMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
       } catch {
         dirtyByRoot.set(repoRoot, new Map());
       }
@@ -375,11 +476,11 @@ export function untouchedPathsInCompletion(
     const values = dirtyByRoot.get(repoRoot);
     return values?.get(normalizedRepoPath(path)) ?? values?.get(path);
   };
-  const commitAt = (repoRoot: string, path: string): number | null | undefined => {
+  const commitAt = async (repoRoot: string, path: string): Promise<number | null | undefined> => {
     if (probe.lastCommitAt) return probe.lastCommitAt(repoRoot, path);
     if (!commitsByRoot.has(repoRoot)) {
       try {
-        commitsByRoot.set(repoRoot, lastCommitAtMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
+        commitsByRoot.set(repoRoot, await lastCommitAtMany(repoRoot, batchPathsByRoot.get(repoRoot) ?? []));
       } catch {
         commitsByRoot.set(repoRoot, new Map());
       }
@@ -435,7 +536,7 @@ export function untouchedPathsInCompletion(
       // Proof-of-work route 1: the edit is present but not yet swept by git-sync.
       let dirty: boolean | undefined;
       try {
-        dirty = dirtyAt(repoRoot, declaredPath);
+        dirty = await dirtyAt(repoRoot, declaredPath);
       } catch {
         dirty = undefined;
       }
@@ -448,7 +549,7 @@ export function untouchedPathsInCompletion(
       // Proof-of-work route 2: git-sync already swept the edit into a commit.
       let commitSec: number | null | undefined;
       try {
-        commitSec = commitAt(repoRoot, declaredPath);
+        commitSec = await commitAt(repoRoot, declaredPath);
       } catch {
         commitSec = undefined;
       }
