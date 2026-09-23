@@ -38,7 +38,7 @@ export const rubricsAmendArgs = z
       .boolean()
       .optional()
       .describe(
-        'preview a BAR meaning amendment without writing; returns exact approval JSON. Post preview.approval VERBATIM as its own work_items:comment and point the reviewer at THAT thread post (coord:send caps a body at 600 characters). A thread post is readable on every surface, so the reviewer can copy the JSON back; an item payload is not.',
+        "Preview a BAR meaning amendment without writing; returns exact approval JSON. Post preview.approval VERBATIM as a work_items:comment on a thread you can write to, then send the outside-lineage reviewer a pointer to that post (coord:send caps a body at 600 characters). The reviewer re-posts the exact JSON as a work_items:comment on any existing thread they can write to, preferably a work-item they already hold, and returns that post id. The resolver looks up local post ids within the workspace, not by the requester's thread; do not create a counter-sign work-item just for this approval.",
       ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -194,13 +194,13 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+    "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true and post its returned approval JSON on a thread you can write to; send the outside-lineage reviewer a pointer. Have the reviewer re-post it verbatim on any thread they can write to, preferably an item they already hold, then apply approvalRef:'thread-post:<id>'. The lookup is workspace-wide by local post id, not tied to the requester's thread; do not create a counter-sign work-item just for the approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
   guidance: {
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
     chaining:
-      "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → post preview.approval VERBATIM as its own work_items:comment, and point the reviewer at THAT thread post (cap: 600 characters). A thread post is readable on every surface; the item payload is not — it needs payloadTier:'full', which a trimmed or judge-scoped reader never gets, so the reviewer sees an approval they cannot copy. Reviewer re-posts that exact JSON as their own work_items:comment → amend { approvalRef:'thread-post:<their id>' }. Never truncate or retype approval JSON.",
+      "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval VERBATIM as a work_items:comment on a thread they can write to and sends the reviewer a pointer (cap: 600 characters). The reviewer re-posts that exact JSON as a work_items:comment on any existing thread they can write to, preferably an item they already hold, then returns the post id. `thread-post:<id>` resolves a local post by workspace and id; it is not bound to the requester's thread. Do not create a counter-sign work-item just for the approval. Apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Never truncate or retype approval JSON.",
     seeAlso: [
       'rubrics:propose (whole-document revision)',
       'rubrics:get (read before amending)',

@@ -727,8 +727,12 @@ type GradingAuditReplayConsistencyError = {
  * "re-runnable" while separately claiming its uniform distribution is false.
  * For spec-test-adequacy cards the evaluator owns those ratings, so corroborate
  * that claimed contradiction before the audit is allowed to settle the card.
+ *
+ * Exported so the evaluate-and-emit round trip (plans/certify-spec-clauses.test.ts,
+ * clause RSR-P-005-A) can run THIS auditor replay on a card as it was persisted — a
+ * copy of the comparison in a test would prove nothing about the auditor.
  */
-async function validateGradingAuditReplayConsistency(
+export async function validateGradingAuditReplayConsistency(
   gradedObservation: NonNullable<ReturnType<typeof asStructuredObservation>>,
   auditRatings: z.infer<typeof scorecardEmitArgs>['ratings'],
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
@@ -2742,23 +2746,36 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    const identity = resolveAgentIdentity(ctx);
-    const ctxHarness =
-      typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : undefined;
-    return {
-      data: await emitScorecard(
-        args,
-        {
-          createdBy: identity.ownerId,
-          ctxHarness,
-          role: ctx.role,
-          workspaceId: identity.workspaceId ?? undefined,
-          launchContext: ctx,
-          // P-011: tests-checks resolve + run against the tree the AGENT edits.
-          checkRoot: resolveAgentWorkspaceRoot(ctx),
-        },
-        { dispatchTool: ctx.dispatchTool },
-      ),
-    };
+    return { data: await emitScorecardForToolContext(args, ctx) };
   },
 });
+
+/**
+ * The scorecards:emit handler body, exported so a composing verb
+ * (plans:certify-spec-clauses) files cards through the IDENTICAL identity, harness,
+ * check-root and replay-dispatch wiring instead of a hand-copied second path. A fork
+ * here is how an evaluator-built card could pass one emit route and fail the other.
+ */
+export async function emitScorecardForToolContext(
+  args: z.infer<typeof scorecardEmitArgs>,
+  // The full tool-handler context: GradingAuditLaunchContext IS that type (it is derived
+  // from a defineTool handler's ctx parameter), and the handler above passes its own ctx.
+  ctx: GradingAuditLaunchContext,
+) {
+  const identity = resolveAgentIdentity(ctx);
+  const ctxHarness =
+    typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : undefined;
+  return emitScorecard(
+    args,
+    {
+      createdBy: identity.ownerId,
+      ctxHarness,
+      role: ctx.role,
+      workspaceId: identity.workspaceId ?? undefined,
+      launchContext: ctx,
+      // P-011: tests-checks resolve + run against the tree the AGENT edits.
+      checkRoot: resolveAgentWorkspaceRoot(ctx),
+    },
+    { dispatchTool: ctx.dispatchTool },
+  );
+}
