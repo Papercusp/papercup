@@ -19,7 +19,24 @@ import { resolveCodexModelSelection } from './model-context-budget.mjs';
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
   engines: new Map<string, ClaudeSuEngine | SuRpcEngine>(),
+  // Each engine's exit bookkeeping (close + ended mark); its engine entry is
+  // cleared only when this settles.
+  exits: new Map<string, Promise<void>>(),
 }));
+
+function trackExit(key: string, exit: Promise<void>): void {
+  state.exits.set(key, exit);
+  void exit.finally(() => { if (state.exits.get(key) === exit) state.exits.delete(key); });
+}
+
+/** True once `key`'s previous engine has finished exiting, waiting at most `ms`. */
+async function previousEngineExited(key: string, ms: number): Promise<boolean> {
+  const exit = state.exits.get(key);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (exit) await Promise.race([exit, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]);
+  clearTimeout(timer);
+  return !state.engines.has(key);
+}
 
 // PUI sessions use native approval prompts on both creation and recovery.
 // Manual/auto mode is a separate agent policy, never a permission bypass.
@@ -69,7 +86,11 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       const snapshot = host?.snapshot();
       const initializing = state.engines.has(key) && snapshot?.descriptor.lifecycle === 'starting';
       if (!snapshot || snapshot.terminal || (!initializing && (!snapshot.executorAttached || !snapshot.streamReady))) {
-        if (state.engines.has(key)) throw new Error('The previous native process is still closing; reconnect after it exits');
+        // A dead engine's exit bookkeeping can still be running when the
+        // owner's recovery send arrives; wait for it rather than refuse.
+        if (state.engines.has(key) && !await previousEngineExited(key, 10_000)) {
+          throw new Error('The previous native process is still closing; reconnect after it exits');
+        }
         const restored = host ?? await rehydrateRegisteredSuSessionHost({ workspaceId,
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
@@ -81,21 +102,21 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           active = previous.backend === 'claude'
             ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
               { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
-              { ...options, host: restored as SuSessionHost<'claude'>, resume: true })
+              { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact })
             : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
               { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
           state.engines.set(key, active);
           await persistSuSessionDescriptor(previous.advSessionId, active.adapter.host.descriptor());
         } catch (error) { await active?.close(); await resume.release(); throw error; }
         const resumed = active;
-        void (async () => {
+        trackExit(key, (async () => {
           try { await resumed.ready; await resumed.done; }
           catch (error) {
             if (!resumed.adapter.host.snapshot().terminal) resumed.adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
             await resumed.close();
             await resume.release();
           } finally { if (state.engines.get(key) === resumed) state.engines.delete(key); }
-        })().catch((error: unknown) => console.warn('[su-session] resume bookkeeping failed', error));
+        })().catch((error: unknown) => console.warn('[su-session] resume bookkeeping failed', error)));
         return { status: 'ok', attached: true, resumed: true, transport: 'structured', ready: false,
           advSessionId: previous.advSessionId, ownerId: previous.ownerId, workspaceId,
           harnessSlug: previous.harnessSlug, planSlug: resume.binding.planSlug, agent: previous.backend,
@@ -168,7 +189,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       // Launch publishes the durable identity; the existing host stream owns
       // bounded readiness and failure. Waiting here couples native startup to
       // the HTTP route's shorter watchdog and discards a valid launch as 408.
-      void (async () => {
+      trackExit(key, (async () => {
         try {
           await active.ready;
           await setAdvSessionPid(result.sessionId!, active.pid(), `pui-structured-${result.agent}`);
@@ -185,7 +206,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         } finally {
           if (state.engines.get(key) === active) state.engines.delete(key);
         }
-      })().catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error));
+      })().catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error)));
       return { status: 'ok', transport: 'structured', agent: result.agent, advSessionId: binding.advSessionId,
         ownerId: binding.ownerId, workspaceId: binding.workspaceId, harnessSlug: binding.harnessSlug,
         planSlug: binding.planSlug, nativeSession, ready: false };

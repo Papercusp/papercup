@@ -438,6 +438,14 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     const current = this.descriptorValue.lifecycle;
     if (current === state) return null;
     if (TERMINAL_STATES.has(current)) return null;
+    // A terminal runtime can execute nothing. Release its executor so a
+    // replacement can attach to THIS host (attachRuntime) and keep its channel
+    // and receipts, as a restored host does after an operator restart; kept,
+    // it refused every in-process reconnect with runtime_already_attached.
+    if (TERMINAL_STATES.has(state)) {
+      this.executeCommand = undefined;
+      this.runtimeReady = () => false;
+    }
     return this.emit({
       type: 'lifecycle',
       previousState: current,

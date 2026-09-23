@@ -375,6 +375,19 @@ describe('SuSessionHost', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('releases a crashed runtime\'s executor so a replacement attaches to the same host', () => {
+    const execute = vi.fn<SuSessionCommandExecutor<'claude'>>(async () => ({ status: 'completed' }));
+    const saved = descriptor();
+    const host = new SuSessionHost({ descriptor: saved, executeCommand: execute });
+    const replacement = { ...saved, lifecycle: 'starting' as const, runtimeGeneration: saved.runtimeGeneration + 1 };
+    // A live executor is never displaced...
+    expect(() => host.attachRuntime({ descriptor: replacement, executeCommand: execute })).toThrow('without an executor');
+    // ...but a dead one executes nothing and must not block recovery.
+    host.reconcileRuntimeExit({ expected: false, exitCode: 137, signal: 'SIGKILL' });
+    host.attachRuntime({ descriptor: replacement, executeCommand: execute });
+    expect(host.descriptor()).toMatchObject({ lifecycle: 'starting', runtimeGeneration: replacement.runtimeGeneration });
+  });
+
   it('reconnects with Last-Event-ID without duplication after a consumer drops', async () => {
     const host = new SuSessionHost({ descriptor: descriptor() });
     registerSuSessionHost(host);

@@ -30,6 +30,19 @@
  * so a successful state tier is sufficient coverage for the hook's data subset;
  * it is accepted only when the receipt explicitly advertises tier mode.
  *
+ * COVERAGE IS PER ARTIFACT, NOT PER RUN (EI-24018312041976584). A host run that
+ * dumps the state tier and then skips the transcript tier for disk space writes
+ * `ok: false`, but its `dumped` list still proves the state tier was written.
+ * Treating the whole run as "not ok" made every workspace hook on the host dump
+ * the same cluster itself, every hour. Measured 2026-09-23 00:00-02:48Z on the
+ * tower: four workspace hooks, ten full dumps, one success, and nine discarded
+ * after the 900 s watchdog or a gzip EPIPE. Each one swept the 64 GB
+ * swappable shared_buffers and drove the host into swap-in thrash. So a not-ok
+ * receipt still covers an artifact its last run dumped. That run's START
+ * (`lastRunEpoch - elapsedSec`) dates the artifact, and it must pass the same
+ * freshness bound as a successful run. A not-ok receipt with no run timing
+ * falls through to dumping.
+ *
  * Cluster identity is `pg_control_system().system_identifier`, a 64-bit value
  * generated at initdb. It is deliberately NOT a host:port or database-name
  * comparison, because both are unsafe here:
@@ -77,6 +90,11 @@ export const HOST_DUMP_MAX_AGE_SEC = 3 * 60 * 60;
 export interface HostDumpStatus {
   ok?: unknown;
   lastSuccessEpoch?: unknown;
+  /** End of the LAST run, successful or not; pairs with `dumped` and `elapsedSec`. */
+  lastRunEpoch?: unknown;
+  /** Duration of the last run, so `lastRunEpoch - elapsedSec` is when it started. */
+  elapsedSec?: unknown;
+  /** Artifacts the LAST run dumped successfully, even when another artifact failed. */
   dumped?: unknown;
   tiersEnabled?: unknown;
   systemIdentifier?: unknown;
@@ -125,7 +143,7 @@ export function evaluateHostDumpCoverage(input: {
   const maxAgeSec = input.maxAgeSec ?? HOST_DUMP_MAX_AGE_SEC;
 
   if (!status) return { covered: false, reason: 'no host-dump receipt' };
-  if (status.ok !== true) return { covered: false, reason: 'host dump last reported not-ok' };
+  const runOk = status.ok === true;
 
   // Identity must be present on BOTH sides and equal. A receipt written before
   // the identity field existed yields `undefined` here, so an old receipt

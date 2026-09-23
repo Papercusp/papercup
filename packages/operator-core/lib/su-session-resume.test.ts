@@ -143,7 +143,7 @@ describe('structured exact resume preparation', () => {
 
   it('releases the reservation when the transcript or selected account cannot be restored', async () => {
     const saved = fixture('claude');
-    m.transcript.mockResolvedValue(false);
+    m.transcript.mockResolvedValue({ pending: true });
     await expect(prepareStructuredSuResume(saved)).rejects.toThrow('transcript');
     expect(m.release).toHaveBeenCalledWith(42, m.acquire.mock.calls[0][1]);
     m.transcript.mockResolvedValue(true);
@@ -152,6 +152,15 @@ describe('structured exact resume preparation', () => {
     expect(m.release).toHaveBeenCalledTimes(2);
     expect(m.finalize).not.toHaveBeenCalled();
     expect(m.ended).not.toHaveBeenCalled();
+  });
+
+  it('starts a Claude session that never wrote a native transcript fresh; Codex still refuses', async () => {
+    m.transcript.mockResolvedValue(false);
+    await expect(prepareStructuredSuResume(fixture('claude'))).resolves.toMatchObject({ exact: false });
+    expect(m.release).not.toHaveBeenCalled();
+    await expect(prepareStructuredSuResume(fixture('codex'))).rejects.toThrow('transcript');
+    m.transcript.mockResolvedValue(true);
+    await expect(prepareStructuredSuResume(fixture('claude'))).resolves.toMatchObject({ exact: true });
   });
 
   it('rejects a lost lease before announcing readiness', async () => {

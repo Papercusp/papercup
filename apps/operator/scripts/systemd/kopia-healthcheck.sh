@@ -212,8 +212,26 @@ fail() {
     if [ "$since" -lt "$ALERT_REFILE_S" ] 2>/dev/null; then
       echo "[$(date -Iseconds)] ALERT DEDUPED (last paged $(dur "$since") ago < $(dur "$ALERT_REFILE_S") refile window) — would have broadcast: $*" >> "$LOG"
     else
-      [ -x "$ALERT" ] && "$ALERT" "$*"
-      echo "$now" > "$marker"
+      # WI-10002566: this was `[ -x "$ALERT" ] && "$ALERT" "$*"`, which short-circuits to
+      # SILENCE when the alarm script is not executable — no page, no error, no journal
+      # line — and then recorded a page in "$marker" anyway, suppressing REAL alarms for
+      # the next ALERT_REFILE_S. kopia-backup-alert.sh sat at mode 100644 from 2026-09-05
+      # until 2026-09-22 and this alarm was inert for all 17 days, which is EI-10733's own
+      # failure (an alarm ringing in an empty room) wearing a permission bit as a costume.
+      # Three rules follow, and the third is the one that was actually load-bearing:
+      #   1. page anyway, through the interpreter — a wrong mode must not cost a page;
+      #   2. say so LOUDLY, to both the log and the journal, so the mode gets fixed;
+      #   3. never record a page that did not happen, or the dedup window hides the next one.
+      if [ -x "$ALERT" ]; then
+        "$ALERT" "$*"
+        echo "$now" > "$marker"
+      elif [ -f "$ALERT" ]; then
+        echo "[$(date -Iseconds)] ALARM SCRIPT NOT EXECUTABLE: $ALERT — paged via bash anyway; fix its mode (chmod 755)" | tee -a "$LOG" >&2
+        bash "$ALERT" "$*"
+        echo "$now" > "$marker"
+      else
+        echo "[$(date -Iseconds)] ALARM SCRIPT MISSING: $ALERT — NOBODY WAS PAGED; deliberately NOT recording a page, so the next run retries instead of deduping against a page that never went out" | tee -a "$LOG" >&2
+      fi
     fi
   fi
   exit 1
@@ -230,6 +248,11 @@ if [ "${1:-}" = "--self-test" ]; then
   stub="$tmp/alert-stub.sh"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/paged"\n' "$tmp" > "$stub"
   chmod +x "$stub"
+  # Same stub, deliberately NOT executable — the production state that disarmed this
+  # alarm for 17 days (WI-10002566). Used by case 2b below.
+  stub_noexec="$tmp/alert-stub-noexec.sh"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/paged"\n' "$tmp" > "$stub_noexec"
+  chmod 644 "$stub_noexec"
   self="${BASH_SOURCE[0]}"
   pass=0; failed=0
   check() { # <name> <want-exit> <want-paged:yes|no> [ENV=VAL ...]
@@ -255,6 +278,13 @@ if [ "${1:-}" = "--self-test" ]; then
   check "tightened threshold FAILS but does NOT page the fleet"   1 no  MAX_DUMP_AGE_S=1
   # 2. THE OVER-CORRECTION THIS MUST NOT BECOME: the alarm must still be able to fire.
   check "tightened threshold + BACKUP_ALERT_FORCE=1 DOES page"    1 yes MAX_DUMP_AGE_S=1 BACKUP_ALERT_FORCE=1
+  # 2b. WI-10002566: A WRONG FILE MODE MUST NOT COST A PAGE. kopia-backup-alert.sh sat at
+  #     100644 from 2026-09-05 to 2026-09-22; the old `[ -x "$ALERT" ] &&` short-circuited
+  #     to silence, so this alarm was inert for 17 days while looking healthy. Note WHY the
+  #     cases above never caught it: they all inject a stub the harness itself chmod +x'd,
+  #     so the one property that broke in production was the one property never varied.
+  #     This case injects a deliberately NON-EXECUTABLE stub instead.
+  check "NON-executable alarm script STILL pages"                1 yes MAX_DUMP_AGE_S=1 BACKUP_ALERT_FORCE=1 BACKUP_ALERT_CMD="$stub_noexec"
   # 3. THE EXACT BUG FROM EI-20969873312915338: an ancestor lookup error is
   #    irrelevant when the later exact-source block is healthy.
   # The user/host here are the canonical John-Doe stand-ins, NOT this box's identity:

@@ -89,7 +89,15 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     const restored = await ensureResumeTranscriptPresent(session, {
       rematerialize: (id, backend) => tryRematerializeFromArchive(id, backend, { operatorUrl }),
     });
-    if (restored !== true) throw new Error('The native transcript is unavailable or still being restored');
+    // A Claude engine that died before writing a single native line (startup
+    // failure, or death before the prompt reached it) left no conversation to
+    // restore. Start the SAME native id fresh rather than refusing every
+    // reconnect forever: nothing native is lost, and the dead turn is never
+    // re-executed. A pending restore, and Codex/OMP, keep the refusal.
+    const exact = restored === true;
+    if (!exact && (restored !== false || record.backend !== 'claude')) {
+      throw new Error('The native transcript is unavailable or still being restored');
+    }
     const { resolveAccountPin } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     const account = saved.accountRoute ?? 'default';
     let model = spec.model ?? saved.model;
@@ -159,7 +167,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     const binding: PuiSuSessionBinding = { operation: 'attached', backend: record.backend,
       advSessionId: row.id, ownerId: record.ownerId, workspaceId: record.workspaceId,
       harnessSlug: record.harnessSlug, planSlug: spec.planSlug, nativeSession: native };
-    return { boot, binding, nativeSession: native, release,
+    return { boot, binding, nativeSession: native, release, exact,
       options: { agentChatId: saved.identity.agentChatId, model, accountRoute: account,
         carry: saved.carry, modes: saved.modes, runtimeGeneration: saved.runtimeGeneration + 1 },
       async beforeReady(pid: number | null) {

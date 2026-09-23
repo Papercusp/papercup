@@ -119,7 +119,7 @@ describe('attached launch authority', () => {
     mocks.read.mockResolvedValue({ backend: agent, harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
     mocks.rehydrate.mockResolvedValue(restored);
     mocks.resume.mockResolvedValue({ boot: { ...boot, agent }, binding, nativeSession: native,
-      options, beforeReady, onExit, release });
+      options, beforeReady, onExit, release, exact: true });
     const response = await launchAttachedSuSession(request(), { ...input, agent, agent_chat_id: chatId });
     expect(await response.json()).toMatchObject({ resumed: true, ready: false, advSessionId: 18,
       ownerId: 'su-engine', planSlug: 'saved-plan', nativeSession: native });
