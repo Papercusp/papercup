@@ -20,6 +20,7 @@ import {
   type WorkspaceHostProductStageRequest,
 } from './lifecycle-runner';
 import { WorkspaceHostProvisioningRequestError } from './provisioning-runner';
+import { WorkspaceHostControllerFenceError } from './observability-store';
 
 const vm = {
   target: 'gcp' as const,
@@ -335,6 +336,60 @@ describe('runWorkspaceHostLifecycle', () => {
       expect.objectContaining({ reason: 'resume', previousProviderRequestId: 'provider-op-1' }),
       expect.anything(),
     );
+  });
+
+  it('reuses the operation revision when replaying after its first attempt advanced the host revision', async () => {
+    const { store } = storeHarness();
+    const { provider, apply, reconcile } = providerHarness();
+    let hostDesiredRevision = 1;
+    let operationDesiredRevision: number | undefined;
+    let persistedPlan: WorkspaceHostPlan | null = null;
+    store.readTarget = vi.fn(async () => ({
+      id: 'host-1',
+      name: 'Host one',
+      connectionId: 'connection-1',
+      target: 'gcp',
+      observedState: 'stopped',
+      hostGeneration: 1,
+      desiredRevision: hostDesiredRevision,
+      observedRevision: 1,
+      desired,
+      resources: [{ resource: vm, registeredAt: '2026-08-26T00:00:00Z' }],
+    }));
+    store.readOperationPlan = vi.fn(async () => persistedPlan);
+    store.beginOperation = vi.fn(async ({ request, desiredRevision }) => {
+      if (operationDesiredRevision === undefined) {
+        if (desiredRevision === undefined) throw new Error('operation revision was not assigned');
+        operationDesiredRevision = desiredRevision;
+        hostDesiredRevision = desiredRevision;
+        persistedPlan = (request as { plan?: WorkspaceHostPlan } | undefined)?.plan ?? null;
+        return;
+      }
+      if (desiredRevision !== operationDesiredRevision) throw new WorkspaceHostControllerFenceError('host-1');
+    });
+    apply.mockResolvedValueOnce({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'in-progress',
+      observedAt: '2026-08-27T00:00:01Z',
+      providerRequestId: 'provider-op-1',
+      retryAfterMs: 5_000,
+    });
+    reconcile.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'unchanged',
+      observedAt: '2026-08-27T00:00:06Z',
+      resource: vm,
+    });
+
+    await expect(runWorkspaceHostLifecycle(input(provider, store))).resolves.toMatchObject({ status: 'in-progress' });
+    await expect(runWorkspaceHostLifecycle(input(provider, store))).resolves.toMatchObject({ status: 'succeeded' });
+
+    expect(store.beginOperation).toHaveBeenNthCalledWith(1, expect.objectContaining({ desiredRevision: 2 }));
+    expect(store.beginOperation).toHaveBeenNthCalledWith(2, expect.objectContaining({ desiredRevision: 2 }));
+    expect(provider.plan).toHaveBeenCalledOnce();
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it('reports upgrade as succeeded-but-not-yet-servable, in the result AND the ledger', async () => {

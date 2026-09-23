@@ -240,6 +240,13 @@ function persistedLifecyclePlan(stored: unknown): WorkspaceHostPlan | undefined 
     : undefined;
 }
 
+function persistedLifecyclePlanDesiredRevision(plan: WorkspaceHostPlan): number | undefined {
+  const match = /:desired-revision:(\d+)$/.exec(plan.planId);
+  if (!match) return undefined;
+  const revision = Number(match[1]);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : undefined;
+}
+
 function canonicalProductJson(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number') {
@@ -878,7 +885,6 @@ export async function runWorkspaceHostLifecycle(
   }
   const controllerAuthority =
     input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
-  const desiredRevision = input.desiredRevision ?? target.desiredRevision + 1;
   const store = controllerStore(baseStore, controllerAuthority, operationId);
 
   let hostBootstrapScript: string | undefined;
@@ -920,6 +926,10 @@ export async function runWorkspaceHostLifecycle(
   // a live read of the VM its first step deletes, so once that delete applied no new plan could be
   // made, and the upgrade died with no VM and its precomputed rollback unreachable.
   const persistedPlan = persistedLifecyclePlan(await store.readOperationPlan(workspaceId, operationId));
+  const desiredRevision =
+    input.desiredRevision ??
+    (persistedPlan ? persistedLifecyclePlanDesiredRevision(persistedPlan) : undefined) ??
+    target.desiredRevision + 1;
   let plan: WorkspaceHostPlan;
   if (persistedPlan) {
     plan = persistedPlan;
