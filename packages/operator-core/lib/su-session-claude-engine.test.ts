@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
+import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import {
   CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeReadOnlySuTools, createChildStderrTail,
@@ -197,6 +198,31 @@ describe('structured Claude SU engine', () => {
     expect(p.options()?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
     expect(p.prompts).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript')).toBe(false);
+  });
+
+  describe('SU tool surface', () => {
+    const trimming = ['PAPERCUSP_TOOLS', 'PAPERCUSP_TOOLS_COMPACT', 'PAPERCUSP_CONTEXT_TIER', 'ENABLE_TOOL_SEARCH'];
+    beforeEach(() => { for (const key of trimming) vi.stubEnv(key, undefined); });
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    it('launches on the same trimmed tool seed as a psu launch', async () => {
+      const p = peer(); const engine = open(p);
+      await engine.ready;
+      const expected = contextTrimmingEnv('claude');
+      // An empty seed would expand to `&tools=` on the MCP url and advertise the whole catalog.
+      expect(expected.PAPERCUSP_TOOLS).not.toBe('');
+      expect(p.options()?.env).toMatchObject(expected);
+    });
+
+    it('keeps a tool seed the bootstrap envelope already carried', async () => {
+      const p = peer();
+      const engine = startClaudeSuEngine({ ...boot, envelopeEnv: { ...boot.envelopeEnv, PAPERCUSP_TOOLS: 'coord_orient' } }, binding, runtime,
+        { agentChatId: 'chat', accountRoute: 'default', carry: 'warm', query: p.factory, register: false, startupTimeoutMs: 300 });
+      engines.push(engine);
+      await engine.ready;
+      expect(p.options()?.env?.PAPERCUSP_TOOLS).toBe('coord_orient');
+      expect(p.options()?.env?.PAPERCUSP_CONTEXT_TIER).toBe('trimmed');
+    });
   });
 
   it('delivers exact owner text and correlates the reply with the PUI turn', async () => {

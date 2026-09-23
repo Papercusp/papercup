@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { splitModelSpec } from './agent-config-constants';
 import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
@@ -260,6 +260,11 @@ export function startClaudeSuEngine(
   env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
   env.DISABLE_AUTOUPDATER = '1';
   env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();
+  // The user-level papercusp-su MCP url expands ${PAPERCUSP_TOOLS:-}; psu's CLI
+  // sets it, but this engine has no psu process. Unset, the server advertises
+  // the whole catalog: measured 941 tools and a 255k-token first call, which
+  // autocompacted on every turn under a 200k window.
+  healContextTrimmingEnv(env, 'claude');
   enforceDefaultClaudeAccount('claude', env);
   applyDefaultClaudeOAuthToken('claude', env);
   const authSettings = applyDefaultClaudeAuthSettingsArgs('claude', [], env);
