@@ -1,5 +1,6 @@
 /** plans:evaluate-spec-test-adequacy — compile exact clause/evidence rows into scorecard drafts. */
 import { z } from 'zod';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
@@ -66,7 +67,8 @@ function evaluatorBuildDiff(recorded: BuildInfo, live: BuildInfo): boolean {
  * evaluator rejects is not a rerun recipe, and a guard that restates the field
  * names here would pass through exactly the drift it is meant to catch.
  */
-export const argsSchema = z.object({
+// RSR-P-008-A: the clause-pin rules are reported alongside any shape defect.
+export const argsSchema = refineEvenWithShapeIssues(z.object({
   harness: harnessArg,
   slug: z.string().min(1),
   classRef: z
@@ -107,7 +109,7 @@ export const argsSchema = z.object({
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
   detail: reviewReadDetailArg,
-}).superRefine((args, ctx) => {
+}), (args, ctx) => {
   if ((args.specRevision === undefined) !== (args.specFingerprint === undefined)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
