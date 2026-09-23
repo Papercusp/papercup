@@ -413,6 +413,18 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.agentObligations.detailRef).toContain('payloadTier');
   });
 
+  it('does not count a newline in a clipped reason as a complete obligation', () => {
+    const out = shapeLeaderBrief({ ok: true, summary: { fleet: 'goal-fleet' }, agentObligations: {
+      primary: [], detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+      projection: { text: '- [DUE] Act on the goal; why:\n' + 'r'.repeat(800), receipt: {
+        entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0, bodyTruncated: false,
+      } },
+    } }, 'trimmed') as { agentObligations: { projection: { text: string; receipt: Record<string, unknown> } } };
+    expect(out.agentObligations.projection.text).toBe('');
+    expect(out.agentObligations.projection.receipt).toMatchObject({ entriesDelivered: 0, entriesOmitted: 1,
+      bodyDeliveredChars: 0, bodyTruncated: true });
+  });
+
   it('declares a bounded shaper and a ceiling below the result-door envelope', () => {
     expect((leaderBriefTool as { shape?: unknown }).shape).toBeDefined();
     expect((leaderBriefTool as { payloadTierCeilingChars?: number }).payloadTierCeilingChars).toBe(

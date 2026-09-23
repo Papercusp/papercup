@@ -128,7 +128,7 @@ function compactAgentObligations(value: unknown, emergency = false): unknown {
       lines.push(line);
       chars = next;
     }
-    const text = lines.join('\n');
+    let text = lines.join('\n');
     const clipped = rawText.length > textLimit;
     const receipt = pick(
       projection.receipt,
@@ -139,7 +139,14 @@ function compactAgentObligations(value: unknown, emergency = false): unknown {
     // The provider receipt measures the INNER projection, not this final
     // transport cap. Never clip an imperative halfway and keep credit for it.
     if (clipped && receipt) {
-      const delivered = typeof receipt.entriesDelivered === 'number'
+      // Full-detail reasons may themselves contain newlines. If line count is
+      // not the declared entry count, we cannot infer record boundaries from
+      // text. Withhold the body and retain its full-detail recovery pointer.
+      if (rawText.split('\n').filter(Boolean).length !== receipt.entriesDelivered) {
+        lines.length = 0;
+        text = '';
+      }
+      const delivered = lines.length === 0 ? 0 : typeof receipt.entriesDelivered === 'number'
         ? Math.min(receipt.entriesDelivered, lines.length) : null;
       Object.assign(receipt, {
         entriesDelivered: delivered,
