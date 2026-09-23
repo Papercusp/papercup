@@ -3980,7 +3980,9 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(payload.lane).toBe('observation');
     expect(payload.toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-a'],
       deployedRevision: 'build-1' });
-    expect(store.occurrences).toHaveLength(99);
+    // Every filing leaves an occurrence, the first one included.
+    expect(store.occurrences).toHaveLength(100);
+    expect(new Set(store.occurrences.map((o) => o.canonicalId))).toEqual(new Set(['EI-S1']));
   });
 
   it('a report on another build counts onto the row but neither corroborates nor rewrites it', async () => {
