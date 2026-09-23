@@ -136,6 +136,54 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     expect(await getDatatype(db.adminSql, WS, 'plan-ref-list')).toMatchObject({ id: 'plan-ref-list' });
   });
 
+  it('repairs a legacy stored worklist without resetting its value or version checks', async () => {
+    const worklist = {
+      value: ['plan:tp-harness/tp-plan-2026-08-23', 'plan:second'],
+      version: 7,
+      edited_at: '2026-09-19T23:59:35.692Z',
+      edited_by: 'original-holder',
+      provenance: 'agent-edit',
+    };
+    await db.adminSql`
+      INSERT INTO harness_shared.goals
+        (id, install_slug, workspace_id, title, status, properties)
+      VALUES ('g-tp-legacy-stored', ${HARNESS}, ${WS}, 'legacy stored worklist', 'active',
+              ${JSON.stringify({ worklist })}::text::jsonb)`;
+    const args = {
+      workspaceId: WS,
+      goalId: 'g-tp-legacy-stored',
+      property: 'worklist',
+      expectedVersion: 7,
+      provenance: 'agent-edit' as const,
+      actorId: 'successor-holder',
+    };
+    expect(await applyGoalPropertyWrite(db.adminSql, {
+      ...args, value: worklist.value, expectedVersion: 0,
+    })).toMatchObject({ ok: false, code: 'stale', actualVersion: 7 });
+    expect(await applyGoalPropertyWrite(db.adminSql, { ...args, value: [] }))
+      .toMatchObject({ ok: false, code: 'shrink_blocked', actualVersion: 7 });
+    const [before] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-legacy-stored' AND workspace_id = ${WS}`;
+    expect(derivePropertySurface(before!).propertySchema).toEqual({});
+    expect(derivePropertySurface(before!).properties.worklist).toEqual(worklist);
+
+    const repaired = await applyGoalPropertyWrite(db.adminSql, { ...args, value: worklist.value });
+    expect(repaired).toMatchObject({
+      ok: true,
+      priorValue: worklist.value,
+      priorVersion: 7,
+      entry: { value: worklist.value, version: 8, edited_by: 'successor-holder' },
+    });
+    const [after] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-legacy-stored' AND workspace_id = ${WS}`;
+    const surface = derivePropertySurface(after!);
+    expect(surface.propertySchema.worklist).toEqual(canonicalWorklistDeclaration());
+    expect(surface.effective.worklist).toEqual(worklist.value);
+    expect(surface.properties.worklist).toMatchObject({ value: worklist.value, version: 8 });
+  });
+
   it('does not persist a legacy declaration for an invalid or stale worklist write', async () => {
     await db.adminSql`
       INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status)
