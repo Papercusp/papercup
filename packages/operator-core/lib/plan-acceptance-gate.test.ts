@@ -570,6 +570,56 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(v.code).not.toBe('acceptance_ungraded');
     });
 
+    // Dropping the cohort-staled card can leave an AUTHOR card standing, which lands on
+    // `self_graded_only`. The code is right — a fresh independent grading is exactly what
+    // is needed — but the stock wording ("only graded by its own author") is then FALSE:
+    // a non-author did grade it, the grade merely went stale. Measured cost of that
+    // ambiguity: an agent read the message, concluded no independent grader had ever
+    // looked at the plan, and nearly filed a defect against a correctly-settled recruiter.
+    it('names the STALE independent grading instead of claiming the plan was self-graded', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      mockScorecards.mockResolvedValue([
+        // Independent (non-author) and current by rubric identity — dropped only because
+        // the BAR named it cohort-stale.
+        scorecard({ issueId: 'EI-cohort-staled', createdBy: 'su-grader', rubricRevision: 3 }),
+        scorecard({
+          issueId: 'EI-author-accept',
+          createdBy: 'su-implementer',
+          rubricRevision: 3,
+          acceptance: { verdict: 'accept', reasoning: 'author call on record' },
+        }),
+      ]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) =>
+        verdict(phase, phase === 'ship' ? ['bar_snapshot_grading_stale'] : [], phase === 'ship' ? 'EI-cohort-staled' : null));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v).toMatchObject({ satisfied: false, code: 'self_graded_only', rubricId: 'ar-some-plan' });
+      // The message must name the real repair and the real card...
+      expect(v.message).toContain('EI-cohort-staled');
+      expect(v.message).toContain('su-grader');
+      expect(v.message).toContain('FRESH independent grading');
+      // ...and must NOT assert the thing that is false here.
+      expect(v.message).not.toContain('is only graded by its own author');
+      expect(v.message).toContain(ACCEPTANCE_GRADING_NO_CLAIM_FACT);
+    });
+
+    // CONTROL: the stock self-graded wording must survive for the case it IS true of,
+    // or the branch above is just an unconditional message swap.
+    it('CONTROL: a genuinely self-graded plan keeps the self-graded wording', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      mockScorecards.mockResolvedValue([
+        scorecard({ issueId: 'EI-self', createdBy: 'su-implementer', rubricRevision: 3 }),
+      ]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, [], null));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v).toMatchObject({ satisfied: false, code: 'self_graded_only' });
+      expect(v.message).toContain('is only graded by its own author');
+      expect(v.message).not.toContain('FRESH independent grading');
+    });
+
     it('does not recruit through incomplete METHOD or vetting prerequisites', async () => {
       mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase,
         phase === 'ship' ? ['bar_snapshot_grading_missing', 'bar_snapshot_method_missing'] : ['bar_snapshot_method_missing']));

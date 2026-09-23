@@ -1300,16 +1300,39 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   if (!independent) {
     const principalLabel =
       principalImplementers.length > 0 ? ` or a principal plan implementer (${principalImplementers.join(', ')})` : '';
+    // Two very different states reach `!independent`, and the self-graded wording is
+    // only true of one. When the card the BAR judged cohort-stale WAS an independent
+    // grading, saying "only graded by its own author" is flatly false — a non-author
+    // did grade it — and it hides the actual repair (refresh a stale grade, not
+    // recruit a first one). Measured cost of the ambiguity: an agent read this
+    // message, concluded no independent grader had ever looked at the plan, and
+    // nearly filed a defect against the correctly-settled grading recruiter.
+    const staleIndependent =
+      barStaleGradingScorecardId == null
+        ? undefined
+        : scorecards.find(
+            (s) =>
+              s.issueId === barStaleGradingScorecardId &&
+              !isPlanImplementerScorecard(s) &&
+              !holdsAuthorAuthority(s),
+          );
     return {
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
-      message:
-        `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
-        `own author ('${implementer}')${principalLabel} — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
-        `different agent or the owner must file the grading scorecard. ` +
-        `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
-        `declining on a constraint that does not exist (EI-20249725405239230).`,
+      message: staleIndependent
+        ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' HAS an independent ` +
+          `grading (scorecard ${staleIndependent.issueId}, by '${staleIndependent.createdBy}'), but the acceptance BAR ` +
+          `judged it stale — the evidence cohort moved since it was graded — so it no longer counts. This is NOT a ` +
+          `self-graded plan: what remains after excluding it is only the rubric author ('${implementer}')` +
+          `${principalLabel}. The repair is a FRESH independent grading, not a first one. ` +
+          `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
+          `declining on a constraint that does not exist (EI-20249725405239230).`
+        : `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
+          `own author ('${implementer}')${principalLabel} — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
+          `different agent or the owner must file the grading scorecard. ` +
+          `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
+          `declining on a constraint that does not exist (EI-20249725405239230).`,
     };
   }
 
