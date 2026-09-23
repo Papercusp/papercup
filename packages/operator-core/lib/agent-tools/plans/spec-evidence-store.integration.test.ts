@@ -656,6 +656,9 @@ describe('exact spec evidence bindings', () => {
       {
         harness: HARNESS,
         slug: 'reconnect-plan',
+        // P-007 made the default read detail:'summary', which omits sourceValId,
+        // currentRevision and currentness.provenance — the very fields asserted below.
+        detail: 'full',
         evidenceRefs: [binding.evidenceRef],
         current: [
           {
