@@ -545,11 +545,11 @@ function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric:
   };
 }
 
-export function nextRepair(
-  codes: AcceptanceBarSnapshotCode[],
-  bars: AcceptanceBarTrace[],
-): AcceptanceBarContractSnapshot['readiness']['nextRepair'] {
-  const order: AcceptanceBarSnapshotCode[] = [
+/**
+ * The repair order `nextRepair` ranks by. Exported so tests (and any reader of a
+ * refusal) can assert the sequence instead of re-deriving it from prose.
+ */
+export const ACCEPTANCE_BAR_REPAIR_ORDER = [
     'bar_snapshot_source_unavailable',
     'bar_snapshot_source_truncated',
     'bar_snapshot_plan_missing',
@@ -571,18 +571,39 @@ export function nextRepair(
     'bar_snapshot_mapping_missing',
     'bar_snapshot_mapping_dropped_only',
     'bar_snapshot_projection_stale',
+    // P-004 (review-system-rework-reduction-2026-09-23): the repair order IS the runbook
+    // order — amend → vet → attest → bind → cards → grade. Contract TEXT first (every
+    // repair here is a rubrics:amend), then VETTING, and only then work contracts, proof,
+    // adequacy and grading. Vetting used to rank after proof AND grading, so the gate
+    // nudged authors to bind proof and commission grading on a revision the vetting
+    // critique then amended — measured as a whole "vetting after proof" re-proof cycle in
+    // docs/evidence/review-system-time-audit-2026-09-23.md. (Grading on an unvetted
+    // revision is refused by scorecards:emit anyway, so that nudge could never succeed.)
+    // The contract-text codes below method_missing were absent from this list entirely, so
+    // a BAR failing only on them got nextRepair:null — no NEXT REPAIR line at all.
     'bar_snapshot_method_missing',
+    'bar_snapshot_falsifier_missing',
+    'bar_snapshot_role_invalid',
+    'bar_snapshot_mandatory_invalid',
+    'bar_snapshot_scope_invalid',
+    'bar_snapshot_pass_ratings_invalid',
+    'bar_snapshot_coverage_invalid',
+    'bar_snapshot_check_missing',
+    'bar_snapshot_check_invalid',
+    'bar_snapshot_vetting_missing',
+    'bar_snapshot_vetting_stale',
     'bar_snapshot_work_contract_missing',
     'bar_snapshot_work_contract_stale',
     'bar_snapshot_proof_missing',
     'bar_snapshot_proof_stale',
+    'bar_snapshot_proof_uncertain',
     'bar_snapshot_proof_depth_missing',
     'bar_snapshot_proof_inadequate',
+    'bar_snapshot_evidence_plane_unmet',
+    'bar_snapshot_evidence_runtime_unmet',
     'bar_snapshot_grading_missing',
     'bar_snapshot_grading_stale',
     'bar_snapshot_grading_not_pass',
-    'bar_snapshot_vetting_missing',
-    'bar_snapshot_vetting_stale',
     'bar_snapshot_author_verdict_missing',
     'bar_snapshot_author_verdict_stale',
     'bar_snapshot_author_rejected',
@@ -590,8 +611,25 @@ export function nextRepair(
     // delivery, not a defect the author can repair. Ranking it above a real
     // blocker would point the reader at the one thing they cannot act on.
     'bar_snapshot_author_accepted_pending_delivery',
-  ];
-  const code = order.find((candidate) => codes.includes(candidate));
+] as const satisfies readonly AcceptanceBarSnapshotCode[];
+
+/**
+ * Compile-time completeness: a code missing from the order is never ranked, so a
+ * BAR blocked only by it got `nextRepair: null` and a refusal with no NEXT REPAIR
+ * line (nine contract/proof codes were in that state until P-004). Adding a code to
+ * the union without placing it in the order now fails the typecheck here.
+ */
+type UnrankedRepairCode = Exclude<AcceptanceBarSnapshotCode, (typeof ACCEPTANCE_BAR_REPAIR_ORDER)[number]>;
+const everyRepairCodeIsRanked: [UnrankedRepairCode] extends [never] ? true : UnrankedRepairCode = true;
+void everyRepairCodeIsRanked;
+
+export function nextRepair(
+  codes: readonly AcceptanceBarSnapshotCode[],
+  // Structural, not AcceptanceBarTrace: the lifecycle evaluator re-derives per-phase
+  // codes and ranks THOSE, so it passes { barKey, readiness:{ codes } } views.
+  bars: ReadonlyArray<{ barKey: string; readiness: { codes: readonly AcceptanceBarSnapshotCode[] } }>,
+): AcceptanceBarContractSnapshot['readiness']['nextRepair'] {
+  const code = ACCEPTANCE_BAR_REPAIR_ORDER.find((candidate) => codes.includes(candidate));
   if (!code) return null;
   const bar = bars.find((candidate) => candidate.readiness.codes.includes(code));
   const actions: Record<AcceptanceBarSnapshotCode, string> = {
@@ -631,8 +669,13 @@ export function nextRepair(
     bar_snapshot_grading_missing: 'Record a complete independent grading against the current rubric criteria.',
     bar_snapshot_grading_stale: 'Re-grade against the current rubric criteria.',
     bar_snapshot_grading_not_pass: 'Satisfy the BAR and record a pass-equivalent independent rating.',
-    bar_snapshot_vetting_missing: 'Vet the current acceptance-rubric criteria.',
-    bar_snapshot_vetting_stale: 'Re-vet the current acceptance-rubric criteria.',
+    bar_snapshot_vetting_missing:
+      'Vet the current acceptance-rubric criteria BEFORE binding proof or emitting adequacy cards '
+      + '(amend → vet → attest → bind → cards → grade): a vetting critique usually becomes an amendment, '
+      + 'and proof bound first must then be re-bound.',
+    bar_snapshot_vetting_stale:
+      'Re-vet the current acceptance-rubric criteria before binding more proof or commissioning grading '
+      + '(amend → vet → attest → bind → cards → grade).',
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',

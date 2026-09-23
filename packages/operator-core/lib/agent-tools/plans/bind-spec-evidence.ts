@@ -15,6 +15,11 @@ import {
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
+import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
+import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { listScorecards } from '../../scorecards';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { unvettedRubricBindAdvisory, VET_BEFORE_PROOF_ORDER } from './bind-vetting-advisory';
 
 const fingerprint = z.string().trim().min(1).max(256);
 const proofCoverageIds = z
@@ -208,7 +213,7 @@ export default defineTool({
   description:
     'Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.',
   guidance: {
-    when: 'Recording execution proof for one or more plan specs before work-item completion or plan acceptance.',
+    when: `Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (${VET_BEFORE_PROOF_ORDER}).`,
     notWhen: 'Authoring behavior — plans:set-specs. Running a test — testing:run.',
     chaining: 'plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints.',
     seeAlso: ['plans:get-spec-evidence (inspect proof/currentness)', 'plans:get-specs (resolve exact revisions)'],
@@ -283,6 +288,21 @@ export default defineTool({
         keyOf: (binding) => ({ slug: reportedSlug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }),
       },
     );
-    return bulkContent(env);
+    // P-004 (review-system-rework-reduction-2026-09-23): vet before proof. Advisory only —
+    // the bindings above are already written; this names the cheaper order when BAR proof
+    // lands on a rubric revision nobody has vetted yet. Computed only for bindings that
+    // actually succeeded, so a refused binding never triggers it.
+    const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
+    const workspaceId = resolveAgentIdentity(ctx).workspaceId ?? undefined;
+    const advisory = await runWithWorkspaceIfConcrete(workspaceId, () =>
+      unvettedRubricBindAdvisory(
+        { planSlug: args.slug, harnessSlug, specIds: boundSpecIds },
+        {
+          getAcceptanceRubricsForPlan: (planSlug, options) => getAcceptanceRubricsForPlan(planSlug, options),
+          readVettingStatus: (rubric) => getAcceptanceRubricVettingStatus(rubric, { listScorecards }),
+        },
+      ),
+    );
+    return bulkContent(advisory ? { ...env, advisories: [advisory] } : env);
   },
 });

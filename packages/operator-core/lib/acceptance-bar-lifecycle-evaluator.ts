@@ -12,10 +12,15 @@ import type {
   AcceptanceBarSnapshotCode,
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
-import { barRequiresAutomatedProof, readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import {
+  barRequiresAutomatedProof,
+  nextRepair as rankRepair,
+  readAcceptanceBarContractSnapshot,
+} from './acceptance-bar-contract-snapshot';
 import { evidenceRuntimeUnmet } from './acceptance-bar-evidence-runtime';
 import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { deriveNonCodeItemProofs, type NonCodeItemProof } from './plan-requirement-realization';
+import { acceptanceBarContractGaps, type AcceptanceBarContractGap } from './acceptance-bar-contract-completeness';
 
 export type AcceptanceBarLifecyclePhase = 'pre-start' | 'pre-vetting' | 'pre-grading' | 'ship';
 
@@ -52,6 +57,54 @@ export interface AcceptanceBarLifecycleVerdict {
   message: string | null;
   /** Same snapshot's exact current operational proof, shared with the activation join. */
   nonCodeItemProofs?: NonCodeItemProof[];
+  /**
+   * P-003/P-029 (review-system-rework-reduction-2026-09-23): contract-completeness gaps,
+   * present only when the caller asked for them. `contractGapsBlocking` is false once any
+   * BAR has bound proof — past that point the vetting door already demands METHOD/check,
+   * and refusing a start would only strand in-flight work, not save a proof cycle.
+   */
+  contractGaps?: Array<{ barKey: string; gap: AcceptanceBarContractGap; detail: string }>;
+  contractGapsBlocking?: boolean;
+}
+
+export interface AcceptanceBarLifecycleOptions {
+  /** The `plans:start` door's shift-left check; see {@link AcceptanceBarLifecycleVerdict.contractGaps}. */
+  requireCompleteContractBeforeProof?: boolean;
+}
+
+const CONTRACT_GAP_CODE: Record<AcceptanceBarContractGap, AcceptanceBarSnapshotCode> = {
+  method_missing: 'bar_snapshot_method_missing',
+  check_missing: 'bar_snapshot_check_missing',
+  test_layers_missing: 'bar_snapshot_proof_depth_missing',
+  // A check that contradicts its layers is an invalid check; the gate routes that code
+  // to rubrics:amend (contract repair), which is the right repair.
+  check_layer_mismatch: 'bar_snapshot_check_invalid',
+};
+
+/** Any evidence row at all — current, stale, superseded, uncertain or truncated. */
+function anyProofBound(snapshot: AcceptanceBarContractSnapshot): boolean {
+  return snapshot.bars.some(
+    (bar) =>
+      bar.proof.state !== 'missing' ||
+      bar.proof.currentEvidence > 0 ||
+      bar.proof.staleEvidence > 0 ||
+      (bar.proof.supersededEvidence ?? 0) > 0 ||
+      bar.proof.uncertainEvidence > 0,
+  );
+}
+
+function snapshotContractGaps(
+  snapshot: AcceptanceBarContractSnapshot,
+): NonNullable<AcceptanceBarLifecycleVerdict['contractGaps']> {
+  return snapshot.bars.flatMap((bar) =>
+    acceptanceBarContractGaps({
+      role: bar.role,
+      method: bar.method,
+      check: bar.check,
+      requiredTestLayers: bar.requiredTestLayers,
+      automatedProofRequired: automatedProofRequired(bar),
+    }).map((finding) => ({ barKey: bar.barKey, ...finding })),
+  );
 }
 
 const POSITIVE_PASS_FORBIDDEN = new Set([
@@ -322,6 +375,7 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
 export function evaluateAcceptanceBarLifecycle(
   snapshot: AcceptanceBarContractSnapshot,
   phase: AcceptanceBarLifecyclePhase,
+  options: AcceptanceBarLifecycleOptions = {},
 ): AcceptanceBarLifecycleVerdict {
   if (!snapshot.applicable) {
     return {
@@ -343,9 +397,16 @@ export function evaluateAcceptanceBarLifecycle(
   // empty successful contract. Every source/completeness error blocks every
   // applicable phase, including the early BAR-only phase.
   for (const code of phaseSnapshotCodes(snapshot, phase)) addCode(codes, code);
+  const contractGaps = options.requireCompleteContractBeforeProof ? snapshotContractGaps(snapshot) : undefined;
+  const contractGapsBlocking = contractGaps !== undefined && contractGaps.length > 0 && !anyProofBound(snapshot);
   const blockingBars: AcceptanceBarLifecycleVerdict['blockingBars'] = [];
   for (const bar of snapshot.bars) {
-    const barCodes = [...new Set([...baseBarCodes(snapshot, bar), ...executionBarCodes(bar, phase)])];
+    const gapCodes = contractGapsBlocking
+      ? contractGaps!.filter((gap) => gap.barKey === bar.barKey).map((gap) => CONTRACT_GAP_CODE[gap.gap])
+      : [];
+    const barCodes = [
+      ...new Set([...baseBarCodes(snapshot, bar), ...executionBarCodes(bar, phase), ...gapCodes]),
+    ];
     if (barCodes.length > 0) {
       blockingBars.push({ barKey: bar.barKey, codes: barCodes });
       for (const code of barCodes) addCode(codes, code);
@@ -378,20 +439,35 @@ export function evaluateAcceptanceBarLifecycle(
   }
 
   // The snapshot's repair is computed for the complete contract, while this
-  // evaluator adds and defers codes according to the lifecycle door. Reuse the
-  // richer snapshot action only when its code still blocks this phase; an
-  // earlier-door repair (for example proof depth before pre-grading vetting)
-  // would otherwise send the caller toward an irrelevant mutation.
-  const nextRepair =
-    (snapshot.readiness.nextRepair && codes.includes(snapshot.readiness.nextRepair.code)
-      ? snapshot.readiness.nextRepair
-      : null) ??
+  // evaluator adds and defers codes according to the lifecycle door. Rank THIS
+  // phase's blocking codes with the same repair order (and the same action table)
+  // rather than reusing the snapshot's pick: an earlier-door repair (for example
+  // proof depth before pre-grading vetting) would otherwise send the caller toward
+  // an irrelevant mutation, and a snapshot pick that is still in `codes` could
+  // outrank a phase-added code the order puts first — P-004
+  // (review-system-rework-reduction-2026-09-23): vetting before proof. The old
+  // unranked fallback also printed the bare CODE as the "action".
+  const rankedRepair =
+    rankRepair(
+      codes,
+      blockingBars.map((bar) => ({ barKey: bar.barKey, readiness: { codes: bar.codes } })),
+    ) ??
     (() => {
       const first = codes[0];
       return first
         ? { code: first, barKey: blockingBars.find((bar) => bar.codes.includes(first))?.barKey ?? null, action: first }
         : null;
     })();
+  // A contract gap names its exact missing field; the generic action for the shared
+  // code ("bind evidence ...", "before vetting") is wrong advice before proof exists.
+  const gapRepair = contractGapsBlocking && rankedRepair
+    ? contractGaps!.find(
+        (gap) => gap.barKey === rankedRepair.barKey && CONTRACT_GAP_CODE[gap.gap] === rankedRepair.code,
+      )
+    : undefined;
+  const nextRepair = gapRepair && rankedRepair
+    ? { ...rankedRepair, action: `${gapRepair.detail}. ${CONTRACT_GAP_REPAIR_ROUTE}` }
+    : rankedRepair;
   const phaseLabel =
     phase === 'pre-start'
       ? 'start'
@@ -425,8 +501,14 @@ export function evaluateAcceptanceBarLifecycle(
       codes.length === 0
         ? null
         : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair),
+    ...(contractGaps !== undefined ? { contractGaps, contractGapsBlocking } : {}),
   };
 }
+
+const CONTRACT_GAP_REPAIR_ROUTE =
+  'Repair it before any proof is bound: while the plan is a draft, rewrite the BAR as a ```requirement block and ' +
+  're-run the activation audit; once it is ready, use rubrics:amend (dryRun, approval, apply). After proof is bound ' +
+  'the same change re-revisions every clause and discards that proof.';
 
 export const evaluateAcceptanceBarContract = evaluateAcceptanceBarLifecycle;
 
@@ -434,7 +516,11 @@ export const evaluateAcceptanceBarContract = evaluateAcceptanceBarLifecycle;
 export async function readAndEvaluateAcceptanceBarLifecycle(
   planSlug: string,
   phase: AcceptanceBarLifecyclePhase,
-  options: { expectedApplicable?: boolean; current?: EvidenceCurrentInput[]; harnessSlug?: string } = {},
+  options: {
+    expectedApplicable?: boolean;
+    current?: EvidenceCurrentInput[];
+    harnessSlug?: string;
+  } & AcceptanceBarLifecycleOptions = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
   const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, {
     current: options.current,
@@ -468,6 +554,7 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
     ...evaluateAcceptanceBarLifecycle(
       snapshot.applicable ? snapshot : { ...snapshot, applicable: true },
       phase,
+      { requireCompleteContractBeforeProof: options.requireCompleteContractBeforeProof },
     ),
     nonCodeItemProofs: deriveNonCodeItemProofs(snapshot),
   };
