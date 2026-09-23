@@ -478,6 +478,11 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_grading_not_pass');
     // This summons an independent re-grade; it does NOT grant a pass. Still unshippable.
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
+    // WI-10002509: the ship door has to know WHICH card was staled, not merely that one
+    // was. This card's rubric revision is unchanged, so the door's rubric-identity test
+    // reads it as current; without this id it counts as a complete grading and the
+    // re-grade asked for one line above is never recruited.
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').staleGradingScorecardId).toBe('SC-GRADE');
   });
 
   it('stales when an UNEXECUTED binding becomes executed — excluding execution rebuilds the dead end one level down', () => {
@@ -507,6 +512,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'not-pass', rating: 'degraded' });
     expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_not_pass');
+    // WI-10002509 anti-storm control: an honest unchanged fail names NO stale card, so
+    // the ship door keeps counting it and stays terminal instead of re-rolling a grader
+    // on every ship attempt.
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').staleGradingScorecardId).toBeNull();
   });
 
   it('CONTROL: a PASSING grading is untouched by a later cohort change, so repairs do not churn ship-ready bars', () => {
