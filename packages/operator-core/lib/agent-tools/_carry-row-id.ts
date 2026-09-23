@@ -54,3 +54,17 @@ export const CARRY_ROW_ID_SCHEMA = z
     "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
       'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Stored identities are limited to 40 characters; bounded longer inputs are repaired and reported, while inputs over the hard backstop are rejected. Omitted ⇒ identity is the claim text.',
   );
+
+/**
+ * P-025 (review-system-rework-reduction-2026-09-23): name the carried row this row
+ * EDITS, so re-wording an id-less row at the row cap is a one-row write instead of a
+ * net addition that evicts the carried tail. Resolved by `resolveCarryRowRefs`.
+ */
+export const CARRY_ROW_REPLACES_SCHEMA = z
+  .string()
+  .max(CARRY_ROW_ID_INPUT_HARD_MAX * 25)
+  .optional()
+  .describe(
+    "Edit a carried row in place: its [#id] or exact claim. Keeps its evidence/age; the row gains a stable id. " +
+      'Unmatched refs are reported.',
+  );

@@ -2958,6 +2958,66 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
     expect(b.message).toContain('confirmRetire:true');
+    // P-025: the refusal teaches the one-row remedies, not a full resend.
+    expect(b.message).toContain('replaces');
+    expect(b.message).toContain('retireIds');
+  });
+
+  // P-025 (review-system-rework-reduction-2026-09-23): 1,675 merge-eviction refusals in 7
+  // days, each recovered by re-sending all 12 rows to change one. Through the real schema.
+  const checkLines = (note: string) => note.split('\n').filter((l) => /^- [✓?⚠]/.test(l));
+
+  it('P-025: a `replaces` edit at the cap is a ONE-row write — accepted, other rows byte-identical', async () => {
+    const prior = buildPrior(
+      Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}`, recheck: `probe ${i + 1}` })),
+    );
+    getLoopCarryNote.mockResolvedValue(prior);
+    const b = body(
+      await call({ did: 'progress', checks: [{ claim: 'carried 5, reworded', replaces: 'carried 5' }], rowsMode: 'merge' }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b.checksDropped).toBeUndefined();
+    expect(b.unmatchedRowRefs).toBeUndefined();
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    const before = checkLines(prior);
+    const after = checkLines(written);
+    expect(after).toHaveLength(before.length);
+    before.forEach((line, i) => {
+      if (i === 4) expect(after[i]).toMatch(/carried 5, reworded — re-check: probe 5/);
+      else expect(after[i]).toBe(line);
+    });
+  });
+
+  it('P-025: retireIds retires one named row so a genuinely new row fits at the cap in one call', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+    const b = body(
+      await call({ did: 'progress', checks: [{ claim: 'a genuinely new row' }], retireIds: ['carried 3'], rowsMode: 'merge' }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b.checksDropped).toBeUndefined();
+    expect(b.checksRetired).toEqual(['carried 3']);
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('a genuinely new row');
+    expect(written).not.toMatch(/^- \? carried 3$/m);
+  });
+
+  it('P-025: an unmatched `replaces` is reported and treated as the net addition it is (still refused at the cap)', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+    const b = body(
+      await call({ did: 'progress', checks: [{ claim: 'x', replaces: 'no such carried row' }], rowsMode: 'merge' }),
+    );
+
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_merge_would_evict_rows');
+    expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
   });
 
   // EI-21849813048365808: a routine merge refresh near the cap (e.g. a monitor loop

@@ -2198,6 +2198,147 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
   });
 });
 
+describe('P-025 — editing or retiring ONE carried row at the cap is a one-row write', () => {
+  // Measured 2026-09-23 (review-system-rework-reduction P-025): 1,675
+  // checkpoint_merge_would_evict_rows refusals in 7 days; the recovery each time was
+  // re-sending all 12 rows to change one. These cases pin the one-row alternative.
+  const check = (n: number) => ({ claim: `claim ${n}`, recheck: `probe ${n}`, verified: `ok ${n}` });
+  const atCap = (rows = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1))) =>
+    mergeCarryRows({ priorNote: null, baseNote: 'body', checks: rows, hasNoteWrite: true }).note;
+  const checkLines = (note: string) => note.split('\n').filter((l) => /^- [✓?⚠]/.test(l));
+
+  it('RE-PROBE of the [inferred] claim: a reworded id-less row is keyed as NEW, so at the cap it evicts a carried row', () => {
+    // Confirms the mechanism the plan item marked [inferred]: carryRowKey falls back to
+    // the claim text, so the reword is a net addition and the carried tail yields. This is
+    // also the CONTROL for the `replaces` case below — without it that case would pass for
+    // an implementation that simply never evicts.
+    const merged = mergeCarryRows({
+      priorNote: atCap(),
+      baseNote: 'body',
+      checks: [{ claim: 'claim 5, reworded' }],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    expect(merged.droppedChecks).toEqual([`claim ${CARRY_NOTE_MAX_CHECKS}`]);
+    const claims = merged.checks.map((c) => c.claim);
+    expect(claims).toContain('claim 5');
+    expect(claims).toContain('claim 5, reworded');
+  });
+
+  it('replaces:<claim> edits that row in place: nothing dropped, evidence kept, every other row byte-identical', () => {
+    const prior = atCap();
+    const merged = mergeCarryRows({
+      priorNote: prior,
+      baseNote: 'body',
+      checks: [{ claim: 'claim 5, reworded', replaces: 'claim 5' }],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    expect(merged.droppedChecks).toEqual([]);
+    expect(merged.unmatchedRowRefs).toEqual([]);
+    expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(merged.checks[4]).toMatchObject({ claim: 'claim 5, reworded', recheck: 'probe 5' });
+    expect(merged.checks[4]?.verified).toContain('ok 5');
+    const before = checkLines(prior);
+    const after = checkLines(merged.note);
+    expect(after).toHaveLength(before.length);
+    for (let i = 0; i < before.length; i++) {
+      if (i === 4) expect(after[i]).toContain('claim 5, reworded');
+      else expect(after[i]).toBe(before[i]);
+    }
+  });
+
+  it('the edited row gains a stable id, so the NEXT edit keys on it directly', () => {
+    const first = mergeCarryRows({
+      priorNote: atCap(),
+      baseNote: 'body',
+      checks: [{ claim: 'claim 5, reworded', replaces: 'claim 5' }],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    const id = first.checks[4]?.id;
+    expect(id).toBeTruthy();
+    const second = mergeCarryRows({
+      priorNote: first.note,
+      baseNote: 'body',
+      checks: [{ id, claim: 'claim 5, reworded twice' }],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    expect(second.droppedChecks).toEqual([]);
+    expect(second.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(second.checks[4]).toMatchObject({ id, claim: 'claim 5, reworded twice', recheck: 'probe 5' });
+  });
+
+  it('replaces:<id> edits a keyed row and keeps its id; a caller-supplied id wins', () => {
+    const rows = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1));
+    rows[2] = { ...rows[2]!, id: 'k3' } as (typeof rows)[number];
+    const merged = mergeCarryRows({
+      priorNote: atCap(rows),
+      baseNote: 'body',
+      checks: [{ claim: 'claim 3, reworded', replaces: 'k3' }],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    expect(merged.droppedChecks).toEqual([]);
+    expect(merged.checks[2]).toMatchObject({ id: 'k3', claim: 'claim 3, reworded', recheck: 'probe 3' });
+  });
+
+  it('retire:[ref] retires exactly the named row in the same write, so an add at the cap fits', () => {
+    const prior = atCap();
+    const merged = mergeCarryRows({
+      priorNote: prior,
+      baseNote: 'body',
+      checks: [{ claim: 'claim 13' }],
+      retire: ['claim 3'],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    // A deliberate retirement is not an unintended drop — it is reported separately.
+    expect(merged.droppedChecks).toEqual([]);
+    expect(merged.retiredChecks).toEqual(['claim 3']);
+    expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    const claims = merged.checks.map((c) => c.claim);
+    expect(claims).not.toContain('claim 3');
+    expect(claims).toContain('claim 13');
+    const untouchedBefore = checkLines(prior).filter((l) => !l.includes('claim 3 —'));
+    const untouchedAfter = checkLines(merged.note).filter((l) => !l.includes('claim 13'));
+    expect(untouchedAfter).toEqual(untouchedBefore);
+  });
+
+  it('retire works for walls too, and on the carry-forward path where no rows are supplied', () => {
+    const prior = mergeCarryRows({
+      priorNote: null,
+      baseNote: 'body',
+      walls: [{ claim: 'wall 1' }, { id: 'w2', claim: 'wall 2' }],
+      checks: [check(1), check(2)],
+      hasNoteWrite: true,
+    }).note;
+    const merged = mergeCarryRows({ priorNote: prior, baseNote: 'body', retire: ['w2', 'claim 2'], hasNoteWrite: true, mode: 'merge' });
+    expect(merged.walls.map((w) => w.claim)).toEqual(['wall 1']);
+    expect(merged.checks.map((c) => c.claim)).toEqual(['claim 1']);
+    expect(merged.retiredWalls).toEqual(['wall 2']);
+    expect(merged.retiredChecks).toEqual(['claim 2']);
+    expect(merged.droppedWalls).toEqual([]);
+    expect(merged.droppedChecks).toEqual([]);
+  });
+
+  it('a replaces/retire ref that matches no carried row is REPORTED, never silently ignored', () => {
+    const merged = mergeCarryRows({
+      priorNote: atCap(),
+      baseNote: 'body',
+      checks: [{ claim: 'x', replaces: 'no such row' }],
+      retire: ['nope'],
+      hasNoteWrite: true,
+      mode: 'merge',
+    });
+    expect(merged.unmatchedRowRefs).toEqual(['no such row', 'nope']);
+    // The unmatched replacement is treated as the net addition it is, so the cap still
+    // refuses it through the ordinary drop report rather than silently landing.
+    expect(merged.droppedChecks).toEqual([`claim ${CARRY_NOTE_MAX_CHECKS}`]);
+  });
+});
+
 describe('truncateCarryField — EI-22079495152196184: keep the TAIL, not just the head', () => {
   it('returns the value untouched when within cap, with no repair recorded', () => {
     const repairs: CarryArgRepair[] = [];

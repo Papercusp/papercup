@@ -28,7 +28,7 @@ import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
-import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
+import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA, CARRY_ROW_REPLACES_SCHEMA } from '../_carry-row-id';
 import { dependsOnSpec } from '../../freshness/tool-schema';
 import {
   lintUncheckedExternalClaims,
@@ -512,6 +512,7 @@ export default defineTool({
                   { min: 1 },
                 ),
                 id: CARRY_ROW_ID_SCHEMA,
+                replaces: CARRY_ROW_REPLACES_SCHEMA,
                 recheck: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'A concrete command a successor runs to re-check it.',
@@ -578,6 +579,7 @@ export default defineTool({
                   min: 1,
                 }),
                 id: CARRY_ROW_ID_SCHEMA,
+                replaces: CARRY_ROW_REPLACES_SCHEMA,
                 recheck: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'Concrete probe to run before relying on the claim.',
@@ -713,9 +715,17 @@ export default defineTool({
             'If the union would OVERFLOW the cap, the write is REFUSED (naming every carried row that would be ' +
             "evicted in `checksDropped`/`wallsDropped`) unless `confirmRetire:true` is also set, in which case " +
             'supplied rows win and PREDICTED rows yield before VERIFIED ones — a supplied list that alone fills ' +
-            "the cap evicts every carried row, evidence or not. 'replace' makes the list the new set and is the " +
-            "only way to retire rows WITHOUT re-sending an update; under 'merge' a [] list is a no-op, never a " +
-            'clear.',
+            "the cap evicts every carried row, evidence or not. 'replace' makes the list the new set; to retire " +
+            "or edit ONE row use `retireIds` or a row's `replaces` instead of a full resend. Under 'merge' a [] " +
+            'list is a no-op, never a clear.',
+        ),
+      retireIds: z
+        .array(z.string().min(1).max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE))
+        .max((CARRY_NOTE_MAX_WALLS + CARRY_NOTE_MAX_CHECKS) * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe(
+          'Retire carried walls/checks by [#id] or exact claim in this same write, under either rowsMode — no ' +
+            'full resend. Reported as `wallsRetired`/`checksRetired`; unmatched refs as `unmatchedRowRefs`.',
         ),
       confirmRetire: z
         .boolean()
@@ -1370,6 +1380,7 @@ export default defineTool({
               hasNoteWrite,
               narrativeFields: hasStructured && hasOmittedPriorNarrativeField ? fields : undefined,
               mode: rowsMode,
+              retire: args.retireIds,
             });
             captured.merged = merged;
             const legacyChecksOverCap = priorChecksOverCapCount(priorNote);
@@ -1524,8 +1535,11 @@ export default defineTool({
                   'carried rows were left exactly as they were and your supplied rows were NOT added. The ' +
                   'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
                   'To land the rows too: retry with confirmRetire:true to let the cap\'s own PREDICTED-before-VERIFIED ' +
-                  'eviction proceed (the rows above are exactly what would go, and carried rows yield evidence-last), ' +
-                  "or retire rows you no longer need with a separate rowsMode:'replace' + confirmRetire:true write.",
+                  'eviction proceed (the rows above are exactly what would go, and carried rows yield evidence-last). ' +
+                  "If you were RE-WORDING a carried row, retry with that row only plus `replaces: '<its [#id] or " +
+                  "exact old claim>'` — an edit is not an addition. To make room for a genuinely new row, retry " +
+                  "with `retireIds: ['<[#id] or exact claim>']` for the row(s) you no longer need. Neither needs a " +
+                  'full resend.',
               }),
             },
           ],
@@ -1656,7 +1670,18 @@ export default defineTool({
 
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
     // the transform) — but a missing capture must never silently read as "no rows".
-    const { walls, checks, narrativeBody, droppedWalls, droppedChecks, overflowWalls, overflowChecks } =
+    const {
+      walls,
+      checks,
+      narrativeBody,
+      droppedWalls,
+      droppedChecks,
+      overflowWalls,
+      overflowChecks,
+      retiredWalls,
+      retiredChecks,
+      unmatchedRowRefs,
+    } =
       captured.merged ??
       mergeCarryRows({
         priorNote: null,
@@ -1666,6 +1691,7 @@ export default defineTool({
         hasNoteWrite,
         narrativeFields: hasStructured ? fields : undefined,
         mode: rowsMode,
+        retire: args.retireIds,
       });
 
     // P-009: advisory lint — an external-state ASSERTION in the narrative prose whose
@@ -2148,6 +2174,18 @@ export default defineTool({
                         `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
                         `unmentioned rows then survive and you send only the rows you are changing; give a row an ` +
                         `\`id\` if you expect to re-word its claim.`,
+                }
+              : {}),
+            // P-025: rows the caller retired BY NAME (`retireIds`) — deliberate, so
+            // reported apart from the unintended-loss `checksDropped`/`wallsDropped`.
+            ...(retiredChecks.length ? { checksRetired: retiredChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) } : {}),
+            ...(retiredWalls.length ? { wallsRetired: retiredWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) } : {}),
+            ...(unmatchedRowRefs.length
+              ? {
+                  unmatchedRowRefs: unmatchedRowRefs.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  unmatchedRowRefsNote:
+                    'These `replaces`/`retireIds` refs named no carried row (match is by [#id] or EXACT claim ' +
+                    'text). An unmatched `replaces` row was written as a new row; an unmatched retire removed nothing.',
                 }
               : {}),
             /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
