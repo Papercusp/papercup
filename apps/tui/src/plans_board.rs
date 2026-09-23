@@ -193,6 +193,15 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
             Theme::dim(),
         )));
     }
+    // Task keys are ignored while a mutation is in flight (context_key), so a
+    // status/move/drop key must say so too, not only the text editor.
+    if app.context_task_pending && app.context_task_editor.is_none() {
+        lines.push(Line::from(Span::styled(
+            "  saving… task keys resume when the canonical projection returns",
+            Theme::dim(),
+        )));
+    }
+
     if let Some(error) = app.last_error.as_deref() {
         lines.push(Line::from(Span::styled(
             format!("\n{error}"),
@@ -460,6 +469,15 @@ mod tests {
         let output = render(&app);
         assert!(output.contains("Edit task > Owner's exact revision"));
         assert!(output.contains("task_revision_conflict"));
+    }
+
+    #[test]
+    fn a_pending_status_mutation_says_task_keys_are_held() {
+        let mut app = App::new();
+        app.context_projection = Some(projection(true));
+        assert!(!render(&app).contains("saving…"));
+        app.context_task_pending = true;
+        assert!(render(&app).contains("saving… task keys resume"));
     }
 
     #[test]
