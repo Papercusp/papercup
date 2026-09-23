@@ -33,6 +33,7 @@ import { logIfStageStalls } from './stage-stall-log';
 import {
   isSnapshotOp,
   SNAPSHOT_COMPACT_EVERY_OPS,
+  SNAPSHOT_TOMBSTONE_HORIZON_MS,
   type SnapshotPayload,
   type SnapshotRow,
 } from './log-snapshot';
@@ -534,26 +535,31 @@ export interface MergeCursor {
   snapshotSkipUnsafe?: Set<string>;
 }
 
+/** P-004: a verified complete set plus what it says about itself. */
+export interface KnownSnapshotSet {
+  seed: SnapshotSeed;
+  meta: SnapshotSetMeta;
+}
+
 /** P-004: what a previous snapshot scan established for one log. */
 export interface SnapshotScanMemo {
   /** `log.length` when the scan ran. Every index below it has been scanned. */
   scannedTo: number;
   /** The newest complete set found below `scannedTo`, or null for none. While
    *  `resumeBelow` is set it may be an OLDER complete set kept as a fallback. */
-  seed: SnapshotSeed | null;
+  set: KnownSnapshotSet | null;
   /** A scan that ran out of its time budget. Indices `[resumeBelow, scannedTo)` hold no
    *  complete set; the next call continues downward from `resumeBelow - 1`. */
   resumeBelow?: number;
-  /** Set when the last attempt hit an unreadable block. The scan is retried once
-   *  the log grows past this length or `SNAPSHOT_UNREADABLE_RETRY_MS` has passed,
-   *  so a stuck tail block cannot cost a read timeout on every merge pass. */
+  /** Set when the last attempt hit an unreadable block. The scan is not retried
+   *  until `SNAPSHOT_UNREADABLE_RETRY_MS` has passed, so a stuck block cannot cost a
+   *  read timeout on every merge pass. Growth alone does not trigger a retry, because
+   *  a log still being written grows on every pass. */
   unreadableAtLength?: number;
   unreadableAtMs?: number;
 }
 
-/** P-004: how long an unreadable snapshot scan is remembered before a retry on a
- *  log that has not grown (an idle writer never grows, so length alone would never
- *  retry it). */
+/** P-004: how long an unreadable snapshot scan is remembered before a retry. */
 export const SNAPSHOT_UNREADABLE_RETRY_MS = 30_000;
 
 export function createMergeCursor(): MergeCursor {
@@ -599,9 +605,12 @@ export const SNAPSHOT_SCAN_WINDOW_MAX = 256;
 /**
  * P-004: a cursor this many ops (or more) behind its log's tail looks for a
  * complete snapshot set ahead of it, and jumps there when that is safe
- * (`seedCursorFromSnapshots`). Below this backlog the fold simply reads on.
+ * (`seedCursorFromSnapshots`). Below this backlog the fold simply reads on. Four
+ * cadence windows, so a live peer lagging through an ordinary write burst keeps
+ * folding. The jump is for a peer that is genuinely far behind: a joiner whose
+ * durable row sits at 0, or a device returning after a long absence.
  */
-export const SNAPSHOT_JUMP_MIN_BACKLOG_OPS = SNAPSHOT_COMPACT_EVERY_OPS;
+export const SNAPSHOT_JUMP_MIN_BACKLOG_OPS = SNAPSHOT_COMPACT_EVERY_OPS * 4;
 
 type BoundedReadResult = Awaited<ReturnType<typeof readOpBoundedDetailed>>;
 
@@ -791,6 +800,7 @@ export async function findLatestCompleteSnapshotDetailed(
   const lookbackFloor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
   const floor = Math.max(lookbackFloor, Math.max(0, Math.floor(opts?.floor ?? 0)));
   const r = await scanForCompleteSnapshot(log, { from: len - 1, floor, getTimeoutMs });
+  if (r.kind === 'found') return { kind: 'found', seed: r.seed };
   // No deadline was given, so the budget outcome cannot occur.
   return r.kind === 'budget' ? { kind: 'none-in-window', scannedFrom: len - 1, floor } : r;
 }
@@ -798,6 +808,23 @@ export async function findLatestCompleteSnapshotDetailed(
 /** P-004: a scan that stopped at its deadline. Indices `[resumeBelow, from]` were read
  *  and hold no complete set; continue from `resumeBelow - 1`. */
 type SnapshotScanBudgetOutcome = { kind: 'budget'; resumeBelow: number };
+
+/**
+ * P-004: what a set says about ITSELF, beyond where it sits. The far-behind jump
+ * needs both fields; fresh seeding needs neither. They are kept off the public
+ * `SnapshotSeed` so its shape is unchanged.
+ */
+export interface SnapshotSetMeta {
+  /** The producing op's `ts`. This is also the `now` its tombstone GC was measured against. */
+  ts: number;
+  /** Tables the producer left out (the release-cut head snapshot). Absent = none. */
+  excludeTables?: string[];
+}
+
+type InternalSnapshotScanOutcome =
+  | { kind: 'found'; seed: SnapshotSeed; meta: SnapshotSetMeta }
+  | Exclude<SnapshotScanOutcome, { kind: 'found' }>
+  | SnapshotScanBudgetOutcome;
 
 /**
  * The backward scan behind {@link findLatestCompleteSnapshotDetailed}, from index
@@ -811,7 +838,7 @@ type SnapshotScanBudgetOutcome = { kind: 'budget'; resumeBelow: number };
 async function scanForCompleteSnapshot(
   log: AdmittedLog,
   args: { from: number; floor: number; getTimeoutMs: number; deadlineAt?: number },
-): Promise<SnapshotScanOutcome | SnapshotScanBudgetOutcome> {
+): Promise<InternalSnapshotScanOutcome> {
   const { from, floor, getTimeoutMs, deadlineAt } = args;
   const read = scanBackwardWindowed(log, floor, getTimeoutMs);
   let i = Math.min(from, log.length - 1);
@@ -830,7 +857,13 @@ async function scanForCompleteSnapshot(
       const coversUpTo = p?.coversUpTo ?? 0;
       const chunkCount = p?.chunkCount ?? 1;
       const v = await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs);
-      if (v.ok) return { kind: 'found', seed: { seedIndex: coversUpTo, coversUpTo, chunkCount } };
+      if (v.ok) {
+        return {
+          kind: 'found',
+          seed: { seedIndex: coversUpTo, coversUpTo, chunkCount },
+          meta: { ts: op.ts, ...(p?.excludeTables?.length ? { excludeTables: [...p.excludeTables] } : {}) },
+        };
+      }
       // A set we could not READ is not a set we know to be torn — propagate, don't skip
       // past it. Skipping was how a complete-but-slow-to-read set vanished from the scan.
       if (v.reason === 'unreadable') return { kind: 'unreadable', atIndex: v.atIndex, cause: v.cause };
@@ -892,16 +925,51 @@ export async function seedCursorFromSnapshots(
     const pos = cursor.positions.get(key);
     if (pos === undefined) {
       // Fresh log (P-007): seed at the newest complete set anywhere in the log.
-      const seed = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
-      if (seed && seed.seedIndex > 0) cursor.positions.set(key, seed.seedIndex);
+      const set = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
+      if (set && set.seed.seedIndex > 0) cursor.positions.set(key, set.seed.seedIndex);
       continue;
     }
     // P-004 (R-4): a far-behind cursor jumps forward to a complete set AHEAD of it.
     if (!jump || log.length - pos < minBacklog || !snapshotJumpIsSafe(cursor, key)) continue;
-    const seed = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs, budgetMs);
-    if (!seed || seed.seedIndex <= pos) continue; // never rewinds
-    jumpCursorToSnapshot(cursor, key, pos, seed.seedIndex);
+    const set = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs, budgetMs);
+    if (!set || set.seed.seedIndex <= pos) continue; // never rewinds
+    if (!(await snapshotSetCoversSkip(log, pos, set.meta, getTimeoutMs))) continue;
+    jumpCursorToSnapshot(cursor, key, pos, set.seed.seedIndex);
   }
+}
+
+/**
+ * P-004 — does this set stand in for EVERY op in `[pos, seedIndex)` for a cursor
+ * that has already applied `[0, pos)`? Fresh seeding never asks, because it has no
+ * applied prefix. A jump does, and two producer behaviours make the answer no:
+ *
+ *  - EXCLUDED TABLES. The release-cut head snapshot is appended to the LIVE log
+ *    without `SEED_EXCLUDED_TABLES`. Jumping over it would silently drop those
+ *    tables' ops in the skipped range.
+ *  - TOMBSTONE GC. A set drops tombstones older than `SNAPSHOT_TOMBSTONE_HORIZON_MS`
+ *    before its own `ts` (EI-1688). A fresh fold never held those keys. This cursor
+ *    may already have applied the PUT that a skipped, GC'd DEL removes, so jumping
+ *    would keep a row a full replay deletes. The jump is allowed only when the
+ *    skipped range starts well inside the horizon: the last op this cursor applied
+ *    (index `pos - 1`, already local) must be younger than HALF the horizon at the
+ *    set's `ts`. A single writer's clock is monotonic, so every skipped op is at
+ *    least that young too, and the half-horizon margin absorbs clock skew.
+ *
+ * `pos === 0` has no applied prefix from this log, so it is the fresh case and
+ * passes the GC rule. It still fails on excluded tables, which cost a jumper
+ * rows that the old full replay would have delivered.
+ */
+async function snapshotSetCoversSkip(
+  log: AdmittedLog,
+  pos: number,
+  meta: SnapshotSetMeta,
+  getTimeoutMs: number,
+): Promise<boolean> {
+  if (meta.excludeTables?.length) return false;
+  if (pos === 0) return true;
+  const last = await readOpBoundedDetailed(log, pos - 1, getTimeoutMs);
+  if (last.kind !== 'op' || !last.op) return false; // cannot prove the skipped range is young
+  return last.op.ts >= meta.ts - SNAPSHOT_TOMBSTONE_HORIZON_MS / 2;
 }
 
 export interface SeedCursorFromSnapshotsOpts {
@@ -993,10 +1061,14 @@ async function latestCompleteSnapshotMemoized(
   maxLookback: number,
   getTimeoutMs: number,
   budgetMs: number,
-): Promise<SnapshotSeed | null> {
+): Promise<KnownSnapshotSet | null> {
   if (maxLookback > 0) {
-    const r = await findLatestCompleteSnapshotDetailed(log, maxLookback, getTimeoutMs, { floor });
-    return r.kind === 'found' ? r.seed : null;
+    const r = await scanForCompleteSnapshot(log, {
+      from: log.length - 1,
+      floor: Math.max(floor, log.length - maxLookback, 0),
+      getTimeoutMs,
+    });
+    return r.kind === 'found' ? { seed: r.seed, meta: r.meta } : null;
   }
   const memos = (cursor.snapshotScans ??= new Map<string, SnapshotScanMemo>());
   const len = log.length;
@@ -1008,10 +1080,9 @@ async function latestCompleteSnapshotMemoized(
   if (
     memo &&
     memo.unreadableAtLength !== undefined &&
-    len <= memo.unreadableAtLength &&
     Date.now() - (memo.unreadableAtMs ?? 0) < SNAPSHOT_UNREADABLE_RETRY_MS
   ) {
-    return memo.seed;
+    return memo.set;
   }
   if (
     memo &&
@@ -1019,16 +1090,16 @@ async function latestCompleteSnapshotMemoized(
     memo.resumeBelow === undefined &&
     len === memo.scannedTo
   ) {
-    return memo.seed;
+    return memo.set;
   }
   const key = log.keyHex;
-  const known = memo?.seed ?? null;
+  const known = memo?.set ?? null;
   const deadlineAt = budgetMs > 0 ? Date.now() + budgetMs : undefined;
-  const unreadable = (): SnapshotSeed | null => {
+  const unreadable = (): KnownSnapshotSet | null => {
     // Not evidence about any set. Keep what is known and retry later.
     memos.set(key, {
       scannedTo: memo?.scannedTo ?? 0,
-      seed: known,
+      set: known,
       ...(memo?.resumeBelow !== undefined ? { resumeBelow: memo.resumeBelow } : {}),
       unreadableAtLength: len,
       unreadableAtMs: Date.now(),
@@ -1047,14 +1118,15 @@ async function latestCompleteSnapshotMemoized(
       deadlineAt,
     });
     if (top.kind === 'found') {
-      memos.set(key, { scannedTo: len, seed: top.seed });
-      return top.seed;
+      const set = { seed: top.seed, meta: top.meta };
+      memos.set(key, { scannedTo: len, set });
+      return set;
     }
     if (top.kind === 'unreadable') return unreadable();
     if (top.kind === 'budget') {
       // Out of time inside the new region. Resume below it next pass. Keep a known
       // older set as the answer meanwhile: any complete set is a correct seed.
-      memos.set(key, { scannedTo: len, seed: known, resumeBelow: top.resumeBelow });
+      memos.set(key, { scannedTo: len, set: known, resumeBelow: top.resumeBelow });
       return known;
     }
   }
@@ -1064,15 +1136,15 @@ async function latestCompleteSnapshotMemoized(
     const rest = await scanForCompleteSnapshot(log, { from: resumeBelow - 1, floor, getTimeoutMs, deadlineAt });
     if (rest.kind === 'unreadable') return unreadable();
     if (rest.kind === 'budget') {
-      memos.set(key, { scannedTo: len, seed: known, resumeBelow: rest.resumeBelow });
+      memos.set(key, { scannedTo: len, set: known, resumeBelow: rest.resumeBelow });
       return known;
     }
     // Nothing above `resumeBelow` held a set, so a set found here is the newest.
-    const seed = rest.kind === 'found' ? rest.seed : known;
-    memos.set(key, { scannedTo: len, seed });
-    return seed;
+    const set = rest.kind === 'found' ? { seed: rest.seed, meta: rest.meta } : known;
+    memos.set(key, { scannedTo: len, set });
+    return set;
   }
-  memos.set(key, { scannedTo: len, seed: known });
+  memos.set(key, { scannedTo: len, set: known });
   return known;
 }
 
