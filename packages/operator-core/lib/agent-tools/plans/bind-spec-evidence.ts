@@ -489,7 +489,10 @@ export default defineTool({
     const env = await runBulk(
       resolved,
       async (entry) => {
-        if (!entry.ok) return { ok: false as const, slug: reportedSlug, ...entry };
+        if (!entry.ok) {
+          const { error, testRunId, message } = entry;
+          return { ok: false as const, slug: reportedSlug, error, fromTestRun: testRunId, message };
+        }
         const { binding } = entry;
         const derived = entry.derived ? { derivedFromTestRun: entry.derived } : {};
         const targetingRefusal = await mutationTargetingRefusal(binding, {

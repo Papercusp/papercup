@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { costFromTokens } from '@papercusp/model-pricing';
 import { modelClassForModel, parseTranscriptChunk, readFileDelta } from './ingest-claude-transcripts';
 
 const turn = (model: string, usage: Record<string, number>, type = 'assistant', id?: string): string =>
@@ -24,6 +25,7 @@ describe('parseTranscriptChunk', () => {
       outputTokens: 25,
       cacheReadTokens: 1000,
       cacheCreationTokens: 500,
+      cacheCreationTierUnknown: true,
     });
     expect(perModel.get('claude-haiku-4-5-20251001')?.cacheReadTokens).toBe(30);
   });
@@ -67,6 +69,7 @@ describe('parseTranscriptChunk', () => {
       outputTokens: 220, // 120 (max of msg_01) + 100 (msg_02)
       cacheReadTokens: 10000,
       cacheCreationTokens: 400,
+      cacheCreationTierUnknown: true,
     });
   });
 
@@ -75,6 +78,27 @@ describe('parseTranscriptChunk', () => {
     const { consumedBytes } = parseTranscriptChunk(line);
     expect(consumedBytes).toBe(Buffer.byteLength(line, 'utf8'));
     expect(consumedBytes).toBeGreaterThan(line.length); // multibyte ⇒ bytes > chars
+  });
+  it('carries reported write tiers through message deduplication into the canonical price calculation', () => {
+    const line = JSON.stringify({ type: 'assistant', message: {
+      id: 'tiered-message', model: 'claude-opus-4-8', usage: {
+        input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 2_000_000,
+        cache_creation_input_tokens: 1_000_000,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 },
+      },
+    } }) + '\n';
+    const usage = parseTranscriptChunk(line + line).perModel.get('claude-opus-4-8')!;
+    expect(usage).toEqual({ turns: 1, inputTokens: 100_000, outputTokens: 0,
+      cacheReadTokens: 2_000_000, cacheCreationTokens: 1_000_000,
+      cacheCreation5mTokens: 0, cacheCreation1hTokens: 1_000_000 });
+    expect(costFromTokens('claude-opus-4-8', usage)).toEqual({ priced: true, usd: 11.5 });
+  });
+  it('does not price an unreported write tier as five minutes', () => {
+    const usage = parseTranscriptChunk(turn('claude-opus-4-8', {
+      input_tokens: 5, cache_creation_input_tokens: 1000,
+    }) + '\n').perModel.get('claude-opus-4-8')!;
+    expect(usage.cacheCreationTierUnknown).toBe(true);
+    expect(costFromTokens('claude-opus-4-8', usage)).toEqual({ priced: false, usd: 0 });
   });
 });
 

@@ -468,7 +468,7 @@ async function readScratchResource(
     if (reference) {
       authorizeScratchReference(reference.manifest, {
         workspaceId: unscopedSuperuser ? reference.manifest.workspaceId : principal.workspaceId,
-        // The bearer principal is the only caller identity available at this
+        // The resolved principal is the caller identity available at this
         // transport seam; result-door owner references use that same stable
         // principal slug when they are produced outside a request context.
         ownerId: principal.slug,

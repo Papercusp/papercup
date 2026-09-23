@@ -33206,7 +33206,7 @@
           "POST"
         ]
       },
-      "description": "Link one or many work-items to targets: `{id, rel, target_id}` or `items:[{id, rel, target_id|target_kind+target_ref, remove?}]`. Source `id` is subject: src BLOCKS dst (dst held up), src FIXES dst, src DUPLICATES dst (dst canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are work-items (`target_id`) or coord ObjectRefs (`target_kind` + `target_ref`: plan_item, event key, topic). `satisfaction` is only for `blocks`; plan_item/event/topic targets cannot carry satisfaction. `blocks` works across kinds; default-on complete typed candidate graph validation rejects cycles, endpoint defects, and newly stranded work atomically. `remove:true` unlinks. Returns `{ok, results:[{ok,id,rel,dst?|error}], counts}`.",
+      "description": "Link one or many work-items to targets: `{id, rel, target_id}` or `items:[{id, rel, target_id|target_kind+target_ref, remove?}]`. Source `id` is subject; legacy `source_id` is accepted as its alias. src BLOCKS dst (dst held up), src FIXES dst, src DUPLICATES dst (dst canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are work-items (`target_id`) or coord ObjectRefs (`target_kind` + `target_ref`: plan_item, event key, topic). `satisfaction` is only for `blocks`; plan_item/event/topic targets cannot carry satisfaction. `blocks` works across kinds; default-on complete typed candidate graph validation rejects cycles, endpoint defects, and newly stranded work atomically. `remove:true` unlinks. Returns `{ok, results:[{ok,id,rel,dst?|error}], counts}`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -33232,7 +33232,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "For typed relationships: `blocks` = src gates dst (only scheduler rel; refuses cycles, bad endpoints, and newly stranded work); `fixes` = src resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst; `about` = src concerns a target; `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference. Use items:[…] for several edges.",
-        "chaining": "work_items:get both sides → work_items:link { rel:\"blocks\", target_id } (or items:[…])."
+        "chaining": "work_items:get both sides → work_items:link { id, rel:\"blocks\", target_id } (or items:[…])."
       }
     },
     {

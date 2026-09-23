@@ -35,6 +35,9 @@ export interface TranscriptDelta {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  cacheCreation5mTokens?: number;
+  cacheCreation1hTokens?: number;
+  cacheCreationTierUnknown?: boolean;
 }
 
 export interface ParsedChunk {
@@ -42,6 +45,15 @@ export interface ParsedChunk {
   perModel: Map<string, TranscriptDelta>;
   /** Byte length of the consumed prefix (complete lines only) — the watermark advance. */
   consumedBytes: number;
+  /** State committed together with the byte watermark; never inferred from a default model. */
+  parserState?: TranscriptParserState;
+}
+
+export interface TranscriptParserState {
+  model?: string;
+  lastCumulativeUsage?: string;
+  predecessorSessionId?: string;
+  contextGeneration?: number;
 }
 
 const emptyDelta = (): TranscriptDelta => ({
@@ -67,6 +79,10 @@ interface UsageLine {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
 }
 
 /**
@@ -88,7 +104,10 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
   if (lastNewline === -1) return { perModel, consumedBytes: 0 };
   const consumed = chunk.slice(0, lastNewline + 1);
   // msgId → { model, max-merged usage } for this chunk; id-less lines flushed directly.
-  const byMsg = new Map<string, { model: string; u: Required<UsageLine> }>();
+  const byMsg = new Map<string, {
+    model: string;
+    u: Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'>;
+  }>();
   let anonSeq = 0;
   for (const line of consumed.split('\n')) {
     if (!line.trim()) continue;
@@ -105,11 +124,19 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     // `<synthetic>` rows are harness-injected error placeholders, not API calls.
     if (!model || model.startsWith('<') || !u) continue;
     const key = evt.message?.id ?? `anon-${anonSeq++}`;
-    const acc = byMsg.get(key) ?? { model, u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+    const acc: { model: string; u: Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'> } =
+      byMsg.get(key) ?? { model, u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
     acc.u.input_tokens = Math.max(acc.u.input_tokens, u.input_tokens ?? 0);
     acc.u.output_tokens = Math.max(acc.u.output_tokens, u.output_tokens ?? 0);
     acc.u.cache_read_input_tokens = Math.max(acc.u.cache_read_input_tokens, u.cache_read_input_tokens ?? 0);
     acc.u.cache_creation_input_tokens = Math.max(acc.u.cache_creation_input_tokens, u.cache_creation_input_tokens ?? 0);
+    if (u.cache_creation && typeof u.cache_creation === 'object') {
+      const old = acc.u.cache_creation;
+      acc.u.cache_creation = {
+        ephemeral_5m_input_tokens: u.cache_creation.ephemeral_5m_input_tokens ?? old?.ephemeral_5m_input_tokens,
+        ephemeral_1h_input_tokens: u.cache_creation.ephemeral_1h_input_tokens ?? old?.ephemeral_1h_input_tokens,
+      };
+    }
     byMsg.set(key, acc);
   }
   for (const { model, u } of byMsg.values()) {
@@ -119,6 +146,18 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     acc.outputTokens += u.output_tokens;
     acc.cacheReadTokens += u.cache_read_input_tokens;
     acc.cacheCreationTokens += u.cache_creation_input_tokens;
+    const fiveMinute = u.cache_creation?.ephemeral_5m_input_tokens;
+    const oneHour = u.cache_creation?.ephemeral_1h_input_tokens;
+    if (
+      typeof fiveMinute === 'number' && Number.isFinite(fiveMinute) && fiveMinute >= 0 &&
+      typeof oneHour === 'number' && Number.isFinite(oneHour) && oneHour >= 0 &&
+      fiveMinute + oneHour === u.cache_creation_input_tokens
+    ) {
+      acc.cacheCreation5mTokens = (acc.cacheCreation5mTokens ?? 0) + fiveMinute;
+      acc.cacheCreation1hTokens = (acc.cacheCreation1hTokens ?? 0) + oneHour;
+    } else if (u.cache_creation_input_tokens > 0) {
+      acc.cacheCreationTierUnknown = true;
+    }
     perModel.set(model, acc);
   }
   return { perModel, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
@@ -300,11 +339,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     errors: [],
   };
 
-  const wmRows = await sql<Array<{ file_path: string; byte_offset: string }>>`
-    SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files
+  const wmRows = await sql<Array<{ file_path: string; byte_offset: string; parser_state: TranscriptParserState }>>`
+    SELECT file_path, byte_offset, parser_state FROM harness_shared.interactive_usage_files
      WHERE workspace_id = ${ws}
   `;
-  const watermarks = new Map(wmRows.map((r) => [r.file_path, Number(r.byte_offset)]));
+  const watermarks = new Map(wmRows.map((r) => [r.file_path, {
+    offset: Number(r.byte_offset), parserState: r.parser_state ?? {},
+  }]));
 
   for (const adapter of adapters) {
     let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
@@ -341,20 +382,35 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
       result.scannedFiles += 1;
       try {
         const { size } = await fs.stat(file);
-        let offset = watermarks.get(file) ?? 0;
+        const stored = watermarks.get(file) ?? { offset: 0, parserState: {} };
+        let offset = stored.offset;
         if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
         if (size === offset) {
           result.skippedUnchanged += 1;
           continue;
         }
         const chunk = await readFileDelta(file, offset, capBytes);
-        const { perModel, consumedBytes } = adapter.parse(chunk);
+        const { perModel, consumedBytes, parserState } = adapter.parse(
+          chunk, size < stored.offset ? {} : stored.parserState,
+        );
         if (consumedBytes === 0) continue; // no complete line yet — retry next tick
         // The value every spend join keys on (= adv_sessions.session_id); codex
         // rollouts need the adapter's extractor, see TranscriptAdapter.sessionIdForFile.
         const sessionId = adapter.sessionIdForFile ? adapter.sessionIdForFile(file) : path.basename(file, '.jsonl');
 
-        await sql.begin(async (tx) => {
+        const committed = await sql.begin(async (tx) => {
+          // Two ticks may scan the same old watermark. Serialize only this file
+          // and compare the observed offset before writing any usage samples.
+          await tx`
+            INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, updated_at)
+            VALUES (${ws}, ${file}, 0, now())
+            ON CONFLICT (workspace_id, file_path) DO NOTHING
+          `;
+          const [head] = await tx<Array<{ byte_offset: string }>>`
+            SELECT byte_offset FROM harness_shared.interactive_usage_files
+             WHERE workspace_id = ${ws} AND file_path = ${file} FOR UPDATE
+          `;
+          if (Number(head.byte_offset) !== stored.offset) return false;
           for (const [model, d] of perModel) {
             if (d.turns === 0) continue;
             const modelClass = modelClassForModel(model);
@@ -374,32 +430,41 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               INSERT INTO harness_shared.agent_usage_samples
                 (workspace_id, ts, bucket_key, provider, model_class, source,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-                 model, cost_source, harness_slug, run_id, role, session_id, goal_id)
+                 model, cost_source, harness_slug, run_id, role, session_id, goal_id,
+                 cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count)
               VALUES (
                 ${ws}, ${Date.now()}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
                 ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
-                ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
+                ${est.priced ? est.usd : null}, ${model === 'unknown-openai' ? null : model}, ${est.priced ? 'estimated' : null},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
                    ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
                 ${sessionId}, ${'interactive'}, ${sessionId},
                 (SELECT harness_shared.goal_id_for_usage_session(
-                   ${ws}, ${sessionId}, ${adapter.advSessionId ?? null}))
+                   ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})),
+                ${d.cacheCreationTierUnknown ? null : d.cacheCreation5mTokens ?? null},
+                ${d.cacheCreationTierUnknown ? null : d.cacheCreation1hTokens ?? null}, ${d.turns}
               )
             `;
-            result.samples += 1;
-            result.totals.turns += d.turns;
-            result.totals.inputTokens += d.inputTokens;
-            result.totals.outputTokens += d.outputTokens;
-            result.totals.cacheReadTokens += d.cacheReadTokens;
-            result.totals.cacheCreationTokens += d.cacheCreationTokens;
           }
           await tx`
-            INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, updated_at)
-            VALUES (${ws}, ${file}, ${offset + consumedBytes}, now())
+            INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, parser_state, updated_at)
+            VALUES (${ws}, ${file}, ${offset + consumedBytes}, ${JSON.stringify(parserState ?? stored.parserState)}::jsonb, now())
             ON CONFLICT (workspace_id, file_path)
-            DO UPDATE SET byte_offset = EXCLUDED.byte_offset, updated_at = now()
+            DO UPDATE SET byte_offset = EXCLUDED.byte_offset, parser_state = EXCLUDED.parser_state, updated_at = now()
           `;
+          return true;
         });
+        if (!committed) continue; // the winning tick owns these source bytes
+        watermarks.set(file, { offset: offset + consumedBytes, parserState: parserState ?? stored.parserState });
+        for (const d of perModel.values()) {
+          if (d.turns === 0) continue;
+          result.samples += 1;
+          result.totals.turns += d.turns;
+          result.totals.inputTokens += d.inputTokens;
+          result.totals.outputTokens += d.outputTokens;
+          result.totals.cacheReadTokens += d.cacheReadTokens;
+          result.totals.cacheCreationTokens += d.cacheCreationTokens;
+        }
         result.ingestedFiles += 1;
       } catch (e) {
         result.errors.push({ file, error: e instanceof Error ? e.message : String(e) });

@@ -217,6 +217,19 @@ export function shouldWriteHostDiagnostic({ bridgeTty, env }?: {
 /** The carry prompt's unique first line is the strongest cross-backend proof
  * that the fresh native transcript accepted THIS successor turn. */
 export function leadingTurnOriginMarker(text: any): string | null;
+/** WI-10002752: Codex has no system-prompt CLI flag, so a carry-respawn's carry
+ * document rides in the first TYPED turn (`mintCarryRespawnArgs` returns it as
+ * `carryText`: the carry document plus a lineage line). That minted text has no
+ * provenance line of its own. Replacing the operator's first prompt with it
+ * wholesale dropped the leading ⟦turn-origin⟧ line and the continuation body:
+ * `verifyNativeTurnStartWithRetry` then refused before checking anything
+ * ('missing-leading-turn-origin'), so every Codex carry was recorded as dropped
+ * although Codex received it, and a machine-injected turn reached the transcript
+ * with nothing to distinguish it from owner input. Compose instead: the original
+ * marker line FIRST, then the original body, then the minted carry text.
+ * Without a leading marker on the original there is nothing to preserve, so the
+ * minted text is used as before. Pure and exported for tests. */
+export function composeCarryTurnText(originalText: any, mintedCarryText: any): string;
 /** Find the exact port marker in a recently-written target-native JSONL. This
  * is the delivery authority: PTY output/activity is intentionally insufficient.
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,

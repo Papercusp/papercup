@@ -10,6 +10,7 @@ import {
   parseCodexChunk,
   parseOmpChunk,
   providerForModel,
+  UNKNOWN_CODEX_MODEL,
 } from './ingest-adapters';
 
 const codexLine = (o: unknown) => JSON.stringify(o) + '\n';
@@ -27,7 +28,7 @@ describe('parseCodexChunk (P-015)', () => {
       payload: {
         type: 'token_count',
         info: {
-          total_token_usage: { input_tokens: 99999, cached_input_tokens: 0, output_tokens: 9999 },
+          total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output },
           last_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output },
         },
       },
@@ -51,9 +52,48 @@ describe('parseCodexChunk (P-015)', () => {
     expect(perModel.size).toBe(0);
   });
 
-  it('falls back to the default model when no turn_context precedes usage', () => {
+  it('keeps the model unknown when no observed turn_context precedes usage', () => {
     const { perModel } = parseCodexChunk(tokenCount(100, 0, 10));
-    expect([...perModel.keys()]).toEqual(['gpt-5.5']);
+    expect([...perModel.keys()]).toEqual([UNKNOWN_CODEX_MODEL]);
+    expect(providerForModel(UNKNOWN_CODEX_MODEL)).toBe('openai');
+  });
+
+  it('preserves an observed model across a chunk boundary and a serialized restart', () => {
+    const first = parseCodexChunk(codexLine({ type: 'turn_context', payload: { model: 'gpt-6-luna' } }));
+    const persisted = JSON.parse(JSON.stringify(first.parserState));
+    const second = parseCodexChunk(tokenCount(1000, 600, 40), persisted);
+    expect([...second.perModel.keys()]).toEqual(['gpt-6-luna']);
+    expect(second.perModel.get('gpt-6-luna')?.inputTokens).toBe(400);
+    expect(persisted).toEqual({ model: 'gpt-6-luna' }); // parsing does not mutate the committed state
+  });
+
+  it('updates the model when the source changes it, without relabeling earlier usage', () => {
+    const chunk = turnCtx + tokenCount(1000, 600, 40) +
+      codexLine({ type: 'turn_context', payload: { model: 'gpt-6-astra' } }) + tokenCount(2000, 1500, 60);
+    const parsed = parseCodexChunk(chunk);
+    expect([...parsed.perModel.keys()]).toEqual(['gpt-5.5', 'gpt-6-astra']);
+    expect(parsed.parserState?.model).toBe('gpt-6-astra');
+  });
+
+  it('deduplicates repeated cumulative usage across chunks but counts distinct requests with identical last usage', () => {
+    const event = tokenCount(1000, 600, 40);
+    const first = parseCodexChunk(turnCtx + event + event);
+    expect(first.perModel.get('gpt-5.5')?.turns).toBe(1);
+    const second = parseCodexChunk(event, JSON.parse(JSON.stringify(first.parserState)));
+    expect(second.perModel.size).toBe(0);
+    const next = JSON.parse(event);
+    next.payload.info.total_token_usage = { input_tokens: 2000, cached_input_tokens: 1200, output_tokens: 80 };
+    expect(parseCodexChunk(codexLine(next), second.parserState).perModel.get('gpt-5.5')?.turns).toBe(1);
+  });
+
+  it('ignores zero-usage resets and records sparse fork lineage without guessing its model', () => {
+    const parsed = parseCodexChunk(
+      codexLine({ type: 'session_meta', payload: { forked_from_id: 'parent-session' } }) +
+      tokenCount(0, 0, 0) + codexLine({ type: 'compacted' }) + tokenCount(1000, 600, 40),
+    );
+    expect(parsed.perModel.get(UNKNOWN_CODEX_MODEL)?.turns).toBe(1);
+    expect(parsed.parserState).toMatchObject({ predecessorSessionId: 'parent-session', contextGeneration: 1 });
+    expect(parsed.parserState?.model).toBeUndefined();
   });
 
   it('incomplete trailing line is not consumed', () => {
@@ -137,8 +177,9 @@ describe('codex session identity + per-session isolation roots (WI-2140701 (a))'
         },
       },
     });
-    const d = parseCodexChunk(chunk).perModel.get('gpt-5.5')!;
-    expect(d).toMatchObject({ turns: 1, inputTokens: 400, cacheReadTokens: 600, cacheCreationTokens: 250, outputTokens: 40 });
+    const d = parseCodexChunk(chunk).perModel.get(UNKNOWN_CODEX_MODEL)!;
+    expect(d).toMatchObject({ turns: 1, inputTokens: 150, cacheReadTokens: 600, cacheCreationTokens: 250, outputTokens: 40 });
+    expect(d.inputTokens + d.cacheReadTokens + d.cacheCreationTokens).toBe(1000);
   });
 
   it('codexSessionRoots: one root per <base>/<home>/sessions; homes without one and stray files are skipped; missing base → []', async () => {

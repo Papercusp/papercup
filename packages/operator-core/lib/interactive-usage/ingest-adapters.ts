@@ -10,8 +10,8 @@
  *
  *   codex (`~/.codex/sessions/**.jsonl`):
  *     - `turn_context` lines carry `payload.model` — tracked as last-seen
- *       (chunk-local; a watermark landing between a turn_context and its
- *       token_count falls back to the default model — rare + low-volume).
+ *       in parser state committed with the file watermark; an unavailable
+ *       model is explicitly unknown, never replaced with a default model.
  *     - `event_msg` lines with `payload.type === 'token_count'` carry
  *       `payload.info.last_token_usage` = the PER-TURN usage
  *       ({input_tokens, cached_input_tokens, output_tokens}). `info` is null
@@ -29,7 +29,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { codexHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
-import type { ParsedChunk, TranscriptDelta } from './ingest-claude-transcripts';
+import type { ParsedChunk, TranscriptDelta, TranscriptParserState } from './ingest-claude-transcripts';
 import { parseTranscriptChunk } from './ingest-claude-transcripts';
 
 const emptyDelta = (): TranscriptDelta => ({
@@ -48,14 +48,15 @@ function completeLines(chunk: string): { text: string; bytes: number } {
   return { text, bytes: Buffer.byteLength(text, 'utf8') };
 }
 
-const CODEX_DEFAULT_MODEL = 'gpt-5.5';
+export const UNKNOWN_CODEX_MODEL = 'unknown-openai';
 
 /** Parse a codex rollout chunk. Exported for unit tests. */
-export function parseCodexChunk(chunk: string): ParsedChunk {
+export function parseCodexChunk(chunk: string, priorState: TranscriptParserState = {}): ParsedChunk {
   const perModel = new Map<string, TranscriptDelta>();
+  const parserState = { ...priorState };
   const { text, bytes } = completeLines(chunk);
-  if (bytes === 0) return { perModel, consumedBytes: 0 };
-  let model = CODEX_DEFAULT_MODEL;
+  if (bytes === 0) return { perModel, consumedBytes: 0, parserState };
+  let model = typeof parserState.model === 'string' && parserState.model ? parserState.model : UNKNOWN_CODEX_MODEL;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let j: unknown;
@@ -69,7 +70,9 @@ export function parseCodexChunk(chunk: string): ParsedChunk {
       payload?: {
         type?: string;
         model?: string;
+        forked_from_id?: string;
         info?: {
+          total_token_usage?: Record<string, number> | null;
           last_token_usage?: {
             input_tokens?: number;
             cached_input_tokens?: number;
@@ -79,24 +82,42 @@ export function parseCodexChunk(chunk: string): ParsedChunk {
         } | null;
       };
     };
+    if (evt?.type === 'session_meta' && typeof evt.payload?.forked_from_id === 'string') {
+      parserState.predecessorSessionId = evt.payload.forked_from_id;
+    }
+    if (evt?.type === 'compacted' || evt.payload?.type === 'context_compacted') {
+      parserState.contextGeneration = (parserState.contextGeneration ?? 0) + 1;
+      delete parserState.lastCumulativeUsage;
+    }
     if (evt?.type === 'turn_context' && typeof evt.payload?.model === 'string' && evt.payload.model) {
       model = evt.payload.model;
+      parserState.model = model;
       continue;
     }
     if (evt?.type !== 'event_msg' || evt.payload?.type !== 'token_count') continue;
     const u = evt.payload?.info?.last_token_usage;
     if (!u) continue; // rate-limit-only token_count update
-    const input = u.input_tokens ?? 0;
-    const cached = u.cached_input_tokens ?? 0;
+    const cumulative = evt.payload?.info?.total_token_usage;
+    if (cumulative && typeof cumulative === 'object') {
+      const fingerprint = JSON.stringify(Object.keys(cumulative).sort().map((key) => [key, cumulative[key]]));
+      if (fingerprint === parserState.lastCumulativeUsage) continue;
+      parserState.lastCumulativeUsage = fingerprint;
+    }
+    const count = (n: unknown): number => typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+    const input = count(u.input_tokens);
+    const cached = count(u.cached_input_tokens);
+    const written = count(u.cache_write_input_tokens);
+    const output = count(u.output_tokens);
+    if (input + cached + written + output === 0) continue; // compaction/reset notification, not a request
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;
-    acc.inputTokens += Math.max(0, input - cached); // input INCLUDES the cached subset
+    acc.inputTokens += Math.max(0, input - cached - written); // input INCLUDES both cache subsets
     acc.cacheReadTokens += cached;
-    acc.cacheCreationTokens += u.cache_write_input_tokens ?? 0;
-    acc.outputTokens += u.output_tokens ?? 0;
+    acc.cacheCreationTokens += written;
+    acc.outputTokens += output;
     perModel.set(model, acc);
   }
-  return { perModel, consumedBytes: bytes };
+  return { perModel, consumedBytes: bytes, parserState };
 }
 
 interface OmpUsage {
@@ -155,8 +176,9 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
 }
 
 /** Provider bucket for a model id (drives `provider` + `bucket_key`). */
-export function providerForModel(model: string): 'anthropic' | 'openai' {
-  return /gpt|codex|^o\d/i.test(model) ? 'openai' : 'anthropic';
+export function providerForModel(model: string): 'anthropic' | 'openai' | 'unknown' {
+  if (model === UNKNOWN_CODEX_MODEL || /gpt|codex|^o\d/i.test(model)) return 'openai';
+  return /^claude/i.test(model) ? 'anthropic' : 'unknown';
 }
 
 export interface TranscriptAdapter {
@@ -165,7 +187,7 @@ export interface TranscriptAdapter {
   /** Transcript root to walk recursively for `*.jsonl`. */
   root: string;
   /** Chunk parser (complete-lines-only; returns the watermark advance). */
-  parse: (chunk: string) => ParsedChunk;
+  parse: (chunk: string, state?: TranscriptParserState) => ParsedChunk;
   /**
    * Native session id for a transcript file — the value written to
    * `agent_usage_samples.session_id`, which MUST equal `adv_sessions.session_id`

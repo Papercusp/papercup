@@ -279,6 +279,9 @@
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
+    // review-system-rework-reduction-2026-09-23 P-040 — its behavior test imports the pure
+    // burst/format/parse functions directly (same TS7016 reason as the entries around it).
+    "apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs",
     "apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
     // managed-carry-lifecycle-enforcement P-002 — imported directly by its
     // TypeScript behavior test. Enroll the inferred surface so the test cannot
