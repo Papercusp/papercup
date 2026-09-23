@@ -551,7 +551,11 @@ function consultBody(req: GetFeedbackRequest): string {
  * verbatim) — which is what cascade-core's refill-exhaustion revival leg
  * passes (EI-20864690354207496). */
 export interface RevivalBriefCandidate {
+  /** Stage-2 comparison score (relevance × freshness). */
   score: number;
+  /** Stage-1 qualification score — the number the relevance floor judged, and
+   * therefore the one that justifies reviving this responder at all. */
+  relevance: number;
   signals: { similarity: number };
   evidence: Array<{ session_id: string; turn_idx: number; sim: number; lexicalRank?: number }>;
 }
@@ -585,7 +589,7 @@ export function revivalBrief(opts: {
   const c = opts.candidate;
   return (
     `🧭 You were REVIVED (carry-respawn of your own session) to answer a consult — your archived transcript is the most relevant context in the workspace for this question, and no live peer matched better (WI-39852 revival leg).\n` +
-    `From ${opts.requesterId} (score ${c.score.toFixed(2)}, sim ${c.signals.similarity.toFixed(2)}).\n` +
+    `From ${opts.requesterId} (relevance ${c.relevance.toFixed(2)}, sim ${c.signals.similarity.toFixed(2)}).\n` +
     `Why you: ${evidenceLine(c)} — sessions:read resolves the refs (they are YOUR turns).\n` +
     `QUESTION: ${opts.question}\n` +
     `Answer FROM your transcript, citing evidence.\n` +
@@ -1404,9 +1408,9 @@ export async function getFeedbackCore(
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
             `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
           : finalChosenVia === 'minimum'
-          ? `Selected as BEST-AVAILABLE reviewer (blended score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
+          ? `Selected as BEST-AVAILABLE reviewer (relevance ${finalChosen.relevance.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
             `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
-          : `Routed to you by transcript relevance (score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)}).\n` +
+          : `Routed to you by transcript relevance (relevance ${finalChosen.relevance.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)}).\n` +
             `Why you: ${evidenceLine(finalChosen)} — sessions:read resolves the refs.\n` +
             `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence.\n`) +
         consultResponderVerbMenu({
@@ -1608,6 +1612,10 @@ export async function getFeedbackCore(
     ).map((s) => ({
       ownerId: s.candidate.ownerId,
       score: s.candidate.score,
+      // Reported beside `score` because `via` is derived from THIS number, not
+      // from the comparison score: a caller weighing the remaining menu cannot
+      // otherwise tell a floor-qualified peer from a best-available fill.
+      relevance: s.candidate.relevance,
       liveness: s.candidate.liveness,
       via: s.via,
       ...(s.candidate.fallback ? { fallback: s.candidate.fallback } : {}),
