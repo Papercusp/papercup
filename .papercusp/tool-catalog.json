@@ -6138,7 +6138,7 @@
           "POST"
         ]
       },
-      "description": "Acknowledge one OR many coord messages by msg_id. Posts a `kind: \"ack\"` entry in your outbox addressed back at each original sender, so they can see you received it. Single: { msg_id }. Many: { msg_ids:[…] } or items:[{ msg_id }]. Returns { ok, results:[{ ok, msg_id, ack_msg_id? + acked_from? | error }], counts } — correlate by msg_id; an unknown msg_id never fails the rest.",
+      "description": "Acknowledge one OR many coord messages you received by msg_id. Messages authored by the caller are refused with self_authored_message. Posts a `kind: \"ack\"` entry in your outbox addressed back at each original sender, so they can see you received it. Single: { msg_id }. Many: { msg_ids:[…] } or items:[{ msg_id }]. Returns { ok, results:[{ ok, msg_id, ack_msg_id? + acked_from? | error }], counts } — correlate by msg_id; an unknown msg_id never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -6164,7 +6164,7 @@
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) coord message(s) — closes the loop for the sender. Ack several at once via msg_ids:[…].",
-        "notWhen": "For routine read-and-forget. Acks are most useful for hand-offs and questions where the sender is waiting."
+        "notWhen": "For routine read-and-forget or messages you authored yourself. Acks are only meaningful for received messages and are most useful for hand-offs and questions where the sender is waiting."
       }
     },
     {

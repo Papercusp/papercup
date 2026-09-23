@@ -44,7 +44,7 @@ describe('scope-aware goal planning obligations', () => {
       family: 'planning-needed', status: 'due', applicableDemand: 1,
       action: { kind: 'continue' },
     });
-    expect(goalPlanningObligation(input('plan-needed', populated)).action?.summary).toContain('Recover failed checkout');
+    expect(goalPlanningObligation(input('plan-needed', populated)).reason).toContain('Recover failed checkout');
   });
   it('accepts a current supported sufficient-plan review without an idea quota', () => {
     expect(goalPlanningObligation(input('existing-plans-sufficient'))).toMatchObject({ status: 'satisfied', applicableDemand: 0 });
@@ -79,7 +79,8 @@ describe('scope-aware goal planning obligations', () => {
     const value = input('adopt-plan'); const state = known(value);
     state.review!.planRefs = ['plan:papercusp/foreign'];
     state.authorities.papercusp = { allowed: false, reason: 'different-active-goal-owns-pot', ownerGoalId: 'goal-other', ownerGoalTitle: 'Other' };
-    expect(goalPlanningObligation(value).action?.summary).toMatch(/route.*goal-other/i);
+    expect(goalPlanningObligation(value).reason).toMatch(/route.*goal-other/i);
+    expect(goalPlanningObligation(value).action?.summary).toContain('do not adopt or duplicate');
     expect(goalPlanningObligation(value).action?.tool).toBeUndefined();
   });
   it('permits nonduplicating adoption in an unowned harness but retains CAS and launch guards', () => {

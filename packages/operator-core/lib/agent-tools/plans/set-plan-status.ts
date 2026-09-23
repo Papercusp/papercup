@@ -36,7 +36,11 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
-import { evaluatePlanAcceptanceGate, type CitationDeployment } from '../../plan-acceptance-gate';
+import {
+  evaluatePlanAcceptanceGate,
+  type CitationDeployment,
+  type PlanAcceptanceRepairAction,
+} from '../../plan-acceptance-gate';
 import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import {
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
@@ -44,6 +48,10 @@ import {
   resolveAcceptanceGrader,
   type AcceptanceGraderLifecycle,
 } from '../../acceptance-grader';
+import {
+  readAcceptanceGradingSweepState,
+  type AcceptanceGradingSweepState,
+} from '../../acceptance-grading-sweep-state';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
 import { resolvePlanScope } from './source';
@@ -341,6 +349,98 @@ export async function launchAcceptanceGraderForGate(
   } as never);
 }
 
+/** Why a stalled acceptance grading will NOT be recovered automatically, and the
+ * route that still works (EI-24032136322947460). */
+export type AcceptanceGraderRecovery = {
+  code: 'grading_sweep_paused' | 'grading_sweep_inactive';
+  sweep: Extract<AcceptanceGradingSweepState, { status: 'paused' | 'inactive' }>;
+  instruction: string;
+};
+
+const NO_PARALLEL_REVIEWER = 'Do not self-grade or launch a parallel reviewer.';
+const RETRY = 'retry plans:set-plan-status — each call re-runs recruitment';
+
+/**
+ * The recruiter dispatches once per ship attempt; the acceptance-grading-sweep is
+ * what re-dispatches and escalates a grading that stalls afterwards. When that
+ * sweep is paused or inactive, the refusal must say so and name the manual route
+ * instead of implying recovery is automatic (EI-24032136322947460: it sat paused
+ * under an owner hold while plans deduped onto an unassigned request, silently).
+ * Undefined = recovery is automatic, unknown, or the grading is already settled.
+ */
+export function acceptanceGraderRecovery(
+  lifecycle: AcceptanceGraderLifecycle,
+  sweep: AcceptanceGradingSweepState | undefined,
+): AcceptanceGraderRecovery | undefined {
+  if (lifecycle.state === 'settled' || !sweep) return undefined;
+  if (sweep.status !== 'paused' && sweep.status !== 'inactive') return undefined;
+
+  const why = sweep.status === 'paused'
+    ? `The acceptance-grading-sweep routine is paused` +
+      (sweep.reason ? ` (${sweep.reason})` : '') +
+      (sweep.pausedBy ? ` by ${sweep.pausedBy}` : '') +
+      (sweep.pausedAt ? ` since ${sweep.pausedAt}` : '') +
+      (sweep.autoResumesAt ? `, auto-resuming ${sweep.autoResumesAt}` : ', with no auto-resume') +
+      ', so it will not re-dispatch or escalate this grading. Do not re-arm the sweep to unblock this ship: it is a deliberate hold.'
+    : 'The acceptance-grading-sweep routine is inactive with no recorded pause, so it will not re-dispatch or ' +
+      'escalate this grading; an unexplained stop is worth investigating (routines:list { name: "acceptance-grading-sweep" }).';
+
+  let route: string;
+  switch (lifecycle.state) {
+    case 'deduped': {
+      const id = lifecycle.existingWorkItemId;
+      const holder = lifecycle.existingWorkItemAssignee;
+      route = !id
+        ? `This ship deduped onto an existing grader launch; confirm it is taking turns, and if it is not, ${RETRY}.`
+        : holder
+          ? `This ship deduped onto grading request ${id}, held by ${holder}. coord:send ${holder} to confirm they are ` +
+            `grading it; if they are not live, have a live non-implementer outside the author lineage take ${id} and grade with scorecards:emit.`
+          : `This ship deduped onto grading request ${id}, which is unassigned. Have a live non-implementer outside the ` +
+            `author lineage claim ${id} and grade with scorecards:emit.`;
+      break;
+    }
+    case 'assigned':
+      route = `Graders were assigned${lifecycle.graders?.length ? ` (${lifecycle.graders.join(', ')})` : ''}; ` +
+        `confirm one picks up the grading conversation, and if none does, ${RETRY}.`;
+      break;
+    case 'launched':
+      route = lifecycle.agentStarted === false
+        ? `A fresh judge was launched but never started; ${RETRY}.`
+        : `A fresh judge was launched${lifecycle.agentStarted === null ? ' (start unconfirmed)' : ''}; ` +
+          `confirm it is taking turns, and if it stalls, ${RETRY}.`;
+      break;
+    default:
+      route = `Recruitment failed${lifecycle.error ? `: ${lifecycle.error}` : ''}; ${RETRY}.`;
+  }
+
+  return {
+    code: sweep.status === 'paused' ? 'grading_sweep_paused' : 'grading_sweep_inactive',
+    sweep,
+    instruction: `${why} ${route} ${NO_PARALLEL_REVIEWER}`,
+  };
+}
+
+/** The refusal fields a recruited grader contributes. `repairAction` is only
+ * present when recovery is NOT automatic — then its instruction is replaced by the
+ * recovery route; its kind and retry verb are kept, since a retry still re-runs
+ * recruitment. The top-level refusal code is untouched: routing keys on it. */
+export function acceptanceGraderRefusalFields(
+  repairAction: PlanAcceptanceRepairAction | undefined,
+  lifecycle: AcceptanceGraderLifecycle | undefined,
+  sweep: AcceptanceGradingSweepState | undefined,
+): {
+  repairAction?: PlanAcceptanceRepairAction;
+  acceptanceGrader?: AcceptanceGraderLifecycle & { recovery?: AcceptanceGraderRecovery };
+} {
+  if (!lifecycle) return {};
+  const recovery = acceptanceGraderRecovery(lifecycle, sweep);
+  if (!recovery) return { acceptanceGrader: lifecycle };
+  return {
+    ...(repairAction ? { repairAction: { ...repairAction, instruction: recovery.instruction } } : {}),
+    acceptanceGrader: { ...lifecycle, recovery },
+  };
+}
+
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
@@ -434,6 +534,11 @@ export default defineTool({
           }
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, harnessSlug);
+            // EI-24032136322947460: say whether a stall will be recovered
+            // automatically. Read only when a grader is in play and unsettled.
+            const sweep = acceptanceGrader && acceptanceGrader.state !== 'settled'
+              ? await readAcceptanceGradingSweepState()
+              : undefined;
             return {
               // Keep canonical BAR attribution, grading identity, and the safe
               // repair route. A hand-picked code/message subset loses the very
@@ -442,7 +547,7 @@ export default defineTool({
               ok: false as const,
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
-              ...(acceptanceGrader ? { acceptanceGrader } : {}),
+              ...acceptanceGraderRefusalFields(gate.repairAction, acceptanceGrader, sweep),
             };
           }
         }

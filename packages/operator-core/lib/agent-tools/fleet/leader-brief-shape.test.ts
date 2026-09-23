@@ -341,11 +341,13 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
           primary: [
             {
               id: 'obl:owner-report:1',
+              ruleRevision: 'goal-owner-report-v1',
+              sourceGeneration: 'goal-source-42',
               family: 'owner-report',
               status: 'due',
               title: 'Owner report is due',
               applicableDemand: 1,
-              action: { kind: 'report', summary: 'send the owner report now', tool: 'coord:send' },
+              action: { kind: 'report', summary: 'send the owner report now', tool: 'coord:send', recoveryRef: 'coord:orient' },
             },
           ],
           projection: {
@@ -369,12 +371,46 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
 
     expect(out.agentObligations).toMatchObject({
       sourceGeneration: 'agenda-1',
-      primary: [{ family: 'owner-report', status: 'due', action: { kind: 'report', tool: 'coord:send' } }],
+      primary: [{ family: 'owner-report', status: 'due', ruleRevision: 'goal-owner-report-v1',
+        sourceGeneration: 'goal-source-42', action: { kind: 'report', tool: 'coord:send', recoveryRef: 'coord:orient' } }],
       projection: { receipt: { entriesAvailable: 4, entriesDelivered: 1, entriesOmitted: 3, bodyTruncated: true } },
       detailRef: 'fleet:leader-brief { payloadTier:"full" }',
       read: { elapsedMs: 12, degradedSources: [] },
     });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
+  it('does not retain a delivery receipt for an action cut by the final shaper', () => {
+    const first = '- [DUE] First action ' + 'a'.repeat(390);
+    const second = '- [DUE] Second action ' + 'b'.repeat(390);
+    const out = shapeLeaderBrief({ ok: true, summary: { fleet: 'goal-fleet' }, agentObligations: {
+      sourceGeneration: 'generation-1', primary: [], detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+      projection: { text: `${first}\n${second}`, receipt: {
+        sink: 'fleet:leader-brief', mode: 'truncate', entriesAvailable: 4, entriesDelivered: 2,
+        entriesOmitted: 2, bodyDeliveredChars: first.length + second.length + 1,
+        estimatedTokens: 206, bodyTruncated: true, refused: false,
+      } },
+    } }, 'trimmed') as { agentObligations: { projection: { text: string; receipt: Record<string, unknown> } } };
+    expect(out.agentObligations.projection.text).toBe(first);
+    expect(out.agentObligations.projection.receipt).toMatchObject({ entriesDelivered: 1, entriesOmitted: 3,
+      bodyDeliveredChars: first.length, bodyTruncated: true, reason: 'character-cap' });
+  });
+
+  it('reports zero complete actions when the emergency tier cannot fit one', () => {
+    const input = { ...largeBrief(), agentObligations: {
+      sourceGeneration: 'generation-1', primary: [], detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+      projection: { text: '- [DUE] ' + 'x'.repeat(250), receipt: {
+        sink: 'fleet:leader-brief', mode: 'truncate', entriesAvailable: 1, entriesDelivered: 1,
+        entriesOmitted: 0, bodyDeliveredChars: 258, estimatedTokens: 65, bodyTruncated: false, refused: false,
+      } },
+    } };
+    const out = shapeLeaderBrief(input, 'trimmed') as { leaderBriefProjection: { emergency: boolean };
+      agentObligations: { detailRef: string; projection: { text: string; receipt: Record<string, unknown> } } };
+    expect(out.leaderBriefProjection.emergency).toBe(true);
+    expect(out.agentObligations.projection.text).toBe('');
+    expect(out.agentObligations.projection.receipt).toMatchObject({ entriesDelivered: 0, entriesOmitted: 1,
+      bodyDeliveredChars: 0, bodyTruncated: true, reason: 'character-cap' });
+    expect(out.agentObligations.detailRef).toContain('payloadTier');
   });
 
   it('declares a bounded shaper and a ceiling below the result-door envelope', () => {

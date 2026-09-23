@@ -6319,6 +6319,49 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── consult.expertRouting — the consult expert-routing owner surface ──
+  //
+  // The two knobs /settings/expert-routing edits (consult-expert-routing-2026-09-22
+  // P-006): the RANKED allowlist of models allowed to ANSWER a consult (D-004,
+  // order IS the walk order) and the stage-2 recency half-life (D-001 §2).
+  // Workspace-singleton — the client subscribes with NO args, so the
+  // consult-expert-routing-set write route emits a NAME-ONLY
+  // notifySyncInvalidate('consult.expertRouting'). Returns a 1-element array
+  // (client reads data[0]).
+  //
+  // NOT table-backed: until migration 1202 is armed the row's table does not
+  // exist, and readConsultExpertRoutingSettings is total by design — it degrades
+  // to the owner-stated seed rather than throwing, because it also sits on the
+  // consult dispatch critical path. So this entry needs no catch of its own and
+  // there is no degraded() branch to render: a pre-1202 box is a usable default
+  // state, not a fault.
+  //
+  // `bounds` and `defaults` ride along so the page renders the half-life limits
+  // and the "same as the default policy" hint from the module that OWNS them
+  // rather than re-declaring 0.5/365 and the seed order in client code.
+  'consult.expertRouting': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const {
+        readConsultExpertRoutingSettings,
+        seedConsultExpertRoutingSettings,
+        MIN_RECENCY_HALF_LIFE_DAYS,
+        MAX_RECENCY_HALF_LIFE_DAYS,
+      } = await import('../consult/expert-routing-settings');
+      const settings = await readConsultExpertRoutingSettings(activeWorkspaceId());
+      return [
+        {
+          ...settings,
+          bounds: {
+            minRecencyHalfLifeDays: MIN_RECENCY_HALF_LIFE_DAYS,
+            maxRecencyHalfLifeDays: MAX_RECENCY_HALF_LIFE_DAYS,
+          },
+          defaults: seedConsultExpertRoutingSettings(),
+        },
+      ];
+    },
+  },
+
   // ── learning.scout — the Learning tab's Scout view (learning-system-audit P-042) ──
   //
   // Routed-ideas-by-rail over scout_routed_ideas (migration 194) + the newest

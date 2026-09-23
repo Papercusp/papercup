@@ -459,6 +459,53 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(values).toEqual(['papercusp-workspace', '123']);
   });
 
+  it('accepts a compact reviewer pointer to the immutable preview and keeps reviewer authorship', async () => {
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ query: strings.join('?'), values });
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-07T00:00:00.000Z' }]
+        : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(
+      resolveAcceptanceBarApproval(sql, {
+        workspaceId: 'papercusp-workspace',
+        approvalRef: 'thread-post:123',
+        expected,
+      }),
+    ).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+      approvedAt: '2026-09-07T00:00:00.000Z',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[0]!.values).toEqual(['papercusp-workspace', '123']);
+    expect(queries[1]!.query).toContain('WHERE workspace_id = ? AND id = ?::bigint');
+    expect(queries[1]!.query).toContain("AND origin = 'local'");
+    expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
+  });
+
+  it('refuses a compact pointer whose preview post is absent in this workspace', async () => {
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-07T00:00:00.000Z' }]
+        : []);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(
+      resolveAcceptanceBarApproval(sql, {
+        workspaceId: 'papercusp-workspace',
+        approvalRef: 'thread-post:123',
+        expected,
+      }),
+    ).rejects.toThrow('acceptance_bar_approval_preview_unreadable');
+  });
+
   it('strips a ```json fence before parsing, and leaves an unfenced body untouched', () => {
     expect(approvalReceiptJsonSource('```json\n{"a":1}\n```')).toBe('{"a":1}');
     expect(approvalReceiptJsonSource('```\n{"a":1}\n```')).toBe('{"a":1}');
@@ -626,6 +673,9 @@ describe('approval covers the full amendment delta (R-5)', () => {
       [bar('R-1', PRIOR, NEXT)],
     ).catch((e: Error) => e.message);
     expect(stale).toMatch(/acceptance_bar_approval_stale_or_mismatched/);
+    expect(stale).toContain('R-1');
+    expect(stale).toContain(`reviewed prior=${PRIOR}, next=${'c'.repeat(64)}`);
+    expect(stale).toContain(`current prior=${PRIOR}, next=${NEXT}`);
     expect(stale).not.toMatch(/incomplete/);
   });
 

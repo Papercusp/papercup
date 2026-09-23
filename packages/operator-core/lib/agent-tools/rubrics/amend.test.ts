@@ -64,13 +64,14 @@ describe('rubrics:amend complete acceptance criteria input', () => {
   it('documents a writable-thread handoff for outside-lineage approval JSON', () => {
     const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
 
-    expect(rendered).toContain('600 characters');
     expect(rendered).toContain('work_items:comment');
-    expect(rendered).toContain('any existing thread they can write to');
-    expect(rendered).toContain('workspace and id');
-    expect(rendered).toContain('do not create a counter-sign work-item');
+    expect(rendered).toContain('any existing writable thread');
+    expect(rendered).toContain('workspace/id');
+    expect(rendered).toMatch(/do not create a counter-sign work-item/i);
     expect(rendered).toContain("approvalRef:'thread-post:");
-    expect(rendered).toContain('Never truncate or retype');
+    expect(rendered).toContain('approve thread-post:<preview-post-id>');
+    expect(rendered).toContain('immutable');
+    expect(rendered).toContain('avoids hash transcription');
     expect(rendered).not.toContain('point the reviewer at THAT thread post');
   });
 

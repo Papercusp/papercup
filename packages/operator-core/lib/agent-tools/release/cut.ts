@@ -552,6 +552,11 @@ const legsFrom = (a: { mac?: boolean; windows?: boolean; arm64?: boolean }): Cut
   arm64: a.arm64,
 });
 
+const MAC_LEG_ARGUMENT_DESCRIPTION =
+  'Include the macOS leg (cross-compiled on Linux via bin/build-mac-cross.sh; no VM or SSH).';
+const WINDOWS_LEG_ARGUMENT_DESCRIPTION =
+  'Include the Windows leg (cross-compiled on Linux via bin/build-windows-cross.sh; no VM or SSH).';
+
 function desktopReleaseTag(version: string, channel: Channel): string {
   return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
 }
@@ -597,8 +602,8 @@ export default defineTool({
   args: z.discriminatedUnion('op', [
     z.object({
       op: z.literal('preflight'),
-      mac: z.boolean().optional().describe('Include the macOS leg (build VM on SSH :2222).'),
-      windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
+      mac: z.boolean().optional().describe(MAC_LEG_ARGUMENT_DESCRIPTION),
+      windows: z.boolean().optional().describe(WINDOWS_LEG_ARGUMENT_DESCRIPTION),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
       // Keep the read-only preflight compatible with callers that carry the
@@ -625,8 +630,8 @@ export default defineTool({
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this cut.'),
-      mac: z.boolean().optional().describe('Include the macOS leg (build VM on SSH :2222).'),
-      windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
+      mac: z.boolean().optional().describe(MAC_LEG_ARGUMENT_DESCRIPTION),
+      windows: z.boolean().optional().describe(WINDOWS_LEG_ARGUMENT_DESCRIPTION),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
       ownerName: cutOwnerNameArg,

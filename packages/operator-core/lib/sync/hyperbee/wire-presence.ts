@@ -509,7 +509,9 @@ function startSessionAnnouncer(
       'presence-sessions-announcer',
       SESSION_ANNOUNCE_TICK_MS,
       () => void tickSessions(),
-      { category: 'lifecycle', instanced: true },
+      // D-004: no event source announces a local session roster change, so the
+      // announcer hash-compares each tick to detect one — must-sample, not a reaper.
+      { category: 'lifecycle', instanced: true, classification: 'must-sample' },
     );
     return () => managed.stop();
   }

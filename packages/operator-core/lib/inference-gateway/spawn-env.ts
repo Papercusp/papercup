@@ -150,6 +150,22 @@ export function wakeAccountRouteFromArgv(argv: unknown, ownerId?: string | null)
   if (!Array.isArray(argv)) return null;
   const raw = accountFromArgv(argv);
   if (raw == null) return null;
+  return wakeAccountRouteForChoice(raw, ownerId);
+}
+
+/**
+ * The gateway-failover (`auto`) route for a wake resume. P-013
+ * (review-system-rework-reduction-2026-09-23): a dead session whose persisted route
+ * points at a WALLED account is re-homed onto this route, so the gateway picks an
+ * account with headroom instead of resuming into the known wall.
+ */
+export function autoWakeAccountRoute(ownerId?: string | null): WakeAccountRoute {
+  return wakeAccountRouteForChoice('auto', ownerId);
+}
+
+/** One `--account` value → the resumed child's explicit route (shared by the argv
+ * reconstruction and the P-013 re-home, so both emit byte-identical overlays). */
+function wakeAccountRouteForChoice(raw: string, ownerId?: string | null): WakeAccountRoute {
   const mode = accountRoutingMode(raw);
   const accountId = mode === 'pin' ? raw.trim() : null;
   const env =

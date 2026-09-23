@@ -86,6 +86,22 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
     },
   );
 
+  // EI-24032136322947460: the gate cannot see whether the acceptance-grading-sweep
+  // is running, so its default text must not promise that the sweep recovers a
+  // stalled grading. It names the one recovery that always exists (a retry re-runs
+  // recruitment) and points at the ship result's `acceptanceGrader.recovery`, which
+  // carries the manual route when the sweep is paused or inactive.
+  it.each(['acceptance_ungraded', 'self_graded_only'] as const)(
+    'does not claim the grading sweep owns recovery for %s',
+    (code) => {
+      const { instruction } = planAcceptanceRepairAction('plan-a', { satisfied: false, code });
+      expect(instruction).not.toMatch(/sweep own/i);
+      expect(instruction).toMatch(/re-runs the idempotent grader recruiter/);
+      expect(instruction).toContain('acceptanceGrader.recovery');
+      expect(instruction).toContain('Do not self-grade or launch a parallel reviewer.');
+    },
+  );
+
   it('routes a graded result to the exact author-verdict predecessor', () => {
     expect(
       planAcceptanceRepairAction('plan-a', {

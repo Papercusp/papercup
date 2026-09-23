@@ -2052,9 +2052,23 @@ interface GitSyncHistoryEntry {
   committed_count: number;
   error: string | null;
   reaped: false;
+  /** P-009 (ex-P-028, WI-10002596): what THIS tick withheld from its commit. The `last_*`
+   *  fields are overwritten every tick, so on their own they cannot show that one file was
+   *  held back for 18 ticks in a row, or that a path was locked out across one sweep then
+   *  swept on the next. Paths are capped per entry; the counts are exact. */
+  excluded: {
+    locked_paths: string[];
+    locked_count: number;
+    oversized_count: number;
+    bulk_count: number;
+    quarantined: string[];
+    quarantined_count: number;
+  };
 }
 
 const GIT_SYNC_HISTORY_LIMIT = 30;
+/** Per-entry path cap for `GitSyncHistoryEntry.excluded`, so 30 entries stay bounded. */
+export const GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP = 20;
 
 /** Merge a partial metadata patch onto the git-sync routine's JSONB.
  *
@@ -2258,6 +2272,17 @@ async function recordOutcome(
       committed_count: outcome.committedCount,
       error: errorMessage || null,
       reaped: false,
+      excluded: {
+        // `scope:path`, the same key shape as last_oversized / last_bulk_excluded.
+        locked_paths: skippedPaths.slice(0, GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP).map((p) => `${p.scope}:${p.path}`),
+        locked_count: skippedPaths.length,
+        oversized_count: oversized.length,
+        bulk_count: bulkExcluded.length,
+        quarantined: outcome.contentErrors
+          .slice(0, GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP)
+          .map((c) => `${c.scope}:${c.file}`),
+        quarantined_count: outcome.contentErrors.length,
+      },
     },
   );
 }

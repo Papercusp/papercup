@@ -473,6 +473,7 @@ import {
   isGenericLockIntent,
   runWithGitSyncPerInstallLease,
   resolveGitServingStateWithBootRecovery,
+  GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -2795,6 +2796,40 @@ describe('clean sync outcome', () => {
       category: 'git-sync',
     });
     expect((notice as { body: string }).body).toContain('unlocked remainder may have synced');
+  });
+
+  // P-009 (ex-P-028): last_skipped_paths is overwritten every tick, so the bounded
+  // git_sync_history ring must carry what EACH tick withheld.
+  it('P-009: records the tick\'s exclusions in its git_sync_history entry, capped per entry', async () => {
+    const skippedPaths = Array.from({ length: GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP + 5 }, (_, i) => ({
+      scope: 'superproject',
+      path: `src/locked-${i}.ts`,
+      owner: 'su-peer',
+      intent: 'mid-edit',
+    }));
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+
+    await action(ctx);
+
+    const [entry] = routineHistoryEntries();
+    const excluded = entry.excluded as Record<string, unknown>;
+    expect(excluded.locked_count).toBe(GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP + 5);
+    expect(excluded.locked_paths).toHaveLength(GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP);
+    expect((excluded.locked_paths as string[])[0]).toBe('superproject:src/locked-0.ts');
+    expect(excluded).toMatchObject({ oversized_count: 0, bulk_count: 0, quarantined: [], quarantined_count: 0 });
+  });
+
+  it('P-009: a tick that withheld nothing still records an explicit empty exclusion set', async () => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome });
+    await action(ctx);
+    expect(routineHistoryEntries()[0].excluded).toEqual({
+      locked_paths: [],
+      locked_count: 0,
+      oversized_count: 0,
+      bulk_count: 0,
+      quarantined: [],
+      quarantined_count: 0,
+    });
   });
 
   it('EI-21743795611133311: a notification failure never fails the partial git-sync tick', async () => {

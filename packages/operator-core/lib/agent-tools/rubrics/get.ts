@@ -29,6 +29,42 @@ import { getRubric, readRubricPlanRevision } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+import type { Rubric } from '../../rubrics';
+
+/**
+ * P-007 (RSR-P-007-A): the default rubric read is an INDEX — identity, the hashes a
+ * grader pins, the rating scale, and one row per criterion (key, title, role/barKey) —
+ * plus a `fullBody` ref. The grading prose (model/method/driftMarkers per criterion) and
+ * the BAR contract return only under detail:'full'. EI-21406267171411887 exempted this
+ * read from the session tier and result door so a grader never gets an unrecoverable
+ * projection; that still holds — `full` is never projected, and the summary names its
+ * exact recovery call instead of silently dropping fields.
+ */
+function summaryRubric(rubric: Rubric) {
+  return {
+    rubricId: rubric.rubricId,
+    ...(rubric.revision !== undefined ? { revision: rubric.revision } : {}),
+    kind: rubric.kind,
+    ...(rubric.subjectPlan ? { subjectPlan: rubric.subjectPlan } : {}),
+    ...(rubric.classRef ? { classRef: rubric.classRef } : {}),
+    title: rubric.title,
+    status: rubric.status,
+    ratingScale: rubric.ratingScale,
+    ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
+    ...(rubric.barSetHash ? { barSetHash: rubric.barSetHash } : {}),
+    methodRef: rubric.methodRef,
+    // Defensive: a degraded/partial projection may omit criteria; an index of none beats a throw.
+    criteria: (rubric.criteria ?? []).map((criterion) => ({
+      key: criterion.key,
+      title: criterion.title,
+      ...(criterion.role ? { role: criterion.role } : {}),
+      ...(criterion.barKey ? { barKey: criterion.barKey } : {}),
+    })),
+  };
+}
+
+const RUBRIC_SUMMARY_OMITS = ['rubric.description', 'rubric.criteria[].model', 'rubric.criteria[].method', 'rubric.criteria[].driftMarkers', 'rubric.barContract'];
 
 /**
  * `coord:send` provenance uses the typed dependency ref `plan:<slug>` for a
@@ -56,9 +92,9 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — criteria (key + model + method + drift markers + rating scale), default rating scale, method_ref runbook, and acceptance-rubric vetting status. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
+    "Read one OR many rubrics. Default detail:'summary' returns a criteria index (key + title), hashes, rating scale, method_ref and acceptance-rubric vetting status plus a fullBody ref; detail:'full' adds each criterion's model, method and drift markers — pass it to grade. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
   guidance: {
-    when: 'You hold rubric refs (from rubrics:list/search or coord provenance) and need full criteria to grade against — a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.',
+    when: 'You hold rubric refs (from rubrics:list/search or coord provenance) and need their criteria — pass detail:"full" to grade a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
     chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key). For a frozen audit pass { rubricRef, revision } and retain rubric.revision + rubric.criteriaHash. One failed ref never fails the rest.",
     seeAlso: [
@@ -110,6 +146,7 @@ export default defineTool({
         .min(1)
         .optional()
         .describe('Optional caller scope hint accepted for compatibility; rubric reads remain workspace/template scoped and are not filtered by harness.'),
+      detail: reviewReadDetailArg,
     })
     .refine((a) => Boolean(a.rubricRef ?? a.ref ?? a.slug ?? a.id) || (a.rubricRefs?.length ?? 0) > 0, {
       message: 'pass `rubricRef`/`ref`/`slug`/`id` (one) or `rubricRefs` (many)',
@@ -134,6 +171,18 @@ export default defineTool({
           const rubric =
             args.revision === undefined ? await getRubric(lookupRef) : await getRubric(lookupRef, args.revision);
           if (rubric) {
+            const full = isFullDetail(args.detail);
+            const shaped = full
+              ? { rubric }
+              : {
+                  detail: 'summary' as const,
+                  rubric: summaryRubric(rubric),
+                  fullBody: fullBodyRef(
+                    'rubrics:get',
+                    { rubricRef, ...(args.revision !== undefined ? { revision: args.revision } : {}) },
+                    RUBRIC_SUMMARY_OMITS,
+                  ),
+                };
             if (rubric.kind === 'acceptance') {
               // Keep every rubric-store read on this handler's injected seam.
               // The shared vetting helper otherwise closes over its production
@@ -147,9 +196,9 @@ export default defineTool({
                   return read.ok ? read.revision : null;
                 },
               });
-              return { ok: true as const, rubricRef, rubric, vetting };
+              return { ok: true as const, rubricRef, ...shaped, vetting };
             }
-            return { ok: true as const, rubricRef, rubric };
+            return { ok: true as const, rubricRef, ...shaped };
           }
 
           // An explicit revision is an immutable-read contract. Do not reuse the

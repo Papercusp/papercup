@@ -1340,6 +1340,9 @@ import './plans/get-spec-evidence';
 // P-006 — reusable per-clause proof-quality rubric evaluator. It returns exact
 // scorecards:emit drafts; P-007 consumes current emitted rows at completion.
 import './plans/evaluate-spec-test-adequacy';
+// review-system-rework-reduction-2026-09-23 P-005 — evaluate + file terminal cards for
+// every passing clause in one verb, through the scorecards:emit replay gate.
+import './plans/certify-spec-clauses';
 // P-004 — reusable plan-level spec-quality rubric evaluator. plans:start and
 // direct promotion consume exact current specSetHash scorecards from this flow.
 import './plans/evaluate-spec-quality';

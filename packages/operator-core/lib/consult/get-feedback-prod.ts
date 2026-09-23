@@ -24,6 +24,7 @@ export async function getFeedbackProd(
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
     { resolveProseProfileSelection },
     { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { makeConsultReachDispatcher },
+    { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
     import('../agent-tools/search/embedder'), import('../search/prose-vector-dims'),
@@ -31,6 +32,7 @@ export async function getFeedbackProd(
     import('../harness/routines/release-pause-ttl'),
     import('../agent-tools/coordination/conversations'),
     import('./consult-dispatch'),
+    import('./expert-routing-settings'),
   ]);
   // This is an interactive MCP path, so a cold/local or rate-limited embedder
   // must degrade to the lexical fallback before the ~55s transport deadline.
@@ -38,6 +40,12 @@ export async function getFeedbackProd(
   // query surfaces (WI-3922); the losing acquisition continues warming the
   // process for a later consult.
   const dispatchDisabled = options.allowDispatch === false;
+  // P-005: the PERSISTED expert-routing settings, read ONCE per consult. Once,
+  // deliberately: the ranking half-life and the dispatcher's allowlist are two
+  // halves of one policy, so re-reading per seam would let a mid-consult settings
+  // edit rank against one policy and dispatch against another.
+  const routingSettings = await readConsultExpertRoutingSettings(request.workspaceId);
+  const expertRouting = bindConsultExpertRoutingSettings(routingSettings);
   const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
   const embed = resolved?.embed ?? null;
   const embeddingProfile = resolved
@@ -46,7 +54,15 @@ export async function getFeedbackProd(
   return getFeedbackCore(request, {
     getSql: () => getOrgPg().sql,
     route: async (params) => {
-      const routed = await routeConsult(params, {
+      const routed = await routeConsult({
+        ...params,
+        // ⚠ STAGE-2 ONLY [owner 2026-09-22]: "recently should only be considered
+        // when comparing... If we have like any expert floor that an agent has to
+        // pass, the recency shouldnt be considered for this." This tunes how
+        // qualified candidates are RANKED against each other; it never gates
+        // qualification, so time away cannot strip an agent of expert status.
+        recencyHalfLifeDays: expertRouting.recencyHalfLifeDays,
+      }, {
         getSql: () => getOrgPg().sql,
         embed,
         embeddingProfile,
@@ -84,6 +100,10 @@ export async function getFeedbackProd(
           workspaceId: request.workspaceId,
           harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
           launchedBy: identity.ownerId,
-        }),
+          // P-005: the walk order is the PERSISTED allowlist (D-004), not the
+          // hardcoded seed. loadExpertModelRanks returns null when nothing usable
+          // is stored, which lets resolveExpertModelAllowlist fall back to the
+          // owner-stated seed on its own terms.
+        }, { loadRanks: expertRouting.loadRanks }),
   });
 }

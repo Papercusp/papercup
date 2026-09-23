@@ -520,6 +520,28 @@ export interface ConsultLifecycleState {
   expires_at: string | null;
   closed_at: string | null;
   wakes_used: number | null;
+  /** Live spend samples for the answer sessions this consult launched. A
+   * missing/NULL USD amount stays unknown; estimated prices remain labeled. */
+  session_cost: {
+    status: 'pending' | 'measured' | 'partial';
+    usd: number | null;
+    sample_count: number;
+    priced_sample_count: number;
+    estimated_sample_count: number;
+    unpriced_sample_count: number;
+  } | null;
+}
+
+type ConsultLifecycleBaseRow = Omit<ConsultLifecycleState, 'session_cost'>;
+
+interface ConsultLifecycleUsageRow {
+  conversation_id: string;
+  session_cost_usd: number | string | null;
+  session_cost_sample_count: number | string | null;
+  session_cost_priced_count: number | string | null;
+  session_cost_estimated_count: number | string | null;
+  session_cost_unpriced_count: number | string | null;
+  session_cost_answer_session_count: number | string | null;
 }
 
 export function getConsultStates(
@@ -531,14 +553,72 @@ export function getConsultStates(
     if (conversationIds.length === 0) return out;
     try {
       const { sql } = getOrgPg();
-      const rows = await sql`
+      const rows = await sql<ConsultLifecycleBaseRow[]>`
         SELECT conversation_id, state, latency_contract, responder_id,
                expires_at, closed_at, wakes_used
           FROM harness_shared.consult_state
          WHERE workspace_id = ${conversationsScopeWorkspace()}
            AND conversation_id = ANY(${conversationIds as string[]}::text[])
       `;
-      for (const r of rows as unknown as ConsultLifecycleState[]) {
+      const usageByConversation = new Map<string, ConsultLifecycleUsageRow>();
+      try {
+        const usageRows = await sql<ConsultLifecycleUsageRow[]>`
+          SELECT cs.conversation_id,
+                 usage.session_cost_usd, usage.session_cost_sample_count,
+                 usage.session_cost_priced_count, usage.session_cost_estimated_count,
+                 usage.session_cost_unpriced_count, usage.session_cost_answer_session_count
+            FROM harness_shared.consult_state cs
+            JOIN LATERAL (
+              SELECT COUNT(DISTINCT answer_session.session_id)::int AS session_cost_answer_session_count,
+                     SUM(u.cost_usd) AS session_cost_usd,
+                     COUNT(u.id)::int AS session_cost_sample_count,
+                     COUNT(u.id) FILTER (WHERE u.cost_usd IS NOT NULL AND u.cost_source = 'provider')::int
+                       AS session_cost_priced_count,
+                     COUNT(u.id) FILTER (WHERE u.cost_usd IS NOT NULL AND u.cost_source = 'estimated')::int
+                       AS session_cost_estimated_count,
+                     COUNT(u.id) FILTER (WHERE u.id IS NOT NULL AND u.cost_usd IS NULL)::int
+                       AS session_cost_unpriced_count
+                FROM jsonb_array_elements(
+                       CASE
+                         WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
+                           THEN cs.routing #> '{selection,selected}'
+                         ELSE '[]'::jsonb
+                       END
+                     ) selected
+                JOIN harness_shared.adv_sessions answer_session
+                  ON answer_session.workspace_id = cs.workspace_id
+                 AND answer_session.coord_owner_id = NULLIF(selected->>'answeringOwnerId', '')
+                 AND answer_session.session_id IS NOT NULL
+                 AND answer_session.started_at >= cs.created_at
+                LEFT JOIN harness_shared.agent_usage_samples u
+                  ON u.workspace_id = cs.workspace_id
+                 AND u.session_id = answer_session.session_id
+                 AND u.ts >= (EXTRACT(EPOCH FROM answer_session.started_at) * 1000)::bigint
+               WHERE NULLIF(selected->>'answeringOwnerId', '') IS NOT NULL
+            ) usage ON usage.session_cost_answer_session_count > 0
+           WHERE cs.workspace_id = ${conversationsScopeWorkspace()}
+             AND cs.conversation_id = ANY(${conversationIds as string[]}::text[])
+        `;
+        for (const usage of usageRows) usageByConversation.set(usage.conversation_id, usage);
+      } catch {
+        // Spend is supplemental. A usage-ledger read failure must not hide the
+        // consult lifecycle the caller asked for.
+      }
+      for (const r of rows) {
+        const usage = usageByConversation.get(r.conversation_id);
+        const sampleCount = Number(usage?.session_cost_sample_count ?? 0);
+        const pricedSampleCount = Number(usage?.session_cost_priced_count ?? 0);
+        const estimatedSampleCount = Number(usage?.session_cost_estimated_count ?? 0);
+        const unpricedSampleCount = Number(usage?.session_cost_unpriced_count ?? 0);
+        const sessionCost = usage ? {
+          status: sampleCount === 0 ? 'pending' as const
+            : unpricedSampleCount > 0 ? 'partial' as const : 'measured' as const,
+          usd: usage.session_cost_usd == null ? null : Number(usage.session_cost_usd),
+          sample_count: sampleCount,
+          priced_sample_count: pricedSampleCount,
+          estimated_sample_count: estimatedSampleCount,
+          unpriced_sample_count: unpricedSampleCount,
+        } : null;
         out.set(r.conversation_id, {
           conversation_id: r.conversation_id,
           state: r.state,
@@ -547,6 +627,7 @@ export function getConsultStates(
           expires_at: r.expires_at ?? null,
           closed_at: r.closed_at ?? null,
           wakes_used: r.wakes_used ?? null,
+          session_cost: sessionCost,
         });
       }
     } catch (err) {

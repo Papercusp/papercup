@@ -1064,7 +1064,14 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       });
 
       if (outcome.kind === 'delivered') {
-        if (outcome.channel === 'resume' || outcome.channel === 'resume-headless' || outcome.channel === 'plan-run-resume') resumes++;
+        if (
+          outcome.channel === 'resume' ||
+          outcome.channel === 'resume-headless' ||
+          outcome.channel === 'resume-rehome-backend' ||
+          outcome.channel === 'plan-run-resume'
+        ) {
+          resumes++;
+        }
         await markDeliveryDelivered(headline.id, outcome.channel, group.length);
         recordSettledDeliveryStats(stats, outcome.channel);
         if (siblings.length > 0) {

@@ -319,6 +319,13 @@ describe("Papercusp-hosted delegations (D-399)", () => {
     );
     expect(org.reserved).toEqual([]);
     expect(records.size).toBe(0);
+
+    // Its own entry records a Papercusp-hosted delegation only for the host the server derived.
+    const { organizationId: _ignored, ...base } = common;
+    const { record } = await manager.onboardPapercuspHosted(base, 'host-derived-1');
+    expect(org.reserved).toEqual(['host-derived-1']);
+    expect(record).toMatchObject({ organizationId: 'org-a', configuration: { source: { hostId: 'host-derived-1' } } });
+    expect(records.get(`${common.workspaceId}/${common.connectionId}`)).toEqual(record);
   });
 
   it('reserves exactly the server-given host and records it with nothing for the customer to apply', async () => {

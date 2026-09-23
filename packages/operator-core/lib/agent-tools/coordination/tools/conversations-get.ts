@@ -110,6 +110,7 @@ export default defineTool({
                   expires_at: consult.expires_at,
                   closed_at: consult.closed_at,
                   wakes_used: consult.wakes_used,
+                  session_cost: consult.session_cost,
                 },
               }
             : {}),

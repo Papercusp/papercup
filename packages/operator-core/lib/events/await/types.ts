@@ -192,6 +192,10 @@ export type WakeChannel =
   | 'psu-socket-recycle-unconfirmed'
   | 'resume'
   | 'resume-headless'
+  // P-013 part A (review-system-rework-reduction-2026-09-23): every Claude account was
+  // walled, so the dead session was continued on Codex via a session port instead of
+  // resumed into the wall. Burns a turn like a resume.
+  | 'resume-rehome-backend'
   // The Hive Queen is never resumed — her ended-session wake fires a FRESH hive
   // launch (queen-brief-cache-assembly B-01 / P-012). Burns a turn like a resume.
   | 'hive-fresh-wake'
@@ -226,6 +230,7 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'psu-socket-recycle-unconfirmed',
   'resume',
   'resume-headless',
+  'resume-rehome-backend',
   'hive-fresh-wake',
   'fresh-context-warm-inject',
   'plan-run-resume',

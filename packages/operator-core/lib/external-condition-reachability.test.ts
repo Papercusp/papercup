@@ -47,6 +47,7 @@ describe('external condition reachability', () => {
         waiters: [],
         deliveries: [],
         fireLatch: null,
+        composedRoot: null,
       }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
@@ -73,6 +74,7 @@ describe('external condition reachability', () => {
         waiters: [],
         deliveries: [],
         fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never,
+        composedRoot: null,
       }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'live-resolver', authoritative: true });
@@ -87,6 +89,7 @@ describe('external condition reachability', () => {
         waiters: [{ cancelledAt: '2026-08-27T11:30:00.000Z' }] as never,
         deliveries: [],
         fireLatch: null,
+        composedRoot: null,
       }),
     });
     expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration' });
@@ -113,7 +116,13 @@ describe('external condition reachability', () => {
       subscriberId: 'su-composed',
       wakeHandle: null,
     }));
-    const inspect = async () => ({ announcements: [], waiters: [], deliveries: [], fireLatch: null });
+    const inspect = async () => ({
+      announcements: [],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+      composedRoot: null,
+    });
 
     const reachability = await readEventConditionReachability('composed-root:395', {
       now: new Date(NOW),
@@ -132,7 +141,13 @@ describe('external condition reachability', () => {
     const loadComposedRootAnchor = vi.fn(async () => null);
     const reachability = await readEventConditionReachability('composed-root:395', {
       now: new Date(NOW),
-      inspect: async () => ({ announcements: [], waiters: [], deliveries: [], fireLatch: null }),
+      inspect: async () => ({
+        announcements: [],
+        waiters: [],
+        deliveries: [],
+        fireLatch: null,
+        composedRoot: null,
+      }),
       loadComposedRoot,
       loadComposedRootAnchor,
     });

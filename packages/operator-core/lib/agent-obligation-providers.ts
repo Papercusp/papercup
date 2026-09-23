@@ -60,10 +60,10 @@ export interface GoalPlanningProviderInput extends ProviderBase {
 /** A review selects the next planning action; it never grants launch or ownership authority. */
 export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentObligation {
   const common = {
-    ruleId: 'goal-planning-needed', ruleRevision: 'goal-planning-needed-v1', family: 'planning-needed' as const,
+    ruleId: 'goal-planning-needed', ruleRevision: 'goal-planning-needed-v2', family: 'planning-needed' as const,
     scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
     responsibleOwnerId: input.ownerId,
-    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', 'goal-planning-needed-v1'),
+    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', 'goal-planning-needed-v2'),
     priority: 'normal' as const, causalRank: 2, sourceGeneration: input.sourceGeneration,
     episode: input.sourceGeneration, applicableDemand: 0, evidence: [] as AgentObligationEvidence[],
     clearsWhen: { id: 'current-evidenced-goal-review', summary: 'A current evidence-backed goal review addresses uncovered needs; actual plan execution remains a separate obligation.', evidenceKind: 'state' as const, sourceRef: 'scout_ticks.detail.goalReview+GoalPortfolioBrief' },
@@ -93,9 +93,9 @@ export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentO
     const frontier = portfolio.goal.standing && portfolio.worklist.every((p) => p.placement.state === 'terminal');
     return defineAgentObligation({ ...common, title: 'Review uncovered goal needs', status: 'due',
       episode: `review:${fingerprint}:${review?.reviewedAt ?? 'none'}`,
-      reason: 'No current scoped review covers these planning inputs and this reporting interval.',
-      action: { kind: 'inspect', targetRef: `goal:${input.goalId}`, recoveryRef: `goals:get ${input.goalId}`,
-        summary: `${frontier ? 'Review the standing goal frontier' : 'Review goal outcomes against existing plans'}; staff executable plans first, then adopt/revise/create-start/drain/route work or record an evidenced no-new-plan result with blender:ideate-pass-record.` },
+      reason: 'No current scoped review covers these planning inputs and this reporting interval. Adopt/revise/create-start/drain/route scoped work, or record an evidenced no-new-plan result with blender:ideate-pass-record.',
+      action: { kind: 'inspect', targetRef: `goal:${input.goalId}`, recoveryRef: 'coord:orient',
+        summary: `${frontier ? 'Review the standing goal frontier' : 'Review uncovered goal outcomes'}; staff executable plans first, then record a supported planning disposition.` },
     });
   }
   const measured = { ...common, evidence: [evidence(
@@ -117,20 +117,24 @@ export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentO
       const authority = match ? authorities[match[1]!] : undefined;
       if (!authority) return unknown({ code: 'goal-planning-authority-unavailable', detail: `Ownership is unmeasured for ${ref}.`, retry: 'Read canonical goal-pot placement authority; do not adopt based only on a link.' });
       if (!authority.allowed) return defineAgentObligation({ ...measured, title: 'Route work to its existing goal', status: 'due', applicableDemand: 1,
-        reason: `Another active goal owns the candidate harness: ${authority.ownerGoalId}.`,
-        action: { kind: 'report', targetRef: ref, summary: `Route ${ref} to ${authority.ownerGoalId}; do not adopt or duplicate its execution. ${guards}` },
+        reason: `Route ${ref} to ${authority.ownerGoalId}, the active goal owning its harness. ${guards}`,
+        action: { kind: 'report', targetRef: ref, recoveryRef: 'coord:orient', summary: 'Route this work to its current goal owner; do not adopt or duplicate its execution.' },
       });
     }
-    return defineAgentObligation({ ...measured, title: 'Reuse the existing plan', status: 'due', applicableDemand: 1, reason: review.rationale,
-      action: { kind: 'continue', targetRef: review.planRefs[0], summary: `${review.disposition === 'adopt-plan' ? 'Adopt' : 'Revise'} ${review.planRefs.join(', ')} rather than clone it; inspect its current lifecycle, then staff suitable executable work. ${guards}` },
+    return defineAgentObligation({ ...measured, title: 'Reuse the existing plan', status: 'due', applicableDemand: 1,
+      reason: `${review.rationale} Plans: ${review.planRefs.join(', ')}. ${guards}`,
+      action: { kind: 'continue', targetRef: review.planRefs[0], recoveryRef: 'coord:orient', summary: `${review.disposition === 'adopt-plan' ? 'Adopt' : 'Revise'} the existing plan, not a clone; verify ownership, CAS, budget and admission, then staff executable work.` },
     });
   }
   return defineAgentObligation({ ...measured, title: 'Address the uncovered goal need', applicableDemand: 1,
-    status: review.disposition === 'blocked' ? 'blocked' : 'due', reason: review.rationale,
+    status: review.disposition === 'blocked' ? 'blocked' : 'due',
+    reason: `${review.rationale}${review.uncoveredOutcome ? ` Uncovered outcome: ${review.uncoveredOutcome}` : ''} ${guards}`,
     action: { kind: review.disposition === 'blocked' ? 'repair' : review.disposition === 'route-work' ? 'report' : 'continue',
-      targetRef: `goal:${input.goalId}`, summary: review.disposition === 'plan-needed'
-        ? `Reuse or write and start a goal-local plan for: ${review.uncoveredOutcome}. Delegate implementation to an independent plan fleet and verify real claims. ${guards}`
-        : `${review.disposition === 'blocked' ? 'Advance or escalate the evidenced planning blocker' : 'Route this need to the accountable goal or Blender for cross-goal synthesis'}: ${review.rationale}. ${guards}` },
+      targetRef: `goal:${input.goalId}`, recoveryRef: 'coord:orient', summary: review.disposition === 'plan-needed'
+        ? 'Reuse or write/start a goal-local plan; delegate to an independent fleet and verify real claims.'
+        : review.disposition === 'blocked'
+          ? 'Advance or escalate the evidenced planning blocker; recheck launch and ownership gates before resuming.'
+          : 'Route this need to its accountable goal or to Blender for cross-goal synthesis.' },
   });
 }
 

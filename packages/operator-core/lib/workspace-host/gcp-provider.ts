@@ -252,6 +252,37 @@ export interface GcpInstanceInsertInput {
   metadata: { items: readonly { key: string; value: string }[] };
 }
 
+/**
+ * The permissions GCP checks on `instances.insert` for THIS request: one per field it sets
+ * (cloud.google.com/compute/docs/access/iam-permissions, instances.insert). Every role that must
+ * create a host is pinned to it by test — a hand-kept list lacked `setTags`, so every
+ * Papercusp-hosted create was refused 403. `iam.serviceAccounts.actAs` is checked on the attached
+ * account, not the project.
+ */
+export function gcpInstanceInsertPermissions(request: GcpInstanceInsertInput): string[] {
+  const permissions = new Set(['compute.instances.create']);
+  if (Object.keys(request.labels).length > 0) permissions.add('compute.instances.setLabels');
+  if (request.tags.items.length > 0) permissions.add('compute.instances.setTags');
+  if (request.metadata.items.length > 0) permissions.add('compute.instances.setMetadata');
+  if (request.serviceAccounts?.length) {
+    permissions.add('compute.instances.setServiceAccount');
+    permissions.add('iam.serviceAccounts.actAs');
+  }
+  for (const nic of request.networkInterfaces) {
+    permissions.add('compute.subnetworks.use');
+    if (nic.accessConfigs?.length) permissions.add('compute.subnetworks.useExternalIp');
+  }
+  for (const disk of request.disks) {
+    if ('initializeParams' in disk) {
+      permissions.add('compute.disks.create');
+      permissions.add('compute.images.useReadOnly');
+    } else {
+      permissions.add('compute.disks.use');
+    }
+  }
+  return [...permissions].sort();
+}
+
 export interface GcpInstanceMetadataInput {
   fingerprint: string;
   items: readonly { key: string; value: string }[];

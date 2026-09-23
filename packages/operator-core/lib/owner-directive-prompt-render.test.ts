@@ -40,6 +40,8 @@ import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderSuPlaybook } from './desktop-install/papercusp-files';
+import ordersList from './agent-tools/orders/list';
+import ordersDisposition from './agent-tools/orders/disposition';
 
 const REPO_ROOT = join(fileURLToPath(new URL('../../../', import.meta.url)));
 const DEFAULT_BLUEPRINT_SU = join(
@@ -97,6 +99,18 @@ describe('rendered SU persona — owner-directive capture and resolution (WI-100
       expect(rendered.text).toContain('orders:summarize { id, summary }');
       expect(rendered.text).toContain('orders:clear { id, reason }');
       expect(rendered.text).not.toContain('orders:resolve-pending');
+      expect(rendered.text).not.toMatch(/\borders:list\s*\{\s*status\b/);
+
+      // The live prompt and the registered tools must describe the same lifecycle.
+      expect(ordersList.name).toBe('orders:list');
+      expect(Object.keys(ordersList.args.shape)).toEqual(['open', 'state', 'limit']);
+      expect(ordersList.args.shape.state.safeParse('open').success).toBe(true);
+      expect(ordersList.args.shape.state.safeParse('pending').success).toBe(false);
+
+      expect(ordersDisposition.name).toBe('orders:disposition');
+      expect(Object.keys(ordersDisposition.args.shape)).toEqual(['id', 'status', 'note', 'items']);
+      expect(ordersDisposition.args.shape.status.safeParse('done').success).toBe(true);
+      expect(ordersDisposition.args.shape.status.safeParse('promote').success).toBe(false);
     },
   );
 });

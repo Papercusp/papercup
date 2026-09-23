@@ -459,7 +459,12 @@ export function formatAgentObligationLine(obligation: AgentObligation, detail: '
   // The recovery pointer rides at BOTH detail levels: a narrow sink is exactly
   // where content was budgeted away, so it is where the pointer earns its chars.
   const recovery = obligation.action?.recoveryRef ? `; full: ${obligation.action.recoveryRef}` : '';
-  const actionLine = `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}${recovery}`;
+  // Goal grading joins the actually emitted row to its provider snapshot. A
+  // source/API receipt alone cannot establish which revision reached a turn.
+  const identity = obligation.scope.goalId
+    ? `; [${obligation.id}@${obligation.sourceGeneration}; ${obligation.ruleRevision}]`
+    : '';
+  const actionLine = `- [${obligation.status.toUpperCase()}] ${obligation.title} — ${action}${recovery}${identity}`;
   if (detail === 'action') return actionLine;
   const demand = obligation.applicableDemand > 0 ? `; demand ${obligation.applicableDemand}` : '';
   const age = obligation.ageMs != null ? `; age ${Math.max(0, Math.round(obligation.ageMs / 60_000))}m` : '';

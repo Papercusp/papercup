@@ -97,6 +97,47 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it('does not mistake ordinary English uses of implementation nouns for code references', () => {
+    const behaviors = [
+      'A declared class is missing from any sink.',
+      'Each orientation state class is declared once.',
+      'The method for requesting an event returns a stable result.',
+      'The function of this retry is to preserve request identity.',
+      'The variable number of returned records matches the requested limit.',
+      'The per-class carry decision remains available after compaction.',
+    ];
+    const clauses = behaviors.map((behavior, index) =>
+      clause({
+        specId: 'SPEC-ENGLISH-' + (index + 1),
+        sourceValId: 'VAL-ENGLISH-' + (index + 1),
+        planItemId: 'P-00' + (index + 1),
+        behavior,
+      }),
+    );
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: clauses.map(({ planItemId }) => planItemId),
+      clauses,
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it('quotes the exact explicit construct reference in implementation-independence evidence', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'A class OrientationState is declared once.' })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
+  });
+
   it('fails atomicity for independently falsifiable outcomes joined across a clause', () => {
     const behaviors = [
       'orders:promote and orders:dismiss { reason } exist, dismiss refuses an empty reason, and a dismissed row stays queryable rather than being deleted.',

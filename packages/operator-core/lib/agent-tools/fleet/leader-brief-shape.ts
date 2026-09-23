@@ -105,12 +105,12 @@ function compactAgentObligations(value: unknown, emergency = false): unknown {
     const compact =
       pick(
         obligation,
-        ['id', 'family', 'status', 'title', 'priority', 'applicableDemand', 'dueAt', 'ageMs'],
+        ['id', 'family', 'status', 'title', 'priority', 'applicableDemand', 'dueAt', 'ageMs', 'ruleRevision', 'sourceGeneration'],
         emergency ? 80 : 160,
       ) ?? {};
     const action = pick(
       obligation.action,
-      ['kind', 'summary', 'tool', 'targetRef', 'continuesCurrentWork'],
+      ['kind', 'summary', 'tool', 'targetRef', 'recoveryRef', 'continuesCurrentWork'],
       emergency ? 80 : 180,
     );
     if (action) compact.action = action;
@@ -118,24 +118,40 @@ function compactAgentObligations(value: unknown, emergency = false): unknown {
   });
   const projection = asDict(source.projection);
   if (projection) {
+    const rawText = typeof projection.text === 'string' ? projection.text : '';
+    const textLimit = emergency ? 120 : 700;
+    const lines: string[] = [];
+    let chars = 0;
+    for (const line of rawText.split('\n').filter(Boolean)) {
+      const next = chars + (lines.length ? 1 : 0) + line.length;
+      if (next > textLimit) break;
+      lines.push(line);
+      chars = next;
+    }
+    const text = lines.join('\n');
+    const clipped = rawText.length > textLimit;
+    const receipt = pick(
+      projection.receipt,
+      ['sink', 'mode', 'entriesAvailable', 'entriesDelivered', 'entriesOmitted',
+        'bodyDeliveredChars', 'estimatedTokens', 'bodyTruncated', 'refused', 'reason'],
+      100,
+    );
+    // The provider receipt measures the INNER projection, not this final
+    // transport cap. Never clip an imperative halfway and keep credit for it.
+    if (clipped && receipt) {
+      const delivered = typeof receipt.entriesDelivered === 'number'
+        ? Math.min(receipt.entriesDelivered, lines.length) : null;
+      Object.assign(receipt, {
+        entriesDelivered: delivered,
+        entriesOmitted: typeof receipt.entriesAvailable === 'number' && delivered !== null
+          ? receipt.entriesAvailable - delivered : null,
+        bodyDeliveredChars: text.length, estimatedTokens: Math.ceil(text.length / 4),
+        bodyTruncated: true, reason: 'character-cap',
+      });
+    }
     out.projection = {
-      text: clip(projection.text, emergency ? 120 : 700) ?? projection.text,
-      receipt: pick(
-        projection.receipt,
-        [
-          'sink',
-          'mode',
-          'entriesAvailable',
-          'entriesDelivered',
-          'entriesOmitted',
-          'bodyDeliveredChars',
-          'estimatedTokens',
-          'bodyTruncated',
-          'refused',
-          'reason',
-        ],
-        100,
-      ),
+      text: clipped ? text : projection.text,
+      receipt,
     };
   }
   const read = asDict(source.read);
