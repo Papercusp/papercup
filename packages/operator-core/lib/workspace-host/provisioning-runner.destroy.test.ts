@@ -833,6 +833,31 @@ describe('runWorkspaceHostDestroy', () => {
     expect(reason).toContain('pc-host-');
   });
 
+  // The terminal census omitted this host's registry, so a SIBLING host's labelled resources in the
+  // same workspace read as label mismatches: the r40 canary destroy deleted all seven resources and
+  // still failed on the live r39 soak host's VM, disk and snapshots. The test above is the control —
+  // this host's own survivors must still fail it.
+  it('completes a canary destroy while another labelled host remains in the same workspace', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store, updateHostState } = storeHarness();
+    const foreignResources = legacyInventorySnapshot().observed
+      .filter(({ resource }) => ['vm', 'disk'].includes(resource.kind))
+      .map((entry) => ({
+        ...entry,
+        resource: { ...entry.resource, providerId: `other-${entry.resource.providerId}` },
+        labels: { ...entry.labels, [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-2' },
+      }));
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot(foreignResources));
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 0 });
+
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      evidence: { providerCensus: { clean: true, labelMismatches: [] } },
+    });
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
+  });
+
   // WI-2143626: a FAILED destroy discarded the one artefact that says what is still RECLAIMABLE.
   // The destroy census runs with `expected: []`, so every managed resource still visible lands in
   // `reaperPlan` carrying a reclaim state (and, while quarantined, the instant it becomes eligible).
