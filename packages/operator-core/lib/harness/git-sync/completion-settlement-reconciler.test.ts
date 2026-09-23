@@ -284,10 +284,13 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
   });
 });
 
-function settlementSql(options: { updateHits: boolean[]; manifest?: unknown }) {
+function settlementSql(options: { updateHits: boolean[]; manifest?: unknown; treeStamp?: unknown }) {
   let updateIndex = 0;
   const payload = {
-    [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: options.manifest ?? manifest },
+    [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+      settlementManifest: options.manifest ?? manifest,
+      ...(options.treeStamp === undefined ? {} : { treeStamp: options.treeStamp }),
+    },
   };
   const sql = vi.fn(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
@@ -408,6 +411,87 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
       expect(entry.workingTreeBlobSha).not.toBeNull();
       expect(entry.headBlobSha).toBe(entry.workingTreeBlobSha);
     }
+  });
+
+  it('writes a manifest-bound history attestation without rewriting truthful treeStamp', async () => {
+    const originalTreeStamp = {
+      repositoryRoot: manifest.repositoryRoot,
+      headSha: manifest.headSha,
+      contentIdentity: manifest.contentIdentity,
+    };
+    const sql = settlementSql({ updateHits: [true], treeStamp: originalTreeStamp });
+    const historyLookup = vi.fn(async (_root: string, _from: string, _to: string, path: string) => path === 'a.ts');
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: () =>
+        new Map([
+          ['a.ts', resolved('f'.repeat(40))],
+          ['nested/b.ts', resolved('e'.repeat(40))],
+        ]),
+      historyLookup,
+      emit: settlementEmitMock(),
+    });
+
+    expect(result).toMatchObject({ inspected: 1, upgraded: ['WI-42476'], residual: 0, unreadable: [] });
+    expect(historyLookup).toHaveBeenCalledTimes(1);
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    const nextPayload = updateCall?.[1] as unknown as Record<string, unknown>;
+    const evidence = nextPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
+      historyAttestation?: {
+        version: number;
+        generation: number;
+        evidenceHash: string;
+        repositoryRoot: string;
+        closeHeadSha: string;
+        emittedCommitSha: string;
+        paths: Array<{
+          path: string;
+          workingTreeBlobSha: string;
+          fromHeadSha: string;
+          toCommitSha: string;
+          proof: string;
+        }>;
+      } | null;
+      treeStamp?: unknown;
+    };
+    expect(evidence.historyAttestation).toEqual({
+      version: 1,
+      generation: manifest.generation,
+      evidenceHash: manifest.evidenceHash,
+      repositoryRoot: manifest.repositoryRoot,
+      closeHeadSha: manifest.headSha,
+      emittedCommitSha: SHA,
+      paths: [{
+        path: 'a.ts',
+        workingTreeBlobSha: 'd'.repeat(40),
+        fromHeadSha: manifest.headSha,
+        toCommitSha: SHA,
+        proof: 'exact-path-blob-history',
+      }],
+    });
+    expect(evidence.treeStamp).toEqual(originalTreeStamp);
+  });
+
+  it('does not persist a complete history attestation while another declared path remains residual', async () => {
+    const sql = settlementSql({ updateHits: [true] });
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: () =>
+        new Map([
+          ['a.ts', resolved('f'.repeat(40))],
+          ['nested/b.ts', absent()],
+        ]),
+      historyLookup: async () => true,
+      emit: settlementEmitMock(),
+    });
+
+    expect(result).toMatchObject({ inspected: 1, upgraded: [], residual: 1, unreadable: [] });
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    const nextPayload = updateCall?.[1] as unknown as Record<string, unknown>;
+    const evidence = nextPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+    expect(evidence.historyAttestation).toBeNull();
   });
 
   it('does NOT write a treeStamp for a partial/residual reconciliation (nothing to prove yet)', async () => {

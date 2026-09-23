@@ -24,6 +24,22 @@ type CompletionHeadBlobLookup = (
   opts?: { signal?: AbortSignal },
 ) => ReadonlyMap<string, HeadBlobResolution> | undefined | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
 type CompletionBlobHistoryLookup = typeof completionBlobHistoryContains;
+type SettlementHistoryPathAttestation = {
+  path: string;
+  workingTreeBlobSha: string;
+  fromHeadSha: string;
+  toCommitSha: string;
+  proof: 'exact-path-blob-history';
+};
+type SettlementHistoryAttestation = {
+  version: 1;
+  generation: number;
+  evidenceHash: string;
+  repositoryRoot: string;
+  closeHeadSha: string;
+  emittedCommitSha: string;
+  paths: SettlementHistoryPathAttestation[];
+};
 
 /** EI-22344624691081449: manifest entries may describe an intentional deletion. */
 type SettlementIdentity = CompletionSettlementManifest['contentIdentity'][number] & {
@@ -69,6 +85,7 @@ export async function residualPathsForCommit(
   lookup: CompletionHeadBlobLookup = completionHeadBlobMap,
   signal?: AbortSignal,
   historyLookup?: CompletionBlobHistoryLookup,
+  onHistoryMatch?: (path: string, workingTreeBlobSha: string) => void,
 ): Promise<SettlementResidualPath[] | undefined> {
   const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
@@ -131,7 +148,10 @@ export async function residualPathsForCommit(
         )
       : false;
     if (signal?.aborted) return undefined;
-    if (foundInHistory === true) continue;
+    if (foundInHistory === true) {
+      onHistoryMatch?.(path, expectedSha);
+      continue;
+    }
     residualPaths.push({
       path,
       reason: foundInHistory === undefined ? 'identity-unavailable' : 'content-mismatch',
@@ -279,17 +299,37 @@ export async function reconcileProposedCompletionsAtCommit(
         emittedTree = await lookup(root, sha, paths, opts);
         return emittedTree;
       };
+      const historyMatches = new Map<string, string>();
       const residualPaths = await residualPathsForCommit(
         parsed.data,
         commitSha,
         captureLookup,
         deps.signal,
         historyLookup,
+        (path, workingTreeBlobSha) => historyMatches.set(path, workingTreeBlobSha),
       );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
       if (!residualPaths) continue;
       residualCount += residualPaths.length;
       const nextManifest = { ...parsed.data, residualPaths };
+      const historyAttestation: SettlementHistoryAttestation | null =
+        residualPaths.length === 0 && historyMatches.size > 0
+          ? {
+              version: 1,
+              generation: parsed.data.generation,
+              evidenceHash: parsed.data.evidenceHash,
+              repositoryRoot: parsed.data.repositoryRoot,
+              closeHeadSha: parsed.data.headSha,
+              emittedCommitSha: commitSha,
+              paths: [...historyMatches.entries()].map(([path, workingTreeBlobSha]) => ({
+                path,
+                workingTreeBlobSha,
+                fromHeadSha: parsed.data.headSha,
+                toCommitSha: commitSha,
+                proof: 'exact-path-blob-history' as const,
+              })),
+            }
+          : null;
       // WI-1053550: refresh treeStamp only when the emitted tree itself matches every
       // close-time blob. A history-only settlement cannot truthfully claim that the
       // superseded blob is still in the emitted tree.
@@ -302,6 +342,7 @@ export async function reconcileProposedCompletionsAtCommit(
         [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
           ...evidence,
           settlementManifest: nextManifest,
+          historyAttestation,
           ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
         },
       };

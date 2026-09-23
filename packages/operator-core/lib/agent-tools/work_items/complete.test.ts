@@ -4641,6 +4641,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         normalizedPaths: ['src/fix.ts'],
         contentIdentity: treeStamp.contentIdentity,
       };
+      const historyAttestation = {
+        version: 1,
+        generation: 1,
+        evidenceHash: settlementManifest.evidenceHash,
+        repositoryRoot: settlementManifest.repositoryRoot,
+        closeHeadSha: settlementManifest.headSha,
+        emittedCommitSha: 'd'.repeat(40),
+        paths: [{
+          path: 'src/fix.ts',
+          workingTreeBlobSha: 'b'.repeat(40),
+          fromHeadSha: settlementManifest.headSha,
+          toCommitSha: 'd'.repeat(40),
+          proof: 'exact-path-blob-history',
+        }],
+      };
       const result = (
         complete.args as {
           safeParse: (value: unknown) => { success: boolean; data?: any; error?: unknown };
@@ -4677,12 +4692,44 @@ describe('work_items:complete input coercion (EI-7031)', () => {
             testResult: 'passed',
             verifiedHow: 'unit',
             settlementManifest,
+            historyAttestation,
           },
         },
       });
 
       expect(nestedResult.success).toBe(true);
       expect(nestedResult.data?.completion?.verification).not.toHaveProperty('settlementManifest');
+      expect(nestedResult.data?.completion?.verification).not.toHaveProperty('historyAttestation');
+    });
+
+    it('rejects caller-supplied top-level historyAttestation', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any; error?: unknown };
+        }
+      ).safeParse({
+        id: 'WI-21599866958764530',
+        completion: {
+          summary: 'caller cannot author a settlement history proof',
+          historyAttestation: {
+            version: 1,
+            generation: 1,
+            evidenceHash: 'c'.repeat(64),
+            repositoryRoot: '/repo',
+            closeHeadSha: 'a'.repeat(40),
+            emittedCommitSha: 'd'.repeat(40),
+            paths: [{
+              path: 'src/fix.ts',
+              workingTreeBlobSha: 'b'.repeat(40),
+              fromHeadSha: 'a'.repeat(40),
+              toCommitSha: 'd'.repeat(40),
+              proof: 'exact-path-blob-history',
+            }],
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
     });
 
     it('accepts the server-stamped assumptions object on a read→retry (EI-22404076241784390)', () => {

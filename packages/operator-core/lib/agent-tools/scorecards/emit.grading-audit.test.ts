@@ -114,6 +114,7 @@ const REPLAY_SPLIT_RATINGS: ObservationRatings = {
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorRevision: 2,
   classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
@@ -621,6 +622,51 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res.ok).toBe(true);
     expect(captureImprovement).toHaveBeenCalledOnce();
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it('requires re-emitting a legacy card when a newer evaluator revision changes its rating', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    const currentCard = replayConsistencyGradedCard();
+    const { evaluatorRevision: _currentRevision, ...legacyRecipe } = RERUN_RECIPE;
+    getIssue.mockResolvedValue({
+      ...currentCard,
+      payload: {
+        observation: {
+          ...currentCard.payload.observation,
+          rerunRecipe: legacyRecipe,
+          ratings: {
+            falsifiability: { rating: 'pass', evidence: 'recorded under the earlier targeting rule' },
+            traceability: { rating: 'pass', evidence: 'exact binding replay passed' },
+          },
+        },
+      },
+    });
+    const exactReplay = targetReplay('pass');
+    const dispatchTool = vi.fn().mockResolvedValue({
+      ...exactReplay,
+      rows: [
+        {
+          ...exactReplay.rows[0],
+          wouldBlock: ['falsifiability'],
+          ratings: {
+            falsifiability: { rating: 'unknown' },
+            traceability: { rating: 'pass' },
+          },
+        },
+      ],
+    });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
+    expect((res as { error?: string }).error).toContain('changed from 1 to 2');
+    expect((res as { error?: string }).error).toContain('re-emit the target card');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
   it.each([

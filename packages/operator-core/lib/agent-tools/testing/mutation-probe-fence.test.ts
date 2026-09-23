@@ -36,7 +36,7 @@ it('refuses the run before root discovery when the checkout has an active mutati
   const result = await runTestFilesCore({ root: checkout, files: ['tests/subject.test.ts'] });
 
   expect(result).toMatchObject({ ok: false, error: 'mutation_probe_active' });
-  expect(result.hint).toContain('src/subject.ts');
+  expect("hint" in result ? result.hint : undefined).toContain('src/subject.ts');
   expect(readQueueMock).toHaveBeenCalledWith(expect.anything(), { coordinationDomain: checkout });
 });
 
@@ -46,7 +46,7 @@ it('fails closed when the lock ledger cannot establish whether a probe is active
   const result = await runTestFilesCore({ root: makeRoot(), files: ['tests/subject.test.ts'] });
 
   expect(result).toMatchObject({ ok: false, error: 'mutation_probe_state_unknown' });
-  expect(result.hint).toContain('lock ledger unavailable');
+  expect("hint" in result ? result.hint : undefined).toContain('lock ledger unavailable');
 });
 
 it('continues to ordinary root validation when no mutation-probe lock is active', async () => {
