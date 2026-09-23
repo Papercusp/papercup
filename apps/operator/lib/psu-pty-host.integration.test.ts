@@ -32,6 +32,7 @@ import {
   startupOutputReady,
   freshChildPromptReady,
   codexTuiStartObserved,
+  codexInitialFrameObserved,
   startupFallbackElapsed,
   CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER,
   killPtyProcessTree,
@@ -284,38 +285,130 @@ describe('session-port managed seed + native persistence helpers', () => {
   });
 
   // WI-10002745: the PTY child is the psu launcher, which prints its banner and
-  // then bootstraps the role for ~20s before Codex execs. Measured from that
-  // banner, the 15s startup fallback expired before Codex existed; the quiet
-  // gate then read Codex's silent terminal-capability-probe wait as "at a
-  // prompt" and typed the kickoff into it, where the reply parser swallowed the
-  // leading provenance marker. The fallback must be measured from the Codex
-  // TUI's own start.
-  it('measures the Codex startup fallback from the TUI start, not the launcher banner', () => {
-    // Verbatim first bytes of a captured v0.156.1 boot, after the launcher's lines.
+  // then bootstraps the role for ~20s before Codex execs. After exec, Codex
+  // sends terminal-capability probes and reads stdin for the replies until it
+  // schedules its first frame; any input in that window is swallowed. That wait
+  // is bimodal (Codex's own log, 41 launches on 2026-09-23: p50 698ms, p90 13.9s,
+  // max 14.1s). A 15s window from the banner, and then one from the probe, both
+  // typed the kickoff into it and lost the leading provenance marker. The
+  // fallback must be measured from the first frame Codex PAINTS.
+  it('measures the Codex startup fallback from the first painted frame, not the banner or the probe', () => {
+    // Verbatim bytes of a captured v0.156.1 boot (grading-audit
+    // EI-24067277488814126, 2026-09-23): the probe burst, then the first frame.
     const launcherBanner = 'psu: kickoff — seeding the role session’s first turn\n';
     const codexProbe = '\x1b[?2004h\x1b[>4;0m\x1b[>7u\x1b[?1004h\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c';
+    const firstFrame =
+      '\x1b[?25l\x1b[1;1H\x1b[2m╭───────────────────────────────────────────────╮\x1b[2;1H│ >_ ' +
+      '\x1b[22m\x1b[1mOpenAI Codex\x1b[22m\x1b[2m\x1b[2m (v0.156.1)                    │';
     expect(codexTuiStartObserved(launcherBanner)).toBe(false);
     expect(codexTuiStartObserved(launcherBanner + codexProbe)).toBe(true);
+
+    // The probe alone is NOT readiness: Codex is still swallowing stdin.
+    expect(codexInitialFrameObserved(launcherBanner + codexProbe)).toBe(false);
+    expect(codexInitialFrameObserved(launcherBanner + codexProbe + firstFrame)).toBe(true);
+    // The composer glyph alone also proves a painted frame.
+    expect(codexInitialFrameObserved(codexProbe + '\x1b[9;1H› Ask Codex to do anything')).toBe(true);
+    // Chrome painted BEFORE the latest probe does not count: the frame must follow it.
+    expect(codexInitialFrameObserved('OpenAI Codex ›' + codexProbe)).toBe(false);
+    // No probe in the buffer is not a frame, unless the caller already saw the
+    // probe and its bounded buffer has since trimmed it away.
+    expect(codexInitialFrameObserved(firstFrame)).toBe(false);
+    expect(codexInitialFrameObserved(firstFrame, { probeAlreadySeen: true })).toBe(true);
 
     const fallbackMs = 15_000;
     const firstOutputAt = 1_000; // launcher banner
     const base = { agent: 'codex', firstOutputAt, fallbackMs };
-    // The measured failure: 19.6s after the banner Codex has only just started.
-    // The old banner-relative clock called this "elapsed" and wrote blind.
-    expect(startupFallbackElapsed({ ...base, nowMs: 20_600, backendTuiStartedAt: 20_000 })).toBe(false);
-    expect(startupFallbackElapsed({ ...base, nowMs: 34_999, backendTuiStartedAt: 20_000 })).toBe(false);
-    expect(startupFallbackElapsed({ ...base, nowMs: 35_000, backendTuiStartedAt: 20_000 })).toBe(true);
-    // Probe never seen: still delivers, but only after the widened window.
-    const widened = firstOutputAt + fallbackMs * CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
-    expect(startupFallbackElapsed({ ...base, nowMs: 20_600, backendTuiStartedAt: 0 })).toBe(false);
-    expect(startupFallbackElapsed({ ...base, nowMs: widened - 1, backendTuiStartedAt: 0 })).toBe(false);
-    expect(startupFallbackElapsed({ ...base, nowMs: widened, backendTuiStartedAt: 0 })).toBe(true);
+    // The measured failure: probe at 17.4s, first frame at 33.03s. A clock
+    // started at the probe expired at 32.4s, 0.6s before the frame. The
+    // frame-relative clock has not started yet, so only the widened window
+    // applies, and it runs from the probe, not from the launcher banner.
+    const multiplier = CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
+    const probeAt = 17_400;
+    const widenedFromProbe = probeAt + fallbackMs * multiplier;
+    expect(startupFallbackElapsed({ ...base, nowMs: 32_400, backendTuiStartedAt: probeAt })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: firstOutputAt + fallbackMs * multiplier, backendTuiStartedAt: probeAt })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: widenedFromProbe - 1, backendTuiStartedAt: probeAt })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: widenedFromProbe, backendTuiStartedAt: probeAt })).toBe(true);
+    // Neither probe nor frame seen: widened from the first output byte.
+    const widenedFromOutput = firstOutputAt + fallbackMs * multiplier;
+    expect(startupFallbackElapsed({ ...base, nowMs: widenedFromOutput - 1 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: widenedFromOutput })).toBe(true);
+    // Once the frame is painted, the ordinary window runs from it.
+    const frame = { backendTuiStartedAt: probeAt, backendFirstFrameAt: 33_030 };
+    expect(startupFallbackElapsed({ ...base, ...frame, nowMs: 48_029 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, ...frame, nowMs: 48_030 })).toBe(true);
     // No output at all is never "elapsed".
-    expect(startupFallbackElapsed({ ...base, firstOutputAt: 0, nowMs: 999_999, backendTuiStartedAt: 0 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, firstOutputAt: 0, nowMs: 999_999, backendFirstFrameAt: 0 })).toBe(false);
     // Other backends keep the first-output clock unchanged.
-    expect(startupFallbackElapsed({ agent: 'claude', firstOutputAt, fallbackMs, nowMs: 16_000, backendTuiStartedAt: 0 })).toBe(true);
-    expect(startupFallbackElapsed({ agent: 'omp', firstOutputAt, fallbackMs, nowMs: 15_999, backendTuiStartedAt: 0 })).toBe(false);
+    expect(startupFallbackElapsed({ agent: 'claude', firstOutputAt, fallbackMs, nowMs: 16_000, backendFirstFrameAt: 0 })).toBe(true);
+    expect(startupFallbackElapsed({ agent: 'omp', firstOutputAt, fallbackMs, nowMs: 15_999, backendFirstFrameAt: 0 })).toBe(false);
   });
+
+  // WI-10002745 host wiring: the pure clock above is only half the fix. This
+  // drives the real host with a fake Codex that swallows stdin between its
+  // probe and its first frame, the way the real TUI's reply parser does.
+  // With the 500ms fallback measured from the probe (the previous fix) or from
+  // the banner (the original code), the kickoff lands inside the 1.2s swallow
+  // window and the child reports it. The widened no-frame window (4 x 500ms
+  // from the probe) is deliberately longer than the swallow, so only a clock
+  // anchored on the frame can pass.
+  it('never types a Codex kickoff between the startup probe and the first painted frame', async () => {
+    const ownerId = `su-codex-first-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write('psu: launcher banner\\n');" +
+      "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
+      "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
+      "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.156.1) \\u2502\\n\\u203a Ask Codex to do anything\\n');},1200);},100);" +
+      'setTimeout(()=>process.exit(0),15000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '500',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      kickoff: 'KICKOFF-AFTER-FRAME',
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-FRAME'), { timeout: 8000 });
+      expect(captured()).not.toContain('SWALLOWED:');
+      const hostEvents = () =>
+        readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      // The event follows Codex's delayed resubmit CR, which lands after the echo.
+      const written = await vi.waitFor(() => {
+        const row = hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      const frame = hostEvents().find((e) => e.kind === 'backend-first-frame-observed');
+      expect(frame?.msAfterTuiStart).toBeGreaterThanOrEqual(1_000);
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'startup-fallback' });
+      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(500);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 20_000);
 
   it('recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows', () => {
     expect(freshChildPromptReady('claude', '\x1b[2J spinner / loading')).toBe(false);
@@ -419,21 +512,23 @@ describe('session-port managed seed + native persistence helpers', () => {
       const codexDir = join(home, 'codex-target', 'sessions', '2026', '07');
       mkdirSync(codexDir, { recursive: true });
       const codexFile = join(codexDir, 'rollout.jsonl');
-      writeFileSync(codexFile, `${JSON.stringify({ role: 'user', text: marker })}\n`);
+      const codexSinceMs = Date.now();
+      writeFileSync(codexFile, `${JSON.stringify({ role: 'user', text: marker, timestamp: new Date(codexSinceMs).toISOString() })}\n`);
       expect(findNativeTranscriptMarker({
-        agent: 'codex', env: { CODEX_HOME: join(home, 'codex-target') }, marker, sinceMs: Date.now(), home,
+        agent: 'codex', env: { CODEX_HOME: join(home, 'codex-target') }, marker, sinceMs: codexSinceMs, home,
       })).toBe(codexFile);
 
       const ompDir = join(home, '.omp-target', 'agent', 'sessions', 'project');
       mkdirSync(ompDir, { recursive: true });
       const ompFile = join(ompDir, 'thread.jsonl');
-      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', text: marker })}\n`);
+      const ompSinceMs = Date.now();
+      writeFileSync(ompFile, `${JSON.stringify({ type: 'message', text: marker, timestamp: new Date(ompSinceMs).toISOString() })}\n`);
       const proof = await waitForNativeTranscriptMarker({
-        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker, sinceMs: Date.now(), home, timeoutMs: 100, pollMs: 5,
+        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker, sinceMs: ompSinceMs, home, timeoutMs: 100, pollMs: 5,
       });
       expect(proof).toEqual({ persisted: true, nativeRef: ompFile });
       expect(findNativeTranscriptMarker({
-        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker: `${marker}-wrong`, sinceMs: Date.now(), home,
+        agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker: `${marker}-wrong`, sinceMs: ompSinceMs, home,
       })).toBeNull();
 
       const claudeId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -441,7 +536,8 @@ describe('session-port managed seed + native persistence helpers', () => {
       mkdirSync(claudeDir, { recursive: true });
       const claudeFile = join(claudeDir, `${claudeId}.jsonl`);
       const carryMarker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
-      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', message: { content: carryMarker } })}\n`);
+      const claudeSinceMs = Date.now();
+      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { content: carryMarker } })}\n`);
       expect(leadingTurnOriginMarker(`${carryMarker}\nContinue where you left off`)).toBe(carryMarker);
       expect(leadingTurnOriginMarker(`history before ${carryMarker}`)).toBeNull();
       expect(findNativeTranscriptMarker({
@@ -449,7 +545,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         env: { CLAUDE_CONFIG_DIR: join(home, 'claude-target') },
         marker: carryMarker,
         nativeId: claudeId,
-        sinceMs: Date.now(),
+        sinceMs: claudeSinceMs,
         home,
       })).toBe(claudeFile);
       expect(findNativeTranscriptMarker({
@@ -457,7 +553,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         env: { CLAUDE_CONFIG_DIR: join(home, 'claude-target') },
         marker: carryMarker,
         nativeId: 'ffffffff-1111-4222-8333-444444444444',
-        sinceMs: Date.now(),
+        sinceMs: claudeSinceMs,
         home,
       })).toBeNull();
     } finally {
