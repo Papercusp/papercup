@@ -40,14 +40,7 @@ import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import { tsImport } from 'tsx/esm/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import * as releaseJournalModule from './lib/release-task-journal.ts';
-
-// tsx treats this root's .ts helpers as CommonJS; native Node type stripping
-// exposes them as ESM. Preserve both supported CLI invocation paths.
-const {
-  releaseStageInputHash,
-  releaseStageRequestIdentity,
-} = releaseJournalModule.default ?? releaseJournalModule;
+import { releaseStageInputHash, releaseStageRequestIdentity } from './lib/release-task-journal.mts';
 
 export { releaseStageInputHash, releaseStageRequestIdentity };
 
