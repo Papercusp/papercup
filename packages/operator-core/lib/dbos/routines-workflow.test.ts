@@ -95,8 +95,7 @@ import { fireLoopWake } from '../harness/routines/loop-fire';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
   evaluateRoutineDispatchEpoch,
-  noteRoutineFairnessAttempt,
-  orderDueRoutinesFairly,
+  orderDueRoutinesByAge,
   ROUTINE_FIRE_QUEUES,
   ROUTINE_FIRE_TIMEOUT_MS,
   enqueueRoutineFire,
@@ -335,24 +334,28 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBeLessThan(16);
   });
 
-  it('rotates due candidates after each admission attempt so a later row cannot starve', () => {
-    const cursors = new Map<string, number>();
-    const due = ['a', 'b', 'c', 'd'].map((id) => ({
-      id,
-      targetRole: 'system:ordinary-routine',
+  it('keeps the oldest due rows ahead of new arrivals when backlog grows faster than dispatch credits', () => {
+    const due = Array.from({ length: 15 }, (_, index) => ({
+      id: 'old-' + String(index).padStart(2, '0'),
+      nextFireAt: new Date(index * 1_000),
+      targetRole: 'system:git-sync',
       installSlug: 'papercusp',
     }));
+    const firstEpoch = orderDueRoutinesByAge(due).slice(0, 4);
+    const firstEpochIds = new Set(firstEpoch.map((row) => row.id));
+    const nextEpochDue = [
+      ...due.filter((row) => !firstEpochIds.has(row.id)),
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: 'new-0-' + index,
+        nextFireAt: new Date(100_000 + index),
+        targetRole: 'system:git-sync',
+        installSlug: 'papercusp',
+      })),
+    ];
+    const secondEpoch = orderDueRoutinesByAge(nextEpochDue).slice(0, 4);
 
-    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['a', 'b', 'c', 'd']);
-    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
-    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
-
-    // The next epoch starts after the two credits spent by the previous epoch,
-    // even if those claims later lose their CAS race.
-    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['c', 'd', 'a', 'b']);
-    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
-    noteRoutineFairnessAttempt(ROUTINES_QUEUE, cursors);
-    expect(orderDueRoutinesFairly(due, cursors).map((row) => row.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(firstEpoch.map((row) => row.id)).toEqual(['old-00', 'old-01', 'old-02', 'old-03']);
+    expect(secondEpoch.map((row) => row.id)).toEqual(['old-04', 'old-05', 'old-06', 'old-07']);
   });
 
   it('reads indexed DBOS occupancy and gates feedback credit before claim/start', () => {
@@ -366,13 +369,15 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
 
     const impl = source.split('async function routinesTickImpl(): Promise<void> {')[1] ?? '';
     const epoch = impl.indexOf("name: 'routine-dispatch-feedback-epoch'");
-    const loop = impl.indexOf('for (const r of fairDue) {');
+    const dueByAge = impl.indexOf('const dueByAge = orderDueRoutinesByAge(due);');
+    const loop = impl.indexOf('for (const r of dueByAge) {');
     const budget = impl.indexOf('const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0');
     const claim = impl.indexOf('claimDueRoutine(sql, r)');
     const start = impl.indexOf('DBOS.startWorkflow');
     const spend = impl.indexOf('remainingStartsByQueue.set(queueName, remainingStarts - 1)');
     expect(epoch).toBeGreaterThan(-1);
-    expect(epoch).toBeLessThan(loop);
+    expect(epoch).toBeLessThan(dueByAge);
+    expect(dueByAge).toBeLessThan(loop);
     expect(loop).toBeLessThan(budget);
     expect(budget).toBeLessThan(claim);
     expect(claim).toBeLessThan(start);

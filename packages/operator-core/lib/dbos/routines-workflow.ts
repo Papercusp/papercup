@@ -190,66 +190,23 @@ type DueRoutine = {
   readonly id: string;
   readonly targetRole: string;
   readonly installSlug: string;
+  readonly nextFireAt: Date | null;
 };
 
-type RoutineFairnessCursors = Map<string, number>;
-
-// A feedback epoch limits how many fires each queue may start, but the due-list
-// is larger than that credit. Without a rotating cursor, a row that remains due
-// (for example while its CAS loses to another executor) can stay ahead of every
-// later row forever. Keep this cursor process-local: it is only a scheduling hint,
-// and a restart safely resets it to the database's due ordering.
-const routineFairnessCursors: RoutineFairnessCursors = new Map();
-
 /**
- * Rotate candidates independently within each DBOS queue while preserving the
- * due-list slots occupied by each queue. The per-queue admission budgets are
- * consumed in the same way as before; only which due row receives a slot changes.
- * A caller must call noteRoutineFairnessAttempt after it gets a queue credit so
- * failed claims also advance and cannot permanently block their siblings. The
- * cursor is a count rather than a row id because claimed rows leave the due
- * result before the next tick; an id cursor would reset to the head precisely
- * when the row it remembered was successfully claimed.
+ * Preserve FIFO dispatch by due time, with a stable id tie-breaker. The due
+ * population changes as fires are claimed and new cron rows become due, so a
+ * count cursor modulo the current population can follow the growing tail while
+ * leaving the oldest row at the head indefinitely.
  */
-export function orderDueRoutinesFairly<T extends DueRoutine>(
-  due: readonly T[],
-  cursors: RoutineFairnessCursors = routineFairnessCursors,
-): T[] {
-  if (due.length < 2) return [...due];
-
-  const byQueue = new Map<string, T[]>();
-  for (const routine of due) {
-    const queueName = queueForRoutine(routine.targetRole, routine.installSlug);
-    const rows = byQueue.get(queueName);
-    if (rows) rows.push(routine);
-    else byQueue.set(queueName, [routine]);
-  }
-
-  const rotatedByQueue = new Map<string, T[]>();
-  for (const [queueName, rows] of byQueue) {
-    const start = (cursors.get(queueName) ?? 0) % rows.length;
-    rotatedByQueue.set(queueName, [...rows.slice(start), ...rows.slice(0, start)]);
-  }
-
-  const offsets = new Map<string, number>();
-  return due.map((routine) => {
-    const queueName = queueForRoutine(routine.targetRole, routine.installSlug);
-    const rows = rotatedByQueue.get(queueName);
-    if (!rows) throw new Error(`missing fairness bucket for routine queue ${queueName}`);
-    const offset = offsets.get(queueName) ?? 0;
-    const selected = rows[offset];
-    if (!selected) throw new Error(`fairness bucket ${queueName} exhausted while ordering due routines`);
-    offsets.set(queueName, offset + 1);
-    return selected;
+export function orderDueRoutinesByAge<T extends DueRoutine>(due: readonly T[]): T[] {
+  return [...due].sort((a, b) => {
+    const aAt = a.nextFireAt?.getTime();
+    const bAt = b.nextFireAt?.getTime();
+    if (aAt === undefined) return bAt === undefined ? a.id.localeCompare(b.id) : -1;
+    if (bAt === undefined) return 1;
+    return aAt - bAt || a.id.localeCompare(b.id);
   });
-}
-
-/** Advance a queue's fairness cursor after its current admission credit is spent. */
-export function noteRoutineFairnessAttempt(
-  queueName: string,
-  cursors: RoutineFairnessCursors = routineFairnessCursors,
-): void {
-  cursors.set(queueName, (cursors.get(queueName) ?? 0) + 1);
 }
 
 export interface RoutineDispatchQueueDecision {
@@ -987,8 +944,8 @@ async function routinesTickImpl(): Promise<void> {
   const queueAdmission = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item]));
   const remainingStartsByQueue = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item.availableStarts]));
   const loggedWithheldQueues = new Set<string>();
-  const fairDue = orderDueRoutinesFairly(due);
-  for (const r of fairDue) {
+  const dueByAge = orderDueRoutinesByAge(due);
+  for (const r of dueByAge) {
     // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
     // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
@@ -1011,9 +968,6 @@ async function routinesTickImpl(): Promise<void> {
       continue;
     }
 
-    // Advance before the CAS so a failed claim (including a legitimate race)
-    // cannot leave the same row at the head of the next epoch indefinitely.
-    noteRoutineFairnessAttempt(queueName);
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
     if (!claimed) {
       // WI-40883: a bare `continue` here is what let 11 routines sit unclaimable and silent —
