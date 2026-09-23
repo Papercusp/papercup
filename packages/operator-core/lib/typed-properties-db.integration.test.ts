@@ -297,7 +297,9 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       expect(result).toMatchObject({ ok: false, code: attempt.code });
       const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`SELECT property_schema, properties FROM harness_shared.goals
         WHERE workspace_id = ${WS} AND id = ${args.goalId}`;
-      expect(derivePropertySurface(row!)).toMatchObject({ propertySchema: {}, properties: prior });
+      const surface = derivePropertySurface(row!);
+      expect(surface.propertySchema).toEqual({});
+      expect(surface.properties).toEqual(prior);
     }
     const valid = await db.adminSql.begin((tx) => applyGoalPropertyWrite(tx as unknown as typeof db.adminSql,
       { ...args, expectedVersion: 7, value: ['plan:replacement'] }));
