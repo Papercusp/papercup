@@ -26,6 +26,8 @@ const recipe = (specId: string, testPath: string) => ({
 function row(id: number, opts: {
   specId?: string; testPath?: string; kind?: string; phase?: string; revision?: number;
   currentness?: Partial<Currentness>; moved?: unknown; outcome?: string; evidenceRef?: string;
+  /** Bound by hand (plans:bind-spec-evidence): no stored recipe, only the measured paths. */
+  handBound?: boolean;
 }) {
   const specId = opts.specId ?? 'S-1';
   const testPath = opts.testPath ?? 'src/subject.test.ts';
@@ -33,11 +35,14 @@ function row(id: number, opts: {
     overall: 'current', dimensions: { spec: 'current', source: 'current', test: 'current' },
     staleReasons: [], unknownReasons: [], ...opts.currentness,
   };
+  const handBound = opts.handBound ?? opts.kind === 'mutation';
   return {
     id, specId, specRevision: opts.revision ?? 3, evidenceKind: opts.kind ?? 'test',
     evidenceRef: opts.evidenceRef ?? `test-run-group:old:${id}`,
     details: {
-      testExecution: { phase: opts.phase ?? 'settled', binding: recipe(specId, testPath) },
+      ...(handBound
+        ? { currentMeasurement: { kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
+        : { testExecution: { phase: opts.phase ?? 'settled', binding: recipe(specId, testPath) } }),
       adequacy: { outcome: opts.outcome ?? 'pass' },
     },
     currentness,
@@ -81,6 +86,34 @@ describe('planTestEvidenceRemeasure', () => {
       .toEqual({ selected: [], skipped: [] });
   });
 
+  it('reports a stale proof it cannot re-run instead of dropping it silently', () => {
+    // Measured 2026-09-23 on WI-10002643: the pass answered examined 1 / selected 0 /
+    // skipped [] while the completion gate failed freshness on exactly these bindings.
+    const plan = planTestEvidenceRemeasure([
+      row(10363, { specId: 'S-B', handBound: true, currentness: sourceStale }),
+      row(10554, { specId: 'S-B', kind: 'mutation', currentness: sourceStale }),
+      row(10435, { specId: 'S-B', kind: 'mutation', currentness: sourceStale }),
+      row(7, { specId: 'S-C', kind: 'mutation' }),
+    ]);
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((entry) => `${entry.specId}:${entry.bindingId}:${entry.reason}:${entry.testPath}`)).toEqual([
+      'S-B:10554:probe-required:src/subject.test.ts',
+      'S-B:10363:no-recipe:src/subject.test.ts',
+      'S-C:7:current:src/subject.test.ts',
+    ]);
+    expect(plan.skipped.find((entry) => entry.bindingId === 10363)!.detail).toMatch(/^source-stale: .*testing:run \{ evidence \}/);
+    expect(plan.skipped.find((entry) => entry.bindingId === 10554)!.detail).toMatch(/^source-stale: .*mutation-probe/);
+  });
+
+  it('lets a newer recipe-bearing proof supersede a hand-bound one for the same clause and file', () => {
+    const plan = planTestEvidenceRemeasure([
+      row(1, { handBound: true, currentness: sourceStale }),
+      row(2, { currentness: sourceStale }),
+    ]);
+    expect(plan.selected.map((entry) => entry.bindingId)).toEqual([2]);
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('treats a run whose sources moved WHILE it ran as the same drift', () => {
     const plan = planTestEvidenceRemeasure([row(1, { phase: 'source-changed', currentness: sourceStale })]);
     expect(plan.selected.map((entry) => entry.bindingId)).toEqual([1]);
@@ -101,7 +134,7 @@ describe('buildTestEvidenceRemeasure', () => {
     const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' }, { harnessSlug: 'h' }, { list });
     expect(built.request).toBeNull();
     expect(built.files).toEqual([]);
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ planSlugs: ['p'], workItemIds: ['WI-1'], evidenceKinds: ['test'] }));
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ planSlugs: ['p'], workItemIds: ['WI-1'], evidenceKinds: ['test', 'mutation'] }));
   });
 
   it('turns stale bindings into an ordinary evidence request over the exact test files', async () => {

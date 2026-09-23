@@ -3096,7 +3096,8 @@ export default defineTool({
       }
       if (!remeasure.request) {
         // Nothing curable is stale: start no process. `skipped` says why per binding —
-        // `current` is the good answer; `clause-moved` / `not-remeasurable` need a human.
+        // `current` is the good answer; `clause-moved` / `not-remeasurable` need a human;
+        // `no-recipe` / `probe-required` name stale proofs this pass cannot re-run itself.
         return {
           data: {
             ok: true,
