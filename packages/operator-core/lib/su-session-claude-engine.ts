@@ -4,10 +4,10 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type Settings } from '@anthropic-ai/claude-agent-sdk';
 import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { splitModelSpec } from './agent-config-constants';
@@ -127,6 +127,24 @@ export function claudeReadOnlySuTools(server: {
     .map((tool) => tool.name.startsWith(prefix) ? tool.name.slice(prefix.length) : tool.name)
     .filter((name) => !name.startsWith('capability_'))
     .map((name) => prefix + name));
+}
+
+/** psu-isolation D-002: a playbook that splices the project guide delivers it
+ * itself, so project-memory auto-load must not send the same CLAUDE.md again
+ * (measured: a second 39k-token copy on every full-tier launch). Returns each
+ * memory file Claude would auto-load from `cwd` upward whose whole text the
+ * prompt already holds; a truncated or since-edited guide stays loaded. */
+export function claudeMemoryFilesInPrompt(cwd: string, systemPrompt: string): string[] {
+  const found = new Set<string>();
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    for (const name of ['CLAUDE.md', join('.claude', 'CLAUDE.md'), 'CLAUDE.local.md']) {
+      const file = join(dir, name);
+      let body: string;
+      try { body = readFileSync(file, 'utf8').trim(); } catch { continue; }
+      if (body && systemPrompt.includes(body)) { found.add(file); found.add(realpathSync(file)); }
+    }
+    if (dirname(dir) === dir) return [...found];
+  }
 }
 
 export function startClaudeSuEngine(
@@ -268,6 +286,9 @@ export function startClaudeSuEngine(
   enforceDefaultClaudeAccount('claude', env);
   applyDefaultClaudeOAuthToken('claude', env);
   const authSettings = applyDefaultClaudeAuthSettingsArgs('claude', [], env);
+  const settings: Settings = authSettings[0] === '--settings' ? JSON.parse(authSettings[1]) : {};
+  const guidesInPrompt = claudeMemoryFilesInPrompt(boot.cwd, systemPrompt);
+  if (guidesInPrompt.length) settings.claudeMdExcludes = [...(settings.claudeMdExcludes ?? []), ...guidesInPrompt];
   // The on-disk per-session settings are also used on native exact resume.
   if (!options.query) {
     persistDefaultClaudeAuthSettings({ wrapperBin: 'claude', env });
@@ -279,7 +300,7 @@ export function startClaudeSuEngine(
   const sdkOptions: Options = {
     cwd: boot.cwd,
     env,
-    ...(authSettings[0] === '--settings' ? { settings: JSON.parse(authSettings[1]) } : {}),
+    ...(Object.keys(settings).length ? { settings } : {}),
     ...(options.resume ? { resume: nativeId } : { sessionId: nativeId }),
     includePartialMessages: true,
     settingSources: ['user', 'project', 'local'],

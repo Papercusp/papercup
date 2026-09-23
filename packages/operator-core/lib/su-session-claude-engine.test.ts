@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -9,7 +9,7 @@ import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import {
-  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeReadOnlySuTools, createChildStderrTail,
+  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
   formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
   type ClaudeEngineOptions, type ClaudeSuEngine,
 } from './su-session-claude-engine';
@@ -638,6 +638,53 @@ const fixtureSecret = {
   assignedValue: 'super-secret-value',
 } as const;
 const secretEnvName = ['ANTHROPIC', 'API', 'KEY'].join('_');
+
+// psu-isolation D-002: the playbook splice delivers the project guide, so the
+// SDK's project-memory auto-load must not send the same CLAUDE.md a second time.
+describe('project guide delivered once', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pui-engine-guide-'));
+  const cwd = join(root, 'repo', 'pkg');
+  const guideFile = join(root, 'repo', 'CLAUDE.md');
+  const guide = '# Repo guide\n\n' + 'Keep user-meaningful state in the URL.\n'.repeat(40);
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(guideFile, guide);
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const persona = 'SU persona and workspace scope.\n'.repeat(80);
+  const spliced = `${persona}\n## Project guide — repo conventions\n\n> spliced\n\n${guide.trim()}\n`;
+
+  it('excludes an ancestor guide whose whole text the prompt already carries', () => {
+    const excluded = claudeMemoryFilesInPrompt(cwd, spliced);
+    expect(excluded).toContain(guideFile);
+    expect(excluded.every((file) => file.endsWith(join('repo', 'CLAUDE.md')))).toBe(true);
+  });
+
+  it('keeps auto-load when the prompt carries no copy or only a truncated one', () => {
+    expect(claudeMemoryFilesInPrompt(cwd, persona)).toEqual([]);
+    expect(claudeMemoryFilesInPrompt(cwd, spliced.slice(0, spliced.length - 80))).toEqual([]);
+  });
+
+  it('passes the excluded guide to the SDK as claudeMdExcludes', async () => {
+    const p = peer();
+    const guidePrompt = join(root, 'su.md');
+    writeFileSync(guidePrompt, spliced);
+    const engine = startClaudeSuEngine({ ...boot, cwd, promptFile: guidePrompt }, binding, runtime,
+      { agentChatId: 'chat', accountRoute: 'default', carry: 'warm', query: p.factory, register: false, startupTimeoutMs: 300 });
+    engines.push(engine);
+    await engine.ready;
+    const settings = p.options()?.settings;
+    expect(typeof settings === 'object' ? settings.claudeMdExcludes : undefined).toContain(guideFile);
+  });
+
+  it('adds no exclusion for a prompt that does not splice the guide', async () => {
+    const p = peer();
+    const engine = startClaudeSuEngine({ ...boot, cwd }, binding, runtime,
+      { agentChatId: 'chat', accountRoute: 'default', carry: 'warm', query: p.factory, register: false, startupTimeoutMs: 300 });
+    engines.push(engine);
+    await engine.ready;
+    const settings = p.options()?.settings;
+    expect(typeof settings === 'object' ? settings.claudeMdExcludes ?? [] : []).not.toContain(guideFile);
+  });
+});
 
 // The engine used to DISCARD the child's stderr, so a child that refuses on that
 // channel — a quota wall answers in ~5s in plain text and exits 1 — was invisible in
