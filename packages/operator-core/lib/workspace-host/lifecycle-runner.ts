@@ -644,10 +644,12 @@ async function runRollbackLeg(leg: RollbackLeg): Promise<WorkspaceHostLifecycleR
     destructive: false,
     input: rollback.input,
   };
-  let current = leg.prior;
-  const withCurrent = () => replaceCheckpoint(leg.checkpoints, current!);
+  let current: WorkspaceHostResourceCheckpoint;
+  const withCurrent = () => replaceCheckpoint(leg.checkpoints, current);
 
-  if (!current) {
+  if (leg.prior) {
+    current = leg.prior;
+  } else {
     current = { logicalKey, state: 'planned', attempts: 0 };
     await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: current });
     await store.appendEvent({
