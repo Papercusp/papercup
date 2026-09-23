@@ -302,6 +302,13 @@ describe('workspace-host provisioning DBOS admission', () => {
         customerWorkspaceId: 'customer-ws-1',
         hostId: 'host-1',
       });
+      // A machine fresh out of first boot gets a wider retry budget than an ordinary operation
+      // (measured: the first local-inference check failed, the retry passed).
+      const bringUpRetry = { maxAttempts: 5, intervalSeconds: 10, backoffRate: 2 };
+      expect(control.stepOptionsByName['workspace-host-initialize-0']).toMatchObject(bringUpRetry);
+      expect(control.stepOptionsByName['workspace-host-install-desktop-pack-0']).toMatchObject(bringUpRetry);
+      expect(control.stepOptionsByName['workspace-host-provision-0']).toMatchObject({ maxAttempts: 3, intervalSeconds: 2 });
+      expect(control.stepOptionsByName['workspace-host-provision-0']).not.toHaveProperty('backoffRate');
       // Admission and its timestamps are steps, so a replay reuses what was admitted.
       expect(control.stepCalls).toEqual(expect.arrayContaining([
         'workspace-host-bring-up-admit-initialize',
