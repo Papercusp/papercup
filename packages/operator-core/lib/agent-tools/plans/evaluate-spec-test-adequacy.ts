@@ -12,6 +12,39 @@ import {
 } from './spec-evidence-store';
 import { evaluateSpecTestAdequacy, latestLogicalEvidence, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
+import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+
+type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy>;
+const PASS_LIKE = new Set(['pass', 'not-applicable']);
+
+/**
+ * P-007 (RSR-P-007-A): the per-clause verdict table a summary read returns. It keeps every
+ * field the scorecards:emit replay gate and the grading-integrity auditor compare
+ * (specId / specRevision / specFingerprint / ratings[].rating / wouldBlock) so a replay
+ * reads the SAME verdicts from either detail level; it drops only the prose — each
+ * criterion's evidence text and the scorecardDraft — which is what made one evaluation
+ * ~138 KB. A non-passing criterion keeps its short `suggestion`, the actionable part.
+ */
+function summaryRow(row: EvaluatedRow) {
+  return {
+    planSlug: row.planSlug,
+    specId: row.specId,
+    specRevision: row.specRevision,
+    specFingerprint: row.specFingerprint,
+    planItemId: row.planItemId,
+    verdict: row.verdict,
+    requiredProofFloor: row.requiredProofFloor,
+    wouldBlock: row.wouldBlock,
+    ratings: Object.fromEntries(
+      Object.entries(row.ratings).map(([criterion, entry]) => [
+        criterion,
+        !PASS_LIKE.has(entry.rating) && entry.suggestion
+          ? { rating: entry.rating, suggestion: entry.suggestion }
+          : { rating: entry.rating },
+      ]),
+    ),
+  };
+}
 
 const evaluatorBuildSchema = z
   .object({
@@ -70,6 +103,7 @@ export const argsSchema = z.object({
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
+  detail: reviewReadDetailArg,
 }).superRefine((args, ctx) => {
   if ((args.specRevision === undefined) !== (args.specFingerprint === undefined)) {
     ctx.addIssue({
@@ -90,14 +124,14 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
   guidance: {
     returns:
-      'On success { ok, rows, count, verdicts, wouldBlock } with ok:true. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. Do not assume rows[0].scorecardDraft exists.',
+      'On success { ok, rows, count, verdicts, wouldBlock } with ok:true. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
-      'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy with current fingerprints → scorecards:emit each passing draft. P-007 consumes current emitted rows at work_items:complete.',
+      'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete.',
     seeAlso: ['plans:get-spec-evidence', 'scorecards:emit', 'rubrics:get spec-test-adequacy'],
   },
   capability: 'plans:read',
@@ -347,7 +381,17 @@ export default defineTool({
         rubricRef: 'spec-test-adequacy',
         governing,
         ...(governingNote ? { governingNote } : {}),
-        rows: scorecardRows,
+        ...(isFullDetail(args.detail)
+          ? { detail: 'full' as const, rows: scorecardRows }
+          : {
+              detail: 'summary' as const,
+              rows: rows.map(summaryRow),
+              fullBody: fullBodyRef('plans:evaluate-spec-test-adequacy', args, [
+                'rows[].ratings[].evidence',
+                'rows[].evidenceRefs',
+                'rows[].scorecardDraft',
+              ]),
+            }),
         count: rows.length,
         verdicts: {
           pass: rows.filter((row) => row.verdict === 'pass').length,

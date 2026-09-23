@@ -15,7 +15,8 @@ import {
   type AgentObligationEvidence,
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
-import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
+import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief, GoalPotPlacementAuthority } from './goal-launch-settings';
+import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
@@ -44,6 +45,94 @@ interface ProviderKnown<T> {
 }
 
 export type ProviderRead<T> = ProviderKnown<T> | ProviderUnknown;
+
+export interface GoalPlanningProviderInput extends ProviderBase {
+  goalId: string;
+  read: ProviderRead<{
+    portfolio: GoalPortfolioBrief | null;
+    review: GoalPlanningReview | null;
+    reviewIntervalMs: number;
+    /** Canonical sovereignty reads for candidate harnesses, never inferred from a plan link. */
+    authorities: Record<string, GoalPotPlacementAuthority>;
+  }>;
+}
+
+/** A review selects the next planning action; it never grants launch or ownership authority. */
+export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentObligation {
+  const common = {
+    ruleId: 'goal-planning-needed', ruleRevision: 'goal-planning-needed-v1', family: 'planning-needed' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
+    responsibleOwnerId: input.ownerId,
+    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', 'goal-planning-needed-v1'),
+    priority: 'normal' as const, causalRank: 2, sourceGeneration: input.sourceGeneration,
+    episode: input.sourceGeneration, applicableDemand: 0, evidence: [] as AgentObligationEvidence[],
+    clearsWhen: { id: 'current-evidenced-goal-review', summary: 'A current evidence-backed goal review addresses uncovered needs; actual plan execution remains a separate obligation.', evidenceKind: 'state' as const, sourceRef: 'scout_ticks.detail.goalReview+GoalPortfolioBrief' },
+  };
+  const unknown = (failure: AgentObligationMeasurementFailure) => defineAgentObligation({
+    ...common, title: 'Goal planning evidence is unavailable', status: 'unknown', reason: failure.detail,
+    action: { kind: 'inspect', summary: failure.retry }, measurementFailure: failure,
+  });
+  if (input.read.status === 'unknown') return unknown(input.read.failure);
+  const { portfolio, review, reviewIntervalMs, authorities } = input.read.value;
+  if (!portfolio || portfolio.goal.id !== input.goalId || portfolio.degradedReasons.some((r) => /portfolio read failed/i.test(r))) {
+    return unknown({ code: 'goal-planning-portfolio-unavailable', detail: 'Canonical goal scope or portfolio is unavailable.', retry: 'Refresh the canonical goal portfolio; do not infer that there is no demand.' });
+  }
+  if (['paused', 'achieved', 'killed'].includes(portfolio.goal.status ?? '')) return defineAgentObligation({
+    ...common, title: 'Goal planning is inactive', status: 'not-applicable', reason: `Goal is ${portfolio.goal.status}.`,
+  });
+  if (portfolio.goal.status !== 'active') return unknown({ code: 'goal-planning-lifecycle-unresolved', detail: 'The goal lifecycle is unresolved.', retry: 'Resolve the goal lifecycle before planning work.' });
+  const fingerprint = goalPlanningPortfolioFingerprint(portfolio);
+  const nowMs = Date.parse(input.observedAt);
+  const reviewedMs = review ? Date.parse(review.reviewedAt) : NaN;
+  if (!Number.isFinite(reviewIntervalMs) || reviewIntervalMs <= 0 || !Number.isFinite(nowMs)) {
+    return unknown({ code: 'goal-review-cadence-unavailable', detail: 'The review cadence or observation time is unavailable.', retry: 'Refresh the canonical reporting cadence before assessing review age.' });
+  }
+  const current = review?.goalId === input.goalId && review.portfolioFingerprint === fingerprint &&
+    Number.isFinite(reviewedMs) && reviewedMs <= nowMs && nowMs - reviewedMs < reviewIntervalMs;
+  if (!current) {
+    const frontier = portfolio.goal.standing && portfolio.worklist.every((p) => p.placement.state === 'terminal');
+    return defineAgentObligation({ ...common, title: 'Review uncovered goal needs', status: 'due',
+      episode: `review:${fingerprint}:${review?.reviewedAt ?? 'none'}`,
+      reason: 'No current scoped review covers these planning inputs and this reporting interval.',
+      action: { kind: 'inspect', targetRef: `goal:${input.goalId}`, recoveryRef: `goals:get ${input.goalId}`,
+        summary: `${frontier ? 'Review the standing goal frontier' : 'Review goal outcomes against existing plans'}; staff executable plans first, then adopt/revise/create-start/drain/route work or record an evidenced no-new-plan result with blender:ideate-pass-record.` },
+    });
+  }
+  const measured = { ...common, evidence: [evidence(
+    `goal-review:${input.goalId}:${input.ownerId}:${review.reviewedAt}`, review.reviewedAt, fingerprint,
+    `Recorded assessment: ${review.rationale}; cited references: ${review.evidenceRefs.join(', ')}`,
+    'current scoped review recorded; not proof of the cited facts, launched workers or achieved outcomes',
+  )],
+    episode: `review:${fingerprint}:${review.reviewedAt}`, lastSatisfiedAt: review.reviewedAt };
+  if (review.disposition === 'existing-plans-sufficient' || review.disposition === 'no-eligible-work') {
+    if (review.uncoveredOutcome) return unknown({ code: 'goal-review-conflicting-disposition', detail: 'The no-new-plan disposition also names an uncovered outcome.', retry: 'Resolve the contradictory review evidence before treating planning as satisfied.' });
+    return defineAgentObligation({ ...measured, title: 'Current review requires no new plan', status: 'satisfied',
+      reason: review.rationale, changeSignal: { nextDeadlineAt: new Date(reviewedMs + reviewIntervalMs).toISOString(), cancellationRef: `goal:${input.goalId}` },
+    });
+  }
+  const guards = 'Preserve proposal lineage; recheck scope, budget, admission and ownership at mutation time, and use CAS for worklist changes. A review is not a worker claim.';
+  if (review.disposition === 'adopt-plan' || review.disposition === 'revise-plan') {
+    for (const ref of review.planRefs) {
+      const match = /^plan:([^/]+)\/(.+)$/.exec(ref);
+      const authority = match ? authorities[match[1]!] : undefined;
+      if (!authority) return unknown({ code: 'goal-planning-authority-unavailable', detail: `Ownership is unmeasured for ${ref}.`, retry: 'Read canonical goal-pot placement authority; do not adopt based only on a link.' });
+      if (!authority.allowed) return defineAgentObligation({ ...measured, title: 'Route work to its existing goal', status: 'due', applicableDemand: 1,
+        reason: `Another active goal owns the candidate harness: ${authority.ownerGoalId}.`,
+        action: { kind: 'report', targetRef: ref, summary: `Route ${ref} to ${authority.ownerGoalId}; do not adopt or duplicate its execution. ${guards}` },
+      });
+    }
+    return defineAgentObligation({ ...measured, title: 'Reuse the existing plan', status: 'due', applicableDemand: 1, reason: review.rationale,
+      action: { kind: 'continue', targetRef: review.planRefs[0], summary: `${review.disposition === 'adopt-plan' ? 'Adopt' : 'Revise'} ${review.planRefs.join(', ')} rather than clone it; inspect its current lifecycle, then staff suitable executable work. ${guards}` },
+    });
+  }
+  return defineAgentObligation({ ...measured, title: 'Address the uncovered goal need', applicableDemand: 1,
+    status: review.disposition === 'blocked' ? 'blocked' : 'due', reason: review.rationale,
+    action: { kind: review.disposition === 'blocked' ? 'repair' : review.disposition === 'route-work' ? 'report' : 'continue',
+      targetRef: `goal:${input.goalId}`, summary: review.disposition === 'plan-needed'
+        ? `Reuse or write and start a goal-local plan for: ${review.uncoveredOutcome}. Delegate implementation to an independent plan fleet and verify real claims. ${guards}`
+        : `${review.disposition === 'blocked' ? 'Advance or escalate the evidenced planning blocker' : 'Route this need to the accountable goal or Blender for cross-goal synthesis'}: ${review.rationale}. ${guards}` },
+  });
+}
 
 function policyAuthority(sourceRef: string, revision: string) {
   return { kind: 'policy' as const, sourceRef, revision };
@@ -1296,6 +1385,7 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
+    goalPlanning?: GoalPlanningProviderInput;
     ownerReport?: OwnerReportProviderInput;
     independentVerification?: IndependentVerificationProviderInput[];
     ownerDirectives?: OwnerDirectivesProviderInput;
@@ -1305,6 +1395,7 @@ export function buildAgentObligationAgenda(
 ): AgentObligationAgenda {
   const obligations = [
     ...(inputs.planPlacement ? [planPlacementObligation(inputs.planPlacement)] : []),
+    ...(inputs.goalPlanning ? [goalPlanningObligation(inputs.goalPlanning)] : []),
     ...(inputs.ownerReport ? [ownerReportObligation(inputs.ownerReport)] : []),
     ...(inputs.independentVerification ?? []).map(independentVerificationObligation),
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),

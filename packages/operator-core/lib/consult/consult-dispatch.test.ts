@@ -440,10 +440,10 @@ describe('consultDispatchBrief', () => {
 });
 
 describe('expert-model allowlist (D-004)', () => {
-  it('seeds exactly the owner-stated policy: claude opus/fable, then chatgpt sol/astra', () => {
+  it('seeds the D-006 rank order: Claude fable/opus, then ChatGPT sol/astra', () => {
     expect([...DEFAULT_EXPERT_MODEL_ALLOWLIST]).toEqual([
-      { rank: 1, agent: 'claude', model: 'opus' },
-      { rank: 2, agent: 'claude', model: 'fable' },
+      { rank: 1, agent: 'claude', model: 'fable' },
+      { rank: 2, agent: 'claude', model: 'opus' },
       { rank: 3, agent: 'codex', model: 'sol' },
       { rank: 4, agent: 'codex', model: 'astra' },
     ]);

@@ -123,14 +123,16 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
     expiresAt?: Date | null;
     createdAt?: Date;
     lastAccessedAt?: Date;
+    byteLength?: number;
   }) => {
     const key = await sha256Hex(Buffer.from(`row-${Math.random()}`));
     const createdAt = opts.createdAt ?? new Date();
+    const bytes = Buffer.alloc(opts.byteLength ?? 1, 0x78);
     await db.sql`
       INSERT INTO harness_shared.gateway_payload_blobs
         (workspace_id, blob_key, bytes, byte_length, ref_count, expires_at, created_at, last_accessed_at)
       VALUES
-        (${WS}, ${key}, ${body('x')}, 1, ${opts.refCount ?? 0},
+        (${WS}, ${key}, ${bytes}, ${bytes.byteLength}, ${opts.refCount ?? 0},
          ${opts.expiresAt ?? null}, ${createdAt}, ${opts.lastAccessedAt ?? createdAt})`;
     return key;
   };
@@ -295,6 +297,40 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
     expect(secondPass).toBe(1);
     const remainingAfterSecond = await Promise.all(keys.map(exists));
     expect(remainingAfterSecond.every((present) => !present)).toBe(true);
+  });
+
+  it('bounds a single pass by cumulative payload bytes as well as row count', async () => {
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
+    const expired = new Date(Date.now() - 1_000);
+    const base = Date.now() - 10_000;
+    const keys = await Promise.all([
+      insertRow({ refCount: 0, expiresAt: expired, lastAccessedAt: new Date(base), byteLength: 5 }),
+      insertRow({ refCount: 0, expiresAt: expired, lastAccessedAt: new Date(base + 1), byteLength: 4 }),
+      insertRow({ refCount: 0, expiresAt: expired, lastAccessedAt: new Date(base + 2), byteLength: 3 }),
+    ]);
+
+    // 5 fits; 5 + 4 crosses the 8-byte budget, so the oldest row is the whole
+    // first pass even though the row limit would allow all three.
+    const firstPass = await store.sweep(100, 8);
+    expect(firstPass).toBe(1);
+    expect(await Promise.all(keys.map(exists))).toEqual([false, true, true]);
+
+    // The remaining 4 + 3 bytes fit together on the next pass.
+    const secondPass = await store.sweep(100, 8);
+    expect(secondPass).toBe(2);
+    expect((await Promise.all(keys.map(exists))).every((present) => !present)).toBe(true);
+  });
+
+  it('still makes progress when the oldest payload alone exceeds an explicit byte budget', async () => {
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
+    const key = await insertRow({
+      refCount: 0,
+      expiresAt: new Date(Date.now() - 1_000),
+      byteLength: 5,
+    });
+
+    expect(await store.sweep(100, 2)).toBe(1);
+    expect(await exists(key)).toBe(false);
   });
 });
 

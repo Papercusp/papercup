@@ -396,6 +396,48 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe(false);
     });
 
+    it('EI-23902378389781007: does not treat technical labels or Markdown headings as owner attributions', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          '- It OVERSTATED the scope. Those are `CarryBrief.directives` = OWNER directives and are correctly NOT renamed.',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+      expect(
+        lintCarrySurfaceProvenance(
+          "...NOT text drift: the anchor '## Owner directives — durable capture and resolution' is byte-IDENTICAL in live su.md:800 and su-decomposition.ts:300...",
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+      expect(
+        lintCarrySurfaceProvenance('## Owner directives — durable capture and resolution'),
+      ).toEqual({ flagged: false, matches: [] });
+
+      // Mention handling must not silence a real unanchored owner directive.
+      expect(
+        lintCarrySurfaceProvenance(
+          'Owner directive 2026-07-06: do not spend V1 effort on P2P/cross-machine federation',
+        ).matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
+    it('EI-23902378389781007: recognizes classifier prose without silencing real owner claims', () => {
+      const sourceLine =
+        "PROVENANCE RAIL (the part most worth not regressing): a hook-captured row (capturedByHook) becomes authority { kind:'owner', turnOrigin:'owner-typed' } because the UserPromptSubmit provenance hook is the only mechanism here that CLASSIFIES a turn as OWNER. An orders:record row becomes { kind:'owner-candidate', turnOrigin:'unknown' } — an agent asserting the owner said it. Representing the second as owner is exactly how a note-to-self becomes an owner directive.";
+      expect(lintCarrySurfaceProvenance(sourceLine)).toEqual({ flagged: false, matches: [] });
+      expect(
+        lintCarrySurfaceProvenance('The real dated owner directive control remains flagged.'),
+      ).toEqual({ flagged: false, matches: [] });
+
+      expect(
+        lintCarrySurfaceProvenance('The owner said to defer the deployment until Friday.').matches[0]
+          ?.kind,
+      ).toBe('owner-attribution');
+      expect(
+        lintCarrySurfaceProvenance(
+          'Owner directive 2026-07-06: do not spend V1 effort on P2P/cross-machine federation',
+        ).matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
     it('an "owner directed" VERB phrase still routes through the existing owner-attribution match, not this one', () => {
       const r = lintCarrySurfaceProvenance('the owner directed us to hold off, per the standup');
       expect(r.flagged).toBe(true);

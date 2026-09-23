@@ -4,6 +4,44 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { listSpecEvidence, SPEC_EVIDENCE_KINDS, evidenceCurrentInputSchema } from './spec-evidence-store';
+import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+
+type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
+
+/**
+ * P-007 (RSR-P-007-A): the default per-binding currentness table. Identity plus the
+ * overall verdict and its reasons — what an auditor scans; fingerprints, per-dimension
+ * detail, binding details and the server-measurement body stay in detail:'full'.
+ */
+function summaryEvidenceRow(row: EvidenceRow) {
+  return {
+    id: row.id,
+    workItemId: row.workItemId,
+    specId: row.specId,
+    specRevision: row.specRevision,
+    evidenceKind: row.evidenceKind,
+    evidenceRef: row.evidenceRef,
+    testRunId: row.testRunId ?? null,
+    currentness: {
+      overall: row.currentness.overall,
+      staleReasons: row.currentness.staleReasons,
+      unknownReasons: row.currentness.unknownReasons,
+    },
+  };
+}
+
+/** One row per clause revision: how many bindings, and how many are current/stale/unknown. */
+function byClause(evidence: EvidenceRow[]) {
+  const clauses = new Map<string, { specId: string; specRevision: number; bindings: number; current: number; stale: number; unknown: number }>();
+  for (const row of evidence) {
+    const key = `${row.specId}@${row.specRevision}`;
+    const entry = clauses.get(key) ?? { specId: row.specId, specRevision: row.specRevision, bindings: 0, current: 0, stale: 0, unknown: 0 };
+    entry.bindings += 1;
+    entry[row.currentness.overall] += 1;
+    clauses.set(key, entry);
+  }
+  return [...clauses.values()];
+}
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -30,12 +68,13 @@ const argsSchema = z.object({
     .max(3)
     .optional(),
   limit: z.number().int().min(1).max(1000).optional(),
+  detail: reviewReadDetailArg,
 });
 
 export default defineTool({
   name: 'plans:get-spec-evidence',
   description:
-    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown.',
+    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details.',
   guidance: {
     when: 'Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.',
     notWhen: 'Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.',
@@ -57,7 +96,8 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    const evidence = await listSpecEvidence({ ...args, planSlugs: [args.slug], harnessSlug });
+    const { detail, ...listArgs } = args;
+    const evidence = await listSpecEvidence({ ...listArgs, planSlugs: [args.slug], harnessSlug });
     const counts = { current: 0, stale: 0, unknown: 0 };
     for (const row of evidence) counts[row.currentness.overall] += 1;
     return {
@@ -65,7 +105,19 @@ export default defineTool({
         ok: true,
         slug: args.slug,
         harnessSlug,
-        evidence,
+        ...(isFullDetail(detail)
+          ? { detail: 'full' as const, evidence }
+          : {
+              detail: 'summary' as const,
+              evidence: evidence.map(summaryEvidenceRow),
+              byClause: byClause(evidence),
+              fullBody: fullBodyRef('plans:get-spec-evidence', args, [
+                'evidence[].fingerprints',
+                'evidence[].currentness.dimensions',
+                'evidence[].details',
+                'evidence[].serverMeasurement',
+              ]),
+            }),
         count: evidence.length,
         currentness: counts,
       },

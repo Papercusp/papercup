@@ -3491,6 +3491,7 @@ export function resumeTargetSelectionFromLastActive(session: any, args: {} | und
 };
 export function sessionPortTargetAccount(account: any): any;
 export function sessionPortRequestBody(source: any, target: any, account: any, args?: {}): {
+    consultEvidenceSpan?: any;
     protocolVersion: number;
     transformVersion: number;
     workspace: any;
@@ -4256,7 +4257,7 @@ export const RESUME_EFFORT_MENU: {
     value: string;
 }[];
 export const SESSION_PORT_PROTOCOL_VERSION: 2;
-export const SESSION_PORT_TRANSFORM_VERSION: 3;
+export const SESSION_PORT_TRANSFORM_VERSION: 4;
 export namespace AGENT_LABELS {
     let claude: string;
     let codex: string;

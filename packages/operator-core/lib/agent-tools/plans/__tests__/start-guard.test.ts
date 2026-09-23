@@ -13,7 +13,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
+  type AcceptanceBarContractSnapshot,
   type AcceptanceBarContractSnapshotInput,
+  type AcceptanceBarTrace,
 } from '../../../acceptance-bar-contract-snapshot';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn() }));
@@ -333,6 +335,107 @@ describe('plans:start canonical BAR subject readiness', () => {
     expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
     expectNoOpStatusWrite();
+  });
+});
+
+// review-system-rework-reduction-2026-09-23 P-003 (RSR-P-003-A): plans:start refuses a
+// post-epoch BAR whose METHOD, structured check or test layers are missing, or whose
+// check files cannot satisfy a declared layer — before any proof is bound — and names
+// the missing field. Real evaluator + real start gate; only the snapshot is supplied.
+describe('plans:start BAR contract completeness before proof (P-003)', () => {
+  const completeBar = (): AcceptanceBarTrace => ({
+    barKey: 'R-1', criterionKey: 'r-1', barHash: 'a'.repeat(64),
+    model: 'The export contains every matching row.',
+    method: 'Export a multi-page fixture and compare rows.',
+    check: { kind: 'tests', files: ['packages/operator-core/lib/export.integration.test.ts'] },
+    requiredTestLayers: ['integration'],
+    replication: null, falsifier: 'A matching row is missing.', role: 'outcome', mandatory: true,
+    requiredScope: ['tree'], evidencePlane: 'tree', passRatings: ['healthy'], coversBarKeys: [],
+    provenance: { lifecycle: 'pre-implementation', declaredAt: '2026-09-04T12:00:00.000Z', declaredBy: 'su-author' },
+    mappings: [{
+      planItemId: 'P-001', planItemStatus: 'todo', specId: 'spec-1', specRevision: 1,
+      specContentHash: 'spec-hash', sourceBarHash: 'a'.repeat(64), sourceBarSetHash: 'b'.repeat(64),
+      sourceRubricRevision: 1, evidencePlane: 'tree',
+    }],
+    workContracts: [{ workItemId: 'WI-1', specId: 'spec-1', specRevision: 1, specFingerprint: 'spec-hash', current: true }],
+    proof: {
+      state: 'missing', currentEvidence: 0, staleEvidence: 0, kinds: [], evidenceRefs: [],
+      uncertainEvidence: 0, evidencePlanes: [],
+    },
+    grading: {
+      state: 'missing', scorecardId: null, rubricRevision: null, gradedBy: null,
+      selectedVia: null, rating: null, evidence: null,
+    },
+    readiness: { state: 'ready', codes: [], mapping: 'live', method: 'declared', workContract: 'current' },
+  });
+  const postEpochSnapshot = (trace: AcceptanceBarTrace): AcceptanceBarContractSnapshot => ({
+    schemaVersion: 1, contentHash: 'c'.repeat(64), planSlug: 'mock', applicable: true,
+    plan: {
+      workspaceId: 'ws-of-harness', harnessSlug: 'papercup', planSlug: 'mock', status: 'ready',
+      revision: 1, contentHash: 'fixture', adoptionEpoch: 1, cohort: 'post-epoch',
+      barSetHash: 'b'.repeat(64), rubricSlug: 'acceptance-mock', rubricRevision: 1,
+      seededAt: '2026-09-04T12:00:00.000Z', seededBy: 'su-author',
+    },
+    rubric: {
+      rubricId: 'acceptance-mock', revision: 1, criteriaHash: 'criteria', barSetHash: 'b'.repeat(64),
+      contract: {
+        schemaVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch', subjectPlanRevision: 1,
+        seededAt: '2026-09-04T12:00:00.000Z', seededBy: 'su-author',
+      },
+      createdBy: 'su-author', ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], classRef: null,
+    },
+    sourceRevisions: { subjectPlan: 1, rubricPlan: 1, clauses: [], workContracts: [], scorecardIds: [] },
+    bounded: {
+      plans: { rowsRead: 1, limit: 1, truncated: false },
+      rubrics: { rowsRead: 1, limit: 2, truncated: false },
+      planItems: { rowsRead: 1, limit: 500, truncated: false },
+      clauses: { rowsRead: 1, limit: 1000, truncated: false },
+      workContracts: { rowsRead: 1, limit: 1000, truncated: false },
+      evidence: { rowsRead: 0, limit: 2000, truncated: false },
+      scorecards: { rowsRead: 0, limit: 50, truncated: false },
+      vetting: { rowsRead: 0, limit: 50, truncated: false },
+      lineage: { rowsRead: 1, limit: 1000, truncated: false },
+    },
+    completeness: { complete: true, truncated: false, problems: [] },
+    lineage: { identities: ['su-impl'], parties: [], complete: true },
+    grading: {
+      authoritativeScorecardId: null, gradedBy: null, selectedVia: null, rubricRevision: null,
+      vetting: { state: 'missing', scorecardId: null, rubricRevision: null },
+      authorVerdict: { state: 'missing', scorecardId: null, verdict: null },
+    },
+    bars: [trace],
+    readiness: { state: 'ready', codes: [], nextRepair: null },
+  });
+
+  it('admits a complete contract past the BAR gate (positive control)', async () => {
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(postEpochSnapshot(completeBar()));
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).not.toMatchObject({ code: 'acceptance_bar_contract_not_ready' });
+    expect(planLockMocks.withPlanLock).toHaveBeenCalled();
+  });
+
+  it.each([
+    { defect: 'no METHOD', patch: { method: '' }, code: 'bar_snapshot_method_missing', field: 'METHOD is empty' },
+    { defect: 'no structured check', patch: { check: null }, code: 'bar_snapshot_check_missing', field: 'no structured check' },
+    { defect: 'no test layers', patch: { requiredTestLayers: [] }, code: 'bar_snapshot_proof_depth_missing',
+      field: 'declares no requiredTestLayers' },
+    { defect: 'a check file that cannot satisfy its declared layer',
+      patch: { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/export.test.ts'] } },
+      code: 'bar_snapshot_check_invalid', field: 'no check.files entry is a test at that layer' },
+  ])('refuses a BAR with $defect and names the field, without promotion', async ({ patch, code, field }) => {
+    vi.mocked(readAcceptanceBarContractSnapshot)
+      .mockResolvedValue(postEpochSnapshot({ ...completeBar(), ...patch } as AcceptanceBarTrace));
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'plan_inputs_not_ready',
+      code: 'acceptance_bar_contract_not_ready',
+      source: 'acceptance-bar-contract',
+      missing: expect.arrayContaining([code]),
+      issues: expect.arrayContaining([expect.stringContaining(`R-1: `), expect.stringContaining(field)]),
+    });
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 });
 

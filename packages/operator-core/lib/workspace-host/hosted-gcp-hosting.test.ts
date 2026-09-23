@@ -6,6 +6,7 @@ import {
   PAPERCUSP_HOSTED_HOST_ROLE_ID,
   PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS,
   PAPERCUSP_HOSTED_OBSERVER_ROLE_ID,
+  HostedGcpNotReadyError,
   ensurePapercuspHostingGrant,
   hostedGcpWorkspaceProject,
   papercuspHostingBindings,
@@ -129,6 +130,23 @@ describe("Papercusp-hosted GCP reservation (D-399)", () => {
     await expect(ensurePapercuspHostingGrant({
       projectId: PROJECT, member: MEMBER, hostId: HOST, accessToken: async () => 't', fetch: alwaysConflict,
     })).rejects.toThrow('policy_contended');
+  });
+
+  it("tells IAM not yet seeing a new organization account apart from a real refusal, and says why", async () => {
+    const answering = (status: number, message: string) => vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith(':getIamPolicy')
+        ? Response.json({ bindings: [] })
+        : Response.json({ error: { code: status, message, status: 'INVALID_ARGUMENT' } }, { status }));
+    const grant = (fetchImpl: typeof fetch) =>
+      ensurePapercuspHostingGrant({ projectId: PROJECT, member: MEMBER, hostId: HOST, accessToken: async () => 't', fetch: fetchImpl });
+
+    const lag = grant(answering(400, 'Service account pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com does not exist.'));
+    await expect(lag).rejects.toBeInstanceOf(HostedGcpNotReadyError);
+    await expect(lag).rejects.toThrow('does not exist');
+
+    const invalid = grant(answering(400, 'Invalid condition expression.'));
+    await expect(invalid).rejects.toThrow('policy_write_failed:400:');
+    await expect(invalid).rejects.not.toBeInstanceOf(HostedGcpNotReadyError);
   });
 
   it('does not write a policy that already holds the reservation', async () => {

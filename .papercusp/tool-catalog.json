@@ -21515,7 +21515,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].",
       "capabilities": [
         "plans:read"
       ],
@@ -21578,7 +21578,7 @@
       "guidance": {
         "when": "During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.",
         "notWhen": "Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.",
-        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy with current fingerprints → scorecards:emit each passing draft. P-007 consumes current emitted rows at work_items:complete."
+        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete."
       }
     },
     {
@@ -21778,7 +21778,7 @@
           "POST"
         ]
       },
-      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown.",
+      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. Default detail:\"summary\" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:\"full\" adds fingerprints, per-dimension status and binding details.",
       "capabilities": [
         "plans:read"
       ],
@@ -27898,7 +27898,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true and post its returned approval JSON on a thread you can write to; send the outside-lineage reviewer a pointer. Have the reviewer re-post it verbatim on any thread they can write to, preferably an item they already hold, then apply approvalRef:'thread-post:<id>'. The lookup is workspace-wide by local post id, not tied to the requester's thread; do not create a counter-sign work-item just for the approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change: amend { dryRun:true } → requester posts preview.approval once with work_items:comment and sends its thread-post id to an outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread → apply with approvalRef:'thread-post:<reviewer-post-id>'. The resolver loads the immutable preview within the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post. Do not create a counter-sign work-item just for approval. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -27925,7 +27925,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval VERBATIM as a work_items:comment on a thread they can write to and sends the reviewer a pointer (cap: 600 characters). The reviewer re-posts that exact JSON as a work_items:comment on any existing thread they can write to, preferably an item they already hold, then returns the post id. `thread-post:<id>` resolves a local post by workspace and id; it is not bound to the requester's thread. Do not create a counter-sign work-item just for the approval. Apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Never truncate or retype approval JSON."
+        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval once as a work_items:comment and sends its post id to the outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread, preferably an item they already hold → apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Both posts are immutable and resolved by workspace/id. The compact pointer avoids hash transcription; the server compares the referenced preview to the full applied delta. Do not create a counter-sign work-item for approval."
       }
     },
     {
@@ -27936,7 +27936,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many rubrics in full — criteria (key + model + method + drift markers + rating scale), default rating scale, method_ref runbook, and acceptance-rubric vetting status. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
+      "description": "Read one OR many rubrics. Default detail:'summary' returns a criteria index (key + title), hashes, rating scale, method_ref and acceptance-rubric vetting status plus a fullBody ref; detail:'full' adds each criterion's model, method and drift markers — pass it to grade. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
       "capabilities": [
         "coord:read"
       ],
@@ -27962,7 +27962,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You hold rubric refs (from rubrics:list/search or coord provenance) and need full criteria to grade against — a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.",
+        "when": "You hold rubric refs (from rubrics:list/search or coord provenance) and need their criteria — pass detail:\"full\" to grade a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
         "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key). For a frozen audit pass { rubricRef, revision } and retain rubric.revision + rubric.criteriaHash. One failed ref never fails the rest."
       }

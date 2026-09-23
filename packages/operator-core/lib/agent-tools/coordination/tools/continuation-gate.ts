@@ -401,7 +401,11 @@ export type ActiveLoopRewakeBlockedReason =
   | 'max-fires-exhausted'
   | 'max-duration-unverifiable'
   | 'max-duration-exhausted'
-  | 'fire-starved';
+  | 'fire-starved'
+  /** P-013 / EI-24023838400909760: the loop's most recent fire PARKED undelivered
+   *  (e.g. a cold fire with no injectable psu host), so the next fire on the same
+   *  path is expected to park too. */
+  | 'last-fire-parked';
 
 export interface ContinuationVerdict {
   /** The mechanical recommendation: run the next unit in-turn (true) or settle (false). */
@@ -526,7 +530,9 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
             ? 'its next attempted fire would exceed maxDurationSec'
             : activeLoopRewakeBlockedReason === 'fire-starved'
               ? 'it is fire-starved (zero fires despite at least two expected opportunities and an overdue nextFireAt)'
-              : null;
+              : activeLoopRewakeBlockedReason === 'last-fire-parked'
+                ? 'its most recent fire PARKED undelivered (loop:status lastWakeStatus/lastWakeError), so the next fire on the same path is expected to park too'
+                : null;
     const reWakeGap = activeLoopDiagnosis
       ? `an armed loop EXISTS but is intentionally excluded from the guarantee because ${activeLoopDiagnosis}; ` +
         (activeInboxWakeAwait === true
@@ -541,7 +547,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
       `ending the turn now would SILENTLY HALT the session. Do NOT just end it — `;
     const remedy = activeLoopDiagnosis
       ? `DO NOT read this as "no armed loop" or blindly arm a second one. Read loop:status and repair the EXISTING loop state; ` +
-        (activeLoopRewakeBlockedReason === 'fire-starved'
+        (activeLoopRewakeBlockedReason === 'fire-starved' || activeLoopRewakeBlockedReason === 'last-fire-parked'
           ? 'restore its routine/wake path and re-check delivery before settling. '
           : 'if continuation is still intended, deliberately re-arm that same owner loop with the intended cadence, goal, and dead-man bounds. ') +
         (selfCompactionAvailable === true

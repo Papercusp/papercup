@@ -858,7 +858,10 @@ const FAIL_BASELINE = new Map([
   // EngineCtx.progress rows became stale when observer classification became
   // consumption-based and are intentionally omitted below.
   ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', OVERRIDE_WITH_REAL_DEFAULT],
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', VERB_SPECIFIC_BINDING],
+  // 2026-09-23 — PRUNED `revive`, not a relaxation: the --list measurement no longer
+  // reports that divergence at all, so the row was stale and the checker flagged it as
+  // such. `reach` is the surviving adjudication and is re-keyed onto the narrowed finding.
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach', VERB_SPECIFIC_BINDING],
   // 2026-09-20 — RE-KEYED, not a new exception (row count unchanged, scope strictly
   // narrower). `settleConversation` is now wired in decline.ts:63 (a terminal decline
   // carries a typed `declined` consult_state but must also settle the coarse
@@ -869,7 +872,15 @@ const FAIL_BASELINE = new Map([
   // unwired here: it is declared OPTIONAL (consult-verbs-core.ts:146), is referenced
   // only inside consultCloseCore (:776/:783), and its absence is guarded structurally
   // by a `graduate_unavailable` refusal rather than silently ignored.
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem', VERB_SPECIFIC_BINDING],
+  // 2026-09-23 — RE-KEYED to add `reach`, same VERB_SPECIFIC_BINDING ruling, strictly
+  // narrower scope. `reach` became newly visible here only because D-011 seam 1 of 2 wired
+  // it in reply.ts:83, and parity compares against seams wired anywhere on the type — it is
+  // not a new divergence in decline.ts. Wiring it would be WRONG, not merely unnecessary:
+  // decline.ts:80 states the omission affirmatively ("No `reach` binding here at all — a
+  // decline has no requester follow-up, so this verb has no live agent it may legitimately
+  // message"), so binding `reach` would make a decline message an agent D-002/D-011 say it
+  // must not. The cascade advance it does owe is carried by the `dispatch` seam instead.
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,reach', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|resolveLocalBackends', HARNESS_VS_PRODUCTION],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|log', HARNESS_VS_PRODUCTION],

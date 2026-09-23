@@ -789,18 +789,21 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         barrierErr,
         (t) => t.includes('another exclusive materializer owns the writer lock — waiting before touching heavy slots'),
         'the materializer remaining pending on the writer lock',
+        4_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry waiting for exclusive materializer intent to clear'),
         'the retry waiting for the materializer intent',
+        4_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry still waiting for exclusive materializer intent'),
         'the retry emitting a progress heartbeat while the materializer remains pending',
+        4_000,
       );
       // The regression is about re-admission ordering: while the materializer is
       // still intent-pending, no second workload attempt may have started. The

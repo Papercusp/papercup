@@ -395,6 +395,50 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     ).toBe(true);
   });
 
+  // P-013 / RSR-P-013-C (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
+  // a cold loop re-armed and was told rewakeGuaranteed:true while its previous fire had
+  // parked "no injectable psu host"; the next fire parked identically and the session went
+  // dark. An active in-bounds loop is not a guarantee when its delivery path is broken.
+  describe('a loop whose last fire PARKED undelivered is not a re-wake guarantee', () => {
+    const NO_HOST = 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary';
+
+    it('reports last-fire-parked for a parked no-host cold fire', () => {
+      expect(classifyLoopNextWake(loop({ lastWakeStatus: 'parked', lastWakeError: NO_HOST }))).toEqual({
+        guaranteed: false,
+        reason: 'last-fire-parked',
+      });
+      expect(loopGuaranteesNextWake(loop({ lastWakeStatus: 'parked', lastWakeError: NO_HOST }))).toBe(false);
+    });
+
+    it('also rejects other undeliverable park shapes (alive but not an injectable pty)', () => {
+      expect(
+        classifyLoopNextWake(
+          loop({ lastWakeStatus: 'parked', lastWakeError: 'session pid 42 alive but not an injectable managed pty for this subscriber' }),
+        ).reason,
+      ).toBe('last-fire-parked');
+    });
+
+    it('still guarantees when the last fire was delivered, or its park already holds a durable retry', () => {
+      expect(classifyLoopNextWake(loop({ lastWakeStatus: 'delivered', lastWakeError: null })).guaranteed).toBe(true);
+      expect(
+        classifyLoopNextWake(
+          loop({
+            lastWakeStatus: 'parked',
+            lastWakeError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+          }),
+        ).guaranteed,
+      ).toBe(true);
+      // Legacy inputs without the wake fields keep their old verdict.
+      expect(classifyLoopNextWake(loop()).guaranteed).toBe(true);
+    });
+
+    it('a dead-man bound still wins over the park diagnosis (ordering is stable)', () => {
+      expect(
+        classifyLoopNextWake(loop({ firesSinceArm: 12, maxFires: 12, lastWakeStatus: 'parked', lastWakeError: NO_HOST })).reason,
+      ).toBe('max-fires-exhausted');
+    });
+  });
+
   it('does not reject once fires have actually been delivered, even with an overdue nextFireAt', () => {
     const now = Date.parse('2026-08-25T04:20:00.000Z');
     expect(

@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { lookup as lookupToolDefinition } from '@papercusp/tooldef';
 import {
   readGoalHistory,
   readGoalHistoryEntriesByIds,
@@ -210,6 +211,41 @@ export interface BoundedPriorAttemptBrief {
   };
   estimatedTokens: number;
   serializedChars: number;
+  /**
+   * P-035 (review-system-rework-reduction-2026-09-23): HOW earlier holders changed this
+   * plan — the write verbs that already succeeded on it. Present only on a claim whose
+   * plan resolves. See {@link compileWorkedVerbs}.
+   */
+  workedVerbs?: PriorAttemptWorkedVerbs;
+}
+
+/** One write verb that already worked on the plan (P-035). */
+export interface PriorAttemptWorkedVerb {
+  /** Colon-form tool name, e.g. `rubrics:amend`. */
+  tool: string;
+  /** Successful agent-originated calls against the plan's work-items in the ledger window. */
+  calls: number;
+  lastAt: string | null;
+  /** Who made the latest call: the peer to ask how it was used. */
+  lastActor: string | null;
+  /** Plan decisions whose text names this verb (e.g. `<slug>#D-024`). */
+  decisionRefs: string[];
+}
+
+export interface PriorAttemptWorkedVerbs {
+  planSlug: string;
+  /**
+   * Read/write comes from the tool registry's own effect field (`@papercusp/tooldef`
+   * `inferCapabilityEffect`, the one effect oracle). A name the registry does not know is
+   * never listed, so a prose token such as `owner:Avi` cannot pose as a verb.
+   */
+  classifier: 'tool-registry-effect';
+  /** `unavailable` = the call ledger could not be read, so `calls` are 0 by absence of
+   *  evidence, not evidence of absence. Decision-named verbs still appear. */
+  ledger: 'read' | 'unavailable';
+  windowDays: number;
+  verbs: PriorAttemptWorkedVerb[];
+  omittedVerbs: number;
 }
 
 export interface PriorAttemptBriefBudget {
@@ -800,6 +836,148 @@ interface CollectorDeps {
     goalId: string;
     ids: readonly string[];
   }) => Promise<GoalHistoryEntry[]>;
+  /**
+   * P-035: successful calls against a plan's work-items, grouped by tool. OPTIONAL for
+   * the same reason as `journal`: existing doubles predate it, and an absent leg is a
+   * brief without `workedVerbs`, never a failed claim.
+   */
+  workedVerbCalls?: typeof readWorkedVerbCalls;
+  /** P-035 classifier. Absent ⇒ no `workedVerbs` block (nothing can be classified). */
+  toolEffect?: (toolName: string) => 'read' | 'write' | undefined;
+}
+
+/** The call ledger's retention (DISPATCH_SAMPLE_WINDOW_DAYS); asking for more reads nothing extra. */
+export const WORKED_VERB_WINDOW_DAYS = 14;
+const WORKED_VERB_LIMIT = 16;
+const WORKED_VERB_ROW_LIMIT = 200;
+
+export interface WorkedVerbCallRow {
+  tool: string;
+  calls: number;
+  lastAt: string | null;
+  lastActor: string | null;
+}
+
+/**
+ * P-035: every tool that succeeded while an agent's goal was one of the plan's work-items
+ * (or the requested item itself), grouped by tool.
+ *
+ * Joins on `goal_ref`, which is indexed (`tool_invocations_goal_ref_idx`). Measured
+ * 2026-09-23 on the 33-item greening program: 145-890 ms. A text search of `args_json` for the
+ * slug was the first design and was rejected: 4.6 s warm, and over 300 s across 10 days.
+ * Hook-originated calls (`call_origin='hook'`: activity:report, journal:record-turn, the
+ * lock hook) are excluded because no agent chose them; they were 16k of the 40k rows.
+ */
+export async function readWorkedVerbCalls(input: {
+  workspaceId: string;
+  planSlug: string;
+  workItemId?: string | null;
+  windowDays?: number;
+  limit?: number;
+}): Promise<WorkedVerbCallRow[]> {
+  const { sql } = getOrgPg();
+  const extra = input.workItemId ? [input.workItemId] : [];
+  const rows = await sql<{ tool_name: string; calls: number; last_at: Date | string | null; last_actor: string | null }[]>`
+    SELECT t.tool_name,
+           count(*)::int AS calls,
+           max(t.invoked_at) AS last_at,
+           (array_agg(t.coord_owner_id ORDER BY t.invoked_at DESC))[1] AS last_actor
+      FROM harness_shared.tool_invocations t
+     WHERE t.goal_ref = ANY(
+             ARRAY(SELECT w.feature_id FROM harness_shared.work_items w
+                    WHERE w.workspace_id = ${input.workspaceId}
+                      AND w.source_plan_slug = ${input.planSlug}
+                    LIMIT 500) || ${extra}::text[])
+       AND t.status = 'ok'
+       AND t.call_origin IS DISTINCT FROM 'hook'
+       AND t.invoked_at > now() - make_interval(days => ${input.windowDays ?? WORKED_VERB_WINDOW_DAYS})
+     GROUP BY t.tool_name
+     ORDER BY calls DESC
+     LIMIT ${input.limit ?? WORKED_VERB_ROW_LIMIT}`;
+  return rows.map((row) => ({
+    tool: row.tool_name,
+    calls: Number(row.calls) || 0,
+    lastAt: row.last_at ? new Date(row.last_at).toISOString() : null,
+    lastActor: row.last_actor ?? null,
+  }));
+}
+
+/** A tool name as prose writes it: `rubrics:amend`, `plans:set-plan-status`, `plan_items:claim`. */
+const TOOL_NAME_TOKEN = /\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*\b/g;
+
+/**
+ * P-035 pure compiler: merge the call ledger with the verbs the plan's Decisions name,
+ * keep only what the registry classifies as a WRITE, and order the curated "how" first.
+ *
+ * Why Decisions lead: they are where a prior holder wrote down the method (D-024..D-026 on
+ * the greening program each name `rubrics:amend`), they survive the ledger's 14-day
+ * retention, and they name domain verbs rather than the coordination plumbing every
+ * session calls. The measured failure this exists for: a successor concluded after three
+ * `tools:find` calls that no BAR-amendment verb existed, while the program had used
+ * `rubrics:amend` 112 times.
+ */
+export function compileWorkedVerbs(input: {
+  planSlug: string;
+  /** `null` = the ledger could not be read. */
+  calls: readonly WorkedVerbCallRow[] | null;
+  decisions: ReadonlyArray<{ rawRef: string; text: string }>;
+  effectOf: (toolName: string) => 'read' | 'write' | undefined;
+  windowDays?: number;
+  limit?: number;
+}): PriorAttemptWorkedVerbs | null {
+  const byTool = new Map<string, PriorAttemptWorkedVerb>();
+  const entry = (tool: string): PriorAttemptWorkedVerb => {
+    let found = byTool.get(tool);
+    if (!found) {
+      found = { tool, calls: 0, lastAt: null, lastActor: null, decisionRefs: [] };
+      byTool.set(tool, found);
+    }
+    return found;
+  };
+  const isWrite = (tool: string): boolean => {
+    try {
+      return input.effectOf(tool) === 'write';
+    } catch {
+      return false;
+    }
+  };
+  for (const row of input.calls ?? []) {
+    if (!row.tool || !isWrite(row.tool)) continue;
+    const verb = entry(row.tool);
+    verb.calls += row.calls;
+    if (row.lastAt && (!verb.lastAt || row.lastAt > verb.lastAt)) {
+      verb.lastAt = row.lastAt;
+      verb.lastActor = row.lastActor;
+    }
+  }
+  for (const decision of input.decisions) {
+    const named = new Set(decision.text.match(TOOL_NAME_TOKEN) ?? []);
+    for (const tool of named) {
+      if (!isWrite(tool)) continue;
+      const verb = entry(tool);
+      if (!verb.decisionRefs.includes(decision.rawRef)) verb.decisionRefs.push(decision.rawRef);
+    }
+  }
+  const ledger = input.calls ? ('read' as const) : ('unavailable' as const);
+  if (byTool.size === 0 && ledger === 'read') return null;
+  const ordered = [...byTool.values()].sort(
+    (a, b) =>
+      b.decisionRefs.length - a.decisionRefs.length || b.calls - a.calls || a.tool.localeCompare(b.tool),
+  );
+  const limit = Math.max(1, input.limit ?? WORKED_VERB_LIMIT);
+  return {
+    planSlug: input.planSlug,
+    classifier: 'tool-registry-effect',
+    ledger,
+    windowDays: input.windowDays ?? WORKED_VERB_WINDOW_DAYS,
+    verbs: ordered.slice(0, limit).map((verb) => ({ ...verb, decisionRefs: verb.decisionRefs.slice(0, 4) })),
+    omittedVerbs: Math.max(0, ordered.length - limit),
+  };
+}
+
+/** The registry's effect for a colon-form tool name; `undefined` when it is not registered. */
+function registryToolEffect(toolName: string): 'read' | 'write' | undefined {
+  return lookupToolDefinition(toolName)?.effect;
 }
 
 const DEFAULT_DEPS: CollectorDeps = {
@@ -818,6 +996,8 @@ const DEFAULT_DEPS: CollectorDeps = {
     readGoalHistory(getOrgPg().sql, { workspaceId, goalId, limit }),
   goalHistoryByIds: ({ workspaceId, goalId, ids }) =>
     readGoalHistoryEntriesByIds(getOrgPg().sql, { workspaceId, goalId, ids }),
+  workedVerbCalls: readWorkedVerbCalls,
+  toolEffect: registryToolEffect,
 };
 
 function goalHistoryText(entry: GoalHistoryEntry): string {
@@ -1366,12 +1546,34 @@ export async function getClaimTimePriorAttemptBrief(
   if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
   const budget = opts.budget ?? (pointer ? undefined : ORPHAN_CLAIM_BRIEF_BUDGET);
+  const planSlug = pointer?.planSlug ?? opts.planSlug ?? opts.workItem?.sourcePlanSlug ?? null;
+  // P-035: the ledger read runs BESIDE the collector under the same budget. It resolves
+  // (never rejects) so a slow or failed ledger costs this claim its call counts, not
+  // its whole brief — the decision-named verbs still come from the compilation.
+  const readCalls = deps.workedVerbCalls;
+  const workedVerbCalls: Promise<WorkedVerbCallRow[] | null> =
+    planSlug && deps.toolEffect && readCalls
+      ? Promise.race([
+          // Async wrapper: a synchronous throw (workspace resolution) must degrade to
+          // `ledger:'unavailable'`, not escape the fail-soft contract of this function.
+          (async () =>
+            readCalls({
+              workspaceId: resolveConcreteWorkspaceId(),
+              planSlug,
+              workItemId: opts.workItemId ?? opts.workItem?.id ?? null,
+            }))().catch(() => null),
+          new Promise<null>((resolve) => {
+            const timer = setTimeout(() => resolve(null), timeoutMs);
+            timer.unref?.();
+          }),
+        ])
+      : Promise.resolve(null);
   try {
     const compilation = await Promise.race([
       collectPriorAttempts(
         {
           harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
-          planSlug: pointer?.planSlug ?? opts.planSlug ?? opts.workItem?.sourcePlanSlug ?? null,
+          planSlug,
           planItemId: pointer?.planItemId ?? opts.planItemId ?? null,
           workItemId,
           // A CLAIM is a member read: ancestors only, never a descendant rollup (D-007).
@@ -1386,7 +1588,23 @@ export async function getClaimTimePriorAttemptBrief(
         timer.unref?.();
       }),
     ]);
-    return buildBoundedPriorAttemptBrief(compilation, budget);
+    const brief = buildBoundedPriorAttemptBrief(compilation, budget);
+    if (brief && planSlug && deps.toolEffect) {
+      const workedVerbs = compileWorkedVerbs({
+        planSlug,
+        calls: await workedVerbCalls,
+        decisions: compilation.records
+          .filter((record) => record.authority === 'plan-decision')
+          .map((record) => ({ rawRef: record.rawRef, text: record.text })),
+        effectOf: deps.toolEffect,
+      });
+      if (workedVerbs) {
+        brief.workedVerbs = workedVerbs;
+        brief.serializedChars = JSON.stringify(brief).length;
+        brief.estimatedTokens = Math.ceil(brief.serializedChars / 4);
+      }
+    }
+    return brief;
   } catch {
     return null;
   }

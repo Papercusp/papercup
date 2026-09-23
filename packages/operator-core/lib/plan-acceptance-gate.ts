@@ -356,7 +356,7 @@ export const VETTING_PRECEDES_GRADING_REQUIRED_AFTER = '2026-08-31T00:00:00.000Z
  * resolve after the publishing session or account-local presentation expires.
  */
 const DURABLE_COMPANION_LABEL_RE =
-  /(?:durable\s+(?:companion|source)|source(?:\s+path)?|persisted\s+(?:at|in)|stored\s+(?:at|in)|committed\s+(?:at|in)|repository\s+(?:path|file)|work[- ]item(?:\s+(?:record|comment|source))?)\s*[:=]?\s*(?:`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|([^\s,;.)>]+))/gi;
+  /(?:durable\s+(?:companion|source)|source(?:\s+path)?|persisted\s+(?:at|in)|stored\s+(?:at|in)|committed\s+(?:at|in)|repository\s+(?:path|file)|work[- ]item(?:\s+(?:record|comment|source))?)\s*[:=]?\s*(?:`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|([^\s,;)>]+))/gi;
 
 /**
  * Extract explicit durable companion references from plan prose. This is
@@ -370,7 +370,7 @@ export function findDurableDeliverableCompanions(content: string): string[] {
   const seen = new Set<string>();
   DURABLE_COMPANION_LABEL_RE.lastIndex = 0;
   for (const match of String(content ?? '').matchAll(DURABLE_COMPANION_LABEL_RE)) {
-    const candidate = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? '').trim();
+    const candidate = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? '').trim().replace(/[.!?]+$/, '');
     if (!candidate || detectEphemeralDeliverableReferences(candidate).length > 0) continue;
     // A companion must identify a resolvable path or durable record, not a
     // sentence fragment such as “source: verified” or another presentation URL.
@@ -1523,9 +1523,13 @@ export function planAcceptanceRepairAction(
         };
   }
   if (verdict.code === 'acceptance_ungraded' || verdict.code === 'self_graded_only') {
+    // EI-24032136322947460: this gate cannot see whether the acceptance-grading-sweep
+    // is armed, so it must not promise the sweep recovers a stall — it sat paused for
+    // days while this text said it did. plans:set-plan-status reads the sweep and, when
+    // recovery is not automatic, replaces this with acceptanceGrader.recovery's route.
     return {
       kind: 'independent-grading', nextVerb: ship,
-      instruction: 'Retry through the existing idempotent grader recruiter; its lifecycle and the grading sweep own dispatch/recovery. Do not self-grade or launch a parallel reviewer.',
+      instruction: 'Retry plans:set-plan-status: each call re-runs the idempotent grader recruiter. Read its acceptanceGrader result for the dispatch state; acceptanceGrader.recovery is present when stalled gradings are NOT recovered automatically and names the manual route. Do not self-grade or launch a parallel reviewer.',
     };
   }
   if (verdict.code === 'acceptance_not_recorded' || verdict.code === 'acceptance_rejected') {

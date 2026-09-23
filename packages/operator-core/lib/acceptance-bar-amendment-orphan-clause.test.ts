@@ -13,7 +13,7 @@ import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 // Mirrors the fixture in acceptance-bar-amendment.test.ts. R-1 mapped to P-001 is what
 // makes the canonical identity `AUTO-BAR-R-1-P-001` -- the exact clause that wedged the
 // activation audit in EI-23816909807579931.
-function subjectPlan(): string {
+function subjectPlan(mapRow = '| R-1 | P-001 | tree |'): string {
   return `---
 title: Subject plan
 slug: subject-plan
@@ -40,18 +40,19 @@ updated: 2026-09-06
 
 | bar | implementing plan items | evidence plane |
 |---|---|---|
-| R-1 | P-001 | tree |
+${mapRow}
 
 ## Phase 1 — Build
 
 - **P-001** \`todo\` persist the canonical BAR
+- **P-002** \`todo\` consume the canonical BAR
 `;
 }
 
-function seedTemplateData() {
+function seedTemplateData(planContent = subjectPlan()) {
   const seeded = buildAcceptanceBarSeed({
     planSlug: 'subject-plan',
-    planContent: subjectPlan(),
+    planContent,
     actorId: 'seed-author',
     declaredAt: '2026-09-06T00:00:00.000Z',
     cohort: 'post-epoch',
@@ -95,14 +96,18 @@ function clauseRow(overrides: Record<string, unknown> = {}) {
  * to the minimum the transaction needs, so the only variable under test is what the
  * amendment believes about an already-stored clause.
  */
-function sqlStub(rows: unknown[], rowsAfterRepair: unknown[] = rows) {
+function sqlStub(
+  rows: unknown[],
+  rowsAfterRepair: unknown[] = rows,
+  currentPlanContent = subjectPlan(),
+) {
   let clauseReads = 0;
   const clauseQueries: Array<{ statement: string; values: unknown[] }> = [];
   const fn = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const statement = strings.join(' ');
     if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
     if (statement.includes('SELECT plan_slug, content')) {
-      return [{ plan_slug: 'subject-plan', content: subjectPlan() }];
+      return [{ plan_slug: 'subject-plan', content: currentPlanContent }];
     }
     if (statement.includes('FROM harness_shared.plan_spec_clauses c')) {
       clauseQueries.push({ statement, values });
@@ -114,13 +119,17 @@ function sqlStub(rows: unknown[], rowsAfterRepair: unknown[] = rows) {
   return Object.assign(fn, { clauseQueries });
 }
 
-function runAmendment(sql: ReturnType<typeof sqlStub>) {
+function runAmendment(
+  sql: ReturnType<typeof sqlStub>,
+  options: { templateData?: unknown; previousTemplateData?: unknown } = {},
+) {
   return synchronizeAcceptanceBarRevision(sql as never, {
     workspaceId: 'workspace',
     harnessSlug: 'papercusp',
     rubricSlug: 'acceptance-subject-plan',
     rubricRevision: 4,
-    templateData: seedTemplateData(),
+    templateData: options.templateData ?? seedTemplateData(),
+    previousTemplateData: options.previousTemplateData,
     actorId: 'amender',
   });
 }
@@ -133,7 +142,12 @@ function writeFor(specId: string) {
 
 // A clause whose current revision lost its bar linkage: a write that omitted `sourceBar`
 // NULLed source_bar_key, but the row is emphatically present -- at revision 2.
-const orphaned = () => clauseRow({ current_revision: 2, source_bar_key: null, source_bar_hash: null });
+const orphaned = (overrides: Record<string, unknown> = {}) => clauseRow({
+  current_revision: 2,
+  source_bar_key: null,
+  source_bar_hash: null,
+  ...overrides,
+});
 
 describe('AUTO-BAR clause whose bar linkage was lost (EI-23816909807579931)', () => {
   beforeEach(() => {
@@ -185,5 +199,105 @@ describe('AUTO-BAR clause whose bar linkage was lost (EI-23816909807579931)', ()
     expect(projection).toBeDefined();
     expect(projection!.statement).toContain('c.spec_id = ANY(');
     expect(projection!.values.flat()).toContain('AUTO-BAR-R-1-P-001');
+  });
+
+  it('retires a prior generated pair when an approved map amendment moves the BAR to another item', async () => {
+    const priorPlan = subjectPlan();
+    const currentPlan = subjectPlan('| R-1 | P-002 | tree |');
+    const priorTemplateData = seedTemplateData(priorPlan);
+    const currentTemplateData = seedTemplateData(currentPlan);
+    const oldClause = clauseRow({ spec_id: 'AUTO-BAR-R-1-P-001', plan_item_id: 'P-001' });
+    const newClause = clauseRow({
+      spec_id: 'AUTO-BAR-R-1-P-002',
+      plan_item_id: 'P-002',
+      lifecycle_status: 'draft',
+    });
+    h.setSpecClause.mockImplementation(async (write: Record<string, unknown>) => ({
+      status: write.specId === 'AUTO-BAR-R-1-P-002' ? 'created' : 'revised',
+      specId: write.specId,
+      revision: write.specId === 'AUTO-BAR-R-1-P-002' ? 1 : 2,
+    }));
+    const sql = sqlStub([oldClause], [oldClause, newClause], currentPlan);
+
+    await runAmendment(sql, {
+      templateData: currentTemplateData,
+      previousTemplateData: priorTemplateData,
+    });
+
+    const retired = writeFor('AUTO-BAR-R-1-P-001');
+    expect(retired).toMatchObject({
+      expectedRevision: 1,
+      lifecycleStatus: 'superseded',
+      acceptanceRef: null,
+      sourceBar: null,
+    });
+    expect(retired!.behavior).toContain('pair is absent from the current map');
+    // The old revision keeps the prior behavior; only its current lifecycle is retired.
+    expect(retired!.planItemId).toBe('P-001');
+    const replacement = writeFor('AUTO-BAR-R-1-P-002');
+    expect(replacement).toMatchObject({ expectedRevision: 0, lifecycleStatus: 'draft', planItemId: 'P-002' });
+  });
+
+  it('uses the canonical generated pair to retire a stale clause whose source BAR pin was lost', async () => {
+    const priorPlan = subjectPlan();
+    const currentPlan = subjectPlan('| R-1 | P-002 | tree |');
+    const oldClause = orphaned({
+      spec_id: 'AUTO-BAR-R-1-P-001',
+      plan_item_id: 'P-001',
+    });
+    const newClause = clauseRow({
+      spec_id: 'AUTO-BAR-R-1-P-002',
+      plan_item_id: 'P-002',
+      lifecycle_status: 'draft',
+    });
+    h.setSpecClause.mockImplementation(async (write: Record<string, unknown>) => ({
+      status: write.specId === 'AUTO-BAR-R-1-P-002' ? 'created' : 'revised',
+      specId: write.specId,
+      revision: write.specId === 'AUTO-BAR-R-1-P-002' ? 1 : 3,
+    }));
+    const sql = sqlStub([oldClause], [oldClause, newClause], currentPlan);
+
+    await runAmendment(sql, {
+      templateData: seedTemplateData(currentPlan),
+      previousTemplateData: seedTemplateData(priorPlan),
+    });
+
+    expect(sql.clauseQueries[0]!.statement).toContain("c.spec_id ~ '^AUTO-BAR-R-[0-9]+-P-[0-9]{3,}$'");
+    expect(writeFor('AUTO-BAR-R-1-P-001')).toMatchObject({ lifecycleStatus: 'superseded', sourceBar: null });
+  });
+
+  it('leaves a reviewed non-canonical clause tied to the old item intact as an additive contract', async () => {
+    const priorPlan = subjectPlan();
+    const currentPlan = subjectPlan('| R-1 | P-002 | tree |');
+    const currentTemplateData = seedTemplateData(currentPlan);
+    const currentCriteria = currentTemplateData.criteria as Array<{ barHash: string }>;
+    const reviewed = clauseRow({
+      spec_id: 'AUTO-BAR-R-1-P-001-reviewed',
+      source_bar_hash: currentCriteria[0]!.barHash,
+      plan_item_id: 'P-001',
+      behavior: 'Reviewed atomic proof remains bound to its authored outcome.',
+    });
+    const newClause = clauseRow({
+      spec_id: 'AUTO-BAR-R-1-P-002',
+      plan_item_id: 'P-002',
+      lifecycle_status: 'draft',
+    });
+    h.setSpecClause.mockImplementation(async (write: Record<string, unknown>) => ({
+      status: write.specId === 'AUTO-BAR-R-1-P-002' ? 'created' : 'revised',
+      specId: write.specId,
+      revision: 1,
+    }));
+    const sql = sqlStub([reviewed], [reviewed, newClause], currentPlan);
+
+    await runAmendment(sql, {
+      templateData: currentTemplateData,
+      previousTemplateData: seedTemplateData(priorPlan),
+    });
+
+    expect(writeFor('AUTO-BAR-R-1-P-001-reviewed')).toMatchObject({
+      lifecycleStatus: 'active',
+      behavior: 'Reviewed atomic proof remains bound to its authored outcome.',
+      planItemId: 'P-001',
+    });
   });
 });

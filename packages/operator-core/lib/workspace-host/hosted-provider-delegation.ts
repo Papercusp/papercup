@@ -586,6 +586,22 @@ export class HostedProviderDelegationManager {
     return onboarding;
   }
 
+  /**
+   * "Use Papercusp's cloud" (D-399). {@link onboard} refuses this method by design, so it has its
+   * own entry: the caller passes the host its server derived, and the configuration is bound here
+   * from that host — never taken from the caller.
+   */
+  async onboardPapercuspHosted(
+    input: Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'configuration'>,
+    hostId: string,
+  ): Promise<HostedProviderDelegationOnboarding> {
+    const onboarding = buildHostedProviderDelegationOnboarding(
+      await bindPapercuspHostedDelegation(input, this.organization, hostId),
+    );
+    await this.store.save(onboarding.record);
+    return onboarding;
+  }
+
   async verify(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord> {
     const current = await this.requireRecord(workspaceId, connectionId);
     if (current.status === 'revoked') throw new Error('hosted_provider_delegation_is_revoked');

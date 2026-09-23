@@ -74,6 +74,32 @@ describe('git-sync missed-interval alarm', () => {
       expect(evaluateLivenessAlarm(withDeploy(data), null).map((x) => x.key)).not.toContain('git-sync-missed-intervals');
     }
   });
+
+  // A failed read makes the signal VANISH; that must not auto-resolve an open alarm.
+  it('a failed read (errored panel or unreadable sub-read) is unobservable, never a recovery', () => {
+    expect(unobservableLivenessSignatures(withDeploy({ gitSyncMissedIntervalsUnreadable: true }))).toContain('git-sync-missed-intervals');
+    expect(
+      unobservableLivenessSignatures(mkHealth({ panels: { deploy: { status: 'unknown', error: 'boom', data: null } } })),
+    ).toContain('git-sync-missed-intervals');
+  });
+
+  it('a numeric reading or a genuinely empty measurement stays observable (so a real recovery resolves)', () => {
+    for (const data of [{ gitSyncMaxMissedIntervals: 0 }, { gitSyncMaxMissedIntervals: null, gitSyncMissedIntervalsUnreadable: false }]) {
+      expect(unobservableLivenessSignatures(withDeploy(data))).not.toContain('git-sync-missed-intervals');
+    }
+  });
+
+  it('records what the resolve observed, and classifies its own summary for legacy rows', () => {
+    const h = withDeploy({ gitSyncMaxMissedIntervals: 1 });
+    expect(resolveEvidenceFor('git-sync-missed-intervals', h)).toBe(
+      `observed deploy status=ok gitSyncMaxMissedIntervals=1 (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`,
+    );
+    const fired = evaluateLivenessAlarm(
+      withDeploy({ gitSyncMaxMissedIntervals: 7, gitSyncMissedIntervalsInstallSlug: 'papercusp' }),
+      null,
+    ).find((x) => x.key === 'git-sync-missed-intervals');
+    expect(deriveSignatureFromSummary(`[infra-liveness] ${fired?.summary ?? ''}`)).toBe('git-sync-missed-intervals');
+  });
 });
 
 describe('evaluateLivenessAlarm (pure)', () => {

@@ -5,6 +5,8 @@ import {
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
+  goalPlanningObligation,
+  type GoalPlanningProviderInput,
   waitingOnObligations,
   type IndependentVerificationProviderInput,
   type OwnerReportProviderInput,
@@ -15,10 +17,92 @@ import {
 } from './agent-obligation-providers';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import { compileGoalPlanPlacement } from './goal-launch-settings';
+import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
 const failure = { code: 'read-failed', detail: 'canonical writer timed out', retry: 'retry the canonical writer' };
+
+describe('scope-aware goal planning obligations', () => {
+  function input(disposition: GoalPlanningReview['disposition'] = 'plan-needed', populated = true): GoalPlanningProviderInput {
+    const value = portfolio(populated ? [worklistPlan(placement('working', 'none'))] : []);
+    return { ...base, goalId: 'goal-1', read: { status: 'known', value: {
+      portfolio: value, reviewIntervalMs: 60 * 60_000,
+      review: { schemaVersion: 1, goalId: 'goal-1', disposition,
+        rationale: 'Measured missing recovery coverage.', evidenceRefs: ['work-item:WI-fixture'],
+        planRefs: [], ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+        portfolioFingerprint: goalPlanningPortfolioFingerprint(value), reviewedAt: NOW },
+      authorities: { papercusp: { allowed: true, reason: 'caller-goal-owns-pot', ownerGoalId: 'goal-1', ownerGoalTitle: 'Goal' } },
+    } } };
+  }
+  function known(value: GoalPlanningProviderInput) {
+    if (value.read.status !== 'known') throw new Error('test requires known source');
+    return value.read.value;
+  }
+  it.each([true, false])('exposes an uncovered outcome with populated worklist=%s', (populated) => {
+    expect(goalPlanningObligation(input('plan-needed', populated))).toMatchObject({
+      family: 'planning-needed', status: 'due', applicableDemand: 1,
+      action: { kind: 'continue' },
+    });
+    expect(goalPlanningObligation(input('plan-needed', populated)).action?.summary).toContain('Recover failed checkout');
+  });
+  it('accepts a current supported sufficient-plan review without an idea quota', () => {
+    expect(goalPlanningObligation(input('existing-plans-sufficient'))).toMatchObject({ status: 'satisfied', applicableDemand: 0 });
+  });
+  it('reviews the standing frontier instead of equating terminal plans with goal completion', () => {
+    const value = input(); const state = known(value);
+    state.portfolio!.worklist = [worklistPlan(placement('terminal', 'none'))];
+    state.review = null;
+    expect(goalPlanningObligation(value)).toMatchObject({ status: 'due', action: { kind: 'inspect' } });
+    expect(goalPlanningObligation(value).action?.summary).toContain('frontier');
+  });
+  it('does not turn a failed source read into no demand', () => {
+    expect(goalPlanningObligation({ ...base, goalId: 'goal-1', read: { status: 'unknown', failure } })).toMatchObject({ status: 'unknown', measurementFailure: failure });
+  });
+  it.each(['paused', 'achieved', 'killed'])('does not resume a %s goal', (status) => {
+    const value = input(); known(value).portfolio!.goal.status = status;
+    expect(goalPlanningObligation(value)).toMatchObject({ status: 'not-applicable' });
+    expect(goalPlanningObligation(value).action).toBeUndefined();
+  });
+  it('refreshes a review when outcomes changed, not when observation clocks changed', () => {
+    const value = input('existing-plans-sufficient'); const state = known(value);
+    state.portfolio!.assembledAt = '2026-09-05T20:01:00Z';
+    expect(goalPlanningObligation(value).status).toBe('satisfied');
+    state.portfolio!.goal.body = 'New outcome';
+    expect(goalPlanningObligation(value)).toMatchObject({ status: 'due', action: { kind: 'inspect' } });
+  });
+  it('makes periodic review due even when planning inputs are unchanged', () => {
+    const value = input('existing-plans-sufficient'); value.observedAt = '2026-09-05T21:01:00Z';
+    expect(goalPlanningObligation(value).status).toBe('due');
+  });
+  it('routes other-goal plans instead of offering local adoption', () => {
+    const value = input('adopt-plan'); const state = known(value);
+    state.review!.planRefs = ['plan:papercusp/foreign'];
+    state.authorities.papercusp = { allowed: false, reason: 'different-active-goal-owns-pot', ownerGoalId: 'goal-other', ownerGoalTitle: 'Other' };
+    expect(goalPlanningObligation(value).action?.summary).toMatch(/route.*goal-other/i);
+    expect(goalPlanningObligation(value).action?.tool).toBeUndefined();
+  });
+  it('permits nonduplicating adoption in an unowned harness but retains CAS and launch guards', () => {
+    const value = input('adopt-plan'); const state = known(value);
+    state.review!.planRefs = ['plan:papercusp/reuse'];
+    state.authorities.papercusp = { allowed: true, reason: 'no-active-owner', ownerGoalId: null, ownerGoalTitle: null };
+    expect(goalPlanningObligation(value).action?.summary).toMatch(/adopt.*CAS/i);
+    expect(goalPlanningObligation(value).action?.summary).toContain('budget');
+  });
+  it('keeps unresolved candidate ownership unknown', () => {
+    const value = input('adopt-plan'); known(value).review!.planRefs = ['plan:unknown/candidate'];
+    expect(goalPlanningObligation(value).status).toBe('unknown');
+  });
+  it('puts executable existing-plan staffing ahead of planning', () => {
+    const planning = input();
+    const p = portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]);
+    const agenda = buildAgentObligationAgenda({ goalPlanning: planning, planPlacement: planInput({ status: 'known', value: {
+      portfolio: p, launch: launch(), alert: null, evidenceRef: 'placement:fixture',
+    } }) }, NOW);
+    expect(agenda.primary[0]?.family).toBe('plan-placement');
+    expect(agenda.primary.some((row) => row.family === 'planning-needed' && row.status === 'due')).toBe(true);
+  });
+});
 
 function planInput(value: PlanPlacementProviderInput['read']): PlanPlacementProviderInput {
   return { ...base, goalId: 'goal-1', read: value };

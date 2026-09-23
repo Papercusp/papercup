@@ -51,7 +51,7 @@ import {
   type HostedProviderDelegationRecord,
   type HostedProviderDelegationTemplate,
 } from '../../workspace-host/hosted-provider-delegation';
-import { PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
+import { HostedGcpNotReadyError, PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
 import { admissionIdentity, HostedWorkspaceAdmissionError } from './workspace-admission';
 import type { HostedWorkspaceAdmissionDependencies } from './workspace-admission';
 import type { HostedOnboardingWorkspacePort } from './onboarding';
@@ -93,6 +93,12 @@ export interface HostedFirstWorkspaceDependencies {
   /** Control-plane-privileged delegation store/manager, keyed by the derived workspace id. */
   readDelegation(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null>;
   onboardDelegation(input: HostedProviderDelegationOnboardingInput): Promise<HostedProviderDelegationOnboarding>;
+  /** D-399: records a Papercusp-hosted delegation for the server-derived host only. */
+  onboardPapercuspHostedDelegation(
+    organizationId: string,
+    input: Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'configuration'>,
+    hostId: string,
+  ): Promise<HostedProviderDelegationOnboarding>;
   verifyDelegation(organizationId: string, workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord>;
   /** Builds the admission port around a spec resolver bound to THIS verified delegation. */
   createAdmission(resolveDesiredSpec: ResolveFirstWorkspaceSpec): HostedOnboardingWorkspacePort;
@@ -282,7 +288,13 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
             { ...delegationBase, organizationId, configuration: configuration! },
             organization,
           );
-      } catch {
+      } catch (error) {
+        // A brand-new organization's account is often not yet visible to IAM: that is Papercusp's
+        // own cloud catching up, which the browser already waits out on its own.
+        if (hosting === 'papercusp' && error instanceof HostedGcpNotReadyError) {
+          return failure('papercusp_cloud_preparing', 409, true, { connectionId: identity.connectionId });
+        }
+        console.error(`[hosted-first-workspace] delegation bind failed for host ${identity.hostId} (${hosting})`, error);
         return failure('delegation_source_unavailable', 503, true);
       }
       let planned: HostedProviderDelegationOnboarding;
@@ -301,6 +313,8 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         if (existing.status === 'revoked') {
           return failure('delegation_revoked', 409, false, { connectionId: identity.connectionId });
         }
+      } else if (hosting === 'papercusp') {
+        await deps.onboardPapercuspHostedDelegation(organizationId, delegationBase, identity.hostId);
       } else {
         await deps.onboardDelegation(onboardingInput);
       }
@@ -339,6 +353,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         if (error instanceof HostedWorkspaceAdmissionError && error.code === 'organization_has_live_workspace') {
           return failure('organization_already_has_workspace', 409, false);
         }
+        console.error(`[hosted-first-workspace] admission failed for host ${identity.hostId}`, error);
         return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
       }
       if (hosting === 'papercusp') {
@@ -347,7 +362,8 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         // one workspace: re-assert its host. Idempotent, so a failure is safe to retry.
         try {
           await organization.gcpPapercuspHosting(identity.hostId);
-        } catch {
+        } catch (error) {
+          console.error(`[hosted-first-workspace] host reservation re-assert failed for host ${identity.hostId}`, error);
           return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
         }
       }

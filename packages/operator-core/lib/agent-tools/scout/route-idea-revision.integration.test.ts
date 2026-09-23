@@ -108,7 +108,7 @@ describe('blender:route-idea revision spine', () => {
       },
       summary: 'revision spine exists at route time',
     });
-    expect(audit.ok).toBe(true);
+    expect(audit, JSON.stringify(audit)).toMatchObject({ ok: true });
     if (audit.ok) expect(audit.auditedPlanRevision.seq).toBe(1);
   }, 180_000);
 });

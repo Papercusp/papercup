@@ -118,6 +118,8 @@ export default defineTool({
       ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
       ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),
       ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      // The drafts this verb files exist only in the evaluator's full body (P-007).
+      detail: 'full',
     });
     const evaluated = (await evaluatorTool.handler(evaluatorArgs, ctx)) as { data: Record<string, unknown> };
     const evaluation = evaluated.data;

@@ -15,6 +15,7 @@ import {
   resolveHostedGcpAuth,
   type HostedGcpDelegationSource,
 } from './hosted-gcp-auth';
+import { HostedGcpNotReadyError } from './hosted-gcp-hosting';
 import type { HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 const CONTROLLER_EMAIL = 'controller@papercusp.iam.gserviceaccount.com';
@@ -277,10 +278,20 @@ describe('per-organization delegation accounts (D-397)', () => {
       organizationId: ORG, identityProject: IDENTITY_PROJECT, source,
       fetch: vi.fn<typeof fetch>(async () => new Response('', { status: 403 })),
     })).rejects.toThrow('organization_account_read_failed:403');
-    await expect(ensureOrganizationDelegationAccount({
+    const refused = ensureOrganizationDelegationAccount({
       organizationId: ORG, identityProject: IDENTITY_PROJECT, source,
       fetch: vi.fn<typeof fetch>(async (_input, init) =>
         new Response('', { status: init?.method === 'POST' ? 403 : 404 })),
-    })).rejects.toThrow('organization_account_create_failed:403');
+    });
+    await expect(refused).rejects.toThrow('organization_account_create_failed:403');
+    await expect(refused).rejects.not.toBeInstanceOf(HostedGcpNotReadyError);
+  });
+
+  it('reports a rate-limited creation as GCP not ready yet, not as a failure', async () => {
+    await expect(ensureOrganizationDelegationAccount({
+      organizationId: ORG, identityProject: IDENTITY_PROJECT, source,
+      fetch: vi.fn<typeof fetch>(async (_input, init) =>
+        new Response('', { status: init?.method === 'POST' ? 429 : 404 })),
+    })).rejects.toBeInstanceOf(HostedGcpNotReadyError);
   });
 });

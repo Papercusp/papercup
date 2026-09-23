@@ -4,6 +4,7 @@ import {
   DEFAULT_MAX_SPOOL_BYTES,
   DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS,
   DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT,
+  DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES,
   DEFAULT_PAYLOAD_SPOOL_TTL_MS,
   GATEWAY_PAYLOAD_ADDRESSING,
   PayloadSpoolPersistenceError,
@@ -375,9 +376,12 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
     // ref_count = 0 here; that is the bug (the leak was a refcount floor with no time
     // dimension, so a pin that outlived its process was immortal).
     expect((deletion!.text.match(/ref_count = 0/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(deletion!.text).toContain('cumulative_bytes');
+    expect(deletion!.text).toContain('sweep_rank = 1');
     expect(deletion!.text).toContain('last_accessed_at');
     expect(deletion!.text).toContain('expires_at IS NULL');
     expect(deletion!.values).toContain(7);
+    expect(deletion!.values).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES);
     // The abandoned branch binds two values that exist ONLY if it is wired, so each leg
     // fails closed independently if dropped — unlike a text match, which the surviving
     // branch-1 text would still satisfy.
@@ -395,5 +399,21 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
 
     expect(sqlCalls).toHaveLength(2);
     expect(sqlCalls.flatMap((call) => call.values)).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT);
+    expect(sqlCalls.flatMap((call) => call.values)).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES);
+  });
+
+  it('uses a byte budget in addition to the row limit', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSql([[], []]),
+      workspaceId: 'ws-payload-test',
+    });
+
+    await store.sweep(2_000, 123_456);
+
+    const deletion = sqlCalls[1]!;
+    expect(deletion.text).toContain('sum(candidate.byte_length)');
+    expect(deletion.text).toContain('ranked.cumulative_bytes <=');
+    expect(deletion.values).toContain(2_000);
+    expect(deletion.values).toContain(123_456);
   });
 });

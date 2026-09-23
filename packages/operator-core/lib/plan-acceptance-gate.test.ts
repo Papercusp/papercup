@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   ACCEPTANCE_VERDICT_REQUIRED_AFTER,
   evaluatePlanAcceptanceGate,
+  findDurableDeliverableCompanions,
   planAcceptanceRepairAction,
   unfinishedItemsAreAuditedNonCode,
 } from './plan-acceptance-gate';
@@ -440,6 +441,14 @@ describe('evaluatePlanAcceptanceGate', () => {
 
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+  });
+
+  it('parses bare durable companion paths with extensions and trims sentence punctuation', () => {
+    expect(findDurableDeliverableCompanions('durable source: report.md')).toEqual(['report.md']);
+    expect(findDurableDeliverableCompanions('durable source: findings.csv')).toEqual(['findings.csv']);
+    expect(findDurableDeliverableCompanions('durable source: docs/plans/x.md')).toEqual(['docs/plans/x.md']);
+    expect(findDurableDeliverableCompanions('durable source: report.md.')).toEqual(['report.md']);
+    expect(findDurableDeliverableCompanions('durable source: `report.md`')).toEqual(['report.md']);
   });
 
   it('does not let the code-truth force escape hatch bypass deliverable durability', async () => {

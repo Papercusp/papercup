@@ -44,6 +44,7 @@ import {
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
 import { gcpDelegationOrganization, resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
@@ -264,7 +265,7 @@ function routeKey(route: { method: string; path: string }): string {
   return `${route.method} ${route.path}`;
 }
 
-function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>> {
+export function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>> {
   const unavailable = (provider: 'aws' | 'azure'): HostedProviderDelegationAdapter => ({
     async verify() { throw new Error(`hosted_provider_delegation_${provider}_adapter_unavailable`); },
     async revoke(record) {
@@ -277,6 +278,17 @@ function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' |
         credentialRef: record.credentialRef,
         provider: { hostedDelegation: { ...record, status: 'verified' } },
       });
+      // A token mints as soon as the account exists; the host reservation takes a minute or
+      // two longer to reach GCP's enforcement, and provisioning before it does would fail.
+      const source = record.configuration.provider === 'gcp' ? record.configuration.source : null;
+      if (source?.method === 'papercusp-hosted') {
+        const effective = await papercuspHostingGrantEffective({
+          projectId: source.projectId,
+          hostId: source.hostId,
+          accessToken: auth.accessToken,
+        });
+        if (!effective) throw new Error('hosted_provider_delegation_papercusp_hosting_not_effective');
+      }
       return {
         identity: auth.identity ?? (record.configuration.provider === 'gcp'
           ? record.configuration.source.serviceAccountEmail

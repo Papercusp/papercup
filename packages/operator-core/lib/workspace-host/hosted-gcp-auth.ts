@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { GoogleAuth, type JWTInput } from 'google-auth-library';
 import type { GcpResolvedAuth } from '../cloud-workspaces/gcp-preflight';
-import { ensurePapercuspHostingGrant, hostedGcpWorkspaceProject } from './hosted-gcp-hosting';
+import { ensurePapercuspHostingGrant, hostedGcpWorkspaceProject, HostedGcpNotReadyError } from './hosted-gcp-hosting';
 import type { HostedDelegationOrganization, HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 const METADATA_ROOT = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default';
@@ -103,7 +103,10 @@ export async function ensureOrganizationDelegationAccount(
       }),
     });
     if (!created.ok && created.status !== 409) {
-      throw new Error(`gcp_workspace_host_organization_account_create_failed:${created.status}`);
+      const message = `gcp_workspace_host_organization_account_create_failed:${created.status}`;
+      // Measured under concurrent sign-ups: account creation is rate limited (429), then succeeds.
+      if (created.status === 429) throw new HostedGcpNotReadyError(message);
+      throw new Error(message);
     }
   }
   return `serviceAccount:${email}`;

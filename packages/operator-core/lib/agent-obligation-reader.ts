@@ -22,7 +22,11 @@ import {
   type OwnerDirectivesProviderInput,
   type OwnerReportProviderInput,
   type PlanPlacementProviderInput,
+  type GoalPlanningProviderInput,
 } from './agent-obligation-providers';
+import { goalPlanningPortfolioFingerprint, parseGoalPlanningReview, type GoalPlanningReview } from './goal-planning-review';
+import type { GoalPotPlacementAuthority } from './goal-launch-settings';
+import { GOAL_OWNER_REPORT_MAX_SILENCE_MS, GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS } from './system-health/goal-owner-report-watchdog';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
 import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
@@ -42,6 +46,10 @@ export interface AgentObligationReaderDeps {
   goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
   planSlugs: (workspaceId: string, ownerId: string) => Promise<string[]>;
   goalPortfolio: (workspaceId: string, goalId: string) => Promise<GoalPortfolioBrief | null>;
+  goalPlanning: (workspaceId: string, ownerId: string, goalId: string) => Promise<{
+    review: GoalPlanningReview | null;
+    authorities: Record<string, GoalPotPlacementAuthority>;
+  }>;
   goalLaunch: (input: {
     workspaceId: string;
     ownerId: string;
@@ -207,6 +215,10 @@ export async function readAgentObligationAgenda(input: {
         sourceTimeoutMs,
       )
     : Promise.resolve<ReadOutcome<GoalLaunchResolution | null>>({ value: null, degraded: false, elapsedMs: 0 });
+  const planningPromise = goalId
+    ? boundedRead('goal-planning', deps.goalPlanning(input.workspaceId, input.ownerId, goalId),
+        { review: null, authorities: {} }, sourceTimeoutMs)
+    : Promise.resolve({ value: { review: null, authorities: {} }, degraded: false, elapsedMs: 0 });
   const fleetPromise = goalId
     ? boundedRead(
         'plan-fleet',
@@ -291,7 +303,7 @@ export async function readAgentObligationAgenda(input: {
     [] as WaitingOnObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits] =
+  const [portfolio, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning] =
     await Promise.all([
       portfolioPromise,
       launchPromise,
@@ -301,6 +313,7 @@ export async function readAgentObligationAgenda(input: {
       worklistAcceptancePromise,
       directivesPromise,
       waitingOnPromise,
+      planningPromise,
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
@@ -370,11 +383,13 @@ export async function readAgentObligationAgenda(input: {
     ['goal launch', launch],
     ['plan fleet', fleet],
     ['owner report', report],
+    ['goal planning', planning],
   ] as const) {
     if (goalId && outcome.degraded) degradedSources.push(readFailure(label, outcome));
   }
 
   let planPlacement: PlanPlacementProviderInput | undefined;
+  let goalPlanning: GoalPlanningProviderInput | undefined;
   let ownerReport: OwnerReportProviderInput | undefined;
   const scopeReadFailure = goalOutcome.degraded || plansOutcome.degraded;
   if (scopeReadFailure && !goalId) {
@@ -403,6 +418,24 @@ export async function readAgentObligationAgenda(input: {
     };
   }
   if (goalId) {
+    const planningStopped = portfolio.value?.goal.id === goalId &&
+      ['paused', 'achieved', 'killed'].includes(portfolio.value.goal.status ?? '');
+    const planningFailure = goalOutcome.degraded || portfolio.degraded || (planning.degraded && !planningStopped);
+    goalPlanning = {
+      workspaceId: input.workspaceId, ownerId: input.ownerId, goalId, observedAt,
+      sourceGeneration: agentObligationSourceGeneration({
+        portfolio: portfolio.value ? goalPlanningPortfolioFingerprint(portfolio.value) : null,
+        planning: planning.degraded ? 'unknown' : planning.value,
+      }),
+      read: planningFailure ? { status: 'unknown', failure: {
+        code: 'canonical-goal-planning-read-failed',
+        detail: degradedSources.filter((entry) => /goal subject|goal portfolio|goal planning/.test(entry)).join('; ') || 'Goal planning sources unavailable.',
+        retry: 'Refresh the canonical goal scope, portfolio and scoped review ledger.',
+      } } : { status: 'known', value: {
+        portfolio: portfolio.value, ...planning.value,
+        reviewIntervalMs: portfolio.value?.goal.standing ? GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS : GOAL_OWNER_REPORT_MAX_SILENCE_MS,
+      } },
+    };
     const placementGeneration = agentObligationSourceGeneration({
       portfolio: stablePortfolio(portfolio.value),
       launch: stableLaunch(launch.value),
@@ -532,7 +565,7 @@ export async function readAgentObligationAgenda(input: {
 
   return {
     agenda: buildAgentObligationAgenda(
-      { planPlacement, ownerReport, independentVerification, ownerDirectives, waitingOn },
+      { planPlacement, goalPlanning, ownerReport, independentVerification, ownerDirectives, waitingOn },
       observedAt,
     ),
     goalId,
@@ -718,6 +751,23 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     goalPortfolio: async (workspaceId, goalId) => {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
       return readGoalPortfolioBrief({ workspaceId, goalId });
+    },
+    goalPlanning: async (workspaceId, ownerId, goalId) => {
+      const [{ readScoutTicks }, { resolveGoalPotPlacementAuthority }] = await Promise.all([
+        import('./scout/tick-ledger'), import('./goal-launch-settings'),
+      ]);
+      const rows = await readScoutTicks({ workspaceId, ownerId, goalId, origin: 'su-ideate', limit: 1 });
+      if (!rows.length) return { review: null, authorities: {} };
+      const review = parseGoalPlanningReview(rows[0]!.detail?.goalReview);
+      if (!review || review.goalId !== goalId) throw new Error('Latest scoped goal review is invalid; absence is not established.');
+      const harnesses = [...new Set(review.planRefs.flatMap((ref) => {
+        const match = /^plan:([^/]+)\/(.+)$/.exec(ref);
+        return match ? [match[1]!] : [];
+      }))];
+      const entries = await Promise.all(harnesses.map(async (harnessSlug) => [harnessSlug,
+        await resolveGoalPotPlacementAuthority({ workspaceId, launcherGoalId: goalId, harnessSlug }),
+      ] as const));
+      return { review, authorities: Object.fromEntries(entries) };
     },
     goalLaunch: async ({ workspaceId, ownerId, fleetSlug, count }) => {
       const { resolveGoalLaunch } = await import('./goal-launch-settings');

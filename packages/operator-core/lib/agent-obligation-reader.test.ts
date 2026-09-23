@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { goalPlanningPortfolioFingerprint } from './goal-planning-review';
 
 import {
   PLAN_CONTEXT_MAX,
@@ -77,6 +78,11 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     goalSubject: vi.fn(async () => 'goal-1'),
     planSlugs: vi.fn(async () => ['plan-a']),
     goalPortfolio: vi.fn(async () => portfolio()),
+    goalPlanning: vi.fn(async () => ({ review: {
+      schemaVersion: 1 as const, goalId: 'goal-1', disposition: 'existing-plans-sufficient' as const,
+      rationale: 'No uncovered outcome in this generic reader fixture.', evidenceRefs: ['goal:goal-1'], planRefs: [],
+      portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio()), reviewedAt: NOW.toISOString(),
+    }, authorities: {} })),
     goalLaunch: vi.fn(async () => launch()),
     planFleet: vi.fn(
       async (): Promise<GoalPlanFleetObservation> => ({
@@ -119,6 +125,62 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
 }
 
 describe('shared agent obligation reader', () => {
+  it('delivers a bounded goal action with exact identity and source revision despite a long outcome', async () => {
+    const p = portfolio();
+    const uncoveredOutcome = 'An evidenced missing recovery path. '.repeat(80);
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      planSlugs: [], deps: deps({ ownerReport: async () => null, goalPlanning: async () => ({
+        review: { schemaVersion: 1, goalId: 'goal-1', disposition: 'plan-needed',
+          rationale: 'Existing plans do not cover this outcome.', evidenceRefs: ['work-item:WI-gap'], planRefs: [],
+          uncoveredOutcome, portfolioFingerprint: goalPlanningPortfolioFingerprint(p), reviewedAt: NOW.toISOString() },
+        authorities: {},
+      }) }) });
+    const obligation = read.agenda.primary.find((row) => row.family === 'planning-needed')!;
+    const brief = projectAgentTurnStartObligationBrief(read.agenda);
+    expect(brief.projection.receipt.entriesDelivered).toBe(1);
+    expect(brief.projection.receipt.entriesOmitted).toBe(0);
+    expect(brief.projection.text.length).toBeLessThanOrEqual(400);
+    expect(brief.projection.text).toContain(obligation.id);
+    expect(brief.projection.text).toContain(obligation.ruleRevision);
+    expect(brief.projection.text).toContain(obligation.sourceGeneration);
+    expect(brief.projection.text).toContain('verify real claims');
+    expect(obligation.reason).toContain(uncoveredOutcome);
+  });
+
+  it('prints source identity even when the ordinary goal action already fits the sink', async () => {
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      planSlugs: [], deps: deps({ ownerReport: async () => null, goalPlanning: async () => ({ review: null, authorities: {} }) }) });
+    const obligation = read.agenda.primary.find((row) => row.family === 'planning-needed')!;
+    const text = projectAgentTurnStartObligationBrief(read.agenda).projection.text;
+    expect(text).toContain(obligation.id);
+    expect(text).toContain(obligation.ruleRevision);
+    expect(text).toContain(obligation.sourceGeneration);
+  });
+
+  it('delivers recorded uncovered needs from the planning reader', async () => {
+    const p = portfolio();
+    const goalPlanning = vi.fn(async () => ({ review: {
+      schemaVersion: 1 as const, goalId: 'goal-1', disposition: 'plan-needed' as const,
+      rationale: 'Failure recovery is uncovered.', evidenceRefs: ['work-item:WI-gap'], planRefs: [],
+      uncoveredOutcome: 'Recover failed checkout', portfolioFingerprint: goalPlanningPortfolioFingerprint(p),
+      reviewedAt: NOW.toISOString(),
+    }, authorities: {} }));
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ goalPlanning }) });
+    expect(goalPlanning).toHaveBeenCalledWith('ws', 'su-goal', 'goal-1');
+    expect(read.agenda.evaluations.find((row) => row.family === 'planning-needed')).toMatchObject({
+      status: 'due', applicableDemand: 1, action: { kind: 'continue' },
+    });
+  });
+  it('keeps failed planning reads unknown while unrelated obligations remain available', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ goalPlanning: vi.fn(async () => { throw new Error('review ledger unavailable'); }) }) });
+    expect(read.agenda.evaluations.find((row) => row.family === 'planning-needed')?.status).toBe('unknown');
+    expect(read.agenda.evaluations.some((row) => row.family === 'owner-report')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('review ledger unavailable'));
+    warn.mockRestore();
+  });
   it.each(['paused', 'achieved', 'killed'])('does not deliver stale reporting work for a %s goal', async (status) => {
     const stopped = portfolio();
     stopped.goal.status = status;
@@ -132,6 +194,18 @@ describe('shared agent obligation reader', () => {
     expect(read.agenda.primary).toEqual([]);
     expect(read.agenda.evaluations.find((entry) => entry.family === 'owner-report')?.status).toBe('not-applicable');
     expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).toBe('');
+  });
+
+  it('does not revive a stopped goal when its review ledger fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stopped = portfolio(); stopped.goal.status = 'paused';
+    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      planSlugs: [], deps: deps({ goalPortfolio: async () => stopped,
+        goalPlanning: async () => { throw new Error('stopped review unavailable'); } }) });
+    expect(read.agenda.evaluations.find((row) => row.family === 'planning-needed')?.status).toBe('not-applicable');
+    expect(read.agenda.primary).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('stopped review unavailable'));
+    warn.mockRestore();
   });
 
   it.each([null, 'unrecognized'])('does not turn lifecycle %s into a reporting duty', async (status) => {
@@ -174,6 +248,7 @@ describe('shared agent obligation reader', () => {
     expect(read.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
       ['owner-report', 'due'],
       ['plan-placement', 'not-applicable'],
+      ['planning-needed', 'satisfied'],
       // P-006: the owner-directive family is assembled UNCONDITIONALLY, so an
       // empty queue is reported as a measured not-applicable rather than as the
       // class being absent — those two must never render identically.

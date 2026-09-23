@@ -189,7 +189,12 @@ type StateTable =
   // session_briefs.control_state, which other writers replace wholesale (D-017 §3).
   | 'operator_session_confinements'
   // Migration 1057 — standing Inbox automation authority + confidence policy.
-  | 'operator_attention_automation_policy';
+  | 'operator_attention_automation_policy'
+  // Migration 1202 — consult expert-routing settings: the ranked allowlist of models
+  // allowed to ANSWER a consult (D-004) plus the stage-2 recency half-life
+  // (consult-expert-routing-2026-09-22 P-005 / D-001 §2). Read on the dispatch
+  // critical path, so an empty/absent row degrades to the owner-stated seed.
+  | 'operator_consult_expert_routing';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

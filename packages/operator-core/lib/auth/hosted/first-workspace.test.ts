@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  bindPapercuspHostedDelegation,
   buildHostedProviderDelegationOnboarding,
   type HostedProviderDelegationConfiguration,
   type HostedProviderDelegationRecord,
@@ -11,6 +12,7 @@ import {
   type HostedFirstWorkspaceDependencies,
   type HostedFirstWorkspaceRequest,
 } from './first-workspace';
+import { HostedGcpNotReadyError } from '../../workspace-host/hosted-gcp-hosting';
 import { HostedWorkspaceAdmissionError } from './workspace-admission';
 
 const GCP: HostedProviderDelegationConfiguration = {
@@ -69,6 +71,13 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     readDelegation: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
     onboardDelegation: vi.fn(async (input) => {
       const onboarding = buildHostedProviderDelegationOnboarding(input);
+      records.set(`${input.workspaceId}/${input.connectionId}`, onboarding.record);
+      return onboarding;
+    }),
+    onboardPapercuspHostedDelegation: vi.fn(async (organizationId, input, hostId) => {
+      const onboarding = buildHostedProviderDelegationOnboarding(
+        await bindPapercuspHostedDelegation(input, deps.delegationOrganization(organizationId), hostId),
+      );
       records.set(`${input.workspaceId}/${input.connectionId}`, onboarding.record);
       return onboarding;
     }),
@@ -254,9 +263,13 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
         },
       }),
     });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
+    // The response carries no cause, so the log is the only place an operator can find it.
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('delegation bind failed'), expect.any(Error));
+    logged.mockRestore();
   });
 
   it('rejects a malformed attempt key and non-GCP providers', async () => {
@@ -296,8 +309,12 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     const result = await createHostedFirstWorkspace(deps).run(PAPERCUSP_REQUEST);
     const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
     expect(result).toMatchObject({ ok: true, workspaceId: identity.workspaceId, sessionId: 'session-rotated' });
-    // Reserved before the delegation is recorded, re-asserted once the workspace is admitted.
-    expect(reserved).toEqual([identity.hostId, identity.hostId]);
+    // Reserved to plan the grant, again by the manager that records it (it never takes the
+    // configuration from its caller), and re-asserted once the workspace is admitted.
+    expect(reserved).toEqual([identity.hostId, identity.hostId, identity.hostId]);
+    expect(deps.onboardPapercuspHostedDelegation).toHaveBeenCalledWith('org-a', expect.anything(), identity.hostId);
+    // The general entry refuses this method by design (the D-399 binder guard); it must not be used.
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
     expect(records.get(`${identity.workspaceId}/${identity.connectionId}`)?.configuration).toEqual({
       provider: 'gcp',
       source: {
@@ -350,6 +367,29 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     expect(result).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', status: 409, retryable: true });
     expect(result.ok === false && result.template).toBeUndefined();
     expect(ensureProvisioned).not.toHaveBeenCalled();
+  });
+
+  it("waits out GCP catching up with a brand-new organization's account, and still fails on a real refusal", async () => {
+    const organization = (error: Error) => (organizationId: string) => ({
+      organizationId,
+      gcpTrustedPrincipal: async () => 'serviceAccount:unused@x.iam.gserviceaccount.com',
+      gcpPapercuspHosting: async () => {
+        throw error;
+      },
+    });
+    const lagging = harness({
+      delegationOrganization: organization(new HostedGcpNotReadyError('policy_write_failed:400:Service account pco-x does not exist.')),
+    });
+    const waiting = await createHostedFirstWorkspace(lagging.deps).run(PAPERCUSP_REQUEST);
+    expect(waiting).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', status: 409, retryable: true });
+    expect(lagging.deps.onboardDelegation).not.toHaveBeenCalled();
+
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const refused = harness({ delegationOrganization: organization(new Error('policy_write_failed:403:denied')) });
+    const failed = await createHostedFirstWorkspace(refused.deps).run(PAPERCUSP_REQUEST);
+    expect(failed).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
+    expect(logged).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
   });
 
   it('refuses a spec for a host other than the one the delegation reserves', () => {

@@ -241,7 +241,9 @@ export async function ensurePapercuspHostingGrant(input: EnsurePapercuspHostingG
       headers,
       body: JSON.stringify({ options: { requestedPolicyVersion: 3 } }),
     });
-    if (!read.ok) throw new Error(`gcp_workspace_host_papercusp_hosting_policy_read_failed:${read.status}`);
+    if (!read.ok) {
+      throw new Error(`gcp_workspace_host_papercusp_hosting_policy_read_failed:${read.status}:${await responseExcerpt(read)}`);
+    }
     const policy = (await read.json()) as IamPolicy;
     const bindings = papercuspHostingBindings(policy.bindings ?? [], input);
     if (!bindings) return;
@@ -252,9 +254,36 @@ export async function ensurePapercuspHostingGrant(input: EnsurePapercuspHostingG
       body: JSON.stringify({ policy: { ...policy, version: 3, bindings } }),
     });
     if (write.ok) return;
-    if (write.status !== 409) throw new Error(`gcp_workspace_host_papercusp_hosting_policy_write_failed:${write.status}`);
+    if (write.status !== 409) {
+      const excerpt = await responseExcerpt(write);
+      const message = `gcp_workspace_host_papercusp_hosting_policy_write_failed:${write.status}:${excerpt}`;
+      // Measured: an organization account created a second earlier is refused as nonexistent on
+      // about half of first binds (.papercusp/scratch/d399-bind-repro.log). IAM catches up.
+      if (write.status === 400 && /service account .* does not exist/i.test(excerpt)) {
+        throw new HostedGcpNotReadyError(message);
+      }
+      throw new Error(message);
+    }
   }
   throw new Error('gcp_workspace_host_papercusp_hosting_policy_contended');
+}
+
+/**
+ * GCP has not caught up with a change Papercusp just made (a new organization account, a
+ * rate-limited creation). Nothing is wrong and nothing is owed by the customer: the same call
+ * succeeds shortly, so callers report "still preparing" rather than a failure.
+ */
+export class HostedGcpNotReadyError extends Error {
+  override readonly name = 'HostedGcpNotReadyError';
+}
+
+/** GCP's error text, bounded: the status alone cannot tell a propagation lag from a denial. */
+async function responseExcerpt(response: Response): Promise<string> {
+  try {
+    return (await response.text()).replace(/\s+/g, ' ').slice(0, 300);
+  } catch {
+    return '';
+  }
 }
 
 /**

@@ -304,6 +304,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       slug: PLAN,
       classRef: 'plan-class-feature-ship',
       specIds: [SPEC],
+      detail: 'full',
     });
 
     // Calibration: the live grade must itself be a full pass, or a green emit below
@@ -346,6 +347,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       slug: PLAN,
       classRef: 'plan-class-feature-ship',
       specIds: [SPEC],
+      detail: 'full',
     });
     expect(live.rows[0]!.ratings.freshness.rating).toBe('pass');
 

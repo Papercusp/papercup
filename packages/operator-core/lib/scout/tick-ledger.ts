@@ -124,6 +124,9 @@ export interface ScoutTickRow extends ScoutTickRecord {
 
 /** Read scope for {@link readScoutTicks}. */
 export interface ReadScoutTicksOpts {
+  /** Scoped su review selectors, applied before LIMIT; never scan a noisy workspace and filter afterward. */
+  ownerId?: string;
+  goalId?: string;
   /** Override the active workspace (tests). */
   workspaceId?: string;
   /** Filter to one harness's ticks. */
@@ -174,6 +177,8 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
       FROM harness_shared.scout_ticks
      WHERE workspace_id = ${ws}
        AND origin = ${origin}
+       ${opts.ownerId ? sql`AND detail->>'owner' = ${opts.ownerId}` : sql``}
+       ${opts.goalId ? sql`AND detail->'goalReview'->>'goalId' = ${opts.goalId}` : sql``}
        ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
        ${sinceMs !== undefined ? sql`AND tick_at >= to_timestamp(${sinceMs} / 1000.0)` : sql``}
      ORDER BY tick_at DESC

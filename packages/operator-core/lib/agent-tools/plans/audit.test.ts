@@ -243,6 +243,19 @@ const barPlanWithDesign = `${barPlanWithoutDesign}
 | R-1 | P-001 | tree |
 `;
 
+// review-system-rework-reduction P-003: a never-seeded post-epoch plan must carry a complete
+// METHOD/check/layer contract for the activation writer (and so its preview) to accept it.
+const barPlanCompleteWithDesign = barPlanWithDesign.replace(
+  '**R-1 — Persist the canonical promise.** One acceptance criterion remains the BAR authority.',
+  '**R-1 — Persist the canonical promise.**\n```requirement\n' + JSON.stringify({
+    intent: { request: 'Keep one BAR authority.' },
+    acceptance: { condition: 'One acceptance criterion remains the BAR authority.',
+      falsifier: 'A second criterion claims the same BAR.', requiredTestLayers: ['unit'] },
+    verification: { method: 'Run the focused audit test.',
+      check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/plans/audit.test.ts'] } },
+  }) + '\n```',
+);
+
 const COMPLETE_CONVERSATION_OBLIGATION_IDS = [
   'M-001', // requirement
   'M-002', // scope boundary
@@ -975,7 +988,7 @@ describe('plans:audit phase:activation', () => {
   it('passes the preview for a contract plan that DOES carry a Bar-to-work map', async () => {
     // Calibration control: without this, the refusal above would also pass against a
     // check that simply refused whenever the epoch is set.
-    resolvePlanContent(barPlanWithDesign);
+    resolvePlanContent(barPlanCompleteWithDesign);
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
       .mockResolvedValueOnce([]);
@@ -983,6 +996,31 @@ describe('plans:audit phase:activation', () => {
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
+  });
+
+  it('previews the writer contract-completeness refusal for a never-seeded prose BAR (P-003)', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch', acceptance_bar_rubric_slug: null }])
+      .mockResolvedValueOnce([]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, preview: true, error: 'bar_contract_method_missing' });
+    expect(result.problems[0].contractGaps).toEqual(['method_missing', 'check_missing', 'test_layers_missing']);
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('stays silent on an already-seeded prose plan, exactly as the writer does (P-003)', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch',
+        acceptance_bar_rubric_slug: 'acceptance-plan-a' }])
+      .mockResolvedValueOnce([]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, preview: true });
   });
 
   it('previews the writer projection conflict for a live generated identity outside the current map', async () => {
@@ -1009,7 +1047,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('does not treat a superseded unpinned generated identity as a live preview conflict', async () => {
-    resolvePlanContent(barPlanWithDesign);
+    resolvePlanContent(barPlanCompleteWithDesign);
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
       .mockResolvedValueOnce([{

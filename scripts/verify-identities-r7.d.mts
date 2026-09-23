@@ -19,8 +19,8 @@ export function appliesLayer(row: {
  * The page URL a switch starts from. It deliberately carries NO `identityTab`, so the page opens
  * on its default `library` tab: that is the only tab that renders the `.pc-identities__identity`
  * rows and the `Inspect identity <id>` buttons the switch clicks. Review then moves to the agent
- * tab itself. Pinning `identityTab=agent` here made the library assertion unsatisfiable, and it
- * failed as a DOM timeout that read like a slow page.
+ * tab itself. Pinning the tab param to the agent tab here made the library assertion
+ * unsatisfiable, and it failed as a DOM timeout that read like a slow page.
  *
  * @param {string} owner
  * @param {string} identityId
@@ -28,4 +28,15 @@ export function appliesLayer(row: {
  * @returns {string}
  */
 export function identitiesUrl(owner: string, identityId: string, nonce: number): string;
+/**
+ * Classify a failed VERIFY_TAURI_SETTLE run. The settle contract exits 1 when the page is still
+ * busy at its timeout and 3 when readiness is unknown; both are recorded, not fatal. Anything else
+ * (a spawn failure, a killed child, a missing script) is a real error and is rethrown.
+ *
+ * @param {{ status?: number|null } | null | undefined} error
+ * @returns {"busy"|"unknown"|null}
+ */
+export function settleOutcome(error: {
+    status?: number | null;
+} | null | undefined): "busy" | "unknown" | null;
 export function main(): Promise<void>;

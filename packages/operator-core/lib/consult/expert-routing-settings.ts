@@ -33,6 +33,7 @@ import {
   DEFAULT_EXPERT_MODEL_ALLOWLIST,
   normalizeExpertModelAllowlist,
   type AllowedExpertModel,
+  type ExpertModelAllowlistDeps,
 } from './expert-model-allowlist';
 import { DEFAULT_RECENCY_HALF_LIFE_DAYS } from './relevance-router';
 
@@ -44,6 +45,17 @@ export interface ConsultExpertRoutingSettings {
   allowlist: AllowedExpertModel[];
   /** Stage-2 comparison half-life, in days. */
   recencyHalfLifeDays: number;
+}
+
+/** Bind both route-time consumers to one settings snapshot for a consult. */
+export function bindConsultExpertRoutingSettings(settings: ConsultExpertRoutingSettings): {
+  recencyHalfLifeDays: number;
+  loadRanks: NonNullable<ExpertModelAllowlistDeps['loadRanks']>;
+} {
+  return {
+    recencyHalfLifeDays: settings.recencyHalfLifeDays,
+    loadRanks: async () => settings.allowlist,
+  };
 }
 
 /**

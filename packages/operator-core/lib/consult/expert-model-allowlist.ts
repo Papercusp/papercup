@@ -43,8 +43,8 @@ export interface AllowedExpertModel {
  * stated policy.
  */
 export const DEFAULT_EXPERT_MODEL_ALLOWLIST: readonly AllowedExpertModel[] = Object.freeze([
-  { rank: 1, agent: 'claude', model: 'opus' },
-  { rank: 2, agent: 'claude', model: 'fable' },
+  { rank: 1, agent: 'claude', model: 'fable' },
+  { rank: 2, agent: 'claude', model: 'opus' },
   { rank: 3, agent: 'codex', model: 'sol' },
   { rank: 4, agent: 'codex', model: 'astra' },
 ] as const);

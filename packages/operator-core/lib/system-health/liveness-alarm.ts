@@ -867,6 +867,18 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
   } else if (accountPoolProjectionStale(health)) {
     out.add('accounts-starved');
   }
+
+  // P-009 (ex-P-010): collectDeploy's git-sync read is fail-soft, so a failed read leaves
+  // gitSyncMaxMissedIntervals null and the signal simply vanishes. A vanished reading is not
+  // a recovery: keep an open starvation alarm open while the panel errored or the sub-read
+  // failed (same shape as the workFeed/stalePausedRoutinesUnreadable pair above).
+  const deploy = health.panels.deploy;
+  if (
+    (deploy && (deploy.status === 'unknown' || deploy.error != null)) ||
+    deploy?.data?.gitSyncMissedIntervalsUnreadable === true
+  ) {
+    out.add('git-sync-missed-intervals');
+  }
   return out;
 }
 
@@ -1007,6 +1019,11 @@ export function resolveEvidenceFor(
     }
     // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
     return `observed panel ${key} status=panel-absent${gate}`;
+  }
+  if (sig === 'git-sync-missed-intervals') {
+    const dp = health.panels.deploy;
+    const missed = dp?.data?.gitSyncMaxMissedIntervals;
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
   }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;
@@ -1217,6 +1234,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
     return 'overwatch-dark';
   if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
+  if (/^git-sync\b.* has missed \d+ consecutive scheduler intervals/.test(s)) return 'git-sync-missed-intervals';
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
   const fireStaleMatch = /^([^@\s]+)@\S+ has not fired in/.exec(s);
   if (fireStaleMatch) return `autoloop-fire-stale:${fireStaleMatch[1]}`;

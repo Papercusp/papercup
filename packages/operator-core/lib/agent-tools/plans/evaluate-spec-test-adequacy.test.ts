@@ -138,6 +138,52 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result).not.toHaveProperty('evaluatorBuildDrift');
   });
 
+  // review-system-rework-reduction-2026-09-23 P-007, clause RSR-P-007-A: a verdict table
+  // plus a ref by default; the full body only on request. Falsifier: the default response
+  // carries the full body, or omits the ref to it.
+  it('returns a per-clause verdict table plus a fullBody ref by default, and the full body only with detail:"full"', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
+
+    const summary = await call(base);
+    const full = await call({ ...base, detail: 'full' });
+
+    // Default: the table, and the exact re-call that returns the rest.
+    expect(summary).toMatchObject({ ok: true, detail: 'summary' });
+    expect(summary.fullBody).toMatchObject({
+      tool: 'plans:evaluate-spec-test-adequacy',
+      args: { ...base, detail: 'full' },
+      omitted: expect.arrayContaining(['rows[].scorecardDraft', 'rows[].ratings[].evidence']),
+    });
+    const [compact] = summary.rows;
+    expect(compact).not.toHaveProperty('scorecardDraft');
+    expect(compact).not.toHaveProperty('evidenceRefs');
+    for (const entry of Object.values(compact.ratings) as Array<Record<string, unknown>>) {
+      expect(entry).not.toHaveProperty('evidence');
+    }
+
+    // Full: the drafts and evidence text, and no ref (there is nothing left to fetch).
+    expect(full).toMatchObject({ ok: true, detail: 'full' });
+    expect(full).not.toHaveProperty('fullBody');
+    expect(full.rows[0].scorecardDraft).toBeTruthy();
+    expect(Object.values(full.rows[0].ratings).every((r: any) => typeof r.evidence === 'string')).toBe(true);
+
+    // Same verdicts either way — the summary drops prose, never a rating the replay gates read.
+    expect(compact).toMatchObject({
+      specId: full.rows[0].specId,
+      specRevision: full.rows[0].specRevision,
+      specFingerprint: full.rows[0].specFingerprint,
+      verdict: full.rows[0].verdict,
+      wouldBlock: full.rows[0].wouldBlock,
+    });
+    for (const [criterion, entry] of Object.entries(full.rows[0].ratings) as Array<[string, { rating: string }]>) {
+      expect(compact.ratings[criterion].rating).toBe(entry.rating);
+    }
+
+    // And it is materially smaller.
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
+  });
+
   it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {
     const evidenceRefs = ['testing:run:current#packages/operator-core/lib/reconnect.test.ts'];
     const result = await call({
@@ -148,6 +194,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       evidenceRefs,
       planItemIds: ['P-001'],
       includeDraft: true,
+      detail: 'full',
     });
 
     expect(result).toMatchObject({ ok: true, count: 1 });
@@ -209,6 +256,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       classRef: 'plan-class-feature-ship',
       evidenceRefs: ['test-run:1:spec-001'],
       evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+      detail: 'full',
     });
 
     expect(result).toMatchObject({
@@ -389,7 +437,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
 
     const result = await call({
       harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship',
-      workItemIds: ['WI-123'], specIds: ['SPEC-001'],
+      workItemIds: ['WI-123'], specIds: ['SPEC-001'], detail: 'full',
     });
     expect(result.rows[0].ratings.freshness.rating).toBe('pass');
     const recipe = result.rows[0].scorecardDraft.rerunRecipe;

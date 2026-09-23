@@ -188,6 +188,20 @@ describe('mode:set registration', () => {
     expect(body.contract).toMatch(/complete per-run or terminal scorecard NEVER goes through improvements:capture/);
     expect(body.contract).not.toMatch(/emits a scorecard\s+\(improvements:capture/);
   });
+
+  it('delivers the scoped GOAL gap-review contract instead of a feature quota', async () => {
+    const body = parse(await run({ mode: 'goal', subject: 'goal-1', reason: 'manage goal-local planning' }));
+    expect(body.ok).toBe(true);
+    const text = String(body.contract).replace(/\s+/g, ' ');
+    expect(text.includes('GOAL-LOCAL GAP REVIEW')).toBe(true);
+    expect(/Blender.*workspace-level/.test(text)).toBe(true);
+    expect(text.includes('Both may originate plans')).toBe(true);
+    expect(text.includes('adopt or revise a suitable existing plan')).toBe(true);
+    expect(text.includes('goalReview')).toBe(true);
+    expect(text.includes('existing-plans-sufficient')).toBe(true);
+    expect(/no minimum new-idea or feature count/i.test(text)).toBe(true);
+    expect(text.includes('a review is not a worker claim')).toBe(true);
+  });
 });
 
 beforeEach(() => {

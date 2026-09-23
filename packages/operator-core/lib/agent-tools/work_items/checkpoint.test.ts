@@ -319,6 +319,40 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).toHaveBeenCalledTimes(1);
   });
 
+  it('does not treat an inherited frozen-lineage CHECK row as caller-supplied text', async () => {
+    const unsafeStoredCheck =
+      "· verdict RED on test:lane-stateful -> THEN run that one lane locally, fix it on the shared staging checkout (there is NO repair worktree, D-010), let git-sync commit, and admit BY PATH via release:repair-queue { op:'admit', paths:[...] }";
+    const prior = withCarryNoteChecks('prior narrative', [{ claim: unsafeStoredCheck }]);
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpointWithPrior.mockImplementationOnce(
+      async (
+        ref: unknown,
+        checkpointText: string | null | undefined,
+        opts?: Parameters<typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior>[2],
+      ) => {
+        const stored = opts?.transform ? opts.transform(prior, checkpointText) : checkpointText;
+        await setWorkItemCheckpoint(ref, stored);
+        return { stored, priorLength: prior.length };
+      },
+    );
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, stored: string | null | undefined) => stored);
+
+    const result = await one({ id: 'WI-7', checkpoint: 'Corrected checkpoint narrative.' });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    const stored = setWorkItemCheckpoint.mock.calls.at(-1)?.[1] as string;
+    expect(stored).toContain(unsafeStoredCheck);
+    expect(stored).toContain('Corrected checkpoint narrative.');
+  });
+
   it('allows a diagnostic check that quotes the refusal wording', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),

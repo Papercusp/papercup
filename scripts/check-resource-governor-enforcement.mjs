@@ -428,6 +428,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for apps/operator/lib/release/cut-seed-cli.ts: this release/checkpoint operation is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "apps/operator/lib/release/workspace-host-release-cut-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for apps/operator/lib/release/workspace-host-release-cut-cli.ts: every start here is the `runStep` helper — one `spawn` per release stage (pinned source checkout, vm-release sidecar build, deterministic pack, minisign sign plus independent verify, tar extract, SBOM/vulnerability audit, identity audit). Each is sequential, awaited to `close` before the next begins, writes into a per-stage log fd rather than an in-memory buffer, and retains nothing between calls, so the file adds no residency and starts no independent resident queue. The whole cut runs under ONE durable `class: 'deploy'` task that `openOperation` registers BEFORE any stage spawns (D-394 / WI-10002539 — 'the row first: a row with no cut is discoverable and harmless; a cut with no row cannot journal'), and that task owns admission, resumption and release for the operation as a whole, including the --task-id/--operation-id resume path. A per-stage receipt would double-count the same release work against a task already accounted for. Same shape as the substrate-sidecar-spawn.ts upstream disposition.",
+  },
+  {
     path: "apps/operator/lib/release/deploy-deps.ts",
     code: "resource-start-outside-admission",
     disposition: "upstream",
@@ -720,6 +727,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "upstream",
     reason:
       "P-016 reviewed upstream disposition for packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts: this bounded support-path operation is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
+  },
+  {
+    path: "packages/operator-core/lib/sync/pot-git/chunked-blob-scan.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for packages/operator-core/lib/sync/pot-git/chunked-blob-scan.ts: this module EXISTS to impose the very bound the rule hunts for (WI-6254/WI-6258 — `partitionBlobsForScan` splits the admissible range into `chunkBytes` groups so that peak resident content is ONE chunk rather than the whole range, written after ref-announce's OOM took the whole sidecar down). The flagged structures are per-chunk working sets: `groups`/`current` live only across the partition pass, and `files`/`binaryOids` hold one `cat-file --batch` frame that the caller consumes and drops with the chunk — none survives the chunk or starts independent resident work. The one structure that DOES persist is bounded and instrumented rather than unbounded: the verdict memo is capped at `BLOB_SCAN_VERDICT_CACHE_MAX` (100_000) inside `pinModuleState`, `recallVerdict` re-inserts on hit for LRU recency, `rememberVerdict` evicts the oldest key while `size > max`, and the drops are counted and published through `getBlobScanCacheStats().evictions` — a capped memo publishing honest state, not a resident queue.",
   },
   {
     path: "packages/operator-core/lib/sync/pot-git/gate/shards.ts",

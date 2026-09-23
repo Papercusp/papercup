@@ -179,6 +179,34 @@ async function seedCurrentPlan() {
   return { id: Number(rows[0]?.id), contentHash };
 }
 
+// review-system-rework-reduction-2026-09-23 P-003: activation refuses a fresh post-epoch
+// BAR without a METHOD, a structured check and (when it owes automated proof) test
+// layers, so the fixture authors complete ```requirement blocks. The sentences the
+// tests below rewrite (the R-1 condition, the `**R-N —` headings) stay verbatim.
+const postEpochR1 = {
+  intent: { request: 'Persist the canonical promise.' },
+  acceptance: {
+    condition: 'One acceptance criterion remains the BAR authority.',
+    falsifier: 'A second criterion is treated as the BAR authority.',
+    requiredTestLayers: ['integration'],
+  },
+  verification: {
+    method: 'Read the seeded acceptance rubric and its projected clauses.',
+    check: { kind: 'tests', files: ['packages/operator-core/lib/plan-activation-audits.integration.test.ts'] },
+  },
+};
+const postEpochR2 = {
+  intent: { request: 'Expose current runtime truth.' },
+  acceptance: {
+    condition: 'Live evidence reports the current result.',
+    falsifier: 'The live surface reports a stale result.',
+  },
+  verification: {
+    method: 'Observe the live surface after a change.',
+    check: { kind: 'instrument', instrumentKey: 'none' },
+  },
+};
+
 const postEpochContent = `---
 title: Post-epoch seed target
 slug: post-epoch-seed-target
@@ -191,9 +219,15 @@ updated: 2026-09-04
 
 ## Requirements
 
-**R-1 — Persist the canonical promise.** One acceptance criterion remains the BAR authority.
+**R-1 — Persist the canonical promise.**
+\`\`\`requirement
+${JSON.stringify(postEpochR1)}
+\`\`\`
 
-**R-2 — Expose current runtime truth.** Live evidence reports the current result.
+**R-2 — Expose current runtime truth.**
+\`\`\`requirement
+${JSON.stringify(postEpochR2)}
+\`\`\`
 
 ## Design
 
@@ -729,6 +763,16 @@ describe('migration 938 activation-audit ledger', () => {
       label: 'unnumbered requirements',
       content: postEpochContent.replace('**R-1 —', '**1.').replace('**R-2 —', '**2.'),
       error: 'bar_requirement_parse_failed',
+    },
+    {
+      // P-003: an unrefined prose BAR cannot carry METHOD/check/layers; activation is
+      // the cheapest door to demand them, before any proof is bound to its clauses.
+      label: 'a prose BAR with no METHOD, check or test layers',
+      content: postEpochContent.replace(
+        `**R-1 — Persist the canonical promise.**\n\`\`\`requirement\n${JSON.stringify(postEpochR1)}\n\`\`\``,
+        '**R-1 — Persist the canonical promise.** One acceptance criterion remains the BAR authority.',
+      ),
+      error: 'bar_contract_method_missing',
     },
   ])('keeps the cohort marker but rolls back audit/rubric/projections on $label', async ({ content, error }) => {
     await seedPostEpochPlan(content, 'post-epoch-incomplete');

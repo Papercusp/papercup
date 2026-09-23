@@ -152,6 +152,56 @@ function snapshot(overrides: Partial<AcceptanceBarContractSnapshot> = {}): Accep
   };
 }
 
+// review-system-rework-reduction-2026-09-23 P-003/P-029: plans:start demands a complete
+// METHOD/check/layer contract while it can still be supplied without discarding proof.
+describe('start-door contract completeness (requireCompleteContractBeforeProof)', () => {
+  const unrefined = snapshot(); // METHOD '', check null, no layers, no proof bound
+
+  it('leaves the shared pre-start phase unchanged when the option is not requested', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(unrefined, 'pre-start');
+    expect(verdict.codes).not.toContain('bar_snapshot_method_missing');
+    expect(verdict.contractGaps).toBeUndefined();
+  });
+
+  it('blocks an unrefined contract before any proof is bound, with a field-level repair', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(unrefined, 'pre-start', { requireCompleteContractBeforeProof: true });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.contractGapsBlocking).toBe(true);
+    expect(verdict.blockingBars).toEqual([
+      {
+        barKey: 'R-1',
+        codes: expect.arrayContaining([
+          'bar_snapshot_method_missing',
+          'bar_snapshot_check_missing',
+          'bar_snapshot_proof_depth_missing',
+        ]),
+      },
+    ]);
+    expect(verdict.nextRepair?.action).toContain('METHOD is empty');
+    expect(verdict.nextRepair?.action).toContain('rubrics:amend');
+  });
+
+  it('maps a check that contradicts its layers to check_invalid (the rubrics:amend repair)', () => {
+    const manualWithLayers = snapshot({
+      bars: [bar({ method: 'Read the report.', check: { kind: 'instrument', instrumentKey: 'none' },
+        requiredTestLayers: ['e2e'] })],
+    });
+    const verdict = evaluateAcceptanceBarLifecycle(manualWithLayers, 'pre-start', { requireCompleteContractBeforeProof: true });
+    expect(verdict.blockingBars[0]?.codes).toContain('bar_snapshot_check_invalid');
+    expect(verdict.contractGaps?.map((gap) => gap.gap)).toEqual(['check_layer_mismatch']);
+  });
+
+  it('reports but does not block once proof is bound — refusing then would only strand in-flight work', () => {
+    const proven = snapshot({
+      bars: [bar({ proof: { ...bar().proof, state: 'current', currentEvidence: 1 } })],
+    });
+    const verdict = evaluateAcceptanceBarLifecycle(proven, 'pre-start', { requireCompleteContractBeforeProof: true });
+    expect(verdict.contractGapsBlocking).toBe(false);
+    expect(verdict.contractGaps?.length).toBeGreaterThan(0);
+    expect(verdict.codes).not.toContain('bar_snapshot_method_missing');
+  });
+});
+
 describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability', () => {
   beforeEach(() => vi.mocked(readAcceptanceBarContractSnapshot).mockReset());
 
@@ -463,6 +513,41 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
 
     expect(verdict.codes).toEqual(['bar_snapshot_vetting_missing']);
     expect(verdict.nextRepair).toMatchObject({ code: 'bar_snapshot_vetting_missing', barKey: null });
+  });
+
+  it('P-004: at ship, an unvetted rubric with missing proof is told to VET first, with the full action', () => {
+    // The snapshot's own pick (proof) is still in this phase's codes, which used to be
+    // enough to reuse it — so the door rendered "bind proof" ahead of the vetting the
+    // runbook puts first. The phase codes are now ranked with the same order.
+    const verdict = evaluateAcceptanceBarLifecycle(
+      snapshot({
+        bars: [
+          bar({
+            method: 'Run tests.',
+            check: { kind: 'tests', files: ['x.test.ts'] },
+            readiness: {
+              state: 'blocked',
+              codes: ['bar_snapshot_proof_missing'],
+              mapping: 'live',
+              method: 'declared',
+              workContract: 'current',
+            },
+          }),
+        ],
+        readiness: {
+          state: 'blocked',
+          codes: ['bar_snapshot_proof_missing'],
+          nextRepair: { code: 'bar_snapshot_proof_missing', barKey: 'R-1', action: 'Bind evidence.' },
+        },
+      }),
+      'ship',
+    );
+    expect(verdict.codes).toEqual(
+      expect.arrayContaining(['bar_snapshot_proof_missing', 'bar_snapshot_vetting_missing']),
+    );
+    expect(verdict.nextRepair?.code).toBe('bar_snapshot_vetting_missing');
+    expect(verdict.nextRepair?.action).toMatch(/BEFORE binding proof/i);
+    expect(verdict.message).toContain('NEXT REPAIR (bar_snapshot_vetting_missing)');
   });
 
   it('requires current proof, pass grading, vetting, and accepted author verdict at ship', () => {

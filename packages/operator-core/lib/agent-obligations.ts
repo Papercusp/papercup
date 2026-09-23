@@ -27,6 +27,7 @@ export function planAcceptanceChangedKey(planSlug: string): string {
 
 export type AgentObligationFamily =
   | 'plan-placement'
+  | 'planning-needed'
   | 'owner-report'
   | 'independent-verification'
   /** An open owner turn awaiting disposition (done, or declined with a reason). */

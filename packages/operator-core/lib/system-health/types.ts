@@ -533,6 +533,9 @@ export interface DeployHealth {
   gitSyncMaxMissedIntervals?: number | null;
   /** The install that holds `gitSyncMaxMissedIntervals`. */
   gitSyncMissedIntervalsInstallSlug?: string | null;
+  /** True when the git-sync routine read FAILED (the fail-soft catch fired), so a null
+   *  `gitSyncMaxMissedIntervals` means "not observed", never "recovered". */
+  gitSyncMissedIntervalsUnreadable?: boolean;
   // ── RUNNING-CODE freshness (WI-1258129) ──────────────────────────────────────
   // Every field above measures GIT POSITIONS (staging→main→live) or git-sync
   // delivery. None of them can see the distinct failure where the refs are all

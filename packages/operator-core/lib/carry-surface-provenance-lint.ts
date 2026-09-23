@@ -253,6 +253,17 @@ function isDialogAnswerClaim(line: string): boolean {
 const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
 
+/** EI-23902378389781007: this describes the classifier's counterexample
+ * ("an agent asserting the owner said it"); it does not attribute a directive
+ * to the current writer.
+ */
+const OWNER_ATTRIBUTION_REPORTED_AGENT_MENTION_RE =
+  /\b(?:a|an|the)\s+agent\s+asserting\s+(?:that\s+)?the\s+owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands)\s+(?:it|this|that)\b/i;
+
+function isOwnerAttributionReportedAgentMention(line: string): boolean {
+  return OWNER_ATTRIBUTION_REPORTED_AGENT_MENTION_RE.test(line);
+}
+
 /**
  * EI-22787623747935751: OWNER_ATTRIBUTION_RE can begin at the `owner` suffix of
  * a peer-owned domain role — "Gate owner asked for ..." — and misclassify that
@@ -402,9 +413,41 @@ const OWNER_DIRECTIVE_MENTION_CONTEXT_RE =
 
 const BACKTICK_WRAPPED_OWNER_DIRECTIVE_RE = /`[^`\n]*\bowner\s+(?:directive|mandate)s?\b[^`\n]*`/i;
 
+/** EI-23902378389781007: the noun matcher also sees quoted section anchors and code
+ * field labels. Those are names being discussed, not owner-attributed directives:
+ * a Markdown section heading is an identifier, while an identifier assignment such
+ * as CarryBrief.directives = OWNER directives names a field concept. Keep these
+ * structural exemptions narrow so the live directive forms below still lint.
+ */
+/** Diagnostic labels name a detector/control rather than a live instruction. */
+const OWNER_DIRECTIVE_CLASSIFIER_LABEL_RE =
+  /\bowner\s+(?:directive|mandate)s?\s+(?:control|test|fixture|matcher|detector|classification|label|pattern|case)\b/i;
+const OWNER_DIRECTIVE_CLASSIFICATION_EXPLANATION_RE =
+  /\bhow\b[^.\n]{0,60}\bbecomes?\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?\b/i;
+
+function isOwnerDirectiveNounClassifierMeta(line: string): boolean {
+  return (
+    OWNER_DIRECTIVE_CLASSIFIER_LABEL_RE.test(line) ||
+    OWNER_DIRECTIVE_CLASSIFICATION_EXPLANATION_RE.test(line)
+  );
+}
+
+const OWNER_DIRECTIVE_MARKDOWN_HEADING_MENTION_RE =
+  /(?:^\s{0,3}#{1,6}\s*owner\s+(?:directive|mandate)s?\b|["']\s*#{1,6}\s*owner\s+(?:directive|mandate)s?\b[^"'\n]*["'])/i;
+const OWNER_DIRECTIVE_FIELD_LABEL_RE =
+  /\x60?\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\x60?\s*=\s*OWNER\s+(?:directive|mandate)s?\b/;
+
 /** Definite quoting — never flag, mirrors {@link isOwnerTagQuotedForm}. */
 function isOwnerDirectiveNounQuotedForm(line: string): boolean {
-  return BACKTICK_WRAPPED_OWNER_DIRECTIVE_RE.test(line);
+  return (
+    BACKTICK_WRAPPED_OWNER_DIRECTIVE_RE.test(line) ||
+    OWNER_DIRECTIVE_MARKDOWN_HEADING_MENTION_RE.test(line)
+  );
+}
+
+/** A code identifier assigned a capitalized provenance concept is a field label. */
+function isOwnerDirectiveNounFieldLabel(line: string): boolean {
+  return OWNER_DIRECTIVE_FIELD_LABEL_RE.test(line);
 }
 
 /** Ambiguous — likely documenting/comparing the convention, not asserting a directive. */
@@ -822,7 +865,9 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
     const ownerAttributionMatch = OWNER_ATTRIBUTION_RE.exec(line);
     if (
-      (ownerAttributionMatch && !isPeerRoleOwnerAttribution(line, ownerAttributionMatch)) ||
+      (ownerAttributionMatch &&
+        !isPeerRoleOwnerAttribution(line, ownerAttributionMatch) &&
+        !isOwnerAttributionReportedAgentMention(line)) ||
       isPassiveOwnerAttribution(line)
     ) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
@@ -839,6 +884,8 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // EI-19393929983792049: same mention-vs-use split as the bracket tag above,
       // generalized to the noun phrase.
       if (isOwnerDirectiveNounQuotedForm(line)) continue; // definite quoting — never flag
+      if (isOwnerDirectiveNounFieldLabel(line)) continue; // code field name, not attribution
+      if (isOwnerDirectiveNounClassifierMeta(line)) continue; // documented detector category
       // EI-19461711239876849: same retraction carve-out as the bracket tag above — the
       // noun form is what a retraction of a noun-form assertion ("this is [self-imposed],
       // NOT an owner directive") is necessarily written in.

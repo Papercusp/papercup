@@ -292,6 +292,53 @@ beforeEach(() => {
   readLatestLoopTransitionMock.mockResolvedValue({ status: 'none' });
 });
 
+/**
+ * P-013 / RSR-P-013-C (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
+ * loop status reports rewakeGuaranteed:false when the last fire parked. The verdict is
+ * the same classifier loop:checkpoint's continuation gate uses (./next-wake).
+ */
+describe('loop:status rewake verdict (P-013)', () => {
+  const armed = {
+    active: true,
+    intervalSec: 600,
+    parked: false,
+    nextFireAt: '2099-01-01T00:00:00.000Z',
+    armedAt: '2026-09-23T03:55:04.000Z',
+    firesSinceArm: 1,
+    maxFires: null,
+    maxDurationSec: null,
+    expectedFiresSinceArm: 1,
+    carry: 'cold',
+  };
+
+  it('reports rewakeGuaranteed:false with last-fire-parked when the newest fire parked with no injectable host', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'parked',
+      lastWakeError: 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
+    });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-parked' });
+  });
+
+  it('reports rewakeGuaranteed:true for the same loop once its last fire was delivered', async () => {
+    getLoopStatusMock.mockResolvedValue({ ...armed, lastWakeStatus: 'delivered', lastWakeError: null });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
+  it('is null when no loop exists', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    expect((await run()).rewake).toBeNull();
+  });
+
+  it('documents the field in the tool returns guidance', () => {
+    const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+    expect(returns).toContain('rewakeGuaranteed');
+    expect(returns).toContain('last-fire-parked');
+  });
+});
+
 describe('loop:status latest transition diagnostics (EI-21573850378423298)', () => {
   it('surfaces await-suppression and its driving event instead of resembling fire starvation', async () => {
     getLoopStatusMock.mockResolvedValue({

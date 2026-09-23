@@ -64,8 +64,22 @@ export const DEFAULT_MAX_SPOOL_BYTES = 32 * 1024 * 1024;
  * ingestion rates.
  */
 export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 2 * 60 * 60 * 1000;
-/** Keep each lifecycle GC pass bounded so it cannot monopolize the gateway database. */
+/** Keep each lifecycle GC pass row-bounded so it cannot scan an unbounded candidate set. */
 export const DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT = 2_000;
+/**
+ * Bound the bytes retired by one GC transaction, not only its row count.
+ *
+ * WI-10002664 measured 1,045 eligible rows carrying 1.545 GiB while the old
+ * 2,000-row limit still called that one "bounded" pass. During the incident,
+ * PgBouncer samples showed every server slot active and clients queued for up
+ * to 30 seconds while this DELETE and its 24 GiB TOAST vacuum waited on WAL.
+ * A count-only bound therefore left one known multi-gigabyte write contributor
+ * unbounded even though it looked guarded.
+ * 256 MiB is above the observed ~137 MiB/min ingestion rate and eight times the
+ * maximum legal single payload, so GC can catch up without one transaction
+ * monopolizing the shared write path.
+ */
+export const DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES = 256 * 1024 * 1024;
 /** Legacy rows without an expiry are safe to collect after a short idle grace period. */
 export const DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS = 2 * 60 * 60 * 1000;
 /**
@@ -145,7 +159,7 @@ export interface GatewayPayloadSpool {
   /** Unpin. Does NOT delete: a retry arriving before the sweep can still resurrect it. */
   release(payloadRef: string): Promise<void>;
   /** Reclaim unreferenced/expired blobs. Returns how many rows it removed. */
-  sweep(options?: { readonly limit?: number }): Promise<number>;
+  sweep(options?: { readonly limit?: number; readonly maxBytes?: number }): Promise<number>;
 }
 
 class BlobStoreGatewayPayloadSpool implements GatewayPayloadSpool {
@@ -207,8 +221,13 @@ class BlobStoreGatewayPayloadSpool implements GatewayPayloadSpool {
     await this.#refcount?.release(GATEWAY_PAYLOAD_ADDRESSING.key(payloadRef));
   }
 
-  async sweep(options: { readonly limit?: number } = {}): Promise<number> {
-    return (await this.#refcount?.sweep(options.limit ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT)) ?? 0;
+  async sweep(options: { readonly limit?: number; readonly maxBytes?: number } = {}): Promise<number> {
+    return (
+      (await this.#refcount?.sweep(
+        options.limit ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT,
+        options.maxBytes ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES,
+      )) ?? 0
+    );
   }
 }
 
@@ -216,7 +235,7 @@ class BlobStoreGatewayPayloadSpool implements GatewayPayloadSpool {
 interface RefcountPort {
   retain(key: string): Promise<void>;
   release(key: string): Promise<void>;
-  sweep(limit: number): Promise<number>;
+  sweep(limit: number, maxBytes: number): Promise<number>;
 }
 
 export interface PgGatewayPayloadStoreOptions {
@@ -352,8 +371,11 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
          AND blob_key = ${key}`;
   }
 
-  async sweep(limit: number): Promise<number> {
+  async sweep(limit: number, maxBytes = DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES): Promise<number> {
     const batchLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT;
+    const batchMaxBytes = Number.isFinite(maxBytes)
+      ? Math.max(1, Math.floor(maxBytes))
+      : DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES;
 
     // Migration 1022 intentionally allowed NULL expires_at, and rows written before the
     // finite-TTL policy therefore need a bounded backfill. Backfill referenced rows too:
@@ -422,34 +444,47 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
            )
          )
          AND (blobs.workspace_id, blobs.blob_key) IN (
-         SELECT candidate.workspace_id, candidate.blob_key
-           FROM harness_shared.gateway_payload_blobs AS candidate
-          WHERE candidate.workspace_id = ${this.#workspaceId}
-            AND (
-              (
-                candidate.ref_count = 0
+         SELECT ranked.workspace_id, ranked.blob_key
+           FROM (
+             SELECT candidate.workspace_id,
+                    candidate.blob_key,
+                    row_number() OVER (
+                      ORDER BY candidate.last_accessed_at, candidate.blob_key
+                    ) AS sweep_rank,
+                    sum(candidate.byte_length) OVER (
+                      ORDER BY candidate.last_accessed_at, candidate.blob_key
+                    ) AS cumulative_bytes
+               FROM harness_shared.gateway_payload_blobs AS candidate
+              WHERE candidate.workspace_id = ${this.#workspaceId}
                 AND (
-                  (candidate.expires_at IS NOT NULL AND candidate.expires_at <= now())
+                  (
+                    candidate.ref_count = 0
+                    AND (
+                      (candidate.expires_at IS NOT NULL AND candidate.expires_at <= now())
+                      OR (
+                        candidate.expires_at IS NULL
+                        AND candidate.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+                      )
+                    )
+                  )
                   OR (
-                    candidate.expires_at IS NULL
-                    AND candidate.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+                    (
+                      candidate.expires_at IS NOT NULL
+                      AND candidate.expires_at <= now()
+                      AND candidate.last_accessed_at <= now() - (${this.#pinnedGraceMs} * interval '1 millisecond')
+                    )
+                    OR (
+                      candidate.expires_at IS NULL
+                      AND candidate.last_accessed_at <= now() - (${legacyPlusPinnedMs} * interval '1 millisecond')
+                    )
                   )
                 )
-              )
-              OR (
-                (
-                  candidate.expires_at IS NOT NULL
-                  AND candidate.expires_at <= now()
-                  AND candidate.last_accessed_at <= now() - (${this.#pinnedGraceMs} * interval '1 millisecond')
-                )
-                OR (
-                  candidate.expires_at IS NULL
-                  AND candidate.last_accessed_at <= now() - (${legacyPlusPinnedMs} * interval '1 millisecond')
-                )
-              )
-            )
-          ORDER BY candidate.last_accessed_at, candidate.blob_key
-          LIMIT ${batchLimit}
+              ORDER BY candidate.last_accessed_at, candidate.blob_key
+              LIMIT ${batchLimit}
+           ) AS ranked
+          WHERE ranked.cumulative_bytes <= ${batchMaxBytes}
+             OR ranked.sweep_rank = 1
+          ORDER BY ranked.sweep_rank
        )
       RETURNING blob_key`;
     return rows.length;
@@ -491,14 +526,20 @@ export function memoryGatewayPayloadSpool(options: { readonly maxBytes?: number 
     release: async (key) => {
       refs.set(key, Math.max(0, (refs.get(key) ?? 0) - 1));
     },
-    sweep: async (limit) => {
+    sweep: async (limit, maxBytes) => {
       let removed = 0;
+      let removedBytes = 0;
       for (const key of [...store.data.keys()]) {
         if (removed >= limit) break;
         if ((refs.get(key) ?? 0) === 0) {
+          const bytes = store.data.get(key)?.byteLength ?? 0;
+          // Always allow the oldest first row so an explicitly tiny byte cap
+          // cannot make GC permanently stop making progress.
+          if (removed > 0 && removedBytes + bytes > maxBytes) break;
           store.data.delete(key);
           refs.delete(key);
           removed += 1;
+          removedBytes += bytes;
         }
       }
       return removed;
