@@ -6,10 +6,22 @@
  * checkpoint gate, lifecycle marker, and successor authority assembly. Codex's
  * synchronous PreCompact hook is the one supported point that can stop that
  * cut before it happens. This bridge asks the existing
- * session:request-compaction tool to schedule the managed boundary, then ALWAYS
+ * session:request-compaction tool to schedule the managed boundary, then
  * returns continue:false: a refused or unavailable managed boundary leaves the
  * current process intact and reports the actionable reason; it never falls
  * through to an unmanaged native compaction.
+ *
+ * ONE exception (WI-10002522): a thread that is a native FORK and has not
+ * sampled a single model turn since it was cut. A managed Codex carry successor
+ * IS such a fork (psu-launcher mintCarryRespawnArgs forks the predecessor so the
+ * conversation stays visible), so its model context is the predecessor's,
+ * inherited whole. When that inherited context is what trips auto-compaction,
+ * another managed boundary cannot shed it — the next successor forks the same
+ * context and trips again before its first sample. Measured 2026-09-23: 13 cuts
+ * in 10 minutes with zero model turns for one agent at 784140/784800 tokens.
+ * The managed boundary has already been applied to that thread (its carry
+ * document is installed in AGENTS.md), so the bridge lets Codex compact the
+ * inherited history natively instead of re-forking it forever.
  *
  * PAPERCUSP_MCP_URL is the exact per-session URL already written to the managed
  * CODEX_HOME. Keeping that exact URL preserves workspace, harness, role, tool
@@ -18,12 +30,14 @@
  * at execution time, never embedded in hooks.json or exposed in argv.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 590_000;
+/** Same bound psu-launcher's latestCodexRollout applies to a rollout it trusts. */
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
 function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -134,6 +148,60 @@ export function preCompactDecision(parsed) {
   };
 }
 
+/**
+ * Classify the thread Codex wants to compact from its own rollout: is it a
+ * native fork, and has it sampled a model turn yet? Codex writes a fork's
+ * `session_meta.forked_from_id` on the first line and references the parent's
+ * history instead of copying it, so a fork rollout carries no `token_count`
+ * until the fork itself samples. Fail-soft: anything unreadable reports
+ * `readable:false`, and the caller keeps the managed boundary. `sampled` is
+ * only measured for a fork (null = not checked), so a large original rollout
+ * is never scanned.
+ * @param {unknown} transcriptPath
+ * @returns {{ readable: boolean, forkedFromId: string | null, sampled: boolean | null }}
+ */
+export function inspectCodexTranscript(transcriptPath) {
+  const unreadable = { readable: false, forkedFromId: null, sampled: null };
+  if (typeof transcriptPath !== 'string' || !transcriptPath.trim()) return unreadable;
+  let text;
+  try {
+    const stat = statSync(transcriptPath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_TRANSCRIPT_BYTES) return unreadable;
+    text = readFileSync(transcriptPath, 'utf8');
+  } catch {
+    return unreadable;
+  }
+  const firstBreak = text.indexOf('\n');
+  const meta = parseJsonObject(firstBreak >= 0 ? text.slice(0, firstBreak) : text);
+  if (meta?.type !== 'session_meta') return unreadable;
+  const forkedFrom = objectOrNull(meta.payload)?.forked_from_id;
+  const forkedFromId = typeof forkedFrom === 'string' && forkedFrom.trim() ? forkedFrom : null;
+  if (!forkedFromId) return { readable: true, forkedFromId: null, sampled: null };
+  for (const line of text.split('\n')) {
+    if (!line.includes('"token_count"')) continue;
+    const payload = objectOrNull(parseJsonObject(line)?.payload);
+    if (payload?.type === 'token_count' && objectOrNull(payload.info)) {
+      return { readable: true, forkedFromId, sampled: true };
+    }
+  }
+  return { readable: true, forkedFromId, sampled: false };
+}
+
+/**
+ * The one PreCompact outcome that lets native compaction run: an unsampled
+ * fork whose over-limit context is inherited (see the file header).
+ * @param {string} forkedFromId
+ */
+export function inheritedContextDecision(forkedFromId) {
+  return {
+    continue: true,
+    systemMessage:
+      `Managed carry already applied: this thread is a fork of ${boundedDetail(forkedFromId, 'its predecessor')} and has not sampled a turn yet, ` +
+      'so the context over the limit is INHERITED. Another managed carry would fork the same context and loop (WI-10002522), ' +
+      'so Codex will compact this successor natively instead. The deterministic carry document is in AGENTS.md.',
+  };
+}
+
 function readSuperuserToken(env) {
   if (env.PAPERCUSP_MCP_AUTH !== 'superuser-token') return '';
   const path = env.PAPERCUSP_SUPERUSER_TOKEN_PATH ||
@@ -152,6 +220,7 @@ function readSuperuserToken(env) {
  *   env?: Record<string, string | undefined>,
  *   fetchImpl?: typeof globalThis.fetch,
  *   readToken?: (env: Record<string, string | undefined>) => string,
+ *   inspectTranscript?: (transcriptPath: unknown) => { readable: boolean, forkedFromId: string | null, sampled: boolean | null },
  * }} [options]
  */
 export async function runManagedPreCompact(payload, options = {}) {
@@ -163,6 +232,10 @@ export async function runManagedPreCompact(payload, options = {}) {
       ok: false,
       detail: 'invalid PreCompact payload (expected hook_event_name=PreCompact and trigger=auto)',
     });
+  }
+  const transcript = (options.inspectTranscript ?? inspectCodexTranscript)(input.transcript_path);
+  if (transcript.readable && transcript.forkedFromId && transcript.sampled === false) {
+    return inheritedContextDecision(transcript.forkedFromId);
   }
   const mcpUrl = String(env.PAPERCUSP_MCP_URL ?? '').trim();
   const sid = String(env.PAPERCUSP_SID ?? '').trim();

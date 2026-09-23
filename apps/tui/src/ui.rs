@@ -45,6 +45,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 /// (fails under 260) and `surface_b_min_width_matches_the_layout_constraints_it_guards`.
 pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 160;
 
+/// PUBLIC_RELEASE_UX.md § Wide terminal is "160 columns by 24 rows or larger";
+/// below 24 rows the compact rules apply and Context is reached with Ctrl-T
+/// instead of squeezing a rail beside the four-row composer.
+pub(crate) const SURFACE_B_MIN_HEIGHT: u16 = 24;
+
 pub fn draw(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
     // desktop-docked native terminal's panes render JUST one tab's body — no
@@ -113,23 +118,35 @@ pub fn draw(f: &mut Frame, app: &App) {
     // longer a layout decision; only the width gate protects narrow terminals.
     // Carve the pane BEFORE presence and plans-filter splits so the panes never
     // overlap.
-    let (work, op_dock) = if app.tab != Tab::Operator
-        && app.tab != Tab::Overview
-        // Surface B needs enough room for a readable main pane, presence rail,
-        // and the fixed Agent Chat column. Keep the existing full-width layout
-        // below this threshold rather than collapsing its content to a sliver.
-        // The threshold is the arithmetic of the constraints just below, not a
-        // feel-good margin — see SURFACE_B_MIN_WIDTH.
-        && root[1].width >= SURFACE_B_MIN_WIDTH
-    {
+    // Surface B needs enough room for a readable main pane, presence rail,
+    // and the fixed 40-column side column. Keep the existing full-width layout
+    // below this threshold rather than collapsing its content to a sliver.
+    // The threshold is the arithmetic of the constraints just below, not a
+    // feel-good margin — see SURFACE_B_MIN_WIDTH.
+    let surface_b = root[1].width >= SURFACE_B_MIN_WIDTH;
+    let side_column = || {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(56), Constraint::Length(40)])
             .split(root[1]);
-        (cols[0], Some(cols[1]))
-    } else {
-        (root[1], None)
+        (cols[0], cols[1])
     };
+    let (work, op_dock, context_rail) =
+        if app.tab != Tab::Operator && app.tab != Tab::Overview && surface_b {
+            let (work, dock) = side_column();
+            (work, Some(dock), None)
+        } else if app.tab == Tab::Operator
+            && surface_b
+            && f.area().height >= SURFACE_B_MIN_HEIGHT
+        {
+            // PUBLIC_RELEASE_UX.md § Wide terminal: on Agent Chat the same
+            // column is the selected conversation's Context rail, so the
+            // conversation and its work stay visible together.
+            let (work, rail) = side_column();
+            (work, None, Some(rail))
+        } else {
+            (root[1], None, None)
+        };
 
     // P7: an always-visible presence sidebar (who's online + intent), toggled
     // with `p`. Suppressed on narrow terminals so it never crowds the body.
@@ -168,6 +185,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     // right-side panes so it owns its carved column outright.
     if let Some(area) = op_dock {
         draw_operator_dock(f, app, area);
+    }
+    if let Some(area) = context_rail {
+        crate::plans_board::draw_context_rail(f, app, area);
     }
     draw_status(f, app, root[2]);
 

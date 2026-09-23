@@ -239,6 +239,39 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
     lines
 }
 
+/// What Context says before a projection arrives. The dock pane waits for the
+/// operator's live native session; the workbench follows Agent Chat, so with
+/// no conversation open there is honestly nothing to describe — never another
+/// session's context standing in for it.
+fn placeholder_lines(app: &App) -> Vec<Line<'static>> {
+    let text = if app.context_projection_target.is_some() {
+        "This session's producer does not expose Context at its current capability tier."
+    } else if app.pinned.is_some() {
+        "Waiting for a live Sentinel native-session identity…"
+    } else {
+        "No conversation is open — Context follows the session Agent Chat has selected."
+    };
+    vec![Line::from(Span::styled(text, Theme::dim()))]
+}
+
+/// Surface B's 40-column Context rail beside Agent Chat (PUBLIC_RELEASE_UX.md
+/// § Wide terminal): the same projection the focused Context renders, for the
+/// conversation Agent Chat has selected. The rail is read-only — task keys act
+/// once Ctrl-T focuses Context — so it advertises that door rather than keys
+/// it cannot take.
+pub fn draw_context_rail(f: &mut Frame, app: &App, area: Rect) {
+    let lines = match &app.context_projection {
+        Some(projection) => projection_lines(app, projection),
+        None => placeholder_lines(app),
+    };
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Theme::block(Line::from(" Context · Ctrl-T "), false))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -257,19 +290,17 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
         Paragraph::new(Line::from(vec![
             Span::styled(" Context", Theme::title().add_modifier(Modifier::BOLD)),
             Span::styled(format!(" · {tier}"), Theme::dim()),
+            // The workbench reaches this surface with Ctrl-T; name the way back.
+            Span::styled(
+                if app.pinned.is_none() { " · Esc/o Agent Chat" } else { "" },
+                Theme::dim(),
+            ),
         ])),
         outer[0],
     );
     let lines = match &app.context_projection {
         Some(projection) => projection_lines(app, projection),
-        None if app.context_projection_target.is_some() => vec![Line::from(Span::styled(
-            "This session's producer does not expose Context at its current capability tier.",
-            Theme::dim(),
-        ))],
-        None => vec![Line::from(Span::styled(
-            "Waiting for a live Sentinel native-session identity…",
-            Theme::dim(),
-        ))],
+        None => placeholder_lines(app),
     };
     f.render_widget(
         Paragraph::new(lines)

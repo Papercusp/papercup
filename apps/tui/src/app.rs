@@ -3427,6 +3427,9 @@ impl App {
         }
         self.chat_queued.clear();
         self.chat_scroll = 0;
+        // The unbound conversation's Context goes with it (main.rs also calls
+        // this directly, outside `update`, on a harness switch).
+        self.reconcile_context_projection_target();
     }
 
     /// Advance the async-load token before spawning a load that did not first
@@ -4731,6 +4734,48 @@ impl App {
         self.clamp_sel();
     }
 
+    /// Which conversation Context describes (PUBLIC_RELEASE_UX.md § Wide /
+    /// Compact terminal; P-008 R-03). In the workbench it is exactly the
+    /// conversation Agent Chat has bound — switching sessions re-targets it,
+    /// and an unbound Agent Chat shows no Context rather than another
+    /// session's. Only the pinned `pui context-pane` dock pane, which has no
+    /// Agent Chat of its own, follows the live operator roster row. An
+    /// explicit `pui context-pane SOURCE ID` target is never re-derived.
+    fn desired_context_projection_target(&self) -> Option<ConversationContextProjectionTarget> {
+        if self.pinned.is_some() {
+            return resolve_context_projection_target(&self.roster);
+        }
+        let chat_id = self.agent_chat_id.as_deref().filter(|id| !id.trim().is_empty())?;
+        // The chat was loaded under the active harness; an attached SU session
+        // reports the harness its canonical identity was minted in.
+        let harness = self
+            .su_session
+            .as_ref()
+            .and_then(|session| session.identity.as_ref())
+            .and_then(|identity| identity.harness_slug.clone())
+            .or_else(|| Some(self.harness.clone()))
+            .filter(|harness| !harness.trim().is_empty());
+        Some(ConversationContextProjectionTarget::new("agent_chat", chat_id, harness))
+    }
+
+    /// Re-derive the Context target and drop every piece of state that belongs
+    /// to the previous target, so no task highlight, editor or projection from
+    /// one session can render against another. The run loop fetches whenever
+    /// the target changes.
+    fn reconcile_context_projection_target(&mut self) {
+        if self.context_projection_target_explicit {
+            return;
+        }
+        let next = self.desired_context_projection_target();
+        if next != self.context_projection_target {
+            self.context_projection_target = next;
+            self.context_projection = None;
+            self.context_task_sel = 0;
+            self.context_task_editor = None;
+            self.context_task_pending = false;
+        }
+    }
+
     pub fn set_roster(&mut self, roster: Vec<RosterEntry>) {
         self.roster = roster;
         let leader_fleet = self
@@ -4743,16 +4788,7 @@ impl App {
             self.fleet.leader_brief = None;
             self.fleet.leader_brief_error = None;
         }
-        if !self.context_projection_target_explicit {
-            let next = resolve_context_projection_target(&self.roster);
-            if next != self.context_projection_target {
-                self.context_projection_target = next;
-                self.context_projection = None;
-                self.context_task_sel = 0;
-                self.context_task_editor = None;
-                self.context_task_pending = false;
-            }
-        }
+        self.reconcile_context_projection_target();
         // The Fleet tab navigates the (plans-filtered, D-009) roster too —
         // keep its cursor in range of what actually renders.
         let len = self.visible_roster().len();
@@ -5873,8 +5909,15 @@ impl App {
     /// `harness_shared.tui_view_state`). Pure read; the run loop ships this to
     /// the debounced saver on each nav change.
     pub fn capture_view_state(&self) -> ViewState {
+        // Workbench Context is a focus over Agent Chat (Ctrl-T), not a
+        // destination: persisting it would relaunch PUI onto Context instead of
+        // the active conversation (P-008 R-07).
+        let tab = match self.tab {
+            Tab::PlansBoard if self.pinned.is_none() => Tab::Operator,
+            tab => tab,
+        };
         ViewState {
-            tab: Some(self.tab.title().to_string()),
+            tab: Some(tab.title().to_string()),
             harness: Some(self.harness.clone()),
             scope: Some(if self.all_pots { "all" } else { "pot" }.to_string()),
             harness_focus: Some(
@@ -9021,6 +9064,16 @@ impl App {
 
     /// The single reducer. Pure w.r.t. I/O, so it is unit-testable.
     pub fn update(&mut self, ev: Event) -> Action {
+        let action = self.update_event(ev);
+        // Agent Chat's binding changes from many arms (picker, attach, load,
+        // continuation, harness switch). Re-deriving Context once here, after
+        // every event, is what keeps it on the selected conversation without
+        // each of those arms having to remember to.
+        self.reconcile_context_projection_target();
+        action
+    }
+
+    fn update_event(&mut self, ev: Event) -> Action {
         // Loading the saved view follows asynchronous startup reads. Any owner
         // input takes precedence over that old snapshot, including composing on
         // the default tab (which need not change a persisted field). Read-only
@@ -10980,6 +11033,21 @@ impl App {
                 query: String::new(),
             };
         }
+        // PUBLIC_RELEASE_UX.md § Compact terminal: Ctrl-T opens the selected
+        // conversation's Context full-screen from every ordinary surface — the
+        // same projection the wide rail shows beside Agent Chat, now focused so
+        // its task keys act. `o`/Esc return to the unchanged transcript and
+        // draft. A pinned dock pane already IS one surface and keeps its keys.
+        if code == KeyCode::Char('t')
+            && mods.contains(KeyModifiers::CONTROL)
+            && self.pinned.is_none()
+        {
+            self.tab = Tab::PlansBoard;
+            // The draft stays in `chat_input`; only composer focus is released
+            // so Context's task keys are not typed into it.
+            self.chat_composing = false;
+            return Action::FetchContextProjection;
+        }
         // An open change card is a modal surface (PUBLIC_RELEASE_UX.md
         // § Keyboard precedence rank 3): it owns scroll and copy while open, so
         // `j`/`k`/`y` mean THIS diff rather than the transcript behind it. It
@@ -11083,8 +11151,29 @@ impl App {
         }
         // The pinned Context pane owns the whole keymap — j/k move the task
         // highlight, mutation keys act through the bridge, and g refreshes.
+        // In the workbench, Context is the Ctrl-T surface over Agent Chat: Esc
+        // returns to the chat, and keys Context leaves unclaimed fall through
+        // so `o` and the destination keys are never trapped behind it.
         if self.tab == Tab::PlansBoard {
-            return self.context_key(code, mods);
+            let action = self.context_key(code, mods);
+            if self.pinned.is_some() || !matches!(action, Action::None) {
+                return action;
+            }
+            match code {
+                KeyCode::Esc => {
+                    self.tab = Tab::Operator;
+                    self.chat_composing = true;
+                    return Action::Render;
+                }
+                // A task verb with no selected/writable task is a no-op here,
+                // never the destination key the same letter means elsewhere
+                // (`s` Sessions, `a` Voice, `d`…).
+                KeyCode::Enter
+                | KeyCode::Char('x' | 'a' | 'e' | 's' | 'd' | 'b' | 'u' | 'r' | 'K' | 'J' | 'P') => {
+                    return Action::Render;
+                }
+                _ => {}
+            }
         }
         // The pinned agent-context panes (dock 4-pane split): j/k scroll,
         // N opens the notifications history, everything else is swallowed
@@ -13854,7 +13943,11 @@ mod tests {
         }))
         .expect("generated papercup roster row should decode");
 
+        // Roster binding is the bare `pui context-pane` dock pane's contract;
+        // the workbench's Context follows Agent Chat instead (see below).
         let mut app = App::new();
+        app.pinned = Some(Tab::PlansBoard);
+        app.tab = Tab::PlansBoard;
         app.set_roster(vec![row]);
         let target = app
             .context_projection_target
@@ -13895,6 +13988,114 @@ mod tests {
                 .session_id,
             "rollout-canonical"
         );
+    }
+
+    fn load_agent_chat(app: &mut App, chat_id: &str) {
+        let token = app.next_agent_chat_load_token();
+        let harness = app.harness.clone();
+        app.update(Event::AgentChatLoaded {
+            harness,
+            chat_id: Some(chat_id.into()),
+            role: "operator".into(),
+            load_token: token,
+            summaries: Vec::new(),
+            messages: Vec::new(),
+            owner_turn_ids: Vec::new(),
+            approvals: Vec::new(),
+        });
+        assert_eq!(app.agent_chat_id.as_deref(), Some(chat_id));
+    }
+
+    #[test]
+    fn workbench_context_follows_the_selected_conversation_not_the_roster() {
+        // P-008 R-03: Context shows the conversation Agent Chat has bound.
+        // Switching re-targets it and discards every scrap of the previous
+        // session's state; the live operator row is another session and must
+        // never stand in for an unbound Agent Chat.
+        let mut app = App::new();
+        app.harness = "p8-project".into();
+        app.set_roster(vec![live_context_row(
+            Some("papercup"),
+            Some("operator"),
+            Some("claude"),
+            Some("operator-native"),
+        )]);
+        assert_eq!(app.context_projection_target, None);
+
+        load_agent_chat(&mut app, "chat-a");
+        assert_eq!(
+            app.context_projection_target,
+            Some(ConversationContextProjectionTarget::new(
+                "agent_chat",
+                "chat-a",
+                Some("p8-project".into()),
+            ))
+        );
+        app.context_projection = Some(ConversationContextProjection {
+            schema_version: "conversation-context-v1".into(),
+            session: crate::models::ConversationContextSession {
+                source_kind: "agent_chat".into(),
+                session_id: "chat-a".into(),
+                harness: Some("p8-project".into()),
+                role: None,
+                linked_work_item_id: None,
+                capability_tier: "owned-loop".into(),
+            },
+            capabilities: crate::models::ConversationContextCapabilities {
+                live_frames: false,
+                task_write: true,
+                approval_write: false,
+            },
+            frames: vec![],
+        });
+        app.context_task_sel = 2;
+        app.context_task_pending = true;
+
+        load_agent_chat(&mut app, "chat-b");
+        assert_eq!(
+            app.context_projection_target
+                .as_ref()
+                .map(|target| target.session_id.as_str()),
+            Some("chat-b")
+        );
+        assert!(app.context_projection.is_none(), "chat-a's projection must not render as chat-b's");
+        assert_eq!(app.context_task_sel, 0);
+        assert!(!app.context_task_pending);
+
+        app.reset_agent_chat_binding();
+        assert_eq!(app.context_projection_target, None);
+    }
+
+    #[test]
+    fn ctrl_t_focuses_context_over_agent_chat_and_esc_returns_with_the_draft() {
+        let mut app = App::new();
+        app.chat_composing = true;
+        app.chat_input = "P8 unsent draft".into();
+        assert_eq!(
+            app.update(key('t', KeyModifiers::CONTROL)),
+            Action::FetchContextProjection
+        );
+        assert_eq!(app.tab, Tab::PlansBoard);
+        assert!(!app.chat_composing, "Context's task keys must not type into the draft");
+
+        // A task verb with nothing to act on stays a Context no-op — never the
+        // destination the same letter means elsewhere (`s` is Sessions).
+        assert_eq!(app.update(key('s', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(app.tab, Tab::PlansBoard);
+        assert_eq!(
+            app.capture_view_state().tab.as_deref(),
+            Some("Operator"),
+            "a relaunch restores the conversation, not the Context focus"
+        );
+
+        app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(app.tab, Tab::Operator);
+        assert!(app.chat_composing);
+        assert_eq!(app.chat_input, "P8 unsent draft");
+
+        app.update(key('t', KeyModifiers::CONTROL));
+        app.update(key('o', KeyModifiers::NONE));
+        assert_eq!(app.tab, Tab::Operator, "`o` always returns to Agent Chat");
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {

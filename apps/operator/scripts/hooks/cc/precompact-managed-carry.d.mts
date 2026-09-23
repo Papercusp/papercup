@@ -21,21 +21,52 @@ export function preCompactDecision(parsed: any): {
     systemMessage: string;
 };
 /**
+ * Classify the thread Codex wants to compact from its own rollout: is it a
+ * native fork, and has it sampled a model turn yet? Codex writes a fork's
+ * `session_meta.forked_from_id` on the first line and references the parent's
+ * history instead of copying it, so a fork rollout carries no `token_count`
+ * until the fork itself samples. Fail-soft: anything unreadable reports
+ * `readable:false`, and the caller keeps the managed boundary. `sampled` is
+ * only measured for a fork (null = not checked), so a large original rollout
+ * is never scanned.
+ * @param {unknown} transcriptPath
+ * @returns {{ readable: boolean, forkedFromId: string | null, sampled: boolean | null }}
+ */
+export function inspectCodexTranscript(transcriptPath: unknown): {
+    readable: boolean;
+    forkedFromId: string | null;
+    sampled: boolean | null;
+};
+/**
+ * The one PreCompact outcome that lets native compaction run: an unsampled
+ * fork whose over-limit context is inherited (see the file header).
+ * @param {string} forkedFromId
+ */
+export function inheritedContextDecision(forkedFromId: string): {
+    continue: boolean;
+    systemMessage: string;
+};
+/**
  * Run the bridge with injectable transport/token readers for hermetic tests.
  * @param {Record<string, unknown>} payload
  * @param {{
  *   env?: Record<string, string | undefined>,
  *   fetchImpl?: typeof globalThis.fetch,
  *   readToken?: (env: Record<string, string | undefined>) => string,
+ *   inspectTranscript?: (transcriptPath: unknown) => { readable: boolean, forkedFromId: string | null, sampled: boolean | null },
  * }} [options]
  */
 export function runManagedPreCompact(payload: Record<string, unknown>, options?: {
     env?: Record<string, string | undefined>;
     fetchImpl?: typeof globalThis.fetch;
     readToken?: (env: Record<string, string | undefined>) => string;
+    inspectTranscript?: (transcriptPath: unknown) => {
+        readable: boolean;
+        forkedFromId: string | null;
+        sampled: boolean | null;
+    };
 }): Promise<{
     continue: boolean;
-    stopReason: string;
     systemMessage: string;
 }>;
 /**

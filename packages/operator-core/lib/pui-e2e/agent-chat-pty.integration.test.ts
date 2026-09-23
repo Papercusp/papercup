@@ -1826,9 +1826,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     });
     stage = 'index-chats';
     await ingestSeededAgentChats();
+    // Scoped to this test's two chats: earlier cases in this sequential block
+    // (R-04's legacy source + sibling) index their own turns into the same
+    // workspace, so a workspace-wide count measures test order, not this case.
     const indexed = await db.adminSql<Array<{ session_id: string; text: string }>>`
       SELECT session_id, text FROM harness_shared.session_turns
        WHERE workspace_id = ${WORKSPACE} AND source_kind = 'agent_chat'
+         AND session_id IN (${sourceId}, ${siblingId})
        ORDER BY session_id, turn_idx`;
     expect(indexed).toHaveLength(4);
     expect(new Set(indexed.map((row) => row.session_id))).toEqual(new Set([sourceId, siblingId]));
