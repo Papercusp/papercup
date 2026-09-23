@@ -56,6 +56,9 @@ vi.mock('../../events/await/store', () => ({
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
   INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
 }));
+vi.mock('../../events/await/compose-store', () => ({
+  listActiveComposedRoots: vi.fn(async () => []),
+}));
 // Keep the module graph light: these are transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
 vi.mock('../../modes/store', () => ({
@@ -96,6 +99,7 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
 import { listActiveAwaits, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { listActiveComposedRoots } from '../../events/await/compose-store';
 import { getModes } from '../../modes/store';
 import { checkOpenDirectivesGuard } from '../orders/open-directives-guard';
 import {
@@ -117,6 +121,7 @@ const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typ
 const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
 const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
 const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
+const listActiveComposedRootsMock = listActiveComposedRoots as unknown as ReturnType<typeof vi.fn>;
 const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
 const getModesMock = getModes as unknown as ReturnType<typeof vi.fn>;
 const checkOpenDirectivesGuardMock = checkOpenDirectivesGuard as unknown as ReturnType<typeof vi.fn>;
@@ -160,6 +165,8 @@ beforeEach(() => {
   acceptanceGateMock.mockResolvedValue({ satisfied: true });
   listActiveAwaitsMock.mockReset();
   listActiveAwaitsMock.mockResolvedValue([]);
+  listActiveComposedRootsMock.mockReset();
+  listActiveComposedRootsMock.mockResolvedValue([]);
   listParkedAwaitsMock.mockReset();
   listParkedAwaitsMock.mockResolvedValue([]);
   getModesMock.mockReset();
@@ -704,6 +711,40 @@ describe('the surviving-awaits receipt (EI-21349668185386229)', () => {
     expect(note).toContain('#88515 green-checkpoint:inconclusive');
     expect(note).toMatch(/events:cancel \{ await_ids \}/);
     expect(note).not.toContain(BLANKET_CLAIM);
+  });
+
+  it('excludes a fired composed-root anchor and its leaves even while their await rows remain unfired', async () => {
+    listActiveAwaitsMock.mockResolvedValue([
+      { id: 187540, eventKey: 'composed-root:406', expiresTs: '2026-09-19T14:20:35.167Z', rootId: 406, nodeId: null },
+      { id: 187541, eventKey: 'member:ready', expiresTs: null, rootId: 406, nodeId: 901 },
+    ]);
+    // listActiveComposedRoots returns only roots whose node state is still active.
+    // Root 406 has already fired, although its anchor await row remains unfired.
+    listActiveComposedRootsMock.mockResolvedValue([]);
+
+    const got = await run({});
+
+    expect(got.survivingAwaits).toEqual([]);
+    expect(String(got.note)).toMatch(/no independent event awaits remain active/);
+  });
+
+  it('reports one active composed root, omits its member leaves, and recommends root_ids for cancellation', async () => {
+    listActiveAwaitsMock.mockResolvedValue([
+      { id: 187550, eventKey: 'composed-root:407', expiresTs: '2026-09-19T14:20:35.167Z', rootId: 407, nodeId: null },
+      { id: 187551, eventKey: 'member:ready', expiresTs: null, rootId: 407, nodeId: 902 },
+      { id: 187552, eventKey: 'ordinary:ready', expiresTs: '2026-09-20T14:20:35.167Z', rootId: null, nodeId: null },
+    ]);
+    listActiveComposedRootsMock.mockResolvedValue([{ id: 407 }] as never);
+
+    const got = await run({});
+
+    expect(got.survivingAwaits).toEqual([
+      { await_id: 187550, event_key: 'composed-root:407', expires_ts: '2026-09-19T14:20:35.167Z', root_id: 407 },
+      { await_id: 187552, event_key: 'ordinary:ready', expires_ts: '2026-09-20T14:20:35.167Z' },
+    ]);
+    expect(String(got.note)).toContain('root #407 composed-root:407');
+    expect(String(got.note)).toMatch(/events:cancel \{ await_ids \}/);
+    expect(String(got.note)).toMatch(/events:cancel \{ root_ids \}/);
   });
 
   it('FAIL-SOFT: a read failure never blocks the stop — the note degrades to the scoped claim, survivingAwaits is omitted', async () => {

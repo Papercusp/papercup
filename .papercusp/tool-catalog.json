@@ -5648,7 +5648,7 @@
           "POST"
         ]
       },
-      "description": "Open a new feedback consult for one unresolved question — a request/creation verb, not a reader. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts; a fresh consult dispatches an isolated answer session and never wakes the expert’s live session. Below the relevance floor it reports the honest routing outcome instead of inventing expertise.",
+      "description": "Open a new feedback consult for one unresolved question — a request/creation verb, not a reader for an existing conversation; use conversations:get { id } to read one. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts; a fresh consult dispatches an isolated answer session and does not wake the expert’s live session. Below the relevance floor it reports the honest routing outcome instead of inventing expertise.",
       "capabilities": [
         "coord:write"
       ],
@@ -5672,9 +5672,9 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "A concrete technical question survives a first-pass check of local code, docs and search, and a peer may already have solved it. Ask once before a long re-derivation; say what you tried, what you observed, and the decision it informs.",
-        "notWhen": "Reading an existing conversation or consult thread (conversations:get { id }); live state (query it); owner decisions (coord:ask-owner); a known agent (coord:send); or anything code, docs or search already answer. Never duplicate a consult or repeat an unchanged question after no_available_responder — a consult is advice, never a handoff.",
-        "chaining": "For a known id use conversations:get { id }. An archive match may answer without launching a session; otherwise the dispatcher walks the allowed model ranks and skips walled backends, so never retry manually. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer. Declines and expiries advance the existing cascade."
+        "when": "A concrete technical question survives a first-pass check of local code, docs, or search, and a peer may already have solved it. Ask once before a long re-derivation; say what you tried, what you observed, and the decision it informs.",
+        "notWhen": "Reading an existing conversation or consult thread (conversations:get { id }); live state (query it); owner decisions (coord:ask-owner); a known agent (coord:send); or anything code, docs or search already answer. Do not open duplicate consults or repeat an unchanged question after no_available_responder — a consult is advice, never a handoff.",
+        "chaining": "For a known id, use conversations:get { id } to read the existing conversation; this tool does not read an existing conversation. An archive match may answer without launching a session; otherwise the dispatcher already walks allowed model ranks and skips walled backends, so never retry manually. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer. Declines and expiries advance the existing cascade."
       }
     },
     {

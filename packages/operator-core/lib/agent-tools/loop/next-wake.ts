@@ -34,7 +34,12 @@
  * EI-22089924844237484 for the full incident (loop armed 19:43Z, 0 fires by 19:47Z against
  * 4 expected, because a peer's seed re-cut had quiesced bg-host for the whole window).
  *
- * A FOURTH shape, P-013 / EI-24023838400909760: the loop's newest fire PARKED undelivered
+ * Fire starvation is read from LoopStatus.fireStarved, which the status writer computes
+ * from cadence, recent activity, and the scheduler's next-fire time. Do not recompute it
+ * here: suppressed-redundant wakes can leave an overdue schedule and zero loop fires
+ * while a real turn is actively settling.
+ *
+ * A fourth shape, P-013 / EI-24023838400909760: the loop's newest fire PARKED undelivered
  * (see {@link lastLoopFireParked}).
  */
 import type { LoopStatus } from '../../harness/routines/loop';
@@ -51,7 +56,7 @@ export type LoopNextWakeInput =
       | 'maxFires'
       | 'nextFireAt'
       | 'parked'
-      | 'expectedFiresSinceArm'
+      | 'fireStarved'
     > &
       // Optional so hand-built inputs (and older fixtures) stay valid; getLoopStatus
       // always populates both from the loop's newest wake-delivery row.
@@ -112,17 +117,7 @@ export function classifyLoopNextWake(
     }
   }
 
-  // EI-22089924844237484: armed, un-parked, zero fires despite >=2 expected
-  // opportunities, and a concrete scheduled fire already in the past — the
-  // engine had a due fire and never even attempted it. Neither `stalled` (parked-
-  // only) nor cadence-drift (needs historical fires) covers this shape; see the
-  // doc comment above.
-  if (!loop.parked && loop.firesSinceArm === 0 && loop.expectedFiresSinceArm != null && loop.expectedFiresSinceArm >= 2) {
-    const scheduledAtMs = loop.nextFireAt == null ? Number.NaN : Date.parse(loop.nextFireAt);
-    if (Number.isFinite(scheduledAtMs) && scheduledAtMs < nowMs) {
-      return { guaranteed: false, reason: 'fire-starved' };
-    }
-  }
+  if (loop.fireStarved) return { guaranteed: false, reason: 'fire-starved' };
 
   // P-013 / EI-24023838400909760: the last fire parked undelivered — the next one on the
   // same delivery path is expected to park too, so this loop does not guarantee a wake.

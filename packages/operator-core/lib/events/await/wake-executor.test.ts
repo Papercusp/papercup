@@ -311,6 +311,14 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // PG (routines metadata / pause / escalation). null = "not tracked" — the park
     // behaves exactly as before the guard existed (EI-21431587306904888).
     recordColdNoHostPark: vi.fn(async () => null),
+    // Hermetic by default: the P-013 cold-park inbox-wake fallback's real binding fires
+    // a live wake key. queued:0 = "nobody watches the key", so the cold no-host branch
+    // parks exactly as before the fallback existed.
+    fireColdParkInboxWake: vi.fn(async () => ({ queued: 0 })),
+    // Hermetic by default: the P-013 wake re-home decision's real binding reads the
+    // account-pool projection from PG. `keep` = resume exactly as before re-homing existed.
+    resolveWakeRehome: vi.fn(async () => ({ action: 'keep' as const, reason: 'test default' })),
+    rehomeWakeOnBackend: vi.fn(async () => ({ ok: false, detail: 'test default' })),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
     findPsuHost: vi.fn(() => null) as never,
@@ -1890,6 +1898,142 @@ describe('wake account route reaches the resumed child (WI-41266 wiring)', () =>
       else process.env.ANTHROPIC_AUTH_TOKEN = prevTok;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A rev 2): a wake
+ * addressed to a DEAD session revives it, and when its account is walled it is RE-HOMED
+ * onto another account or backend instead of resumed into the wall. The decision itself
+ * is unit-tested in wake-rehome.test.ts; these tests pin the WIRING — that the dispatcher
+ * acts on each verdict — with a dead target (alive:false) and a walled pinned account.
+ */
+describe('dead-session wake re-home on a walled account (P-013 part A)', () => {
+  const PINNED_ARGV = ['psu', '--no-picker', '--agent=claude', '--account=acct-walled'];
+  const overlayEnv = (args: string[]): Record<string, string> => {
+    const i = args.indexOf('--settings');
+    expect(i).toBeGreaterThan(-1);
+    return JSON.parse(args[i + 1]).env as Record<string, string>;
+  };
+
+  it('keep → the dead pinned session resumes on its persisted hard pin (positive control)', async () => {
+    const spawnDetached = vi.fn((_bin: string, _args: string[], _opts: { env: Record<string, string> }) => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ launchArgv: PINNED_ARGV })) as never,
+        spawnDetached: spawnDetached as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, args, opts] = spawnDetached.mock.calls[0]!;
+    // Without a re-home the child routes to the walled pin — the property below must differ.
+    expect(opts.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('pin');
+    expect(overlayEnv(args).ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-account: acct-walled');
+  });
+
+  it('rehome-account → the dead session is revived on the gateway AUTO route, never the walled pin', async () => {
+    const spawnDetached = vi.fn((_bin: string, _args: string[], _opts: { env: Record<string, string> }) => 4321);
+    const resolveWakeRehome = vi.fn(async () => ({
+      action: 'rehome-account' as const,
+      fromAccountId: 'acct-walled',
+      reason: 'pinned account walled; another has headroom',
+    }));
+    const claimResume = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ launchArgv: PINNED_ARGV })) as never,
+        spawnDetached: spawnDetached as never,
+        resolveWakeRehome,
+        claimResume,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    // The decision was asked about the PERSISTED route (the walled pin).
+    expect(resolveWakeRehome).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', route: expect.objectContaining({ mode: 'pin', accountId: 'acct-walled' }) }),
+    );
+    expect(claimResume).toHaveBeenCalledWith(42);
+    const [, args, opts] = spawnDetached.mock.calls[0]!;
+    expect(opts.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(opts.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    const headers = overlayEnv(args).ANTHROPIC_CUSTOM_HEADERS ?? '';
+    expect(headers).not.toContain('acct-walled');
+    expect(headers).not.toContain('x-papercusp-account-pin');
+    // Still gateway-routed, so the gateway picks the account with headroom.
+    expect(overlayEnv(args).ANTHROPIC_BASE_URL).toContain('127.0.0.1');
+  });
+
+  it('rehome-backend → the dead session is ported to codex BEFORE any claim, and no claude resume spawns', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const claimResume = vi.fn(async () => true);
+    const rehomeWakeOnBackend = vi.fn(async () => ({ ok: true, detail: 'ported' }));
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ launchArgv: PINNED_ARGV })) as never,
+        spawnDetached,
+        claimResume,
+        resolveWakeRehome: vi.fn(async () => ({
+          action: 'rehome-backend' as const,
+          backend: 'codex' as const,
+          reason: 'every claude account walled',
+        })),
+        rehomeWakeOnBackend,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-rehome-backend' });
+    expect(rehomeWakeOnBackend).toHaveBeenCalledTimes(1);
+    const [input] = rehomeWakeOnBackend.mock.calls[0] as unknown as [
+      { subscriberId: string; backend: string; wakeText: string; cwd: string | null },
+    ];
+    expect(input).toMatchObject({ subscriberId: 'su-abc', backend: 'codex', cwd: '/repo' });
+    // The ported session's first turn IS the wake.
+    expect(input.wakeText).toContain('lock:grant:t-1');
+    // psu's own resume claims the ended row — a pre-claim would make it refuse.
+    expect(claimResume).not.toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rehome-backend that cannot launch → falls through to the claude resume (the wake is never dropped)', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ launchArgv: PINNED_ARGV })) as never,
+        spawnDetached,
+        resolveWakeRehome: vi.fn(async () => ({
+          action: 'rehome-backend' as const,
+          backend: 'codex' as const,
+          reason: 'every claude account walled',
+        })),
+        rehomeWakeOnBackend: vi.fn(async () => ({ ok: false, detail: 'no codex model allowed' })),
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnDetached).toHaveBeenCalledTimes(1);
+    // The failed port is reported, never silent.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no codex model allowed'));
+    warn.mockRestore();
+  });
+
+  it('a non-claude dead session never consults the re-home decision (ports are claude-source-only)', async () => {
+    const resolveWakeRehome = vi.fn(async () => ({ action: 'keep' as const, reason: 'x' }));
+    await executeWake(
+      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null })) as never,
+        resolveWakeRehome,
+      }),
+    );
+    expect(resolveWakeRehome).not.toHaveBeenCalled();
   });
 });
 
@@ -3482,6 +3626,81 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       kind: 'park',
       reason:
         'eligible cold loop wake has no injectable psu host — loop already auto-paused (cold no-host limbo guard); parked',
+    });
+  });
+
+  // P-013 / RSR-P-013-B (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
+  // a parked cold fire used to leave the session with no pending wake until a peer's
+  // coord:send wake:required revived it. It now takes that same inbox-wake path itself.
+  describe('P-013: a cold no-host fire falls back to the inbox-wake path', () => {
+    it('fires the subscriber inbox-wake and settles the loop row on the non-turn inbox channel', async () => {
+      const fireColdParkInboxWake = vi.fn(async () => ({ queued: 1 }));
+      const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 7 }) }),
+        coldDeps({
+          findPsuHost: vi.fn(() => null) as never,
+          alive: vi.fn(() => false),
+          fireColdParkInboxWake,
+          recordColdNoHostPark,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+      expect(fireColdParkInboxWake).toHaveBeenCalledTimes(1);
+      const [input] = fireColdParkInboxWake.mock.calls[0] as unknown as [
+        { subscriberId: string; workspaceId: string; summary: string; source: string; payload: unknown },
+      ];
+      expect(input.subscriberId).toBe('su-abc');
+      // A loop: source bypasses the manual wake-mode gate, as the loop self-wake does.
+      expect(input.source).toBe('loop:loop-su-abc');
+      expect(input.summary).toMatch(/re-routed via inbox-wake/);
+      // The fallback payload must NOT itself be a cold loop marker, or it would park too.
+      expect(input.payload).toEqual({
+        coldParkFallback: { fromDeliveryId: expect.any(Number), routineId: 'loop-su-abc', wakeCount: 7 },
+      });
+      expect(input.payload).not.toHaveProperty('carry');
+      expect(input.payload).not.toHaveProperty('wakeCount');
+      expect(input.payload).not.toHaveProperty('routineId');
+      // A fire that was carried is not a limbo streak, and the executor itself never
+      // resumes the cold transcript — the inbox-wake delivery owns that turn.
+      expect(recordColdNoHostPark).not.toHaveBeenCalled();
+      expect(spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('with no inbox-wake watcher (queued 0) parks and streaks exactly as before', async () => {
+      const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 8 }) }),
+        coldDeps({
+          findPsuHost: vi.fn(() => null) as never,
+          alive: vi.fn(() => false),
+          fireColdParkInboxWake: vi.fn(async () => ({ queued: 0 })),
+          recordColdNoHostPark,
+        }),
+      );
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(recordColdNoHostPark).toHaveBeenCalledTimes(1);
+    });
+
+    it('a throwing fallback never changes the park behavior (fail-soft)', async () => {
+      // The bounded-timeout wrapper reports the failure loudly; assert it, don't hide it.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const out = await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 9 }) }),
+        coldDeps({
+          findPsuHost: vi.fn(() => null) as never,
+          alive: vi.fn(() => false),
+          fireColdParkInboxWake: vi.fn(async () => {
+            throw new Error('pump unavailable');
+          }),
+        }),
+      );
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cold-park inbox-wake fallback/su-abc'));
+      warn.mockRestore();
     });
   });
 

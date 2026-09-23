@@ -282,6 +282,7 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       maxDurationSec: null,
       maxFires: null,
       nextFireAt: null,
+      fireStarved: false,
       ...overrides,
     }) as never;
 
@@ -335,6 +336,7 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       loopGuaranteesNextWake(
         loop({
           parked: false,
+          fireStarved: true,
           expectedFiresSinceArm: 4,
           nextFireAt: '2026-08-25T04:05:00.000Z', // overdue by 15min
         }),
@@ -345,12 +347,30 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       classifyLoopNextWake(
         loop({
           parked: false,
+          fireStarved: true,
           expectedFiresSinceArm: 4,
           nextFireAt: '2026-08-25T04:05:00.000Z',
         }),
         now,
       ),
     ).toEqual({ guaranteed: false, reason: 'fire-starved' });
+  });
+
+  it('does not reclassify a suppressed-redundant wake as fire-starved when loop status says healthy', () => {
+    const now = Date.parse('2026-08-25T04:20:00.000Z');
+    const healthyLoop = loop({
+      parked: false,
+      fireStarved: false,
+      firesSinceArm: 0,
+      expectedFiresSinceArm: 4,
+      nextFireAt: '2026-08-25T04:05:00.000Z',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeStatus: 'delivered',
+      lastRealTurnAt: '2026-08-25T04:19:00.000Z',
+    });
+
+    expect(classifyLoopNextWake(healthyLoop, now)).toEqual({ guaranteed: true, reason: null });
+    expect(loopGuaranteesNextWake(healthyLoop, now)).toBe(true);
   });
 
   it('does not spuriously reject a freshly-armed loop that has not yet reached 2 expected opportunities', () => {

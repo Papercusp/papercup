@@ -32,6 +32,7 @@ import {
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
 import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
+import { listActiveComposedRoots } from '../../events/await/compose-store';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import {
@@ -102,23 +103,31 @@ export function isKeepaliveInboxWake(a: {
   return a.expiresTs == null || (a.timeoutBehavior ?? 'wake') !== 'wake';
 }
 
-export function survivingAwaitsNote(surviving: { await_id: number; event_key: string }[] | null): string {
+export function survivingAwaitsNote(
+  surviving: { await_id: number; event_key: string; root_id?: number }[] | null,
+): string {
   if (surviving === null) {
     // The read failed — still never restate the disproven blanket claim.
-    return 'Loop ended — no further LOOP wakes will fire. Independent event awaits (if any) are a separate lifecycle and survive this stop — events:status to inspect, events:cancel { await_ids } to stop one deliberately.';
+    return 'Loop ended — no further LOOP wakes will fire. Independent event awaits (if any) are a separate lifecycle and survive this stop — events:status to inspect; cancel ordinary awaits with events:cancel { await_ids } and composed trees with events:cancel { root_ids }.';
   }
   if (surviving.length === 0) {
     return 'Loop ended — no further loop wakes will fire, and no independent event awaits remain active for this owner.';
   }
   const listed = surviving
     .slice(0, SURVIVING_AWAITS_LISTED_CAP)
-    .map((a) => `#${a.await_id} ${a.event_key}`)
+    .map((a) => (a.root_id == null ? `#${a.await_id} ${a.event_key}` : `root #${a.root_id} ${a.event_key}`))
     .join(', ');
   const more =
     surviving.length > SURVIVING_AWAITS_LISTED_CAP ? `, +${surviving.length - SURVIVING_AWAITS_LISTED_CAP} more` : '';
+  const cancellationAdvice = [
+    surviving.some((a) => a.root_id == null) ? 'ordinary awaits with events:cancel { await_ids }' : null,
+    surviving.some((a) => a.root_id != null) ? 'composed trees with events:cancel { root_ids }' : null,
+  ]
+    .filter((advice): advice is string => advice !== null)
+    .join(' and ');
   return (
     `Loop ended — no further LOOP wakes will fire, but ${surviving.length} independent event await(s) remain active and CAN still wake this session: ${listed}${more}. ` +
-    'They are a separate lifecycle (loop:end never cancels them). Inspect via events:status; cancel deliberately with events:cancel { await_ids } — leave interest watches you did not create.'
+    `They are a separate lifecycle (loop:end never cancels them). Inspect via events:status; cancel ${cancellationAdvice} deliberately — leave interest watches you did not create.`
   );
 }
 
@@ -484,15 +493,28 @@ export default defineTool({
     // EI-21349668185386229: enumerate the wake sources that SURVIVE this stop
     // (see survivingAwaitsNote's header). Fail-soft — a read error must never
     // block the stop; the note then degrades to the scoped-claim wording.
-    let survivingAwaits: { await_id: number; event_key: string; expires_ts: string | null }[] | null = null;
+    let survivingAwaits: { await_id: number; event_key: string; expires_ts: string | null; root_id?: number }[] | null = null;
     if (ended) {
       try {
-        const rows = await listActiveAwaits(ownerId);
+        const [rows, activeRoots] = await Promise.all([
+          listActiveAwaits(ownerId),
+          listActiveComposedRoots(ownerId),
+        ]);
+        const activeRootIds = new Set(activeRoots.map((root) => root.id));
         survivingAwaits = rows
+          // Composed leaves only feed their root; they do not independently wake
+          // this subscriber. A root anchor can remain unfired while delivery is
+          // queued after the composed root itself has already fired.
+          .filter((r) => r.rootId == null || (r.nodeId == null && activeRootIds.has(r.rootId)))
           // WI-2146110: exclude the keepalive by SHAPE, not by key prefix alone — a
           // DELIBERATE bounded wake-on-timeout await on that same key must surface.
           .filter((r) => !isKeepaliveInboxWake(r))
-          .map((r) => ({ await_id: r.id, event_key: r.eventKey, expires_ts: r.expiresTs }));
+          .map((r) => ({
+            await_id: r.id,
+            event_key: r.eventKey,
+            expires_ts: r.expiresTs,
+            ...(r.rootId != null ? { root_id: r.rootId } : {}),
+          }));
       } catch {
         survivingAwaits = null;
       }

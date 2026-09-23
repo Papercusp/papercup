@@ -61,10 +61,16 @@ import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token
 import { fallbackCodexLaunchSpecFromAdvSession, getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
+  autoWakeAccountRoute,
   sanitizeInheritedWakeEnv,
   wakeAccountRouteFromArgv,
   type WakeAccountRoute,
 } from '../../inference-gateway/spawn-env';
+import {
+  rehomeWakeOnBackend as defaultRehomeWakeOnBackend,
+  resolveWakeRehome as defaultResolveWakeRehome,
+  type WakeRehomeDecision,
+} from './wake-rehome';
 import {
   collectSessionFiles as defaultCollectSessionFiles,
   findArchivedSessionIdForAdv as defaultFindArchivedSessionIdForAdv,
@@ -2272,6 +2278,33 @@ export interface ExecuteWakeDeps {
    *  defaults to the real recordColdNoHostParkAndMaybeEscalate (fail-soft: null ⇒
    *  the caller parks exactly as before). */
   recordColdNoHostPark?: typeof recordColdNoHostParkAndMaybeEscalate;
+  /** P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: fire the
+   *  subscriber's own inbox-wake when a cold loop fire finds no injectable psu host.
+   *  Returns how many deliveries the fan queued (0 ⇒ nobody watches the key). Injected
+   *  for tests; the default lazily imports `wakeRecipients` (a static import would close
+   *  the wake-executor → inbox-wake → engine → wake-executor cycle). */
+  fireColdParkInboxWake?: (input: {
+    subscriberId: string;
+    workspaceId: string;
+    summary: string;
+    source: string;
+    payload: unknown;
+  }) => Promise<{ queued: number }>;
+  /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
+   *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
+   *  for tests; defaults to the account-pool projection read in wake-rehome.ts (fail-soft:
+   *  an unreadable pool is `keep`). */
+  resolveWakeRehome?: (input: { workspaceId: string; route: WakeAccountRoute | null }) => Promise<WakeRehomeDecision>;
+  /** P-013 part A: continue the dead session on another backend (the session-port
+   *  conversion). Injected for tests; defaults to wake-rehome.ts `rehomeWakeOnBackend`. */
+  rehomeWakeOnBackend?: (input: {
+    subscriberId: string;
+    workspaceId: string;
+    harnessSlug: string | null;
+    cwd: string | null;
+    wakeText: string;
+    backend: 'codex';
+  }) => Promise<{ ok: boolean; detail: string }>;
   /** deterministic-context-carry P-021: the verdict-gated cold-by-default resolver —
    *  given the wake target's live host view, decide whether its session CLASS is
    *  drill-proven cold (COLD_BY_DEFAULT_PROVEN_CLASSES flag + gradeColdBootDrills
@@ -3491,6 +3524,71 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
     // preserve the normal resume fallback below.
     if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
+      // P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: a
+      // cold fire that finds no injectable host used to PARK and nothing else — the
+      // session went dark until a peer happened to coord:send it a wake. That peer
+      // wake is exactly what revived it: an inbox-wake carries no cold marker, so it
+      // takes the warm process-gone rung below (resume). Re-route THIS fire onto that
+      // same demonstrably-working path instead of waiting for a peer. The cost is the
+      // fresh-context boundary for this one wake (the resume keeps the transcript);
+      // going dark is strictly worse.
+      //
+      // Settled as `delivered`/`inbox` (a non-turn channel, like degradeToInboxOrDrop)
+      // rather than parked: a still-parked cold row would be re-claimed WITH the new
+      // inbox-wake delivery and coalesced into one group that carries the cold marker,
+      // parking the fallback too. The inbox-wake row is the turn-burning delivery.
+      const coldMarker = readLoopDeliveryMarker(d.payload);
+      const fallbackSource = `loop:${coldMarker?.routineId ?? 'cold-park-fallback'}`;
+      const fireFallback =
+        deps.fireColdParkInboxWake ??
+        (async (input: {
+          subscriberId: string;
+          workspaceId: string;
+          summary: string;
+          source: string;
+          payload: unknown;
+        }) => {
+          const { wakeRecipients } = await import('../../agent-tools/coordination/inbox-wake');
+          const fired = await wakeRecipients([input.subscriberId], {
+            summary: input.summary,
+            payload: input.payload,
+            // A `loop:` source bypasses the manual wake-mode gate, as the loop's own
+            // self-wake does: staging it would leave nobody to release it.
+            source: input.source,
+            workspaceId: input.workspaceId,
+          });
+          return { queued: fired.queued ?? fired.woken };
+        });
+      const fallback = await withWakeTimeout(
+        fireFallback({
+          subscriberId: d.subscriberId,
+          workspaceId: d.workspaceId,
+          summary:
+            'Loop fire re-routed via inbox-wake: its cold wake found no injectable psu host ' +
+            `(delivery #${d.id}). Resume your loop goal. ${text}`.slice(0, 1_800),
+          source: fallbackSource,
+          // Nested on purpose: top-level carry/wakeCount/routineId would make this a cold
+          // loop marker again (readColdLoopMarker) and park the fallback.
+          payload: {
+            coldParkFallback: {
+              fromDeliveryId: d.id,
+              routineId: coldMarker?.routineId ?? null,
+              wakeCount: coldMarker?.wakeCount ?? null,
+            },
+          },
+        }),
+        `cold-park inbox-wake fallback/${d.subscriberId}`,
+        2_000,
+      ).catch(() => null);
+      if (fallback && fallback.queued > 0) {
+        console.log(
+          `[wake-executor] wake #${d.id} cold fire had no injectable psu host → re-routed via inbox-wake ` +
+            `(${fallback.queued} queued) for ${d.subscriberId} (P-013)`,
+        );
+        return { kind: 'delivered', channel: 'inbox' };
+      }
+      // No inbox-wake watcher (or the fan failed): nothing else can carry this fire,
+      // so the limbo guard below still streaks it toward pause + escalation.
       // EI-21431587306904888: for an ENDED session no injectable host ever
       // reappears on its own, so an unbounded park here is a black hole — the
       // loop burns fires forever and the owner's lane strands silently (the
@@ -3564,6 +3662,46 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // else fall through to the legacy resume below (fail-soft).
     }
 
+    const resumeAgent = fresh?.agent ?? handle.agent;
+    // P-013 part A (RSR-P-013-A): a dead Claude session whose persisted account is
+    // WALLED is re-homed instead of resumed into the wall — onto the gateway auto route
+    // when another Claude account has headroom, or onto Codex (a session port) when every
+    // Claude account is walled. Decided BEFORE the claim below: the backend port is a psu
+    // resume, and psu claims this same ended row itself — a pre-claimed row would make it
+    // refuse. Bounded + fail-soft: a slow or unreadable pool resumes exactly as before.
+    let rehome: WakeRehomeDecision | null = null;
+    if (resumeAgent === 'claude') {
+      const persistedRoute = wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
+      rehome = await withWakeTimeout(
+        (deps.resolveWakeRehome ?? defaultResolveWakeRehome)({
+          workspaceId: sessionDelivery.workspaceId,
+          route: persistedRoute,
+        }),
+        `wake re-home decision for ${d.subscriberId}`,
+        2_000,
+      );
+      if (rehome && rehome.action !== 'keep') {
+        console.log(`[wake-executor] P-013 re-home ${d.subscriberId}: ${rehome.action} — ${rehome.reason}`);
+      }
+      if (rehome?.action === 'rehome-backend') {
+        const ported = await (deps.rehomeWakeOnBackend ?? defaultRehomeWakeOnBackend)({
+          subscriberId: d.subscriberId,
+          workspaceId: sessionDelivery.workspaceId,
+          harnessSlug: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
+          cwd: fresh?.cwd ?? handle.cwd ?? null,
+          wakeText: appendCrashResumeAdvisory(text, {
+            agent: resumeAgent,
+            endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
+          }),
+          backend: rehome.backend,
+        }).catch((e: unknown) => ({ ok: false, detail: e instanceof Error ? e.message : String(e) }));
+        if (ported.ok) return { kind: 'delivered', channel: 'resume-rehome-backend' };
+        // The port could not launch (no allowed codex model, unresolvable target, spawn
+        // failure): fall through to the Claude resume, which keeps the existing wall path.
+        console.warn(`[wake-executor] P-013 backend re-home for ${d.subscriberId} did not launch: ${ported.detail}`);
+      }
+    }
+
     // Channel 2: process gone → resume. The manual psu resume path claims the
     // same ended row before spawning; this atomic predicate makes exactly one
     // of the two competing resume writers proceed.
@@ -3588,12 +3726,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         reason: `resume claim for adv session #${handle.advSessionId} was won by another resumer; parked before Channel 2 spawn`,
       };
     }
-    const resumeAgent = fresh?.agent ?? handle.agent;
     // `--account` is a launch-time choice and Claude does not retain launch
     // flags across `--resume`. Rebuild it from the persisted argv for Claude
     // wakes; the helper also emits the high-precedence settings overlay and
     // strips operator-only gateway state before the detached child starts.
-    const accountRoute = resumeAgent === 'claude' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
+    // P-013: a walled hard pin is re-homed onto the gateway auto route (decided above).
+    const accountRoute =
+      resumeAgent !== 'claude'
+        ? null
+        : rehome?.action === 'rehome-account'
+          ? autoWakeAccountRoute(d.subscriberId)
+          : wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation
     // UUID recovered from that home's rollout — codex carries no native id on
