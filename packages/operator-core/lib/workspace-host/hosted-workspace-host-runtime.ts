@@ -25,11 +25,16 @@
  */
 import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from '../workspace-registry';
-import { listDesktopSessions, touchDesktopSession } from '../desktop/desktop-session-registry';
+import {
+  listDesktopSessions,
+  reconcileLocalDesktopSessions,
+  touchDesktopSession,
+} from '../desktop/desktop-session-registry';
 import {
   ensureHiveDesktop,
   hiveDesktopSessionId,
   leasedDesktopBySessionId,
+  leasedHiveDesktops,
 } from '../agent-tools/computer/desktop-lease';
 import {
   desktopAuditAction,
@@ -169,6 +174,15 @@ export function createDefaultDesktopBackend(
     ensureDesktop: async () => {
       await ensureHiveDesktop(HOSTED_WORKSPACE_DESKTOP_LEASE);
       return hiveDesktopSessionId(HOSTED_WORKSPACE_DESKTOP_LEASE);
+    },
+    // Sole owner by construction: a workspace host runs one operator, and its
+    // desktops die with that operator's socket (D-363), so every row it holds no
+    // lease for was left by a previous incarnation of it (WI-10002797).
+    reconcile: async () => {
+      const liveIds = leasedHiveDesktops()
+        .map(hiveDesktopSessionId)
+        .filter((id): id is string => Boolean(id));
+      return (await reconcileLocalDesktopSessions({ workspaceId, liveIds, soleOwner: true })).reaped;
     },
     ...overrides,
   });
