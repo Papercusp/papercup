@@ -75,6 +75,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       payload?: {
         type?: string;
         model?: string;
+        turn_id?: string;
         forked_from_id?: string;
         info?: {
           total_token_usage?: Record<string, number> | null;
@@ -94,9 +95,12 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       parserState.contextGeneration = (parserState.contextGeneration ?? 0) + 1;
       delete parserState.lastCumulativeUsage;
     }
-    if (evt?.type === 'turn_context' && typeof evt.payload?.model === 'string' && evt.payload.model) {
-      model = evt.payload.model;
-      parserState.model = model;
+    if (evt?.type === 'turn_context') {
+      if (typeof evt.payload?.model === 'string' && evt.payload.model) {
+        model = evt.payload.model;
+        parserState.model = model;
+      }
+      parserState.turnId = typeof evt.payload?.turn_id === 'string' ? evt.payload.turn_id : undefined;
       continue;
     }
     if (evt?.type !== 'event_msg' || evt.payload?.type !== 'token_count') continue;
@@ -122,7 +126,8 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       cacheReadTokens: cached, cacheCreationTokens: written, outputTokens: output };
     events.push({ model, usage, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
       sourceId: fingerprint ? `cumulative:${parserState.contextGeneration ?? 0}:${fingerprint}` : `line:${lineOffset}`,
-      contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId });
+      contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId,
+      turnId: parserState.turnId });
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;
     acc.inputTokens += Math.max(0, input - cached - written); // input INCLUDES both cache subsets

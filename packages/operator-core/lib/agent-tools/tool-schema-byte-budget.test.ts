@@ -22,7 +22,11 @@
  * seed-scoped, so a tool outside the Claude seed can grow without limit and neither
  * notices. This is the catalog-wide tier beneath them.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
+// Register the real catalog during module collection, outside Vitest's 60s hookTimeout.
+// This full catalog import can legitimately take longer than one hook while still fitting
+// the routed test-file process budget.
+import './index';
 import { listAllProjectedTools } from '@papercusp/tooldef';
 import {
   ALLOW_OVER_SCHEMA_BUDGET,
@@ -53,14 +57,7 @@ import {
 const MIN_PLAUSIBLE_CATALOG_SCHEMA_BYTES = 600_000;
 
 describe('per-tool argSchema wire budget (EI-23345472964244980)', () => {
-  let measured: NamedToolSchemaBytes[] = [];
-
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog listAllProjectedTools() reads. Without
-    // it the list is EMPTY and every upper bound below passes vacuously.
-    await import('./index');
-    measured = namedToolSchemaBytes(listAllProjectedTools());
-  });
+  const measured: NamedToolSchemaBytes[] = namedToolSchemaBytes(listAllProjectedTools());
 
   it('sees a genuinely-registered catalog and real schema bytes (a vacuous green is worse than a red)', () => {
     expect(measured.length).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_CATALOG_SIZE);

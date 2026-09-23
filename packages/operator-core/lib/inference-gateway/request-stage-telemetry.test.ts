@@ -89,6 +89,16 @@ describe('GatewayRequestTelemetry', () => {
     expect(telemetry.snapshot().recent).toHaveLength(1);
   });
 
+  it('measures fingerprint overhead and rejects non-object request shapes', () => {
+    let clock = 0;
+    const telemetry = new GatewayRequestTelemetry({ now: () => ++clock });
+    const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.setCacheShape(Buffer.from('null'));
+    const timeline = span.finish('client-error', 400)!;
+    expect(timeline.cacheObservationMs).toBe(1);
+    expect(timeline.cache.shape).toBe('invalid');
+  });
+
   it('publishes bounded p50/p95/p99 samples with exact request/outcome reconciliation', () => {
     let now = 1_000;
     const telemetry = new GatewayRequestTelemetry({ now: () => now, sampleCapacity: 3, recentCapacity: 2 });

@@ -66,6 +66,10 @@ export const PROTECTED_MODULES = [
     module: '@papercusp/coordination/core',
     why: 'WI-71582: the WI-42229 fail-closed flip stranded hand-listed factories here — 4 inbox-*.test.ts files were missing COORD_EXECUTABLE_KINDS and crashed on COLLECTION, taking the gate red. Census 2026-08-27 (both quote styles): 6 mocking files, of which 5 were already import-actual spreads and 1 (inbox-coalesce.test.ts) was a bare factory; converted before registration, leaving 0 full-replacement mockers. NOTE the census trap that hid it: this module is absent from `--list`, which prints only the top ~25 of 1531 unprotected modules, so its exposure was never visible there.',
   },
+  {
+    module: 'packages/operator-core/lib/datatype-registry-store',
+    why: 'WI-10002602: nine _create-core tests fully replaced this module with only getGenericKindDatatype; a transitive getDatatype import then broke collection across the gate. Converted to import-actual spreads and protected 2026-09-23.',
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -4555,7 +4555,8 @@ export interface CompletionIntegrityStats {
    *  without skipCompletionGate. P-004 added the authority half: the gate now accepts a
    *  judgement in place of the ref (and work_items:complete no longer supplies a ref at
    *  all), so a ref-only test would report every post-P-004 completion as `dedupOrUnverified`
-   *  — a metric that measures the deleted auto-fill rather than completion integrity. */
+   *  — a metric that measures the deleted auto-fill rather than completion integrity.
+   *  This is NOT a count of new code or durable changes. */
   genuineCompletions: number;
   /** terminalTotal - genuineCompletions — watchdog/hygiene/revert dedup flips (or any
    *  other skipCompletionGate write, or a pre-migration-432 historical row with the
@@ -4579,6 +4580,17 @@ export interface CompletionIntegrityStats {
    * 2026-07-27: 38.2% of that day's agent closes were judged, vs 0.1% the day before.
    */
   gateJudged: number;
+  /** Exact terminal-row counts from the closer's optional declaration. The unknown
+   *  bucket includes legacy omissions and unrecognized values; it is never imputed
+   *  from filesChanged or completion authority. */
+  declaredWorkOutcomes: {
+    introducedChange: number;
+    verifiedExisting: number;
+    duplicate: number;
+    invalidOrExpected: number;
+    otherNoNewChange: number;
+    unknown: number;
+  };
 }
 
 /**
@@ -4590,8 +4602,18 @@ export interface CompletionIntegrityStats {
  */
 export async function getCompletionIntegrityStats(harness: string): Promise<CompletionIntegrityStats> {
   const { sql } = getOrgPg();
+  type StatsRow = {
+    terminal_total: string;
+    genuine: string;
+    judged: string;
+    introduced_change: string;
+    verified_existing: string;
+    duplicate: string;
+    invalid_or_expected: string;
+    other_no_new_change: string;
+  };
   const [featureRows, issueRows] = await Promise.all([
-    sql<{ terminal_total: string; genuine: string; judged: string }[]>`
+    sql<StatsRow[]>`
       SELECT
         count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])) AS terminal_total,
         count(*) FILTER (
@@ -4601,10 +4623,20 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
         ) AS genuine,
         count(*) FILTER (
           WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[]) AND authority IS NOT NULL
-        ) AS judged
+        ) AS judged,
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'introduced-change') AS introduced_change,
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'verified-existing') AS verified_existing,
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'duplicate') AS duplicate,
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'invalid-or-expected') AS invalid_or_expected,
+        count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'other-no-new-change') AS other_no_new_change
       FROM harness_shared.harness_features_consolidated
       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness}`,
-    sql<{ terminal_total: string; genuine: string; judged: string }[]>`
+    sql<StatsRow[]>`
       SELECT
         count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])) AS terminal_total,
         count(*) FILTER (
@@ -4614,19 +4646,45 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
         ) AS genuine,
         count(*) FILTER (
           WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[]) AND authority IS NOT NULL
-        ) AS judged
+        ) AS judged,
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'introduced-change') AS introduced_change,
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'verified-existing') AS verified_existing,
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'duplicate') AS duplicate,
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'invalid-or-expected') AS invalid_or_expected,
+        count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
+          AND payload #>> '{_completionEvidence,workOutcome}' = 'other-no-new-change') AS other_no_new_change
       FROM harness_shared.engineer_issues
       WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`,
   ]);
   const terminalTotal = Number(featureRows[0]?.terminal_total ?? 0) + Number(issueRows[0]?.terminal_total ?? 0);
   const genuineCompletions = Number(featureRows[0]?.genuine ?? 0) + Number(issueRows[0]?.genuine ?? 0);
   const gateJudged = Number(featureRows[0]?.judged ?? 0) + Number(issueRows[0]?.judged ?? 0);
+  const outcomeCount = (key: keyof Pick<StatsRow,
+    'introduced_change' | 'verified_existing' | 'duplicate' | 'invalid_or_expected' | 'other_no_new_change'>) =>
+    Number(featureRows[0]?.[key] ?? 0) + Number(issueRows[0]?.[key] ?? 0);
+  const introducedChange = outcomeCount('introduced_change');
+  const verifiedExisting = outcomeCount('verified_existing');
+  const duplicate = outcomeCount('duplicate');
+  const invalidOrExpected = outcomeCount('invalid_or_expected');
+  const otherNoNewChange = outcomeCount('other_no_new_change');
   return {
     harness,
     terminalTotal,
     genuineCompletions,
     dedupOrUnverified: terminalTotal - genuineCompletions,
     gateJudged,
+    declaredWorkOutcomes: {
+      introducedChange,
+      verifiedExisting,
+      duplicate,
+      invalidOrExpected,
+      otherNoNewChange,
+      unknown: terminalTotal - introducedChange - verifiedExisting - duplicate - invalidOrExpected - otherNoNewChange,
+    },
   };
 }
 

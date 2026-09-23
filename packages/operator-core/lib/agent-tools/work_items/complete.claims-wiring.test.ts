@@ -21,6 +21,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CompletionClaim } from '../../completion-claims';
+import { CompletionRecordSchema } from '../../coord-lifecycle/records';
 import { completionEvidenceFromRecord } from './complete';
 
 const CLAIM: CompletionClaim = {
@@ -30,6 +31,25 @@ const CLAIM: CompletionClaim = {
   value: 'coord:dispatch',
   expect: 'present',
 };
+
+describe('declared work outcome survives the completion evidence seam', () => {
+  it('accepts a canonical nested outcome and carries it to persistence evidence', () => {
+    const record = CompletionRecordSchema.parse({
+      workItem: 'WI-1',
+      summary: 'verified an existing repair',
+      verification: { workOutcome: 'verified-existing' },
+    });
+    expect(completionEvidenceFromRecord(record)?.workOutcome).toBe('verified-existing');
+  });
+
+  it('rejects an invalid category and does not infer one from legacy completion evidence', () => {
+    expect(() => CompletionRecordSchema.parse({
+      workItem: 'WI-1', summary: 'closed', verification: { workOutcome: 'committed' },
+    })).toThrow();
+    const legacy = CompletionRecordSchema.parse({ workItem: 'WI-1', summary: 'closed', filesChanged: ['old.ts'] });
+    expect(completionEvidenceFromRecord(legacy)?.workOutcome).toBeUndefined();
+  });
+});
 
 describe('declared claims survive the evidence whitelist', () => {
   it('carries verification.claims through to the gate evidence', () => {

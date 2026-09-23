@@ -3,7 +3,7 @@
  *
  * This is an internal accumulator, not a second observability surface: gateway.ts publishes its
  * snapshots through the existing `/stats` and `/admin/owner-report` responses. The writer accepts
- * only enumerated dimensions plus bounded owner/model identifiers. Request bodies, prompt text,
+ * only enumerated dimensions plus bounded owner/model/account identifiers. Request bodies, prompt text,
  * credentials, headers, URLs, and raw error strings are deliberately absent from the contract.
  */
 import { createHash } from 'node:crypto';
@@ -141,6 +141,7 @@ export interface GatewayRequestTimeline {
   cache: GatewayCacheObservation;
   /** Gap to this owner's prior completed request in the bounded process-local ring; null is unknown. */
   previousObservedRequestGapMs: number | null;
+  cacheObservationMs: number;
   startedAt: number;
   finalizedAt: number;
   attempts: number;
@@ -328,6 +329,7 @@ export class GatewayRequestSpan {
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
   private readonly previousObservedRequestGapMs: number | null;
+  private cacheObservationMs = 0;
   private attempts = 0;
   private failovers = 0;
   private streaming = false;
@@ -441,13 +443,16 @@ export class GatewayRequestSpan {
   /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */
   setCacheShape(body: Uint8Array): void {
     if (this.finished) return;
-    if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
+    const started = this.now();
     try {
+      if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
       const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as { tools?: unknown; system?: unknown; instructions?: unknown };
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { this.cache.shape = 'invalid'; return; }
       this.cache.tools = cacheFingerprint(parsed.tools);
       this.cache.instructions = cacheFingerprint(parsed.system ?? parsed.instructions);
       this.cache.shape = 'observed';
     } catch { this.cache.shape = 'invalid'; }
+    finally { this.cacheObservationMs += Math.max(0, this.now() - started); }
   }
 
   setServingAccount(accountId: string): void {
@@ -518,6 +523,7 @@ export class GatewayRequestSpan {
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
       previousObservedRequestGapMs: this.previousObservedRequestGapMs,
+      cacheObservationMs: this.cacheObservationMs,
       startedAt: this.startedAt,
       finalizedAt,
       attempts: this.attempts,

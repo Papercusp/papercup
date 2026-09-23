@@ -1873,6 +1873,31 @@ describe('work_items:complete (keyed-array)', () => {
     );
   });
 
+  it('persists the canonical declared work outcome without interpreting authority as a new change', async () => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'verified an existing repair',
+        verification: {
+          verifiedHow: 'unit',
+          testsRun: 'npm test',
+          testResult: 'passed',
+          workOutcome: 'verified-existing',
+        },
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({
+        completionEvidence: expect.objectContaining({ workOutcome: 'verified-existing' }),
+      }),
+    );
+  });
+
   // EI-21478999218933285: these fields were accepted and rendered into the
   // completion broadcast, but silently disappeared from the work-item row. A
   // later audit reading work_items:get therefore treated a known-positive close

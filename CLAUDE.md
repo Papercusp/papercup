@@ -1275,20 +1275,29 @@ For tier 3, pause the sweep only for the files the probe mutates — git-sync ex
 
 
 ```
-locks:acquire { paths: ['<repo-relative-mutated-file>'],
-                ttl_sec: 600, intent: 'mutation probe' }
+locks:acquire {
+  paths: ['<repo-relative-mutated-file>'],
+  coordination_domain: '<physical root for a nested repository>',
+  ttl_sec: 1200,
+  intent: 'mutation probe'
+}
 ```
 
-Use one repo-relative path for each file the probe mutates; do not take the global `git-sync:<slug>` resource for a single-file probe. Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
-```
-locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 600 }
-```
-Repeat `locks:heartbeat` for each further interval; then release the file lock when done:
+For a file in the top-level repository, omit `coordination_domain`. For a submodule, use its physical root from `git -C <file-directory> rev-parse --show-toplevel`; keep `paths` relative to that root. `--sweep-lock-held` queries the exact path and refuses unless this session owns a live lock with intent `mutation probe`; it then heartbeats the file lock to 1200 seconds. The in-tree mutation window is capped at 600 seconds. After the trap verifies restoration, release the file lock:
+
 ```
 locks:release { lock_id: '<returned lock_id>' }
 ```
 
-Holding the exact file lock, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept. A probe that genuinely mutates a subtree or whole checkout may still require the global resource lock, but that is not the normal one-file case.
+For a file under a submodule, also hold the enclosing harness's exclusive git-sync resource lock:
+
+```
+locks:acquire_resource { resource: 'git-sync:<harness>', mode: 'exclusive', ttl_sec: 1200 }
+```
+
+The probe verifies that this session owns the lease and that it outlasts the dirty window. Release the resource lock immediately after restoration. Evidence binders refuse to fingerprint a path while its `mutation probe` file lock is live.
+
+`--accept-sweep-race` is only for a checkout known not to be swept or a consciously accepted risk. Prefer copy-out mode, which has no dirty window at all.
 
 
 ## Browser checks — use `verdict`

@@ -351,7 +351,7 @@ function projectCompletionEvidence(
   if (jsonLen(projected) > caps.completionScalar * 6) {
     dropped.add(label);
     const compact: Row = {};
-    for (const key of ["summary", "verifiedHow", "testsRun", "testResult", "addedTests", "filesChanged"]) {
+    for (const key of ["summary", "verifiedHow", "workOutcome", "testsRun", "testResult", "addedTests", "filesChanged"]) {
       if (projected[key] !== undefined) compact[key] = projected[key];
     }
     return compact;

@@ -52,7 +52,11 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMocks.query }),
 }));
-vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
+vi.mock('../../datatype-registry-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../datatype-registry-store')>()),
+  getGenericKindDatatype: vi.fn(async () => null),
+  getDatatype: vi.fn(async () => null),
+}));
 vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
 vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string) => `${s}#${i}`, PLAN_ITEM_KIND: 'plan_item' }));

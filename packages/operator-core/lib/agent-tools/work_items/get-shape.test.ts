@@ -495,6 +495,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       testsRun: 'npm run test:file -- get-shape.test.ts',
       testResult: '47 passed',
       verifiedHow: 'focused Vitest regression',
+      workOutcome: 'introduced-change',
       addedTests: true,
       filesChanged: ['packages/operator-core/lib/agent-tools/work_items/get-shape.ts'],
     };
@@ -558,6 +559,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       testsRun: 'npm test',
       testResult: 'passed',
       verifiedHow: 'unit',
+      workOutcome: 'verified-existing',
       filesChanged: ['get.ts'],
     };
     const rows = Array.from({ length: 100 }, (_, i) =>
@@ -620,6 +622,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       testsRun: 'npm test',
       testResult: 'passed',
       verifiedHow: 'unit',
+      workOutcome: 'verified-existing',
       filesChanged: ['get.ts'],
     };
     const out = shapeWorkItemsGet(
@@ -659,6 +662,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       summary: 'completed',
       testResult: 'passed',
       verifiedHow: 'unit',
+      workOutcome: 'verified-existing',
     });
   });
 

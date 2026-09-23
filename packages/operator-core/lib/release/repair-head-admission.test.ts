@@ -284,6 +284,40 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     expect(out.entry.blobs).toEqual({ 'libs/nested': candidate });
   });
 
+  it('refuses a path below a gitlink and reports candidate/source/repairHead pins instead of unchanged null blobs', () => {
+    const { root } = repo();
+    const candidateSubmoduleCommit = git(root, ['rev-parse', 'HEAD']);
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${candidateSubmoduleCommit},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'candidate gitlink']);
+    const candidate = git(root, ['rev-parse', 'HEAD']);
+
+    // Stand in for a newer commit inside the submodule, then advance only the superproject's
+    // gitlink to it. The nested file cannot be resolved by ls-tree from the superproject.
+    const sourceSubmoduleCommit = git(root, [
+      'commit-tree',
+      `${candidateSubmoduleCommit}^{tree}`,
+      '-p',
+      candidateSubmoduleCommit,
+      '-m',
+      'submodule fix',
+    ]);
+    git(root, ['update-index', '--cacheinfo', `160000,${sourceSubmoduleCommit},libs/nested`]);
+    git(root, ['commit', '-q', '-m', 'move gitlink']);
+
+    const innerPath = 'libs/nested/packages/orchestrator/src/fix.test.ts';
+    const out = admit(root, candidate, candidate, [innerPath]);
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'path-under-gitlink',
+      detail: expect.stringContaining(`candidate libs/nested@${candidateSubmoduleCommit}`),
+    });
+    if (out.ok) return;
+    expect(out.detail).toContain(`source libs/nested@${sourceSubmoduleCommit}`);
+    expect(out.detail).toContain(`repairHead libs/nested@${candidateSubmoduleCommit}`);
+    expect(out.detail).toContain('paths: ["libs/nested"]');
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+
   it('is source-agnostic: a raw commit sha works as the source and no branch name is consulted', () => {
     const { root, candidate } = repo();
     const fixSha = sweep(root, { 'lib/a.ts': 'a-fix\n' }, 'fix');

@@ -48,6 +48,7 @@ describe('decision_ledger:summary tool', () => {
       genuineCompletions: 6,
       dedupOrUnverified: 3,
       gateJudged: 2,
+      declaredWorkOutcomes: { introducedChange: 1, verifiedExisting: 1, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 7 },
     });
   });
   afterEach(() => vi.useRealTimers());
@@ -79,6 +80,7 @@ describe('decision_ledger:summary tool', () => {
         genuineCompletions: 6,
         dedupOrUnverified: 3,
         gateJudged: 2,
+        declaredWorkOutcomes: { introducedChange: 1, verifiedExisting: 1, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 7 },
       },
     });
   });

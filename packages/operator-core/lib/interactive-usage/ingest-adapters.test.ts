@@ -58,6 +58,15 @@ describe('parseCodexChunk (P-015)', () => {
     expect(providerForModel(UNKNOWN_CODEX_MODEL)).toBe('openai');
   });
 
+  it('preserves the native turn identity across chunks without inventing a trigger', () => {
+    const first = parseCodexChunk(turnCtx);
+    const second = parseCodexChunk(tokenCount(1000, 600, 40), JSON.parse(JSON.stringify(first.parserState)));
+    expect(second.events?.[0].turnId).toBe('t-1');
+    expect(second.parserState?.turnId).toBe('t-1');
+    const sparse = parseCodexChunk(codexLine({ type: 'turn_context', payload: { turn_id: 't-2' } }) + tokenCount(2000, 600, 40), second.parserState);
+    expect(sparse.events?.[0]).toMatchObject({ turnId: 't-2', model: 'gpt-5.5' });
+  });
+
   it('preserves an observed model across a chunk boundary and a serialized restart', () => {
     const first = parseCodexChunk(codexLine({ type: 'turn_context', payload: { model: 'gpt-6-luna' } }));
     const persisted = JSON.parse(JSON.stringify(first.parserState));

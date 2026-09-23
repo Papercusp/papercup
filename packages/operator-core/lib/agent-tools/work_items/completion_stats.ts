@@ -1,5 +1,5 @@
 /**
- * work_items:completion_stats — the WI-1405 genuine-completions metric
+ * work_items:completion_stats — completion-integrity and declared-outcome counts
  * (work-item-completion-integrity-2026-07-01 P-003, contract C-1 consumer).
  *
  * WI-1403's gate rejects a terminal transition missing an owner+completionRef UNLESS the
@@ -8,8 +8,9 @@
  * completions with dedup flips. This read separates them: `genuineCompletions` counts ONLY
  * terminal work-items carrying BOTH terminal_owner and terminal_completion_ref;
  * `dedupOrUnverified` is everything else terminal (a dedup flip, or a pre-migration-432
- * historical row). Fleet-facing progress reports should read `genuineCompletions`, not
- * `terminalTotal`, when the question is "how much real work landed".
+ * historical row). Neither value measures whether a new change landed. Only a
+ * declared workOutcome can answer that narrower question, and legacy omissions
+ * remain unknown.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -20,10 +21,10 @@ export default defineTool({
   name: 'work_items:completion_stats',
   profile: 'engineer',
   description:
-    "Completion-integrity metric for one harness: terminalTotal (every done/closed work-item, both families) vs genuineCompletions (terminal AND carrying an owner PLUS either a completion_ref or an authority judgement — the only rows the gate would accept without a skip) vs dedupOrUnverified (the difference — watchdog/hygiene/revert dedup flips, or pre-gate historical rows), plus gateJudged (P-013: terminal rows the P-004 evidence gate actually JUDGED). gateJudged/terminalTotal is instrument COVERAGE, not a compliance score — only work_items:complete stamps a judgement, so a close made via the bare state-write path is unjudged however well evidenced it was.",
+    "Completion-integrity and declared-outcome counts for one harness. genuineCompletions means terminal owner plus completion ref or authority judgement; it does NOT mean a new change landed. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes across terminal rows. gateJudged is evidence-gate coverage, not a compliance score.",
   guidance: {
     when:
-      'Reporting progress on a harness and the question is "how much REAL work landed", not just the raw done/closed count — a watchdog dedup sweep or hygiene close inflates the raw terminal count without any owner doing the work.',
+      'Reporting harness completion-integrity coverage or the exact split of declared work outcomes; do not equate a committed authority judgement with a new change.',
     notWhen: 'Per-item detail — that is work_items:get. A live roster of who is doing what — that is fleet:status / fleet:assignments.',
     seeAlso: [
       'work_items:get (per-item terminalOwner/terminalCompletionRef detail)',

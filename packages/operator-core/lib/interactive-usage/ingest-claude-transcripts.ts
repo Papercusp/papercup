@@ -59,6 +59,7 @@ export interface TranscriptUsageEvent {
   sourceId: string;
   relativeOffset: number;
   eventTime: number | null;
+  turnId?: string;
   contextGeneration?: number;
   predecessorSessionId?: string;
 }
@@ -98,6 +99,7 @@ export interface TranscriptParserState {
   bootstrapSource?: 'transcript-prefix';
   fileGeneration?: number;
   model?: string;
+  turnId?: string;
   lastCumulativeUsage?: string;
   predecessorSessionId?: string;
   contextGeneration?: number;
@@ -542,6 +544,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               sourceId, byteOffset: offset + event.relativeOffset, grain: events ? 'request' : 'file-model-delta',
               modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
               parserStateSource: fileState.bootstrapSource ?? 'incremental',
+              turnId: event.turnId ?? null,
               accountSource: 'unavailable', triggerSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null };
             // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK

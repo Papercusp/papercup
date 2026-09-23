@@ -603,8 +603,32 @@ export function leadingTurnOriginMarker(text) {
     : null;
 }
 
-/** Find the exact port marker in a recently-written target-native JSONL. This
- * is the delivery authority: PTY output/activity is intentionally insufficient.
+/** WI-10002752: Codex has no system-prompt CLI flag, so a carry-respawn's carry
+ * document rides in the first TYPED turn (`mintCarryRespawnArgs` returns it as
+ * `carryText`: the carry document plus a lineage line). That minted text has no
+ * provenance line of its own. Replacing the operator's first prompt with it
+ * wholesale dropped the leading ⟦turn-origin⟧ line and the continuation body:
+ * `verifyNativeTurnStartWithRetry` then refused before checking anything
+ * ('missing-leading-turn-origin'), so every Codex carry was recorded as dropped
+ * although Codex received it, and a machine-injected turn reached the transcript
+ * with nothing to distinguish it from owner input. Compose instead: the original
+ * marker line FIRST, then the original body, then the minted carry text.
+ * Without a leading marker on the original there is nothing to preserve, so the
+ * minted text is used as before. Pure and exported for tests. */
+export function composeCarryTurnText(originalText, mintedCarryText) {
+  const original = String(originalText ?? '');
+  const minted = String(mintedCarryText ?? '');
+  if (!minted.trim()) return original;
+  const marker = leadingTurnOriginMarker(original);
+  if (!marker || leadingTurnOriginMarker(minted)) return minted;
+  const body = original.replace(/\r\n?/g, '\n').split('\n').slice(1).join('\n').trim();
+  return body ? `${marker}\n${body}\n\n${minted}` : `${marker}\n${minted}`;
+}
+
+/** Find the exact port marker in a target-native JSONL row written for this
+ * injection. File mtime alone is not proof: unrelated metadata can update an
+ * old transcript and make an earlier marker appear fresh. This is the delivery
+ * authority; PTY output/activity is intentionally insufficient.
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
  *   home?: string, nativeId?: string | null}} options
  */
@@ -641,8 +665,31 @@ export function findNativeTranscriptMarker({
       if (nativeId && !entry.name.includes(String(nativeId))) continue;
       try {
         const st = statSync(path);
-        if (st.mtimeMs < sinceMs - 5_000 || st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
-        if (readFileSync(path).includes(markerBytes)) return path;
+        if (st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
+        const body = readFileSync(path, 'utf8');
+        for (const line of body.split(/\r?\n/)) {
+          if (!line.includes(marker)) continue;
+          let row;
+          try { row = JSON.parse(line); }
+          catch { continue; }
+          const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
+          if (rawTimestamp != null) {
+            let rowTimestampMs = typeof rawTimestamp === 'number'
+              ? rawTimestamp
+              : Date.parse(String(rawTimestamp));
+            if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0 && rowTimestampMs < 10_000_000_000) {
+              rowTimestampMs *= 1_000; // numeric Unix seconds
+            }
+            if (Number.isFinite(rowTimestampMs) && rowTimestampMs >= sinceMs) return path;
+            // An explicitly old or malformed row must never fall back to the
+            // file's mtime; a later metadata append cannot refresh its proof.
+            continue;
+          }
+          // Legacy native rows without their own timestamp are usable only when
+          // the transcript itself was created after this injection began. An
+          // existing transcript's mtime can move for unrelated row types.
+          if (Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs) return path;
+        }
       } catch {
         /* a concurrently-rotated transcript is simply not proof yet */
       }
@@ -4396,27 +4443,60 @@ export function codexTuiStartObserved(output) {
   return String(output ?? '').includes('\x1b[6n');
 }
 
-/** If the Codex TUI-start probe is never observed (a future Codex that stops
- * sending it, or bytes that landed before the listener attached), the host
- * still delivers — but only after this multiple of the ordinary fallback, so
- * a detector miss degrades to "slower" rather than to "typed into a booting
- * TUI". */
+/** WI-10002745 (reopened): the probe above marks when the Codex TUI STARTS,
+ * not when it is READY. Codex keeps reading stdin for the probe replies until
+ * it schedules its first frame, and that wait is bimodal. Its own log line
+ * `tui startup initial frame scheduled duration_ms=` measured min 33ms, p50
+ * 698ms, p90 13.9s and max 14.1s over 41 launches on 2026-09-23. A fixed 15s
+ * window measured from the probe therefore fired 0.3s and 0.6s BEFORE the
+ * first frame on two grading auditors: each kickoff lost its leading
+ * provenance marker, the native proof timed out, and the host tore down the
+ * working session. The first frame Codex PAINTS after its latest probe (the
+ * `OpenAI Codex` header or the `›` composer glyph) is positive proof that the
+ * reply wait is over.
+ *
+ * `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
+ * has already trimmed away: the whole buffer then counts as post-probe.
+ * Pure and exported for tests. */
+export function codexInitialFrameObserved(output, { probeAlreadySeen = false } = {}) {
+  const raw = String(output ?? '');
+  const probeAt = raw.lastIndexOf('\x1b[6n');
+  if (probeAt < 0 && !probeAlreadySeen) return false;
+  const visible = stripAnsi(probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length));
+  return visible.includes('OpenAI Codex') || visible.includes('›');
+}
+
+/** If the Codex first frame is never observed (a future Codex that stops
+ * painting the header, or bytes that landed before the listener attached),
+ * the host still delivers, but only after this multiple of the ordinary
+ * fallback. It is measured from the startup probe when one was seen, otherwise
+ * from the first output byte. A detector miss then makes delivery slower
+ * instead of typing into a booting TUI. */
 export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER = 4;
 
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from
- * the Codex TUI's OWN start: the PTY child is the psu launcher, which prints
- * its banner and then bootstraps the role (minting CODEX_HOME, etc.) for ~20s
- * under load before Codex execs. Measured from the banner, the 15s window had
- * already expired before Codex existed, so the output-quiet gate read Codex's
- * silent capability-probe wait as "settled at a prompt" and typed the kickoff
- * into it — losing the provenance marker, after which the host tore the
- * working session down (WI-10002745). Pure and exported for tests. */
-export function startupFallbackElapsed({ agent, nowMs, firstOutputAt, backendTuiStartedAt, fallbackMs }) {
+ * the first frame the Codex TUI paints (see codexInitialFrameObserved). It is
+ * not measured from the launcher banner: the PTY child is the psu launcher,
+ * which bootstraps the role for ~20s under load before Codex execs. It is not
+ * measured from Codex's startup probe either, because Codex can then read
+ * stdin for up to ~14s more and swallow whatever is typed (WI-10002745).
+ * Without a frame, the widened window runs from the probe when one was seen:
+ * the launcher's own bootstrap time must not eat into Codex's swallow margin.
+ * Pure and exported for tests. */
+export function startupFallbackElapsed({
+  agent,
+  nowMs,
+  firstOutputAt,
+  backendTuiStartedAt = 0,
+  backendFirstFrameAt = 0,
+  fallbackMs,
+}) {
   if (!(firstOutputAt > 0)) return false;
   if (String(agent ?? '').trim().toLowerCase() === 'codex') {
-    if (backendTuiStartedAt > 0) return nowMs - backendTuiStartedAt >= fallbackMs;
-    return nowMs - firstOutputAt >= fallbackMs * CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
+    if (backendFirstFrameAt > 0) return nowMs - backendFirstFrameAt >= fallbackMs;
+    const widenedFrom = backendTuiStartedAt > 0 ? backendTuiStartedAt : firstOutputAt;
+    return nowMs - widenedFrom >= fallbackMs * CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
   }
   return nowMs - firstOutputAt >= fallbackMs;
 }
@@ -5926,14 +6006,18 @@ export function hostThroughPty(o) {
   let childPromptReady = false;
   let childStartupFirstOutputAt = 0;
   // WI-10002745: when the backend TUI itself started (Codex: its first
-  // capability probe), as distinct from the psu launcher's banner above.
+  // capability probe), as distinct from the psu launcher's banner above, and
+  // when it painted its first frame after that probe. Only the frame proves
+  // Codex has stopped swallowing stdin; the fallback is measured from it.
   let childBackendTuiStartedAt = 0;
+  let childBackendFirstFrameAt = 0;
   const childStartupFallbackElapsed = () =>
     startupFallbackElapsed({
       agent: env.PAPERCUSP_AGENT,
       nowMs: Date.now(),
       firstOutputAt: childStartupFirstOutputAt,
       backendTuiStartedAt: childBackendTuiStartedAt,
+      backendFirstFrameAt: childBackendFirstFrameAt,
       fallbackMs: startupMarkerFallbackMs,
     });
   let headlessClaudeOnboardingExpiryTimer = null;
@@ -6533,6 +6617,16 @@ export function hostThroughPty(o) {
             dropReason = 'submit-verification-aborted-quota-blocked';
             break;
           }
+          // The text is the first step; later steps are delayed submit CRs, so
+          // readiness is captured now, not after them.
+          const turnWriteStartedAt = Date.now();
+          const turnWriteAuthorizedBy = childStartupReady
+            ? 'startup-ready-marker'
+            : childPromptReady
+              ? 'prompt-ready'
+              : startupFallbackReady
+                ? 'startup-fallback'
+                : 'last-resort';
           for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
@@ -6548,6 +6642,22 @@ export function hostThroughPty(o) {
             }
           }
           lastMachineTurnSubmittedAtMs = Date.now();
+          if (requireInitialOutput) {
+            // WI-10002745: record which readiness gate authorized this first
+            // write, timed from when the text bytes were written. A kickoff
+            // typed into a still-booting TUI was only discoverable by
+            // comparing the native transcript with the backend's own startup log.
+            appendHostEvent(ownerId, 'startup-turn-written', {
+              label,
+              authorizedBy: turnWriteAuthorizedBy,
+              msSinceFirstOutput: childStartupFirstOutputAt
+                ? turnWriteStartedAt - childStartupFirstOutputAt
+                : null,
+              msSinceBackendFirstFrame: childBackendFirstFrameAt
+                ? turnWriteStartedAt - childBackendFirstFrameAt
+                : null,
+            });
+          }
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
           }
@@ -8156,6 +8266,19 @@ export function hostThroughPty(o) {
           msAfterFirstOutput: childBackendTuiStartedAt - childStartupFirstOutputAt,
         });
       }
+      // Not an else-branch: when Codex's probe wait is short, the probe and the
+      // first frame can arrive in the same chunk.
+      if (
+        childBackendTuiStartedAt &&
+        !childBackendFirstFrameAt &&
+        codexInitialFrameObserved(childStartupOutput, { probeAlreadySeen: true })
+      ) {
+        childBackendFirstFrameAt = Date.now();
+        appendHostEvent(ownerId, 'backend-first-frame-observed', {
+          agent: 'codex',
+          msAfterTuiStart: childBackendFirstFrameAt - childBackendTuiStartedAt,
+        });
+      }
       const onboarding = headlessClaudeOnboarding.observe(raw);
       if (onboarding.action === 'submit') {
         try {
@@ -8765,11 +8888,13 @@ export function hostThroughPty(o) {
         recycleArgs = minted.args;
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
-        // Codex's carry mint adds a visible, non-user-authored lineage marker
-        // after the original turn-origin line. Feed that exact rendered text
-        // to the native transcript; AGENTS.md alone is system context and does
-        // not solve the owner's missing-history view.
-        if (minted.carryText) carryText = minted.carryText;
+        // Codex's carry mint adds a visible, non-user-authored lineage marker.
+        // Feed that rendered text to the native transcript (AGENTS.md alone is
+        // system context and does not solve the owner's missing-history view),
+        // but AFTER the original turn-origin line and body: replacing the first
+        // prompt wholesale lost the marker, so every Codex carry failed its
+        // native turn-start proof and was recorded as dropped (WI-10002752).
+        if (minted.carryText) carryText = composeCarryTurnText(carryText, minted.carryText);
       } catch (e) {
         if (drillId) {
           const failExtra = {
@@ -8955,6 +9080,7 @@ export function hostThroughPty(o) {
         childPromptReady = false;
         childStartupFirstOutputAt = 0;
         childBackendTuiStartedAt = 0;
+        childBackendFirstFrameAt = 0;
         // WI-1386682 (1): a fresh child has no screen history and cannot
         // inherit the old child's wall.
         quotaBlockDetector.reset();

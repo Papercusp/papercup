@@ -47,7 +47,11 @@ vi.mock('../_pot-scope', () => ({
   resolvePotScope: vi.fn(async () => ({ kind: 'pot', slug: 'papercusp' })),
   POT_REQUIRED_DETAIL: 'hive required',
 }));
-vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
+vi.mock('../../datatype-registry-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../datatype-registry-store')>()),
+  getGenericKindDatatype: vi.fn(async () => null),
+  getDatatype: vi.fn(async () => null),
+}));
 vi.mock('../../datatype-payload-validation', () => ({
   validateDatatypePayload: () => ({ ok: true as const }),
 }));

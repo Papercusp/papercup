@@ -34,6 +34,7 @@ describe('work_items:completion_stats tool', () => {
       genuineCompletions: 6,
       dedupOrUnverified: 4,
       gateJudged: 2,
+      declaredWorkOutcomes: { introducedChange: 1, verifiedExisting: 2, duplicate: 1, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 6 },
     });
     const res = await callTool({ harness: 'papercusp' });
     expect(mockStats).toHaveBeenCalledWith('papercusp');
@@ -44,6 +45,7 @@ describe('work_items:completion_stats tool', () => {
       genuineCompletions: 6,
       dedupOrUnverified: 4,
       gateJudged: 2,
+      declaredWorkOutcomes: { introducedChange: 1, verifiedExisting: 2, duplicate: 1, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 6 },
     });
   });
 
@@ -57,11 +59,13 @@ describe('work_items:completion_stats tool', () => {
       genuineCompletions: 100,
       dedupOrUnverified: 0,
       gateJudged: 38,
+      declaredWorkOutcomes: { introducedChange: 20, verifiedExisting: 30, duplicate: 10, invalidOrExpected: 5, otherNoNewChange: 5, unknown: 30 },
     });
     const res = await callTool({ harness: 'papercusp' });
     // Fully-evidenced yet only 38% judged — the exact shape that makes coverage a DISTINCT
     // signal from genuineCompletions rather than a restatement of it.
     expect(res.data.genuineCompletions).toBe(100);
     expect(res.data.gateJudged).toBe(38);
+    expect(res.data.declaredWorkOutcomes).toMatchObject({ introducedChange: 20, unknown: 30 });
   });
 });

@@ -561,6 +561,16 @@ export function missingRootCauseVerificationV2Fields(
   ];
 }
 
+/** Caller-declared result of this close, not a server-verified causal attribution. */
+export const CompletionWorkOutcomeSchema = z.enum([
+  'introduced-change',
+  'verified-existing',
+  'duplicate',
+  'invalid-or-expected',
+  'other-no-new-change',
+]);
+export type CompletionWorkOutcome = z.infer<typeof CompletionWorkOutcomeSchema>;
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: FilesChangedSchema,
@@ -576,6 +586,12 @@ export const CompletionVerificationEvidenceSchema = z.object({
   testResult: z.string().min(1).optional(),
   /** Verification mode, coarse enough for leader/Queen completion audits. */
   verifiedHow: CompletionVerifiedHowSchema.optional(),
+  /**
+   * Whether this close introduced a durable change, as DECLARED by its closer.
+   * Optional for older callers; omission means unknown, never "introduced-change".
+   * Evidence sufficiency (`completionAuthority`) is a separate dimension.
+   */
+  workOutcome: CompletionWorkOutcomeSchema.optional(),
   /** Whether this completion added or changed tests. */
   addedTests: z
     .boolean()

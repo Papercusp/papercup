@@ -1369,6 +1369,7 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       genuineCompletions: 0,
       dedupOrUnverified: 0,
       gateJudged: 0,
+      declaredWorkOutcomes: { introducedChange: 0, verifiedExisting: 0, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 0 },
     });
   });
 
@@ -1415,6 +1416,7 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       // work, not the metric losing its edge — `gateJudged` still excludes both skipCompletionGate
       // flips, and the case below pins that a SYSTEM ref close stays unjudged.
       gateJudged: 2,
+      declaredWorkOutcomes: { introducedChange: 0, verifiedExisting: 0, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 4 },
     });
   });
 
@@ -1467,6 +1469,7 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       genuineCompletions: 0,
       dedupOrUnverified: 0,
       gateJudged: 0,
+      declaredWorkOutcomes: { introducedChange: 0, verifiedExisting: 0, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 0 },
     });
 
     const otherStats = await wi.getCompletionIntegrityStats('other-harness');
@@ -1479,6 +1482,38 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       // The subject here is harness SCOPING, and that is unchanged — the point of the case is
       // that this row is counted here and nowhere else.
       gateJudged: 1,
+      declaredWorkOutcomes: { introducedChange: 0, verifiedExisting: 0, duplicate: 0, invalidOrExpected: 0, otherNoNewChange: 0, unknown: 1 },
+    });
+  });
+
+  it('counts each declared outcome exactly across families and leaves legacy omissions unknown', async () => {
+    const harness = 'declared-outcomes-harness';
+    const outcomes = [
+      ['feature', 'introduced-change'],
+      ['bug', 'verified-existing'],
+      ['bug', 'duplicate'],
+      ['change', 'invalid-or-expected'],
+      ['feature', 'other-no-new-change'],
+    ] as const;
+    for (const [kind, workOutcome] of outcomes) {
+      const item = await wi.createWorkItem({ kind, title: `${kind} ${workOutcome}`, harness, createdBy: 'agA' });
+      await wi.setWorkItemState(item.id, kind === 'feature' ? 'passed' : 'resolved', {
+        harness,
+        by: 'agA',
+        completionAuthority: 'committed',
+        completionEvidence: { verifiedHow: 'unit', testsRun: 'focused test', testResult: 'passed', workOutcome },
+      });
+    }
+    const legacy = await wi.createWorkItem({ kind: 'bug', title: 'legacy close', harness, createdBy: 'agA' });
+    await wi.setWorkItemState(legacy.id, 'resolved', { harness, by: 'agA', completionRef: 'legacy evidence' });
+
+    expect((await wi.getCompletionIntegrityStats(harness)).declaredWorkOutcomes).toEqual({
+      introducedChange: 1,
+      verifiedExisting: 1,
+      duplicate: 1,
+      invalidOrExpected: 1,
+      otherNoNewChange: 1,
+      unknown: 1,
     });
   });
 });
