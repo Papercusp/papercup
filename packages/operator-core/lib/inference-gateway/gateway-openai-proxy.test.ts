@@ -720,9 +720,14 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(body).toContain('response.completed');
     const stats = (await (await ask('/stats')).json()) as {
       cache: { read: number; create: number; input: number; hits: number; byAccount: Record<string, { read: number }> };
+      requestStages: import('./request-stage-telemetry').GatewayRequestTelemetrySnapshot;
     };
     expect(stats.cache).toMatchObject({ read: 1200, create: 100, input: 200, hits: 1 });
     expect(stats.cache.byAccount['cdx-1']?.read).toBe(1200);
+    expect(stats.requestStages.recent.at(-1)?.cache).toMatchObject({
+      servingAccountId: 'cdx-1', providerRequestId: 'resp_cache', inputTokens: 200,
+      cacheReadTokens: 1200, cacheWriteTokens: 100, reuse: 'partial-hit', shape: 'observed',
+    });
   });
 });
 
