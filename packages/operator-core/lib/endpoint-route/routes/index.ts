@@ -272,6 +272,7 @@ import agentMcp_storagePrune from './agent-mcp/storage-prune';
 import agentMcp_autonomyTripwireRevert from './agent-mcp/autonomy-tripwire-revert';
 import agentMcp_trustSet from './agent-mcp/trust-set';
 import agentMcp_p2pSettingsSet from './agent-mcp/p2p-settings-set';
+import agentMcp_consultExpertRoutingSet from './agent-mcp/consult-expert-routing-set';
 import agentMcp_p2pGrantSet from './agent-mcp/p2p-grant-set';
 import agentMcp_p2pAllotmentSet from './agent-mcp/p2p-allotment-set';
 import agentMcp_potOverrideSet from './agent-mcp/pot-override-set';
@@ -597,6 +598,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_autonomyTripwireRevert as AnyRoute),
   ...flatten(agentMcp_trustSet as AnyRoute),
   ...flatten(agentMcp_p2pSettingsSet as AnyRoute),
+  ...flatten(agentMcp_consultExpertRoutingSet as AnyRoute),
   ...flatten(agentMcp_p2pGrantSet as AnyRoute),
   ...flatten(agentMcp_p2pAllotmentSet as AnyRoute),
   ...flatten(agentMcp_potOverrideSet as AnyRoute),
