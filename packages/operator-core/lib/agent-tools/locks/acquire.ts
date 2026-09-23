@@ -702,7 +702,7 @@ export default defineTool({
       // wait.max_sec deadline polling a row that no longer exists. Track WHY we
       // bail so the final response can name the real cause instead of folding
       // every non-grant outcome into an undifferentiated timeout/busy snapshot.
-      let terminalReason: 'cancelled' | 'expired' | 'waiter_vanished' | undefined;
+      let terminalReason: 'cancelled' | 'expired' | 'released' | 'waiter_vanished' | undefined;
 
       // Phase 2 polish: 10s progress heartbeat with elapsed +
       // ahead_count + busy snapshot. Independent of the wake mechanism
@@ -849,6 +849,7 @@ export default defineTool({
           if (
             status.status === 'cancelled' ||
             status.status === 'expired' ||
+            status.status === 'released' ||
             status.status === 'missing'
           ) {
             // External cancel, DB-side expiry, or the waiter row itself vanished
