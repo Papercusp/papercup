@@ -14,7 +14,7 @@ import {
   type HostedDesktopWireSocket,
 } from './hosted-desktop-backend';
 import type { SandboxDesktop } from '../agent-tools/computer/desktop-provisioner';
-import type { DesktopSessionRecord } from '../desktop/desktop-session-registry';
+import { toRecord, type DesktopSessionRecord } from '../desktop/desktop-session-registry';
 
 class FakeWire implements HostedDesktopWireSocket {
   readonly OPEN = 1;
@@ -143,6 +143,39 @@ describe('rosterEntryForSession', () => {
 
   it('omits a display number it cannot parse rather than emitting a wrong one', () => {
     expect(rosterEntryForSession(session({ display: 'guest' }))).not.toHaveProperty('displayNumber');
+  });
+
+  // D-405: the production client returns timestamptz as TEXT, so the first real row
+  // threw here and failed every desktop.start on a hosted machine whose desktop was up.
+  it('renders a registry row whose timestamps arrived from Postgres as text', () => {
+    const record = toRecord({
+      id: 'ds_text',
+      workspace_id: 'ws',
+      kind: 'kasmvnc',
+      scope: 'pot',
+      scope_ref: 'hosted-workspace',
+      display: ':110',
+      display_width: 1024,
+      display_height: 768,
+      display_depth: 24,
+      capture_width: 1024,
+      capture_height: 768,
+      state: 'ready',
+      viewer_mode: 'none',
+      created_at: '2026-09-23 16:02:43.5+00',
+      last_active_at: '2026-09-23 16:02:46.25+00',
+      frozen_at: null,
+      released_at: '2026-09-23 17:00:00+00',
+    });
+
+    expect(record.lastActiveAt).toBeInstanceOf(Date);
+    expect(record.createdAt.toISOString()).toBe('2026-09-23T16:02:43.500Z');
+    expect(record.releasedAt?.toISOString()).toBe('2026-09-23T17:00:00.000Z');
+    expect(record.frozenAt).toBeNull();
+    expect(rosterEntryForSession(record)).toMatchObject({
+      desktopSessionId: 'ds_text',
+      lastActiveAt: '2026-09-23T16:02:46.250Z',
+    });
   });
 });
 

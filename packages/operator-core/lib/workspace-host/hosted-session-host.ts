@@ -256,6 +256,12 @@ export interface HostedWorkspaceHostOptions {
   maxMessageBytes?: number;
   onAudit?: (event: HostedHostAuditEvent) => void;
   /**
+   * Host-side detail for a failure the viewer only sees as a fixed code. The code is
+   * all the wire may carry; without this line the host journal held nothing either,
+   * and a desktop.start failure took a live-host PTY session to diagnose (D-405).
+   */
+  onWarning?: (message: string) => void;
+  /**
    * Omitted on a host with no desktop pack installed. A `kind:'desktop'` open is
    * then REFUSED rather than silently opening a channel that can never carry
    * pixels.
@@ -700,6 +706,7 @@ export class HostedWorkspaceHostSessionAdapter {
   private readonly idleMs: number;
   private readonly maxMessageBytes: number;
   private readonly onAudit: (event: HostedHostAuditEvent) => void;
+  private readonly warn: (message: string) => void;
   private closed = false;
 
   constructor(private readonly options: HostedWorkspaceHostOptions) {
@@ -708,6 +715,7 @@ export class HostedWorkspaceHostSessionAdapter {
     this.idleMs = options.idleMs ?? HOSTED_HOST_SESSION_IDLE_MS;
     this.maxMessageBytes = options.maxMessageBytes ?? HOSTED_HOST_MAX_MESSAGE_BYTES;
     this.onAudit = options.onAudit ?? (() => {});
+    this.warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-session-host] ${message}`));
   }
 
   async accept(envelope: unknown): Promise<void> {
@@ -1281,6 +1289,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.audit('desktop_thumbnail', identity, channelId, `desktop=${desktopSessionId} bytes=${image.byteLength}`);
     } catch (error) {
       const code = error instanceof SafeRootFileError ? error.code : 'desktop_query_failed';
+      if (code === 'desktop_query_failed') this.warn(`${type} failed: ${String(error)}`);
       this.send(channelId, { type: 'operation.error', requestId, operation: type, code });
       this.audit('operation_denied', identity, channelId, code);
     }
@@ -1316,7 +1325,9 @@ export class HostedWorkspaceHostSessionAdapter {
       this.send(channelId, { type: 'desktop.start.result', requestId, desktop });
       this.audit('desktop_started', identity, channelId, `desktop=${desktop.desktopSessionId}`);
     } catch (error) {
-      refuse(error instanceof SafeRootFileError ? error.code : 'desktop_start_failed');
+      if (error instanceof SafeRootFileError) return refuse(error.code);
+      this.warn(`desktop.start failed: ${String(error)}`);
+      refuse('desktop_start_failed');
     }
   }
 
