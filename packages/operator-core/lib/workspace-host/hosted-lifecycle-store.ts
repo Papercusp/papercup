@@ -28,6 +28,11 @@ import {
   type GcpBillingExportRetryReason,
 } from './gcp-api-client';
 import { readWorkspaceHostConnection, type StoredWorkspaceHostConnection } from './observability-store';
+import {
+  parseWorkspaceHostReleaseClosurePointer,
+  recordWorkspaceHostBillingClosure,
+} from './billing-closure-release-receipt';
+import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
 
 type TxRunner = <T>(workspaceId: string, fn: (tx: Sql) => Promise<T>) => Promise<T>;
 type Notify = typeof notifyAttentionOnce;
@@ -42,6 +47,7 @@ interface HostedLifecycleStoreHooks {
   uuid?: () => string;
   readConnection?: ReadConnection;
   readGcpBilling?: ReadGcpBilling;
+  recordBillingClosure?: typeof recordWorkspaceHostBillingClosure;
 }
 
 function hooks(): HostedLifecycleStoreHooks {
@@ -399,7 +405,8 @@ export type HostedLifecycleSpendReconciliationReason =
   | 'invalid-signal'
   | 'connection-not-found'
   | 'unsupported-provider'
-  | 'history-invalid';
+  | 'history-invalid'
+  | 'release-receipt-unwritten';
 
 export interface HostedLifecycleSpendReconciliationError {
   hostId: string;
@@ -450,6 +457,7 @@ interface SpendHostRow {
 interface SpendSignalPatch {
   spendObservations?: readonly WorkspaceHostSpendObservation[];
   spendReconciliation: JsonObject;
+  releaseClosureReceipt?: JsonObject;
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -757,6 +765,59 @@ async function reconcileDeferredSpend(
       continue;
     }
 
+    // D-395: a settled run that closes a release records billing.closure BEFORE its spend is marked
+    // settled — a settled signal is never due again, so a receipt that did not land now never would.
+    // A receipt that can NEVER be written is noted on the signal and does not hold the money back.
+    let releaseClosureReceipt: JsonObject | undefined;
+    if (finality.status === 'settled' && candidate.signal.releaseClosure !== undefined) {
+      const pointer = parseWorkspaceHostReleaseClosurePointer(candidate.signal.releaseClosure);
+      const unrecordable = (reason: string): JsonObject => ({
+        status: 'unrecordable',
+        reason,
+        ...(pointer ? { releaseTaskId: pointer.releaseTaskId } : {}),
+        at: now.toISOString(),
+      });
+      if (!pointer) {
+        releaseClosureReceipt = unrecordable('pointer-malformed');
+      } else if (pointer.runId !== candidate.runId) {
+        releaseClosureReceipt = unrecordable('run-mismatch');
+      } else {
+        try {
+          const judged = await (hooks().recordBillingClosure ?? recordWorkspaceHostBillingClosure)({
+            workspaceId,
+            hostId: candidate.hostId,
+            pointer,
+            finality,
+          });
+          releaseClosureReceipt = {
+            status: 'recorded',
+            outcome: judged.outcome,
+            releaseTaskId: pointer.releaseTaskId,
+            at: now.toISOString(),
+          };
+        } catch (error) {
+          if (error instanceof WorkspaceHostReleaseBindingError) {
+            releaseClosureReceipt = unrecordable(error.reason);
+          } else {
+            const retry = retryPatch(candidate, 'release-receipt-unwritten', now);
+            const applied = await applySpendSignalPatch(
+              workspaceId,
+              candidate,
+              { ...retry.patch, spendObservations: history },
+              selectedConnectionVersion,
+            );
+            if (applied === 'stale') {
+              out.skipped += 1;
+              continue;
+            }
+            out.retryable += 1;
+            out.errors.push(retry.error);
+            continue;
+          }
+        }
+      }
+    }
+
     const attempts = candidate.attempts + 1;
     const spendReconciliation: JsonObject =
       finality.status === 'settled'
@@ -780,7 +841,7 @@ async function reconcileDeferredSpend(
     const applied = await applySpendSignalPatch(
       workspaceId,
       candidate,
-      { spendObservations: history, spendReconciliation },
+      { spendObservations: history, spendReconciliation, ...(releaseClosureReceipt ? { releaseClosureReceipt } : {}) },
       selectedConnectionVersion,
     );
     if (applied === 'stale') {

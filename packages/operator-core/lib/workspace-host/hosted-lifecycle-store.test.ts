@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { createWorkspaceHostSpendObservation } from '@papercusp/deployment-driver';
+import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
 import {
   HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT,
   HOSTED_LIFECYCLE_SPEND_RETRY_BASE_MS,
@@ -393,5 +395,162 @@ describe('hosted lifecycle store', () => {
       counts: { queued: 2, running: 1, stuck: 1, orphaned: 1, exhausted: 0 },
       jobs: [{ id: 'op-1', cost_estimate_ref: 'gcp://catalog/e2-small' }],
     });
+  });
+});
+
+// D-395: billing.closure is recorded by the reconciler from ITS settled reading, before the spend is
+// marked settled (a settled signal is never due again), and a receipt that can never be written does
+// not hold the money back.
+describe('deferred spend that closes a release (D-395)', () => {
+  const releaseClosure = {
+    schemaVersion: 'workspace-host-release-closure-v1',
+    releaseTaskId: 'release-task-1',
+    runRef: 'destroy-operation:op-destroy-1',
+    runId: 'r4-canary',
+    maxSpendCents: 2_500,
+  };
+
+  function observed(observedAt: string, providerEvidenceRef: string) {
+    return createWorkspaceHostSpendObservation({
+      currency: 'USD',
+      grossMicros: '712000',
+      creditMicros: '0',
+      netMicros: '712000',
+      observedAt,
+      providerEvidenceRef,
+    });
+  }
+
+  /** One due signal whose next reading settles it: an identical spend 30 minutes after the first. */
+  async function reconcile(
+    signalExtra: Record<string, unknown>,
+    recordBillingClosure: NonNullable<Parameters<typeof setHostedLifecycleStoreHooks>[0]>['recordBillingClosure'],
+    priorObservations = [observed('2026-09-08T01:30:00.000Z', 'gcp://bigquery/job-1')],
+  ) {
+    const signal = { ...deferredSpendSignal(), spendObservations: priorObservations, ...signalExtra };
+    const order: string[] = [];
+    const written: Array<Record<string, unknown>> = [];
+    setHostedLifecycleStoreHooks({
+      transaction: fakeTransaction((text, values) => {
+        if (text.includes('jsonb_array_elements(host.cost_signals)')) {
+          return [{ host_id: 'host-r4', connection_id: 'connection-r4', signal_ordinal: 1, cost_signal: signal }];
+        }
+        if (text.includes('FOR UPDATE OF host')) return [{ connection_id: 'connection-r4', cost_signals: [signal] }];
+        if (text.startsWith('UPDATE harness_shared.workspace_hosts')) {
+          order.push('signal-patch');
+          written.push((values[0] as Array<Record<string, unknown>>)[0]!);
+        }
+        return [];
+      }),
+      readConnection: async () => ({
+        id: 'connection-r4',
+        target: 'gcp',
+        status: 'connected',
+        connection: {
+          target: 'gcp',
+          cloudCredentialRef: { kind: 'cloud', ref: 'gcloud://active-user' },
+          provider: { projectId: 'project-r4' },
+        },
+      }),
+      readGcpBilling: async () => ({
+        status: 'observed' as const,
+        retryable: false as const,
+        observation: observed('2026-09-08T02:00:00.000Z', 'gcp://bigquery/job-2'),
+        jobReference: { projectId: 'project-r4', jobId: 'job-2' },
+      }),
+      ...(recordBillingClosure
+        ? {
+            recordBillingClosure: async (input) => {
+              order.push('release-receipt');
+              return recordBillingClosure(input);
+            },
+          }
+        : {}),
+    });
+    const result = await reconcileHostedLifecycleJobs('control-a', new Date('2026-09-08T02:00:30.000Z'));
+    return { result, order, written };
+  }
+
+  it('records billing.closure from the settled reading BEFORE it marks the spend settled', async () => {
+    const recordBillingClosure = vi.fn(async () => ({ outcome: 'committed' as const, evidenceRefs: [] }));
+
+    const { result, order, written } = await reconcile({ releaseClosure }, recordBillingClosure);
+
+    expect(order).toEqual(['release-receipt', 'signal-patch']);
+    expect(recordBillingClosure).toHaveBeenCalledWith({
+      workspaceId: 'control-a',
+      hostId: 'host-r4',
+      pointer: releaseClosure,
+      finality: expect.objectContaining({ status: 'settled', stableForMs: 1_800_000, stableObservationCount: 2 }),
+    });
+    expect(result.spend).toMatchObject({ settled: 1, retryable: 0, errors: [] });
+    expect(written[0]).toMatchObject({
+      spendReconciliation: { status: 'settled' },
+      releaseClosureReceipt: { status: 'recorded', outcome: 'committed', releaseTaskId: 'release-task-1' },
+    });
+  });
+
+  it('keeps the spend due, with its new reading, when the receipt could not be written', async () => {
+    const recordBillingClosure = vi.fn(async () => {
+      throw new Error('release journal unavailable');
+    });
+
+    const { result, written } = await reconcile({ releaseClosure }, recordBillingClosure);
+
+    expect(result.spend).toMatchObject({
+      settled: 0,
+      retryable: 1,
+      errors: [{ hostId: 'host-r4', runId: 'r4-canary', reason: 'release-receipt-unwritten' }],
+    });
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ spendReconciliation: { status: 'retryable', reason: 'release-receipt-unwritten' } });
+    expect(written[0]!.spendObservations).toHaveLength(2);
+    expect(written[0]).not.toHaveProperty('releaseClosureReceipt');
+  });
+
+  it('settles the money even when the release receipt can never be written, and says why', async () => {
+    const recordBillingClosure = vi.fn(async () => {
+      throw new WorkspaceHostReleaseBindingError('stage-refused', 'billing.closure', 'the stage is refused');
+    });
+
+    const { result, written } = await reconcile({ releaseClosure }, recordBillingClosure);
+
+    expect(result.spend).toMatchObject({ settled: 1, retryable: 0 });
+    expect(written[0]).toMatchObject({
+      spendReconciliation: { status: 'settled' },
+      releaseClosureReceipt: { status: 'unrecordable', reason: 'stage-refused', releaseTaskId: 'release-task-1' },
+    });
+  });
+
+  it.each([
+    ['pointer-malformed', { ...releaseClosure, runRef: 'initialize-operation:op-1' }],
+    ['run-mismatch', { ...releaseClosure, runId: 'some-other-run' }],
+  ])('never records a closure through an untrusted pointer (%s)', async (reason, pointer) => {
+    const recordBillingClosure = vi.fn(async () => ({ outcome: 'committed' as const, evidenceRefs: [] }));
+
+    const { result, written } = await reconcile({ releaseClosure: pointer }, recordBillingClosure);
+
+    expect(recordBillingClosure).not.toHaveBeenCalled();
+    expect(result.spend).toMatchObject({ settled: 1 });
+    expect(written[0]).toMatchObject({ releaseClosureReceipt: { status: 'unrecordable', reason } });
+  });
+
+  it('settles a spend that closes no release exactly as before', async () => {
+    const recordBillingClosure = vi.fn(async () => ({ outcome: 'committed' as const, evidenceRefs: [] }));
+
+    const { result, written } = await reconcile({}, recordBillingClosure);
+
+    expect(recordBillingClosure).not.toHaveBeenCalled();
+    expect(result.spend).toMatchObject({ settled: 1 });
+    expect(written[0]).not.toHaveProperty('releaseClosureReceipt');
+  });
+
+  it('leaves the release alone while the spend is still settling', async () => {
+    const recordBillingClosure = vi.fn(async () => ({ outcome: 'committed' as const, evidenceRefs: [] }));
+
+    const { result } = await reconcile({ releaseClosure }, recordBillingClosure, []);
+
+    expect(recordBillingClosure).not.toHaveBeenCalled();
+    expect(result.spend).toMatchObject({ settled: 0, retryable: 1 });
   });
 });

@@ -180,18 +180,42 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(startLifecycle).not.toHaveBeenCalled();
   });
 
+  // D-395: a release-bound teardown is a canary destroy that DEFERS its spend settlement.
+  const releaseDestroyBody = {
+    ...destroyBody,
+    canary: {
+      ...canary,
+      costEvidence: [],
+      lateObservedSpend: [],
+      spendSettlement: {
+        status: 'deferred' as const,
+        actorId: 'operator:test',
+        reason: 'provider billing has not settled; GCP lags hours behind teardown',
+        procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+        reconcileAfter: '2026-08-26T00:00:00.000Z',
+      },
+    },
+  };
+
   it('checks a release census receipt before admission and binds it to the operation id it fixes', async () => {
     const { dependencies, startDestroy } = harness();
     const openTeardownRelease = vi.fn(async () => ({}) as never);
     dependencies.openTeardownRelease = openTeardownRelease;
-    const { operationId: _operationId, ...withoutOperation } = destroyBody;
+    const { operationId: _operationId, ...withoutOperation } = releaseDestroyBody;
 
     const response = await post(dependencies, { ...withoutOperation, releaseTaskId: 'release-task-1' });
 
     expect(response.status).toBe(200);
     expect(openTeardownRelease).toHaveBeenCalledOnce();
-    const checked = (openTeardownRelease.mock.calls[0] as unknown as [{ operationId: string; releaseTaskId: string }])[0];
+    const checked = (
+      openTeardownRelease.mock.calls[0] as unknown as [
+        { operationId: string; releaseTaskId: string; billing: { runId: string; maxSpendCents: number | null } },
+      ]
+    )[0];
     expect(checked.releaseTaskId).toBe('release-task-1');
+    // The billing stage is keyed by the canary run whose spend the reconciler will settle.
+    // This canary declared no spend ceiling, so billing is judged against none.
+    expect(checked.billing).toEqual({ runId: canary.runId, maxSpendCents: null });
     // The admission check and the durable run must name the SAME destroy, so the route fixes the id.
     expect(startDestroy).toHaveBeenCalledWith(
       expect.objectContaining({ releaseTaskId: 'release-task-1', operationId: checked.operationId }),
@@ -208,11 +232,26 @@ describe('POST /workspace-hosts/action destroy', () => {
     dependencies.openTeardownRelease = vi.fn(async () => {
       throw new WorkspaceHostReleaseBindingError('bundle-mismatch', 'teardown.resource-census', 'other bytes');
     });
-    const conflict = await post(dependencies, { ...destroyBody, releaseTaskId: 'release-task-1' });
+    const conflict = await post(dependencies, { ...releaseDestroyBody, releaseTaskId: 'release-task-1' });
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({ reason: 'bundle-mismatch' });
     expect(startDestroy).not.toHaveBeenCalled();
     expect(startLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('refuses a release-bound destroy that could never close billing, before the journal is read', async () => {
+    const { dependencies, startDestroy } = harness();
+    const openTeardownRelease = vi.fn(async () => ({}) as never);
+    dependencies.openTeardownRelease = openTeardownRelease;
+
+    // Spend "settled" by cited evidence, and no canary evidence at all: neither is a billing-export reading.
+    for (const body of [destroyBody, { ...destroyBody, canary: undefined }]) {
+      const refused = await post(dependencies, { ...body, releaseTaskId: 'release-task-1' });
+      expect(refused.status).toBe(400);
+      await expect(refused.json()).resolves.toMatchObject({ error: expect.stringContaining('D-395') });
+    }
+    expect(openTeardownRelease).not.toHaveBeenCalled();
+    expect(startDestroy).not.toHaveBeenCalled();
   });
 
   it('admits discard through the stored connection and returns provider-read receipts', async () => {

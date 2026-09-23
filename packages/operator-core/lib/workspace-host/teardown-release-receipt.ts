@@ -87,7 +87,7 @@ export function workspaceHostTeardownReleaseRefusal(canary: {
   runId: string;
   maxSpendCents?: number;
   spendSettlement?: { status: 'deferred' };
-} | undefined): string | null {
+} | null | undefined): string | null {
   if (!canary) {
     return 'a release-bound destroy must carry canary cost evidence: billing.closure is judged only from the provider billing export (D-395)';
   }

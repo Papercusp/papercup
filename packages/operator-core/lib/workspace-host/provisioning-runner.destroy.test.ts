@@ -33,6 +33,7 @@ import {
   memoryReleaseLedger,
   receipt,
 } from './release-journal-test-support';
+import { WORKSPACE_HOST_BILLING_CLOSURE_STAGE } from './billing-closure-release-receipt';
 import { WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, openWorkspaceHostTeardownRelease } from './teardown-release-receipt';
 
 const NOW = '2026-08-25T00:00:00.000Z';
@@ -829,16 +830,40 @@ describe('runWorkspaceHostDestroy release census receipt', () => {
     };
   }
 
+  // D-395: billing closes only from the reconciler's reading of a DEFERRED canary settlement, so a
+  // release-bound destroy is always a canary destroy that defers it.
+  function releaseInput(provider: WorkspaceHostProvider, store: WorkspaceHostDestroyStore): RunWorkspaceHostDestroyInput {
+    const input = runInput(provider, store);
+    return {
+      ...input,
+      canary: {
+        ...input.canary!,
+        costEvidence: [],
+        lateObservedSpend: [],
+        spendSettlement: {
+          status: 'deferred',
+          actorId: 'operator:test',
+          reason: 'provider billing has not settled; GCP lags hours behind teardown',
+          procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+          reconcileAfter: '2026-08-26T00:00:00.000Z',
+        },
+      },
+    };
+  }
+
+  function receiptsFor(journal: ReturnType<typeof releaseStore>, stage: string) {
+    return journal.journal.receipts.filter((entry) => entry.stage === stage);
+  }
+
   it('commits teardown.resource-census from the clean eight-kind terminal census, naming the destroy', async () => {
     const { provider } = providerHarness();
-    const { store } = storeHarness({ ...desired, labels: undefined });
+    const { store } = storeHarness();
     const journal = releaseStore();
 
-    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), ...recorded(journal) });
+    const result = await runWorkspaceHostDestroy({ ...releaseInput(provider, store), ...recorded(journal) });
 
     expect(result.status).toBe('succeeded');
-    expect(journal.journal.receipts.at(-1)).toMatchObject({
-      stage: WORKSPACE_HOST_RESOURCE_CENSUS_STAGE,
+    expect(receiptsFor(journal, WORKSPACE_HOST_RESOURCE_CENSUS_STAGE).at(-1)).toMatchObject({
       state: 'committed',
       evidenceRefs: expect.arrayContaining([
         'destroy-operation:op-destroy-1',
@@ -848,18 +873,70 @@ describe('runWorkspaceHostDestroy release census receipt', () => {
     });
   });
 
+  it('opens billing.closure for the reconciler and points the persisted cost signal at it', async () => {
+    const { provider } = providerHarness();
+    const { store } = storeHarness();
+    const journal = releaseStore();
+
+    const result = await runWorkspaceHostDestroy({ ...releaseInput(provider, store), ...recorded(journal) });
+
+    expect(result.status).toBe('succeeded');
+    // Opened, never settled here: the destroy cannot know the final spend.
+    expect(receiptsFor(journal, WORKSPACE_HOST_BILLING_CLOSURE_STAGE).map((entry) => entry.state)).toEqual(['intent']);
+    expect(store.recordSignals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        costSignals: [
+          expect.objectContaining({
+            runId: RUN_ID,
+            spendSettlement: expect.objectContaining({ status: 'deferred' }),
+            releaseClosure: {
+              schemaVersion: 'workspace-host-release-closure-v1',
+              releaseTaskId: TASK_ID,
+              runRef: 'destroy-operation:op-destroy-1',
+              runId: RUN_ID,
+              maxSpendCents: 2_500,
+            },
+          }),
+        ],
+      }),
+    );
+  });
+
+  it.each([
+    ['no canary cost evidence', (provider: WorkspaceHostProvider, store: WorkspaceHostDestroyStore) => ordinaryInput(provider, store)],
+    ['spend settled at teardown by cited evidence', (provider: WorkspaceHostProvider, store: WorkspaceHostDestroyStore) => runInput(provider, store)],
+  ])('refuses a release-bound destroy with %s before the journal or the provider is touched', async (_label, build) => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness();
+    const journal = releaseStore();
+    const cursor = journal.journal.cursor;
+    const openRelease = vi.fn(recorded(journal).openRelease!);
+
+    await expect(
+      runWorkspaceHostDestroy({ ...build(provider, store), releaseTaskId: TASK_ID, openRelease }),
+    ).rejects.toMatchObject({ problems: [expect.stringContaining('D-395')] });
+    expect(openRelease).not.toHaveBeenCalled();
+    expect(store.beginOperation).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(journal.journal.cursor).toBe(cursor);
+  });
+
   it('settles the census receipt refused when the terminal census is unclean, and names only the failure class', async () => {
     const { provider, inventoryManagedResources } = providerHarness();
     const { store } = storeHarness();
     inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot());
     const journal = releaseStore();
 
-    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 0, ...recorded(journal) });
+    const result = await runWorkspaceHostDestroy({ ...releaseInput(provider, store), censusSettleMs: 0, ...recorded(journal) });
 
     expect(result.status).toBe('failed');
-    const settled = journal.journal.receipts.at(-1)!;
-    expect(settled).toMatchObject({ stage: WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, state: 'refused' });
-    expect(settled.evidenceRefs).toEqual(['reconcile:confirmed-absent', 'destroy-operation:op-destroy-1', 'destroy-failure:Error']);
+    // Both stages the destroy opened are refused: a teardown that did not finish closes no billing.
+    for (const stage of [WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, WORKSPACE_HOST_BILLING_CLOSURE_STAGE]) {
+      const settled = receiptsFor(journal, stage).at(-1)!;
+      expect(settled.state).toBe('refused');
+      expect(settled.evidenceRefs).toEqual(['reconcile:confirmed-absent', 'destroy-operation:op-destroy-1', 'destroy-failure:Error']);
+    }
+    expect(store.recordSignals).not.toHaveBeenCalled();
   });
 
   it('refuses the destroy before any provider call when the host runs other bytes than the release', async () => {
@@ -869,8 +946,8 @@ describe('runWorkspaceHostDestroy release census receipt', () => {
     const cursor = journal.journal.cursor;
 
     await expect(
-      runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), ...recorded(journal, OTHER_BUNDLE) }),
-    ).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+      runWorkspaceHostDestroy({ ...releaseInput(provider, store), ...recorded(journal, OTHER_BUNDLE) }),
+    ).rejects.toMatchObject({ problems: [expect.stringContaining('bundle')] });
     expect(store.beginOperation).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
     expect(journal.journal.cursor).toBe(cursor);
