@@ -8,11 +8,15 @@
  * renderPropertyDelta (the orient-fold delta line).
  */
 import { describe, expect, it } from 'vitest';
-import {
-  prepareTypedPropertyMutation,
-  renderPropertyDelta,
-  type PrepareTypedPropertyMutationArgs,
-} from './typed-properties';
+import { pathToFileURL } from 'node:url';
+import type { PrepareTypedPropertyMutationArgs } from './typed-properties';
+
+// Copy-out falsifiability probes exercise the unchanged suite against a relocated
+// subject. Ordinary CI always uses the real module; no in-tree mutation is needed.
+const { prepareTypedPropertyMutation, renderPropertyDelta }: typeof import('./typed-properties') =
+  process.env.PAPERCUSP_TYPED_PROPERTY_PROBE
+    ? await import(/* @vite-ignore */ pathToFileURL(process.env.PAPERCUSP_TYPED_PROPERTY_PROBE).href)
+    : await import('./typed-properties');
 
 const SCHEMA = {
   worklist: { datatype: 'string-list', default: ['perf'], editable_by: 'both' },

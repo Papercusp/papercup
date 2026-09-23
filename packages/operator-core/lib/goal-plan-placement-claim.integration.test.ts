@@ -14,6 +14,7 @@ import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { setClaimSpec } from './scheduler/claim-spec-store';
 import { acquireClaim } from './plan-items/claims';
 import { createWorkItem } from './work-items';
+import { runWithWorkspaceIfConcrete } from './workspace-als';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -76,7 +77,9 @@ beforeEach(async () => {
 afterEach(async () => {
   if (!fx) return;
   await fx.admin`DELETE FROM harness_shared.plan_item_claims WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
-  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+  // HARNESS is unique to this fixture across workspaces; creator provenance is
+  // payload-owned on issue rows, not a created_by base-table column.
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS}`;
   await fx.admin`DELETE FROM harness_shared.cup_claim_specs WHERE workspace_id = ${WS} AND bee_id = ${`fleet:${FLEET}`}`;
   await fx.admin`DELETE FROM harness_shared.agent_fleets WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
   await fx.admin`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS} AND owner_id = ANY(${OWNERS}::text[])`;
@@ -103,12 +106,13 @@ async function lease(owner = MEMBER, itemId = 'P-001') {
 }
 async function claimedWork(owner = MEMBER, planSlug = PLAN, itemId = 'P-001') {
   // Canonical atomic create+claim writer, rather than inserting a fabricated taken_by row.
-  const work = await createWorkItem({ workspaceId: WS, harness: HARNESS, kind: 'task',
+  // The public dispatch seat establishes workspace ALS for issue-family writers.
+  const work = await runWithWorkspaceIfConcrete(WS, () => createWorkItem({ workspaceId: WS, harness: HARNESS, kind: 'task',
     title: `Placement claim ${owner}`, summary: 'Isolated P003 verification work',
-    createdBy: LEADER, assignee: owner, sourcePlanSlug: planSlug, sourcePlanItemIds: [itemId] });
-  const rows = await fx.admin`SELECT feature_id, harness_slug, status, taken_by, source_plan_slug, source_plan_item_ids
-    FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${work.id}`;
-  expect(rows).toMatchObject([{ feature_id: work.id, harness_slug: HARNESS, taken_by: owner,
+    createdBy: LEADER, assignee: owner, sourcePlanSlug: planSlug, sourcePlanItemIds: [itemId] }));
+  const rows = await fx.admin`SELECT workspace_id, feature_id, harness_slug, status, taken_by, source_plan_slug, source_plan_item_ids
+    FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${work.id}`;
+  expect(rows).toMatchObject([{ workspace_id: WS, feature_id: work.id, harness_slug: HARNESS, taken_by: owner,
     source_plan_slug: planSlug, source_plan_item_ids: [itemId] }]);
   return work;
 }

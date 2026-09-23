@@ -279,6 +279,37 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     expect(derivePropertySurface(row!).propertySchema).toEqual(declaration);
   });
 
+  it('preserves a populated legacy worklist and version through stale and invalid writes', async () => {
+    const prior = { worklist: { value: ['plan:existing'], version: 7,
+      edited_at: '2026-09-19T23:59:35.692Z', edited_by: 'prior-holder', provenance: 'agent-edit' } };
+    await db.adminSql`INSERT INTO harness_shared.goals
+      (id, install_slug, workspace_id, title, status, properties)
+      VALUES ('g-tp-legacy-populated-refused', ${HARNESS}, ${WS}, 'populated legacy refusal', 'active',
+        ${JSON.stringify(prior)}::text::jsonb)`;
+    const args = { workspaceId: WS, goalId: 'g-tp-legacy-populated-refused', property: 'worklist',
+      provenance: 'agent-edit' as const, actorId: 'goal-holder' };
+    for (const attempt of [
+      { expectedVersion: 6, value: ['plan:replacement'], code: 'stale' },
+      { expectedVersion: 7, value: ['bare-plan-slug'], code: 'invalid_value' },
+    ]) {
+      const result = await db.adminSql.begin((tx) => applyGoalPropertyWrite(tx as unknown as typeof db.adminSql,
+        { ...args, expectedVersion: attempt.expectedVersion, value: attempt.value }));
+      expect(result).toMatchObject({ ok: false, code: attempt.code });
+      const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`SELECT property_schema, properties FROM harness_shared.goals
+        WHERE workspace_id = ${WS} AND id = ${args.goalId}`;
+      expect(derivePropertySurface(row!)).toMatchObject({ propertySchema: {}, properties: prior });
+    }
+    const valid = await db.adminSql.begin((tx) => applyGoalPropertyWrite(tx as unknown as typeof db.adminSql,
+      { ...args, expectedVersion: 7, value: ['plan:replacement'] }));
+    expect(valid).toMatchObject({ ok: true, entry: { version: 8, value: ['plan:replacement'] } });
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`SELECT property_schema, properties FROM harness_shared.goals
+      WHERE workspace_id = ${WS} AND id = ${args.goalId}`;
+    expect(derivePropertySurface(row!)).toMatchObject({
+      propertySchema: { worklist: canonicalWorklistDeclaration() },
+      properties: { worklist: { version: 8, value: ['plan:replacement'] } },
+    });
+  });
+
   it('goal write cycle: ok persists the envelope; the follow-up CAS write sees it', async () => {
     const first = await applyGoalPropertyWrite(db.adminSql, {
       workspaceId: WS,
