@@ -490,10 +490,32 @@ GIT_SYNC_DRAIN_SEC="$(normalize_git_sync_drain_sec "${PAPERCUSP_STAGING_SYNC_GIT
   exit 1
 }
 
+# The systemd oneshot has no psu launch record. ptool otherwise falls back to
+# su-loopback, which the identity kernel cannot authorize for dev:restart.
+# Reuse the installer's persistent machine client identity for this first-party
+# service; preserve a real session SID when one was explicitly supplied.
+resolve_ptool_client_sid() {
+  if [ -n "${PAPERCUSP_SID:-}" ]; then
+    printf '%s\n' "$PAPERCUSP_SID"
+    return 0
+  fi
+  [ -n "${HOME:-}" ] || return 1
+  local identity_file="$HOME/.papercusp/su-agent-id" machine_sid
+  [ -f "$identity_file" ] && [ -r "$identity_file" ] || return 1
+  machine_sid="$(<"$identity_file")"
+  [[ "$machine_sid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || return 1
+  printf '%s\n' "$machine_sid"
+}
+
+PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
+  log "FATAL: coordinated dev:restart requires PAPERCUSP_SID or the installer's valid machine identity at \$HOME/.papercusp/su-agent-id"
+  exit 1
+}
+
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result="$({
   cd "$INTEGRATION_ROOT"
-  "$PTOOL_BIN" dev:restart --json - <<JSON
+  PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --json - <<JSON
 {"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
 } 2>&1)" || {

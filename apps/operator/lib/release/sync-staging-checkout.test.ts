@@ -32,7 +32,7 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -449,6 +449,48 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
       }),
     ).toBe(false);
     expect(accepted('not-json')).toBe(false);
+  });
+});
+
+describe('sync-staging-checkout.sh coordinated restart identity (EI-24077446541707229)', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'staging-sync-identity-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const resolve = (home: string, sid = '') => runFn(
+    ['resolve_ptool_client_sid'],
+    'resolve_ptool_client_sid',
+    { env: { HOME: home, PAPERCUSP_SID: sid } },
+  );
+
+  it('uses the installed machine identity when a systemd invocation has no session SID', () => {
+    mkdirSync(join(home, '.papercusp'));
+    const machineSid = '43279960-9a3b-4b55-80d3-44110bf48834';
+    writeFileSync(join(home, '.papercusp', 'su-agent-id'), `${machineSid}\n`, { mode: 0o600 });
+    expect(resolve(home)).toMatchObject({ status: 0, stdout: `${machineSid}\n`, stderr: '' });
+  });
+
+  it('preserves an explicit agent session SID without reading the machine file', () => {
+    expect(resolve(home, 'su-real-session')).toMatchObject({ status: 0, stdout: 'su-real-session\n' });
+  });
+
+  it('fails closed when the machine identity is missing or malformed', () => {
+    expect(resolve(home).status).not.toBe(0);
+    mkdirSync(join(home, '.papercusp'));
+    writeFileSync(join(home, '.papercusp', 'su-agent-id'), 'not-a-uuid\n');
+    expect(resolve(home).status).not.toBe(0);
+  });
+
+  it('passes the resolved identity to the audited dev:restart call', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    expect(script).toContain('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
+    expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --json -');
   });
 });
 
