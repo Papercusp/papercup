@@ -29,7 +29,7 @@ describe('parseCodexChunk (P-015)', () => {
         type: 'token_count',
         info: {
           total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output },
-          last_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output },
+          last_token_usage: { input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0, output_tokens: output },
         },
       },
     });
@@ -113,6 +113,13 @@ describe('parseCodexChunk (P-015)', () => {
       expect(parsed.perModel.get('gpt-5.5')?.turns).toBe(2);
       expect(parsed.events?.map((e) => e.sourceId)[0]).not.toBe(parsed.events?.map((e) => e.sourceId)[1]);
     }
+  });
+
+  it('distinguishes an absent write count from a provider-reported zero', () => {
+    const missing = JSON.parse(tokenCount(1000, 600, 40));
+    delete missing.payload.info.last_token_usage.cache_write_input_tokens;
+    expect(parseCodexChunk(codexLine(missing)).events?.[0].usage.cacheCreationUnreported).toBe(true);
+    expect(parseCodexChunk(tokenCount(1000, 600, 40)).events?.[0].usage.cacheCreationUnreported).toBeUndefined();
   });
 
   it('ignores changing non-token metadata in a repeated cumulative notification', () => {

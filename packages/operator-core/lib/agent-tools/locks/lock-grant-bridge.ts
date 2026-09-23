@@ -89,6 +89,20 @@ export async function reconcileLockTicket(
     return 'fired-granted';
   }
 
+  // A waiter row keeps its historical 'granted' status after the owner releases
+  // the lock. The status reader derives 'released'/'expired' when the full lock
+  // set is no longer live, so never turn that stale history into an edit claim.
+  if (status.status === 'released' || (status.status === 'expired' && status.granted_lock_id)) {
+    await emit({
+      key: lockGrantKey(ticketId),
+      summary: `file-lock grant is no longer held (ticket ${status.status}). Do not edit; re-queue or pivot.`,
+      payload: { granted: false, ticket_status: status.status, ticket_id: ticketId },
+      source: 'lock-grant-bridge',
+      workspaceId,
+    });
+    return 'fired-terminal';
+  }
+
   // expired / cancelled / missing — the queue wait lapsed without a grant.
   // The waiter should know (re-queue or pivot is THEIR call), so this fires too.
   await emit({

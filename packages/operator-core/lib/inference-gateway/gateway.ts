@@ -1286,6 +1286,22 @@ export interface GatewayRoutingQualitySnapshot {
   recent: GatewayRoutingDecision[];
 }
 
+export interface GatewayCacheCounts {
+  /** Exact aggregate; null if any observed usage omitted this field. */
+  read: number | null;
+  create: number | null;
+  input: number | null;
+  /** Sums of reported values only, explicitly lower bounds when coverage is incomplete. */
+  knownTokenTotals: { read: number; create: number; input: number };
+  hits: number;
+  misses: number;
+  failoverMisses: number;
+  /** Token reuse for the comparable population, not requests with any cache read. */
+  hitRate: number | null;
+  tokenRateBasis: { read: number; inputTotal: number };
+  coverage: { requests: number; readKnown: number; writeKnown: number; uncachedInputKnown: number; inputTotalKnown: number; tokenRateRequests: number };
+}
+
 export interface GatewayStats {
   accountId: string;
   upstreamBase: string;
@@ -1551,22 +1567,11 @@ export interface GatewayStats {
    *  hint whether it's a live deadline or a long-lapsed one from an idle account — this makes that
    *  unambiguous without the reader doing its own clock math. */
   pausedActuallyEnforced: boolean;
-  /** Prompt-cache instrumentation (#0, 2026-06-21): per-account + total cache read/write tokens with
-   *  hit/miss counts, failover-induced misses tagged. `hitRate` = read/(read+create+input) — how much of
-   *  the input context was a cache HIT vs a cold (re)write. Surfaces the cost of routing a bee off its
-   *  cache-warm account. */
-  cache: {
-    read: number;
-    create: number;
-    input: number;
-    hits: number;
-    misses: number;
-    failoverMisses: number;
-    hitRate: number;
-    byAccount: Record<
-      string,
-      { read: number; create: number; hits: number; misses: number; failoverMisses: number; hitRate: number }
-    >;
+  /** Per-account and total cache observations. Unknown counts stay null; token reuse
+   * only compares observations whose read count and total input are both known.
+   * Failover misses are correlated with failover, not an attribution of cause. */
+  cache: GatewayCacheCounts & {
+    byAccount: Record<string, GatewayCacheCounts>;
     /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): how unpinned requests were routed since boot. `nokey` is
      *  the population still on per-request round-robin (no owner header, no per-session metadata). */
     affinity: { hits: number; cold: number; nokey: number; yields: number; enabled: boolean; ttlMs: number };
@@ -3620,8 +3625,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     hits: number;
     misses: number;
     failoverMisses: number;
+    comparableRead: number;
+    comparableInput: number;
+    coverage: GatewayCacheCounts['coverage'];
   }
-  const newTally = (): CacheTally => ({ read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0 });
+  const newTally = (): CacheTally => ({ read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0,
+    comparableRead: 0, comparableInput: 0,
+    coverage: { requests: 0, readKnown: 0, writeKnown: 0, uncachedInputKnown: 0, inputTotalKnown: 0, tokenRateRequests: 0 } });
   const cacheByAccount = new Map<string, CacheTally>();
   const cacheTotal = newTally();
   /** AUTO-ROUTE SESSION AFFINITY counters (WI-2140943), surfaced on /stats `cache.affinity`: `hits` =
@@ -3632,27 +3642,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const autoAffinityTally = { hits: 0, cold: 0, nokey: 0, yields: 0 };
   function recordCacheUsage(
     accountId: string,
-    input: number,
-    read: number,
-    create: number,
+    input: number | null,
+    read: number | null,
+    create: number | null,
+    inputTotal: number | null,
     didFailover: boolean,
   ): void {
     const t = cacheByAccount.get(accountId) ?? newTally();
     for (const x of [t, cacheTotal]) {
-      x.read += read;
-      x.create += create;
-      x.input += input;
+      x.coverage.requests++;
+      if (read !== null) { x.read += read; x.coverage.readKnown++; }
+      if (create !== null) { x.create += create; x.coverage.writeKnown++; }
+      if (input !== null) { x.input += input; x.coverage.uncachedInputKnown++; }
+      if (inputTotal !== null) x.coverage.inputTotalKnown++;
+      if (read !== null && inputTotal !== null && read <= inputTotal) {
+        x.comparableRead += read;
+        x.comparableInput += inputTotal;
+        x.coverage.tokenRateRequests++;
+      }
       // HIT = reused a cached prefix. MISS = processed a non-trivial prefix with NO cache read (a cold
       // (re)write — first-time, expired, or wrong-account). A miss AFTER failover is correlated,
       // not proof that routing caused the miss (prefix drift/expiry are not observed here).
-      if (read > 0) x.hits++;
-      else if (input + create >= CACHE_MISS_MIN_TOKENS) {
+      if (read !== null && read > 0) x.hits++;
+      else if (read === 0 && inputTotal !== null && inputTotal >= CACHE_MISS_MIN_TOKENS) {
         x.misses++;
         if (didFailover) x.failoverMisses++;
       }
     }
     cacheByAccount.set(accountId, t);
   }
+  const observedCount = (n: unknown): number | null => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
   // Attach a bounded, passive 'data' observer that captures the message_start usage then detaches. Runs
   // ALONGSIDE the client pipe (never in it), so it adds zero client-visible latency and can never break the
   // stream (all parsing is wrapped + best-effort).
@@ -3688,17 +3707,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ).message;
           const u = message?.usage;
           if (u) {
-            const inputTokens = u.input_tokens ?? 0;
-            const cacheRead = u.cache_read_input_tokens ?? 0;
-            const cacheCreate = u.cache_creation_input_tokens ?? 0;
-            recordCacheUsage(accountId, inputTokens, cacheRead, cacheCreate, didFailover);
-            if (typeof u.input_tokens === 'number') stageSpan?.recordCacheUsage(inputTokens, cacheRead, cacheCreate, message?.id);
-            recordOwnerUsage(routeKey, {
-              inputTotal: inputTokens + cacheRead + cacheCreate,
-              inputTokens,
-              cacheRead,
-              cacheCreate,
-            });
+            const inputTokens = observedCount(u.input_tokens);
+            const cacheRead = observedCount(u.cache_read_input_tokens);
+            const cacheCreate = observedCount(u.cache_creation_input_tokens);
+            const inputTotal = inputTokens !== null && cacheRead !== null && cacheCreate !== null
+              ? inputTokens + cacheRead + cacheCreate : null;
+            recordCacheUsage(accountId, inputTokens, cacheRead, cacheCreate, inputTotal, didFailover);
+            if (inputTokens !== null && cacheRead !== null) stageSpan?.recordCacheUsage(inputTokens, cacheRead, cacheCreate ?? undefined, message?.id);
+            // Never lower the observed prompt floor using an incomplete total.
+            if (inputTotal !== null && inputTokens !== null && cacheRead !== null && cacheCreate !== null) {
+              recordOwnerUsage(routeKey, { inputTotal, inputTokens, cacheRead, cacheCreate });
+            }
           }
         } catch {
           /* malformed message_start — ignore; never break the stream */
@@ -3740,11 +3759,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         };
         const usage = parsed.response?.usage ?? parsed.usage;
         if (!usage) return false;
-        const read = usage.input_tokens_details?.cached_tokens ?? 0;
-        const create = usage.input_tokens_details?.cache_write_tokens ?? 0;
-        const input = Math.max(0, (usage.input_tokens ?? 0) - read - create);
-        recordCacheUsage(accountId, input, read, create, didFailover);
-        if (typeof usage.input_tokens === 'number') stageSpan?.recordCacheUsage(input, read, create, parsed.response?.id ?? parsed.id);
+        const read = observedCount(usage.input_tokens_details?.cached_tokens);
+        const create = observedCount(usage.input_tokens_details?.cache_write_tokens);
+        const total = observedCount(usage.input_tokens);
+        const input = total !== null && read !== null && create !== null && read + create <= total ? total - read - create : null;
+        // Inclusive OpenAI input still supplies the denominator when its write breakdown is absent.
+        recordCacheUsage(accountId, input, read, create, total, didFailover);
+        if (total !== null && read !== null) stageSpan?.recordCacheUsage(Math.max(0, total - read - (create ?? 0)), read, create ?? undefined, parsed.response?.id ?? parsed.id);
         return true;
       } catch {
         return false;
@@ -3778,30 +3799,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stream.on('data', onData);
     stream.on('end', onEnd);
   }
-  const cacheRate = (t: CacheTally): number => {
-    const denom = t.read + t.create + t.input;
-    return denom > 0 ? Math.round((t.read / denom) * 1000) / 1000 : 0;
-  };
+  const cacheSummary = (t: CacheTally): GatewayCacheCounts => ({
+    read: t.coverage.readKnown === t.coverage.requests ? t.read : null,
+    create: t.coverage.writeKnown === t.coverage.requests ? t.create : null,
+    input: t.coverage.uncachedInputKnown === t.coverage.requests ? t.input : null,
+    knownTokenTotals: { read: t.read, create: t.create, input: t.input },
+    hits: t.hits, misses: t.misses, failoverMisses: t.failoverMisses,
+    hitRate: t.comparableInput > 0 ? Math.round((t.comparableRead / t.comparableInput) * 1000) / 1000 : null,
+    tokenRateBasis: { read: t.comparableRead, inputTotal: t.comparableInput },
+    coverage: { ...t.coverage },
+  });
   function cacheSnapshot(): GatewayStats['cache'] {
     const byAccount: GatewayStats['cache']['byAccount'] = {};
     for (const [id, t] of cacheByAccount) {
-      byAccount[id] = {
-        read: t.read,
-        create: t.create,
-        hits: t.hits,
-        misses: t.misses,
-        failoverMisses: t.failoverMisses,
-        hitRate: cacheRate(t),
-      };
+      byAccount[id] = cacheSummary(t);
     }
     return {
-      read: cacheTotal.read,
-      create: cacheTotal.create,
-      input: cacheTotal.input,
-      hits: cacheTotal.hits,
-      misses: cacheTotal.misses,
-      failoverMisses: cacheTotal.failoverMisses,
-      hitRate: cacheRate(cacheTotal),
+      ...cacheSummary(cacheTotal),
       byAccount,
       affinity: { ...autoAffinityTally, enabled: AUTO_AFFINITY_ENABLED, ttlMs: AUTO_AFFINITY_TTL_MS },
     };

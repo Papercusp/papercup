@@ -36,6 +36,8 @@ export interface TranscriptDelta {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Arithmetic retains the known lower bound; persistence uses NULL, not measured zero. */
+  cacheCreationUnreported?: boolean;
   cacheCreation5mTokens?: number;
   cacheCreation1hTokens?: number;
   cacheCreationTierUnknown?: boolean;
@@ -78,6 +80,7 @@ export function mergeTranscriptUsage(a: TranscriptDelta, b: TranscriptDelta): Tr
     cacheReadTokens: Math.max(a.cacheReadTokens, b.cacheReadTokens),
     cacheCreationTokens: Math.max(a.cacheCreationTokens, b.cacheCreationTokens),
   };
+  if (a.cacheCreationUnreported && b.cacheCreationUnreported) merged.cacheCreationUnreported = true;
   const tiers = [b, a].find((u) => !u.cacheCreationTierUnknown &&
     u.cacheCreation5mTokens !== undefined && u.cacheCreation1hTokens !== undefined &&
     u.cacheCreation5mTokens + u.cacheCreation1hTokens === merged.cacheCreationTokens);
@@ -158,6 +161,7 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     u: Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'>;
     relativeOffset: number;
     eventTime: number | null;
+    writeReported: boolean;
   }>();
   let relativeOffset = 0;
   for (const line of consumed.split('\n')) {
@@ -177,13 +181,14 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     // `<synthetic>` rows are harness-injected error placeholders, not API calls.
     if (!model || model.startsWith('<') || !u) continue;
     const key = evt.message?.id ? `message:${evt.message.id}` : `line:${lineOffset}`;
-    const acc = byMsg.get(key) ?? { model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
+    const acc = byMsg.get(key) ?? { model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp), writeReported: false,
       u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } as
         Required<Omit<UsageLine, 'cache_creation'>> & Pick<UsageLine, 'cache_creation'> };
     acc.u.input_tokens = Math.max(acc.u.input_tokens, u.input_tokens ?? 0);
     acc.u.output_tokens = Math.max(acc.u.output_tokens, u.output_tokens ?? 0);
     acc.u.cache_read_input_tokens = Math.max(acc.u.cache_read_input_tokens, u.cache_read_input_tokens ?? 0);
     acc.u.cache_creation_input_tokens = Math.max(acc.u.cache_creation_input_tokens, u.cache_creation_input_tokens ?? 0);
+    if (typeof u.cache_creation_input_tokens === 'number' && Number.isFinite(u.cache_creation_input_tokens) && u.cache_creation_input_tokens >= 0) acc.writeReported = true;
     if (u.cache_creation && typeof u.cache_creation === 'object') {
       const old = acc.u.cache_creation;
       acc.u.cache_creation = {
@@ -194,9 +199,10 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     byMsg.set(key, acc);
   }
   const events: TranscriptUsageEvent[] = [];
-  for (const [sourceId, { model, u, relativeOffset, eventTime }] of byMsg) {
+  for (const [sourceId, { model, u, relativeOffset, eventTime, writeReported }] of byMsg) {
     const acc: TranscriptDelta = { turns: 1, inputTokens: u.input_tokens, outputTokens: u.output_tokens,
       cacheReadTokens: u.cache_read_input_tokens, cacheCreationTokens: u.cache_creation_input_tokens };
+    if (!writeReported) acc.cacheCreationUnreported = true;
     const fiveMinute = u.cache_creation?.ephemeral_5m_input_tokens;
     const oneHour = u.cache_creation?.ephemeral_1h_input_tokens;
     if (
@@ -215,6 +221,7 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     if (acc.cacheCreation5mTokens !== undefined) total.cacheCreation5mTokens = (total.cacheCreation5mTokens ?? 0) + acc.cacheCreation5mTokens;
     if (acc.cacheCreation1hTokens !== undefined) total.cacheCreation1hTokens = (total.cacheCreation1hTokens ?? 0) + acc.cacheCreation1hTokens;
     if (acc.cacheCreationTierUnknown) total.cacheCreationTierUnknown = true;
+    if (acc.cacheCreationUnreported) total.cacheCreationUnreported = true;
     perModel.set(model, total);
   }
   return { perModel, events, consumedBytes: Buffer.byteLength(consumed, 'utf8') };
@@ -523,6 +530,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               turns: previous.turn_count ?? 0, inputTokens: Number(previous.input_tokens ?? 0),
               outputTokens: Number(previous.output_tokens ?? 0), cacheReadTokens: Number(previous.cache_read_tokens ?? 0),
               cacheCreationTokens: Number(previous.cache_creation_tokens ?? 0),
+              cacheCreationUnreported: previous.cache_creation_tokens === null,
               cacheCreation5mTokens: previous.cache_creation_5m_tokens === null ? undefined : Number(previous.cache_creation_5m_tokens),
               cacheCreation1hTokens: previous.cache_creation_1h_tokens === null ? undefined : Number(previous.cache_creation_1h_tokens),
               cacheCreationTierUnknown: providerForModel(model) === 'anthropic' && Number(previous.cache_creation_tokens) > 0 &&
@@ -532,6 +540,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             const change = emptyDelta();
             for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
             if (previous && Object.values(change).every((n) => n === 0) &&
+              Boolean(d.cacheCreationUnreported) === Boolean(before.cacheCreationUnreported) &&
               d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
               (previous.event_ts !== null || event.eventTime === null)) continue;
             const modelClass = modelClassForModel(model);
@@ -545,6 +554,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
               parserStateSource: fileState.bootstrapSource ?? 'incremental',
               turnId: event.turnId ?? null,
+              cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
               accountSource: 'unavailable', triggerSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null };
             // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
@@ -566,7 +576,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                  usage_event_key, event_ts, ingested_at, usage_provenance)
               VALUES (
                 ${ws}, ${eventTime ?? ingestedAt}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
-                ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
+                ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationUnreported ? null : d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model === 'unknown-openai' ? null : model}, ${est.priced ? 'estimated' : null},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
                    ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
@@ -585,6 +595,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
                 ingested_at = EXCLUDED.ingested_at, usage_provenance = EXCLUDED.usage_provenance
             `;
+            if (d.cacheCreationUnreported) change.cacheCreationUnreported = true;
             deltas.push(change);
           }
           await tx`
@@ -604,6 +615,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
           result.totals.outputTokens += d.outputTokens;
           result.totals.cacheReadTokens += d.cacheReadTokens;
           result.totals.cacheCreationTokens += d.cacheCreationTokens;
+          if (d.cacheCreationUnreported) result.totals.cacheCreationUnreported = true;
         }
         result.ingestedFiles += 1;
       } catch (e) {

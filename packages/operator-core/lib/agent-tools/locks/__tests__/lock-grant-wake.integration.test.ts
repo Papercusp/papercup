@@ -51,6 +51,7 @@ const {
   normalizePaths,
   tryAcquire,
   tryInsertWaiter,
+  tryRelease,
   readWaiterStatus,
   readPendingEditDisposition,
   readQueue,
@@ -187,6 +188,76 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
       expect(wakesC[0].payload).toMatchObject({ granted: true });
     },
     60_000,
+  );
+
+  it.skipIf(!live)(
+    'a grant released before bridge reconciliation produces a non-granted wake',
+    async () => {
+      const domain = 'wake-stale-' + Date.now();
+      const paths = normalizePaths(['lib/wake-stale.ts']);
+      const subscriberId = 'su-stale-wake-' + Date.now();
+
+      const holder = await inWorkspaceTxn(domain, 'agent-a', (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain: domain,
+          owner: 'agent-a',
+          ownerLabel: 'A',
+          paths,
+          intent: 'hold until waiter queues',
+          ttlSec: 60,
+        }),
+      );
+      expect(holder.ok).toBe(true);
+      if (!holder.ok) return;
+
+      const inserted = await inWorkspaceTxn(domain, 'agent-b', (tx) =>
+        tryInsertWaiter(tx, {
+          coordinationDomain: domain,
+          owner: 'agent-b',
+          ownerLabel: 'B',
+          paths,
+          intent: 'wait for a grant that is then released',
+          ttlSec: 60,
+          maxWaitSec: 120,
+        }),
+      );
+      expect(inserted.ok).toBe(true);
+      if (!inserted.ok || !('ticket_id' in inserted)) return;
+      const ticket = inserted.ticket_id;
+      await awaitStore.registerAwait({
+        subscriberId,
+        eventKey: lockGrantKey(ticket),
+        note: 'released grant regression',
+      });
+
+      await inWorkspaceTxn(domain, 'agent-a', (tx) =>
+        tryRelease(tx, { coordinationDomain: domain, owner: 'agent-a', lockId: holder.lock_id }),
+      );
+      const grant = await readWaiterStatus(getTxPool(), ticket);
+      expect(grant.status).toBe('granted');
+      expect(grant.granted_lock_id).toBeTruthy();
+      if (!grant.granted_lock_id) return;
+
+      await inWorkspaceTxn(domain, 'agent-b', (tx) =>
+        tryRelease(tx, { coordinationDomain: domain, owner: 'agent-b', lockId: grant.granted_lock_id }),
+      );
+
+      const released = await readWaiterStatus(getTxPool(), ticket);
+      expect(released.status).toBe('released');
+      expect(await reconcileLockTicket(ticket, h.ws, { applyOnGrant: async () => 'none' })).toBe('fired-terminal');
+      await sleep(150);
+
+      const wakes = await awaitStore.listRecentDeliveries(subscriberId);
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0].eventKey).toBe(lockGrantKey(ticket));
+      expect(wakes[0].payload).toMatchObject({
+        granted: false,
+        ticket_status: 'released',
+        ticket_id: ticket,
+      });
+      expect(wakes[0].payload).not.toHaveProperty('lock_id');
+    },
+    30_000,
   );
 
   it.skipIf(!live)(

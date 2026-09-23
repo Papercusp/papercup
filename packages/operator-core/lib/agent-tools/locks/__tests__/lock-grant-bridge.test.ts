@@ -116,6 +116,24 @@ describe('reconcileLockTicket', () => {
     const arg = (emit.mock.calls[0] as unknown as [{ payload: Record<string, unknown> }])[0];
     expect(arg.payload).toMatchObject({ granted: false, ticket_status: 'expired' });
   });
+
+  it('released grant → reports that the lock is no longer held', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 1, notified: [], msgId: null }));
+    const out = await reconcileLockTicket('t-released', 'ws', {
+      readStatus: async () => ({
+        status: 'released',
+        granted_lock_id: 'lock-stale',
+        paths: ['lib/foo.ts'],
+      } as never),
+      emit: emit as never,
+    });
+    expect(out).toBe('fired-terminal');
+    const arg = (emit.mock.calls[0] as unknown as [{ payload: Record<string, unknown>; summary: string }])[0];
+    expect(arg.payload).toMatchObject({ granted: false, ticket_status: 'released', ticket_id: 't-released' });
+    expect(arg.payload).not.toHaveProperty('lock_id');
+    expect(arg.summary).toContain('no longer held');
+    expect(arg.summary).not.toContain('WITHOUT a grant');
+  });
 });
 
 describe('reconcileLockGrantAwaits', () => {

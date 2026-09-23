@@ -205,4 +205,24 @@ describe('persistent transcript accounting', () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.usage_provenance.fileGeneration).sort()).toEqual([0, 1]);
   });
+
+  it('persists missing writes as NULL, then enriches an explicit zero without adding a turn', async () => {
+    const file = path.join(root, 'unknown-writes.jsonl');
+    const message = (writes?: number) => line({ type: 'assistant', message: { id: 'same', model: 'claude-opus-4-8',
+      usage: { input_tokens: 100, output_tokens: 1, ...(writes === undefined ? {} : { cache_creation_input_tokens: writes }) } } });
+    const adapters = [{ name: 'claude', root, parse: parseTranscriptChunk }];
+    await fs.writeFile(file, message());
+    expect((await ingestInteractiveUsage({ adapters })).errors).toEqual([]);
+    const [unknown] = await sql`SELECT cache_creation_tokens,cost_usd,usage_provenance FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(unknown.cache_creation_tokens).toBeNull();
+    expect(unknown.cost_usd).toBeNull();
+    expect(unknown.usage_provenance.cacheWriteSource).toBe('unreported');
+    await fs.appendFile(file, message(0));
+    expect((await ingestInteractiveUsage({ adapters })).totals.turns).toBe(0);
+    const [known] = await sql`SELECT turn_count,cache_creation_tokens,cost_usd,usage_provenance FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(known.turn_count).toBe(1);
+    expect(Number(known.cache_creation_tokens)).toBe(0);
+    expect(known.cost_usd).toBeGreaterThan(0);
+    expect(known.usage_provenance.cacheWriteSource).toBe('reported');
+  });
 });

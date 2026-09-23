@@ -99,6 +99,14 @@ describe('GatewayRequestTelemetry', () => {
     expect(timeline.cache.shape).toBe('invalid');
   });
 
+  it('does not mislabel missing write usage as a measured zero or full hit', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.recordCacheUsage(0, 100, undefined);
+    expect(span.finish('ok', 200)?.cache).toMatchObject({ cacheWriteTokens: null, reuse: 'hit-unknown-write' });
+    expect(telemetry.snapshot().requests).toMatchObject({ cacheUsageObserved: 1, cacheWriteObserved: 0 });
+  });
+
   it('publishes bounded p50/p95/p99 samples with exact request/outcome reconciliation', () => {
     let now = 1_000;
     const telemetry = new GatewayRequestTelemetry({ now: () => now, sampleCapacity: 3, recentCapacity: 2 });

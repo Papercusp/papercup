@@ -14,7 +14,7 @@ describe('parseTranscriptChunk', () => {
       [
         turn('claude-opus-4-8', { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 }),
         JSON.stringify({ type: 'user', message: { content: 'hi' } }),
-        turn('claude-opus-4-8', { input_tokens: 5, output_tokens: 5 }),
+        turn('claude-opus-4-8', { input_tokens: 5, output_tokens: 5, cache_creation_input_tokens: 0 }),
         turn('claude-haiku-4-5-20251001', { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 30 }),
       ].join('\n') + '\n';
     const { perModel, consumedBytes } = parseTranscriptChunk(chunk);
@@ -99,6 +99,13 @@ describe('parseTranscriptChunk', () => {
     }) + '\n').perModel.get('claude-opus-4-8')!;
     expect(usage.cacheCreationTierUnknown).toBe(true);
     expect(costFromTokens('claude-opus-4-8', usage)).toEqual({ priced: false, usd: 0 });
+  });
+
+  it('keeps an absent write count explicitly unreported, even when its arithmetic lower bound is zero', () => {
+    const missing = parseTranscriptChunk(turn('claude-opus-4-8', { input_tokens: 5 }) + '\n').events![0].usage;
+    expect(missing.cacheCreationUnreported).toBe(true);
+    const zero = parseTranscriptChunk(turn('claude-opus-4-8', { input_tokens: 5, cache_creation_input_tokens: 0 }) + '\n').events![0].usage;
+    expect(zero.cacheCreationUnreported).toBeUndefined();
   });
 
   it('retains stable source identity and timestamp separately from chunk-relative offsets', () => {

@@ -20,7 +20,7 @@ export interface GatewayCacheObservation {
   inputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
-  reuse: 'unobserved' | 'zero-read' | 'partial-hit' | 'full-hit';
+  reuse: 'unobserved' | 'zero-read' | 'partial-hit' | 'full-hit' | 'hit-unknown-write';
   /** A zero read alone cannot distinguish eviction, expiry, prefix drift or cold start. */
   missReason: 'unobserved' | 'unknown' | 'none';
   shape: 'unobserved' | 'observed' | 'oversized' | 'invalid';
@@ -183,6 +183,7 @@ export interface GatewayRequestTelemetrySnapshot {
     missingStageTimelines: number;
     cacheUsageObserved: number;
     cacheUsageCoverage: number | null;
+    cacheWriteObserved: number;
   };
   outcomes: Record<GatewayRequestOutcome, number>;
   stages: Record<GatewayRequestStageName, GatewayPercentileSummary>;
@@ -459,13 +460,13 @@ export class GatewayRequestSpan {
     if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
   }
 
-  recordCacheUsage(input: number, read: number, write: number, requestId?: string): void {
-    if (this.finished || [input, read, write].some((n) => !Number.isFinite(n) || n < 0)) return;
+  recordCacheUsage(input: number, read: number, write: number | undefined, requestId?: string): void {
+    if (this.finished || [input, read, ...(write === undefined ? [] : [write])].some((n) => !Number.isFinite(n) || n < 0)) return;
     this.cache.inputTokens = input;
     this.cache.cacheReadTokens = read;
-    this.cache.cacheWriteTokens = write;
+    this.cache.cacheWriteTokens = write ?? null;
     this.cache.providerRequestId = boundedIdentifier(requestId, 160);
-    this.cache.reuse = read === 0 ? 'zero-read' : input + write === 0 ? 'full-hit' : 'partial-hit';
+    this.cache.reuse = read === 0 ? 'zero-read' : write === undefined ? 'hit-unknown-write' : input + write === 0 ? 'full-hit' : 'partial-hit';
     this.cache.missReason = read === 0 ? 'unknown' : 'none';
   }
 
@@ -548,6 +549,7 @@ export class GatewayRequestTelemetry {
   private sampled = 0;
   private missingStageTimelines = 0;
   private cacheUsageObserved = 0;
+  private cacheWriteObserved = 0;
   private readonly active = new Set<number>();
   private readonly outcomes = emptyOutcomes();
   private readonly missingStageByName = emptyMissingStages();
@@ -604,6 +606,7 @@ export class GatewayRequestTelemetry {
     this.finalized++;
     this.sampled++;
     if (timeline.cache.reuse !== 'unobserved') this.cacheUsageObserved++;
+    if (timeline.cache.cacheWriteTokens !== null) this.cacheWriteObserved++;
     this.outcomes[timeline.outcome]++;
     if (timeline.missingStages.length) {
       this.missingStageTimelines++;
@@ -637,6 +640,7 @@ export class GatewayRequestTelemetry {
         missingStageTimelines: this.missingStageTimelines,
         cacheUsageObserved: this.cacheUsageObserved,
         cacheUsageCoverage: this.finalized ? this.cacheUsageObserved / this.finalized : null,
+        cacheWriteObserved: this.cacheWriteObserved,
       },
       outcomes: { ...this.outcomes },
       stages,

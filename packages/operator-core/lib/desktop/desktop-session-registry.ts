@@ -226,8 +226,23 @@ export function _resetBootIdForTests(): void {
   cachedBootId = undefined;
 }
 
+/**
+ * The canonical client hands `timestamptz` back as TEXT once drizzle has wrapped it
+ * (see `restoreRawDateSerializers`), so a raw read cannot promise the `Date` this
+ * record declares. Measured 2026-09-23: `lastActiveAt` arrived as a string and the
+ * hosted roster's `.toISOString()` threw on the first row, which failed every
+ * `desktop.start` on a Papercusp-hosted machine AFTER its desktop was up (D-405).
+ */
+function asDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+function asNullableDate(value: Date | string | null | undefined): Date | null {
+  return value === null || value === undefined ? null : asDate(value);
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function toRecord(r: any): DesktopSessionRecord {
+export function toRecord(r: any): DesktopSessionRecord {
   return {
     id: r.id,
     workspaceId: r.workspace_id,
@@ -253,10 +268,10 @@ function toRecord(r: any): DesktopSessionRecord {
     ttlSec: r.ttl_sec ?? null,
     taskId: r.task_id ?? null,
     idleAfterSec: r.idle_after_sec ?? null,
-    frozenAt: r.frozen_at ?? null,
-    createdAt: r.created_at,
-    lastActiveAt: r.last_active_at,
-    releasedAt: r.released_at ?? null,
+    frozenAt: asNullableDate(r.frozen_at),
+    createdAt: asDate(r.created_at),
+    lastActiveAt: asDate(r.last_active_at),
+    releasedAt: asNullableDate(r.released_at),
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

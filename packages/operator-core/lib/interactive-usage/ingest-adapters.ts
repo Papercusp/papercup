@@ -124,6 +124,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     if (input + cached + written + output === 0) continue; // compaction/reset notification, not a request
     const usage: TranscriptDelta = { turns: 1, inputTokens: Math.max(0, input - cached - written),
       cacheReadTokens: cached, cacheCreationTokens: written, outputTokens: output };
+    if (typeof u.cache_write_input_tokens !== 'number' || !Number.isFinite(u.cache_write_input_tokens) || u.cache_write_input_tokens < 0) usage.cacheCreationUnreported = true;
     events.push({ model, usage, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
       sourceId: fingerprint ? `cumulative:${parserState.contextGeneration ?? 0}:${fingerprint}` : `line:${lineOffset}`,
       contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId,
@@ -134,6 +135,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     acc.cacheReadTokens += cached;
     acc.cacheCreationTokens += written;
     acc.outputTokens += output;
+    if (usage.cacheCreationUnreported) acc.cacheCreationUnreported = true;
     perModel.set(model, acc);
   }
   return { perModel, events, consumedBytes: bytes, parserState };
@@ -152,7 +154,7 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
   const { text, bytes } = completeLines(chunk);
   if (bytes === 0) return { perModel, consumedBytes: 0 };
   // line id → max-merged usage (the Claude parser's message.id discipline).
-  const byMsg = new Map<string, { model: string; u: Required<OmpUsage>; relativeOffset: number; eventTime: number | null }>();
+  const byMsg = new Map<string, { model: string; u: Required<OmpUsage>; relativeOffset: number; eventTime: number | null; writeReported: boolean }>();
   let relativeOffset = 0;
   for (const line of text.split('\n')) {
     const lineOffset = relativeOffset;
@@ -176,19 +178,21 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
     if (!model || !u) continue;
     const key = evt.id ? `message:${evt.id}` : `line:${lineOffset}`;
     const acc = byMsg.get(key) ?? {
-      model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
+      model, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp), writeReported: false,
       u: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };
     acc.u.input = Math.max(acc.u.input, u.input ?? 0);
     acc.u.output = Math.max(acc.u.output, u.output ?? 0);
     acc.u.cacheRead = Math.max(acc.u.cacheRead, u.cacheRead ?? 0);
     acc.u.cacheWrite = Math.max(acc.u.cacheWrite, u.cacheWrite ?? 0);
+    if (typeof u.cacheWrite === 'number' && Number.isFinite(u.cacheWrite) && u.cacheWrite >= 0) acc.writeReported = true;
     byMsg.set(key, acc);
   }
   const events: TranscriptUsageEvent[] = [];
-  for (const [sourceId, { model, u, relativeOffset, eventTime }] of byMsg) {
+  for (const [sourceId, { model, u, relativeOffset, eventTime, writeReported }] of byMsg) {
     const usage: TranscriptDelta = { turns: 1, inputTokens: u.input, outputTokens: u.output,
       cacheReadTokens: u.cacheRead, cacheCreationTokens: u.cacheWrite };
+    if (!writeReported) usage.cacheCreationUnreported = true;
     // OMP does not report Claude's TTL split; never assume five-minute writes.
     if (/^claude/i.test(model) && u.cacheWrite > 0) usage.cacheCreationTierUnknown = true;
     events.push({ model, usage, sourceId, relativeOffset, eventTime });
@@ -199,6 +203,7 @@ export function parseOmpChunk(chunk: string): ParsedChunk {
     acc.cacheReadTokens += u.cacheRead;
     acc.cacheCreationTokens += u.cacheWrite;
     if (usage.cacheCreationTierUnknown) acc.cacheCreationTierUnknown = true;
+    if (usage.cacheCreationUnreported) acc.cacheCreationUnreported = true;
     perModel.set(model, acc);
   }
   return { perModel, events, consumedBytes: bytes };

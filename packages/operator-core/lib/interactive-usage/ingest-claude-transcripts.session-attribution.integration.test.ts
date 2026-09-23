@@ -111,7 +111,8 @@ describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
     tmpDirs.push(dir);
     await fs.writeFile(
       path.join(dir, `${uuid}.jsonl`),
-      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 2000 } } }) + '\n',
+      // The spend assertion needs fully reported input usage, including measured zero writes.
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 2000, cache_creation_input_tokens: 0 } } }) + '\n',
     );
     await ingestInteractiveUsage({ adapters: [{ name: 'claude', root: dir, parse: parseTranscriptChunk }] });
 
@@ -137,7 +138,7 @@ describe('ingestInteractiveUsage — per-owner isolation root sweep (EI-19964643
     await fs.mkdir(ownerProjectsDir, { recursive: true });
     await fs.writeFile(
       path.join(ownerProjectsDir, `${uuid}.jsonl`),
-      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 500, output_tokens: 700 } } }) + '\n',
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 500, output_tokens: 700, cache_creation_input_tokens: 0 } } }) + '\n',
     );
 
     // Empty explicit `adapters` (no global-root pollution) + includeIsolationRoots:true

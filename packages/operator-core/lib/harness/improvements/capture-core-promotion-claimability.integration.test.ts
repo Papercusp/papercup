@@ -20,6 +20,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { captureImprovement } = await import('./capture-core');
+const { createIssue } = await import('../../issues-engineer');
 const { createImplementationReadiness } = await import('./agent-review-policy');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
 
@@ -36,6 +37,94 @@ afterAll(async () => {
 });
 
 describe('tool-failure probation promotion → scheduler admission', () => {
+  it('stores file-time duplicate evidence while keeping the new bug behind admission', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const first = await captureImprovement({
+      title: `duplicate handshake admission failure ${suffix}`,
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      createdBy: 'su-test',
+    });
+    const second = await captureImprovement(
+      {
+        title: `duplicate handshake admission failures ${suffix}`,
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        createdBy: 'su-peer',
+      },
+      { searchIssues: async () => [first.issue!], createIssue },
+    );
+    expect(second.created).toBe(true);
+    const [stored] = await db.adminSql<{
+      workspace_id: string;
+      admission: string | null;
+      payload: Record<string, unknown>;
+    }[]>`
+      SELECT workspace_id, admission, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = ${second.issue!.id}`;
+    expect(stored.admission).toBe('pending');
+    expect(stored.payload).toMatchObject({
+      dedupVerdict: 'likely-duplicate',
+      dedupCandidates: [expect.objectContaining({ id: first.issue!.id })],
+    });
+    const claimability = await readIssueClaimability(
+      { field: 'id', op: 'in', value: [second.issue!.id] },
+      {
+        harness: 'papercusp',
+        workspaceId: stored.workspace_id,
+        states: ['open'],
+        assignee: 'su-peer',
+        client: db.adminSql,
+      },
+      { limit: 10 },
+    );
+    expect(claimability.rows).toEqual([]);
+  });
+
+  it('keeps an ordinary captured bug out of self-pull until admission and records a critical bypass', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const ordinary = await captureImprovement({
+      title: `ordinary admission capture ${suffix}`,
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      createdBy: 'su-test',
+    });
+    const critical = await captureImprovement({
+      title: `critical admission capture ${suffix}`,
+      kind: 'bug',
+      severity: 'critical',
+      scope: 'harness:papercusp',
+      createdBy: 'su-test',
+    });
+    const ids = [ordinary.issue!.id, critical.issue!.id];
+    const rows = await db.adminSql<{
+      feature_id: string;
+      workspace_id: string;
+      admission: string | null;
+      admitted_by: string | null;
+    }[]>`
+      SELECT feature_id, workspace_id, admission, admitted_by
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${ids}::text[])`;
+    const byId = new Map(rows.map((row) => [row.feature_id, row]));
+    expect(byId.get(ordinary.issue!.id)).toMatchObject({ admission: 'pending', admitted_by: null });
+    expect(byId.get(critical.issue!.id)).toMatchObject({ admission: 'auto', admitted_by: 'bypass:severity-critical' });
+
+    const claimability = await readIssueClaimability(
+      { field: 'id', op: 'in', value: ids },
+      {
+        harness: 'papercusp',
+        workspaceId: byId.get(ordinary.issue!.id)!.workspace_id,
+        states: ['open'],
+        assignee: 'su-test',
+        client: db.adminSql,
+      },
+      { limit: 10 },
+    );
+    expect(claimability.rows.map((row) => row.id)).toEqual([critical.issue!.id]);
+  });
+
   it('removes payload.lane but keeps peer-corroboration out of normal pickup until approval', async () => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const title = `tool-failure probation claimability ${suffix}`;
@@ -157,7 +246,8 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     const id = captured.issue!.id;
     const [row] = await db.adminSql<{ workspace_id: string }[]>`
       UPDATE harness_shared.work_items
-         SET payload = COALESCE(payload, '{}'::jsonb) - 'implementationReadiness'
+         SET payload = COALESCE(payload, '{}'::jsonb) - 'implementationReadiness',
+             admission = NULL
        WHERE feature_id = ${id}
       RETURNING workspace_id`;
     const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
@@ -191,7 +281,8 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     });
     const [row] = await db.adminSql<{ workspace_id: string }[]>`
       UPDATE harness_shared.work_items
-         SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+         SET admission = NULL,
+             payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
            'agentReview', jsonb_build_object(
              'status', 'revision-requested',
              'submittedBy', 'system:legacy-agent-review',

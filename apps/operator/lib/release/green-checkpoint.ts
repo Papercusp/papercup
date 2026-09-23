@@ -8851,8 +8851,8 @@ export interface CheckpointOpts {
 }
 
 /** A burst of admissions is finite even when every pass races another writer. The durable marker
- * stays set after this bound, so the already-due routine is the backstop instead of an unbounded
- * in-process loop. */
+ * stays set for a later checkpoint run, so this run terminates instead of spinning in-process
+ * without a bound. */
 export const MAX_ADMISSION_REFIRE_ATTEMPTS = 3;
 
 /**
@@ -14438,7 +14438,7 @@ export async function runGreenCheckpoint(
           (deadlineExceeded
             ? "the shared gate-run wall budget cannot fit another pass"
             : `the admission self-refire bound ${MAX_ADMISSION_REFIRE_ATTEMPTS} is exhausted`) +
-          ". The durable marker and due-now routine remain as the backstop.",
+          ". The durable marker remains pending for a future checkpoint run; no immediate retry was scheduled.",
       );
     }
   }

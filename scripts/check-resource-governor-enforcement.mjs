@@ -1568,11 +1568,11 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for packages/operator-core/lib/sync/hyperbee/read-merge.ts: its MergeCursor Maps (positions, winners, applyThrows, readThrows, readStalls, lateReadResults) are finite per-merge correlation state keyed by the active logs and positions being merged, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight merge workload and start no independent resident work.",
   },
   {
-    path: "scripts/lib/release-task-journal.ts",
+    path: "scripts/lib/release-task-journal.mts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/lib/release-task-journal.ts: its two execFileSync calls are bounded, awaited git show/ls-tree metadata reads against one pinned source SHA; they start no resident worker or queue and must complete before the journal identity can be accepted.",
+      "P-016 reviewed bypass disposition for scripts/lib/release-task-journal.mts: its two execFileSync calls are bounded, awaited git show/ls-tree metadata reads against one pinned source SHA; they start no resident worker or queue and must complete before the journal identity can be accepted.",
   },
   {
     path: "scripts/lib/stale-swap-leftovers.mjs",
