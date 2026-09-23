@@ -1,12 +1,14 @@
 /**
- * acceptance-runtime-plane-not-main-2026-09-23 P-004/P-006 — graders name the runtime and
- * sha behind an unknown/mismatch rating; rubric vetting flags live BARs with no runtime.
+ * acceptance-runtime-plane-not-main-2026-09-23 P-004 (R-5) — graders name the runtime and
+ * sha behind an unknown/mismatch rating on a live or deployed BAR.
+ *
+ * The rubric-vetting half (R-6: live BARs with no evidenceRuntime) lives in
+ * acceptance-runtime-vetting-findings.test.ts so the two BARs fail independently.
  */
 import { describe, expect, it } from 'vitest';
 import {
   ratingNeedsRuntimeCitation,
   runtimeCitationRefusal,
-  runtimeVettingFindings,
   validateRuntimeCitation,
 } from './acceptance-runtime-citation';
 
@@ -90,20 +92,5 @@ describe('runtimeCitationRefusal — the scorecards:emit wiring', () => {
       }),
     ).toBeNull();
     expect(runtimeCitationRefusal(criteria, undefined)).toBeNull();
-  });
-});
-
-describe('runtimeVettingFindings — rubrics:propose / rubrics:amend', () => {
-  it('flags every live/deployed criterion without evidenceRuntime, and nothing else', () => {
-    const findings = runtimeVettingFindings([
-      { key: 'r-1', barKey: 'R-1', evidencePlane: 'live', method: `census from ${BG_PATH}` },
-      { key: 'r-2', barKey: 'R-2', evidencePlane: 'deployed', method: 'eyeball the dashboard' },
-      { key: 'r-3', barKey: 'R-3', evidencePlane: 'live', evidenceRuntime: 'staging-operator' },
-      { key: 'r-4', barKey: 'R-4', evidencePlane: 'tree' },
-    ]);
-    expect(findings.map((f) => f.barKey)).toEqual(['R-1', 'R-2']);
-    expect(findings[0]!.finding).toMatch(/inferred bg-host/);
-    expect(findings[1]!.finding).toMatch(/default to :3070 and wait on main/);
-    expect(findings[1]!.resolution.runtime).toBeNull();
   });
 });
