@@ -30,7 +30,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
 import { clampText, softText } from '../limits';
-import { readEventConditionReachability } from '../../external-condition-reachability';
+import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 import { PREMISE_STAMPS_FIELD } from '../coordination/premise-resolve';
 
@@ -65,28 +65,13 @@ type ClaimHoldReleaseInput = z.infer<typeof claimHoldReleaseSchema>;
 const CLAIM_HOLD_RELEASE_CONSTRAINT =
   'claimHold:true requires claimHoldRelease { condition, trigger, owner? }; durable parks must declare a typed re-evaluation contract (including per-item overrides and batch defaults)';
 
-/** Resolve, rather than trust, the release condition's live event status. A fired
- * latch is already satisfied; an unregistered/unmeasured key is blocked, never
- * guessed unreachable from age or prose. */
+/** Resolve, rather than trust, the release condition's live event status — one shared
+ * contract writer (also used by the P-030 plan supersede cascade). */
 async function buildClaimHoldReleaseContract(
   input: ClaimHoldReleaseInput,
   defaultOwner: string,
 ): Promise<DurableParkReleaseContract> {
-  const reachability = await readEventConditionReachability(input.trigger);
-  return {
-    condition: input.condition.trim(),
-    owner: input.owner?.trim() || defaultOwner,
-    trigger: input.trigger.trim(),
-    reachability:
-      reachability.basis === 'fired'
-        ? 'satisfied'
-        : reachability.verdict === 'reachable'
-          ? 'reachable'
-          : reachability.verdict === 'impossible'
-            ? 'unreachable'
-            : 'blocked',
-    evidence: reachability.evidence,
-  };
+  return buildDurableParkReleaseContract(input, defaultOwner);
 }
 
 /**

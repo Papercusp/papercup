@@ -10,7 +10,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { isClaimHoldParked, setWorkItemClaimHold } from '../../work-items';
-import { buildDurableParkReleaseContract } from '../../external-condition-reachability';
+import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import { planAcceptanceChangedKey } from '../../agent-obligations';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';

@@ -59,6 +59,8 @@ import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
 import { PLAN_STATUSES } from './parser';
+import { propagatePlanScopeWrite, type PlanScopeCascadeResult } from './plan-scope-cascade';
+import { defaultPlanScopeCascadeDeps } from './plan-scope-cascade-deps';
 import {
   recoverHarnessFromSlugs,
   requireUnambiguousSlugScope,
@@ -750,6 +752,31 @@ export default defineTool({
           }
         }
 
+        // P-030 (review-system-rework-reduction-2026-09-23): superseding a plan makes every
+        // "Ship <slug>" carrier in ANOTHER plan moot. Park those out of claim_next and
+        // re-evaluate their plans' BAR readiness in this same call, surfacing the gate code
+        // in each carrier plan's Now. Never throws into the status write; the result rides
+        // the response so the caller sees what was parked.
+        let scopeCascade: PlanScopeCascadeResult | undefined;
+        if (status === 'superseded' && result.value.changed) {
+          let actor = 'system:plan-supersede-cascade';
+          try {
+            actor = resolveAgentIdentity(ctx).ownerId;
+          } catch {
+            /* unattributable caller: park provenance falls back to the system actor */
+          }
+          scopeCascade = await propagatePlanScopeWrite(
+            {
+              workspaceId: result.scope.workspaceId,
+              harnessSlug: result.scope.harnessSlug,
+              subjectSlug: slug,
+              cause: 'superseded',
+              actor,
+            },
+            defaultPlanScopeCascadeDeps(ctx, actor),
+          );
+        }
+
         // Lifecycle tidy-up (acceptance-rubrics-on-every-plan-2026-08-11 P-005): the
         // acceptance rubric archives WITH its shipped subject plan. Best-effort — the
         // helper never throws and a busy lock is simply skipped (the rubric stays
@@ -799,6 +826,7 @@ export default defineTool({
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
           ...(acceptanceRubricRetired ? { acceptanceRubricRetired } : {}),
+          ...(scopeCascade ? { scopeCascade } : {}),
           // A forced ship is loud in the RESPONSE too, not only in the plan
           // file: the caller who waived the gate should not have to re-read the
           // plan to see what they waived.
