@@ -83,6 +83,69 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+it('classifies an interactive Codex capacity wall without retrying or hiding the PTY output', async () => {
+  const ownerId = uniqueOwner('MODEL-CAPACITY');
+  const sock = socketPathFor(ownerId);
+  const { io, captured } = fakeIo();
+  let exitCode: number | null = null;
+  const done = hostThroughPty({
+    command: execPath,
+    args: [
+      '-e',
+      [
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "let turns=0;process.stdout.write('READY\\n');",
+        "process.stdin.on('data',d=>{if(d.includes('\\\\x04')){process.exit(0);return;}",
+        "if(d.includes('\\\\r')){turns++;process.stdout.write('Selected model is at capacity. Please try again in 90 seconds.\\n');",
+        "process.stdout.write('TURN-COUNT:'+turns+'\\n');}});",
+      ].join(''),
+    ],
+    cwd: '/tmp',
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex' }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: (code: number) => { exitCode = code; },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'trigger-capacity' })).toBe(true);
+    expect(await waitForOutput(captured, 'Selected model is at capacity', 5000)).toBe(true);
+    expect(await waitForOutput(captured, 'TURN-COUNT:1', 5000)).toBe(true);
+
+    const eventPath = eventLogPathForOwner(ownerId);
+    const deadline = Date.now() + 5000;
+    let capacityEvent: Record<string, unknown> | undefined;
+    while (Date.now() < deadline && !capacityEvent) {
+      const events = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : '';
+      for (const line of events.split('\n')) {
+        try {
+          const event = JSON.parse(line) as Record<string, unknown>;
+          if (event.kind === 'model-capacity-detected') capacityEvent = event;
+        } catch {
+          // An append may be observed between the JSON bytes and trailing newline.
+        }
+      }
+      if (!capacityEvent) await sleep(25);
+    }
+    expect(capacityEvent).toMatchObject({
+      kind: 'model-capacity-detected',
+      agent: 'codex',
+      errorClass: 'rate_limited',
+      retryable: true,
+      retryAfterMs: 90_000,
+      matchedPattern: expect.stringContaining('selected\\s+model'),
+      matchedExcerpt: expect.stringContaining('Selected model is at capacity'),
+    });
+    expect(captured()).not.toContain('TURN-COUNT:2');
+    expect(exitCode).toBeNull();
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', data: '\x04' }).catch(() => false);
+    await done;
+  }
+  expect(exitCode).toBe(0);
+});
+
 describe('Codex carry first turn on a continuously repainting fresh composer', () => {
   it.each(['ready', 'launch-ready', 'terminal-reply', 'owner-input', 'not-ready'] as const)(
     '%s: requires startup proof, preserves owner input, and records actual submission',
