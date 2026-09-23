@@ -2338,9 +2338,17 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // A directive a peer already holds carries no route at all: offering
             // work_items:create there is how in-flight work gets duplicated.
             if (claimedBy) {
-              group.parts.push(`#${directive.id}${origin} (claimed by ${shortOwner(claimedBy)} — awareness only, already taken; do not act on or resolve it.): ${shown}`);
+              group.parts.push(
+                'owner directive #' +
+                  directive.id +
+                  origin +
+                  ' (claimed by ' +
+                  shortOwner(claimedBy) +
+                  ' — awareness only, already taken; do not act on or resolve it.): ' +
+                  shown,
+              );
             } else {
-              group.parts.push(`#${directive.id}${origin}: ${shown}`);
+              group.parts.push('owner directive #' + directive.id + origin + ': ' + shown);
               group.routes.push(directive.id);
             }
             groups.set(by, group);
@@ -2357,7 +2365,17 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
               group.routes.length === 0
                 ? ''
                 : ` — NOT yours to resolve; take one only via work_items:create { directiveRef: ${group.routes.length === 1 ? group.routes[0] : `<${group.routes.join('|')}>`} }.`;
-            lines.push(`- 👥 ${by}${context ? ` (${context})` : ''}${related} — THEIR open owner directives: ${group.parts.join(' · ')}${route}`);
+            lines.push(
+              '- 👥 ' +
+                by +
+                (context ? ' (' + context + ')' : '') +
+                related +
+                ' — THEIR open owner directives addressed to ' +
+                by +
+                ': ' +
+                group.parts.join(' · ') +
+                route,
+            );
           }
           if (ordered.length > 5) lines.push(`- 📌 +${ordered.length - 5} more open owner directives — orders:list { open: true }.`);
           return lines;
