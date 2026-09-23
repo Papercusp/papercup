@@ -103,8 +103,15 @@ export async function confirmGoalPlacementDelivery(input: {
     return { recorded: 0, reason: 'native-session-unavailable' };
   }
   const turns = await deps.tail(session);
-  const baseline = candidate.baselineTurnRef === null ? -1
-    : turns.findLastIndex((turn) => completedRef(session, turn) === candidate.baselineTurnRef);
+  let baseline = -1;
+  if (candidate.baselineTurnRef !== null) {
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      if (completedRef(session, turns[index]!) === candidate.baselineTurnRef) {
+        baseline = index;
+        break;
+      }
+    }
+  }
   if ((candidate.baselineTurnRef !== null && baseline < 0) ||
     (candidate.baselineTurnRef === null && turns.some((turn) => turn.requestHistoryStatus === 'truncated'))) {
     return { recorded: 0, reason: 'native-window-incomplete' };

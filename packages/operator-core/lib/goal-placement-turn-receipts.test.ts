@@ -12,7 +12,8 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
   scope: { ownerId: 'holder', workspaceId: 'workspace', goalId: 'goal', planSlug: 'plan' },
   responsibleOwnerId: 'holder', title: 'Place the plan', status: 'due', reason: 'Eligible plan has no member.',
   authority: { kind: 'policy', sourceRef: 'fixture:policy', revision: 'v1' },
-  priority: 'high', sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
+  priority: 'high', causalRank: 1, evidence: [],
+  sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
   clearsWhen: { id: 'claimed', summary: 'A verified member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
   action: { kind: 'delegate', summary: 'Staff the eligible plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
 });
