@@ -382,6 +382,8 @@ pub enum Event {
     ToastHistory(Vec<Notif>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
+    /// An install-lifecycle preview or result for the palette panel (P-011 / D-016).
+    Lifecycle(crate::self_install::LifecycleView),
     /// Canonical endpoint/workspace/store/build/chat identity. Unlike ordinary
     /// polling errors, a failed identity probe remains visible until fixed.
     BackendIdentity(Result<crate::client::BackendIdentity, String>),
