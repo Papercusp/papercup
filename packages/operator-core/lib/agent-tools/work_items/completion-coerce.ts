@@ -88,6 +88,13 @@ const SERVER_GENERATED_COMPLETION_FIELDS = [
   'treeStamp',
   'settlementManifest',
 ] as const;
+// A persisted read may expose historyAttestation inside the nested verification
+// object. Strip it only at that read-retry location; leaving it out of the root
+// completion list keeps caller-authored attestations rejected by the strict schema.
+const SERVER_GENERATED_VERIFICATION_FIELDS = [
+  ...SERVER_GENERATED_COMPLETION_FIELDS,
+  'historyAttestation',
+] as const;
 
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
@@ -359,7 +366,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
     // fields at this nested location too, so the retry does not validate its own receipt
     // as caller evidence or reject a nested settlementManifest before the presence-time
     // guidance can explain that the server recreates it (EI-22552507428065516).
-    for (const f of SERVER_GENERATED_COMPLETION_FIELDS) delete verification[f];
+    for (const f of SERVER_GENERATED_VERIFICATION_FIELDS) delete verification[f];
     for (const f of ['testsRun', 'testResult', 'verifiedHow', 'summary'] as const) {
       const value = verification[f];
       if (Array.isArray(value)) verification[f] = joinToString(value) || undefined;

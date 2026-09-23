@@ -533,7 +533,7 @@ describe('goals:start — rollback', () => {
 });
 
 describe('the pre-pin this tool depends on', () => {
-  it('emits --owner-id on a FRESH launch and never on a resume', () => {
+  it('pins fresh and cross-backend conversion identities but rejects same-backend resume', () => {
     const fresh = buildAgentLaunchCommand({
       mode: 'fresh',
       agent: 'claude',
@@ -541,14 +541,32 @@ describe('the pre-pin this tool depends on', () => {
       ownerId: 'su-abc',
     });
     expect(fresh).toContain('--owner-id=su-abc');
-    // A resumed session already HAS an identity; re-pinning would split it from
-    // its own history — the pin's purpose inverted.
-    const resumed = buildAgentLaunchCommand({
+
+    // A same-backend resume already HAS an identity. Supplying ownerId is a
+    // caller bug; silently dropping the pin would leave pre-written state orphaned.
+    expect(() => buildAgentLaunchCommand({
       mode: 'resume',
       sessionId: 'sess-1',
+      agent: 'claude',
+      ownerId: 'su-abc',
+    })).toThrow(/same-backend resume/);
+
+    const resumedWithoutPin = buildAgentLaunchCommand({
+      mode: 'resume',
+      sessionId: 'sess-1',
+      agent: 'claude',
+    });
+    expect(resumedWithoutPin).not.toContain('--owner-id');
+
+    const converted = buildAgentLaunchCommand({
+      mode: 'resume',
+      sessionId: 'sess-1',
+      agent: 'claude',
+      targetAgent: 'omp',
       ownerId: 'su-abc',
     });
-    expect(resumed).not.toContain('--owner-id');
+    expect(converted).toContain('--owner-id=su-abc');
+    expect(converted).toContain('--agent=omp');
   });
 });
 

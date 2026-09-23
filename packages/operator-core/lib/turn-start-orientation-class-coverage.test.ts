@@ -600,6 +600,10 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
     build: () => [syntheticFamilyObligation('plan-placement', 'plan-placement coverage probe')],
     marker: /plan-placement coverage probe/,
   },
+  'planning-needed': {
+    build: () => [syntheticFamilyObligation('planning-needed', 'planning-needed coverage probe')],
+    marker: /planning-needed coverage probe/,
+  },
   'owner-report': {
     build: () => [syntheticFamilyObligation('owner-report', 'owner-report coverage probe')],
     marker: /owner-report coverage probe/,
