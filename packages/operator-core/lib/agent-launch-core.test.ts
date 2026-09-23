@@ -278,6 +278,100 @@ describe('buildAgentLaunchCommand', () => {
   it('does NOT pass --agent on a resume/fork (the recorded session already carries the kind)', () => {
     expect(buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid-1' })).not.toContain('--agent');
     expect(buildAgentLaunchCommand({ mode: 'fork', sessionId: 'sid-1' })).not.toContain('--agent');
+    // ...and `agent` alone still does not: on a resume it names the RECORDED
+    // backend (launch-agent/revive-responder both pass it that way, to reach
+    // Codex's model policy), never a conversion request. Only `targetAgent`
+    // asks for a different backend — see the R-12 block below.
+    expect(
+      buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid-1', agent: 'codex' }),
+    ).not.toContain('--agent');
+  });
+
+  // R-12 / R-14 (consult-expert-routing-2026-09-22, D-005). MEASURED defect, not a
+  // hypothesis: with `--agent` unconditionally omitted here, psu recovers the backend
+  // from the MODEL NAME alone (`parseArgs`: `if (!out.agent && hintedBackend) out.agent
+  // = hintedBackend`), and `cloudModelBackendHint` returns null for an OMP target (its
+  // vocabulary is deliberately open-set), for any unrecognized model id, and for a
+  // conversion that names no model at all. `resolveResumeTarget` then falls through to
+  // `sourceAgent`, so 3 of 4 cross-backend resume requests composed here resolved to
+  // `operation:'native'` on the SOURCE backend — the caller's conversion silently
+  // became a same-backend resume, with no error on any path. The round-trip through
+  // psu's own resolver is pinned in apps/operator/lib/psu-launcher.test.ts; these
+  // assertions pin the half operator-core owns.
+  describe('cross-backend resume (R-12: the core must be able to SAY "resume onto a different backend")', () => {
+    it('emits --agent for the TARGET backend when one is named', () => {
+      expect(
+        buildAgentLaunchCommand({ mode: 'resume', resumeId: '42', agent: 'claude', targetAgent: 'omp' }),
+      ).toBe('psu --no-picker --account=default --resume=42 --agent=omp');
+    });
+
+    it('emits it for a model-less conversion too — the case the model hint can never rescue', () => {
+      const cmd = buildAgentLaunchCommand({ mode: 'resume', resumeId: '42', agent: 'claude', targetAgent: 'omp' });
+      expect(cmd).toContain('--agent=omp');
+      expect(cmd).not.toContain('--model=');
+    });
+
+    // A conversion TO Codex is the one target that cannot be model-less: there is
+    // no recorded Codex session to inherit from, and a --no-picker launch must
+    // never fall back to the CLI/cache default. This assertion exists because the
+    // first draft of the test above asserted the opposite for codex and composed a
+    // command psu throws on at parse time ("Codex model is required") — a defect
+    // that was unreachable while the conversion was still silently degrading to
+    // the source backend. The refusal now comes from the core, with the policy
+    // resolver's own message naming the way out.
+    it('refuses a model-less conversion to Codex rather than composing one psu rejects at boot', () => {
+      expect(() =>
+        buildAgentLaunchCommand({ mode: 'resume', resumeId: '42', agent: 'claude', targetAgent: 'codex' }),
+      ).toThrow(/Codex model is required/i);
+      // Deliberately selecting the configured default is the sanctioned way through.
+      expect(
+        buildAgentLaunchCommand({
+          mode: 'resume',
+          resumeId: '42',
+          agent: 'claude',
+          targetAgent: 'codex',
+          modelSource: 'configured-default',
+        }),
+      ).toContain('--model-source=configured-default');
+    });
+
+    it('applies the TARGET backend model policy, not the recorded one', () => {
+      // Recorded claude, converting to codex: Codex's "never rely on the CLI/cache
+      // default" rule is the target's rule, so --model-source must ride along.
+      expect(
+        buildAgentLaunchCommand({
+          mode: 'resume',
+          resumeId: '42',
+          agent: 'claude',
+          targetAgent: 'codex',
+          model: 'gpt-5.6-sol:xhigh',
+        }),
+      ).toBe(
+        'psu --no-picker --account=default --resume=42 --agent=codex --model=gpt-5.6-sol:xhigh --model-source=explicit',
+      );
+    });
+
+    it('refuses a cross-backend FORK — psu has no such operation, so composing one is composing a command that cannot run', () => {
+      expect(() =>
+        buildAgentLaunchCommand({ mode: 'fork', sessionId: 'sid-1', agent: 'claude', targetAgent: 'codex' }),
+      ).toThrow(/fork is a native same-backend operation/i);
+      // Same backend named explicitly is a fork, not a conversion — allowed.
+      expect(
+        buildAgentLaunchCommand({ mode: 'fork', sessionId: 'sid-1', agent: 'claude', targetAgent: 'claude' }),
+      ).toContain('--fork');
+    });
+
+    it('refuses an unknown target backend in the core rather than emitting an unlaunchable command', () => {
+      expect(() =>
+        buildAgentLaunchCommand({ mode: 'resume', resumeId: '42', targetAgent: 'gemini' }),
+      ).toThrow(/targetAgent/);
+    });
+
+    it('is resume/fork-only — a fresh launch names its backend with `agent`', () => {
+      expect(() =>
+        buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', targetAgent: 'codex' }),
+      ).toThrow(/targetAgent/);
+    });
   });
 
   it('composes a plan launch', () => {

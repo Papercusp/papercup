@@ -29,6 +29,7 @@ import {
   normalizeModelSpec,
 } from './agent-config-constants';
 import { resolveCodexModel, resolveCodexModelSelection } from './model-context-budget.mjs';
+import { isSuAgent, SU_AGENTS } from './su-agents';
 
 export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
@@ -446,6 +447,23 @@ export function buildAgentLaunchCommand(opts: {
   /** Tracked selector used when a native session id is unavailable. */
   resumeId?: string | null;
   agent?: string | null;
+  /**
+   * The backend to resume ONTO, when it differs from the recorded session's own
+   * (R-12, consult-expert-routing-2026-09-22 / D-005). RESUME + FORK ONLY.
+   *
+   * `agent` and `targetAgent` are deliberately two fields, because on a resume
+   * they answer two different questions and the callers rely on the split:
+   * `agent` is the backend the session WAS recorded under (launch-agent and
+   * revive-responder both pass it that way, to reach the recorded backend's
+   * model policy), while `targetAgent` is the backend this launch should run
+   * on. Equal values are an ordinary same-backend resume; different values are
+   * a conversion, and psu ports the session across.
+   *
+   * Unset is not "same backend" — it is "say nothing", which is what the core
+   * did for every caller before R-12 and is still right for a resume that has
+   * no opinion.
+   */
+  targetAgent?: string | null;
   plan?: string | null;
   harness?: string | null;
   account?: string | null;
@@ -515,6 +533,31 @@ export function buildAgentLaunchCommand(opts: {
     }
     return v;
   };
+  // R-12: resolve the conversion target before composing anything, so an
+  // impossible request is refused here rather than emitted as a command psu
+  // will reject at boot (the same rule the fresh-launch --agent default below
+  // exists to enforce: the core must never compose an unlaunchable command).
+  const targetAgent = opts.targetAgent?.trim() || null;
+  if (targetAgent) {
+    if (opts.mode === 'fresh') {
+      throw new Error(
+        'buildAgentLaunchCommand: targetAgent is a resume/fork conversion target; a fresh launch names its backend with `agent`',
+      );
+    }
+    if (!isSuAgent(targetAgent)) {
+      throw new Error(
+        `buildAgentLaunchCommand: targetAgent must be one of ${SU_AGENTS.join('|')} (got ${targetAgent})`,
+      );
+    }
+    // psu: "--fork is a native same-backend operation and cannot be combined
+    // with a session port". A fork branches one backend's own transcript; there
+    // is nothing to branch on the other side of a conversion.
+    if (opts.mode === 'fork' && opts.agent?.trim() && opts.agent.trim() !== targetAgent) {
+      throw new Error(
+        `buildAgentLaunchCommand: --fork is a native same-backend operation and cannot convert ${opts.agent.trim()} → ${targetAgent}; use mode 'resume' to port the session`,
+      );
+    }
+  }
   const parts = [
     'psu',
     '--no-picker',
@@ -531,6 +574,14 @@ export function buildAgentLaunchCommand(opts: {
     const resumeLabel = opts.resumeId?.trim() ? 'resumeId' : 'sessionId';
     parts.push(`--resume=${safe(resumeLabel, requestedResumeId)}`);
     if (opts.mode === 'fork') parts.push('--fork');
+    // R-12: name the TARGET backend explicitly. Omitting it (the pre-R-12
+    // behaviour) is NOT a neutral default for a conversion — psu's parseArgs
+    // then back-fills the backend from `cloudModelBackendHint(model)`, which is
+    // null for an OMP target, an unrecognized model id, and a conversion with
+    // no model at all; resolveResumeTarget falls through to the SOURCE backend
+    // and the conversion silently becomes a same-backend resume. Measured: 3 of
+    // 4 cross-backend requests degraded that way, none of them loudly.
+    if (targetAgent) parts.push(`--agent=${safe('targetAgent', targetAgent)}`);
   } else {
     // psu REQUIRES --agent on a FRESH launch — an omitted one is not "psu's default",
     // it is a hard boot error (`--agent must be one of claude|omp|codex (got null)`) that
@@ -560,9 +611,26 @@ export function buildAgentLaunchCommand(opts: {
   // to synthesize the platform default; callers must supply a model or explicitly
   // pass modelSource='configured-default'. The resolver also rejects Spark before
   // a terminal opens.
+  // The backend this launch will actually RUN on: on a conversion that is the
+  // target, not the recorded source. Codex's "never rely on the CLI/cache
+  // default" policy belongs to whichever backend boots, so a claude → codex
+  // port must carry --model-source exactly as a native codex resume does.
+  const effectiveAgent = targetAgent ?? opts.agent?.trim() ?? null;
+  // A CONVERSION to Codex has no recorded Codex session behind it, so it stands
+  // exactly where a fresh Codex launch stands: there is nothing to inherit, and
+  // naming the backend alone is not authority to synthesize the platform
+  // default. Putting it on the same footing makes the core refuse a model-less
+  // codex conversion with the policy resolver's own actionable message, instead
+  // of composing a command psu throws on at parse time — which is what this
+  // path did while the conversion was still silently degrading to the source
+  // backend, so nobody had ever reached it.
+  const isConversion = Boolean(targetAgent && targetAgent !== opts.agent?.trim());
   const codexSelection =
-    opts.agent?.trim() === 'codex' &&
-    (opts.mode === 'fresh' || Boolean(composedModelSpec) || opts.modelSource === 'configured-default')
+    effectiveAgent === 'codex' &&
+    (opts.mode === 'fresh' ||
+      isConversion ||
+      Boolean(composedModelSpec) ||
+      opts.modelSource === 'configured-default')
     ? resolveCodexModelSelection(composedModelSpec, {
         source: opts.modelSource ?? 'explicit',
       })
