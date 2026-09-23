@@ -158,6 +158,30 @@ export function hostedConnectorRouteLabel(hostId: string): string {
   return label;
 }
 
+/**
+ * D-407: the customer workspace a host was brought up for, read from its unrevoked connector
+ * enrollment -- the persisted proof that the host carries a hosted bring-up. A host with none
+ * (BYOC) returns null. Only the bring-up enrolls connectors, so a caller never has to say it.
+ */
+export async function readHostedBringUpBinding(input: {
+  controlPlaneWorkspaceId: string;
+  hostId: string;
+}): Promise<{ customerWorkspaceId: string } | null> {
+  return withHostedServiceContext(async (sql) => {
+    const rows = await sql<Array<{ customer_workspace_id: string }>>`
+      SELECT DISTINCT customer_workspace_id
+        FROM papercusp_auth.hosted_workspace_connectors
+       WHERE control_workspace_id = ${input.controlPlaneWorkspaceId}
+         AND host_id = ${input.hostId}
+         AND revoked_at IS NULL
+    `;
+    if (rows.length > 1) {
+      throw new Error(`host ${input.hostId} holds live connectors for ${rows.length} customer workspaces`);
+    }
+    return rows[0] ? { customerWorkspaceId: rows[0].customer_workspace_id } : null;
+  });
+}
+
 export interface HostedConnectorEnrollmentDependencies {
   readOrganizationId(input: { controlPlaneWorkspaceId: string; customerWorkspaceId: string; hostId: string }): Promise<string>;
   gateway: Pick<HostedWorkspaceConnectorGateway, 'enroll'>;

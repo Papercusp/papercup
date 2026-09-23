@@ -22,6 +22,9 @@ const control = vi.hoisted(() => ({
   prepareInitialization: vi.fn(),
   activateCustomerWorkspace: vi.fn(),
   enrollConnector: vi.fn(),
+  readHostedBinding: vi.fn(),
+  readDestroyTarget: vi.fn(),
+  runLifecycle: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   /**
@@ -50,6 +53,12 @@ vi.mock('../workspace-host/hosted-bring-up', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../workspace-host/hosted-bring-up')>()),
   activateHostedCustomerWorkspace: control.activateCustomerWorkspace,
   enrollHostedWorkspaceConnector: control.enrollConnector,
+  readHostedBringUpBinding: control.readHostedBinding,
+}));
+
+vi.mock('../workspace-host/lifecycle-runner', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-host/lifecycle-runner')>()),
+  runWorkspaceHostLifecycle: control.runLifecycle,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -66,6 +75,7 @@ vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
 vi.mock('../workspace-host/observability-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../workspace-host/observability-store')>()),
   recordWorkspaceHostOperationTerminalFailure: control.recordTerminalFailure,
+  readWorkspaceHostDestroyTarget: control.readDestroyTarget,
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -176,6 +186,9 @@ beforeEach(() => {
   control.runDesktopPack.mockReset();
   control.prepareInitialization.mockReset();
   control.activateCustomerWorkspace.mockReset();
+  control.readHostedBinding.mockReset();
+  control.readDestroyTarget.mockReset();
+  control.runLifecycle.mockReset();
   control.startOptions = null;
   control.stepOptions = null;
   control.stepOptionsByName = {};
@@ -376,6 +389,70 @@ describe('workspace-host provisioning DBOS admission', () => {
 
       expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack']);
       expect(control.activateCustomerWorkspace).not.toHaveBeenCalled();
+    });
+
+    describe('after an upgrade or repair of the machine (D-407)', () => {
+      const lifecycle = { workspaceId: 'ws-1', hostId: 'host-1', connection: input.connection, operationId: 'op-up' };
+      const lifecycleDone = { status: 'succeeded' as const, operationId: 'op-up', hostId: 'host-1', plan, checkpoints: [] };
+
+      beforeEach(() => {
+        control.readDestroyTarget.mockResolvedValue({ desired: input.desired });
+      });
+
+      it.each(['upgrade', 'repair'] as const)(
+        'brings a hosted machine up again after %s, under that operation and from its recorded spec',
+        async (action) => {
+          const order = recordOrder();
+          control.runLifecycle.mockResolvedValueOnce(lifecycleDone);
+          control.readHostedBinding.mockResolvedValueOnce({ customerWorkspaceId: 'customer-ws-1' });
+
+          await expect(workspaceHostProvisioningWorkflow({ ...lifecycle, action })).resolves.toMatchObject({
+            status: 'succeeded',
+            operationId: 'op-up',
+          });
+
+          expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'connector', 'activate']);
+          expect(control.readHostedBinding).toHaveBeenCalledWith({ controlPlaneWorkspaceId: 'ws-1', hostId: 'host-1' });
+          expect(control.readDestroyTarget).toHaveBeenCalledWith('ws-1', 'host-1');
+          expect(control.prepareInitialization).toHaveBeenCalledWith(expect.objectContaining({
+            workspaceId: 'ws-1',
+            hostId: 'host-1',
+            operationId: 'op-up.initialize',
+          }));
+          expect(control.enrollConnector).toHaveBeenCalledWith({
+            controlPlaneWorkspaceId: 'ws-1',
+            customerWorkspaceId: 'customer-ws-1',
+            hostId: 'host-1',
+            operationId: 'op-up.connector',
+          });
+        },
+      );
+
+      it('leaves a BYOC machine to its owner: no live connector enrollment, no bring-up', async () => {
+        const order = recordOrder();
+        control.runLifecycle.mockResolvedValueOnce(lifecycleDone);
+        control.readHostedBinding.mockResolvedValueOnce(null);
+
+        await workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'upgrade' });
+
+        expect(order).toEqual([]);
+        expect(control.readDestroyTarget).not.toHaveBeenCalled();
+      });
+
+      it('leaves a hosted machine alone after actions that keep its setup, and after a failed upgrade', async () => {
+        const order = recordOrder();
+        control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
+        for (const action of ['start', 'stop', 'restart', 'snapshot', 'restore'] as const) {
+          control.runLifecycle.mockResolvedValueOnce({ ...lifecycleDone, operationId: `op-${action}` });
+          await workspaceHostProvisioningWorkflow({ ...lifecycle, operationId: `op-${action}`, action });
+        }
+        control.runLifecycle.mockResolvedValueOnce({ ...lifecycleDone, status: 'failed' });
+        await workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'upgrade' }).catch(() => undefined);
+
+        expect(control.runLifecycle).toHaveBeenCalledTimes(6);
+        expect(order).toEqual([]);
+        expect(control.readHostedBinding).not.toHaveBeenCalled();
+      });
     });
   });
 
