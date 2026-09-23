@@ -30,26 +30,57 @@ export interface ApplySessionSetInput {
   frameTs: number;
 }
 
+/**
+ * WI-10002534 — a row whose CONTENT is unchanged is not rewritten until it is at
+ * least this old. Senders re-announce an unchanged set every ~30s (keep-alive) and
+ * the roster's staleness window is minutes, so skipping a same-content beat younger
+ * than this never ages a live session out; it only absorbs duplicate frames.
+ * Measured on the P-203 rig: one tower sent ~39 identical full-set frames per 10s
+ * tick, and this writer rewrote every row for each (one statement per row).
+ */
+export const SESSION_ROW_REFRESH_FLOOR_MS = 15_000;
+
 /** Replace one device's session-presence set (upsert entries + drop absentees). */
 export async function applySessionPresenceSet(
   input: ApplySessionSetInput,
   sqlIn?: postgres.Sql,
 ): Promise<void> {
   const sql = sqlIn ?? getOrgPg().sql;
-  const keep: string[] = [];
-  for (const s of input.sessions) {
-    keep.push(s.owner_id);
+  // One row per owner: a frame naming the same owner twice would otherwise abort
+  // the batched upsert ("ON CONFLICT DO UPDATE command cannot affect row a second
+  // time"). Last entry wins, as it did when each entry was its own statement.
+  const byOwner = new Map<string, SessionPresenceEntry>();
+  for (const s of input.sessions) byOwner.set(s.owner_id, s);
+  const keep = [...byOwner.keys()];
+  if (keep.length > 0) {
+    const rows = [...byOwner.values()].map((s) => ({
+      owner_id: s.owner_id,
+      harness_slug: s.harness_slug,
+      kind: s.kind,
+      intent: s.intent ?? null,
+      plan_slug: s.plan_slug ?? null,
+      fleet_slug: s.fleet_slug ?? null,
+      fleet_role: s.fleet_role ?? null,
+    }));
+    // ONE statement for the whole set. harness_slug is deliberately NOT part of the
+    // change test: it is a sender-declared label outside the key, and pre-fix
+    // senders stamp a different one on each duplicate frame. A label-only change
+    // lands at the next refresh-floor rewrite.
     await sql`
       INSERT INTO harness_shared.shared_session_presence
         (workspace_id, pot_slug, harness_slug, owner_id, kind, intent, plan_slug,
          github_user_id, machine_label, device_pubkey, last_seen_at, schema_version,
          fleet_slug, fleet_role)
-      VALUES
-        (${input.workspaceId}, ${input.potSlug}, ${s.harness_slug}, ${s.owner_id},
-         ${s.kind}, ${s.intent}, ${s.plan_slug}, ${input.githubUserId},
-         ${input.machineLabel}, ${input.devicePubkey},
-         to_timestamp(${input.frameTs} / 1000.0), 1,
-         ${s.fleet_slug ?? null}, ${s.fleet_role ?? null})
+      SELECT ${input.workspaceId}::text, ${input.potSlug}::text, s.harness_slug, s.owner_id,
+             s.kind, s.intent, s.plan_slug, ${input.githubUserId}::bigint,
+             ${input.machineLabel}::text, ${input.devicePubkey}::text,
+             to_timestamp(${input.frameTs} / 1000.0), 1,
+             s.fleet_slug, s.fleet_role
+      -- ::text first: a param the server types as jsonb is JSON-encoded AGAIN by
+      -- postgres.js, turning the array into a scalar string.
+      FROM jsonb_to_recordset(${JSON.stringify(rows)}::text::jsonb) AS s(
+        owner_id text, harness_slug text, kind text, intent text, plan_slug text,
+        fleet_slug text, fleet_role text)
       ON CONFLICT (workspace_id, owner_id, machine_label) DO UPDATE SET
         pot_slug = EXCLUDED.pot_slug,
         harness_slug = EXCLUDED.harness_slug,
@@ -61,8 +92,21 @@ export async function applySessionPresenceSet(
         last_seen_at = EXCLUDED.last_seen_at,
         fleet_slug = EXCLUDED.fleet_slug,
         fleet_role = EXCLUDED.fleet_role
-      -- Never regress a newer beat with an out-of-order stale frame.
+      -- Never regress a newer beat with an out-of-order stale frame…
       WHERE shared_session_presence.last_seen_at <= EXCLUDED.last_seen_at
+        -- …and skip a same-content rewrite until the row reaches the refresh floor.
+        AND (
+          (shared_session_presence.pot_slug, shared_session_presence.kind,
+           shared_session_presence.intent, shared_session_presence.plan_slug,
+           shared_session_presence.github_user_id, shared_session_presence.device_pubkey,
+           shared_session_presence.fleet_slug, shared_session_presence.fleet_role)
+            IS DISTINCT FROM
+          (EXCLUDED.pot_slug, EXCLUDED.kind, EXCLUDED.intent, EXCLUDED.plan_slug,
+           EXCLUDED.github_user_id, EXCLUDED.device_pubkey,
+           EXCLUDED.fleet_slug, EXCLUDED.fleet_role)
+          OR shared_session_presence.last_seen_at
+               <= to_timestamp(${input.frameTs - SESSION_ROW_REFRESH_FLOOR_MS} / 1000.0)
+        )
     `;
   }
   // Drop this device's rows absent from the set — but only rows OLDER than the

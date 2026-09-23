@@ -20,6 +20,7 @@ import {
   applySessionPresenceSet,
   listLiveSessionPresence,
   listFederatedFleetMembers,
+  SESSION_ROW_REFRESH_FLOOR_MS,
 } from '../session-presence-store';
 import type { SessionPresenceEntry } from '../presence-gossip';
 
@@ -252,5 +253,92 @@ describe('shared_session_presence (real PG, mig 434)', () => {
       db.sql,
     );
     expect(staleRead).toEqual([]);
+  });
+
+  // WI-10002534: duplicate frames (one tower sent ~39 identical full sets per 10s
+  // tick) must not rewrite every row per frame, and a frame is one statement.
+  async function beatsFor(devicePubkey: string) {
+    const rows = await db.sql<
+      { owner_id: string; intent: string | null; harness_slug: string; ms: string }[]
+    >`
+      SELECT owner_id, intent, harness_slug,
+             (extract(epoch FROM last_seen_at) * 1000)::bigint::text AS ms
+      FROM harness_shared.shared_session_presence
+      WHERE workspace_id = ${WS} AND device_pubkey = ${devicePubkey} ORDER BY owner_id`;
+    return new Map(rows.map((r) => [r.owner_id, { ...r, ms: Number(r.ms) }]));
+  }
+
+  it('a same-content duplicate inside the refresh floor is skipped; a changed field or an aged row is written (WI-10002534)', async () => {
+    const T1 = T0 + 200_000;
+    const frame = (frameTs: number, sessions: SessionPresenceEntry[]) =>
+      applySessionPresenceSet(
+        {
+          workspaceId: WS,
+          devicePubkey: 'dev-dup',
+          githubUserId: 5,
+          machineLabel: 'dup-box',
+          potSlug: 'hive-home',
+          sessions,
+          frameTs,
+        },
+        db.sql,
+      );
+    await frame(T1, [entry('su-d1', { intent: 'x' }), entry('su-d2', { intent: 'y' })]);
+    expect((await beatsFor('dev-dup')).get('su-d1')?.ms).toBe(T1);
+
+    // Duplicate frame 2s later, differing only in the sender-declared harness label:
+    // no row is rewritten.
+    await frame(T1 + 2_000, [
+      entry('su-d1', { intent: 'x', harness_slug: 'other-label' }),
+      entry('su-d2', { intent: 'y', harness_slug: 'other-label' }),
+    ]);
+    let beats = await beatsFor('dev-dup');
+    expect(beats.get('su-d1')).toMatchObject({ ms: T1, harness_slug: 'hive-home' });
+    expect(beats.get('su-d2')?.ms).toBe(T1);
+
+    // A real content change is written at once, and only for the changed row.
+    await frame(T1 + 3_000, [entry('su-d1', { intent: 'x' }), entry('su-d2', { intent: 'y2' })]);
+    beats = await beatsFor('dev-dup');
+    expect(beats.get('su-d2')).toMatchObject({ ms: T1 + 3_000, intent: 'y2' });
+    expect(beats.get('su-d1')?.ms).toBe(T1);
+
+    // Once a row reaches the floor, the same content refreshes it (keep-alive).
+    const refreshAt = T1 + SESSION_ROW_REFRESH_FLOOR_MS;
+    await frame(refreshAt, [entry('su-d1', { intent: 'x' }), entry('su-d2', { intent: 'y2' })]);
+    beats = await beatsFor('dev-dup');
+    expect(beats.get('su-d1')?.ms).toBe(refreshAt);
+    // su-d2 was written 3s later, so it is still inside its floor.
+    expect(beats.get('su-d2')?.ms).toBe(T1 + 3_000);
+  });
+
+  it('a whole frame is ONE upsert statement, and a repeated owner in one frame does not abort it (WI-10002534)', async () => {
+    let statements = 0;
+    // Count tagged-template statements only; helper calls like sql(keep) pass a
+    // plain array with no `raw`.
+    const counted = new Proxy(db.sql, {
+      apply(target, thisArg, args: unknown[]) {
+        const first = args[0];
+        if (Array.isArray(first) && 'raw' in (first as object)) statements++;
+        return Reflect.apply(target as unknown as (...a: unknown[]) => unknown, thisArg, args);
+      },
+    });
+    const sessions = Array.from({ length: 50 }, (_, i) => entry(`su-batch-${i}`));
+    sessions.push(entry('su-batch-7', { intent: 'last entry wins' }));
+    await applySessionPresenceSet(
+      {
+        workspaceId: WS,
+        devicePubkey: 'dev-batch',
+        githubUserId: 6,
+        machineLabel: 'batch-box',
+        potSlug: 'hive-home',
+        sessions,
+        frameTs: T0 + 300_000,
+      },
+      counted,
+    );
+    expect(statements).toBe(2); // the upsert + the absentee delete, not 51 + 1
+    const beats = await beatsFor('dev-batch');
+    expect(beats.size).toBe(50);
+    expect(beats.get('su-batch-7')?.intent).toBe('last entry wins');
   });
 });
