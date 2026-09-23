@@ -518,8 +518,21 @@ export async function checkIdentityGrantKernel(
   const applied = state.activation?.applied ?? state.appliedRevision;
   // No launch artifact is the legacy, non-opted-in path. An acknowledged
   // identity with a missing receipt is not legacy: fail closed.
+  //
+  // "Acknowledged" is load-bearing and is what makes `no-launch-record` a fault
+  // rather than a brick. A session_briefs row alone is NOT an identity: any
+  // coord verb creates one, and the compaction watchdog writes one (carry +
+  // control_state, no activation) for a session it force-compacts. A launch
+  // that never registered an adv_sessions row (a consult-expiry-sweep
+  // `psu --fork --owner-id` fork, measured 2026-09-23: 12 of 12 live forks had
+  // no row) is therefore ungoverned until it is compacted — and was then denied
+  // EVERY verb on this branch, with no activation for coord:orient to converge
+  // and no wedged-identity escalation (that sweep already treats "no applied
+  // receipt" as the legacy path, exactly as the comment above says). Gate the
+  // fault on an activation being present so the kernel and the sweep agree.
+  const acknowledged = Boolean(state.activation) || Boolean(applied);
   if (!record) {
-    if (state.identityLaunchRecordMissing) {
+    if (state.identityLaunchRecordMissing && acknowledged) {
       // coord:orient is the recovery verb named by the CTRL block. It is the
       // only tool allowed to run without the launch record; every other tool
       // receives a distinct diagnosis so operators do not chase a revision

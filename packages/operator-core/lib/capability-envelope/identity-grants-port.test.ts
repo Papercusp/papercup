@@ -310,6 +310,30 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  // A missing launch row is a FAULT only for an acknowledged identity. A session
+  // that never opted in — no activation at all — is the legacy path whether or
+  // not a session_briefs row exists for it, because any coord verb (and the
+  // compaction watchdog's carry write) creates that row without conferring an
+  // identity. Measured 2026-09-23 on a consult-expiry-sweep fork: ungoverned
+  // until the watchdog force-compacted it, then denied every verb (98
+  // activity:report + 84 coord:glance hook refusals in 15 min) with nothing for
+  // coord:orient to converge. The wedged-identity sweep classifies this same
+  // shape as NOT wedged, so the kernel must agree or the brick is silent.
+  it('does not brick an unacknowledged session on a missing launch row (legacy path)', async () => {
+    const f = fixture();
+    const read = vi.fn(async () => f.policy);
+    const unacknowledged = { policyRevision: 'control:1', identityLaunchRecordMissing: true };
+
+    expect(await checkIdentityGrantKernel(f.request, unacknowledged, null, read)).toBeNull();
+    expect(await checkIdentityGrantKernel({ ...f.request, toolName: 'coord:orient' }, unacknowledged, null, read))
+      .toBeNull();
+    expect(read).not.toHaveBeenCalled();
+
+    // Control: the SAME missing row with an acknowledged receipt is still the fault.
+    expect(await checkIdentityGrantKernel(f.request, { ...f.state, identityLaunchRecordMissing: true }, null, read))
+      .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'no-launch-record' } } });
+  });
+
   // WI-10002028: the recovery door must not ride the failure domain it recovers.
   // `stale-artifact` does not say "this session lacks authority for coord:orient";
   // it says "we cannot establish WHICH specification is in force". Denying the

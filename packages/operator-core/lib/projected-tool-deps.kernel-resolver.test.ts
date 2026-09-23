@@ -231,6 +231,27 @@ describe('control-anchor kernel resolver (D-030)', () => {
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
   });
 
+  // The compaction watchdog writes a session_briefs row (carry + control_state,
+  // NO activation) for the session it force-compacts. For a launch that never
+  // registered an adv_sessions row — every consult-expiry-sweep `psu --fork`
+  // measured 2026-09-23 — that write turned an ungoverned session into one
+  // denied every verb with `no-launch-record`, while the wedged-identity sweep
+  // (no applied receipt ⇒ legacy) reported nothing. No activation means nothing
+  // was ever acknowledged, so there is no receipt for a launch row to be missing
+  // FROM: this is the legacy path, exactly like an absent session_briefs row.
+  it('treats a control anchor with no activation and no adv_sessions row as legacy, not no-launch-record', async () => {
+    db.rows.push([{
+      control_state: { modes: ['auto'], loop: { active: false }, carry: 'cold' },
+      control_generation: 1,
+      workspace_id: 'ws-a',
+      adv_session_id: null,
+      launch_spec: null,
+    }]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'allow', availability: 'unavailable', applied: false,
+    });
+  });
+
   it('opens only coord:orient when the control anchor has no adv_sessions launch row', async () => {
     const missing = {
       control_state: { activation: appliedActivation() },
