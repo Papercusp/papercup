@@ -89,6 +89,14 @@ describe('read-only historical transcript replay', () => {
       .toMatchObject({ status: 'unavailable', reason: 'truncated' });
   });
 
+  it('treats object-property model names as unknown source data, not aggregation objects', async () => {
+    const source = context('constructor') + codexUsage(1000, 0);
+    const result = await replayTranscriptPrefix({ filePath: await file(source), byteOffset: Buffer.byteLength(source), adapter: codex });
+    expect(result.status).toBe('available');
+    if (result.status !== 'available') throw new Error(result.reason);
+    expect(result.models.constructor).toMatchObject({ requests: 1, estimatedUsd: null });
+  });
+
   it('refuses partial frontiers and bounded replay exhaustion', async () => {
     const source = context('gpt-6-luna') + codexUsage(1000, 0) + codexUsage(2000, 0);
     const filePath = await file(source);

@@ -135,7 +135,8 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
     });
     if (!final || initial.ino !== final.ino || initial.dev !== final.dev || final.size < byteOffset ||
       (initial.size === final.size && initial.mtimeMs !== final.mtimeMs)) return unavailable('changed');
-    const models: Record<string, ReplayInventory> = {};
+    // Model ids are source data, not object properties (e.g. "constructor").
+    const models: Record<string, ReplayInventory> = Object.create(null);
     for (const event of requests.values()) {
       const { model, usage } = event;
       const row = models[model] ??= emptyInventory();
