@@ -171,4 +171,14 @@ describe('consult:get_feedback requester guidance', () => {
     expect((tool as any).guidance.notWhen).toContain('Reading an existing conversation');
     expect((tool as any).guidance.chaining).toContain('does not read an existing conversation');
   });
+
+  it('limits consults to unresolved peer-knowledge questions and explains isolated dispatch', () => {
+    expect((tool as any).guidance.when).toContain('first-pass check of local code, docs, or search');
+    expect((tool as any).guidance.when).toContain('Ask once');
+    expect((tool as any).guidance.notWhen).toContain('owner decisions');
+    expect((tool as any).guidance.notWhen).toContain('Do not open duplicate consults');
+    expect((tool as any).description).toContain('isolated answer session');
+    expect((tool as any).description).toContain('does not wake the expert’s live session');
+    expect((tool as any).guidance.chaining).toContain('dispatcher already walks allowed model ranks');
+  });
 });

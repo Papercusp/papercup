@@ -643,6 +643,18 @@ export function consultDispatchBrief(input: {
   return (
     `🧭 CONSULT — you were launched to answer ONE question, on consult conversation ${input.conversationId}.\n` +
     `${provenance}\n\n` +
+    // P-004 answer-only posture. The brief is the ONLY thing that shapes this
+    // session's behaviour — it boots with a fresh identity, no fleet, no loop
+    // and no claims — so the posture has to be stated here or the inherited
+    // transcript's agenda becomes this session's agenda. A fork reads its own
+    // history as "what I was doing", which is precisely the failure: it would
+    // resume the source's work under a new id, double-claiming their lane.
+    `⛔ ANSWER-ONLY — this session exists for this ONE question and ends with it.\n` +
+    `Reply (or decline) on the conversation above, then END YOUR TURN. Do NOT resume ` +
+    `whatever the inherited transcript was doing: that work belongs to the session it ` +
+    `came from, which is still its owner and was NOT notified. Do not claim work-items, ` +
+    `do not arm a loop, do not start a plan, do not edit files. Your transcript is ` +
+    `EVIDENCE to answer from, not an agenda to continue.\n\n` +
     `${input.summary}\n\n${input.body}`
   );
 }
