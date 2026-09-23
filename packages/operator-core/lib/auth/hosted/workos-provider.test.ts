@@ -85,6 +85,8 @@ function makeClient(options: {
   authenticated?: ReturnType<typeof authenticatedSession>;
   authenticateWithCodeError?: unknown;
   revokeError?: unknown;
+  /** What renewing an expired access token answers; WorkOS refuses by default. */
+  refreshed?: { authenticated: true; sealedSession?: string } | { authenticated: false; reason?: string };
 } = {}) {
   const session = options.authenticated ?? authenticatedSession();
   const getAuthorizationUrl = vi.fn(() => 'https://auth.workos.test/authorize');
@@ -101,7 +103,8 @@ function makeClient(options: {
         sealedSession: SEALED_SESSION,
       }));
   const authenticate = vi.fn(async () => session);
-  const loadSealedSession = vi.fn(() => ({ authenticate }));
+  const refresh = vi.fn(async () => options.refreshed ?? { authenticated: false as const, reason: 'invalid_grant' });
+  const loadSealedSession = vi.fn(() => ({ authenticate, refresh }));
   const getLogoutUrl = vi.fn(
     ({ sessionId, returnTo }: { sessionId: string; returnTo?: string }) =>
       `https://auth.workos.test/logout?session_id=${encodeURIComponent(sessionId)}&return_to=${encodeURIComponent(returnTo ?? '')}`,
@@ -126,6 +129,7 @@ function makeClient(options: {
       getAuthorizationUrl,
       authenticateWithCode,
       authenticate,
+      refresh,
       loadSealedSession,
       getLogoutUrl,
       revokeSession,
@@ -316,6 +320,22 @@ describe('WorkOSHostedIdentityProvider', () => {
       active.provider.validateSession({ externalSessionId: 'session_expired' }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'session_expired' } });
     expect(active.vault.records.has('session_expired')).toBe(false);
+  });
+
+  it('renews an expired access token with the refresh token instead of ending the session', async () => {
+    // Every hosted sign-in used to last only as long as the ~5-minute access token.
+    const renewed = makeProvider({ refreshed: { authenticated: true, sealedSession: 'sealed-session-renewed' } });
+    renewed.vault.records.set('session_test_001', {
+      externalSessionId: 'session_test_001',
+      sealedSession: SEALED_SESSION,
+      expiresAtMs: NOW_MS,
+    });
+
+    await expect(
+      renewed.provider.validateSession({ externalSessionId: 'session_test_001' }),
+    ).resolves.toMatchObject({ ok: true, value: { externalSessionId: 'session_test_001' } });
+    expect(renewed.calls.refresh).toHaveBeenCalledTimes(1);
+    expect(renewed.vault.records.get('session_test_001')?.sealedSession).toBe('sealed-session-renewed');
   });
 
   it('maps SDK errors to correlation-only, secret-safe failures', async () => {

@@ -45,6 +45,10 @@ export interface WorkOSUserManagementClientLike {
   authenticateWithCode(options: AuthenticateWithCodeOptions): Promise<AuthenticationResponse>;
   loadSealedSession(options: { sessionData: string; cookiePassword: string }): {
     authenticate(): Promise<WorkOSSessionAuthentication>;
+    /** Renews the access token with the session's refresh token; reseals on success. */
+    refresh(options?: { cookiePassword?: string }): Promise<
+      { authenticated: true; sealedSession?: string } | { authenticated: false; reason?: string }
+    >;
   };
   getLogoutUrl(options: LogoutURLOptions): string;
   revokeSession(options: RevokeSessionOptions): Promise<void>;
@@ -436,24 +440,39 @@ export class WorkOSHostedIdentityProvider implements HostedIdentityProvider {
       if (!record || record.externalSessionId !== input.externalSessionId) {
         throw failure('invalid_session', 'The hosted identity session is not valid.');
       }
-      if (record.expiresAtMs <= this.now()) {
-        await this.sessionVault.delete(input.externalSessionId);
-        throw failure('session_expired', 'The hosted identity session has expired.');
-      }
 
       const { client, configuration } = await this.operationContext();
-      const authenticated = await client.userManagement
-        .loadSealedSession({
-          sessionData: record.sealedSession,
-          cookiePassword: configuration.cookiePassword,
-        })
-        .authenticate();
+      const load = (sessionData: string) =>
+        client.userManagement.loadSealedSession({ sessionData, cookiePassword: configuration.cookiePassword });
+      let sealedSession = record.sealedSession;
+      let authenticated: WorkOSSessionAuthentication | null =
+        record.expiresAtMs > this.now() ? await load(sealedSession).authenticate() : null;
+      if (!authenticated?.authenticated) {
+        // The access token inside lives about five minutes; the WorkOS session behind it
+        // lives far longer. Renew with the session's refresh token. WorkOS stays the
+        // authority: a signed-out, revoked or ended session refuses the refresh, and the
+        // session route then ends ours. Before this, every hosted sign-in lasted five minutes.
+        const refreshed = await load(sealedSession).refresh({ cookiePassword: configuration.cookiePassword });
+        if (!refreshed.authenticated || !refreshed.sealedSession) {
+          await this.sessionVault.delete(input.externalSessionId);
+          throw failure('session_expired', 'The hosted identity session has expired.');
+        }
+        sealedSession = refreshed.sealedSession;
+        authenticated = await load(sealedSession).authenticate();
+      }
       if (!authenticated.authenticated) {
         throw failure('invalid_session', 'The hosted identity session is not valid.');
       }
       const session = normalizeVerifiedSession(authenticated, this.now());
       if (session.externalSessionId !== input.externalSessionId) {
         throw failure('invalid_session', 'The hosted identity session is not valid.');
+      }
+      if (sealedSession !== record.sealedSession) {
+        await this.sessionVault.put({
+          externalSessionId: session.externalSessionId,
+          sealedSession,
+          expiresAtMs: session.expiresAtMs,
+        });
       }
       return hostedIdentityProviderOk(session);
     } catch (cause) {

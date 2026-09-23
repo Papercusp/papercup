@@ -507,7 +507,7 @@ describe('hosted first-workspace bootstrap route', () => {
       attemptKey: validBody.attemptKey,
     });
     expect(Object.keys(request).sort()).toEqual(
-      ['attemptKey', 'configuration', 'displayName', 'label', 'organizationId', 'sessionId', 'sessionVersion', 'userId'],
+      ['attemptKey', 'configuration', 'displayName', 'hosting', 'label', 'organizationId', 'sessionId', 'sessionVersion', 'userId'],
     );
     expect(JSON.stringify(request)).not.toContain('victim');
   });
