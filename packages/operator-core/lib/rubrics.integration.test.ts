@@ -1549,6 +1549,31 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('advances meaningRevision on a meaning-changing cross-plan amendment', async () => {
+    const seeded = await seedBarContract('meaning-revision-change', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const priorMeaningRevision = before.barContract?.meaningRevision;
+    expect(priorMeaningRevision).toBeGreaterThan(0);
+
+    const amendment: Parameters<typeof rubrics.amendRubric>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'meaning-author',
+      reason: 'Change the declared BAR outcome meaning.',
+      criteria: before.criteria.map((criterion) =>
+        criterion.barKey === 'R-1'
+          ? { ...criterion, driftMarkers: 'The revised outcome is absent.' }
+          : criterion,
+      ),
+    };
+    const after = await rubrics.amendRubric({
+      ...amendment,
+      approvalRef: await postApproval(amendment),
+    });
+
+    expect(after?.barContract?.meaningRevision).toBe(after?.revision);
+    expect(after?.barContract?.meaningRevision).toBeGreaterThan(priorMeaningRevision!);
+  });
+
   it.each(['active', 'accepted', 'exempt'] as const)(
     'activation re-audit preserves an unchanged %s clause and its exact evidence revision',
     async (lifecycleStatus) => {
