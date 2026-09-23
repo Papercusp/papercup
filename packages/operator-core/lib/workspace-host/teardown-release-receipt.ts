@@ -7,6 +7,7 @@
  * inventory did not cover every one of them cannot commit it — clean over fewer kinds is not clean.
  */
 import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import { workspaceHostBillingClosureStage, type WorkspaceHostBillingSubject } from './billing-closure-release-receipt';
 import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
 import {
   openWorkspaceHostReleaseRecorder,
@@ -16,7 +17,11 @@ import {
 
 export const WORKSPACE_HOST_RESOURCE_CENSUS_STAGE = 'teardown.resource-census';
 
-export type WorkspaceHostTeardownReleaseRecorder = WorkspaceHostReleaseRecorder<'resource-census'>;
+/**
+ * `billing-closure` is only OPENED here: the destroy cannot measure final spend, so the deferred-spend
+ * reconciler settles it later (billing-closure-release-receipt.ts, D-395).
+ */
+export type WorkspaceHostTeardownReleaseRecorder = WorkspaceHostReleaseRecorder<'resource-census' | 'billing-closure'>;
 
 export function workspaceHostResourceCensusStage(): WorkspaceHostReleaseStage {
   return {
@@ -51,19 +56,47 @@ export function workspaceHostResourceCensusOutcome(input: {
   return { outcome: clean ? 'committed' : 'refused', evidenceRefs };
 }
 
-/** The census stage, opened read-only before the destroy mutates anything. */
+/** The census and billing stages, checked read-only before the destroy mutates anything. */
 export function openWorkspaceHostTeardownRelease(input: {
   releaseTaskId: string;
   workspaceId: string;
   hostId: string;
   operationId: string;
+  /** The canary run whose spend the reconciler will settle; a release-bound destroy always has one. */
+  billing: WorkspaceHostBillingSubject;
   ledger?: ReleaseTaskLedger;
   readHostRuntimeRelease?: (workspaceId: string, hostId: string) => Promise<unknown>;
 }): Promise<WorkspaceHostTeardownReleaseRecorder> {
-  const { operationId, ...rest } = input;
+  const { operationId, billing, ...rest } = input;
   return openWorkspaceHostReleaseRecorder({
     ...rest,
-    stages: { 'resource-census': workspaceHostResourceCensusStage() },
+    stages: {
+      'resource-census': workspaceHostResourceCensusStage(),
+      'billing-closure': workspaceHostBillingClosureStage(billing),
+    },
     runRef: `destroy-operation:${operationId}`,
   });
+}
+
+/**
+ * Why a release-bound destroy is refused before anything else, or null when it may proceed. Billing
+ * closes only from the reconciler's reading of a deferred canary settlement (D-395), so a destroy
+ * without one would leave the release's billing milestone pending forever.
+ */
+export function workspaceHostTeardownReleaseRefusal(canary: {
+  runId: string;
+  maxSpendCents?: number;
+  spendSettlement?: { status: 'deferred' };
+} | undefined): string | null {
+  if (!canary) {
+    return 'a release-bound destroy must carry canary cost evidence: billing.closure is judged only from the provider billing export (D-395)';
+  }
+  if (canary.spendSettlement?.status !== 'deferred') {
+    return 'a release-bound destroy must defer spend settlement: billing.closure is judged only from the provider billing export, never from cited cost evidence (D-395)';
+  }
+  return null;
+}
+
+export function workspaceHostTeardownBillingSubject(canary: { runId: string; maxSpendCents?: number }): WorkspaceHostBillingSubject {
+  return { runId: canary.runId, maxSpendCents: canary.maxSpendCents ?? null };
 }

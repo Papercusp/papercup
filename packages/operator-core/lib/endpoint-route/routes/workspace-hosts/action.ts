@@ -34,7 +34,11 @@ import {
   type WorkspaceHostRequestForwarder,
 } from '../../../workspace-host/controller-forwarding';
 import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
-import { openWorkspaceHostTeardownRelease } from '../../../workspace-host/teardown-release-receipt';
+import {
+  openWorkspaceHostTeardownRelease,
+  workspaceHostTeardownBillingSubject,
+  workspaceHostTeardownReleaseRefusal,
+} from '../../../workspace-host/teardown-release-receipt';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -236,6 +240,10 @@ export function createWorkspaceHostActionRoute(
         if (canary && body.disposition !== 'discard') {
           return requestError('canary destroy requires disposition=discard', 422);
         }
+        if (body.releaseTaskId !== undefined) {
+          const refusal = workspaceHostTeardownReleaseRefusal(canary);
+          if (refusal) return requestError(refusal);
+        }
         destroyAdmission = {
           disposition: body.disposition as DestroyDisposition,
           expectedHostId,
@@ -289,6 +297,7 @@ export function createWorkspaceHostActionRoute(
             workspaceId,
             hostId,
             operationId: operationId!,
+            billing: workspaceHostTeardownBillingSubject(destroyAdmission!.canary!),
           });
         }
         const common = {

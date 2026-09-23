@@ -66,10 +66,16 @@ import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostProvisionBootstrapProfile,
 } from './provision-bootstrap';
+import {
+  workspaceHostReleaseClosurePointer,
+  type WorkspaceHostReleaseClosurePointer,
+} from './billing-closure-release-receipt';
 import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
 import {
   openWorkspaceHostTeardownRelease,
   workspaceHostResourceCensusOutcome,
+  workspaceHostTeardownBillingSubject,
+  workspaceHostTeardownReleaseRefusal,
   type WorkspaceHostTeardownReleaseRecorder,
 } from './teardown-release-receipt';
 
@@ -1433,6 +1439,7 @@ async function finalizeDestroyEvidence(
   workflow: WorkspaceHostDurableWorkflowSpec,
   checkpoints: readonly WorkspaceHostResourceCheckpoint[],
   tags: Readonly<Record<string, string>>,
+  releaseClosure?: WorkspaceHostReleaseClosurePointer,
 ): Promise<WorkspaceHostDestroyEvidenceResult> {
   const destroyTargets = workflow.resources.map((resource) =>
     destroyResourceForStep(
@@ -1539,6 +1546,8 @@ async function finalizeDestroyEvidence(
         // one. This row survives teardown — discard sets recoverability_kind='none', it does not
         // delete the host — so the obligation outlives the resources it accounts for.
         ...(input.canary.spendSettlement ? { spendSettlement: input.canary.spendSettlement } : {}),
+        // D-395: which release's billing.closure the settled spend closes, and the destroy that opened it.
+        ...(releaseClosure ? { releaseClosure } : {}),
       },
     ],
   });
@@ -1692,16 +1701,22 @@ export async function runWorkspaceHostDestroy(
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
   }
-  // A census receipt that could never be written refuses the destroy here, read-only, before any
-  // provider call — as a request error, so the durable workflow does not retry a refusal.
+  // A census or billing receipt that could never be written refuses the destroy here, read-only,
+  // before any provider call — as a request error, so the durable workflow does not retry a refusal.
   let release: WorkspaceHostTeardownReleaseRecorder | undefined;
+  let releaseClosure: WorkspaceHostReleaseClosurePointer | undefined;
   if (input.releaseTaskId !== undefined) {
+    const refusal = workspaceHostTeardownReleaseRefusal(input.canary);
+    if (refusal) throw new WorkspaceHostProvisioningRequestError([refusal]);
+    const billing = workspaceHostTeardownBillingSubject(input.canary!);
+    releaseClosure = workspaceHostReleaseClosurePointer({ releaseTaskId: input.releaseTaskId, operationId, subject: billing });
     try {
       release = await (input.openRelease ?? openWorkspaceHostTeardownRelease)({
         releaseTaskId: input.releaseTaskId,
         workspaceId,
         hostId,
         operationId,
+        billing,
       });
     } catch (error) {
       if (error instanceof WorkspaceHostReleaseBindingError) {
@@ -1962,6 +1977,9 @@ export async function runWorkspaceHostDestroy(
     if (action.kind === 'complete' && action.status === 'succeeded') {
       try {
         await release?.begin('resource-census');
+        // Opened before the cost signal that points at it is written; the deferred-spend reconciler
+        // settles it once the provider's billing is final (D-395). A failure below refuses it.
+        await release?.begin('billing-closure');
         const evidence = canaryInput
           ? await finalizeDestroyEvidence(
               canaryInput,
@@ -1970,6 +1988,7 @@ export async function runWorkspaceHostDestroy(
               workflow,
               checkpoints,
               destroyLabelBinding!.tags,
+              releaseClosure,
             )
           : null;
         const ordinaryEvidence = canaryInput
