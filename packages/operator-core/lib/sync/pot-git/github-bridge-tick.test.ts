@@ -440,9 +440,39 @@ describe('runGithubBridgeTick — composition', () => {
   });
 
   it('isBridgeWriter=false skips the pass (D-002 affinity seam)', async () => {
-    const { input } = bridgeInput({}, { isBridgeWriter: async () => false });
+    const { input, egressCalls } = bridgeInput({}, { isBridgeWriter: async () => false });
     const out = await runGithubBridgeTick(input);
     expect(out).toMatchObject({ ran: false, skipped: 'not_bridge_writer' });
+    // A deliberate "no" is a clean skip — nothing is reported as an error.
+    expect(out.errors).toEqual([]);
+    expect(egressCalls).toHaveLength(0);
+  });
+
+  // WI-10002587: a seam FAILURE is an unknown answer, not a "no". It must stay
+  // distinguishable from `false`: record the error and PROCEED, because egress is
+  // FF-only + CAS and github-egress enforces the hive-effect authority itself.
+  it('isBridgeWriter throwing records the error and PROCEEDS — distinguishable from false', async () => {
+    const { input, egressCalls } = bridgeInput(
+      {},
+      {
+        isBridgeWriter: async () => {
+          throw new Error('lease table unreachable');
+        },
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.skipped).toBeUndefined();
+    expect(out.ran).toBe(true);
+    expect(out.errors).toEqual([expect.stringMatching(/^isBridgeWriter seam failed \(proceeding.*lease table unreachable$/)]);
+    expect(egressCalls).toHaveLength(1);
+  });
+
+  it('isBridgeWriter=true runs the pass with no seam error', async () => {
+    const { input, egressCalls } = bridgeInput({}, { isBridgeWriter: async () => true });
+    const out = await runGithubBridgeTick(input);
+    expect(out.skipped).toBeUndefined();
+    expect(out.errors.filter((e) => e.includes('isBridgeWriter'))).toEqual([]);
+    expect(egressCalls).toHaveLength(1);
   });
 });
 

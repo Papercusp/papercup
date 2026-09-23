@@ -196,13 +196,25 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   // No GitHub remote at all → nothing to bridge (a p2p-only-shaped repo).
   if (!input.githubRemote) return { ...empty, skipped: 'no_github_remote' };
 
+  // The two seam outcomes must stay DISTINGUISHABLE (WI-10002587):
+  //   - `false`  → a deliberate affinity skip, reported as `skipped: 'not_bridge_writer'`.
+  //   - a throw  → an unknown answer, NOT a "no". Record the error and PROCEED: the seam is
+  //     an optimization (see the header), and publication stays guarded where it matters —
+  //     egress is FF-only + CAS, and `requireHiveEffectAuthority` in github-egress fails closed
+  //     without the P517 owning-hive authority. Failing closed here would silently turn a
+  //     flaky affinity lookup into "this member never bridges" while reading like a normal skip.
   if (input.deps?.isBridgeWriter) {
+    let isWriter: boolean | null = null;
     try {
-      if (!(await input.deps.isBridgeWriter())) return { ...empty, skipped: 'not_bridge_writer' };
+      isWriter = await input.deps.isBridgeWriter();
     } catch (e) {
-      errors.push(`isBridgeWriter seam failed: ${e instanceof Error ? e.message : e}`);
-      return { ...empty, skipped: 'not_bridge_writer' };
+      errors.push(
+        `isBridgeWriter seam failed (proceeding — egress stays guarded by FF-only CAS and the hive-effect authority): ${
+          e instanceof Error ? e.message : e
+        }`,
+      );
     }
+    if (isWriter === false) return { ...empty, skipped: 'not_bridge_writer' };
   }
 
   // 1. INGRESS — always from the UPSTREAM remote (the fork is a push target,
