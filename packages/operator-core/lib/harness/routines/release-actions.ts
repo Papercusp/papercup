@@ -35,6 +35,10 @@ import {
   mintGateFireId,
   recordGateFire,
 } from '../../release/gate-fire-ledger';
+import {
+  ROUTINE_FIRE_ROUTINE_ID_ENV,
+  ROUTINE_FIRE_WORKFLOW_ID_ENV,
+} from '../../release/in-flight-candidate';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
@@ -2250,6 +2254,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     {
       ...routing.extraEnv,
       [GATE_FIRE_ID_ENV]: gateFireId,
+      ...(ctx.routineId && ctx.workflowId
+        ? {
+            [ROUTINE_FIRE_ROUTINE_ID_ENV]: ctx.routineId,
+            [ROUTINE_FIRE_WORKFLOW_ID_ENV]: ctx.workflowId,
+          }
+        : {}),
       ...(qualificationAttemptId ? { [CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]: qualificationAttemptId } : {}),
       ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }),
       // WI-4310: the suite's child process must not inherit a large host pool and

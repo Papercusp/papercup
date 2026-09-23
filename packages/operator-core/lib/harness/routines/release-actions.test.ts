@@ -4215,10 +4215,16 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
   it('⭐ hands the CLI the record target — without this env the run cannot know whose gate it judges', async () => {
     const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true, recorded: true })}\n`;
     spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
-    await getSystemAction('green-checkpoint')!(ctx);
+    await getSystemAction('green-checkpoint')!({
+      ...ctx,
+      routineId: 'rt_my_harness_green_checkpoint',
+      workflowId: 'routine-fire-workflow-42',
+    });
     const opts = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_WORKSPACE).toBe('ws-42');
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_HARNESS).toBe('my-harness');
+    expect(opts.env?.PAPERCUSP_ROUTINE_FIRE_ROUTINE_ID).toBe('rt_my_harness_green_checkpoint');
+    expect(opts.env?.PAPERCUSP_ROUTINE_FIRE_WORKFLOW_ID).toBe('routine-fire-workflow-42');
     const anchor = appendPipelineEvent.mock.calls
       .map(([event]) => event as Record<string, unknown>)
       .find((event) => event.kind === 'green_checkpoint_fire');

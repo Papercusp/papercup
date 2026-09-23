@@ -1408,6 +1408,7 @@ export interface GreenStallWatchdogResult {
 export type AbandonedCheckpointAwaitWakeResult =
   | { status: 'not-abandoned'; reason: string }
   | { status: 'emit-failed'; candidate: string }
+  | { status: 'dedup-clear-failed'; candidate: string }
   | { status: 'woken'; candidate: string; markerCleared: boolean };
 
 interface AbandonedCheckpointAwaitWakeDeps {
@@ -1416,6 +1417,7 @@ interface AbandonedCheckpointAwaitWakeDeps {
   pidAlive?: (pid: number) => boolean | null;
   recordLostRun?: typeof recordLostGateRun;
   clearIfUnchanged?: typeof clearInFlightCandidateIfUnchanged;
+  dbosSql?: Sql;
   emit?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
 }
 
@@ -1454,13 +1456,43 @@ export async function wakeAbandonedCheckpointAwaits(
   const target = { installSlug: input.installSlug, workspaceId: input.workspaceId };
   const summary = describeAbandonedInFlightCandidate(verdict) ??
     `Checkpoint run for ${marker.candidate.slice(0, 12)} disappeared without a verdict.`;
-  try {
-    await (deps.recordLostRun ?? recordLostGateRun)(target, verdict);
-  } catch (error) {
-    // Recording is diagnostic; a failed record must not suppress the actionable wake.
-    console.warn(
-      `[green-stall-watchdog] abandoned checkpoint record failed for ${input.installSlug} (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
-    );
+  const recordLostRun = deps.recordLostRun ?? recordLostGateRun;
+  if (marker.routineId && marker.routineFireWorkflowId) {
+    if (!deps.dbosSql) {
+      console.warn(
+        `[green-stall-watchdog] abandoned checkpoint DBOS pin not cleared for ${input.installSlug}: SQL transaction unavailable (will retry)`,
+      );
+      return { status: 'dedup-clear-failed', candidate: marker.candidate };
+    }
+    try {
+      await deps.dbosSql.begin(async (transaction) => {
+        // Lost-run evidence and release of the exact DBOS pin are one state transition. If either
+        // write fails, rollback both and leave the marker for the next watchdog pass.
+        await recordLostRun(target, verdict, process.pid, transaction);
+        const { clearAbandonedCheckpointRoutineFire } = await import('../dbos/dbos-executor-reaper');
+        await clearAbandonedCheckpointRoutineFire(transaction, {
+          installSlug: input.installSlug,
+          workspaceId: input.workspaceId,
+          routineId: marker.routineId!,
+          workflowId: marker.routineFireWorkflowId!,
+          observedAtMs: marker.observedAtMs,
+        });
+      });
+    } catch (error) {
+      console.warn(
+        `[green-stall-watchdog] abandoned checkpoint lost-run/dedup transaction failed for ${input.installSlug} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { status: 'dedup-clear-failed', candidate: marker.candidate };
+    }
+  } else {
+    try {
+      await recordLostRun(target, verdict);
+    } catch (error) {
+      // Legacy/manual markers lack a DBOS row identity; keep their historical best-effort wake.
+      console.warn(
+        `[green-stall-watchdog] abandoned checkpoint record failed for ${input.installSlug} (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   const eventPayload = {
@@ -2156,7 +2188,7 @@ export async function checkGreenStall(
         installSlug: row.install_slug,
         workspaceId: row.workspace_id,
         rawMarker: row.gh?.inFlightCandidate,
-      });
+      }, { dbosSql: sql });
       const checkpointRun = await readCheckpointRunState(row.install_slug, row.workspace_id);
       const verdict = evaluateGreenStall(
         {

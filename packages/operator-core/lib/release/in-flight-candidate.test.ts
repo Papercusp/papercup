@@ -20,6 +20,9 @@ import {
   isPidAlive,
   judgeAbandonedInFlightCandidate,
   parseInFlightCandidate,
+  routineFireIdentityFromEnv,
+  ROUTINE_FIRE_ROUTINE_ID_ENV,
+  ROUTINE_FIRE_WORKFLOW_ID_ENV,
   stampInFlightVerdictWritten,
   type StoredInFlightCandidate,
 } from './in-flight-candidate';
@@ -54,6 +57,21 @@ describe('parseInFlightCandidate', () => {
     // failure silent, so it is asserted field-by-field rather than by shape.
     const parsed = parseInFlightCandidate(marker(), NOW);
     expect(parsed).toEqual(marker());
+  });
+
+  it('round-trips exact scheduled routine identity and rejects a partial environment transport', () => {
+    const identity = {
+      routineId: 'rt_papercusp_green_checkpoint',
+      routineFireWorkflowId: 'routine-fire-workflow-42',
+    };
+    expect(routineFireIdentityFromEnv({
+      [ROUTINE_FIRE_ROUTINE_ID_ENV]: identity.routineId,
+      [ROUTINE_FIRE_WORKFLOW_ID_ENV]: identity.routineFireWorkflowId,
+    })).toEqual(identity);
+    expect(routineFireIdentityFromEnv({
+      [ROUTINE_FIRE_ROUTINE_ID_ENV]: identity.routineId,
+    })).toEqual({});
+    expect(parseInFlightCandidate(marker(identity), NOW)).toMatchObject(identity);
   });
 
   it('carries a stamped verdict time — the field exists to make "decided" readable, not just writable', () => {

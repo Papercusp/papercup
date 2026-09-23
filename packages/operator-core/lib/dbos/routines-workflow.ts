@@ -654,6 +654,14 @@ async function routineFireImpl(
     } else if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const entry = getSystemActionEntry(action);
+      const systemActionCtx = {
+        installSlug,
+        workspaceId,
+        routineId,
+        workflowId: DBOS.workflowID ?? undefined,
+        triggerConfig,
+        payloadTemplate,
+      };
       let actionResult: SystemActionResult | undefined;
       if (entry?.ownSteps) {
         // WI-1416 (bg-host-freeze-eventloop-stall P-006): a multi-step action (git-sync)
@@ -667,7 +675,7 @@ async function routineFireImpl(
         // so a replay never re-runs the SQL.
         const { sql } = getOrgPg();
         try {
-          actionResult = (await entry.fn({ installSlug, workspaceId, triggerConfig, payloadTemplate })) ?? undefined;
+          actionResult = (await entry.fn(systemActionCtx)) ?? undefined;
           await DBOS.runStep(
             async () => {
               await sql`
@@ -708,7 +716,7 @@ async function routineFireImpl(
             // wipes an error an action manages ITSELF (git-sync records its own).
             const { sql } = getOrgPg();
             try {
-              const result = await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
+              const result = await fn(systemActionCtx);
               await sql`
                 UPDATE harness_shared.routines
                    SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',

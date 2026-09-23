@@ -4111,6 +4111,8 @@ describe("runGreenCheckpoint", () => {
       await git(repo, ["branch", "ready", ready]);
       const candidate = await commit("a", "2", "candidate");
       const { deps, calls } = stubDeps(green, failingTests);
+      deps.routineId = "rt_papercusp_green_checkpoint";
+      deps.routineFireWorkflowId = "routine-fire-workflow-42";
       const markers: Array<
         Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0]
       > = [];
@@ -4145,6 +4147,8 @@ describe("runGreenCheckpoint", () => {
       expect(markers[0]).toMatchObject({
         candidate,
         candidateSource: "pinned",
+        routineId: "rt_papercusp_green_checkpoint",
+        routineFireWorkflowId: "routine-fire-workflow-42",
       });
       expect(await revParse(repo, "ready")).toBe(ready);
       expect(readFrozenRepairQueue).not.toHaveBeenCalled();

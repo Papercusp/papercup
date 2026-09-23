@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  clearAbandonedCheckpointRoutineFire,
   clearStaleReaperLastError,
   reapDeadExecutorWorkflows,
   startExecutorReaper,
@@ -27,15 +28,60 @@ function fakeSql(handler: (text: string, values: unknown[]) => unknown) {
     calls.push({ text, values });
     return handler(text, values);
   };
+  const unsafe = async (text: string, values: unknown[] = []) => {
+    calls.push({ text, values });
+    return handler(text, values);
+  };
   // Production postgres.js supplies `begin`; keep the mock transaction-transparent
   // so unit tests continue to inspect the same statement stream. Real rollback
   // semantics are covered by dbos-executor-reaper-queue-liveness.integration.test.ts.
   Object.assign(sqlFn, {
     begin: async (run: (tx: typeof sqlFn) => unknown) => run(sqlFn),
+    unsafe,
   });
   const sql = sqlFn as unknown as Sql;
   return { sql, calls };
 }
+
+describe('clearAbandonedCheckpointRoutineFire', () => {
+  const input = {
+    installSlug: 'papercusp',
+    workspaceId: 'papercusp-workspace',
+    routineId: 'rt_papercusp_green_checkpoint',
+    workflowId: 'routine-fire-workflow-42',
+    observedAtMs: 1_790_194_000_000,
+  };
+
+  it('clears only the exact pending green-checkpoint routineFire owned by the abandoned marker', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('UPDATE dbos.workflow_status')) return [{ workflow_uuid: input.workflowId }];
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    await expect(clearAbandonedCheckpointRoutineFire(sql, input)).resolves.toBe(true);
+
+    const update = calls[0]!;
+    expect(update.text).toContain('workflow_uuid = $1');
+    expect(update.text).toContain("name = 'routineFire'");
+    expect(update.text).toContain('deduplication_id = $2');
+    expect(update.text).toContain("status IN ('PENDING', 'ENQUEUED')");
+    expect(update.text).toContain('created_at <= $3');
+    expect(update.text).toContain("r.target_role = 'system:green-checkpoint'");
+    expect(update.values).toEqual([
+      input.workflowId,
+      `routine:${input.routineId}`,
+      input.observedAtMs,
+      input.routineId,
+      input.installSlug,
+      input.workspaceId,
+    ]);
+  });
+
+  it('leaves a different/newer workflow row untouched', async () => {
+    const { sql } = fakeSql(() => []);
+    await expect(clearAbandonedCheckpointRoutineFire(sql, input)).resolves.toBe(false);
+  });
+});
 
 describe('reapDeadExecutorWorkflows', () => {
   it('reaps stale routinesTick rows even when the stable executor id has fresh activity', async () => {

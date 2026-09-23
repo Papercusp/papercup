@@ -1132,6 +1132,12 @@ creates the directory and lock with shared-write permissions for either identity
 `db-backup.sh` and `backup-alert.sh` scripts are still managed under `~/.config/kopia/` and are
 outside this snapshot-serialization contract.
 
+The dedicated dump volume must be mounted persistently by filesystem UUID at /mnt/backup.
+Resolve the host UUID with blkid and add an /etc/fstab entry in the form:
+UUID=<filesystem-uuid> /mnt/backup ext4 defaults,nofail 0 2
+The database backup and hot snapshot units require this mount so they cannot write to the
+underlying mountpoint directory when the volume is absent.
+
 ## Install (one-time, on a fresh machine)
 
 ```bash

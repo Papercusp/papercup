@@ -29,6 +29,49 @@
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
+/**
+ * Release a green-checkpoint routineFire as soon as its own checkpoint marker is proven
+ * abandoned. This supplements, rather than narrows, the 185m no-output fallback below.
+ */
+export async function clearAbandonedCheckpointRoutineFire(
+  sql: Pick<Sql, 'unsafe'>,
+  input: {
+    installSlug: string;
+    workspaceId: string;
+    routineId: string;
+    workflowId: string;
+    observedAtMs: number;
+  },
+): Promise<boolean> {
+  const { installSlug, workspaceId, routineId, workflowId, observedAtMs } = input;
+  if (
+    !installSlug || !workspaceId || !routineId || !workflowId ||
+    !Number.isSafeInteger(observedAtMs) || observedAtMs <= 0
+  ) {
+    return false;
+  }
+  const rows = await sql.unsafe(
+    `UPDATE dbos.workflow_status
+        SET deduplication_id = NULL, status = 'CANCELLED'
+      WHERE workflow_uuid = $1
+        AND name = 'routineFire'
+        AND deduplication_id = $2
+        AND status IN ('PENDING', 'ENQUEUED')
+        AND created_at <= $3
+        AND EXISTS (
+          SELECT 1
+            FROM harness_shared.routines r
+           WHERE r.id = $4
+             AND r.install_slug = $5
+             AND r.workspace_id = $6
+             AND r.target_role = 'system:green-checkpoint'
+        )
+      RETURNING workflow_uuid`,
+    [workflowId, `routine:${routineId}`, observedAtMs, routineId, installSlug, workspaceId],
+  );
+  return rows.length === 1;
+}
+
 /** A DBOS executor with no `workflow_status` activity in this window is considered dead. */
 const DEFAULT_LIVENESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
 /** A routinesTick should finish quickly; if it is still non-terminal after this,

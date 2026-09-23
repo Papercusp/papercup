@@ -99,6 +99,15 @@ describe(`systemd units that read ${ENV_VAR}`, () => {
     expect(violations).toEqual([]);
   });
 
+  it('requires the dedicated backup mount for scheduled volume writers', () => {
+    const writers = ['papercusp-db-backup.service', 'kopia-snapshots.service'];
+
+    for (const unit of writers) {
+      const body = readFileSync(resolve(SYSTEMD_DIR, unit), 'utf8');
+      expect(body, unit).toContain('RequiresMountsFor=/mnt/backup');
+    }
+  });
+
   /**
    * CALIBRATION — without this, a parser regression (a changed ExecStart shape, a
    * renamed directory, a %h path that stops resolving) makes the assertion above pass

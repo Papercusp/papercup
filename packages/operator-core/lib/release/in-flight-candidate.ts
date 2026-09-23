@@ -40,6 +40,7 @@
  */
 import { mergeGateHealth } from './gate-health-merge';
 import type { GateVerdictTarget } from './gate-verdict-target';
+import type { Sql } from 'postgres';
 import {
   isCheckpointCandidateSource,
   type CheckpointCandidateSource,
@@ -50,6 +51,24 @@ import {
  *  that self-kills and writes a real verdict, so an older marker is an abandoned run's residue,
  *  never a genuinely long one. */
 export const IN_FLIGHT_CANDIDATE_MAX_AGE_MS = 3 * 60 * 60_000;
+/** Environment transport from the scheduled routine action into the checkpoint CLI. */
+export const ROUTINE_FIRE_ROUTINE_ID_ENV = 'PAPERCUSP_ROUTINE_FIRE_ROUTINE_ID';
+export const ROUTINE_FIRE_WORKFLOW_ID_ENV = 'PAPERCUSP_ROUTINE_FIRE_WORKFLOW_ID';
+
+/** Read the scheduled routine identity as a pair; a partial transport is not safe to correlate. */
+export function routineFireIdentityFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<InFlightCandidateInfo, 'routineId' | 'routineFireWorkflowId'> {
+  const routineId = env[ROUTINE_FIRE_ROUTINE_ID_ENV]?.trim();
+  const routineFireWorkflowId = env[ROUTINE_FIRE_WORKFLOW_ID_ENV]?.trim();
+  if (
+    !routineId || routineId.length > 200 ||
+    !routineFireWorkflowId || routineFireWorkflowId.length > 256
+  ) {
+    return {};
+  }
+  return { routineId, routineFireWorkflowId };
+}
 
 /** What a running green-checkpoint publishes about the candidate it is judging. */
 export interface InFlightCandidateInfo {
@@ -83,6 +102,10 @@ export interface InFlightCandidateInfo {
   /** The OS pid of the run, so a reader can confirm the marker belongs to a process that is
    *  still alive rather than trusting the age bound alone. */
   pid: number;
+  /** Scheduled routine row that launched this checkpoint; absent for manual/detached runs. */
+  routineId?: string;
+  /** Exact DBOS workflow_status.workflow_uuid for the scheduled routineFire. */
+  routineFireWorkflowId?: string;
 }
 
 /** The persisted shape — {@link InFlightCandidateInfo} plus the write-time stamp a reader needs
@@ -273,6 +296,16 @@ export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now())
         : null;
   const selectedAtMs = typeof r.selectedAtMs === 'number' ? r.selectedAtMs : null;
   const observedAtMs = typeof r.observedAtMs === 'number' ? r.observedAtMs : null;
+  const routineId =
+    typeof r.routineId === 'string' && r.routineId.trim() === r.routineId && r.routineId.length <= 200
+      ? r.routineId
+      : undefined;
+  const routineFireWorkflowId =
+    typeof r.routineFireWorkflowId === 'string' &&
+    r.routineFireWorkflowId.trim() === r.routineFireWorkflowId &&
+    r.routineFireWorkflowId.length <= 256
+      ? r.routineFireWorkflowId
+      : undefined;
   if (!candidate || !candidateSource || selectedAtMs == null || observedAtMs == null) return null;
   if (nowMs - observedAtMs > IN_FLIGHT_CANDIDATE_MAX_AGE_MS) return null; // abandoned — see doc above.
   return {
@@ -285,6 +318,8 @@ export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now())
     refireDepth: typeof r.refireDepth === 'number' ? r.refireDepth : 0,
     pid: typeof r.pid === 'number' ? r.pid : 0,
     observedAtMs,
+    ...(routineId ? { routineId } : {}),
+    ...(routineFireWorkflowId ? { routineFireWorkflowId } : {}),
     // Carried per the ⚠ above: this literal is exhaustive, so omitting it here would persist the
     // stamp and never read it back — the precise shape of EI-19343516395023183.
     verdictWrittenAtMs: typeof r.verdictWrittenAtMs === 'number' ? r.verdictWrittenAtMs : null,
@@ -492,6 +527,7 @@ export async function recordLostGateRun(
   target: GateVerdictTarget,
   verdict: Extract<AbandonedInFlightVerdict, { abandoned: true }>,
   detectedByPid: number = process.pid,
+  transaction?: Pick<Sql, 'unsafe'>,
 ): Promise<void> {
   await mergeGateHealth(target, {
     lastLostRun: {
@@ -501,11 +537,15 @@ export async function recordLostGateRun(
       refireDepth: verdict.marker.refireDepth,
       observedAtMs: verdict.marker.observedAtMs,
       selectedAtMs: verdict.marker.selectedAtMs,
+      ...(verdict.marker.routineId ? { routineId: verdict.marker.routineId } : {}),
+      ...(verdict.marker.routineFireWorkflowId
+        ? { routineFireWorkflowId: verdict.marker.routineFireWorkflowId }
+        : {}),
       detectedAtMs: Date.now(),
       detectedByPid,
       reason: verdict.reason,
       ageMs: verdict.ageMs,
       note: describeAbandonedInFlightCandidate(verdict),
     },
-  });
+  }, transaction, Boolean(transaction));
 }

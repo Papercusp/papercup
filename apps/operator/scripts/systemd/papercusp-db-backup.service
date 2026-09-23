@@ -2,6 +2,7 @@
 Description=Papercusp Postgres backup (pg_dump -Fd, parallel) — EI-10733
 Documentation=https://papercusp.internal/issues/EI-10733
 After=network-online.target
+RequiresMountsFor=/mnt/backup
 # The backup is the thing you need most when everything else is broken, so its
 # failure must be VISIBLE. The old pg_dumpall leg failed silently behind a
 # one-line "pg-5432 FAIL" for 30 days (EI-10733); db-backup.sh exits non-zero

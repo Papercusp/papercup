@@ -478,6 +478,25 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fire WITHHELD (await-blocking'));
     warn.mockRestore();
   });
+
+  it('passes the exact routine and DBOS workflow identities to scheduled system actions', async () => {
+    const action = vi.fn(async () => undefined);
+    registerSystemAction('test-routine-fire-identity', action, { scheduling: 'on-demand' });
+
+    await routineFireWorkflow(
+      'rt_papercusp_test_identity',
+      'papercusp-workspace',
+      'papercusp',
+      'system:test-routine-fire-identity',
+      {},
+      null,
+    );
+
+    expect(action).toHaveBeenCalledWith(expect.objectContaining({
+      routineId: 'rt_papercusp_test_identity',
+      workflowId: 'test-routine-fire',
+    }));
+  });
 });
 
 describe('enqueueRoutineFire — on-demand durable dispatch', () => {

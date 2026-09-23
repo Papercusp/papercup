@@ -1,6 +1,7 @@
 [Unit]
 Description=Kopia snapshot of all registered sources
 After=network-online.target
+RequiresMountsFor=/mnt/backup
 
 [Service]
 Type=oneshot

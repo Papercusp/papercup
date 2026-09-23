@@ -22,6 +22,7 @@
  * run it describes. A caller that needs to know the write landed must read it back.
  */
 import type { GateVerdictTarget } from './gate-verdict-target';
+import type { Sql } from 'postgres';
 
 /**
  * Shallow-merge `patch` into `metadata.gate_health` for exactly one routine row.
@@ -29,10 +30,14 @@ import type { GateVerdictTarget } from './gate-verdict-target';
  * A key set to `null` in `patch` lands as JSON null, which every `parse*` helper in this family
  * already treats as "absent" — that is how a marker is CLEARED without a second code path.
  */
-export async function mergeGateHealth(target: GateVerdictTarget, patch: Record<string, unknown>): Promise<void> {
+export async function mergeGateHealth(
+  target: GateVerdictTarget,
+  patch: Record<string, unknown>,
+  transaction?: Pick<Sql, 'unsafe'>,
+  rethrowOnError = false,
+): Promise<void> {
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
+    const sql = transaction ?? (await import('@papercusp/db-org')).getOrgPg().sql;
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = jsonb_set(
@@ -45,7 +50,8 @@ export async function mergeGateHealth(target: GateVerdictTarget, patch: Record<s
         WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:green-checkpoint'`,
       [target.installSlug, target.workspaceId, JSON.stringify(patch)],
     );
-  } catch {
+  } catch (error) {
+    if (rethrowOnError) throw error;
     /* best-effort diagnostic — never let this break the checkpoint run it rides alongside */
   }
 }
