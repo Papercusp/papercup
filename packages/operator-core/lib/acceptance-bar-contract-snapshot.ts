@@ -1031,8 +1031,16 @@ export function projectAcceptanceBarContractSnapshot(
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
     const gradingCurrent = classifyRubricEvidenceCurrentness(
-      { revision: grading.card?.rubricRevision, criteriaHash: grading.card?.criteriaHash },
-      { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+      {
+        revision: grading.card?.rubricRevision,
+        criteriaHash: grading.card?.criteriaHash,
+        meaningRevision: grading.card?.rubricMeaningRevision,
+      },
+      {
+        revision: rubricRevision,
+        criteriaHash: rubricCriteriaHash,
+        meaningRevision: rubric?.barContract?.meaningRevision,
+      },
     ).state === 'current';
     // D-030: a rating is a judgment about (rubric, evidence), but `gradingCurrent` above
     // tracks only the rubric half. So a NOT-PASS card whose cited basis was evidence
@@ -1317,8 +1325,16 @@ export function projectAcceptanceBarContractSnapshot(
               role: grading.roleOf(card),
               authoritative: card.issueId === grading.card?.issueId || card.issueId === grading.authorVerdict?.issueId,
               currentRevision: classifyRubricEvidenceCurrentness(
-                { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
-                { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+                {
+                  revision: card.rubricRevision,
+                  criteriaHash: card.criteriaHash,
+                  meaningRevision: card.rubricMeaningRevision,
+                },
+                {
+                  revision: rubricRevision,
+                  criteriaHash: rubricCriteriaHash,
+                  meaningRevision: rubric?.barContract?.meaningRevision,
+                },
               ).state === 'current', complete: completeScorecard(card),
               retracted: Boolean(card.retracted), supersedes: card.supersedes ?? null,
               supersededBy: card.supersededBy ?? null, selectedVia: gradingViaOf(card, input.graderSelectionVia),
@@ -1350,8 +1366,16 @@ export function projectAcceptanceBarContractSnapshot(
         completeScorecard(card) &&
         Boolean(card.vetting?.consultId || card.vetting?.workItemId) &&
         classifyRubricEvidenceCurrentness(
-          { revision: card.vetting?.rubricRevision, criteriaHash: card.vetting?.criteriaHash },
-          { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+          {
+            revision: card.vetting?.rubricRevision,
+            criteriaHash: card.vetting?.criteriaHash,
+            meaningRevision: card.vetting?.rubricMeaningRevision,
+          },
+          {
+            revision: rubricRevision,
+            criteriaHash: rubricCriteriaHash,
+            meaningRevision: rubric?.barContract?.meaningRevision,
+          },
         ).state === 'current' &&
         !card.supersededBy,
     )
