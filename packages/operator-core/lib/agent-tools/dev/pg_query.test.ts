@@ -408,6 +408,81 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       expect(payload.advisory).toContain('positiveControlSql also returned 0 rows');
     });
 
+    it('does not treat an ungrouped COUNT(*) control returning zero as a known-positive row', async () => {
+      pgReadQueryMock.mockResolvedValue({
+        rowCount: 0,
+        truncated: false,
+        fields: [],
+        elapsedMs: 3,
+        rows: [],
+        positiveControl: {
+          rowCount: 1,
+          truncated: false,
+          fields: ['n_orientation_user_turns'],
+          rows: [{ n_orientation_user_turns: '0' }],
+        },
+      });
+      const positiveControlSql =
+        'SELECT count(*) AS n_orientation_user_turns FROM harness_shared.session_turns WHERE false';
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT 1 WHERE false', positiveControlSql } as never,
+        {} as never,
+      );
+      const payload = payloadOf(res as never);
+
+      expect(payload.positiveControl).toMatchObject({
+        status: 'failed',
+        reason: 'scalar-aggregate',
+        rowCount: 1,
+        rows: [{ n_orientation_user_turns: '0' }],
+      });
+      expect(payload.absence).toEqual({
+        status: 'unverified',
+        code: 'positive-control-scalar-aggregate',
+      });
+      expect(payload.advisory).toContain('ungrouped scalar COUNT aggregate');
+    });
+
+    it('keeps row-shaped CTE and window COUNT controls usable', async () => {
+      const controls = [
+        {
+          sql: 'WITH counts AS (SELECT count(*) AS n FROM t WHERE false) SELECT id FROM t WHERE id = 0',
+          fields: ['id'],
+          rows: [{ id: 0 }],
+        },
+        {
+          sql: 'SELECT count(*) OVER () AS matches FROM t WHERE id = 0',
+          fields: ['matches'],
+          rows: [{ matches: '1' }],
+        },
+      ];
+
+      for (const control of controls) {
+        pgReadQueryMock.mockResolvedValue({
+          rowCount: 0,
+          truncated: false,
+          fields: [],
+          elapsedMs: 3,
+          rows: [],
+          positiveControl: {
+            rowCount: 1,
+            truncated: false,
+            fields: control.fields,
+            rows: control.rows,
+          },
+        });
+        const res = await pgQueryTool.handler(
+          { sql: 'SELECT 1 WHERE false', positiveControlSql: control.sql } as never,
+          {} as never,
+        );
+        const payload = payloadOf(res as never);
+
+        expect(payload.positiveControl).toMatchObject({ status: 'passed', rowCount: 1 });
+        expect(payload.absence).toEqual({ status: 'verified', code: 'positive-control-passed' });
+      }
+    });
+
     it('tenant-checks positiveControlSql before executing either query', async () => {
       advisoryMock.mockImplementation(async (sql: string) =>
         sql.includes('unscoped_control') ? '⚠ tenant scope: control is unscoped' : null,
