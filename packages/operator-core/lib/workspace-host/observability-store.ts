@@ -416,6 +416,8 @@ export interface WorkspaceHostDesiredSpecLookup {
   desired: WorkspaceHostDesiredSpec | null;
   /** Set only when `desired` is null — which of the two distinct causes applied. */
   miss?: WorkspaceHostDesiredSpecMiss;
+  /** The connection the host was provisioned through; a hosted credential ref resolves only via it. */
+  connectionId?: string;
 }
 
 /**
@@ -433,18 +435,18 @@ export async function readWorkspaceHostDesiredSpec(
 ): Promise<WorkspaceHostDesiredSpecLookup> {
   return withWorkspace(workspaceId, async (tx) => {
     const rows = (await tx`
-      SELECT desired_spec
+      SELECT desired_spec, connection_id
         FROM harness_shared.workspace_hosts
        WHERE workspace_id = ${workspaceId} AND id = ${hostId}
        LIMIT 1
-    `) as Array<{ desired_spec: unknown }>;
+    `) as Array<{ desired_spec: unknown; connection_id: string }>;
 
     if (rows.length === 0) return { desired: null, miss: 'host-not-found' as const };
     const spec = rows[0]?.desired_spec;
     if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
       return { desired: null, miss: 'no-recorded-spec' as const };
     }
-    return { desired: spec as WorkspaceHostDesiredSpec };
+    return { desired: spec as WorkspaceHostDesiredSpec, connectionId: rows[0]!.connection_id };
   });
 }
 
