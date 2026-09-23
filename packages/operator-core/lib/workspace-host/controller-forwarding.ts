@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import {
   collectSiblingManagedTimers,
   DEFAULT_SIBLING_FANOUT_BUDGET_MS,
-  DEFAULT_SIBLING_PROBE_TIMEOUT_MS,
   type SiblingManagedTimers,
 } from '../schedule-federation';
 import { requestOnlyHost } from '../background-workers';
@@ -22,12 +21,14 @@ export type WorkspaceHostRequestForwarder = (
 
 export interface WorkspaceHostControllerForwardingOptions {
   isRequestOnly?: () => boolean;
-  collectControllers?: () => Promise<readonly SiblingManagedTimers[]>;
+  collectControllers?: (options: { timeoutMs: number; budgetMs: number }) => Promise<readonly SiblingManagedTimers[]>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
 
 export const DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS = WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS;
+export const DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS =
+  DEFAULT_SIBLING_FANOUT_BUDGET_MS - 200;
 
 function isDirectBackgroundController(row: SiblingManagedTimers): boolean {
   return (
@@ -47,7 +48,7 @@ function selectController(rows: readonly SiblingManagedTimers[]): SiblingManaged
 
 /** Keep discovery failures distinguishable from a mutation whose response was lost. */
 function controllerUnavailable(
-  reason: 'discovery-failed' | 'no-controller',
+  reason: 'discovery-failed' | 'no-controller' | 'controller-probe-timeout',
   rows: readonly SiblingManagedTimers[] = [],
 ): Response {
   const candidates = rows.slice(0, 8).map((row) => ({
@@ -82,21 +83,25 @@ export async function forwardWorkspaceHostRequest(
 
   const collectControllers =
     options.collectControllers ??
-    (() =>
-      collectSiblingManagedTimers({
-        timeoutMs: DEFAULT_SIBLING_PROBE_TIMEOUT_MS,
-        budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
-      }));
+    collectSiblingManagedTimers;
   let rows: readonly SiblingManagedTimers[];
   try {
-    rows = await collectControllers();
+    rows = await collectControllers({
+      timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
+      budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
+    });
   } catch {
     // Exceptions and probe error strings may carry private paths or credentials. Retain the
     // closed reason and public candidate metadata, never raw exception/provider bodies.
     return controllerUnavailable('discovery-failed');
   }
   const controller = selectController(rows);
-  if (!controller) return controllerUnavailable('no-controller', rows);
+  if (!controller) {
+    const reason = rows.some((row) => row.probeFailure === 'timeout')
+      ? 'controller-probe-timeout'
+      : 'no-controller';
+    return controllerUnavailable(reason, rows);
+  }
 
   // Both callers validate an object before forwarding. Choose the operation ID
   // here, before crossing the transport boundary, so a lost response cannot also
