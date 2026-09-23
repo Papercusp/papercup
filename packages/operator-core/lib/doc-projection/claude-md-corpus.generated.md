@@ -2950,11 +2950,15 @@ For tier 3, pause the sweep only for the files the probe mutates — git-sync ex
 
 
 ```
-locks:acquire { paths: ['<repo-relative-mutated-file>'],
-                ttl_sec: 1200, intent: 'mutation probe' }
+locks:acquire {
+  paths: ['<repo-relative-mutated-file>'],
+  coordination_domain: '<physical root for a nested repository>',
+  ttl_sec: 1200,
+  intent: 'mutation probe'
+}
 ```
 
-Use one repo-relative path for each file the probe mutates. `--sweep-lock-held` queries that exact path and refuses unless this session owns a live lock with intent `mutation probe`; it then heartbeats the lock to 1200 seconds. The in-tree mutation window is capped at 600 seconds. After the trap verifies restoration, release the file lock:
+For a file in the top-level repository, omit `coordination_domain`. For a submodule, use its physical root from `git -C <file-directory> rev-parse --show-toplevel`; keep `paths` relative to that root. `--sweep-lock-held` queries the exact path and refuses unless this session owns a live lock with intent `mutation probe`; it then heartbeats the file lock to 1200 seconds. The in-tree mutation window is capped at 600 seconds. After the trap verifies restoration, release the file lock:
 
 ```
 locks:release { lock_id: '<returned lock_id>' }

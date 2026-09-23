@@ -60,15 +60,17 @@ export function setBlockedByInBody(
   const prefix = m[1] ?? '';
   const rest = m[2] ?? '';
 
-  // Strip the existing `blocked-by:` keyword (and the whitespace before it).
-  // The grammar (parser ITEM_LINE blockedByRe): blocked-by: P-001, P-002, ...
-  const bbRe = /\s*\bblocked-by\s*:\s*(?:P-\d{3,}(?:\s*,\s*)?)+/i;
-  const bbM = bbRe.exec(rest);
-  const oldBlockedBy = bbM ? ((bbM[0].match(PNN) ?? []) as string[]) : [];
+  // Strip every existing clause, not just the first one. Repeated legacy
+  // markers otherwise survive a replacement and can shadow the current list
+  // when the plan parser rebuilds its structured dependency graph.
+  const bbRe = /\s*\bblocked-by\s*:\s*(?:P-\d{3,}(?:\s*,\s*)?)+/gi;
+  const oldBlockedBy = Array.from(
+    new Set(
+      Array.from(rest.matchAll(bbRe), (match) => (match[0].match(PNN) ?? []) as string[]).flat(),
+    ),
+  );
 
-  let restClean = bbM
-    ? rest.slice(0, bbM.index) + rest.slice(bbM.index + bbM[0].length)
-    : rest;
+  let restClean = rest.replace(bbRe, '');
   // Tidy whitespace the removal left behind (keyword is normally at line end; if it
   // was mid-line, collapse the resulting double space).
   restClean = restClean.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/g, '');

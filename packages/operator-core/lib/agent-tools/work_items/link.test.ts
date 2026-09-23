@@ -39,6 +39,7 @@ describe('work_items:link args schema (EI-7049)', () => {
   it('teaches the default-on complete-candidate admission contract', () => {
     expect(tool.description).toMatch(/default-on.*complete typed candidate graph/i);
     expect(tool.guidance?.when).toMatch(/refuses cycles, bad endpoints, and newly stranded work/i);
+    expect(tool.guidance?.chaining).toContain('work_items:link { id, rel:"blocks", target_id }');
   });
 
   it('rejects a call missing id/rel/items with a message naming the EXACT field (no truncated ellipsis)', () => {
@@ -58,6 +59,13 @@ describe('work_items:link args schema (EI-7049)', () => {
 
   it('accepts a well-formed single-shorthand call (id + rel present, target checked later by the handler)', () => {
     expect(tool.args.safeParse({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T' }).success).toBe(true);
+  });
+
+  it('accepts the legacy source_id spelling emitted by the former set_blocker hint', () => {
+    expect(tool.args.safeParse({ source_id: 'WI-10002525', rel: 'blocks', target_id: 'WI-2144525' }).success).toBe(true);
+    expect(
+      tool.args.safeParse({ id: 'WI-1', source_id: 'WI-2', rel: 'blocks', target_id: 'WI-T' }).success,
+    ).toBe(false);
   });
 
   it("accepts the feedback-lineage rel='revises'", () => {
@@ -112,6 +120,15 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', rel: 'blocks' });
     expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
+      harness: undefined,
+      by: 'me',
+    });
+  });
+
+  it('normalizes the legacy source_id alias to the canonical source field', async () => {
+    const b = await body({ source_id: 'WI-10002525', rel: 'blocks', target_id: 'WI-2144525' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(linkM).toHaveBeenCalledWith('WI-10002525', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
       harness: undefined,
       by: 'me',
     });

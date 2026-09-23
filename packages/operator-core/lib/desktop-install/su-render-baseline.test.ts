@@ -59,6 +59,9 @@ import {
   type SuRenderMeasurement,
 } from './su-render-baseline';
 import { checkSuSpliceMarkers } from '../../../../scripts/check-su-splice-markers';
+// ⚠ ONE LINE, deliberately — see project-doc-parts.test.ts for why the directive must sit on the specifier line.
+// @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
+import { PROJECTION_BUDGET_CHARS } from '../../../../scripts/project-doc-parts.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, '__fixtures__', 'su-render-baseline');
@@ -78,12 +81,79 @@ const TIERS = ['full', 'fleet'] as const;
 const UPDATE = process.env.BASELINE_UPDATE === '1';
 const DUMP_DIR = process.env.SU_RENDER_BASELINE_DUMP;
 /**
- * P-035 prompt-weight ratchet. The canonical engineer + fleet-leader + AUTO stack
- * measured 244,230 B with the real Claude overlay and real project guide on
- * 2026-09-04; 256 KiB leaves 17,914 B (7.3%) of explicit headroom without turning
- * the budget into an unbounded approximation.
+ * P-035 prompt-weight budget, split per identities-v1-2026-08-30#D-127.
+ *
+ * The composed engineer + fleet-leader + AUTO render has two owners, and each is held to
+ * its own ceiling in its own unit:
+ *
+ *   - the SPLICED PROJECT GUIDE (the projected CLAUDE.md body) is bounded by the
+ *     projector's enforced `PROJECTION_BUDGET_CHARS` (owner-set 2026-08-26), IMPORTED —
+ *     derived from the one definition, never restated here;
+ *   - EVERYTHING ELSE — identity stack, base playbook, client overlay, generated sections
+ *     and the renderer's guide wrapper — is held by the ratchet below.
+ *
+ * The pre-D-127 form was ONE 256 KiB total (244,230 B measured 2026-09-04). It counted
+ * the guide against an agent-authored ceiling tighter than the owner's guide budget, so
+ * the two could not both hold: by 2026-09-23 the guide alone had grown +11 KB inside its
+ * own cap and the total went red with no identity layer at fault. Splitting keeps
+ * identity-layer growth caught at its own ceiling without forcing guide-rule cuts.
+ *
+ * Measured 2026-09-23 (total 263,847 B): non-guide 144,638 B; guide 119,209 B / 118,081
+ * chars. 150 KiB leaves 8,962 B (6.2% of the measurement) of explicit headroom — about a
+ * month at the base playbook's observed growth (+5.7 KB over 19 days), so a new identity
+ * layer or a burst of base-prose growth trips it rather than hiding inside the total.
  */
-const COMPOSED_ENGINEER_LEADER_BUDGET_BYTES = 256 * 1024;
+const NON_GUIDE_COMPOSED_BUDGET_BYTES = 150 * 1024;
+
+interface ComposedBudgetInput {
+  renderedText: string;
+  guideText: string;
+  nonGuideBudgetBytes: number;
+  guideBudgetChars: number;
+}
+
+interface ComposedBudgetVerdict {
+  totalBytes: number;
+  guideBytes: number;
+  guideChars: number;
+  nonGuideBytes: number;
+  problems: string[];
+}
+
+/**
+ * Pure so the falsifiability controls in the P-035 case can drive every branch with the
+ * REAL measurement and a budget one unit too small, instead of mutating the tree.
+ */
+function checkComposedBudget(input: ComposedBudgetInput): ComposedBudgetVerdict {
+  // What `renderProjectGuideSection` splices: the guide with trailing newlines and outer
+  // whitespace removed. Its wrapper heading is renderer prose and counts as non-guide.
+  const guideBody = input.guideText.trim();
+  const totalBytes = Buffer.byteLength(input.renderedText, 'utf8');
+  const guideBytes = Buffer.byteLength(guideBody, 'utf8');
+  const guideChars = guideBody.length; // the projector's unit: String#length (UTF-16 code units)
+  const nonGuideBytes = totalBytes - guideBytes;
+  const problems: string[] = [];
+  // Attribution honesty: bytes are only subtracted as "guide" if the guide is genuinely in
+  // the render. An empty or unspliced guide would otherwise shrink nothing and read green.
+  if (!guideBody) problems.push('project guide is empty — the guide sub-budget would be vacuous');
+  else if (!input.renderedText.includes(guideBody)) {
+    problems.push('project guide body is not in the rendered prompt — guide bytes would be misattributed');
+  }
+  if (guideChars > input.guideBudgetChars) {
+    problems.push(
+      `spliced project guide is ${guideChars.toLocaleString('en-US')} chars; the projector budget is ` +
+        `${input.guideBudgetChars.toLocaleString('en-US')} chars`,
+    );
+  }
+  if (nonGuideBytes > input.nonGuideBudgetBytes) {
+    problems.push(
+      `non-guide composed prompt is ${nonGuideBytes.toLocaleString('en-US')} B; its ratchet is ` +
+        `${input.nonGuideBudgetBytes.toLocaleString('en-US')} B ` +
+        `(over by ${(nonGuideBytes - input.nonGuideBudgetBytes).toLocaleString('en-US')} B)`,
+    );
+  }
+  return { totalBytes, guideBytes, guideChars, nonGuideBytes, problems };
+}
 
 const read = (p: string) => readFileSync(p, 'utf8');
 const inputRecord = (p: string) => {
@@ -338,7 +408,7 @@ describe('su render baseline — live blueprint base (informational score + P-03
     expect(score.sections.length).toBeGreaterThan(0);
   });
 
-  it('keeps the composed engineer + fleet-leader stack within the declared 256 KiB prompt budget (P-035)', async () => {
+  it('keeps the composed engineer + fleet-leader stack within its derived budget: non-guide ratchet + the projector guide budget (P-035, D-127)', async () => {
     if (!repoRoot) throw new Error('P-035 prompt budget: repo root (libs/papercusp) not found');
     const harnessDir = join(repoRoot, 'libs/papercusp/packages/harness');
     const baseSource = join(harnessDir, 'blueprints/base/prompts/su.md');
@@ -359,24 +429,62 @@ describe('su render baseline — live blueprint base (informational score + P-03
       projectGuideSource,
       tier: 'full',
     });
-    const measuredBytes = Buffer.byteLength(rendered.text, 'utf8');
-    const headroom = COMPOSED_ENGINEER_LEADER_BUDGET_BYTES - measuredBytes;
+    const guideBudgetChars = PROJECTION_BUDGET_CHARS as number;
+    const measure = (nonGuideBudgetBytes: number, budgetChars: number) =>
+      checkComposedBudget({
+        renderedText: rendered.text,
+        guideText: read(projectGuideSource),
+        nonGuideBudgetBytes,
+        guideBudgetChars: budgetChars,
+      });
+    const verdict = measure(NON_GUIDE_COMPOSED_BUDGET_BYTES, guideBudgetChars);
 
     expect(composed.order.map((entry) => entry.id)).toEqual(
       expect.arrayContaining(['papercusp-engineer', 'su.fleet-leader', 'su.mode-auto']),
     );
     expect(rendered.overlaySource).toBe(join(overlayDir, 'papercusp-su.claude.md'));
     expect(rendered.projectGuideSource).toBe(projectGuideSource);
+    // The guide ceiling is imported, never restated. An import that yielded `undefined` would
+    // make the guide check vacuous — `n > undefined` is always false — so prove it is real.
+    expect(Number.isInteger(guideBudgetChars) && guideBudgetChars > 0, 'PROJECTION_BUDGET_CHARS did not import').toBe(true);
+    expect(verdict.guideBytes + verdict.nonGuideBytes).toBe(verdict.totalBytes);
     expect(
-      measuredBytes,
-      `composed engineer + fleet-leader + AUTO prompt is ${measuredBytes.toLocaleString('en-US')} B; ` +
-        `budget is ${COMPOSED_ENGINEER_LEADER_BUDGET_BYTES.toLocaleString('en-US')} B ` +
-        `(headroom ${headroom.toLocaleString('en-US')} B)`,
-    ).toBeLessThanOrEqual(COMPOSED_ENGINEER_LEADER_BUDGET_BYTES);
+      verdict.problems,
+      `composed engineer + fleet-leader + AUTO prompt is ${verdict.totalBytes.toLocaleString('en-US')} B = ` +
+        `non-guide ${verdict.nonGuideBytes.toLocaleString('en-US')} B ` +
+        `(ratchet ${NON_GUIDE_COMPOSED_BUDGET_BYTES.toLocaleString('en-US')} B, headroom ` +
+        `${(NON_GUIDE_COMPOSED_BUDGET_BYTES - verdict.nonGuideBytes).toLocaleString('en-US')} B) + guide ` +
+        `${verdict.guideBytes.toLocaleString('en-US')} B / ${verdict.guideChars.toLocaleString('en-US')} chars ` +
+        `(projector budget ${guideBudgetChars.toLocaleString('en-US')} chars)`,
+    ).toEqual([]);
+
+    // Falsifiability controls, kept in-test (the subject is imported logic): with the SAME
+    // real measurement, a budget one unit below it must fail on each axis. A sub-budget
+    // check that cannot fail reads exactly like one that holds.
+    expect(
+      measure(verdict.nonGuideBytes - 1, guideBudgetChars).problems.some((p) => p.startsWith('non-guide')),
+      'non-guide ratchet did not trip one byte under the measurement — it is vacuous',
+    ).toBe(true);
+    expect(
+      measure(NON_GUIDE_COMPOSED_BUDGET_BYTES, verdict.guideChars - 1).problems.some((p) =>
+        p.startsWith('spliced project guide'),
+      ),
+      'guide budget did not trip one char under the measurement — it is vacuous',
+    ).toBe(true);
+    expect(
+      checkComposedBudget({
+        renderedText: rendered.text,
+        guideText: `${read(projectGuideSource)}\nnot-in-render-${'x'.repeat(16)}`,
+        nonGuideBudgetBytes: NON_GUIDE_COMPOSED_BUDGET_BYTES,
+        guideBudgetChars,
+      }).problems.some((p) => p.includes('not in the rendered prompt')),
+      'a guide absent from the render was attributed anyway — guide bytes could be subtracted from nothing',
+    ).toBe(true);
   });
 
   // P-036 R-5 `per-layer-byte-attribution`. The budget test above proves the composed stack
-  // fits 256 KiB; it says nothing about WHERE those bytes came from, so a layer contributing
+  // fits its derived budget (D-127); it says nothing about WHERE the identity-stack bytes came
+  // from, so a layer contributing
   // unattributed bytes passed it silently. This splits the same composed stack per named
   // layer and requires the split to sum EXACTLY to the total, with no remainder.
   it('attributes every composed-stack byte to a named layer, summing exactly to the total (P-036 R-5)', () => {

@@ -41,6 +41,15 @@ describe('rendered screen needle matching', () => {
 });
 
 describe('rendered assistant reply evidence', () => {
+  // Real frames: the transcript list draws a two-column highlight gutter, so
+  // labels read `  agent` / `  you`, and `▸ agent` on the focused message.
+  test('accepts the gutter and focus-marker label forms the PUI actually renders', () => {
+    expect(screenHasAssistantReply(frame(['  you', 'Hi.', '▸ agent', 'PUI-REPLY']), 'PUI-REPLY')).toBe(true);
+    expect(screenHasAssistantReply(frame(['  agent', 'PUI-REPLY', '▸ you', 'next']), 'PUI-REPLY')).toBe(true);
+  });
+  test('still ends the bubble at the next gutter-labelled owner turn', () => {
+    expect(screenHasAssistantReply(frame(['  agent', 'waiting', '  you', 'PUI-REPLY']), 'PUI-REPLY')).toBe(false);
+  });
   test('accepts an assistant bubble in a single pane', () => {
     expect(screenHasAssistantReply(frame(['agent', 'PUI-REPLY']), 'PUI-REPLY')).toBe(true);
   });

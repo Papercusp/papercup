@@ -80,10 +80,10 @@ export default defineTool({
   name: 'work_items:link',
   profile: 'engineer',
   description:
-    'Link one or many work-items to targets: `{id, rel, target_id}` or `items:[{id, rel, target_id|target_kind+target_ref, remove?}]`. Source `id` is subject: src BLOCKS dst (dst held up), src FIXES dst, src DUPLICATES dst (dst canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are work-items (`target_id`) or coord ObjectRefs (`target_kind` + `target_ref`: plan_item, event key, topic). `satisfaction` is only for `blocks`; plan_item/event/topic targets cannot carry satisfaction. `blocks` works across kinds; default-on complete typed candidate graph validation rejects cycles, endpoint defects, and newly stranded work atomically. `remove:true` unlinks. Returns `{ok, results:[{ok,id,rel,dst?|error}], counts}`.',
+    'Link one or many work-items to targets: `{id, rel, target_id}` or `items:[{id, rel, target_id|target_kind+target_ref, remove?}]`. Source `id` is subject; legacy `source_id` is accepted as its alias. src BLOCKS dst (dst held up), src FIXES dst, src DUPLICATES dst (dst canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are work-items (`target_id`) or coord ObjectRefs (`target_kind` + `target_ref`: plan_item, event key, topic). `satisfaction` is only for `blocks`; plan_item/event/topic targets cannot carry satisfaction. `blocks` works across kinds; default-on complete typed candidate graph validation rejects cycles, endpoint defects, and newly stranded work atomically. `remove:true` unlinks. Returns `{ok, results:[{ok,id,rel,dst?|error}], counts}`.',
   guidance: {
     when: 'For typed relationships: `blocks` = src gates dst (only scheduler rel; refuses cycles, bad endpoints, and newly stranded work); `fixes` = src resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst; `about` = src concerns a target; `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference. Use items:[…] for several edges.',
-    chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
+    chaining: 'work_items:get both sides → work_items:link { id, rel:"blocks", target_id } (or items:[…]).',
     seeAlso: [
       'work_items:get (inspect both endpoints before linking)',
       'work_items:create (its inline links:[…] writes these same edges at creation time)',
@@ -96,6 +96,11 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the source work-item id'),
+      source_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('legacy compatibility alias for id; if both are supplied, they must match'),
       rel: z.enum(LINK_RELS).optional().describe('single shorthand: the relationship'),
       target_id: z.string().max(120).optional(),
       target_harness: z.string().max(80).optional(),
@@ -111,7 +116,11 @@ export default defineTool({
         ),
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many edges at once'),
     })
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.rel)), {
+    .refine((a) => !a.id || !a.source_id || a.id === a.source_id, {
+      path: ['source_id'],
+      message: 'source_id is a compatibility alias for id; when both are supplied they must match',
+    })
+    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id ?? a.source_id) && Boolean(a.rel)), {
       // EI-7049: the ellipsis truncated the actual required field name, costing a
       // failed retry (a caller without the schema loaded guessed a literal `target`
       // field, which doesn't exist — only target_id / target_kind+target_ref do).
@@ -136,7 +145,7 @@ export default defineTool({
       ? args.items
       : [
           {
-            id: args.id as string,
+            id: (args.id ?? args.source_id) as string,
             rel: args.rel as LinkRel,
             target_id: args.target_id,
             target_harness: args.target_harness,

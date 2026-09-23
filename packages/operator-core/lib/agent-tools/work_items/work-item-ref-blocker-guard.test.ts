@@ -46,7 +46,9 @@ describe('workItemRefBlockerProblem', () => {
 
     it('points at both repairs and quotes the offending id in each', () => {
       const detail = problem('WI-40086')?.detail ?? '';
-      expect(detail).toContain("work_items:link { rel:'blocks'");
+      expect(detail).toContain("work_items:link { id:");
+      expect(detail).toContain("work_items:link { id: 'WI-40086', rel:'blocks', target_id: 'WI-1' }");
+      expect(detail).not.toContain('source_id');
       expect(detail).toContain('WI-40086');
       // The external-condition repair must be offered too: many real refs name a
       // gate or an owner decision, not a work-item dependency.

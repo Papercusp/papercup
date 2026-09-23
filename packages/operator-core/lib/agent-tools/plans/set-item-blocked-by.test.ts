@@ -114,6 +114,22 @@ describe('setBlockedByInBody', () => {
     expect(item?.text).toBe('Second item');
   });
 
+  it('normalizes every repeated blocked-by clause when replacing the list', () => {
+    const duplicated = PLAN.replace(
+      '- **P-002** `wip` Second item blocked-by: P-001 importance: high',
+      '- **P-002** `wip` Second item blocked-by: P-001 blocked-by: P-003 importance: high — note: stale',
+    );
+    const { newBody, found, oldBlockedBy } = setBlockedByInBody(duplicated, 'P-002', ['P-004']);
+
+    expect(found).toBe(true);
+    expect(oldBlockedBy).toEqual(['P-001', 'P-003']);
+    expect(newBody.match(/blocked-by:/g)).toHaveLength(1);
+    expect(newBody).toContain('— note: stale');
+    const item = parsePlan(newBody).items.find((i) => i.id === 'P-002');
+    expect(item?.blockedBy).toEqual(['P-004']);
+    expect(item?.importance).toBe('high');
+  });
+
   it('clears the blocked-by keyword when given an empty list', () => {
     const { newBody, found, oldBlockedBy } = setBlockedByInBody(PLAN, 'P-002', []);
     expect(found).toBe(true);

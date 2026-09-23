@@ -230,8 +230,10 @@ export function leadingTurnOriginMarker(text: any): string | null;
  * Without a leading marker on the original there is nothing to preserve, so the
  * minted text is used as before. Pure and exported for tests. */
 export function composeCarryTurnText(originalText: any, mintedCarryText: any): string;
-/** Find the exact port marker in a recently-written target-native JSONL. This
- * is the delivery authority: PTY output/activity is intentionally insufficient.
+/** Find the exact port marker in a target-native JSONL row written for this
+ * injection. File mtime alone is not proof: unrelated metadata can update an
+ * old transcript and make an earlier marker appear fresh. This is the delivery
+ * authority; PTY output/activity is intentionally insufficient.
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
  *   home?: string, nativeId?: string | null}} options
  */

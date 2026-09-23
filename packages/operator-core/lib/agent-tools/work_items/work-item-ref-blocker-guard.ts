@@ -92,7 +92,7 @@ export function workItemRefBlockerProblem(input: {
       'External blockers are for conditions that are NOT work-items, and clearing one never consults ' +
       'work-item state — so nothing would ever clear this and the row would wait forever. ' +
       'If another work-item must finish first, record the dependency with ' +
-      `work_items:link { rel:'blocks', source_id:${offendingRefs.length === 1 ? ` '${offendingRefs[0]}'` : ' <blocker>'}, target_id: '${input.itemId}' }, ` +
+      `work_items:link { id:${offendingRefs.length === 1 ? ` '${offendingRefs[0]}'` : ' <blocker>'}, rel:'blocks', target_id: '${input.itemId}' }, ` +
       'which tracks terminality and resolves itself. If the real blocker is an external condition that ' +
       "merely RELATES to that item (a gate, an owner decision), name the condition in the ref and keep the " +
       `id as a qualifier — e.g. 'gate-red-streak:papercusp / ${offendingRefs[0]}' — which this guard accepts. ` +
