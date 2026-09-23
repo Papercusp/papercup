@@ -463,7 +463,14 @@ export function startClaudeSuEngine(
       suServer = servers.find((server) => server.name === 'papercusp-su');
     }
     if (suServer?.status !== 'connected') {
-      throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
+      // Name WHY and WHERE: a bare 'failed' cannot tell a dead endpoint from a
+      // refused identity. The query string is dropped because it carries the
+      // session's MCP credentials.
+      const configured = suServer?.config && 'url' in suServer.config ? String(suServer.config.url) : undefined;
+      const endpoint = configured ? configured.split('?', 1)[0] : undefined;
+      const detail = [suServer?.error, endpoint && `endpoint ${endpoint}`, suServer?.scope && `scope ${suServer.scope}`]
+        .filter(Boolean).join('; ');
+      throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
