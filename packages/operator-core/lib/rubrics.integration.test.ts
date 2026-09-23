@@ -1689,8 +1689,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
     },
   );
 
-  it.each(['layers', 'model', 'falsifier', 'plane'] as const)(
-    'preserves reviewed scenarios and causal pairing only for test-layer changes (%s)',
+  // `check` rides with `layers`: both are verification contract (HOW the promise is
+  // proven), so an amendment adding the structured check the ship gate demands must
+  // not erase the atomic clause either (WI-10002563). model/falsifier/plane are
+  // meaning changes and still re-project.
+  it.each(['layers', 'check', 'model', 'falsifier', 'plane'] as const)(
+    'preserves reviewed scenarios and causal pairing only for verification-contract changes (%s)',
     async (change) => {
       const seeded = await seedBarContract(`atomic-layer-preservation-${change}`, { authorMethods: true });
       const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
@@ -1729,6 +1733,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
                 ...criterion,
                 requiredTestLayers: ['browser', 'integration'],
                 method: `${criterion.method}\nInspect browser proof.`,
+                ...(change === 'check'
+                  ? { check: { kind: 'tests' as const, files: ['packages/operator-core/lib/rubrics.integration.test.ts'] } }
+                  : {}),
                 ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
                 ...(change === 'falsifier' ? { driftMarkers: 'The changed outcome is absent.' } : {}),
                 ...(change === 'plane' ? { evidencePlane: 'live' as const } : {}),
@@ -1740,7 +1747,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const after = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
 
       expect(rubricAfter.barSetHash).not.toBe(rubricBefore.barSetHash);
-      if (change === 'layers') {
+      if (change === 'check') {
+        // The check really moved the BAR hash; preservation is not a no-op read.
+        expect(rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.check)
+          .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts'] });
+      }
+      if (change === 'layers' || change === 'check') {
         expect(after).toMatchObject({
           ...authored,
           requiredEvidence: before.requiredEvidence,
