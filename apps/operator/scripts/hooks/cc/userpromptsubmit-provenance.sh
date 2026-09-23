@@ -104,11 +104,21 @@ MACHINE_SUFFIX_RE = re.compile(
 # a BARE <task-notification> block with no banner around it — match the tag
 # itself (head-anchored, mirrors turn-ref.ts's MACHINE_SURFACE_PATTERNS).
 TASK_NOTIFICATION_TAG_RE = re.compile(r'^\s*<task-notification\b', re.IGNORECASE)
+# Claude can resubmit this fixed usage-limit reset continuation as a new user
+# turn after a fleet/carry prompt, with neither the original envelope nor a
+# matching ledger row. It is client-authored machine text, not owner input.
+CLAUDE_USAGE_RESET_RE = re.compile(
+    r'^\s*Your claude\.ai usage limit has reset\.\s+'
+    r'Continue the task you were working on when the limit was reached; '
+    r'do not repeat work that is already complete\.\s*$',
+    re.IGNORECASE,
+)
 
 def is_machine_surface(s):
     return bool(
         MACHINE_SURFACE_RE.match(s)
         or TASK_NOTIFICATION_TAG_RE.match(s)
+        or CLAUDE_USAGE_RESET_RE.match(s)
         or MACHINE_SUFFIX_RE.search(s)
     )
 
