@@ -13338,14 +13338,6 @@ async function runGreenCheckpointInner(
     // line reads "suite verdict recorded before promotion decision; carrying the prior red
     // streak until final disposition". So an early record does NOT inflate the streak.
     //
-    // The skip below therefore remains only a BUDGET heuristic, not a consequence of a
-    // counter defect. Note the cost it is trading against: because the estimate is whole-run
-    // elapsed (see below), this gate reduces to 2T < deadline — a run must reach its verdict
-    // in under HALF its budget or the salvage never starts at all. That is hardest to satisfy
-    // on exactly the long runs a wide lastGreen..HEAD radius produces, i.e. the salvage
-    // self-disables in the situation it exists to recover from. Tracked as
-    // EI-21434759422783893; the preferred fix is to persist the red verdict BEFORE the
-    // salvage (now unblocked, per the correction above) and then relax this gate.
     // Sizing note: ISOLATION_PHASE_RESERVE_MS (15m) is NOT sufficient on its own here. It is
     // sized for the isolation phase's worst case — ONE bounded child (ISOLATION_RUN_TIMEOUT_MS
     // 5m / CONCURRENT_CONFIRM_TIMEOUT_MS 10m). The salvage's confirm is a different animal: it
