@@ -1950,6 +1950,32 @@ describe('owner directives in the brief (EI-11484)', () => {
     expect(out.match(/OPEN OWNER DIRECTIVES/g)!.length).toBe(1);
   });
 
+  it('renders another session\'s directive as FYI in both carry surfaces', async () => {
+    const ownText = 'carry out my own open directive';
+    const peerText = 'take over the peer session project';
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        listOpenDirectivesFn: async () => ({
+          rows: [
+            directive(20, ownText),
+            { ...directive(21, peerText), recordedBy: 'su-peer-session', sessionRef: 'source-session-peer' },
+          ],
+          totalOpen: 2,
+        }),
+      }),
+    );
+
+    for (const out of [renderCarryBriefText(brief), renderCarryBriefColdExtras(brief)]) {
+      expect(out).toContain('[FOR THIS SESSION]');
+      expect(out).toContain(ownText);
+      expect(out).toContain('[FYI');
+      expect(out).toContain('recorded by su-peer-s');
+      expect(out).toContain('orders:get #21');
+      expect(out).not.toContain(peerText);
+    }
+  });
+
   it('renderCarryBriefColdExtras renders directives ahead of walls and held items', async () => {
     const brief = await buildCarryBrief(
       'su-abc',
