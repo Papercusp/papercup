@@ -24,6 +24,12 @@ import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { unvettedRubricBindAdvisory, VET_BEFORE_PROOF_ORDER } from './bind-vetting-advisory';
+import {
+  expandTestRunBinding,
+  testRunBindingSchema,
+  type TestRunBindingError,
+  type TestRunBindingInput,
+} from './bind-from-test-run';
 
 const fingerprint = z.string().trim().min(1).max(256);
 const proofCoverageIds = z
@@ -201,6 +207,21 @@ const retractionSchema = z.object({
     ),
 });
 
+/**
+ * P-044: an item is EITHER a hand-built binding OR `{ fromTestRun }`, which derives the rest
+ * from the recorded run (bind-from-test-run.ts). The run form is tried first because it is
+ * strict and keyed on `fromTestRun`, so a hand-built binding never half-matches it.
+ */
+const bindingOrTestRunSchema = z.union([testRunBindingSchema, bindingSchema]);
+
+function isTestRunBinding(item: object): item is TestRunBindingInput {
+  return typeof (item as { fromTestRun?: unknown }).fromTestRun === 'number';
+}
+
+type ResolvedBinding =
+  | { ok: true; binding: z.infer<typeof bindingSchema>; derived?: Record<string, unknown> }
+  | { ok: false; error: TestRunBindingError | 'derived_binding_invalid'; testRunId: number; message: string };
+
 const argsSchema = refineEvenWithShapeIssues(
   z.object({
     harness: harnessArg,
@@ -211,8 +232,8 @@ const argsSchema = refineEvenWithShapeIssues(
       .describe(
         'Plan owning the referenced spec revisions. Omit for an ad-hoc work-item with no plan — its clauses use the harness-wide ad-hoc spec scope.',
       ),
-    binding: bindingSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
-    items: z.array(bindingSchema).min(1).max(500).optional(),
+    binding: bindingOrTestRunSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
+    items: z.array(bindingOrTestRunSchema).min(1).max(500).optional(),
     retract: z
       .array(retractionSchema)
       .min(1)
@@ -256,7 +277,7 @@ type SupersessionOutcome =
  * by each other. Runs after the binds commit, so a failure leaves old rows live, never lost.
  */
 async function supersedeSiblings(input: {
-  bindings: ReadonlyArray<z.infer<typeof bindingSchema>>;
+  bindings: ReadonlyArray<z.infer<typeof bindingSchema> | undefined>;
   results: ReadonlyArray<unknown>;
   harnessSlug: string | undefined;
   actorId: string;
@@ -424,8 +445,41 @@ export default defineTool({
       );
       return bulkContent(retractions);
     }
-    const bindings = args.items ?? [args.binding!];
-    const measurementScope = bindings.some((binding) => binding.measurement)
+    const requested = args.items ?? [args.binding!];
+    // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
+    // it through bindingSchema, so a derived binding meets exactly the contract a hand-built one
+    // does (including the P-043 targeting check below). A failed expansion stays index-aligned
+    // and is reported in the bulk envelope like any other refused item.
+    const runScope = requested.some(isTestRunBinding) ? await resolvePlanScope({ harnessSlug }) : null;
+    const resolved: ResolvedBinding[] = await Promise.all(
+      requested.map(async (item): Promise<ResolvedBinding> => {
+        if (!isTestRunBinding(item)) return { ok: true, binding: item };
+        const expansion = await expandTestRunBinding(item, runScope!);
+        if (!expansion.ok) return expansion;
+        const parsed = bindingSchema.safeParse(expansion.binding);
+        if (!parsed.success) {
+          return {
+            ok: false,
+            error: 'derived_binding_invalid',
+            testRunId: item.fromTestRun,
+            message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+          };
+        }
+        return {
+          ok: true,
+          binding: parsed.data,
+          derived: {
+            testRunId: expansion.binding.testRunId,
+            evidenceKind: expansion.binding.evidenceKind,
+            evidenceRef: expansion.binding.evidenceRef,
+            measurement: expansion.binding.measurement,
+            harnessAttribution: expansion.attribution,
+          },
+        };
+      }),
+    );
+    const bindings = resolved.map((entry) => (entry.ok ? entry.binding : undefined));
+    const measurementScope = bindings.some((binding) => binding?.measurement)
       ? await resolvePlanScope({ harnessSlug })
       : null;
     // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
@@ -433,8 +487,11 @@ export default defineTool({
     // result echoing `slug: undefined` would hide which scope now owns the evidence.
     const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
     const env = await runBulk(
-      bindings,
-      async (binding) => {
+      resolved,
+      async (entry) => {
+        if (!entry.ok) return { ok: false as const, slug: reportedSlug, ...entry };
+        const { binding } = entry;
+        const derived = entry.derived ? { derivedFromTestRun: entry.derived } : {};
         const targetingRefusal = await mutationTargetingRefusal(binding, {
           planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
           harnessSlug,
@@ -442,7 +499,13 @@ export default defineTool({
           ...(args.harness ? { harnessArg: args.harness } : {}),
         });
         if (targetingRefusal) {
-          return { ok: false as const, slug: reportedSlug, error: 'mutation_target_rejected' as const, ...targetingRefusal };
+          return {
+            ok: false as const,
+            slug: reportedSlug,
+            error: 'mutation_target_rejected' as const,
+            ...derived,
+            ...targetingRefusal,
+          };
         }
         const measured = binding.measurement
           ? await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
@@ -468,11 +531,14 @@ export default defineTool({
           actorId,
         });
         return OK.has(result.status)
-          ? { ok: true as const, slug: reportedSlug, ...result }
-          : { ok: false as const, slug: reportedSlug, error: result.status, ...result };
+          ? { ok: true as const, slug: reportedSlug, ...derived, ...result }
+          : { ok: false as const, slug: reportedSlug, error: result.status, ...derived, ...result };
       },
       {
-        keyOf: (binding) => ({ slug: reportedSlug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }),
+        keyOf: (entry) =>
+          entry.ok
+            ? { slug: reportedSlug, workItemId: entry.binding.workItemId, evidenceRef: entry.binding.evidenceRef }
+            : { slug: reportedSlug, fromTestRun: entry.testRunId },
       },
     );
     // P-004 (review-system-rework-reduction-2026-09-23): vet before proof. Advisory only —

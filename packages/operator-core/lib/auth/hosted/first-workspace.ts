@@ -154,6 +154,26 @@ export type HostedFirstWorkspaceResult =
       readonly connectionId?: string;
     };
 
+export interface HostedWorkspaceSelectionRequest {
+  readonly organizationId: string;
+  readonly sessionId: string;
+  readonly sessionVersion: number;
+}
+
+export type HostedWorkspaceSelectionResult =
+  | {
+      readonly ok: true;
+      readonly workspaceId: string;
+      readonly sessionId: string;
+      readonly sessionExpiresAt: Date;
+    }
+  | {
+      readonly ok: false;
+      readonly code: 'invalid_request' | 'no_workspace' | 'session_selection_failed';
+      readonly status: number;
+      readonly retryable: boolean;
+    };
+
 export interface HostedFirstWorkspaceIdentity {
   readonly operationKey: string;
   readonly workspaceId: string;
@@ -246,6 +266,37 @@ function failure(
 
 export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencies) {
   return {
+    /**
+     * Select the organization's existing workspace for a session that holds none.
+     *
+     * Sign-in never selects a workspace (hosted-identity-binding.ts), and every
+     * workspace-scoped route refuses `workspace_not_selected`. Without this, a member
+     * returning to an organization that already has its workspace landed on the
+     * first-workspace form, where creating again is refused
+     * (`organization_already_has_workspace`): a dead end, measured 2026-09-23 on the
+     * owner's own account. The workspace is read from the SESSION's organization and is
+     * never named by the browser, so this cannot select someone else's workspace.
+     */
+    async selectExisting(request: HostedWorkspaceSelectionRequest): Promise<HostedWorkspaceSelectionResult> {
+      const organizationId = boundedText(request.organizationId);
+      if (!organizationId || !boundedText(request.sessionId) || !Number.isSafeInteger(request.sessionVersion)) {
+        return { ok: false, code: 'invalid_request', status: 400, retryable: false };
+      }
+      // One live workspace per organization (migration 1200), so there is nothing to choose.
+      const [workspaceId, ...others] = await deps.organizationWorkspaceIds(organizationId);
+      if (!workspaceId || others.length > 0) {
+        return { ok: false, code: 'no_workspace', status: 404, retryable: false };
+      }
+      const selected = await deps.selectWorkspace({
+        sessionId: request.sessionId,
+        workspaceId,
+        expectedPermissionVersion: request.sessionVersion,
+      });
+      if (!selected) return { ok: false, code: 'session_selection_failed', status: 409, retryable: true };
+      return { ok: true, workspaceId, sessionId: selected.sessionId, sessionExpiresAt: selected.expiresAt };
+    },
+
+
     async run(request: HostedFirstWorkspaceRequest): Promise<HostedFirstWorkspaceResult> {
       const organizationId = boundedText(request.organizationId);
       const userId = boundedText(request.userId);

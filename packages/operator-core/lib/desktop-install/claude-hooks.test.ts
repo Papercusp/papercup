@@ -159,6 +159,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/posttooluse-cli-entry-nudge.mjs`,
       `${DEST}/posttooluse-tsc-verdict-stale-nudge.mjs`,
+      `${DEST}/posttooluse-proof-stale-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);

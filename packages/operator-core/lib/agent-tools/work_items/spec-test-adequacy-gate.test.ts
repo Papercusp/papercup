@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import type { SpecClauseRevision } from '../plans/spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from '../plans/spec-test-adequacy';
-import { evaluateSpecTestAdequacy, SPEC_TEST_ADEQUACY_RUBRIC_REF } from '../plans/spec-test-adequacy';
+import {
+  evaluateSpecTestAdequacy,
+  SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
+  SPEC_TEST_ADEQUACY_RUBRIC_REF,
+} from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
@@ -116,7 +120,12 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
   };
 }
 
-/** The evaluator requires a successful ledger-backed negative control for falsifiability. */
+/**
+ * The evaluator requires a successful ledger-backed negative control for falsifiability, TARGETED
+ * at the clause (a49fca9b96 + WI-10002724 / D-009): clause() declares no falsifier scenarios, so
+ * the accepted target is its own lower-cased specId. The inherited `targeted: true` no longer
+ * qualifies, which left this whole suite red on staging from a49fca9b96 on.
+ */
 function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
   return listedEvidence({
     id: 2,
@@ -126,6 +135,7 @@ function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvide
       adequacy: {
         ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
         outcome: 'killed',
+        targeted: 'spec-003-01',
       },
     },
     ...over,
@@ -1129,5 +1139,101 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
     // right reason and been indistinguishable from a regression.
     expect(activeResult).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!activeResult.ok) expect(activeResult.reason).toContain('SPEC-900-01@1');
+  });
+});
+
+/**
+ * P-043 (review-system-rework-reduction-2026-09-23), RSR-P-043-A: a card graded under an older
+ * evaluator RULE revision is re-evaluated from its stored bindings at completion; an unchanged
+ * verdict keeps the card and its passed audit, and only a changed verdict needs a new one.
+ */
+describe('P-043: adequacy cards across an evaluator rule revision', () => {
+  const PASSED_AUDIT = {
+    state: 'passed' as const,
+    metaRubricRef: 'grading-integrity',
+    stampedAt: '2026-08-20T00:02:00.000Z',
+  };
+
+  function stampedCard(recordedRevision: number | undefined, over: Partial<ScorecardRow> = {}): ScorecardRow {
+    const live = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: passingEvidence(),
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(live.scorecardDraft.rerunRecipe.evaluatorRevision).toBe(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
+    const recipe: ScorecardRow['rerunRecipe'] = { ...live.scorecardDraft.rerunRecipe };
+    if (recordedRevision === undefined) delete recipe!.evaluatorRevision;
+    else recipe!.evaluatorRevision = recordedRevision;
+    return matchingCard({ rerunRecipe: recipe, gradingAudit: PASSED_AUDIT, ...over });
+  }
+
+  it('the evaluator stamps its rule revision on every card recipe, and it is past the pre-stamp revision', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBeGreaterThan(1);
+  });
+
+  it('keeps an older-revision card and its passed audit when every re-evaluated verdict is unchanged', async () => {
+    const deps = passingDeps();
+    const older = SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1;
+    deps.listCards.mockResolvedValue([stampedCard(older)]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toEqual({
+      ok: true,
+      applicable: true,
+      checked: ['SPEC-003-01@1'],
+      carriedAcrossEvaluatorRevision: [
+        {
+          label: 'SPEC-003-01@1',
+          issueId: 'EI-scorecard',
+          recordedRevision: older,
+          currentRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
+        },
+      ],
+    });
+  });
+
+  it('reads a recipe minted before the stamp as revision 1 and carries it on unchanged verdicts', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([stampedCard(undefined)]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      carriedAcrossEvaluatorRevision: [expect.objectContaining({ recordedRevision: 1 })],
+    });
+  });
+
+  it('reports nothing carried for a card graded under the current revision', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION)]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+  });
+
+  it('refuses when the rule bump CHANGED a verdict, naming the revision move and the changed criterion', async () => {
+    const live = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: passingEvidence(),
+      classRef: 'plan-class-feature-ship',
+    });
+    const [criterion] = Object.entries(live.ratings).find(([, value]) => value.rating === 'pass')!;
+    const oldRuleRatings = { ...live.ratings, [criterion]: { rating: 'not-applicable', evidence: 'old rule' } };
+    const deps = passingDeps();
+    const older = SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1;
+    deps.listCards.mockResolvedValue([stampedCard(older, { ratings: oldRuleRatings })]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain(
+      `the evaluator rule moved from revision ${older} to ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}`,
+    );
+    expect(result.reason).toContain(`${criterion}: not-applicable→pass`);
+    expect(result.reason).toContain('only these changed verdicts need a re-emitted card and a new audit');
   });
 });

@@ -12,6 +12,7 @@ import {
   HOSTED_AUTH_CALLBACK_PATH,
   HOSTED_AUTH_FLOW_COOKIE,
   HOSTED_AUTH_ROUTES,
+  HOSTED_SESSION_LIFETIME_MS,
   createHostedAuthRoutes,
   safeHostedReturnTarget,
   type HostedAuthRouteDependencies,
@@ -237,7 +238,9 @@ describe('hosted auth route contract', () => {
         permissionVersion: 7,
         upstreamProvider: 'fake',
         upstreamSessionId: 'session_test_001',
-        expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
+        // The hosted session lifetime from sign-in — never the access token's expiry,
+        // which made every sign-in last five minutes (2026-09-23).
+        expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + HOSTED_SESSION_LIFETIME_MS),
       },
     ]);
     expect(s.sessionStore.created[0]).not.toHaveProperty('permissions');
@@ -269,7 +272,7 @@ describe('hosted auth route contract', () => {
       upstreamSessionId: 'session_test_001',
       createdAt: NOW,
       rotatedAt: null,
-      expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
+      expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + HOSTED_SESSION_LIFETIME_MS),
       lastSeenAt: null,
       revokedAt: null,
       revocationReason: null,
