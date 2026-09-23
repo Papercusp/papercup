@@ -104,7 +104,7 @@ describe('native turn-end policy observation', () => {
     f.setTail([turn('prior', 1), turn('current', 3)]); f.setNow(4);
     const read = { goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
       agenda: { evaluations: [row] } } as AgentObligationAgendaRead;
-    const deps: GoalPlacementTurnEndDeps = { ...f.deps, agenda: vi.fn(async () => read) };
+    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), agenda: vi.fn(async () => read) };
     const endInput = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: session.sessionId, sourceKind: session.sourceKind };
     return { ...f, read, deps, endInput };
   }
@@ -116,6 +116,16 @@ describe('native turn-end policy observation', () => {
       observedAt: at(4).toISOString(), rows: [{ planSlug: 'plan', planRef: 'plan:harness/plan', status: 'due', applicableDemand: 1,
         actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
     } } }));
+  });
+  it('does no native or policy IO for a non-GOAL caller, and refuses a mid-read goal change', async () => {
+    const f = endFixture(); f.deps.goalSubject = async () => null;
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('no-canonical-goal');
+    expect(f.deps.current).not.toHaveBeenCalled();
+    expect(f.deps.tail).not.toHaveBeenCalled();
+    expect(f.deps.agenda).not.toHaveBeenCalled();
+    f.deps.goalSubject = async () => 'previous-goal';
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('goal-scope-changed-during-observation');
+    expect(f.deps.append).not.toHaveBeenCalled();
   });
   it.each(['blocked', 'unknown', 'not-applicable', 'in-progress', 'satisfied'] as const)('preserves %s instead of asserting eligibility', async (status) => {
     const f = endFixture(); f.read.agenda.evaluations = [{ ...row, status }];

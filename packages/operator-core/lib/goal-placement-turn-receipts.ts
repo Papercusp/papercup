@@ -23,6 +23,7 @@ export type GoalPlacementDelivery = z.infer<typeof goalPlacementDeliverySchema>;
 /** A delayed journal must not relabel today's state as an old turn's state. */
 export const GOAL_PLACEMENT_TURN_END_MAX_LAG_MS = 60_000;
 export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptDeps, 'current' | 'tail' | 'append' | 'now'> {
+  goalSubject: (ownerId: string, workspaceId: string) => Promise<string | null>;
   agenda: (ownerId: string, workspaceId: string) => Promise<AgentObligationAgendaRead>;
 }
 
@@ -64,8 +65,14 @@ function latestCompletedDecision(session: SelfSession, turns: TranscriptTailTurn
 export async function recordGoalPlacementTurnEnd(input: {
   ownerId: string; workspaceId: string; nativeSessionId: string; sourceKind: SelfSession['sourceKind'];
 }, deps: GoalPlacementTurnEndDeps = { ...defaults,
+  goalSubject: async (ownerId, workspaceId) =>
+    (await import('./agent-obligation-reader')).defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
   agenda: async (ownerId, workspaceId) => (await import('./agent-obligation-reader')).readAgentObligationAgenda({ ownerId, workspaceId }),
 }): Promise<{ recorded: boolean; reason: string }> {
+  // Most journal callers do not hold a GOAL. One indexed mode read avoids
+  // transcript and portfolio IO for them; missing scope is never inferred.
+  const goalId = await deps.goalSubject(input.ownerId, input.workspaceId);
+  if (!goalId) return { recorded: false, reason: 'no-canonical-goal' };
   const session = await deps.current(input.ownerId);
   if (!session || session.sessionId !== input.nativeSessionId || session.sourceKind !== input.sourceKind) {
     return { recorded: false, reason: 'native-session-mismatch' };
@@ -77,6 +84,7 @@ export async function recordGoalPlacementTurnEnd(input: {
   if (!timely(deps.now())) return { recorded: false, reason: 'turn-end-observation-stale' };
   const read = await deps.agenda(input.ownerId, input.workspaceId);
   if (!read.goalId) return { recorded: false, reason: 'no-canonical-goal' };
+  if (read.goalId !== goalId) return { recorded: false, reason: 'goal-scope-changed-during-observation' };
   const observedAt = Date.parse(read.observedAt);
   if (!timely(observedAt) || !timely(deps.now()) || observedAt > deps.now()) {
     return { recorded: false, reason: 'turn-end-observation-stale' };

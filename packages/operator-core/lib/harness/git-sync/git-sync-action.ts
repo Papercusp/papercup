@@ -31,7 +31,7 @@
  *     post-leg are still running, so `routines:list` cannot mistake local-stage
  *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
@@ -1529,6 +1529,7 @@ async function readEscalationCounters(
   errTicks: number;
   oversizedKeys: string[];
   contentTicks: number;
+  contentSignature: string | null;
   /** EI-21906459740652039: consecutive ticks the cumulative-limit guard has peeled. */
   cumulativePeelTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
@@ -1541,6 +1542,7 @@ async function readEscalationCounters(
       lo: string[] | null;
       lb: string[] | null;
       ct: number;
+      cs: string | null;
       cpt: number;
       pubrefused: string | null;
       pubblocked: string | null;
@@ -1551,6 +1553,7 @@ async function readEscalationCounters(
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_bulk_excluded', '[]'::jsonb))) AS lb,
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
+           metadata->>'last_content_error_signature' AS cs,
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
@@ -1568,6 +1571,7 @@ async function readEscalationCounters(
     // tick. Old rows simply have no `lb` and remain backwards compatible.
     oversizedKeys: [...new Set([...(rows[0]?.lo ?? []), ...(rows[0]?.lb ?? [])])],
     contentTicks: rows[0]?.ct ?? 0,
+    contentSignature: rows[0]?.cs ?? null,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
     publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
     prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
@@ -1755,6 +1759,37 @@ function contentFixerSignature(contentErrors: readonly ScopedContentError[]): st
   return [...new Set(contentErrors.map((c) => `${c.scope}\u0000${c.file}\u0000${c.detectorKey}`))]
     .sort()
     .join('\u0001');
+}
+
+/** Persist human-actionable quarantine work through the existing condition-key upsert. */
+async function upsertGitSyncContentHumanWorkItem(
+  slug: string,
+  workspaceId: string,
+  contentErrors: readonly ScopedContentError[],
+  consecutiveTicks: number,
+): Promise<void> {
+  const signature = contentFixerSignature(contentErrors);
+  const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 24);
+  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const fileList = files.map((f) => `${f.scope}/${f.file} [${f.detector}]: ${f.error}`).join('; ');
+  const { upsertConditionWorkItem } = await import('../../coord/condition-upsert');
+  await upsertConditionWorkItem(`git-sync-content:${slug}:${signatureHash}`, {
+    kind: 'bug',
+    title: `git-sync content quarantine needs a human (${files.length} file(s), ${signatureHash})`,
+    summary:
+      `The git-sync content fixer exhausted its ${MAX_CONTENT_FIXER_ATTEMPTS}-tick budget for this offender signature ` +
+      `after ${consecutiveTicks} consecutive ticks. These files remain quarantined from auto-commit until repaired: ${fileList}`,
+    severity: 'major',
+    harness: slug,
+    workspaceId,
+    createdBy: GIT_SYNC_IDENTITY.ownerId,
+    payload: {
+      source: 'git-sync-content-guard',
+      signature: signatureHash,
+      consecutiveContentErrorTicks: consecutiveTicks,
+      files,
+    },
+  });
 }
 
 /**
@@ -2255,6 +2290,8 @@ async function recordOutcome(
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
       last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
+      last_content_error_signature:
+        outcome.contentErrors.length > 0 ? contentFixerSignature(outcome.contentErrors) : null,
       // A measured-clean pass invalidates the prior dispatch identity. This is
       // intentionally in the same outcome write as the clean detector result.
       ...(outcome.contentErrors.length === 0 ? { last_content_fixer: null } : {}),
@@ -3380,8 +3417,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     outcome = { ...outcome, contentErrors: revalidatedContentErrors };
   }
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
-  // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
-  const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
+  // EI-23989162263803651: the fixer budget belongs to the current offender signature,
+  // not the routine-wide streak. A new file/detector set starts its own five-tick budget.
+  const contentSignature = outcome.contentErrors.length > 0 ? contentFixerSignature(outcome.contentErrors) : null;
+  const sameContentSignature = contentSignature !== null && contentSignature === prev.contentSignature;
+  const prevSignatureContentTicks = sameContentSignature ? prev.contentTicks : 0;
+  const contentTicks = contentSignature === null ? 0 : prevSignatureContentTicks + 1;
   // EI-21906459740652039: the cumulative-limit peel's own consecutive-tick counter.
   // Same shape as contentTicks, and for the same reason the content guard needed one:
   // the oversized BROADCAST is edge-triggered, so without a persisted count a peel
@@ -3429,6 +3470,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           errTicks,
           contentTicks,
           prevContentTicks: prev.contentTicks,
+          prevSignatureContentTicks,
           prevOversizedKeys: prev.oversizedKeys,
           cumulativePeelTicks,
           // EI-21230011589307899: surface a frozen own-head publish. Read from the
@@ -6287,6 +6329,7 @@ async function recordAndEscalateTick(a: {
   errTicks: number;
   contentTicks: number;
   prevContentTicks: number;
+  prevSignatureContentTicks: number;
   prevOversizedKeys: string[];
   /** EI-21906459740652039: consecutive ticks (incl. this one) the cumulative-limit
    *  guard peeled — persisted here and read back by the NEXT tick, so a CHRONIC peel
@@ -6393,7 +6436,7 @@ async function recordAndEscalateTick(a: {
     // the fixer-budget transition, and a periodic re-alarm while it persists.
     const notice = decideContentQuarantineNotice({
       contentTicks,
-      prevContentTicks: a.prevContentTicks,
+      prevContentTicks: a.prevSignatureContentTicks,
       alarmTicks: MAX_CONTENT_FIXER_ATTEMPTS,
     });
     if (needsHuman) {
@@ -6408,6 +6451,13 @@ async function recordAndEscalateTick(a: {
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
           contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
+        try {
+          await upsertGitSyncContentHumanWorkItem(slug, workspaceId, contentErrors, contentTicks);
+        } catch (error) {
+          console.warn(
+            `[git-sync] ${slug}: could not persist content-quarantine work item: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         // P-006: ASSIGN to the agents who edited the quarantined files (derived from presence),
         // not a fleet broadcast. Falls back to ['*'] when attribution is off / unattributable.
         const to = await contentNoticeRecipients(slug, workspaceId, contentErrors, notice);

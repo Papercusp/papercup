@@ -206,6 +206,51 @@ describe('EI-21335862819188804 — section-only fields name their body home', ()
     );
   });
 
+  it.each([
+    {
+      field: 'youMayNotKnow',
+      value: ['WI-1234'],
+      expectedMessage: '`youMayNotKnow` must be an ARRAY',
+    },
+    {
+      field: 'couldNotDetermine',
+      value: ['whether the candidate carries the fix'],
+      expectedMessage: '`couldNotDetermine` must be an ARRAY',
+    },
+  ])('full dispatch preserves a nested $field shape refusal', async ({ field, value, expectedMessage }) => {
+    const projected = lookupByMcpName('coord:send');
+    expect(projected).toBeTruthy();
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'coord:send',
+      {
+        to: ['peer'],
+        summary: 'status',
+        expects: 'none',
+        body: [{ text: 'context', [field]: value }],
+      },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'papercusp-workspace',
+        runId: `coord-send-${field}-nested-shape-test`,
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+      },
+      {},
+    );
+
+    expect(dispatched.ok).toBe(false);
+    expect(dispatched.error?.message).toContain(expectedMessage);
+    expect(dispatched.error?.message).not.toContain('`body` must be an ARRAY of sections');
+  });
+
   it('redirects every section-only field to body[] instead of leaving a bare key list', () => {
     const redirects = sendTool.guidance?.argRedirects ?? {};
 

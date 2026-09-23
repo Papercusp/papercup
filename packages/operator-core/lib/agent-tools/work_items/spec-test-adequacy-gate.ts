@@ -17,6 +17,7 @@ import {
 } from '../plans/behavior-contract-resolver';
 import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
 import {
+  adequacyCardRevisionDisposition,
   evaluateSpecTestAdequacy,
   isNonCodeWorkItemKind,
   requiredProofFloor,
@@ -73,6 +74,38 @@ export interface SpecAdequacyCompletionAttestation {
  * populates it "once audited" — a card can be stamped `failed` by the identity-reopen
  * path without one, and reporting its absence honestly beats inventing a handle.
  */
+export interface CarriedAdequacyCard {
+  label: string;
+  issueId: string | null;
+  recordedRevision: number;
+  currentRevision: number;
+}
+
+/**
+ * P-043: name WHY no card matched when a live card exists. A rule-revision bump that changed a
+ * verdict says so (and which criteria), instead of the generic mismatch that sent the peer in the
+ * measured case to re-emit and re-audit on unchanged evidence without knowing the rule had moved.
+ */
+function verdictChangeDetail(cards: ScorecardRow[], result: SpecTestAdequacyResult): string | null {
+  const live = cards.find((card) => !card.supersededBy && !card.retracted);
+  if (!live) return null;
+  const disposition = adequacyCardRevisionDisposition({
+    recordedRevision: live.rerunRecipe?.evaluatorRevision,
+    recordedRatings: live.ratings,
+    liveRatings: result.ratings,
+  });
+  if (disposition.state !== 'verdict-changed') return null;
+  const moves = disposition.changed
+    .map((entry) => `${entry.criterion}: ${entry.recorded ?? 'absent'}→${entry.current ?? 'absent'}`)
+    .join(', ');
+  const cause = !live.rerunRecipe
+    ? `card ${live.issueId ?? '(unrecorded)'} records no evaluator rerun recipe, and the stored evidence now grades ${moves}`
+    : disposition.recordedRevision < disposition.currentRevision
+      ? `the evaluator rule moved from revision ${disposition.recordedRevision} to ${disposition.currentRevision} since card ${live.issueId ?? '(unrecorded)'} was graded, and it changed ${moves}`
+      : `card ${live.issueId ?? '(unrecorded)'} was graded under the current evaluator revision ${disposition.currentRevision}, but the stored evidence now grades ${moves}`;
+  return `${cause}; only these changed verdicts need a re-emitted card and a new audit`;
+}
+
 export interface FailedGradingAudit {
   issueId: string;
   auditIssueId?: string;
@@ -82,7 +115,19 @@ export interface FailedGradingAudit {
 
 export type SpecAdequacyCompletionGateResult =
   | { ok: true; applicable: false; checked: []; exempted?: string[]; impactReport?: string }
-  | { ok: true; applicable: true; checked: string[]; exempted?: string[]; impactReport?: string }
+  | {
+      ok: true;
+      applicable: true;
+      checked: string[];
+      exempted?: string[];
+      impactReport?: string;
+      /**
+       * P-043: clauses whose admitting card was graded under an OLDER evaluator rule revision,
+       * re-evaluated from its stored bindings with every verdict unchanged — the card and its
+       * settled audit were accepted as-is, with no re-emission or re-audit.
+       */
+      carriedAcrossEvaluatorRevision?: CarriedAdequacyCard[];
+    }
   | {
       ok: false;
       applicable: true;
@@ -546,6 +591,7 @@ export async function specTestAdequacyCompletionGate(
   }
 
   const checked: string[] = [];
+  const carriedAcrossEvaluatorRevision: CarriedAdequacyCard[] = [];
   const failures: string[] = [];
   const pendingGradingAuditTargetIds = new Set<string>();
   const failedGradingAuditTargetIds = new Set<string>();
@@ -624,9 +670,30 @@ export async function specTestAdequacyCompletionGate(
                     : `(no audit card recorded for graded card ${entry.issueId})`,
                 )
                 .join(', ')}`
-          : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts`,
+          : (() => {
+              const detail = verdictChangeDetail(cards, result);
+              return `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
+            })(),
       );
       continue;
+    }
+    // Only an evaluator-minted card (it carries a rerun recipe) has a grading revision to
+    // report; a recipe without the stamp predates it and reads as revision 1.
+    const admitting = cards.find((card) => scorecardMatches(card, result))!;
+    const disposition = admitting.rerunRecipe
+      ? adequacyCardRevisionDisposition({
+          recordedRevision: admitting.rerunRecipe.evaluatorRevision,
+          recordedRatings: admitting.ratings,
+          liveRatings: result.ratings,
+        })
+      : null;
+    if (disposition?.state === 'carried') {
+      carriedAcrossEvaluatorRevision.push({
+        label,
+        issueId: admitting.issueId ?? null,
+        recordedRevision: disposition.recordedRevision,
+        currentRevision: disposition.currentRevision,
+      });
     }
     checked.push(label);
   }
@@ -643,5 +710,11 @@ export async function specTestAdequacyCompletionGate(
       ...(failedGradingAudits.length ? { failedGradingAudits: [...failedGradingAudits] } : {}),
     });
   }
-  return withReport({ ok: true, applicable: true, checked, ...(exempted.length ? { exempted } : {}) });
+  return withReport({
+    ok: true,
+    applicable: true,
+    checked,
+    ...(exempted.length ? { exempted } : {}),
+    ...(carriedAcrossEvaluatorRevision.length ? { carriedAcrossEvaluatorRevision } : {}),
+  });
 }

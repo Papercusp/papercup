@@ -165,6 +165,33 @@ describe('HostedSessionStore', () => {
     expect(count[0].count).toBe(1);
   });
 
+  itPg('signing in again on a reused provider session supersedes only the same user\'s earlier session', async () => {
+    const store = new mod!.HostedSessionStore(h.sql, () => NOW);
+    const first = await store.create(input('reauth'));
+    // Same person, same upstream session id — what WorkOS returns when its own
+    // browser session outlives our 5-minute local session (2026-09-23 incident).
+    const second = await store.create(input('reauth'));
+
+    expect(second.id).not.toBe(first.id);
+    expect(await store.resolve(first.id, { at: NOW })).toBeNull();
+    expect(await store.resolve(second.id, { at: NOW })).toMatchObject({ id: second.id });
+    const rows = await db!.adminSql<Array<{ id: string; revocation_reason: string | null }>>`
+      SELECT id, revocation_reason FROM papercusp_auth.hosted_sessions
+       WHERE upstream_provider = 'workos' AND upstream_session_id = 'upstream-reauth'
+       ORDER BY created_at, revoked_at NULLS LAST`;
+    expect(rows).toEqual([
+      { id: first.id, revocation_reason: 'superseded_by_reauthentication' },
+      { id: second.id, revocation_reason: null },
+    ]);
+
+    // A DIFFERENT user presenting the same upstream session id must not retire
+    // the live owner's session, and must not get one of its own.
+    await expect(store.create({ ...input('reauth'), userId: 'user-intruder' })).rejects.toThrow(
+      /hosted_sessions_upstream_session_key/,
+    );
+    expect(await store.resolve(second.id, { at: NOW })).toMatchObject({ id: second.id });
+  });
+
   itPg('revokes by opaque id or provider session and never resolves expired rows', async () => {
     const store = new mod!.HostedSessionStore(h.sql, () => NOW);
     const direct = await store.create(input('direct-revoke'));

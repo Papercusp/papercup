@@ -3414,6 +3414,12 @@ export interface AcceptanceBarAmendmentPreview {
   authorVerdictBecomesStale: boolean;
   reboundWorkItemIds: string[];
   cohortDisposition: { cohort: string | null; adoptionEpoch: number | null; action: 'preserve' };
+  /**
+   * P-039 (review-system-rework-reduction-2026-09-23, R-9): ship readiness before vs after this
+   * amendment — blocking-BAR counts, codes added and removed, every BAR flipped between a manual
+   * contract and automated proof, and `raisesProofFloorOnly` when that is its only effect.
+   */
+  readinessDelta: import('./acceptance-bar-amendment-readiness').AcceptanceBarAmendmentReadinessDelta;
   nextRepair: { code: string; action: string };
   /**
    * The independence population a prospective approver must stay OUTSIDE of, so a
@@ -3465,6 +3471,10 @@ export interface AcceptanceBarAmendmentPreview {
     relatedVia?: AcceptanceBarApproverRelationVia;
     /** `eligible` recomputed over the population EXCLUDING the caller. */
     eligibleWithUnrelatedApplier?: boolean;
+    /** Explicitly false on a no-op screen: no approval is needed when no BAR meaning changed. */
+    approvalRequired?: boolean;
+    /** Explains why a no-op preview reports eligibility without requesting approval. */
+    reason?: 'no bar meaning changed';
   };
 }
 
@@ -4156,6 +4166,7 @@ async function amendAcceptanceBarRubric(
       const {
         readAcceptanceBarContractSnapshot,
         diffAcceptanceBarContractSnapshots,
+        predictAmendedBarProofFloor,
       } = await import('./acceptance-bar-contract-snapshot');
       const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
       const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
@@ -4170,7 +4181,9 @@ async function amendAcceptanceBarRubric(
       }
       const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
       const itemStatusById = new Map(itemRows.map((row) => [row.item_id, row.status]));
-      const candidate = buildAcceptanceBarAmendmentCandidate(
+      // P-039: the candidate spreads the pre-amendment trace, so without the re-prediction a
+      // manual BAR given a tests check still read "no automated proof owed" here and in vetting.
+      const candidate = predictAmendedBarProofFloor(snapshot, buildAcceptanceBarAmendmentCandidate(
         snapshot,
         nextCriteria,
         desiredMappingByBar,
@@ -4181,7 +4194,7 @@ async function amendAcceptanceBarRubric(
           barSetHash: String(guard.data.barSetHash),
           barContract: (guard.data.barContract ?? null) as Rubric['barContract'] | null,
         },
-      );
+      ), nextCriteria);
       const nextTemplateData = guard.data as { barContract?: { adoptionEpoch?: number | null } };
       const startedBar =
         stored.barContract?.adoptionEpoch != null || nextTemplateData.barContract?.adoptionEpoch != null;
@@ -4229,12 +4242,13 @@ async function amendAcceptanceBarRubric(
         // EI-23806582233421348: surface the independence population and, when the caller
         // names a prospective approver, the same lineage verdict the apply path will
         // reach — so an ineligible reviewer is discovered BEFORE their wake is spent.
-        // Gated on the approval-required condition so previews that change no BAR are
-        // unaffected; the reads below are exactly the ones apply already performs.
+        // A no-op preview still answers an explicit candidate-screen request; its reason
+        // says no approval is needed because no BAR meaning changed.
         let previewImplementers: string[] | undefined;
         let approverEligibility: AcceptanceBarAmendmentPreview['approverEligibility'];
-        if (changedBars.length > 0) {
-          const norm = (identity: string | null | undefined) => (identity ?? '').trim();
+        const norm = (identity: string | null | undefined) => (identity ?? '').trim();
+        const prospectiveApprover = norm(input.approvedBy);
+        if (changedBars.length > 0 || prospectiveApprover) {
           // WI-10002357: the population stays byte-identical to the apply rail, but we now
           // remember WHY each identity is in it. `actorId` is present because THIS caller
           // would perform the apply — a curable condition — whereas the rubric author, the
@@ -4255,17 +4269,25 @@ async function amendAcceptanceBarRubric(
           attribute(stored.createdBy, 'rubric-author');
           attribute(subjectRow.owner, 'subject-owner');
           attribute(actorId, 'caller');
-          previewImplementers = [...roles.keys()].sort();
-          const prospectiveApprover = norm(input.approvedBy);
+          if (changedBars.length > 0) previewImplementers = [...roles.keys()].sort();
           if (prospectiveApprover) {
-            approverEligibility = await evaluateAcceptanceBarApproverEligibility(
+            const evaluation = await evaluateAcceptanceBarApproverEligibility(
               prospectiveApprover,
               roles,
               { sql: tx as never, workspaceId: subjectScope.workspaceId },
             );
+            approverEligibility = changedBars.length > 0
+              ? evaluation
+              : { ...evaluation, approvalRequired: false, reason: 'no bar meaning changed' };
           }
         }
         const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
+        const { evaluateAmendmentReadinessDelta } = await import('./acceptance-bar-amendment-readiness');
+        const readinessDelta = evaluateAmendmentReadinessDelta(snapshot, candidate);
+        // P-039: when the amendment only raises the proof floor, say so FIRST — the requester
+        // posts this preview for an outside countersignature, and that review should not be spent
+        // on an amendment whose only effect is new blocking codes on formerly manual BARs.
+        const floorWarning = readinessDelta.raisesProofFloorOnly ? `${readinessDelta.summary} ` : '';
         return {
           rubric: stored,
           decisionId: '',
@@ -4305,23 +4327,24 @@ async function amendAcceptanceBarRubric(
             },
             ...(previewImplementers ? { implementers: previewImplementers } : {}),
             ...(approverEligibility ? { approverEligibility } : {}),
+            readinessDelta,
             nextRepair: missingMethod
               ? {
                   code: 'bar_snapshot_method_missing',
-                  action: 'Fill every mandatory METHOD before vetting or grading.',
+                  action: `${floorWarning}Fill every mandatory METHOD before vetting or grading.`,
                 }
               : {
                   code: 'bar_snapshot_proof_stale',
                   // P-002/P-027: name ONLY the proof this amendment invalidates. Unchanged
                   // bars keep their clause revision and proof (carriedProofRefs).
-                  action: proofPartition.invalidatedProofRefs.length > 0
+                  action: floorWarning + (proofPartition.invalidatedProofRefs.length > 0
                     ? `Re-bind the ${proofPartition.invalidatedProofRefs.length} proof ref(s) in invalidatedProofRefs ` +
                       `for the changed bar(s) ${changedBars.join(', ') || '(none)'}; the ` +
                       `${proofPartition.carriedProofRefs.length} in carriedProofRefs survive unchanged. Then refresh ` +
                       'vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.'
                     : `No bound proof is invalidated (${proofPartition.carriedProofRefs.length} carried unchanged). ` +
                       'Refresh vetting and independent grading for the new rubric revision; historical ship verdicts ' +
-                      'remain recorded but cannot authorize this revision.',
+                      'remain recorded but cannot authorize this revision.'),
                 },
           },
         };

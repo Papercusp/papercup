@@ -32,6 +32,18 @@ import {
   HOSTED_SELF_SIGNUP_TERMS_VERSION,
 } from '../../../auth/hosted/self-signup';
 
+/**
+ * How long a hosted session lasts from sign-in.
+ *
+ * Deliberately NOT the identity provider's access-token expiry, which it used to be:
+ * WorkOS access tokens live about five minutes, so every hosted sign-in ended five
+ * minutes later (measured on the owner's account 2026-09-23). The provider stays the
+ * authority on whether the person is still signed in — its revocation webhook ends our
+ * session, and the session route renews the token with the refresh token and ends ours
+ * when WorkOS refuses — so this is only the ceiling on a session nobody revoked.
+ */
+export const HOSTED_SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
+
 export const HOSTED_AUTH_FLOW_COOKIE = '__Secure-papercusp_hosted_auth_flow';
 export const HOSTED_AUTH_CALLBACK_ROUTE = '/hosted/auth/callback';
 export const HOSTED_AUTH_CALLBACK_PATH = `/api${HOSTED_AUTH_CALLBACK_ROUTE}`;
@@ -273,6 +285,7 @@ function validAdmittedSession(
   binding: HostedIdentityBinding,
   upstream: HostedVerifiedIdentitySession,
   providerId: string,
+  expiresAt: Date,
 ): boolean {
   return (
     session.id.length > 0 &&
@@ -282,7 +295,7 @@ function validAdmittedSession(
     session.permissionVersion === binding.permissionVersion &&
     session.upstreamProvider === providerId &&
     session.upstreamSessionId === upstream.externalSessionId &&
-    session.expiresAt.getTime() === upstream.expiresAtMs &&
+    session.expiresAt.getTime() === expiresAt.getTime() &&
     session.revokedAt === null
   );
 }
@@ -445,6 +458,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       }
       const upstream = exchanged.value;
       const now = clock();
+      const sessionExpiresAt = new Date(now.getTime() + HOSTED_SESSION_LIFETIME_MS);
       if (!validIdentitySession(upstream, now.getTime())) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
         return jsonError('invalid_verified_identity', 'The verified identity is not valid.', 502, {
@@ -492,7 +506,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
             providerId: deps.provider.providerId,
             identity: upstream.identity,
             upstreamSessionId: upstream.externalSessionId,
-            upstreamSessionExpiresAt: new Date(upstream.expiresAtMs),
+            sessionExpiresAt,
             // Versions are intentionally fixed at the route seam until the
             // Portal supplies a reviewed terms-version selector.
             termsVersion: HOSTED_SELF_SIGNUP_TERMS_VERSION,
@@ -541,7 +555,10 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         // instead of a raw JSON 403 dead end.
         return callbackRecoveryRedirect(origin, 'membership_required');
       }
-      if (admittedSession && !validAdmittedSession(admittedSession, binding, upstream, deps.provider.providerId)) {
+      if (
+        admittedSession &&
+        !validAdmittedSession(admittedSession, binding, upstream, deps.provider.providerId, sessionExpiresAt)
+      ) {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
         return jsonError('session_create_failed', 'The hosted session could not be created.', 503, {
           'set-cookie': deleteFlowCookie(),
@@ -558,7 +575,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
             permissionVersion: binding.permissionVersion,
             upstreamProvider: deps.provider.providerId,
             upstreamSessionId: upstream.externalSessionId,
-            expiresAt: new Date(upstream.expiresAtMs),
+            expiresAt: sessionExpiresAt,
           };
           session = await deps.sessionStore.create(createInput);
         } catch (cause) {
@@ -700,7 +717,9 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
           upstreamProvider: local.upstreamProvider,
           issuedAtMs: upstream.issuedAtMs,
           authenticatedAtMs: upstream.authenticatedAtMs,
-          expiresAtMs: Math.min(local.expiresAt.getTime(), upstream.expiresAtMs),
+          // The session's own end. The access token behind it is renewed on each check,
+          // so its five-minute expiry says nothing about how long this session lasts.
+          expiresAtMs: local.expiresAt.getTime(),
           authenticationMethods: [...upstream.authenticationMethods],
           mfaVerified: upstream.mfaVerified,
         },

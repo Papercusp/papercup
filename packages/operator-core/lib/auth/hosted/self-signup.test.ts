@@ -19,7 +19,7 @@ function input(overrides: Partial<HostedSelfSignupInput> = {}): HostedSelfSignup
       displayName: 'Member',
     },
     upstreamSessionId: 'workos-session-1',
-    upstreamSessionExpiresAt: EXPIRES,
+    sessionExpiresAt: EXPIRES,
     termsVersion: 'terms-2026-09',
     privacyVersion: 'privacy-2026-09',
     acceptedAt: ACCEPTED,

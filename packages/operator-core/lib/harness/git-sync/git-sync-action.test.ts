@@ -361,6 +361,16 @@ vi.mock('../../agent-tools/coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessageMock(a[0], a[1] as Record<string, unknown>),
 }));
 
+const upsertConditionWorkItemMock = vi.fn(async (conditionKey: string, _input: Record<string, unknown>) => ({
+  conditionKey,
+  id: 'WI-CONTENT-TEST',
+  created: true,
+}));
+vi.mock('../../coord/condition-upsert', () => ({
+  upsertConditionWorkItem: (...a: unknown[]) =>
+    upsertConditionWorkItemMock(a[0] as string, a[1] as Record<string, unknown>),
+}));
+
 // Lazily imported by the action (best-effort doc-freshness sweep) — mock so the
 // dynamic import never pulls the real docs machinery.
 const captureHeadShaMock = vi.fn(async (_slug: string): Promise<string | null> => 'prev-sha-000');
@@ -378,8 +388,8 @@ let resolverRows: Array<{ lr: { status?: string; at?: number; instance?: string 
 let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
 /** Claimed values returned by the atomic content-fixer marker CAS. */
 let contentFixerClaimResults: boolean[] = [];
-/** Rows returned for the EI-18 + content counters read (`consecutive_error_ticks`/`last_oversized`/`consecutive_content_error_ticks`). */
-let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
+/** Rows returned for the EI-18 + content counters read, including the prior offender signature. */
+let counterRows: Array<{ et: number; lo: string[] | null; ct?: number; cs?: string | null }> = [];
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
 let rejectUnsafeAtCall: number | null = null;
 let unsafeCallCount = 0;
@@ -791,6 +801,12 @@ beforeEach(() => {
   resolveLaunchTargetForEventMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
+  upsertConditionWorkItemMock.mockReset();
+  upsertConditionWorkItemMock.mockImplementation(async (conditionKey) => ({
+    conditionKey,
+    id: 'WI-CONTENT-TEST',
+    created: true,
+  }));
   captureHeadShaMock.mockReset();
   enqueueDocSweepMock.mockReset();
   getFlagMock.mockReset();
@@ -3616,9 +3632,12 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(routinePatches().some((p) => 'last_content_fixer' in p)).toBe(false);
   });
 
+  const contentSignature = (errors: GitSyncOutcome['contentErrors']): string =>
+    [...new Set(errors.map((e) => `${e.scope}\u0000${e.file}\u0000${e.detectorKey}`))].sort().join('\u0001');
+
   it('after MAX attempts the file is STILL broken → surfaces to a human + STOPS auto-dispatching (P-005)', async () => {
     runGitSyncMock.mockResolvedValue(contentErrorOutcome);
-    counterRows = [{ et: 0, lo: [], ct: 4 }]; // 4 prior failing ticks → this is the 5th (= MAX), crosses the threshold
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: contentSignature(contentErrorOutcome.contentErrors) }]; // same signature, 4 prior failing ticks
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await action(ctx);
@@ -3637,12 +3656,39 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(identity).toMatchObject({ ownerId: 'system:git-sync' });
     expect(msg).toMatchObject({ to: ['*'], category: 'git-sync' });
     expect((msg as { summary: string }).summary).toContain('human is needed');
+    expect(upsertConditionWorkItemMock).toHaveBeenCalledTimes(1);
+    expect(upsertConditionWorkItemMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^git-sync-content:papercup:[a-f0-9]{24}$/),
+      expect.objectContaining({
+        kind: 'bug',
+        harness: 'papercup',
+        workspaceId: 'ws-42',
+        createdBy: 'system:git-sync',
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('a new quarantined signature after the routine streak reaches MAX gets its own fixer budget', async () => {
+    const previousError = contentErrorOutcome.contentErrors[0]!;
+    const newError = { ...previousError, file: 'apps/operator-docs/src/content/docs/new.mdx' };
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: [newError] });
+    counterRows = [{ et: 0, lo: [], ct: 5, cs: contentSignature([previousError]) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()[0].body).toMatchObject({ needs_human: false, consecutive_content_error_ticks: 1 });
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({ last_content_error_signature: contentSignature([newError]) }),
+    );
     warn.mockRestore();
   });
 
   it('does NOT re-broadcast on a failing tick already PAST the threshold (transition-only)', async () => {
     runGitSyncMock.mockResolvedValue(contentErrorOutcome);
-    counterRows = [{ et: 0, lo: [], ct: 5 }]; // already at MAX last tick → this is the 6th
+    counterRows = [{ et: 0, lo: [], ct: 5, cs: contentSignature(contentErrorOutcome.contentErrors) }]; // same signature, already at MAX last tick
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await action(ctx);

@@ -31,7 +31,8 @@ export interface HostedSelfSignupInput {
   readonly providerId: string;
   readonly identity: HostedVerifiedIdentity;
   readonly upstreamSessionId: string;
-  readonly upstreamSessionExpiresAt: Date;
+  /** When the local hosted session ends — the hosted session lifetime, not the access token's. */
+  readonly sessionExpiresAt: Date;
   readonly termsVersion: string;
   readonly privacyVersion: string;
   readonly acceptedAt: Date;
@@ -88,8 +89,8 @@ function validate(input: HostedSelfSignupInput): void {
     !email(input.identity?.primaryEmail) ||
     input.identity?.emailVerified !== true ||
     !text(input.upstreamSessionId) ||
-    !validDate(input.upstreamSessionExpiresAt) ||
-    input.upstreamSessionExpiresAt.getTime() <= Date.now() ||
+    !validDate(input.sessionExpiresAt) ||
+    input.sessionExpiresAt.getTime() <= Date.now() ||
     !text(input.termsVersion, 128) ||
     !text(input.privacyVersion, 128) ||
     !validDate(input.acceptedAt)
@@ -304,7 +305,7 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
         (id, user_id, organization_id, workspace_id, permission_version,
          upstream_provider, upstream_session_id, expires_at)
       VALUES (${id}, ${userId}, ${organizationId}, NULL, ${permissionVersion},
-              ${providerId}, ${input.upstreamSessionId}, ${input.upstreamSessionExpiresAt})
+              ${providerId}, ${input.upstreamSessionId}, ${input.sessionExpiresAt})
       RETURNING id, user_id, organization_id, permission_version, upstream_provider,
                 upstream_session_id, created_at, expires_at, updated_at
     `;

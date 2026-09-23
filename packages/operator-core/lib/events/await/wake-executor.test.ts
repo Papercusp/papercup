@@ -25,6 +25,8 @@ import {
   type ExecuteWakeDeps,
 } from './wake-executor';
 import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { getDoorConstantsSync } from '../../context-doors-config';
 import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // EI-20489286325396940: `wakeSummaryHeadline` (with `payloadIsTimeout`) lives in
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
@@ -1496,10 +1498,16 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     const delivered = applyInjectionDoor(d, current);
     try {
       expect(delivered).toContain('candidate 29e97a6761');
-      expect(delivered.indexOf('LIVE RE-CHECK')).toBeLessThan(delivered.indexOf('STALE-CANDIDATE-7e0e5011'));
-      expect(delivered).toMatch(/injection-door: wake text exceeded/);
+      // The live re-check still leads. P-024 clause D: the oversized stale snapshot is
+      // now left out WHOLE (absent, or only named in the footer after the re-check).
+      const staleAt = delivered.indexOf('STALE-CANDIDATE-7e0e5011');
+      expect(delivered.indexOf('LIVE RE-CHECK')).toBeGreaterThanOrEqual(0);
+      expect(staleAt === -1 || staleAt > delivered.indexOf('LIVE RE-CHECK')).toBe(true);
+      expect(delivered).not.toContain('old fire-time snapshot old fire-time snapshot');
+      expect(delivered).toMatch(/injection-door: \d+ section\(s\) did not fit/);
+      expect(delivered).not.toMatch(/was truncated/);
     } finally {
-      const m = delivered.match(/the FULL text is at (\S+) —/);
+      const m = delivered.match(/in full at (\S+) \(see its section index\)/);
       if (m) rmSync(m[1], { force: true });
     }
   });
@@ -4441,21 +4449,28 @@ describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () =>
     expect(applyInjectionDoor(work(), text)).toBe(text);
   });
 
-  it('an over-door wake is truncated with a pointer line, and the FULL text is spilled to the subscriber spill file', () => {
+  it('an over-door wake is packed to the budget from whole sections; each left-out section is named and the FULL text is spilled', () => {
     const d = work({ id: 990_001, subscriberId: 'su-door-test' });
-    const text = Array.from(
-      { length: 400 },
-      (_, i) => `carry-note line ${i} with enough words to overflow the injection budget`,
-    ).join('\n');
+    // P-024 clause D: 400 paragraphs, headline first and a `## Next action` section last.
+    const text = [
+      'HEADLINE loop wake #7',
+      ...Array.from({ length: 400 }, (_, i) => `carry-note paragraph ${i} with enough words to overflow the injection budget`),
+      '## Next action\nRun the typecheck.',
+    ].join('\n\n');
     const out = applyInjectionDoor(d, text);
-    expect(out.length).toBeLessThan(text.length);
-    expect(out).toMatch(/\[injection-door: wake text exceeded/);
-    const m = out.match(/the FULL text is at (\S+) —/);
+    const budget = computeTurnDoors(0, getDoorConstantsSync(d.subscriberId)).injections * CHARS_PER_TOKEN_ESTIMATE;
+    expect(out.length).toBeLessThanOrEqual(budget);
+    expect(out.startsWith('HEADLINE loop wake #7')).toBe(true);
+    expect(out).toContain('## Next action\nRun the typecheck.');
+    expect(out).not.toMatch(/was truncated/);
+    const m = out.match(/in full at (\S+) \(see its section index\)/);
     expect(m).not.toBeNull();
     const spillPath = m![1];
     expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001.md'));
     const spilled = readFileSync(spillPath, 'utf8');
     expect(spilled).toContain(text); // the WHOLE original, not just the overflow
+    expect(spilled).toContain('## Section index');
+    expect(spilled).toMatch(/LEFT OUT — "carry-note paragraph \d+/);
     rmSync(spillPath, { force: true });
   });
 

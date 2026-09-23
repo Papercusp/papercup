@@ -74,6 +74,9 @@ const h = vi.hoisted(() => ({
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
   repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
+  // P-024 clauses B/C: the actionability gate's envelope read. Unresolved (null) by
+  // default, which the gate reads as "keep the turn" — existing tests never suppress.
+  getLineEnvelopeById: vi.fn(async (_surface: string, _msgId: string): Promise<Record<string, unknown> | null> => null),
   observeCheckpointProducer: vi.fn(),
   compose: {
     bumpNode: vi.fn(),
@@ -95,6 +98,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
   lastInboxReadAtBatch: h.lastInboxReadAtBatch,
+}));
+vi.mock('../../agent-tools/coordination/line-event-by-id', () => ({
+  getLineEnvelopeById: h.getLineEnvelopeById,
 }));
 vi.mock('./checkpoint-verified-wait', () => ({
   observeCheckpointProducer: h.observeCheckpointProducer,
@@ -1693,5 +1699,77 @@ describe('pump guard is keyed per workspace (audit P-033)', () => {
     // A's guard entry cleared after the rerun — a later explicit pump proceeds.
     await pumpWakeDeliveries('ws-a');
     expect(claimCalls).toBe(4);
+  });
+});
+
+// review-system-rework-reduction-2026-09-23 P-024 clauses B/C, through the real pump.
+describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no turn', () => {
+  const envelopesById: Record<string, Record<string, unknown>> = {
+    'm-fyi': { msg_id: 'm-fyi', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'none' },
+    'm-ack': { msg_id: 'm-ack', from: 'su-b', to: ['su-a'], kind: 'ack', related_msg_id: 'm-0' },
+    'm-ask': { msg_id: 'm-ask', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'action' },
+    'm-owner': { msg_id: 'm-owner', from: 'pc-admin-coord-ui', to: ['su-a'], kind: 'message', expects: 'none' },
+  };
+  const inboxDelivery = (id: number, msgId: string): DeliveryWork =>
+    workRow({
+      id,
+      subscriberId: 'su-a',
+      eventKey: 'coord:inbox-wake:su-a',
+      createdAt: new Date(9000).toISOString(),
+      payload: { msg_id: msgId },
+    });
+
+  beforeEach(() => {
+    h.getLineEnvelopeById.mockImplementation(async (surface: string, msgId: string) =>
+      surface === 'messages' ? (envelopesById[msgId] ?? null) : null,
+    );
+  });
+  afterEach(() => {
+    h.getLineEnvelopeById.mockReset();
+    h.getLineEnvelopeById.mockImplementation(async () => null);
+  });
+
+  it('RSR-P-024-B: settles an FYI + ack group without executing a wake — no turn', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(40, 'm-fyi'), inboxDelivery(41, 'm-ack')]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(41, 'suppressed-redundant', 2);
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([40], 41);
+    expect(stats.suppressed).toBe(1);
+    expect(stats.delivered).toBe(0);
+  });
+
+  it('RSR-P-024-C: a directed ask in the group starts a turn', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(42, 'm-fyi'), inboxDelivery(43, 'm-ask')]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+    expect(stats.delivered).toBe(1);
+  });
+
+  it('RSR-P-024-C: an owner directive that looks like an FYI starts a turn', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(44, 'm-owner')]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('fails open: an envelope that cannot be read keeps the turn', async () => {
+    h.getLineEnvelopeById.mockImplementation(async () => {
+      throw new Error('coord log unavailable');
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(45, 'm-fyi')]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('never reads envelopes for a msg_id-less inbox wake (loop fires, system alarms)', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 46, subscriberId: 'su-a', eventKey: 'coord:inbox-wake:su-a', createdAt: new Date(9000).toISOString() }),
+    ]);
+    await pumpWakeDeliveries('ws-test');
+    expect(h.getLineEnvelopeById).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
   });
 });

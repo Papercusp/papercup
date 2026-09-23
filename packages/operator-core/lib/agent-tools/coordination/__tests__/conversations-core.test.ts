@@ -517,6 +517,30 @@ describe('postReplyCore', () => {
     expect((await store.get(opened.conversation.id))?.updated_ts).toBe('2030-01-01T01:00:00.000Z');
   });
 
+  it('resolves a unique truncated id before posting to the canonical conversation', async () => {
+    const canonicalId = 'conv-mtg3t543-0000-7f6b6e8460be4af0b94dbfc0f6858f00';
+    await store.create({
+      id: canonicalId,
+      kind: 'discussion',
+      scope: 'operator',
+      asker_id: 'asker',
+      body: 'seed conversation',
+      producer: 'test',
+      created_ts: T0,
+    });
+
+    const result = await postReplyCore(deps, ident('replier'), {
+      conversation_id: 'conv-mtg3t543',
+      body: 'reply through truncated id',
+    });
+    if ('error' in result) throw new Error(result.error);
+
+    expect(result.post.thread_id).toBe(`thr-${canonicalId}`);
+    expect((await threads.listPosts(`thr-${canonicalId}`)).map((post) => post.body)).toEqual([
+      'reply through truncated id',
+    ]);
+  });
+
   it('lazily creates the deterministic thread when the conversation row exists without one', async () => {
     await store.create({
       id: 'conv-bare',

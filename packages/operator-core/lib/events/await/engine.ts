@@ -67,6 +67,9 @@ import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
+import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-by-id';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import { classifyInboxWakeGroup } from './inbox-wake-actionability';
 import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
@@ -766,6 +769,36 @@ function deliveryMsgId(payload: unknown): string | null {
   return null;
 }
 
+/** Upper bound for the delivery-time envelope reads behind the actionability gate. */
+const INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS = 3_000;
+
+/**
+ * P-024 clauses B/C: resolve the coord envelopes an inbox-wake group points at,
+ * so `classifyInboxWakeGroup` can ask whether any of them carries something to
+ * act on. Looks on `messages` first, then `plan-events`. Every failure mode
+ * (a read error, a timeout, a missing row) leaves that id OUT of the map, which
+ * the classifier reads as "unresolved ⇒ keep the turn" (fail open).
+ */
+export async function resolveInboxWakeEnvelopes(msgIds: readonly string[]): Promise<Map<string, unknown>> {
+  const out = new Map<string, unknown>();
+  const unique = [...new Set(msgIds)];
+  if (unique.length === 0) return out;
+  await withBoundedTimeout(
+    Promise.all(
+      unique.map(async (id) => {
+        try {
+          const env = (await getLineEnvelopeById('messages', id)) ?? (await getLineEnvelopeById('plan-events', id));
+          if (env) out.set(id, env);
+        } catch {
+          /* fail open: an unreadable envelope keeps the wake */
+        }
+      }),
+    ),
+    { fallback: [], timeoutMs: INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS, label: 'inbox-wake actionability envelopes' },
+  );
+  return out;
+}
+
 /**
  * EI-18673058981655804 (redundant-inbox-wake-suppression): is this GROUP of due
  * deliveries entirely redundant against the subscriber's OWN inbox reads?
@@ -996,6 +1029,31 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
               `covered by its own coord:inbox read at ${lastReadAt})`,
           );
           continue;
+        }
+
+        // P-024 clauses B/C (review-system-rework-reduction-2026-09-23): the rule above
+        // asks "was it seen?"; this one asks "is there anything to act on?". When every
+        // delivery points at a message already durable in the inbox that carries no ask
+        // (an FYI with no reply linkage, an ack receipt, a plan event with no state
+        // change), settle without a turn. Directed asks, owner directives, required
+        // wakes, replies, msg_id-less wakes and unreadable envelopes keep the turn
+        // (classifyInboxWakeGroup fails open on all of them).
+        if (candidateMsgIds.length === group.length) {
+          const envelopes = await resolveInboxWakeEnvelopes(candidateMsgIds);
+          const actionability = classifyInboxWakeGroup(group, envelopes);
+          if (actionability.nonActionable) {
+            await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+            recordSettledDeliveryStats(stats, 'suppressed-redundant');
+            if (siblings.length > 0) {
+              await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+              stats.coalesced += siblings.length;
+            }
+            log(
+              `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) with nothing to act on: ` +
+                `${actionability.classes.join(', ')}; the messages remain in its coord inbox)`,
+            );
+            continue;
+          }
         }
       }
 

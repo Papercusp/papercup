@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,11 @@ import {
   type CompletionSettlementReconcilerDeps,
 } from './completion-settlement-reconciler';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
-import type { HeadBlobResolution } from '../../agent-tools/work_items/completion-freshness';
+import {
+  completionBlobHistoryContains,
+  completionHeadBlobMap,
+  type HeadBlobResolution,
+} from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
 
 const SHA = 'a'.repeat(40);
@@ -140,9 +144,151 @@ describe('residualPathsForCommit', () => {
   });
 });
 
-function settlementSql(options: { updateHits: boolean[] }) {
+describe('completionBlobHistoryContains — exact path and repository proof', () => {
+  it('settles a committed then superseded blob, but rejects ODB-only, other-path, and ignored blobs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-history-'));
+    TEMP_ROOTS.push(root);
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.test');
+    git('config', 'user.name', 'Settlement Fixture');
+    writeFileSync(join(root, '.gitignore'), 'ignored.ts\n');
+    writeFileSync(join(root, 'superseded.ts'), 'export const value = "before";\n');
+    writeFileSync(join(root, 'dirty.ts'), 'export const value = "before dirty";\n');
+    writeFileSync(join(root, 'wrong-path.ts'), 'export const value = "before wrong path";\n');
+    git('add', '--', '.gitignore', 'superseded.ts', 'dirty.ts', 'wrong-path.ts');
+    git('commit', '-q', '-m', 'completion head');
+    const closeHeadSha = git('rev-parse', 'HEAD');
+    const supersededHeadSha = git('hash-object', 'superseded.ts');
+    const dirtyHeadSha = git('hash-object', 'dirty.ts');
+    const wrongPathHeadSha = git('hash-object', 'wrong-path.ts');
+
+    writeFileSync(join(root, 'superseded.ts'), 'export const value = "close time";\n');
+    const supersededSha = git('hash-object', 'superseded.ts');
+    git('add', '--', 'superseded.ts');
+    git('commit', '-q', '-m', 'commit close-time blob');
+    writeFileSync(join(root, 'superseded.ts'), 'export const value = "later content";\n');
+
+    writeFileSync(join(root, 'dirty.ts'), 'export const value = "ODB only";\n');
+    const dirtyOnlySha = git('hash-object', '-w', 'dirty.ts');
+    writeFileSync(join(root, 'dirty.ts'), 'export const value = "later dirty content";\n');
+
+    writeFileSync(join(root, 'other-path.ts'), 'export const value = "other path only";\n');
+    const otherPathSha = git('hash-object', '-w', 'other-path.ts');
+    writeFileSync(join(root, 'wrong-path.ts'), 'export const value = "later wrong content";\n');
+    writeFileSync(join(root, 'ignored.ts'), 'export const value = "ignored ODB only";\n');
+    const ignoredSha = git('hash-object', '-w', 'ignored.ts');
+    git('add', '-A', '--', 'superseded.ts', 'dirty.ts', 'wrong-path.ts', 'other-path.ts');
+    git('commit', '-q', '-m', 'supersede and commit controls');
+    const emittedSha = git('rev-parse', 'HEAD');
+
+    const historyManifest = {
+      ...manifest,
+      repositoryRoot: root,
+      headSha: closeHeadSha,
+      normalizedPaths: ['superseded.ts', 'dirty.ts', 'wrong-path.ts', 'ignored.ts'],
+      contentIdentity: [
+        { path: 'superseded.ts', workingTreeBlobSha: supersededSha, headBlobSha: supersededHeadSha },
+        { path: 'dirty.ts', workingTreeBlobSha: dirtyOnlySha, headBlobSha: dirtyHeadSha },
+        { path: 'wrong-path.ts', workingTreeBlobSha: otherPathSha, headBlobSha: wrongPathHeadSha },
+        { path: 'ignored.ts', workingTreeBlobSha: ignoredSha, headBlobSha: null },
+      ],
+    };
+
+    expect(
+      await residualPathsForCommit(
+        historyManifest,
+        emittedSha,
+        completionHeadBlobMap,
+        undefined,
+        completionBlobHistoryContains,
+      ),
+    ).toEqual([
+      { path: 'dirty.ts', reason: 'content-mismatch' },
+      { path: 'wrong-path.ts', reason: 'content-mismatch' },
+      { path: 'ignored.ts', reason: 'missing-from-commit' },
+    ]);
+    const settlement = await reconcileProposedCompletionsAtCommit(
+      emittedSha,
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
+      { sql: settlementSql({ updateHits: [true], manifest: historyManifest }), emit: settlementEmitMock() },
+    );
+    expect(settlement).toMatchObject({ inspected: 1, upgraded: [], residual: 3, unreadable: [] });
+    expect(
+      await completionBlobHistoryContains(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
+    ).toBe(false);
+    expect(
+      await completionBlobHistoryContains(root, '0'.repeat(40), emittedSha, 'superseded.ts', supersededSha),
+    ).toBeUndefined();
+  });
+
+  it('reads superseded history from the commit-pinned submodule object database', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-history-submodule-'));
+    TEMP_ROOTS.push(root);
+    const subRoot = join(root, 'modules', 'nested');
+    mkdirSync(subRoot, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
+    const subGit = (...args: string[]) =>
+      execFileSync('git', ['-C', subRoot, ...args], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.test');
+    git('config', 'user.name', 'Settlement Fixture');
+    subGit('init', '-q');
+    subGit('config', 'user.email', 'fixture@example.test');
+    subGit('config', 'user.name', 'Settlement Fixture');
+    writeFileSync(join(subRoot, 'file.ts'), 'export const value = "before";\n');
+    subGit('add', '--', 'file.ts');
+    subGit('commit', '-q', '-m', 'submodule base');
+    const submoduleHeadSha = subGit('rev-parse', 'HEAD');
+    writeFileSync(join(root, '.gitmodules'), '[submodule "nested"]\n\tpath = modules/nested\n\turl = ./nested.git\n');
+    git('add', '--', '.gitmodules');
+    git('update-index', '--add', '--cacheinfo', '160000,' + submoduleHeadSha + ',modules/nested');
+    git('commit', '-q', '-m', 'add nested submodule');
+    const closeHeadSha = git('rev-parse', 'HEAD');
+
+    writeFileSync(join(subRoot, 'file.ts'), 'export const value = "close time";\n');
+    const supersededSha = subGit('hash-object', 'file.ts');
+    subGit('add', '--', 'file.ts');
+    subGit('commit', '-q', '-m', 'commit close-time submodule blob');
+    writeFileSync(join(subRoot, 'file.ts'), 'export const value = "later content";\n');
+    subGit('add', '--', 'file.ts');
+    subGit('commit', '-q', '-m', 'supersede submodule blob');
+    const emittedSubmoduleSha = subGit('rev-parse', 'HEAD');
+    git('update-index', '--cacheinfo', '160000,' + emittedSubmoduleSha + ',modules/nested');
+    git('commit', '-q', '-m', 'advance submodule pointer');
+    const emittedSha = git('rev-parse', 'HEAD');
+
+    expect(
+      await completionBlobHistoryContains(
+        root,
+        closeHeadSha,
+        emittedSha,
+        'modules/nested/file.ts',
+        supersededSha,
+      ),
+    ).toBe(true);
+  });
+});
+
+function settlementSql(options: { updateHits: boolean[]; manifest?: unknown }) {
   let updateIndex = 0;
-  const payload = { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: manifest } };
+  const payload = {
+    [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: options.manifest ?? manifest },
+  };
   const sql = vi.fn(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
     if (query.includes('SELECT feature_id, harness_slug, payload')) {

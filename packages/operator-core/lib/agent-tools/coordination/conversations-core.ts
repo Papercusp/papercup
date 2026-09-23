@@ -449,6 +449,18 @@ export interface PostResult {
   delivered: number;
 }
 
+async function resolveConversationRow(
+  deps: ConversationDeps,
+  id: string,
+): Promise<{ conversation: ConversationRow; resolvedFromPrefix?: string } | null> {
+  const exact = await deps.conversations.get(id);
+  if (exact) return { conversation: exact };
+  if (!deps.conversations.getByPrefix) return null;
+  const candidates = await deps.conversations.getByPrefix(id, 2);
+  if (candidates.length !== 1) return null;
+  return { conversation: candidates[0]!, resolvedFromPrefix: id };
+}
+
 async function appendPost(
   deps: ConversationDeps,
   identity: AgentIdentity,
@@ -456,8 +468,10 @@ async function appendPost(
   body: string,
   opts: { isAnswer: boolean; mentions?: string[]; viaConsultVerb?: boolean },
 ): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' } | { error: 'consult_requires_typed_verb' }> {
-  const conv = await deps.conversations.get(conversationId);
-  if (!conv) return { error: 'not_found' };
+  const resolved = await resolveConversationRow(deps, conversationId);
+  if (!resolved) return { error: 'not_found' };
+  const conv = resolved.conversation;
+  conversationId = conv.id;
   // THE CONSULT KIND GATE (get-feedback-relevance-consults-2026-08-16 P-004,
   // D-008 §2): a kind='consult' conversation takes only TYPED posts — every
   // post carries a consult_post_meta row (kind + evidence; migration 834), and
@@ -757,20 +771,10 @@ export interface ConversationDetail {
 }
 
 export async function getConversationCore(deps: ConversationDeps, id: string): Promise<ConversationDetail | null> {
-  let conversation = await deps.conversations.get(id);
-  let resolvedFromPrefix: string | undefined;
-  if (!conversation && deps.conversations.getByPrefix) {
-    // Exact match missed — try the prefix fallback (EI-21914051456641891).
-    // Ambiguous (>1) is treated exactly like a genuine miss: this NEVER
-    // guesses which conversation the caller meant.
-    const candidates = await deps.conversations.getByPrefix(id, 2);
-    if (candidates.length === 1) {
-      conversation = candidates[0];
-      resolvedFromPrefix = id;
-      id = conversation.id;
-    }
-  }
-  if (!conversation) return null;
+  const resolved = await resolveConversationRow(deps, id);
+  if (!resolved) return null;
+  const conversation = resolved.conversation;
+  id = conversation.id;
   const topics = await deps.tags.listTags(convRef(id));
   const thread = await deps.threads.getThreadByParent(convRef(id));
   const posts = thread ? await deps.threads.listPosts(thread.thread_id) : [];
@@ -780,7 +784,7 @@ export async function getConversationCore(deps: ConversationDeps, id: string): P
     topics,
     posts,
     subscriber_count: subscribers.length,
-    ...(resolvedFromPrefix ? { resolvedFromPrefix } : {}),
+    ...(resolved.resolvedFromPrefix ? { resolvedFromPrefix: resolved.resolvedFromPrefix } : {}),
   };
 }
 

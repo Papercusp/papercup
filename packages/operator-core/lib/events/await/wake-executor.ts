@@ -49,7 +49,8 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
-import { capInjectionText, computeTurnDoors } from '../../context-doors';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
 import {
   sessionClaudeConfigDir,
@@ -1696,40 +1697,50 @@ function injectionDoorTokens(subscriberId: string | null | undefined): number {
 }
 
 /**
- * Cap a composed wake text at the injections door, spilling the FULL original to a file
- * the recipient can read back (`~/.papercusp/wake-spills/<subscriber>/delivery-<id>.md`)
- * and appending a pointer line. A wake's unbounded fields (`summary` carries a loop's
- * whole carry-note; a coord body can ride a wake) previously injected without ANY cap —
- * the exact "injections" lane of the 2026-07-13 hop-budget analysis. FAIL-SOFT: a spill
- * write failure delivers the FULL untrimmed text (a lost wake tail is worse than a fat
- * hop), and the kill-switch env bypasses entirely. Applied BEFORE provenance tagging so
- * the envelope is never sheared.
+ * Fit a composed wake text to the injections door. A wake's unbounded fields (`summary`
+ * carries a loop's whole carry-note; a coord body can ride a wake) previously injected
+ * without ANY cap — the "injections" lane of the 2026-07-13 hop-budget analysis.
+ *
+ * P-024 clause D (review-system-rework-reduction-2026-09-23; P-026): the door BUILDS TO
+ * the budget instead of cutting a finished document. `packWakeText` keeps whole sections
+ * by priority (headline, then next-action / owner / blocker sections, then document
+ * order) and names every section it left out in one `[injection-door: …]` pointer; the
+ * FULL original plus a section index is spilled to
+ * `~/.papercusp/wake-spills/<subscriber>/delivery-<id>.md`. Nothing is cut mid-section.
+ * FAIL-SOFT: a spill write failure delivers the FULL untrimmed text (a lost wake tail is
+ * worse than a fat hop), and the kill-switch env bypasses entirely. Applied BEFORE
+ * provenance tagging so the envelope is never sheared.
  */
 export function applyInjectionDoor(d: DeliveryWork, text: string): string {
   try {
     if (process.env.PAPERCUSP_INJECTION_DOOR_OFF === '1') return text;
     const doorTokens = injectionDoorTokens(d.subscriberId);
-    const { kept, overflow } = capInjectionText(text, doorTokens);
-    if (overflow == null) return text;
+    const budgetChars = Math.max(1, Math.floor(doorTokens * CHARS_PER_TOKEN_ESTIMATE));
+    if (text.length <= budgetChars) return text;
     const dir = join(
       homedir(),
       '.papercusp',
       'wake-spills',
       String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'),
     );
-    mkdirSync(dir, { recursive: true });
     const file = join(dir, `delivery-${d.id}.md`);
+    const packed = packWakeText(text, budgetChars, doorTokens, file);
+    mkdirSync(dir, { recursive: true });
     writeFileSync(
       file,
       `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
-        `The injected wake exceeded the per-hop injection door (~${doorTokens} tokens); ` +
-        `this file carries the FULL original text. Safe to delete after reading.\n\n---\n\n${text}\n`,
+        `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
+        `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
+        `This file carries the FULL original text. Safe to delete after reading.\n\n` +
+        `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
       { mode: 0o600 },
     );
-    return (
-      `${kept}\n[injection-door: wake text exceeded the ~${doorTokens}-token per-hop injection budget and was truncated; ` +
-      `the FULL text is at ${file} — read it if this truncated tail matters for your next action.]`
+    recordWakePack(packed.omitted.length);
+    console.info(
+      `[wake-budget] delivery #${d.id} for ${d.subscriberId}: ${packed.omitted.length} section(s) left out whole ` +
+        `(${packed.text.length}/${budgetChars} chars delivered)`,
     );
+    return packed.text;
   } catch {
     return text;
   }

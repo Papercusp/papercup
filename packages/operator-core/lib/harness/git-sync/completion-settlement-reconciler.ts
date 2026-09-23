@@ -5,7 +5,11 @@ import {
   type CompletionSettlementManifest,
   type CompletionTreeStamp,
 } from '../../coord-lifecycle/records';
-import { completionHeadBlobMap, type HeadBlobResolution } from '../../agent-tools/work_items/completion-freshness';
+import {
+  completionBlobHistoryContains,
+  completionHeadBlobMap,
+  type HeadBlobResolution,
+} from '../../agent-tools/work_items/completion-freshness';
 import { emitAwaitedEvent } from '../../events/await/engine';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
@@ -19,6 +23,7 @@ type CompletionHeadBlobLookup = (
   paths: readonly string[],
   opts?: { signal?: AbortSignal },
 ) => ReadonlyMap<string, HeadBlobResolution> | undefined | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
+type CompletionBlobHistoryLookup = typeof completionBlobHistoryContains;
 
 /** EI-22344624691081449: manifest entries may describe an intentional deletion. */
 type SettlementIdentity = CompletionSettlementManifest['contentIdentity'][number] & {
@@ -63,6 +68,7 @@ export async function residualPathsForCommit(
   commitSha: string,
   lookup: CompletionHeadBlobLookup = completionHeadBlobMap,
   signal?: AbortSignal,
+  historyLookup?: CompletionBlobHistoryLookup,
 ): Promise<SettlementResidualPath[] | undefined> {
   const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
@@ -77,29 +83,61 @@ export async function residualPathsForCommit(
   const closeIdentity = new Map<string, SettlementIdentity>(
     receipt.contentIdentity.map((entry) => [entry.path, entry as SettlementIdentity]),
   );
-  return receipt.normalizedPaths.flatMap((path): SettlementResidualPath[] => {
+  const residualPaths: SettlementResidualPath[] = [];
+  for (const path of receipt.normalizedPaths) {
     const expected = closeIdentity.get(path);
-    if (!expected) return [{ path, reason: 'identity-unavailable' }];
+    if (!expected) {
+      residualPaths.push({ path, reason: 'identity-unavailable' });
+      continue;
+    }
     const actual = committed.get(path);
     // WI-42441: a path the lookup could not RESOLVE is `identity-unavailable`, never
     // `missing-from-commit`. The two carry opposite remedies — one is the server's to
     // fix, the other asks the closer to go re-commit work that is already committed —
     // and an unreadable submodule used to land in the second.
-    if (!actual || actual.status === 'unresolvable') return [{ path, reason: 'identity-unavailable' }];
+    if (!actual || actual.status === 'unresolvable') {
+      residualPaths.push({ path, reason: 'identity-unavailable' });
+      continue;
+    }
     if (expected.deletion === true) {
       // A deletion is settled by a definitive absence in the emitted commit.
       // Do not let a malformed deletion entry with a non-null close identity
       // become proof merely because the path happens to be absent.
       if (expected.workingTreeBlobSha !== null || expected.headBlobSha !== null) {
-        return [{ path, reason: 'identity-unavailable' }];
+        residualPaths.push({ path, reason: 'identity-unavailable' });
+        continue;
       }
-      return actual.status === 'absent' ? [] : [{ path, reason: 'content-mismatch' }];
+      if (actual.status !== 'absent') residualPaths.push({ path, reason: 'content-mismatch' });
+      continue;
     }
     const expectedSha = expected.workingTreeBlobSha;
-    if (expectedSha == null) return [{ path, reason: 'identity-unavailable' }];
-    if (actual.status === 'absent') return [{ path, reason: 'missing-from-commit' }];
-    return actual.sha === expectedSha ? [] : [{ path, reason: 'content-mismatch' }];
-  });
+    if (expectedSha == null) {
+      residualPaths.push({ path, reason: 'identity-unavailable' });
+      continue;
+    }
+    if (actual.status === 'absent') {
+      residualPaths.push({ path, reason: 'missing-from-commit' });
+      continue;
+    }
+    if (actual.sha === expectedSha) continue;
+    const foundInHistory = historyLookup
+      ? await historyLookup(
+          receipt.repositoryRoot,
+          receipt.headSha,
+          commitSha,
+          path,
+          expectedSha,
+          signal ? { signal } : undefined,
+        )
+      : false;
+    if (signal?.aborted) return undefined;
+    if (foundInHistory === true) continue;
+    residualPaths.push({
+      path,
+      reason: foundInHistory === undefined ? 'identity-unavailable' : 'content-mismatch',
+    });
+  }
+  return residualPaths;
 }
 
 type CandidateRow = { feature_id: string; harness_slug: string; payload: unknown };
@@ -116,18 +154,17 @@ type CandidateRow = { feature_id: string; harness_slug: string; payload: unknown
  * and found it still unproven, no matter how conclusively the manifest's own
  * exact-commit lookup had just settled the row.
  *
- * `residualPaths.length === 0` is exactly the proof this needs: every declared
- * path's close-time `workingTreeBlobSha` was found, byte-for-byte, at `commitSha`
- * (see `residualPathsForCommit`). That makes `workingTreeBlobSha` and the NOW-true
- * `headBlobSha` identical by construction — precisely what
- * `completion_content_identity_proven` / `completionTreeContentIdentityMatches`
- * require. Filtered to `normalizedPaths` (the exact set the proof covers) with a
- * defensive non-null guard; per the manifest's construction this never drops an
- * entry when residualPaths is empty.
+ * A zero residual count can now come from either an exact emitted-tree match or a
+ * path-history match. Only the former can refresh treeStamp: a superseded historical
+ * blob is not the emitted commit's current head blob. This function therefore checks
+ * the emitted tree map independently and refuses to synthesize a false head identity.
+ * The database floor still requires exact tree identity; historical-only authority
+ * needs a corresponding floor extension before it can persist.
  */
 function confirmedTreeStampForSettlement(
   manifest: CompletionSettlementManifest,
   commitSha: string,
+  emittedTree: ReadonlyMap<string, HeadBlobResolution>,
 ): CompletionTreeStamp | undefined {
   const normalized = new Set(manifest.normalizedPaths);
   const contentIdentity = manifest.contentIdentity
@@ -151,12 +188,25 @@ function confirmedTreeStampForSettlement(
       };
     });
   if (contentIdentity.length === 0) return undefined;
+  // History can prove settlement after a later commit has superseded a path,
+  // but that does not make the older blob part of commitSha's exact tree. Only
+  // refresh treeStamp when the emitted tree itself still matches every identity.
+  const exactTreeMatches = contentIdentity.every((entry) => {
+    if ((entry as SettlementIdentity).deletion === true) {
+      return emittedTree.get(entry.path)?.status === 'absent';
+    }
+    const actual = emittedTree.get(entry.path);
+    return actual?.status === 'resolved' && actual.sha === entry.workingTreeBlobSha;
+  });
+  if (!exactTreeMatches) return undefined;
   return { repositoryRoot: manifest.repositoryRoot, headSha: commitSha, contentIdentity };
 }
 
 export interface CompletionSettlementReconcilerDeps {
   /** Exact-tree lookup seam used by focused reconciliation tests. */
   lookup?: CompletionHeadBlobLookup;
+  /** Exact-path history proof seam. Production uses the emitted commit's Git history. */
+  historyLookup?: CompletionBlobHistoryLookup;
   /** Await-event seam; production uses the durable, per-key latched emitter. */
   emit?: typeof emitAwaitedEvent;
   /** Database seam for focused tests. */
@@ -178,6 +228,9 @@ export async function reconcileProposedCompletionsAtCommit(
   }
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
+  // A custom exact-tree lookup is the unit-test seam for the older tree-only
+  // contract. Tests opt into history explicitly; production uses the safe Git reader.
+  const historyLookup = deps.historyLookup ?? (deps.lookup ? undefined : completionBlobHistoryContains);
   const emit = deps.emit ?? emitAwaitedEvent;
   const rows = await sql<CandidateRow[]>`
     SELECT feature_id, harness_slug, payload
@@ -221,17 +274,29 @@ export async function reconcileProposedCompletionsAtCommit(
         unreadable.push(row.feature_id);
         continue;
       }
-      const residualPaths = await residualPathsForCommit(parsed.data, commitSha, lookup, deps.signal);
+      let emittedTree: ReadonlyMap<string, HeadBlobResolution> | undefined;
+      const captureLookup: CompletionHeadBlobLookup = async (root, sha, paths, opts) => {
+        emittedTree = await lookup(root, sha, paths, opts);
+        return emittedTree;
+      };
+      const residualPaths = await residualPathsForCommit(
+        parsed.data,
+        commitSha,
+        captureLookup,
+        deps.signal,
+        historyLookup,
+      );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
       if (!residualPaths) continue;
       residualCount += residualPaths.length;
       const nextManifest = { ...parsed.data, residualPaths };
-      // WI-1053550: only when settlement is COMPLETE (about to set authority='committed'
-      // below) does the trigger's floor apply to this write — refresh treeStamp so the
-      // upgrade survives it instead of being downgraded straight back. See
-      // confirmedTreeStampForSettlement's doc for why this is a sound proof, not a bypass.
+      // WI-1053550: refresh treeStamp only when the emitted tree itself matches every
+      // close-time blob. A history-only settlement cannot truthfully claim that the
+      // superseded blob is still in the emitted tree.
       const confirmedTreeStamp =
-        residualPaths.length === 0 ? confirmedTreeStampForSettlement(parsed.data, commitSha) : undefined;
+        residualPaths.length === 0 && emittedTree
+          ? confirmedTreeStampForSettlement(parsed.data, commitSha, emittedTree)
+          : undefined;
       const nextPayload = {
         ...payload,
         [TERMINAL_COMPLETION_EVIDENCE_KEY]: {

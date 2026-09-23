@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 906,
+  "count": 907,
   "tools": [
     {
       "name": "ablation:report",
@@ -21579,6 +21579,39 @@
         "when": "During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.",
         "notWhen": "Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete."
+      }
+    },
+    {
+      "name": "plans:evidence-measuring-paths",
+      "http": {
+        "path": "/api/agent-tools/plans/evidence-measuring-paths",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the clauses on unshipped plans whose current-revision, un-retracted repo-files proof measured any of the given repo-relative paths: editing such a file stales that proof. Grouped by clause with the BAR flag, the holder to tell, and the one plans:bind-spec-evidence re-measure call (re-run first for test/mutation/counterexample proof). Read-only.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "worker",
+        "cup",
+        "judge"
+      ],
+      "guidance": {
+        "when": "Before or after editing a file, to learn which live proofs measure it, whose they are and how to re-measure.",
+        "notWhen": "Judging whether a proof is current — plans:get-spec-evidence is the authority.",
+        "chaining": "plans:evidence-measuring-paths → (re-run the proof) → plans:bind-spec-evidence { supersedeAtRevision:true }."
       }
     },
     {

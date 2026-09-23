@@ -4356,13 +4356,69 @@ export function makeScrollbackGuard() {
  * installed — verified against the shipped `codex` binary's embedded UI
  * strings (`@openai/codex-linux-x64`). The ordinary output-quiescence gate
  * still runs after either marker. Pure and exported so backend readiness
- * cannot regress into timing folklore. */
+ * cannot regress into timing folklore.
+ *
+ * WI-10002745: Codex ≥0.156 moved the idle readout into a status footer —
+ * `Ready · <model> <effort> · Context 100% left` — and paints the legacy
+ * `NN% context left` form only once a turn is RUNNING. So before the first
+ * turn the legacy pattern never matched: every fresh Codex kickoff fell to the
+ * 15s startup fallback and was typed blind into a still-booting TUI, and the
+ * leading bytes (the provenance marker) were lost whenever the write landed
+ * mid-draw. The status word is part of the proof: `Starting` is the same
+ * footer while MCP servers are still booting, so only a non-Starting status
+ * counts as the composer being installed. */
+const CODEX_STATUS_FOOTER_RE = /([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g;
 export function startupOutputReady(agent, output) {
   const visible = stripAnsi(output);
   const normalized = String(agent ?? '').toLowerCase();
   if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
-  if (normalized === 'codex') return /\d{1,3}%\s*context left/i.test(visible);
+  if (normalized === 'codex') {
+    if (/\d{1,3}%\s*context left/i.test(visible)) return true;
+    for (const match of visible.matchAll(CODEX_STATUS_FOOTER_RE)) {
+      // Stripped frames can glue a previous cell onto the status word
+      // ("…leftReady"), so test the suffix rather than equality.
+      if (!/starting$/i.test(match[1])) return true;
+    }
+    return false;
+  }
   return String(output ?? '').length > 0;
+}
+
+/** WI-10002745: the first thing a Codex TUI writes is a burst of terminal
+ * capability queries (`ESC[?2004h ESC[>7u ESC[?1004h ESC[6n OSC10? OSC11?
+ * ESC[?u ESC[c`). A headless PTY answers none of them, so Codex spends ~3.6s
+ * reading stdin for the replies before it paints its first frame (its own log:
+ * `tui startup initial frame scheduled duration_ms=3618`) — and any input that
+ * arrives in that window is swallowed by the reply parser. The cursor-position
+ * request is the earliest byte that is unambiguously the Codex TUI rather than
+ * the psu launcher's own banner. Pure and exported for tests. */
+export function codexTuiStartObserved(output) {
+  return String(output ?? '').includes('\x1b[6n');
+}
+
+/** If the Codex TUI-start probe is never observed (a future Codex that stops
+ * sending it, or bytes that landed before the listener attached), the host
+ * still delivers — but only after this multiple of the ordinary fallback, so
+ * a detector miss degrades to "slower" rather than to "typed into a booting
+ * TUI". */
+export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER = 4;
+
+/** Has the startup-ready fallback window elapsed? For most backends it is
+ * measured from the child's first output byte. For Codex it is measured from
+ * the Codex TUI's OWN start: the PTY child is the psu launcher, which prints
+ * its banner and then bootstraps the role (minting CODEX_HOME, etc.) for ~20s
+ * under load before Codex execs. Measured from the banner, the 15s window had
+ * already expired before Codex existed, so the output-quiet gate read Codex's
+ * silent capability-probe wait as "settled at a prompt" and typed the kickoff
+ * into it — losing the provenance marker, after which the host tore the
+ * working session down (WI-10002745). Pure and exported for tests. */
+export function startupFallbackElapsed({ agent, nowMs, firstOutputAt, backendTuiStartedAt, fallbackMs }) {
+  if (!(firstOutputAt > 0)) return false;
+  if (String(agent ?? '').trim().toLowerCase() === 'codex') {
+    if (backendTuiStartedAt > 0) return nowMs - backendTuiStartedAt >= fallbackMs;
+    return nowMs - firstOutputAt >= fallbackMs * CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
+  }
+  return nowMs - firstOutputAt >= fallbackMs;
 }
 
 /** A fresh Claude child can repaint continuously (spinner/elapsed chrome), so
@@ -5869,6 +5925,17 @@ export function hostThroughPty(o) {
   let childStartupReady = false;
   let childPromptReady = false;
   let childStartupFirstOutputAt = 0;
+  // WI-10002745: when the backend TUI itself started (Codex: its first
+  // capability probe), as distinct from the psu launcher's banner above.
+  let childBackendTuiStartedAt = 0;
+  const childStartupFallbackElapsed = () =>
+    startupFallbackElapsed({
+      agent: env.PAPERCUSP_AGENT,
+      nowMs: Date.now(),
+      firstOutputAt: childStartupFirstOutputAt,
+      backendTuiStartedAt: childBackendTuiStartedAt,
+      fallbackMs: startupMarkerFallbackMs,
+    });
   let headlessClaudeOnboardingExpiryTimer = null;
   // A scripted resume/fork kickoff is the only path that can encounter Claude's
   // interactive "Autocompact is thrashing" recovery menu. Keep this detector
@@ -6376,10 +6443,7 @@ export function hostThroughPty(o) {
         requireInitialOutput &&
         !childStartupReady &&
         !freshChildWasInterrupted() &&
-        !(
-          childStartupFirstOutputAt > 0 &&
-          Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs
-        ) &&
+        !childStartupFallbackElapsed() &&
         Date.now() < deadline
       ) {
         const recoveryState = claudeResumeCompaction.tick();
@@ -6394,9 +6458,7 @@ export function hostThroughPty(o) {
       // not return or break from this outer try block when the recovery machine
       // has already timed out; its next gated check observes the same terminal
       // state and exits through that shared path.
-      const startupFallbackReady =
-        childStartupFirstOutputAt > 0 &&
-        Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs;
+      const startupFallbackReady = childStartupFallbackElapsed();
       // EI-20270422678541544 — TERMINAL FALLBACK. A missing startup-ready marker
       // used to return from here with `attempts: 0`, having never once tried to
       // write. That is a GUARANTEED strand whenever marker detection has a false
@@ -8081,6 +8143,19 @@ export function hostThroughPty(o) {
       if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+      if (
+        !childBackendTuiStartedAt &&
+        String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
+        codexTuiStartObserved(childStartupOutput)
+      ) {
+        // Checked on the accumulated buffer so a probe split across two pty
+        // chunks is still seen (WI-10002745).
+        childBackendTuiStartedAt = Date.now();
+        appendHostEvent(ownerId, 'backend-tui-start-observed', {
+          agent: 'codex',
+          msAfterFirstOutput: childBackendTuiStartedAt - childStartupFirstOutputAt,
+        });
+      }
       const onboarding = headlessClaudeOnboarding.observe(raw);
       if (onboarding.action === 'submit') {
         try {
@@ -8879,6 +8954,7 @@ export function hostThroughPty(o) {
         childStartupReady = false;
         childPromptReady = false;
         childStartupFirstOutputAt = 0;
+        childBackendTuiStartedAt = 0;
         // WI-1386682 (1): a fresh child has no screen history and cannot
         // inherit the old child's wall.
         quotaBlockDetector.reset();

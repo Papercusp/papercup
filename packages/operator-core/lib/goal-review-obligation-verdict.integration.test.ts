@@ -4,16 +4,22 @@
  * The review remains an assertion; plan coverage here is controlled fixture evidence.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { setMode } from './modes/store';
-import { readAgentObligationAgenda } from './agent-obligation-reader';
+import { readAgentObligationAgenda, defaultAgentObligationReaderDeps } from './agent-obligation-reader';
 import type { GoalLaunchRefusal } from './goal-launch-settings';
 import { applyGoalPropertyWrite } from './typed-properties-db';
 import { seedPlan, cleanupPlans } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
+import { recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
+import { readVerbatimTail } from './turn-journal';
+import { createPgTelemetryStore } from './activity-pg-store';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -48,6 +54,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
   if (fx) await fx.admin`DELETE FROM harness_shared.scout_ticks WHERE workspace_id = ${WS} AND detail->>'owner' = ${OWNER}`;
+  if (fx) await fx.admin`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
 });
 afterAll(async () => {
   if (!fx) return;
@@ -75,8 +82,8 @@ async function record(disposition: 'existing-plans-sufficient' | 'plan-needed') 
   expect('isError' in result && result.isError === true).toBe(false);
 }
 
-async function agenda(refusal: GoalLaunchRefusal | null = null) {
-  return (await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
+async function readAgenda(refusal: GoalLaunchRefusal | null = null) {
+  return readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Real mode/goal/portfolio/tick/authority/obligation reads. Unrelated admission
     // and final acceptance are controlled, so this is not launch or closure proof.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
@@ -87,8 +94,43 @@ async function agenda(refusal: GoalLaunchRefusal | null = null) {
         budget: null, refusal, degraded: false, degradedReasons: [] }),
       planFleet: async () => ({ status: 'known', alert: null, applicablePlanCount: 0 }),
     },
-  })).agenda;
+  });
 }
+async function agenda(refusal: GoalLaunchRefusal | null = null) { return (await readAgenda(refusal)).agenda; }
+
+describe('native turn-end policy observation from canonical goal sources', () => {
+  it('stores the real goal/plan policy with native completion, without calling a later read eligibility', async () => {
+    await record('existing-plans-sufficient');
+    const directory = await mkdtemp(join(tmpdir(), 'goal-policy-native-'));
+    try {
+      const native = { sourceKind: 'codex' as const, sessionId: `${OWNER}-native`, filePath: join(directory, 'session.jsonl') };
+      const completedAt = new Date(Date.now() - 1000).toISOString();
+      await writeFile(native.filePath, ['user', 'assistant'].map((role) => JSON.stringify({
+        type: 'response_item', timestamp: completedAt, payload: { type: 'message', role,
+          ...(role === 'assistant' ? { phase: 'final_answer' } : {}),
+          internal_chat_message_metadata_passthrough: { turn_id: 'completed-decision' },
+          content: [{ type: role === 'user' ? 'input_text' : 'output_text', text: 'Native fixture response' }] },
+      })).join('\n') + '\n');
+      const result = await recordGoalPlacementTurnEnd({ ownerId: OWNER, workspaceId: WS,
+        nativeSessionId: native.sessionId, sourceKind: 'codex' }, {
+        current: async () => native,
+        goalSubject: (ownerId, workspaceId) => defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
+        tail: (source) => readVerbatimTail(source.filePath, source.sourceKind, 50),
+        agenda: async () => readAgenda(), append: createPgTelemetryStore().append, now: Date.now,
+      });
+      expect(result.recorded).toBe(true);
+      const rows = await fx.admin`SELECT detail FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}
+        AND detail ? 'goalPlacementTurnEnd'`;
+      expect(rows).toHaveLength(1);
+      const proof = rows[0]!.detail.goalPlacementTurnEnd;
+      expect(proof).toMatchObject({ goalId: GOAL, completedTurnRef: `codex:${native.sessionId}:completed-decision`, completedAt,
+        rows: [{ planSlug: SLUG, planRef: PLAN, status: 'due', applicableDemand: 1, actionKind: 'delegate' }] });
+      expect(Date.parse(proof.observedAt)).toBeGreaterThanOrEqual(Date.parse(completedAt));
+      expect(proof).not.toHaveProperty('eligibleAtCompletion');
+      expect(proof).not.toHaveProperty('opportunities');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }, 90_000);
+});
 
 describe('R6 public review-to-obligation verdicts', () => {
   it('review.sufficient: zero new ideas creates no planning penalty while execution remains due', async () => {

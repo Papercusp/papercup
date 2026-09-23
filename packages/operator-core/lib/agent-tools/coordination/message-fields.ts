@@ -537,6 +537,7 @@ function shapeTaughtArray<E>(
   message: string,
   max = 20,
   min = 0,
+  forwardMemberIssues = false,
 ): z.ZodType<E[]> {
   const guard = z
     .unknown()
@@ -553,8 +554,19 @@ function shapeTaughtArray<E>(
         ctx.addIssue({ code: 'custom', message: tooManyEntriesMessage(field, max, value.length) });
         return;
       }
-      if (value.every((member) => entry.safeParse(member).success)) return;
-      ctx.addIssue({ code: 'custom', message });
+      if (!forwardMemberIssues) {
+        if (value.every((member) => entry.safeParse(member).success)) return;
+        ctx.addIssue({ code: 'custom', message });
+        return;
+      }
+      for (const [index, member] of value.entries()) {
+        const parsed = entry.safeParse(member);
+        if (!parsed.success) {
+          for (const issue of parsed.error.issues) {
+            ctx.addIssue({ ...issue, path: [index, ...issue.path] });
+          }
+        }
+      }
     });
 
   // `.pipe()` is intentional. A trailing `.transform()` makes the output impossible to
@@ -1062,6 +1074,7 @@ export const messageBodyArg = shapeTaughtArray(
   BODY_MUST_BE_ARRAY_MESSAGE,
   20,
   1,
+  true,
 )
   .optional()
   .describe(

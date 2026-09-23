@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EI-23994272399366731 LaunchDaemon regression checks",
+  "framework": "operational",
+  "workItem": "EI-23994272399366731",
+  "command": [
+    "bash",
+    "-lc",
+    "cargo test --manifest-path src-tauri/Cargo.toml supervision_ && node --test test/mac-vm-health.test.js && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && git diff --check"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-23T15:30:29Z",
+  "finishedAt": "2026-09-23T15:31:00Z",
+  "summary": "All regression checks passed in papercusp-desktop: 8 supervision tests, 29 VM-rig tests, cargo formatting check, and git diff whitespace check.",
+  "assertions": [
+    {
+      "id": "installed-launchdaemon-deferral",
+      "passed": true,
+      "evidence": "cargo test --manifest-path src-tauri/Cargo.toml supervision_: 8 passed, 0 failed, including supervision_defers_to_installed_launchdaemon_while_it_is_temporarily_unloaded."
+    },
+    {
+      "id": "vm-rig-exact-identity-ordering",
+      "passed": true,
+      "evidence": "node --test test/mac-vm-health.test.js: 29 passed, 0 failed; shell syntax, exact bundle identity checks, and GUI → LaunchDaemon bootout → Server app → stage ordering assertions passed."
+    },
+    {
+      "id": "format-and-diff",
+      "passed": true,
+      "evidence": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check and git diff --check both exited 0."
+    }
+  ],
+  "sourcePaths": [
+    "papercusp-desktop/src-tauri/src/main.rs",
+    "papercusp-desktop/bin/vm-rig/boot-headless-current.sh",
+    "papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh"
+  ],
+  "testPaths": [
+    "papercusp-desktop/test/mac-vm-health.test.js"
+  ],
+  "testRunIds": []
+}

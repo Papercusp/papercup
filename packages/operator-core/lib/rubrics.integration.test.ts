@@ -2629,6 +2629,21 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     expect(preview!.approval.bars.map(({ barKey }) => barKey)).toEqual(['R-1', 'R-2', 'R-3']);
     expect(preview!.approval.bars).toContainEqual(expect.objectContaining({ barKey: 'R-3', priorBarHash: null }));
+    // P-039 (review-system-rework-reduction-2026-09-23, R-9): the real dry run carries the ship
+    // readiness delta. R-3 is new and owes automated proof; R-1/R-2 keep a tests check, so nothing
+    // flips and the amendment is not a floor-only raise.
+    expect(preview!.readinessDelta).toMatchObject({
+      phase: 'ship',
+      before: { barCount: 2 },
+      after: { barCount: 3 },
+      flippedToAutomated: [],
+      flippedToManual: [],
+      raisesProofFloorOnly: false,
+    });
+    expect(preview!.readinessDelta.bars).toContainEqual(
+      expect.objectContaining({ barKey: 'R-3', contractBefore: null, contractAfter: 'automated' }),
+    );
+    expect(preview!.readinessDelta.summary).toMatch(/^Ship readiness: \d+ of 2 BAR\(s\) blocking before, \d+ of 3 after/);
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-3', kinds: ['added'] }));
 
     const approvalRef = await postApproval(amendment);
