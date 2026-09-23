@@ -484,13 +484,24 @@ function DistributionBar({
   );
 }
 
-export default function RubricDetailPanel({
-  rubricId,
-  onBack,
-}: {
+interface RubricDetailPanelProps {
   rubricId: string;
   onBack?: () => void;
-}) {
+}
+
+/**
+ * Every piece of this panel's state (loaded history pages, cursors, the open scorecard)
+ * belongs to ONE rubric, so the body is keyed by `rubricId` here rather than trusting each
+ * caller to add a key (WI-10002802). Resetting in an effect instead ran one render too late:
+ * switching to a rubric whose reads were already cached rendered the previous rubric's loaded
+ * history against the new rubric's total, and filterCountLabel threw "window count cannot
+ * exceed corpusTotal" during render, taking the whole Learning tab down with it.
+ */
+export default function RubricDetailPanel(props: RubricDetailPanelProps) {
+  return <RubricDetailPanelBody key={props.rubricId} {...props} />;
+}
+
+function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
   const [selected, setSelected] = useState<ScorecardRow | null>(null);
   const [stableOpen, setStableOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -499,13 +510,6 @@ export default function RubricDetailPanel({
   const [nextHistoryCursor, setNextHistoryCursor] = useState<string | null>(
     null,
   );
-
-  useEffect(() => {
-    setSelected(null);
-    setHistoryCursor(null);
-    setHistoryRows([]);
-    setNextHistoryCursor(null);
-  }, [rubricId]);
 
   const scorecards = useSyncQuery<ScorecardRow>({
     queryName: "scorecards.list",

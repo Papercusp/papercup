@@ -355,6 +355,58 @@ describe("RubricDetailPanel focused evidence", () => {
   });
 });
 
+describe("RubricDetailPanel rubric switching (WI-10002802)", () => {
+  // The Learning tab reuses ONE panel instance while the selected rubric changes. When the
+  // next rubric's reads are already cached they settle immediately (fetching=false), so a
+  // render that still held the previous rubric's loaded history paired it with the new
+  // rubric's total and filterCountLabel threw "window count cannot exceed corpusTotal",
+  // replacing the whole tab with its error boundary.
+  it("never pairs the previous rubric's loaded history with the next rubric's total", () => {
+    const original = sync.useSyncQuery.getMockImplementation();
+    const row = (issueId: string) => ({
+      issueId,
+      createdAt: "2026-07-03T00:00:00.000Z",
+      createdBy: "owner",
+      score10: 6,
+      nKeys: 3,
+      rubricResolved: true,
+      missingKeys: [],
+      _meta: { nextCursor: null, hasMore: false },
+    });
+    const byRubric: Record<string, { rows: ReturnType<typeof row>[]; matched: number }> = {
+      "rubric-many": { rows: [row("many-1"), row("many-2"), row("many-3")], matched: 3 },
+      "rubric-few": { rows: [row("few-1")], matched: 1 },
+    };
+    const cachedReads = (opts: { queryName: string; args?: unknown }) => {
+      const rubricRef = (opts.args as { rubricRef?: string } | undefined)?.rubricRef ?? "";
+      const entry = byRubric[rubricRef];
+      const data =
+        opts.queryName === "scorecards.summary"
+          ? [{ total: entry.matched, matched: entry.matched, facets: [], selection: [] }]
+          : opts.queryName === "scorecards.list"
+            ? entry.rows
+            : [];
+      return { data, loading: false, fetching: false, error: null };
+    };
+    sync.useSyncQuery.mockImplementation(
+      cachedReads as unknown as Parameters<typeof sync.useSyncQuery.mockImplementation>[0],
+    );
+    try {
+      const { rerender } = render(<RubricDetailPanel rubricId="rubric-many" />);
+      expect(screen.getByTestId("rubric-history-count").textContent).toBe("3 of 3");
+
+      rerender(<RubricDetailPanel rubricId="rubric-few" />);
+      expect(screen.getByTestId("rubric-history-count").textContent).toBe("1 of 1");
+      expect(screen.queryByText("many-1")).toBeNull();
+
+      rerender(<RubricDetailPanel rubricId="rubric-many" />);
+      expect(screen.getByTestId("rubric-history-count").textContent).toBe("3 of 3");
+    } finally {
+      if (original) sync.useSyncQuery.mockImplementation(original);
+    }
+  });
+});
+
 describe("mergeScorecardHistoryPage", () => {
   it("replaces page one and appends cursor pages without duplicate issue ids", () => {
     const first = [
