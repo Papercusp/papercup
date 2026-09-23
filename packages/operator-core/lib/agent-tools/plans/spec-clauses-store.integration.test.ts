@@ -285,6 +285,53 @@ describe('first-class plan spec clauses', () => {
     });
   });
 
+  it('refuses direct behavior edits to a sourceBar-pinned clause and names the canonical rubric edit point', async () => {
+    const specId = 'AUTO-BAR-R-1-P-003';
+    const acceptanceRef = `acceptance-reconnect-plan@${BAR_PIN.rubricRevision}:${BAR_PIN.barKey}`;
+    const originalBehavior = 'Acknowledged event 42 is not replayed after reconnect.';
+    expect(
+      await store.setSpecClause(
+        clause({ specId, behavior: originalBehavior, lifecycleStatus: 'active', acceptanceRef, sourceBar: BAR_PIN }),
+      ),
+    ).toMatchObject({ status: 'created', revision: 1 });
+
+    const refused = (await setSpecsTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        spec: {
+          specId,
+          expectedRevision: 1,
+          sourceValId: 'VAL-003-01',
+          planItemId: 'P-003',
+          behavior: 'The direct clause repair must not survive a rubric re-projection.',
+          behaviorClass: 'concurrency',
+          requiredEvidence: ['integration replay trace', 'boundary counterexample'],
+          requiredTestLayers: ['integration'],
+          mutationRequired: true,
+          lifecycleStatus: 'active',
+          acceptanceRef,
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+
+    expect(refused.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'projected_behavior_readonly',
+      reason: expect.stringContaining('rubrics:amend'),
+    });
+    expect(refused.data.results[0]?.reason).toContain('criterion.model');
+    expect(refused.data.results[0]?.reason).toContain('AUTO-BAR-R-1-P-003');
+
+    const [current] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: [specId],
+    });
+    expect(current).toMatchObject({ revision: 1, behavior: originalBehavior, sourceBar: BAR_PIN });
+  });
+
   it('carries a prior BAR pin forward when a later revision omits sourceBar', async () => {
     expect(
       await store.setSpecClause(
