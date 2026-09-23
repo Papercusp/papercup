@@ -207,6 +207,109 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
 }
 
 /* ------------------------------------------------------------------ */
+/* The live hook's verdict, as the transcript recorded it              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * EI-23999888134974900: the UserPromptSubmit provenance hook's own classification
+ * of a turn, read back from the transcript.
+ *
+ * Two classifiers judge every Claude turn. The hook
+ * (`apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh`) runs LIVE and
+ * consults the nonce ledger. {@link classifyRecordedTurn} runs later, on the
+ * recorded text alone. When the recorded one cannot see what the hook saw, its
+ * default is the AFFIRMATIVE `owner-typed` — the dangerous direction: the
+ * current-turn stamp (`turnProvenance.writtenDuring`) is what
+ * `applyOwnerTurnAutoVerify` trusts to auto-verify `[owner:…]` tags, so a machine
+ * turn misread as owner speech manufactures owner authority (the WI-3532 class).
+ *
+ * Measured 2026-09-22/23 (three occurrences, two sessions): the hook stamped
+ * loop-fire turns VERIFIED AGENT-ORIGIN while loop:checkpoint returned
+ * `{ verdict:'owner-typed', origin:null }` for the same turn. Those turns arrived
+ * wrapped in `<pasted_content>`, which the text classifier learned to unwrap in
+ * WI-10002461 — but the build serving the tool predated that, and the hook ALSO
+ * has a branch no text classifier can reproduce: "envelope lost in transit,
+ * matched by payload hash". So rather than chase each new transit shape, the
+ * recorded classifier now DEFERS to the hook's stamp, which Claude Code persists
+ * as a `hook_additional_context` attachment directly after the turn it judged.
+ *
+ * DOWNGRADE-ONLY. The stamp can take an `owner-typed` text verdict to a non-owner
+ * one; it can never grant `owner-typed`. The model cannot author a transcript
+ * attachment, and an owner typing this prefix lands in their own turn's TEXT, not
+ * in a hook attachment — but even a forged stamp could only ever REMOVE owner
+ * authority, never create it.
+ */
+export type HookProvenanceStamp =
+  | { kind: 'agent-origin'; origin: string }
+  | { kind: 'unverified-origin-claim' }
+  | { kind: 'machine-surface' }
+  | { kind: 'owner' };
+
+/**
+ * The hook's stamp prefixes. PINNED to the hook script by
+ * `turn-ref.test.ts` (it reads the script off disk and requires each one), so a
+ * reworded stamp fails a test instead of silently falling back to the text verdict.
+ */
+export const HOOK_PROVENANCE_STAMP_PREFIXES = {
+  agentOrigin: '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: ',
+  unverified: '⟦turn-provenance⟧ UNVERIFIED ORIGIN CLAIM',
+  machineSurface: '⟦turn-provenance⟧ MACHINE-GENERATED SURFACE',
+  owner: '⟦turn-provenance⟧ OWNER (interactive)',
+} as const;
+
+/** The origin a hook-downgraded turn carries when the hook could not verify one. */
+export const UNVERIFIED_HOOK_ORIGIN = 'unverified-origin-claim';
+
+/** Parse one hook-emitted string into a stamp; null when it is not a provenance stamp. */
+export function parseHookProvenanceStamp(text: string): HookProvenanceStamp | null {
+  const t = (text ?? '').trimStart();
+  const P = HOOK_PROVENANCE_STAMP_PREFIXES;
+  if (t.startsWith(P.agentOrigin)) {
+    const origin = /^[^;)\s]+/.exec(t.slice(P.agentOrigin.length))?.[0] ?? 'unknown';
+    return { kind: 'agent-origin', origin };
+  }
+  if (t.startsWith(P.unverified)) return { kind: 'unverified-origin-claim' };
+  if (t.startsWith(P.machineSurface)) return { kind: 'machine-surface' };
+  if (t.startsWith(P.owner)) return { kind: 'owner' };
+  return null;
+}
+
+/** The provenance stamp carried by a Claude `hook_additional_context` attachment
+ *  line from the UserPromptSubmit hook, if this line is one. */
+function hookProvenanceStampOf(o: Record<string, unknown>): HookProvenanceStamp | null {
+  const a = o.attachment as { type?: unknown; hookEvent?: unknown; hookName?: unknown; content?: unknown } | undefined;
+  if (!a || a.type !== 'hook_additional_context') return null;
+  if (a.hookEvent !== 'UserPromptSubmit' && a.hookName !== 'UserPromptSubmit') return null;
+  const parts = Array.isArray(a.content) ? a.content : typeof a.content === 'string' ? [a.content] : [];
+  for (const part of parts) {
+    if (typeof part !== 'string') continue;
+    const stamp = parseHookProvenanceStamp(part);
+    if (stamp) return stamp;
+  }
+  return null;
+}
+
+/**
+ * Classify a parsed transcript turn: the text verdict, downgraded by the live
+ * hook's stamp when the two disagree about an owner-typed default. This — not the
+ * bare text classifier — is what every raw-transcript reader in this module uses.
+ */
+export function classifyRecordedUserTurn(turn: RecordedUserTurn): RecordedTurnClass {
+  const cls = classifyRecordedTurn(turn.text);
+  if (cls.verdict !== 'owner-typed' || !turn.hookStamp) return cls;
+  switch (turn.hookStamp.kind) {
+    case 'agent-origin':
+      return { verdict: 'agent-injected', origin: turn.hookStamp.origin };
+    case 'unverified-origin-claim':
+      return { verdict: 'agent-injected', origin: UNVERIFIED_HOOK_ORIGIN };
+    case 'machine-surface':
+      return { verdict: 'machine-surface', origin: null };
+    case 'owner':
+      return cls;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Transcript reads                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -214,6 +317,10 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
 export interface RecordedUserTurn {
   ts: string;
   text: string;
+  /** EI-23999888134974900: the UserPromptSubmit hook's recorded verdict for this
+   *  turn, when the transcript carries one. Absent for Codex rollouts, turns
+   *  recorded before the hook, and turns the hook did not stamp. */
+  hookStamp?: HookProvenanceStamp;
 }
 
 /** Where a turn ref was proven. Cross-session proofs come from the bounded
@@ -342,6 +449,14 @@ export function findClaudeQueuedCommandTurn(o: Record<string, unknown>): Recorde
  *  machine-injected ones; classification happens per turn, not by dropping. */
 export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
   const out: RecordedUserTurn[] = [];
+  // EI-23999888134974900: the turn the NEXT UserPromptSubmit hook stamp belongs to.
+  // Claude Code writes that stamp directly after the prompt line it judged (or
+  // after the queued_command attachment, for a prompt typed mid-turn) and before
+  // any assistant line. Measured over 183 stamps in 40 live transcripts: every one
+  // followed its prompt with no assistant or tool traffic between. So the window
+  // closes on an assistant line or tool_result plumbing, and a stamp arriving with
+  // no open window is dropped rather than attached to an older turn.
+  let awaitingStamp: RecordedUserTurn | null = null;
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
     let o: Record<string, unknown>;
@@ -351,8 +466,24 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
       continue; // torn first line of a tail read
     }
     if (o.type === 'attachment') {
+      const stamp = hookProvenanceStampOf(o);
+      if (stamp) {
+        if (awaitingStamp) awaitingStamp.hookStamp = stamp;
+        awaitingStamp = null;
+        continue;
+      }
       const queued = findClaudeQueuedCommandTurn(o);
-      if (queued) out.push(queued);
+      if (queued) {
+        out.push(queued);
+        awaitingStamp = queued;
+      } else if ((o.attachment as { type?: unknown } | undefined)?.type === 'queued_command') {
+        // A non-human queued command (e.g. a task notification) owns the next stamp.
+        awaitingStamp = null;
+      }
+      continue;
+    }
+    if (o.type === 'assistant') {
+      awaitingStamp = null;
       continue;
     }
     let c: unknown;
@@ -394,14 +525,19 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
         // codex response_item lines never take this shape, so it's gated to
         // the Claude branch, matching parseClaudeLine.
         const dialogText = isClaudeUserLine ? findClaudeOwnerDialogAnswer(c) : null;
-        if (dialogText == null) continue; // genuine tool_result-only plumbing
+        if (dialogText == null) {
+          awaitingStamp = null; // genuine tool_result-only plumbing: the prompt window is closed
+          continue;
+        }
         text = dialogText;
       }
     } else {
       continue;
     }
     if (!text.trim()) continue;
-    out.push({ ts: typeof o.timestamp === 'string' ? o.timestamp : '', text });
+    const turn: RecordedUserTurn = { ts: typeof o.timestamp === 'string' ? o.timestamp : '', text };
+    out.push(turn);
+    awaitingStamp = turn;
   }
   return out;
 }
@@ -699,7 +835,7 @@ export async function verifyTurnRefs(
       out.push(miss(r, true, resolved.scope));
       continue;
     }
-    const cls = classifyRecordedTurn(turn.text);
+    const cls = classifyRecordedUserTurn(turn);
     out.push({
       ref: r.raw,
       found: true,
@@ -751,7 +887,7 @@ export async function resolveCurrentTurnStamp(
   // Latest turn that is a real prompt (skip synthetic plumbing so a local
   // command echo doesn't mask the actual driving turn).
   for (let i = turns.length - 1; i >= 0; i -= 1) {
-    const cls = classifyRecordedTurn(turns[i].text);
+    const cls = classifyRecordedUserTurn(turns[i]);
     if (cls.verdict === 'synthetic') continue;
     return {
       ref: formatTurnRef(sessionId, turns[i].ts),

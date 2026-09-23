@@ -895,6 +895,77 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.falsifiability.rating).toBe('unknown');
   });
 
+  // WI-10002724: a clause declaring NO falsifier.requiredScenarios has no scenario id to name, so
+  // a target naming its own specId (lower-cased) is its clause-scoped claim.
+  describe('clause without declared falsifier scenarios', () => {
+    const mutationTargeting = (targeted: boolean | string) =>
+      evidence({
+        evidenceKind: 'mutation',
+        evidenceRef: `mutation-probe:self-target:${String(targeted)}`,
+        details: {
+          adequacy: {
+            falsifiable: true,
+            oracleIndependent: true,
+            collected: true,
+            skipped: false,
+            executed: true,
+            outcome: 'caught',
+            targeted,
+          },
+        },
+      });
+
+    it('passes a mutation binding that targets the clause\'s own specId', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [evidence(), mutationTargeting('spec-003-01')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(clause().falsifier).toBeNull();
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no falsifier scenarios');
+    });
+
+    it('does not credit a mutation binding that targets a sibling spec', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [evidence(), mutationTargeting('spec-003-02')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+      expect(result.ratings.falsifiability.evidence).toContain("do not target this clause's own specId");
+      expect(result.ratings.falsifiability.suggestion).toContain("adequacy.targeted = 'spec-003-01'");
+    });
+
+    it('does not treat boolean targeted=true as the clause-scoped target', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [evidence(), mutationTargeting(true)],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+    });
+
+    it('does not let a self-target bypass declared falsifier scenarios', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause({
+          falsifier: {
+            observation: 'The promoted directive cannot be read from the open standing state.',
+            requiredScenarios: ['promotion-readable'],
+          },
+        }),
+        evidence: [evidence(), mutationTargeting('spec-003-01')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('unknown');
+      expect(result.ratings.falsifiability.evidence).toContain('do not name a scenario declared in falsifier.requiredScenarios');
+    });
+  });
+
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
     const scenarioId = 'reject-future-window';
     const counterexample = evidence({

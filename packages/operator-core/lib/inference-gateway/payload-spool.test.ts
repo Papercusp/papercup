@@ -417,3 +417,84 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
     expect(deletion.values).toContain(123_456);
   });
 });
+
+describe('PgGatewayPayloadStore — WI-10002667 single-flight lifecycle sweep', () => {
+  // The gateway timer fires every 60s without waiting for the previous pass. A DELETE
+  // measured open for 6 minutes under WAL pressure had a second one queued behind it
+  // from the same process. These tests hold the DELETE open and fire again.
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const countDeletes = () => sqlCalls.filter((c) => c.text.includes('DELETE FROM')).length;
+
+  function heldDeleteSql(outcomes: Array<'resolve' | 'reject'> = ['resolve', 'resolve']) {
+    const pending: Array<{ resolve: (v: never) => void; reject: (e: unknown) => void }> = [];
+    let settled = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(' ');
+      sqlCalls.push({ text, values });
+      if (!text.includes('DELETE FROM')) return Promise.resolve([] as never);
+      return new Promise<never>((resolve, reject) => pending.push({ resolve, reject }));
+    }) as unknown as NonNullable<PgGatewayPayloadStoreOptions['sql']>;
+    const settleNext = (rows: unknown[] = [{ blob_key: 'a'.repeat(64) }]) => {
+      const next = pending.shift()!;
+      const outcome = outcomes[settled++] ?? 'resolve';
+      if (outcome === 'reject') next.reject(Object.assign(new Error('WALWrite timeout'), { code: '57014' }));
+      else next.resolve(rows as never);
+    };
+    return { sql, settleNext, pendingCount: () => pending.length };
+  }
+
+  it('does not start a second DELETE while one is still running; the overlapping call joins it', async () => {
+    const held = heldDeleteSql();
+    const store = new PgGatewayPayloadStore({ sql: held.sql, workspaceId: 'ws-payload-test' });
+
+    const first = store.sweep(2_000);
+    await flush();
+    const second = store.sweep(2_000);
+    const third = store.sweep(50);
+    await flush();
+
+    expect(countDeletes()).toBe(1);
+    expect(held.pendingCount()).toBe(1);
+
+    held.settleNext([{ blob_key: 'a'.repeat(64) }, { blob_key: 'b'.repeat(64) }]);
+    await expect(first).resolves.toBe(2);
+    await expect(second).resolves.toBe(2);
+    await expect(third).resolves.toBe(2);
+    expect(countDeletes()).toBe(1);
+  });
+
+  it('runs a fresh pass once the previous one has settled', async () => {
+    const held = heldDeleteSql();
+    const store = new PgGatewayPayloadStore({ sql: held.sql, workspaceId: 'ws-payload-test' });
+
+    const first = store.sweep(2_000);
+    await flush();
+    held.settleNext();
+    await expect(first).resolves.toBe(1);
+
+    const second = store.sweep(2_000);
+    await flush();
+    expect(countDeletes()).toBe(2);
+    held.settleNext([]);
+    await expect(second).resolves.toBe(0);
+  });
+
+  it('clears the guard when a pass fails, so a rejected DELETE cannot wedge GC', async () => {
+    const held = heldDeleteSql(['reject', 'resolve']);
+    const store = new PgGatewayPayloadStore({ sql: held.sql, workspaceId: 'ws-payload-test' });
+
+    const failing = store.sweep(2_000);
+    const joined = store.sweep(2_000);
+    await flush();
+    expect(countDeletes()).toBe(1);
+    held.settleNext();
+    await expect(failing).rejects.toThrow('WALWrite timeout');
+    await expect(joined).rejects.toThrow('WALWrite timeout');
+
+    const retry = store.sweep(2_000);
+    await flush();
+    expect(countDeletes()).toBe(2);
+    held.settleNext();
+    await expect(retry).resolves.toBe(1);
+  });
+});

@@ -69,6 +69,8 @@ import {
 import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
 import { planDrainTransitionMutation } from './plan-drain-transition';
+import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
+import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
 // real backstop. Was [...SU_ROLES, 'bee'].
@@ -1965,6 +1967,29 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     verification: it.verification,
   });
 
+  // P-031 (merged into P-030 by D-005): dropping an item is a SCOPE write — it can leave a
+  // BAR mapped only to dropped items (bar_snapshot_mapping_dropped_only). Re-read the live
+  // BAR readiness in this same call, restamp the plan's Now (which orient folds), and carry
+  // the codes on the response. Runs after the plan lock is released; never throws.
+  let barReadiness: BarReadinessResult | undefined;
+  if (it.status === 'dropped' && result.value.oldStatus !== 'dropped') {
+    let actor = 'system:scope-write-cascade';
+    try {
+      actor = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      /* unattributable caller: the Now stamp falls back to the system actor */
+    }
+    barReadiness = await reevaluateBarReadinessOnScopeWrite(
+      {
+        workspaceId: result.scope.workspaceId,
+        harnessSlug: result.scope.harnessSlug,
+        planSlug: it.slug,
+        cause: 'item-dropped',
+      },
+      defaultBarReadinessDeps(ctx, actor),
+    );
+  }
+
   markPhase('finalize');
   const totalMs = Math.round(Math.max(0, lastPhaseAtMs - startedAtMs));
   const slowPathTiming = totalMs >= 10_000 ? { totalMs, phasesMs } : null;
@@ -1995,6 +2020,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       : {}),
     ...(residualWarning ? { residualWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
+    ...(barReadiness ? { barReadiness } : {}),
     ...(slowPathTiming ? { slowPathTiming } : {}),
     ...(noteTruncated
       ? {

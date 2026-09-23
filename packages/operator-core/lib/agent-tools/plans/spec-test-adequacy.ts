@@ -1287,14 +1287,18 @@ export function evaluateSpecTestAdequacy(input: {
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
         : boundMutationOrCounterexample.length > 0
-          ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not name a scenario declared in falsifier.requiredScenarios.`
+          ? clauseSelfTarget !== null
+            ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`
+            : `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not name a scenario declared in falsifier.requiredScenarios.`
           : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
   ratings.falsifiability =
     clauseScopedMutationOrCounterexample.length > 0
       ? {
           rating: 'pass',
           evidence: evidenceWithBindings(
-            `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
+            clauseSelfTarget !== null
+              ? `A bound mutation or counterexample binding targets ${clauseIdentity(clause)} itself, which declares no falsifier scenarios.`
+              : `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
             clauseScopedMutationOrCounterexample,
           ),
         }
@@ -1302,11 +1306,10 @@ export function evaluateSpecTestAdequacy(input: {
         ? {
             rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Successful mutation or counterexample binding(s) lack a target matching this clause's falsifier.requiredScenarios for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
+              `Successful mutation or counterexample binding(s) lack a target matching ${clauseTargetRequirement} for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
               boundMutationOrCounterexample,
             ),
-            suggestion:
-              'Set adequacy.targeted to a scenario id in this clause\'s falsifier.requiredScenarios; a boolean or sibling-case target is insufficient.',
+            suggestion: `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
           }
       : attestedFalsifiableOnly.length > 0
         ? {

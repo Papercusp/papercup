@@ -259,8 +259,13 @@ const pgTuningDriftCheck: PeriodicCheck = {
   // source — a conf.d edit + SIGHUP happens entirely outside this process.
   classification: 'must-sample',
   tick: async () => {
-    const { runPgTuningDriftCheckOnce } = await import('../storage/pg-tuning-drift');
+    const { runPgTuningDriftCheckOnce, runPgHugePageBackingCheckOnce } = await import(
+      '../storage/pg-tuning-drift'
+    );
     await runPgTuningDriftCheckOnce();
+    // Endgame D-052 (WI-10002573): the same standing-condition sample for a silent
+    // huge_pages=try fallback to 4 KiB pages. Nothing else notices it after boot.
+    await runPgHugePageBackingCheckOnce();
   },
 };
 

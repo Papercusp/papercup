@@ -2029,9 +2029,11 @@ and the wrong door looks identical to no door.**
     failed`) — the activation never rendered, so there is nothing for
     `coord:orient` to acknowledge. **Go straight to the SQL converge; do not call
     `coord:orient` first.**
-  - `status:'desired'`/`'prepared'` with `applied` merely lagging — `coord:orient
-    { afterCompaction: true }` may converge it via
-    `acknowledgeControlTransition`. Try it once, then fall through.
+  - `status:'desired'`/`'prepared'` with `applied` merely lagging — `coord:orient`
+    does NOT apply it: it acknowledges without the activation revision, so it leaves
+    a pending activation for the next turn-start boundary (WI-10002717; before that
+    fix it advanced the watermark and stranded the activation at `desired`). Send
+    one more prompt; if `status` still reads `desired`, fall through to the converge.
 
   **The converge (works for both, and is the only move for `failed`):** compare
   `adv_sessions.launch_spec->>'specificationRevision'` (what you are provably
@@ -2045,6 +2047,7 @@ and the wrong door looks identical to no door.**
   ⚠ This repair is a MITIGATION, not a fix: a recurrence inside one session means
   the writer that leaves activation `failed` is still armed. Add your occurrence to
   EI-23703586803892464 rather than filing a fresh row.
+
 
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT

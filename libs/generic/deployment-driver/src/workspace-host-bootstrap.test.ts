@@ -27,6 +27,10 @@ import {
   WORKSPACE_HOST_OLLAMA_SHA256,
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV,
+  WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT,
+  WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM,
+  WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE,
   WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   WORKSPACE_HOST_GLIBC_SONAMES,
@@ -1998,5 +2002,152 @@ describe('workspace-host bootstrap attestation', () => {
         validateWorkspaceHostBootstrapAttestation(attestation(), input()).ok,
       ).toBe(true);
     });
+  });
+});
+
+describe('hosted connector enrollment conduit (D-403)', () => {
+  const ORIGIN = 'https://app.papercusp.com';
+  const TICKET = `ht_${'A'.repeat(43)}`;
+  const BEARER = `hc_${'b'.repeat(43)}`;
+  const connectorInput = () => input({ hostedConnector: { controlPlaneOrigin: ORIGIN } });
+
+  it('renders nothing new when no control-plane origin is configured', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).not.toContain(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT);
+    expect(script).not.toContain(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM);
+    expect(script).not.toContain('EnvironmentFile=');
+    expect(script).toContain(
+      '$WORKSPACE_USER ALL=(root) NOPASSWD: PAPERCUSP_WORKSPACE_HOST_INITIALIZER, PAPERCUSP_WORKSPACE_HOST_DELIVERY\n',
+    );
+  });
+
+  it('grants the program with its exact argv only, and reads the bearer through an optional root file', () => {
+    const script = buildWorkspaceHostBootstrap(connectorInput());
+    expect(script).toContain(
+      `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_CONNECTOR = ${WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM} ${WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV.join(' ')}`,
+    );
+    expect(script).toContain('Defaults!PAPERCUSP_WORKSPACE_HOST_CONNECTOR env_reset, !setenv');
+    expect(script).toContain(
+      'NOPASSWD: PAPERCUSP_WORKSPACE_HOST_INITIALIZER, PAPERCUSP_WORKSPACE_HOST_DELIVERY, PAPERCUSP_WORKSPACE_HOST_CONNECTOR\n',
+    );
+    expect(script).toContain(`EnvironmentFile=-${WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE}`);
+    expect(script).toContain(
+      `exec /usr/bin/sudo -n -- '${WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM}' "$@"`,
+    );
+    // The same region the sibling conduit test polices: still one grant line, still no wildcard.
+    const region = script.slice(
+      script.indexOf('install -o root -g root -m 0755 /dev/null "$REMOTE_INITIALIZER_CONDUIT"'),
+      script.indexOf('cat > "/etc/systemd/system/$SERVICE_NAME.service"'),
+    );
+    expect(region.match(/NOPASSWD:/g)).toHaveLength(1);
+    expect(region).not.toMatch(/ALL=\(ALL|NOPASSWD:\s*ALL|\*|\beval\b|\bsh -c\b/);
+    expect(spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' }).status).toBe(0);
+  });
+
+  it('refuses an origin that is not a bare HTTPS origin', () => {
+    for (const controlPlaneOrigin of [
+      'http://app.papercusp.com',
+      'https://app.papercusp.com/api',
+      'https://app.papercusp.com?x=1',
+      'https://user:pw@app.papercusp.com',
+    ]) {
+      expect(() => buildWorkspaceHostBootstrap(input({ hostedConnector: { controlPlaneOrigin } }))).toThrow(
+        /hostedConnector\.controlPlaneOrigin/,
+      );
+    }
+  });
+
+  /**
+   * Materialize the root program exactly as the bootstrap writes it on a host (the same heredocs,
+   * run by bash with the bootstrap's own variables), then run it under `sh` with a fake curl and a
+   * fake systemctl on PATH. Only the root-only file path is redirected into the sandbox.
+   */
+  function materialize(status: string, body: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'connector-enroll-'));
+    const script = buildWorkspaceHostBootstrap(connectorInput());
+    const start = script.indexOf('cat > "$CONNECTOR_ENROLLMENT_PROGRAM" <<PAPERCUSP_CONNECTOR_PROGRAM_HEADER');
+    const endMarker = '\nPAPERCUSP_CONNECTOR_PROGRAM\n';
+    const end = script.indexOf(endMarker, start) + endMarker.length;
+    const program = join(dir, 'program');
+    const writer = spawnSync('bash', ['-c', script.slice(start, end)], {
+      env: { CONNECTOR_ENROLLMENT_PROGRAM: program, WORKSPACE_ROOT: '/srv/papercusp/workspaces', SERVICE_NAME: 'papercusp-workspace' },
+      encoding: 'utf8',
+    });
+    expect(writer.status, writer.stderr).toBe(0);
+    const envFile = join(dir, 'hosted-connector.env');
+    const text = readFileSync(program, 'utf8');
+    expect(text).toContain(`ENVIRONMENT_FILE='${WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE}'`);
+    writeFileSync(program, text.replace(`ENVIRONMENT_FILE='${WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE}'`, `ENVIRONMENT_FILE='${envFile}'`));
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'curl'), [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" > '${dir}/curl.argv'`,
+      `cat > '${dir}/curl.config'`,
+      'while [ "$#" -gt 0 ]; do [ "$1" = "--output" ] && out="$2"; shift; done',
+      `printf '%s' '${body}' > "$out"`,
+      `printf '%s' '${status}'`,
+    ].join('\n'), { mode: 0o755 });
+    writeFileSync(join(bin, 'systemctl'), `#!/bin/sh\nprintf '%s\\n' "$*" > '${dir}/systemctl.args'\n`, { mode: 0o755 });
+    const run = (stdin: string) => spawnSync('sh', [program, ...WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV], {
+      input: stdin,
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+      encoding: 'utf8',
+    });
+    return { dir, envFile, run };
+  }
+
+  it('redeems the ticket without putting it in argv, writes a root-only bearer file, and restarts the service', () => {
+    const response = `{"ok":true,"binding":{"hostId":"host-1","generation":3,"state":"active"},"bearer":"${BEARER}"}`;
+    const { dir, envFile, run } = materialize('200', response);
+    try {
+      const result = run(`${TICKET}\n`);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        protocolVersion: WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV[1],
+        generation: 3,
+        registered: true,
+      });
+      expect(result.stdout).not.toContain(BEARER);
+      expect(readFileSync(envFile, 'utf8')).toBe(
+        `PAPERCUSP_HOSTED_CONNECTOR_BEARER=${BEARER}\nPAPERCUSP_HOSTED_CONTROL_PLANE_URL=${ORIGIN}\nPAPERCUSP_HOSTED_WORKSPACE_ROOT=/srv/papercusp/workspaces\n`,
+      );
+      expect(spawnSync('stat', ['-c', '%a', envFile], { encoding: 'utf8' }).stdout.trim()).toBe('600');
+      const argv = readFileSync(join(dir, 'curl.argv'), 'utf8');
+      expect(argv).not.toContain(TICKET);
+      expect(argv).toContain(`${ORIGIN}/api/hosted/connectors/register`);
+      expect(argv).toContain('=https');
+      expect(readFileSync(join(dir, 'curl.config'), 'utf8')).toBe(`header = "x-papercusp-connector-ticket: ${TICKET}"\n`);
+      expect(readFileSync(join(dir, 'systemctl.args'), 'utf8')).toBe('restart papercusp-workspace.service\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a malformed ticket before any request is made', () => {
+    const { dir, envFile, run } = materialize('200', '{}');
+    try {
+      for (const bad of [`${TICKET}x`, `hc_${'A'.repeat(43)}`, `ht_${'A'.repeat(42)};`, '']) {
+        const result = run(`${bad}\n`);
+        expect(result.status).toBe(65);
+      }
+      expect(existsSync(join(dir, 'curl.argv'))).toBe(false);
+      expect(existsSync(envFile)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes nothing and restarts nothing when the control plane refuses the ticket', () => {
+    const { dir, envFile, run } = materialize('401', '{"ok":false,"error":{"code":"connector_ticket_invalid"}}');
+    try {
+      const result = run(`${TICKET}\n`);
+      expect(result.status).toBe(77);
+      expect(result.stderr).toContain('HTTP 401');
+      expect(existsSync(envFile)).toBe(false);
+      expect(existsSync(join(dir, 'systemctl.args'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

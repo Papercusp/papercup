@@ -15,8 +15,9 @@ import {
   type WaitingOnObligationRow,
   type WaitingOnProviderInput,
 } from './agent-obligation-providers';
-import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
+import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import { compileGoalPlanPlacement } from './goal-launch-settings';
+import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 
 const NOW = '2026-09-05T20:00:00.000Z';
@@ -445,9 +446,12 @@ describe('plan placement preserves canonical launch evidence', () => {
     // A declaration/empty transaction cannot clear the required placement.
     expect(observe([eligible]).status).toBe('due');
     const working = worklistPlan(compile('ready-plan', {
-      claims: [{ itemId: 'P-001', ownerId: 'su-member', fleetSlug: 'ready-fleet', holderLive: true }],
+      goalHolderOwnerIds: ['su-goal'],
+      claims: [{ itemId: 'P-001', ownerId: 'su-member', fleetSlug: 'ready-fleet', holderLive: true,
+        workItemId: 'WI-member', expiresAt: '2026-09-05T20:05:00.000Z' }],
       fleet: {
-        slug: 'ready-fleet', leaderOwnerId: 'su-independent', leaderLive: true,
+        slug: 'ready-fleet', controlState: 'active', leaderOwnerId: 'su-independent', leaderLive: true,
+        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'ready-plan' } } },
         liveMembers: 1, target: 1, launchTransaction: { state: 'verified' },
       },
     }), 'ready-plan');
@@ -531,6 +535,43 @@ describe('plan placement preserves canonical launch evidence', () => {
       status: 'unknown',
       measurementFailure: { code: 'plan-placement-writer-conflict' },
     });
+  });
+
+  it.each([
+    ['goal_budget_unmeasurable', /budget measurement/i, /repair.*authoritative.*spend.*measurement/i],
+    ['goal_budget_exceeded', /goal budget/i, /owner.*budget.*direction/i],
+    ['goal_max_agents', /goal headcount/i, /within.*goal.*ceiling/i],
+    ['fleet_max_agents', /fleet headcount/i, /within.*fleet.*ceiling/i],
+  ] as const)('maps %s to its own bounded repair without increasing a ceiling', (reason, title, repair) => {
+    const refusal: GoalLaunchRefusal = {
+      reason, current: reason === 'goal_budget_unmeasurable' ? null : 10,
+      limit: 10, requested: 1, currentScope: 'fixture:known-population', message: `Measured refusal: ${reason}`,
+    };
+    const result = planPlacementObligation(planInput(knownPlacement({
+      portfolio: portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]),
+      launch: launch({ refusal }), evidenceRef: 'cohort:typed-refusal',
+    })));
+    expect(result.status).toBe('blocked');
+    expect(result.title).toMatch(title);
+    expect(result.reason).toBe(refusal.message);
+    expect(result.action).toMatchObject({ kind: 'repair', targetRef: 'goal:goal-1' });
+    expect(result.action?.tool).toBeUndefined();
+    expect(result.action?.summary).toMatch(repair);
+    expect(result.action?.summary).not.toMatch(/revise the declared ceiling|restore verified budget headroom/i);
+  });
+
+  it('keeps an unrecognized launch refusal unknown instead of inventing a headcount remedy', () => {
+    const refusal = { reason: 'future_admission_reason', current: null, limit: 1, requested: 1,
+      currentScope: 'unknown', message: 'A newer launch resolver refused.' } as unknown as GoalLaunchRefusal;
+    const result = planPlacementObligation(planInput(knownPlacement({
+      portfolio: portfolio([worklistPlan(placement('unplaced', 'launch-plan-fleet'))]),
+      launch: launch({ refusal }), evidenceRef: 'cohort:future-refusal',
+    })));
+    expect(result).toMatchObject({ status: 'unknown',
+      measurementFailure: { code: 'unsupported-goal-launch-refusal' },
+    });
+    expect(result.action?.tool).toBeUndefined();
+    expect(result.action?.summary).not.toMatch(/headroom|raise|ceiling/i);
   });
 
   it('does not intervene for a terminal-only portfolio even when launches would be refused', () => {

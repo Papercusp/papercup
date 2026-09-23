@@ -264,6 +264,8 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
   readonly #now: () => number;
   readonly #contentionBackoffsMs: readonly number[] | undefined;
   readonly #contentionSleep: ((ms: number) => Promise<void>) | undefined;
+  /** The lifecycle sweep currently running, if any — see sweep(). */
+  #sweepInFlight: Promise<number> | null = null;
 
   constructor(options: PgGatewayPayloadStoreOptions = {}) {
     this.#sql = options.sql ?? getOrgPg().sql;
@@ -371,7 +373,30 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
          AND blob_key = ${key}`;
   }
 
-  async sweep(limit: number, maxBytes = DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES): Promise<number> {
+  /**
+   * ONE lifecycle sweep at a time per store (WI-10002667).
+   *
+   * The gateway timer fires every 60s and never waited for the previous pass. On
+   * 2026-09-23 one DELETE batch was measured open for 6m08s under WAL pressure while a
+   * second batch from the same process had already started behind it, blocked on the
+   * first one's transactionid, and 142 backends fleet-wide queued on LWLock:WAL*. The
+   * byte budget bounds how much ONE pass writes; this guard bounds how many passes run
+   * at once, which the byte budget cannot.
+   *
+   * An overlapping call joins the in-flight pass and resolves with its count, even if it
+   * passed a different limit — it does not start a second DELETE. The guard clears when
+   * the pass settles, success or failure, so a rejected pass cannot wedge GC.
+   */
+  sweep(limit: number, maxBytes = DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES): Promise<number> {
+    if (this.#sweepInFlight) return this.#sweepInFlight;
+    const run = this.#sweepOnce(limit, maxBytes).finally(() => {
+      this.#sweepInFlight = null;
+    });
+    this.#sweepInFlight = run;
+    return run;
+  }
+
+  async #sweepOnce(limit: number, maxBytes: number): Promise<number> {
     const batchLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT;
     const batchMaxBytes = Number.isFinite(maxBytes)
       ? Math.max(1, Math.floor(maxBytes))

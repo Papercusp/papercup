@@ -53,6 +53,7 @@ import {
   gcpIapHostKeyAlias,
   gcpIapHostKeyAliasFamily,
   type GcpIapWorkspaceHostInitializationProfile,
+  type GcpIapWorkspaceHostTransportProfile,
 } from './gcp-iap-initialization-operations';
 import {
   GCP_WORKSPACE_HOST_TARGET,
@@ -812,6 +813,8 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   desired: WorkspaceHostDesiredSpec;
   operations: WorkspaceHostControllerOperations;
   deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
+  /** The pinned SSH transport the operations use, for programs outside that protocol (D-403). */
+  transport: GcpIapWorkspaceHostTransportProfile;
 }> {
   const read = input.readDesiredSpec ?? readWorkspaceHostDesiredSpec;
   const lookup = await read(input.workspaceId, input.hostId);
@@ -866,6 +869,11 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
     attributes,
   });
 
+  const { remoteEntrypoint: _remoteEntrypoint, ...transport } = resolveGcpIapWorkspaceHostInitializationProfile(
+    desired,
+    input.controller,
+    { instanceId },
+  );
   return {
     desired,
     operations: resolveWorkspaceHostInitializationOperations(
@@ -875,6 +883,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
       input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
     ),
     deliveryCapabilities,
+    transport,
   };
 }
 

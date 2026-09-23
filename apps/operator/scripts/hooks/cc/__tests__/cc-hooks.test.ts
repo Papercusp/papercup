@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
@@ -862,6 +863,121 @@ describe("cc fleet statusline — render + fail-open", () => {
     const r = runStatusline({ PAPERCUSP_SID: "su-x" });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("");
+  });
+
+  // P-012 (review-system-rework-reduction-2026-09-23): the statusline was ~3.5k coord:glance
+  // RPCs/hour fleet-wide. It now reuses the glance the PostToolUse activity hook already cached
+  // (refreshed only on coordination change), and single-flights its own refresh. The operator
+  // is pinned UNREACHABLE in these tests, so a rendered line proves no RPC was needed: the
+  // live-read path returns nothing here (see the fail-open test above).
+  describe("glance reuse — no RPC while a fresh snapshot exists", () => {
+    const SID = "su-p012-self";
+    const displayGlance = (line: string) => ({
+      wake: { default: "auto" },
+      display: { statusline: [line], title: "" },
+      activity: [],
+    });
+    function dirs() {
+      return {
+        locks: fs.mkdtempSync(join(os.tmpdir(), "sl-bundle-")),
+        own: fs.mkdtempSync(join(os.tmpdir(), "sl-own-")),
+      };
+    }
+    function writeBundle(dir: string, glance: object, observedAgoSec: number) {
+      fs.writeFileSync(
+        join(dir, `activity-hook-bundle-${SID}.json`),
+        JSON.stringify({
+          generation: "g1",
+          glance,
+          glanceObservedAt: new Date(Date.now() - observedAgoSec * 1000).toISOString(),
+        }),
+      );
+    }
+    function env(d: { locks: string; own: string }, extra: Record<string, string> = {}) {
+      return {
+        PAPERCUSP_SID: SID,
+        PAPERCUSP_GATEWAY_URL: "http://127.0.0.1:1",
+        PAPERCUSP_LOCKS_CACHE_DIR: d.locks,
+        PAPERCUSP_STATUSLINE_CACHE_DIR: d.own,
+        ...extra,
+      };
+    }
+    // The statusline's own snapshot path: sha256("<operator url>|<owner>")[:24] + ".json"
+    // (statusline-fleet.sh _cache_path). If that derivation drifts, the marker/snapshot tests
+    // below stop finding the file and fail on the empty render — never pass vacuously.
+    const ownPath = (d: { own: string }) =>
+      join(
+        d.own,
+        `${createHash("sha256").update(`http://127.0.0.1:1|${SID}`).digest("hex").slice(0, 24)}.json`,
+      );
+    function writeOwn(d: { own: string }, line: string, agoSec: number) {
+      const p = ownPath(d);
+      fs.writeFileSync(p, JSON.stringify(displayGlance(line)));
+      const t = new Date(Date.now() - agoSec * 1000);
+      fs.utimesSync(p, t, t);
+    }
+
+    it("renders the PostToolUse bundle glance when it is fresh (no RPC)", () => {
+      const d = dirs();
+      writeBundle(d.locks, displayGlance("◇ BUNDLE-LINE"), 5);
+      const r = runStatusline(env(d));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("BUNDLE-LINE");
+    });
+
+    it("ignores a bundle glance older than the max age (falls through to the live read)", () => {
+      const d = dirs();
+      writeBundle(d.locks, displayGlance("◇ OLD-BUNDLE"), 120);
+      const r = runStatusline(env(d));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+    });
+
+    it("keys the bundle file by the same owner normalisation as the PostToolUse hook", () => {
+      const d = dirs();
+      // A different owner's bundle must never be rendered as mine.
+      fs.writeFileSync(
+        join(d.locks, "activity-hook-bundle-su-someone-else.json"),
+        JSON.stringify({ glance: displayGlance("◇ NOT-MINE"), glanceObservedAt: new Date().toISOString() }),
+      );
+      const r = runStatusline(env(d));
+      expect(r.stdout).toBe("");
+    });
+
+    it("serves its own snapshot within the 30s TTL and re-reads past it", () => {
+      const d = dirs();
+      writeOwn(d, "◇ OWN-FRESH", 10);
+      expect(runStatusline(env(d)).stdout).toContain("OWN-FRESH");
+      writeOwn(d, "◇ OWN-EXPIRED", 45);
+      expect(runStatusline(env(d)).stdout).toBe("");
+    });
+
+    it("prefers the NEWER of its own snapshot and the bundle glance", () => {
+      const d = dirs();
+      writeOwn(d, "◇ OWN-OLDER", 20);
+      writeBundle(d.locks, displayGlance("◇ BUNDLE-NEWER"), 2);
+      expect(runStatusline(env(d)).stdout).toContain("BUNDLE-NEWER");
+      writeOwn(d, "◇ OWN-NEWER", 1);
+      writeBundle(d.locks, displayGlance("◇ BUNDLE-OLDER"), 20);
+      expect(runStatusline(env(d)).stdout).toContain("OWN-NEWER");
+    });
+
+    it("single-flight: a peer render's in-flight refresh → show the stale snapshot, no second RPC", () => {
+      const d = dirs();
+      writeBundle(d.locks, displayGlance("◇ STALE-BUT-SHOWN"), 120); // past the 60s max age
+      // Control: no marker → this render claims the refresh, the (unreachable) RPC fails,
+      // nothing renders, and the marker is released behind it.
+      expect(runStatusline(env(d)).stdout).toBe("");
+      expect(fs.existsSync(`${ownPath(d)}.inflight`)).toBe(false);
+      // A peer holds the refresh → this render must not issue its own; it shows the stale one.
+      fs.writeFileSync(`${ownPath(d)}.inflight`, "");
+      expect(runStatusline(env(d)).stdout).toContain("STALE-BUT-SHOWN");
+      // A marker older than INFLIGHT_MAX_SEC is a dead render's → reclaimed (live read again).
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(`${ownPath(d)}.inflight`, old, old);
+      expect(runStatusline(env(d)).stdout).toBe("");
+      expect(fs.existsSync(`${ownPath(d)}.inflight`)).toBe(false);
+    });
   });
 
   // agent-managed-compaction P-015: the `ctx N%` context-usage chip from the glance

@@ -143,6 +143,7 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
+  ignoreSessionPayloadTier: true,
   modality: ['text'],
   args: argsSchema,
   // Structural shape behind `guidance.returns` (guidance-output-schema-live-guard). Kept

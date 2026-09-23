@@ -74,6 +74,7 @@ function harness() {
       desired: {} as never,
       operations: { execute } as never,
       deliveryCapabilities: { fileTransfer: true },
+      transport: {} as never,
     })),
     runLifecycle,
   };
@@ -171,6 +172,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
       desired: {} as never,
       operations,
       deliveryCapabilities: { fileTransfer: true },
+      transport: {} as never,
     }));
 
     const response = await post(dependencies, bodies.rotate);
@@ -274,6 +276,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
       desired: {} as never,
       operations,
       deliveryCapabilities: { fileTransfer: true },
+      transport: {} as never,
     }));
     runLifecycle.mockImplementationOnce(async (input) => {
       input.onPlanned?.({ action: input.action, operationId: 'op-gated' } as never);

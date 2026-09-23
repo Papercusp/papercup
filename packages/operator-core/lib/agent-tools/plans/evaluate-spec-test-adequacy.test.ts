@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
 
 vi.mock('../_harness-scope', async (original) => ({
   ...(await original<typeof import('../_harness-scope')>()),
@@ -31,6 +37,23 @@ type ToolOutput = { data: Record<string, any> };
 
 const call = async (args: Record<string, unknown>) =>
   ((await tool.handler(args as never, {} as never)) as ToolOutput).data;
+
+const makeDispatchContext = (): UnifiedToolContext => ({
+  log: vi.fn(),
+  signal: new AbortController().signal,
+  progress: vi.fn(),
+  emit: vi.fn(),
+  workspaceId: 'default',
+  runId: 'spec-test-adequacy-dispatch-test',
+  isSuperuser: true,
+  uiClientId: 'su-spec-test-adequacy-test',
+  role: 'su',
+  gateBypass: { role: true, capability: true, quota: true },
+  transport: 'mcp',
+  requestedFormat: 'json',
+  contextTier: 'trimmed',
+  tx: {},
+});
 
 const clause = (lifecycleStatus: 'draft' | 'active' | 'accepted' = 'draft') =>
   ({
@@ -65,6 +88,35 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('preserves every criterion rating through a trimmed MCP dispatch', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const args = {
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    };
+    const direct = await call(args);
+    const expectedKeys = Object.keys(direct.rows[0].ratings);
+    expect(expectedKeys).toHaveLength(9);
+
+    const projected = lookupByMcpName('plans:evaluate-spec-test-adequacy');
+    expect(projected?.ignoreSessionPayloadTier).toBe(true);
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'plans:evaluate-spec-test-adequacy',
+      args,
+      makeDispatchContext(),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{ rows: Array<{ ratings: Record<string, unknown> }> }>(dispatched.result!);
+    if (!payload) throw new Error('evaluator dispatch should return JSON');
+    expect(Object.keys(payload.rows[0].ratings)).toEqual(expectedKeys);
+    expect(payload.rows[0].ratings).not.toHaveProperty('_partial');
+  });
+
   it('refuses an explicit selection that matches only draft clauses', async () => {
     const result = await call({
       harness: 'papercusp',

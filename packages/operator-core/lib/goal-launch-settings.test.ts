@@ -2006,6 +2006,9 @@ describe('P-006: the budget launch gate', () => {
     // "No pots" reads as "attach a pot" to anyone acting on this refusal, and
     // that fabricates measurability rather than repairing anything.
     expect(r.refusal!.message).toContain('Do NOT attach a pot');
+    expect(r.refusal!.message).toMatch(/repair the authoritative.*spend measurement/i);
+    expect(r.refusal!.message).not.toContain('Levers: raise or clear budget_cents');
+    expect(r.refusal!.message).toContain('do not infer available headroom');
   });
 
   it('PRESERVES fail-open for a goal that has simply never been ticked', async () => {

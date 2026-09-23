@@ -115,10 +115,18 @@ describe('R6 public review-to-obligation verdicts', () => {
     // Controlled corrupt/legacy record, not a way to bypass the production writer.
     await fx.admin`UPDATE harness_shared.scout_ticks SET detail = jsonb_set(detail, '{goalReview,evidenceRefs}', '[]'::jsonb)
       WHERE workspace_id = ${WS} AND detail->>'owner' = ${OWNER}`;
-    const result = await agenda();
-    expect(result.evaluations.find((r) => r.family === 'planning-needed')).toMatchObject({
-      status: 'unknown', measurementFailure: { code: 'canonical-goal-planning-read-failed' },
-    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await agenda();
+      expect(result.evaluations.find((r) => r.family === 'planning-needed')).toMatchObject({
+        status: 'unknown', measurementFailure: { code: 'canonical-goal-planning-read-failed' },
+      });
+      expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(
+        'Latest scoped goal review is invalid; absence is not established.',
+      ));
+    } finally {
+      warning.mockRestore();
+    }
   }, 90_000);
 
   it('review.neglected: recording the need alone does not clear its follow-through obligation', async () => {

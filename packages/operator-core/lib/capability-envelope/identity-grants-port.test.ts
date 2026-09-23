@@ -4,6 +4,7 @@ import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from 
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied,IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
 const io = vi.hoisted(() => ({
@@ -200,6 +201,91 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     }, tampered, read)).toMatchObject({ decision: 'deny',
       obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
     expect(io.replay.mock.calls.length).toBeGreaterThan(secondReplayCount);
+  });
+
+  // WI-10002721: the live resolver hands the gate a header + loader instead of
+  // the launch record body. The header must reproduce the cache key the full
+  // record produces, or every lazy preflight would miss and read the body.
+  describe('lazy launch record (WI-10002721)', () => {
+    const lazyFor = (record: Record<string, unknown>, rowVersion: string, isObject = true) => {
+      const load = vi.fn(async () => ({ record, rowVersion }));
+      return {
+        load,
+        handle: lazyIdentityLaunchRecord({
+          isObject, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug, load,
+        }),
+      };
+    };
+
+    it('loads the body on a miss and answers the repeat preflight without loading it', async () => {
+      const f = fixture();
+      const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-hit-test', rowVersion: '61' } };
+      const read = vi.fn(async () => f.policy);
+      const { handle, load } = lazyFor(f.record, '61');
+
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
+      expect(load).toHaveBeenCalledTimes(1);
+      const replayCount = io.replay.mock.calls.length;
+      expect(await checkIdentityGrantKernel({ ...f.request, toolName: 'other:send' }, state, handle, read))
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling' } } });
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(io.replay).toHaveBeenCalledTimes(replayCount);
+      // Policy is still re-read on every call; only the artifact replay is cached.
+      expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('derives the same cache key from the header as from the full record', async () => {
+      const f = fixture();
+      const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-key-test', rowVersion: '62' } };
+      const read = vi.fn(async () => f.policy);
+      expect(await checkIdentityGrantKernel(f.request, state, f.record, read)).toMatchObject({ decision: 'allow' });
+      const { handle, load } = lazyFor(f.record, '62');
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
+      expect(load).not.toHaveBeenCalled();
+    });
+
+    it('caches a miss under the row version the body was read at', async () => {
+      const f = fixture();
+      const read = vi.fn(async () => f.policy);
+      const { handle, load } = lazyFor(f.record, '64');
+      const at = (rowVersion: string) => ({
+        ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-version-test', rowVersion },
+      });
+      await checkIdentityGrantKernel(f.request, at('63'), handle, read);
+      expect(load).toHaveBeenCalledTimes(1);
+      await checkIdentityGrantKernel(f.request, at('64'), handle, read);
+      expect(load).toHaveBeenCalledTimes(1);
+      await checkIdentityGrantKernel(f.request, at('63'), handle, read);
+      expect(load).toHaveBeenCalledTimes(2);
+    });
+
+    it('takes the no-record branch for a non-object header without loading the body', async () => {
+      const f = fixture();
+      const { handle, load } = lazyFor(f.record, '65', false);
+      expect(await checkIdentityGrantKernel(f.request, f.state, handle, vi.fn()))
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+      expect(load).not.toHaveBeenCalled();
+      // Unacknowledged (no applied receipt) stays the legacy, ungoverned path.
+      expect(await checkIdentityGrantKernel(f.request, {}, handle, vi.fn())).toBeNull();
+    });
+
+    it('refuses a body that is gone or no longer an object at load time', async () => {
+      const f = fixture();
+      const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-gone-test', rowVersion: '66' } };
+      for (const loaded of [null, { record: null, rowVersion: '66' }, { record: ['x'], rowVersion: '66' }]) {
+        const handle = lazyIdentityLaunchRecord({
+          isObject: true, workspaceId: 'ws-a', harnessSlug: 'sales', load: async () => loaded,
+        });
+        expect(await checkIdentityGrantKernel(f.request, state, handle, vi.fn()))
+          .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+      }
+    });
+
+    it('never mistakes a stored JSON record for the handle', () => {
+      expect(isLazyIdentityLaunchRecord(JSON.parse(JSON.stringify(lazyFor(fixture().record, '1').handle)))).toBe(false);
+      expect(isLazyIdentityLaunchRecord(fixture().record)).toBe(false);
+      expect(isLazyIdentityLaunchRecord(lazyFor(fixture().record, '1').handle)).toBe(true);
+    });
   });
 
   it('selects the exact applied history receipt, not the current desired artifact', () => {

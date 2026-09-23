@@ -21,6 +21,7 @@ const control = vi.hoisted(() => ({
   runDesktopPack: vi.fn(),
   prepareInitialization: vi.fn(),
   activateCustomerWorkspace: vi.fn(),
+  enrollConnector: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   /**
@@ -48,6 +49,7 @@ vi.mock('../workspace-host/initialization-admission', () => ({
 vi.mock('../workspace-host/hosted-bring-up', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../workspace-host/hosted-bring-up')>()),
   activateHostedCustomerWorkspace: control.activateCustomerWorkspace,
+  enrollHostedWorkspaceConnector: control.enrollConnector,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -258,6 +260,10 @@ describe('workspace-host provisioning DBOS admission', () => {
         order.push('desktop-pack');
         return { status: 'succeeded', operationId: request.operationId, hostId: 'host-1' };
       });
+      control.enrollConnector.mockImplementation(async () => {
+        order.push('connector');
+        return { generation: 1, routeLabel: 'host-1' };
+      });
       control.activateCustomerWorkspace.mockImplementation(async () => {
         order.push('activate');
         return { state: 'active' };
@@ -265,7 +271,7 @@ describe('workspace-host provisioning DBOS admission', () => {
       return order;
     }
 
-    it('initializes, installs the desktop, then marks the workspace active, each under its own operation', async () => {
+    it('initializes, installs the desktop, connects it, then marks the workspace active, each under its own operation', async () => {
       const order = recordOrder();
       control.runProvisioning.mockResolvedValueOnce(provisioned);
 
@@ -274,7 +280,19 @@ describe('workspace-host provisioning DBOS admission', () => {
         operationId: 'op-1',
       });
 
-      expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'activate']);
+      expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'connector', 'activate']);
+      // D-403: the connector stage gets its own operation and the same wide retry budget.
+      expect(control.enrollConnector).toHaveBeenCalledWith({
+        controlPlaneWorkspaceId: 'ws-1',
+        customerWorkspaceId: 'customer-ws-1',
+        hostId: 'host-1',
+        operationId: 'op-1.connector',
+      });
+      expect(control.stepOptionsByName['workspace-host-bring-up-connector']).toMatchObject({
+        maxAttempts: 5,
+        intervalSeconds: 10,
+        backoffRate: 2,
+      });
       // Built on the server from the host's own spec: an empty workspace, the machine's own
       // identity, and only the agent that needs no customer account.
       expect(control.prepareInitialization).toHaveBeenCalledWith(expect.objectContaining({
@@ -345,6 +363,18 @@ describe('workspace-host provisioning DBOS admission', () => {
       expect(control.recordTerminalFailure).not.toHaveBeenCalledWith(expect.objectContaining({ operationId: 'op-1' }));
       expect(order).toEqual(['admit-initialize']);
       expect(control.runDesktopPack).not.toHaveBeenCalled();
+      expect(control.activateCustomerWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('does not mark the workspace active when its desktop could not be connected', async () => {
+      const order = recordOrder();
+      const failure = new Error('connector enrollment failed with exit 77');
+      control.enrollConnector.mockRejectedValue(failure);
+      control.runProvisioning.mockResolvedValueOnce(provisioned);
+
+      await expect(workspaceHostProvisioningWorkflow({ ...input, action: 'provision', bringUp })).rejects.toBe(failure);
+
+      expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack']);
       expect(control.activateCustomerWorkspace).not.toHaveBeenCalled();
     });
   });

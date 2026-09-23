@@ -41,6 +41,7 @@ import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
 // catch can reach it when THIS module is what failed to load. Importing the same
 // constants here keeps one source of truth rather than a second copy to drift.
 import { RECOVERY_DOOR_TOOL, RECOVERY_DOOR_DISPATCH_WRAPPER, isRecoveryDoorCall } from './recovery-door';
+import { isLazyIdentityLaunchRecord } from './lazy-launch-record';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 
 export interface IdentityGrantPolicy {
@@ -192,25 +193,49 @@ const identityResolutionCache = pinModuleState('@papercusp/operator-core.identit
   new Map<string, { validatedAt: number; resolution: IdentityArtifactResolution }>(),
 );
 
+function identityResolutionKey(
+  record: Record<string, unknown>,
+  applied: KernelExecutionRevision | null | undefined,
+  version: IdentityGrantKernelState['identityLaunchRecordVersion'],
+): string | null {
+  // Callers without a database-owned version retain the original replay path.
+  if (!version?.sessionId || !version.rowVersion) return null;
+  return JSON.stringify([
+    version.sessionId, version.rowVersion, record.workspaceId, record.harnessSlug,
+    applied?.specificationRevision ?? null, applied?.stateRevision ?? null,
+  ]);
+}
+
+/**
+ * A fresh cached verdict, or null. Needs only the key fields — NOT the launch
+ * record body — which is what lets the kernel resolver skip reading that body on
+ * a hit (WI-10002721).
+ */
+function cachedIdentityResolution(
+  record: Record<string, unknown>,
+  applied: KernelExecutionRevision | null | undefined,
+  version: IdentityGrantKernelState['identityLaunchRecordVersion'],
+): IdentityArtifactResolution | null {
+  const key = identityResolutionKey(record, applied, version);
+  if (key === null) return null;
+  const cached = identityResolutionCache.get(key);
+  if (!cached || Date.now() - cached.validatedAt >= IDENTITY_RESOLUTION_CACHE_TTL_MS) return null;
+  identityResolutionCache.delete(key);
+  identityResolutionCache.set(key, cached);
+  return cached.resolution;
+}
+
 function resolveIdentityArtifactForKernel(
   record: Record<string, unknown>,
   applied: KernelExecutionRevision | null | undefined,
   version: IdentityGrantKernelState['identityLaunchRecordVersion'],
 ): IdentityArtifactResolution {
-  // Callers without a database-owned version retain the original replay path.
-  if (!version?.sessionId || !version.rowVersion) return resolveIdentityArtifact(record, applied);
-  const key = JSON.stringify([
-    version.sessionId, version.rowVersion, record.workspaceId, record.harnessSlug,
-    applied?.specificationRevision ?? null, applied?.stateRevision ?? null,
-  ]);
-  const now = Date.now();
-  const cached = identityResolutionCache.get(key);
-  if (cached && now - cached.validatedAt < IDENTITY_RESOLUTION_CACHE_TTL_MS) {
-    identityResolutionCache.delete(key);
-    identityResolutionCache.set(key, cached);
-    return cached.resolution;
-  }
+  const cached = cachedIdentityResolution(record, applied, version);
+  if (cached) return cached;
   const resolution = resolveIdentityArtifact(record, applied);
+  const key = identityResolutionKey(record, applied, version);
+  if (key === null) return resolution;
+  const now = Date.now();
   identityResolutionCache.delete(key);
   identityResolutionCache.set(key, { validatedAt: now, resolution });
   while (identityResolutionCache.size > IDENTITY_RESOLUTION_CACHE_MAX) {
@@ -514,7 +539,14 @@ export async function checkIdentityGrantKernel(
   rawRecord: unknown,
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ): Promise<KernelEnforcementResult | null> {
-  const record = object(rawRecord);
+  // WI-10002721: the live resolver passes a header + loader instead of the
+  // (hundreds-of-KB) record. The header carries exactly the fields this gate
+  // reads before and after resolution, so a cache hit never loads the body.
+  const lazy = isLazyIdentityLaunchRecord(rawRecord) ? rawRecord : null;
+  let record: Record<string, unknown> | null = lazy
+    ? (lazy.isObject ? { workspaceId: lazy.workspaceId, harnessSlug: lazy.harnessSlug } : null)
+    : object(rawRecord);
+  let version = state.identityLaunchRecordVersion;
   const applied = state.activation?.applied ?? state.appliedRevision;
   // No launch artifact is the legacy, non-opted-in path. An acknowledged
   // identity with a missing receipt is not legacy: fail closed.
@@ -556,7 +588,22 @@ export async function checkIdentityGrantKernel(
   // The decision itself lives in `resolveIdentityArtifact` (above) so the
   // WI-10002060 sweep can ask the same question instead of paraphrasing it.
   // This call site is behaviour-identical to the body it replaced.
-  const resolution = resolveIdentityArtifactForKernel(record, applied, state.identityLaunchRecordVersion);
+  let resolution = lazy ? cachedIdentityResolution(record, applied, version) : null;
+  if (lazy && !resolution) {
+    // Cache miss: read the body. It is resolved AND keyed at the row version it
+    // was read at, so a row updated between the header read and this one is
+    // judged as one consistent snapshot rather than a header/body mix.
+    const loaded = await lazy.load();
+    const full = object(loaded?.record);
+    // The row vanished or stopped being an object between the two reads:
+    // exactly the "no usable record" outcome the header path would have given.
+    if (!full) return applied ? staleArtifact(request) : null;
+    record = full;
+    version = version && loaded?.rowVersion
+      ? { sessionId: version.sessionId, rowVersion: loaded.rowVersion }
+      : undefined;
+  }
+  resolution ??= resolveIdentityArtifactForKernel(record, applied, version);
   if (resolution.kind === 'stale-artifact') return staleArtifact(request);
   if (resolution.kind === 'ungoverned') return null;
   const { artifact, current } = resolution;

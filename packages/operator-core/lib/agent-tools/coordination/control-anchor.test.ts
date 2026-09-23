@@ -517,7 +517,11 @@ describe('compact durable CTRL anchor', () => {
     expect(activationAck.calls[1]!.statement).toMatch(/activation/);
     const legacyAck = sqlReturning([{ control_delivered_generation: 6 }]);
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, legacyAck.sql)).resolves.toBe(true);
-    expect(legacyAck.calls[0]!.statement).not.toMatch(/activation/);
+    // WI-10002717: the revision-less path never WRITES activation state; it only
+    // refuses while an activation is pending (desired != applied). The behaviour is
+    // proven against real Postgres in control-anchor-ack.integration.test.ts.
+    expect(legacyAck.calls[0]!.statement).not.toMatch(/jsonb_set/);
+    expect(legacyAck.calls[0]!.statement).toMatch(/'activation'->'desired' = control_state->'activation'->'applied'/);
     expect(legacyAck.calls.some((call) => /adv_sessions/.test(call.statement))).toBe(false);
   });
 

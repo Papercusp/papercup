@@ -141,6 +141,29 @@ export const WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS =
   "/etc/sudoers.d/papercusp-workspace-host-conduits";
 
 /**
+ * D-403: the hosted desktop connector's enrollment seam. The SSH account runs the conduit; the
+ * conduit runs the root PROGRAM through sudo, which redeems ONE single-use ticket (read from
+ * stdin) at the control plane and writes the bearer it receives into the service's optional
+ * EnvironmentFile. Rendered only when the bootstrap is given a control-plane origin.
+ */
+export const WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT =
+  "/usr/local/bin/papercusp-workspace-host-enroll-connector";
+export const WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM =
+  "/usr/local/libexec/papercusp-workspace-host-enroll-connector";
+export const WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROTOCOL_VERSION =
+  "papercusp-workspace-host-connector-enrollment-v1";
+export const WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV = [
+  "--protocol-version",
+  WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROTOCOL_VERSION,
+] as const;
+/**
+ * Read by PID 1 before the service drops privileges, so the file is root-only and the service
+ * user never needs to read it. Optional in the unit (`-` prefix): an unenrolled host is unchanged.
+ */
+export const WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE =
+  "/etc/papercusp/hosted-connector.env";
+
+/**
  * Shared libraries supplied by Ubuntu 24.04's glibc runtime.
  *
  * These are deliberately an explicit, small baseline rather than an
@@ -779,8 +802,19 @@ export interface WorkspaceHostBootstrapInput {
    * the signed bundle is the stronger long-term answer once an image rebake is permitted again.
    */
   agentRuntimeInstalls?: readonly WorkspaceHostAgentRuntimeInstall[];
+  /**
+   * D-403: install the desktop connector's enrollment conduit, bound to this control plane.
+   * The origin is baked into the root program here, never read from its stdin, so an enrollment
+   * request cannot redirect where the host sends its ticket. Omitted means no conduit.
+   */
+  hostedConnector?: WorkspaceHostBootstrapHostedConnector;
   /** Persistable labels only. Secret-shaped keys and private-key values are rejected. */
   publicMetadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface WorkspaceHostBootstrapHostedConnector {
+  /** Bare HTTPS origin of the hosted control plane, e.g. `https://app.papercusp.com`. */
+  controlPlaneOrigin: string;
 }
 
 export interface WorkspaceHostBootstrapAttestationCheck {
@@ -1093,6 +1127,16 @@ interface ValidatedBootstrapInput {
   agentGroup: string;
   workspaceAuthorizedKeys: readonly string[];
   agentRuntimeInstalls: readonly WorkspaceHostAgentRuntimeInstall[];
+  /** The normalized origin (`URL.origin`), or null when no conduit is rendered. */
+  connectorOrigin: string | null;
+}
+
+/** A bare HTTPS origin: no path, query, fragment or credentials. Returns `URL.origin`. */
+function requireHttpsOrigin(value: string, label: string): string {
+  requirePublicHttpsUrl(value, label);
+  const parsed = new URL(value);
+  requireCondition(parsed.pathname === '/', `${label} must be a bare origin with no path`);
+  return parsed.origin;
 }
 
 function validateInput(
@@ -1280,6 +1324,12 @@ function validateInput(
     agentRuntimeInstalls: normalizedAgentRuntimeInstalls(
       input.agentRuntimeInstalls,
     ),
+    connectorOrigin: input.hostedConnector
+      ? requireHttpsOrigin(
+          input.hostedConnector.controlPlaneOrigin,
+          'hostedConnector.controlPlaneOrigin',
+        )
+      : null,
   };
 }
 
@@ -1373,6 +1423,79 @@ function normalizedAuthorizedKeys(
 
 function assignment(name: string, value: string): string {
   return `${name}=${shellQuote(value)}`;
+}
+
+/**
+ * D-403: the desktop connector's enrollment seam, as three slices of the bootstrap.
+ *
+ * `install` writes the SSH-side conduit and the root program. The program's header is an
+ * UNQUOTED heredoc so the bootstrap's own `$WORKSPACE_ROOT` / `$SERVICE_NAME` land in it as
+ * literals; the body is a QUOTED heredoc so nothing in it expands at render time.
+ *
+ * What the program does, and why each part is shaped the way it is:
+ * - the ticket arrives on stdin and reaches curl through `--config -`, never through argv,
+ *   because `/proc/<pid>/cmdline` is world-readable;
+ * - the origin is this function's argument, never input, so a request cannot redirect it;
+ * - the bearer is written to a root-only file that PID 1 reads before dropping privileges;
+ * - the receipt names the generation and nothing derived from the bearer.
+ *
+ * The program deliberately contains no `*`: the sibling conduit test forbids sudoers wildcards
+ * across this whole region, and a shell glob here would be indistinguishable from one.
+ */
+function connectorEnrollmentLines(origin: string): {
+  install: string[];
+  sudoersAliases: string[];
+  sudoersGrant: string;
+} {
+  const [flag, version] = WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV;
+  const refused = 'echo "connector enrollment: refused argv" >&2; exit 64;';
+  return {
+    install: [
+      'install -d -o root -g root -m 0755 "$(dirname "$CONNECTOR_ENROLLMENT_PROGRAM")"',
+      'install -o root -g root -m 0755 /dev/null "$CONNECTOR_ENROLLMENT_CONDUIT"',
+      "cat > \"$CONNECTOR_ENROLLMENT_CONDUIT\" <<'PAPERCUSP_CONNECTOR_CONDUIT'",
+      "#!/bin/sh",
+      "set -eu",
+      `[ "$#" -eq 2 ] && [ "$1" = ${shellQuote(flag)} ] && [ "$2" = ${shellQuote(version)} ] || { ${refused} }`,
+      `exec /usr/bin/sudo -n -- ${shellQuote(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM)} "$@"`,
+      "PAPERCUSP_CONNECTOR_CONDUIT",
+      'install -o root -g root -m 0700 /dev/null "$CONNECTOR_ENROLLMENT_PROGRAM"',
+      'cat > "$CONNECTOR_ENROLLMENT_PROGRAM" <<PAPERCUSP_CONNECTOR_PROGRAM_HEADER',
+      "#!/bin/sh",
+      assignment("ORIGIN", origin),
+      'WORKSPACE_ROOT="$WORKSPACE_ROOT"',
+      'SERVICE="$SERVICE_NAME.service"',
+      assignment("ENVIRONMENT_FILE", WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE),
+      "PAPERCUSP_CONNECTOR_PROGRAM_HEADER",
+      "cat >> \"$CONNECTOR_ENROLLMENT_PROGRAM\" <<'PAPERCUSP_CONNECTOR_PROGRAM'",
+      "set -eu",
+      "umask 077",
+      `[ "$#" -eq 2 ] && [ "$1" = ${shellQuote(flag)} ] && [ "$2" = ${shellQuote(version)} ] || { ${refused} }`,
+      'IFS= read -r TICKET || { echo "connector enrollment: no ticket on stdin" >&2; exit 65; }',
+      "printf '%s\\n' \"$TICKET\" | grep -Eqx 'ht_[A-Za-z0-9_-]{43}' || { echo \"connector enrollment: refused ticket\" >&2; exit 65; }",
+      'RESPONSE="$(mktemp)"',
+      'STAGED=""',
+      "trap 'rm -f \"$RESPONSE\" ${STAGED:+\"$STAGED\"}' EXIT",
+      "STATUS=\"$(printf 'header = \"x-papercusp-connector-ticket: %s\"\\n' \"$TICKET\" | curl --config - --silent --show-error --proto '=https' --max-time 30 --request POST --header 'content-type: application/json' --data '{}' --output \"$RESPONSE\" --write-out '%{http_code}' \"$ORIGIN/api/hosted/connectors/register\")\" || { echo \"connector enrollment: could not reach $ORIGIN\" >&2; exit 69; }",
+      '[ "$STATUS" = "200" ] || { echo "connector enrollment: $ORIGIN refused the ticket (HTTP $STATUS)" >&2; exit 77; }',
+      "BEARER=\"$(grep -o '\"bearer\":\"hc_[A-Za-z0-9_-]\\{43\\}\"' \"$RESPONSE\" | head -n 1 | cut -d '\"' -f 4)\"",
+      "GENERATION=\"$(grep -o '\"generation\":[0-9]\\{1,\\}' \"$RESPONSE\" | head -n 1 | cut -d ':' -f 2)\"",
+      '[ -n "$BEARER" ] && [ -n "$GENERATION" ] || { echo "connector enrollment: $ORIGIN answered without a credential" >&2; exit 76; }',
+      'STAGED="$(mktemp "$ENVIRONMENT_FILE.XXXXXX")"',
+      "printf 'PAPERCUSP_HOSTED_CONNECTOR_BEARER=%s\\nPAPERCUSP_HOSTED_CONTROL_PLANE_URL=%s\\nPAPERCUSP_HOSTED_WORKSPACE_ROOT=%s\\n' \"$BEARER\" \"$ORIGIN\" \"$WORKSPACE_ROOT\" > \"$STAGED\"",
+      'chmod 0600 "$STAGED"',
+      'mv -f "$STAGED" "$ENVIRONMENT_FILE"',
+      'STAGED=""',
+      'systemctl restart "$SERVICE" || { echo "connector enrollment: $SERVICE did not restart" >&2; exit 75; }',
+      `printf '{"protocolVersion":"%s","generation":%s,"registered":true}\\n' ${shellQuote(version)} "$GENERATION"`,
+      "PAPERCUSP_CONNECTOR_PROGRAM",
+    ],
+    sudoersAliases: [
+      `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_CONNECTOR = ${WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM} ${WORKSPACE_HOST_CONNECTOR_ENROLLMENT_ARGV.join(" ")}`,
+      "Defaults!PAPERCUSP_WORKSPACE_HOST_CONNECTOR env_reset, !setenv",
+    ],
+    sudoersGrant: ", PAPERCUSP_WORKSPACE_HOST_CONNECTOR",
+  };
 }
 
 /**
@@ -1856,8 +1979,10 @@ export function buildWorkspaceHostBootstrap(
     agentGroup,
     workspaceAuthorizedKeys,
     agentRuntimeInstalls,
+    connectorOrigin,
   } = validated;
   const harden = hostModelHardenLines(validated);
+  const connectorEnrollment = connectorOrigin ? connectorEnrollmentLines(connectorOrigin) : null;
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
   // PER MODEL, not the whole name space. Rendering the union would make a bootc host attest
@@ -1976,6 +2101,12 @@ export function buildWorkspaceHostBootstrap(
       "PRIVILEGED_CONDUIT_SUDOERS",
       WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
     ),
+    ...(connectorEnrollment
+      ? [
+          assignment("CONNECTOR_ENROLLMENT_CONDUIT", WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT),
+          assignment("CONNECTOR_ENROLLMENT_PROGRAM", WORKSPACE_HOST_CONNECTOR_ENROLLMENT_PROGRAM),
+        ]
+      : []),
     "",
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     'die() { log "ERROR: $1" >&2; exit 1; }',
@@ -2344,6 +2475,7 @@ export function buildWorkspaceHostBootstrap(
     `[ "$1" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[0])} ] && [ "$2" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[1])} ] && [ "$3" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[2])} ] || { echo "credential delivery conduit: refused argv" >&2; exit 64; }`,
     `exec /usr/bin/sudo -n -- ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node}`)} ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery}`)} "$@"`,
     "PAPERCUSP_DELIVERY_CONDUIT",
+    ...(connectorEnrollment?.install ?? []),
     'chown root:root "$REMOTE_INITIALIZER_CONDUIT" "$CREDENTIAL_DELIVERY_CONDUIT"',
     'chmod 0755 "$REMOTE_INITIALIZER_CONDUIT" "$CREDENTIAL_DELIVERY_CONDUIT"',
     'cat > "$PRIVILEGED_CONDUIT_SUDOERS" <<PAPERCUSP_CONDUIT_SUDOERS',
@@ -2353,7 +2485,8 @@ export function buildWorkspaceHostBootstrap(
     `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_DELIVERY = ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node} ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery} ${WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV.join(" ")}`,
     "Defaults!PAPERCUSP_WORKSPACE_HOST_INITIALIZER env_reset, !setenv",
     "Defaults!PAPERCUSP_WORKSPACE_HOST_DELIVERY env_reset, !setenv",
-    "$WORKSPACE_USER ALL=(root) NOPASSWD: PAPERCUSP_WORKSPACE_HOST_INITIALIZER, PAPERCUSP_WORKSPACE_HOST_DELIVERY",
+    ...(connectorEnrollment?.sudoersAliases ?? []),
+    `$WORKSPACE_USER ALL=(root) NOPASSWD: PAPERCUSP_WORKSPACE_HOST_INITIALIZER, PAPERCUSP_WORKSPACE_HOST_DELIVERY${connectorEnrollment?.sudoersGrant ?? ""}`,
     "PAPERCUSP_CONDUIT_SUDOERS",
     'chown root:root "$PRIVILEGED_CONDUIT_SUDOERS"',
     'chmod 0440 "$PRIVILEGED_CONDUIT_SUDOERS"',
@@ -2391,6 +2524,9 @@ export function buildWorkspaceHostBootstrap(
     "Environment=PAPERCUSP_DOCS_ROOT=$RUNTIME_ROOT/current/internal-docs",
     "Environment=PAPERCUSP_TEMPLATES_DIR=$STATE_ROOT/.papercusp/templates",
     "Environment=PAPERCUSP_RUBRICS_DIR=$STATE_ROOT/.papercusp/rubrics",
+    // D-403: the connector bearer, once enrolled. Optional (`-`), so the unit starts unchanged
+    // before enrollment; read by PID 1, so the file stays root-only.
+    ...(connectorEnrollment ? [`EnvironmentFile=-${WORKSPACE_HOST_CONNECTOR_ENVIRONMENT_FILE}`] : []),
     "ExecStart=$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT",
     "ExecStartPost=$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT --host 127.0.0.1 --port $SERVICE_PORT",
     "Restart=on-failure",

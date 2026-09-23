@@ -843,6 +843,14 @@ export async function acknowledgeControlTransition(
       return true;
     });
   }
+  // WI-10002717: a revision-less acknowledgement may advance the delivery
+  // watermark only when no identity activation is still pending (desired ==
+  // applied, or no activation at all). Advancing it past a pending activation
+  // makes preparePendingControlTransition see nothing pending, so the activation
+  // is never prepared or applied and the session is stranded at 'desired'.
+  // coord:orient {afterCompaction} is the caller this guards against: it
+  // acknowledges without rendering the stack block, so it must leave such a
+  // generation pending for turn-start, which acknowledges WITH the revision.
   const rows = await sql<Array<{ control_delivered_generation: number | string }>>`
     UPDATE harness_shared.session_briefs
        SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
@@ -850,6 +858,11 @@ export async function acknowledgeControlTransition(
        AND workspace_id = ${workspaceId}
        AND control_generation >= ${generation}
        AND control_delivered_generation < ${generation}
+       AND (
+         control_state->'activation'->'desired' IS NULL
+         OR jsonb_typeof(control_state->'activation'->'desired') = 'null'
+         OR control_state->'activation'->'desired' = control_state->'activation'->'applied'
+       )
     RETURNING control_delivered_generation
   `;
   return rows.length > 0;

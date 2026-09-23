@@ -15,13 +15,13 @@ import {
   type AgentObligationEvidence,
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
-import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief, GoalPotPlacementAuthority } from './goal-launch-settings';
+import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief, GoalPotPlacementAuthority } from './goal-launch-settings';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 
-export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v3';
+export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v4';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
@@ -282,6 +282,26 @@ type AgentObligationInputShape = Pick<
   | 'measurementFailure'
 >;
 
+/** Guidance never widens the authority of the launch resolver that refused. */
+const LAUNCH_REFUSAL_GUIDANCE = {
+  goal_budget_unmeasurable: {
+    title: 'Goal budget measurement blocks placement',
+    summary: 'repair the authoritative goal spend measurement and its provenance before launching; unknown spend is not available headroom; do not fabricate pot links or raise a ceiling to bypass this refusal',
+  },
+  goal_budget_exceeded: {
+    title: 'Goal budget blocks placement',
+    summary: 'report the verified budget refusal and seek owner budget direction or wind the goal down; do not increase the cap autonomously',
+  },
+  goal_max_agents: {
+    title: 'Goal headcount ceiling blocks placement',
+    summary: 'reconcile live claims and reallocate within the declared goal headcount ceiling; do not duplicate a launch or raise the ceiling to force admission',
+  },
+  fleet_max_agents: {
+    title: 'Fleet headcount ceiling blocks placement',
+    summary: 'reconcile this fleet and reallocate within the declared fleet headcount ceiling; do not duplicate a launch or raise the ceiling to force admission',
+  },
+} satisfies Record<GoalLaunchRefusal['reason'], { title: string; summary: string }>;
+
 export function planPlacementObligation(input: PlanPlacementProviderInput): AgentObligation {
   const scope = { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId };
   const common = {
@@ -511,12 +531,23 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
 
   if (needsLaunch && launch?.refusal) {
     const refusal = launch.refusal;
+    const guidance = Object.hasOwn(LAUNCH_REFUSAL_GUIDANCE, refusal.reason)
+      ? LAUNCH_REFUSAL_GUIDANCE[refusal.reason] : undefined;
+    if (!guidance) return defineAgentObligation({
+      ...common,
+      scope: { ...scope, planSlug: selected.slug },
+      ...unknownPlacement(input, {
+        title: `Launch refusal for ${selected.slug} is unsupported`,
+        code: 'unsupported-goal-launch-refusal',
+        detail: `Unrecognized launch refusal ${refusal.reason}: ${refusal.message}`,
+        retry: 'refresh the canonical launch refusal semantics before choosing another action',
+        applicableDemand: applicablePlans.length,
+        plan: selected,
+      }),
+    });
     return defineAgentObligation({
       ...common,
-      title:
-        refusal.reason === 'goal_budget_exceeded'
-          ? `Goal budget blocks placement of ${selected.slug}`
-          : `Goal headcount ceiling blocks placement of ${selected.slug}`,
+      title: `${guidance.title} of ${selected.slug}`,
       scope: { ...scope, planSlug: selected.slug },
       episode: `refused:${refusal.reason}:${refusal.current}:${refusal.limit}:${refusal.requested}`,
       status: 'blocked',
@@ -526,10 +557,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       evidence: placementEvidence(input, selected),
       action: {
         kind: 'repair',
-        summary:
-          refusal.reason === 'goal_budget_exceeded'
-            ? 'restore verified budget headroom or wind the goal down before launching'
-            : 'free verified live-agent headroom or revise the declared ceiling before launching',
+        summary: guidance.summary,
         targetRef: `goal:${input.goalId}`,
       },
       ...(ageMs == null ? {} : { ageMs }),

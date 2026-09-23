@@ -6,9 +6,12 @@ import {
   type WorkspaceHostDesiredSpec,
 } from '@papercusp/deployment-driver';
 import {
+  enrollHostedWorkspaceConnector,
   hostedBringUpInitialization,
+  hostedConnectorRouteLabel,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
   workspaceHostBringUpOperationIds,
+  type HostedConnectorEnrollmentDependencies,
 } from './hosted-bring-up';
 import { resolveWorkspaceHostDeliveryCapabilities } from './initialization-operations-resolver';
 
@@ -89,8 +92,111 @@ describe('hosted bring-up (D-401)', () => {
     expect(ids).toEqual({
       initialize: 'prov-3b44551202aa97c3c3048660.initialize',
       desktopPack: 'prov-3b44551202aa97c3c3048660.desktop-pack',
+      connector: 'prov-3b44551202aa97c3c3048660.connector',
     });
     // The initialize/desktop-pack admission guard for operation ids.
     for (const id of Object.values(ids)) expect(id).toMatch(/^[a-z0-9][a-z0-9._:-]{0,159}$/i);
+  });
+});
+
+describe('hosted desktop connector enrollment (D-403)', () => {
+  const TICKET = `ht_${'T'.repeat(43)}`;
+  const INPUT = {
+    controlPlaneWorkspaceId: 'papercusp-workspace',
+    customerWorkspaceId: 'ws-2f6a4b0c6dc222d8d20766ae',
+    hostId: 'host-2f6a4b0c6dc222d8d20766ae',
+    operationId: 'prov-2f6a.connector',
+  };
+
+  function dependencies(overrides: Partial<HostedConnectorEnrollmentDependencies> = {}) {
+    const calls = {
+      enroll: [] as unknown[],
+      delivered: [] as unknown[],
+      updates: [] as Array<Record<string, unknown>>,
+      events: [] as Array<Record<string, unknown>>,
+      signals: [] as Array<Record<string, unknown>>,
+    };
+    const deps: HostedConnectorEnrollmentDependencies = {
+      readOrganizationId: async () => 'org-1',
+      gateway: {
+        enroll: async (binding) => {
+          calls.enroll.push(binding);
+          return {
+            ticket: TICKET,
+            binding: { ...binding, generation: 4, state: 'pending', kind: 'enrollment', audience: 'connector-register', expiresAt: new Date() },
+          };
+        },
+      },
+      deliverTicket: async (input) => {
+        calls.delivered.push(input);
+        return { generation: 4 };
+      },
+      beginOperation: async () => {},
+      updateOperation: async (update) => {
+        calls.updates.push({ ...update });
+      },
+      appendEvent: async (event) => {
+        calls.events.push({ ...event });
+        return 'event-1';
+      },
+      recordSignals: async (signals) => {
+        calls.signals.push({ ...signals });
+      },
+      ...overrides,
+    };
+    return { deps, calls };
+  }
+
+  it('enrolls the bound organization + workspace + host and hands only the ticket to the host', async () => {
+    const { deps, calls } = dependencies();
+    await expect(enrollHostedWorkspaceConnector(INPUT, deps)).resolves.toEqual({
+      generation: 4,
+      routeLabel: 'host-2f6a4b0c6dc222d8d20766ae',
+    });
+    expect(calls.enroll).toEqual([{
+      controlPlaneWorkspaceId: 'papercusp-workspace',
+      organizationId: 'org-1',
+      customerWorkspaceId: 'ws-2f6a4b0c6dc222d8d20766ae',
+      hostId: 'host-2f6a4b0c6dc222d8d20766ae',
+      routeLabel: 'host-2f6a4b0c6dc222d8d20766ae',
+      transport: 'websocket',
+    }]);
+    expect(calls.delivered).toEqual([{ workspaceId: 'papercusp-workspace', hostId: INPUT.hostId, ticket: TICKET }]);
+    expect(calls.updates.at(-1)).toMatchObject({ operationId: INPUT.operationId, status: 'succeeded' });
+    // Published in the shape the desktop surface's readHostedWorkspaceConnector reads
+    // (apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol.ts).
+    expect(calls.signals).toEqual([{
+      workspaceId: 'papercusp-workspace',
+      hostId: INPUT.hostId,
+      tunnelStatus: { hostedConnector: { routeLabel: INPUT.hostId, transport: 'websocket', generation: 4 } },
+    }]);
+    // Nothing persisted by this stage carries the ticket.
+    expect(JSON.stringify([calls.updates, calls.events, calls.signals])).not.toContain(TICKET);
+  });
+
+  it('publishes nothing when the host did not register', async () => {
+    const { deps, calls } = dependencies({ deliverTicket: async () => { throw new Error('exit 69'); } });
+    await expect(enrollHostedWorkspaceConnector(INPUT, deps)).rejects.toThrow('exit 69');
+    expect(calls.signals).toEqual([]);
+  });
+
+  it('fails the stage when the host registered a different generation than was enrolled', async () => {
+    const { deps, calls } = dependencies({ deliverTicket: async () => ({ generation: 3 }) });
+    await expect(enrollHostedWorkspaceConnector(INPUT, deps)).rejects.toThrow(/registered connector generation 3/);
+    expect(calls.updates.at(-1)).toMatchObject({ operationId: INPUT.operationId, status: 'failed' });
+  });
+
+  it('records the host-side refusal on the stage operation and rethrows it', async () => {
+    const refusal = new Error('connector enrollment failed with exit 77: refused the ticket (HTTP 401)');
+    const { deps, calls } = dependencies({ deliverTicket: async () => { throw refusal; } });
+    await expect(enrollHostedWorkspaceConnector(INPUT, deps)).rejects.toBe(refusal);
+    expect(calls.updates.at(-1)).toMatchObject({ status: 'failed', error: refusal.message });
+    expect(JSON.stringify(calls.updates)).not.toContain(TICKET);
+  });
+
+  it('uses the host id as the route label and refuses one that is not a DNS label', () => {
+    expect(hostedConnectorRouteLabel('Host-ABC')).toBe('host-abc');
+    expect(() => hostedConnectorRouteLabel('host_1')).toThrow(/route label/);
+    expect(() => hostedConnectorRouteLabel(`h${'x'.repeat(63)}`)).toThrow(/route label/);
   });
 });

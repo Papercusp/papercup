@@ -17,7 +17,9 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { sendMessage } from '../coordination/messages';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import {
+  stampBarReadinessNowBlock,
   stampMootCarrierNowBlock,
+  type BarReadinessDeps,
   type CarrierCandidate,
   type PlanScopeCascadeDeps,
 } from './plan-scope-cascade';
@@ -121,5 +123,47 @@ export function defaultPlanScopeCascadeDeps(ctx: unknown, actor: string): PlanSc
       await emitPlanEventForCaller(ctx as ResolveIdentityCtx, { planSlug, event: 'now_updated', detail });
     },
     releaseTrigger: planAcceptanceChangedKey,
+  };
+}
+
+/**
+ * Production seam for the P-031 leg: read the SAME live acceptance-bar contract snapshot the
+ * ship gate reads (so the codes are the gate's own), and restamp the plan's Now under the
+ * plan lock. Called AFTER the triggering write has released its own lock.
+ */
+export function defaultBarReadinessDeps(ctx: unknown, actor: string): BarReadinessDeps {
+  return {
+    async readBarReadiness(planSlug, harnessSlug) {
+      const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
+      const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, harnessSlug ? { harnessSlug } : {});
+      const { state, codes, nextRepair } = snapshot.readiness;
+      return {
+        state,
+        codes: [...codes],
+        nextRepair: nextRepair
+          ? { code: nextRepair.code, barKey: nextRepair.barKey, action: nextRepair.action }
+          : null,
+      };
+    },
+    async restampNow(planSlug, scope, reading, cause) {
+      const result = await withPlanLock<boolean>(
+        ctx as never,
+        {
+          slug: planSlug,
+          intent: `scope-write cascade: restamp BAR readiness after ${cause}`,
+          ...(scope.harnessSlug ? { harnessSlug: scope.harnessSlug } : {}),
+          workspaceId: scope.workspaceId,
+          actorId: actor,
+        },
+        async (current) => {
+          if (current === null) return { newBody: null, value: false };
+          const stamped = stampBarReadinessNowBlock(current, reading, cause);
+          return stamped === null
+            ? { newBody: null, value: false }
+            : { newBody: bumpUpdatedDate(stamped), value: true };
+        },
+      );
+      return result.kind === 'applied' && result.value === true;
+    },
   };
 }
