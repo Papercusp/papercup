@@ -1,10 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const rubricsMocks = vi.hoisted(() => ({
   amendRubric: vi.fn(),
   previewAcceptanceBarAmendment: vi.fn(),
   rubricCompleteness: vi.fn(),
+  getRubric: vi.fn(),
+  mintAmendmentIdempotencyKey: vi.fn(() => 'amend-minted-key'),
+  findAmendmentDecisionByKey: vi.fn(),
 }));
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'amend-test' }) }));
@@ -13,6 +16,9 @@ vi.mock('../../rubrics', () => ({
   amendRubric: rubricsMocks.amendRubric,
   previewAcceptanceBarAmendment: rubricsMocks.previewAcceptanceBarAmendment,
   rubricCompleteness: rubricsMocks.rubricCompleteness,
+  getRubric: rubricsMocks.getRubric,
+  mintAmendmentIdempotencyKey: rubricsMocks.mintAmendmentIdempotencyKey,
+  findAmendmentDecisionByKey: rubricsMocks.findAmendmentDecisionByKey,
 }));
 vi.mock('../../rubrics-replication-sql', () => ({
   validateRubricReplicationSql: vi.fn().mockResolvedValue({ ok: true }),
@@ -22,6 +28,8 @@ vi.mock('../../detached-imports', () => ({
 }));
 
 import amendTool, { rubricsAmendArgs } from './amend';
+import amendStatusTool from './amend-status';
+import { __resetAmendReceiptsForTest } from './amend-receipts';
 
 type ToolOutput = { content: Array<{ text: string }> };
 const body = async (args: unknown) =>
@@ -235,5 +243,111 @@ describe('rubrics:amend complete acceptance criteria input', () => {
         markers: ['proc-path', 'pgrep'],
       }),
     ]);
+  });
+});
+
+// RSR-P-008-C (review-system-rework-reduction-2026-09-23): rubrics:amend that
+// would exceed its timeout returns a pollable receipt. Falsifier: the caller
+// receives a timeout error with an unknown commit state. Probe: run amend with a
+// slow stub, assert the receipt, then poll it.
+describe('rubrics:amend receipts (RSR-P-008-C)', () => {
+  const statusBody = async (args: unknown) =>
+    JSON.parse(((await amendStatusTool.handler(args as never, {} as never)) as ToolOutput).content[0]!.text);
+  const amendArgs = { rubricRef: 'acceptance-example', criteria: [criterion], reason: 'Refresh the procedure.' };
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
+  beforeEach(() => {
+    __resetAmendReceiptsForTest();
+    rubricsMocks.rubricCompleteness.mockReturnValue({ complete: true });
+    rubricsMocks.getRubric.mockResolvedValue({ revision: 3 });
+    process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS = '20';
+  });
+  afterEach(() => {
+    delete process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS;
+  });
+
+  it('a fast amend answers synchronously and names the receipt key it minted', async () => {
+    rubricsMocks.amendRubric.mockResolvedValue({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    const result = await body(amendArgs);
+    expect(result).toMatchObject({ ok: true, idempotencyKey: 'amend-minted-key' });
+    expect(result.pending).toBeUndefined();
+    // The minted key is what the amendment commits under, so its Decision can be found by it.
+    expect(rubricsMocks.amendRubric).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'amend-minted-key' }));
+    expect(rubricsMocks.mintAmendmentIdempotencyKey).toHaveBeenCalledWith(expect.anything(), 3);
+  });
+
+  it('keeps a caller-supplied key instead of minting one', async () => {
+    rubricsMocks.amendRubric.mockResolvedValue({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    const result = await body({ ...amendArgs, idempotencyKey: 'caller-key' });
+    expect(result.idempotencyKey).toBe('caller-key');
+    expect(rubricsMocks.mintAmendmentIdempotencyKey).not.toHaveBeenCalled();
+  });
+
+  it('a slow amend returns a receipt instead of timing out, and the receipt polls to committed', async () => {
+    const slow = deferred<unknown>();
+    rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+
+    const answered = await body(amendArgs);
+    expect(answered).toMatchObject({
+      ok: true,
+      pending: true,
+      receipt: {
+        idempotencyKey: 'amend-minted-key',
+        rubricRef: 'acceptance-example',
+        poll: { tool: 'rubrics:amend-status', args: { rubricRef: 'acceptance-example', idempotencyKey: 'amend-minted-key' } },
+      },
+    });
+
+    expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ ok: true, state: 'running', source: 'receipt' });
+
+    slow.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    await vi.waitFor(async () => {
+      expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+        state: 'committed',
+        source: 'receipt',
+        result: { ok: true, rubric: { rubricId: 'acceptance-example' } },
+      });
+    });
+  });
+
+  it('a slow amend that then fails polls to failed with the error, never to committed', async () => {
+    const slow = deferred<unknown>();
+    rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+    const answered = await body(amendArgs);
+    slow.reject(new Error('acceptance_bar_amendment_conflict'));
+    await vi.waitFor(async () => {
+      expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+        state: 'failed',
+        error: 'acceptance_bar_amendment_conflict',
+      });
+    });
+  });
+
+  it('after a restart (no in-process receipt) the committed Decision still answers committed', async () => {
+    rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue({
+      decisionId: 'D-007',
+      subjectPlan: 'subject-plan',
+      subjectHarnessSlug: 'papercusp',
+    });
+    expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'amend-lost' })).toMatchObject({
+      state: 'committed',
+      source: 'decision',
+      decisionId: 'D-007',
+    });
+  });
+
+  it('with neither a receipt nor a Decision it answers not_found and says a same-key retry is safe', async () => {
+    rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue(null);
+    const status = await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'amend-unknown' });
+    expect(status).toMatchObject({ state: 'not_found', source: 'none' });
+    expect(status.note).toMatch(/same rubrics:amend with this idempotencyKey is safe/);
   });
 });

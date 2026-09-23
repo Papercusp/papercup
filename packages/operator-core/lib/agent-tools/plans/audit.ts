@@ -19,6 +19,7 @@
  * real caller, so the single-plan shape is the honest one.
  */
 import { z } from 'zod';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { execFileSync } from 'node:child_process';
@@ -158,7 +159,8 @@ const activationMappingSchema = z.object({
   }
 });
 
-const argsSchema = z.object({
+// RSR-P-008-A: the activation rules are reported alongside any shape defect.
+const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
   phase: z.enum(['completion', 'activation']).default('completion').describe(
@@ -187,7 +189,7 @@ const argsSchema = z.object({
   summary: z.string().max(4000).optional().describe(
     'Optional audit context. For activation, use this to explain resolved conditional/live-environment limitations after mapping them to the plan; it does not make unresolvedBlockers acceptable.',
   ),
-}).superRefine((args, ctx) => {
+}), (args, ctx) => {
   if (args.phase === 'activation') {
     // Whether coverage is required depends on whether this is the first audit.
     // The prior-audit lookup is async and belongs in the handler, so the input
