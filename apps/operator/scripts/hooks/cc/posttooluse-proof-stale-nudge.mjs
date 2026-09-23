@@ -7,7 +7,7 @@
 // A `repo-files` spec-evidence binding's freshness is a content hash of the files it
 // measured, so editing any of them stales that proof. Nothing said so at the edit: the
 // editor — often a PEER of the proof's holder — learned it at the next gate probe.
-// Measured 2026-09-23 (Avi #302): su-9306f9c3 staled R-1, R-3 and R-4 by trimming tool
+// Measured 2026-09-23 (owner order #302): su-9306f9c3 staled R-1, R-3 and R-4 by trimming tool
 // guidance to fit the prompt budget; on this plan peer edits staled P-001 once, P-002
 // twice and P-004 four times (D-006; EI-24053039097767980).
 //

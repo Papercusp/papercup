@@ -655,11 +655,18 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     findLiveHost.mockReturnValue(null);
     const out = await call({ focus: 'x' });
     expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false, error: 'no_live_pty_host' });
+    expect(body(out)).toMatchObject({
+      ok: false,
+      requested: false,
+      respawn: false,
+      error: 'no_live_pty_host',
+    });
+    expect(body(out).note).toContain('no carry-respawn was queued');
     expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(detectRespawnStorm).not.toHaveBeenCalled();
   });
 
-  it('event-resumed Codex on an armed cold loop settles into its verified carry-note without a psu-pty host', async () => {
+  it('an armed cold loop and verified carry-note do not prove compaction without a host', async () => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
       active: true,
@@ -671,35 +678,22 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       updatedAtMs: Date.now(),
     });
     const out = await call({ focus: 'x' });
-    expect(out.isError).toBeUndefined();
-    expect(body(out)).toMatchObject({ ok: true, respawn: 'cold-loop-settle' });
-    expect(injectIntoHost).not.toHaveBeenCalled();
-  });
-
-  it('cold-loop-settle is stated as an unverified expectation, not a confirmed cut (EI-21225280634310458)', async () => {
-    // This branch has no wake-reachability signal (getLoopStatus carries none), so it
-    // cannot actually confirm the process will exit before the next wake — the note
-    // must give the caller a falsifier instead of a bare success claim, matching the
-    // primary carry-respawn path's own "queued, not performed" honesty (EI-19326331501849713).
-    findLiveHost.mockReturnValue(null);
-    getLoopStatus.mockResolvedValue({
-      active: true,
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      requested: false,
+      respawn: false,
+      error: 'no_live_pty_host',
       carry: 'cold',
-      harnessSlug: 'papercusp',
+      carryNote: { verified: true },
     });
-    getLoopCarryNoteWithMeta.mockResolvedValue({
-      note: '## Next action\ncontinue',
-      updatedAtMs: Date.now(),
-    });
-    const out = await call({ focus: 'x' });
-    const b = body(out);
-    expect(b).toMatchObject({ ok: true, respawn: 'cold-loop-settle' });
-    expect(b.note).toContain('is expected to start the next wake');
-    expect(b.note).toContain('NOT verified from here');
-    expect(b.note).toMatch(/still running in this process.*next turn|next turn.*still running in this process/);
+    expect(body(out).note).toContain('do not prove the next turn can be delivered');
+    expect(body(out).note).not.toContain('End this turn');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(detectRespawnStorm).not.toHaveBeenCalled();
   });
 
-  it('an active warm loop without a host is retuned and settled in one request', async () => {
+  it('an active warm loop without a host prepares carry but refuses to promise a respawn', async () => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
       active: true,
@@ -732,11 +726,12 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     const out = await call({ focus: 'continue the fleet lane' });
     const b = body(out);
 
-    expect(out.isError).toBeUndefined();
+    expect(out.isError).toBe(true);
     expect(b).toMatchObject({
-      ok: true,
-      requested: true,
-      respawn: 'cold-loop-settle',
+      ok: false,
+      requested: false,
+      respawn: false,
+      error: 'no_live_pty_host',
       carry: 'cold',
       retuned: true,
       carryNote: { verified: true },
@@ -748,6 +743,8 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
         customWakePrompt: true,
       },
     });
+    expect(b.note).toContain('This is preparation only, not a respawn');
+    expect(b.note).not.toContain('End this turn');
     expect(setLoopCarryNoteWithPrior).toHaveBeenCalledWith(
       { harness: 'papercusp', ownerId: 'su-caller', workspaceId: undefined },
       expect.stringContaining('continue the fleet lane'),
@@ -768,6 +765,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       }),
     );
     expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(detectRespawnStorm).not.toHaveBeenCalled();
   });
 
   it('does not retune when the seed cannot be verified through the cold-wake reader', async () => {

@@ -82,6 +82,7 @@ let rootSql: postgres.Sql;
 interface SessionSignals {
   wakeable: boolean;
   liveTurn: boolean;
+  wakeAttemptMiss?: boolean;
   stale: boolean;
   heartbeatAt: string;
   recordedLive: boolean;
@@ -143,7 +144,13 @@ const resolveLiveness: GoalHolderRespawnDeps['resolveLiveness'] = async (ownerId
         const out = new Map<string, WakeabilitySignals>();
         for (const id of ids) {
           const s = sessions.get(id);
-          if (s) out.set(id, { wakeable: s.wakeable, liveTurn: s.liveTurn } as WakeabilitySignals);
+          if (s) {
+            out.set(id, {
+              wakeable: s.wakeable,
+              liveTurn: s.liveTurn,
+              ...(s.wakeAttemptMiss === undefined ? {} : { wakeAttemptMiss: s.wakeAttemptMiss }),
+            });
+          }
         }
         return out;
       },
@@ -457,6 +464,40 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     // Tick C — stability: held ⇒ no second launch, damping heals, nothing new.
     const tickC = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tickC).toMatchObject({ attempted: 0, respawned: 0 });
+    expect(launches).toEqual([GOAL]);
+  }, 60_000);
+
+  it('a post-wake tool-active turn stays held; a true warm wake miss still respawns', async () => {
+    await seedGoal({ id: GOAL, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder(INITIAL_HOLDER, GOAL);
+    // fetchWakeability's real-PG regression verifies this shape is produced
+    // from tool_invocations even when agent_activity does not advance.
+    sessions.set(INITIAL_HOLDER, { ...liveSignals(), wakeAttemptMiss: false });
+
+    const holderRows = await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: [GOAL] });
+    const liveVerdicts = await resolveLiveness(holderRows.map((holder) => holder.ownerId));
+    const liveFold = resolveGoalHoldersFromRows(GOAL, WS, holderRows, liveVerdicts);
+    expect(liveFold.liveness).toBe('held');
+    expect(liveFold.live.map((holder) => holder.ownerId)).toEqual([INITIAL_HOLDER]);
+
+    const { deps, launches } = drillDeps();
+    const liveTick = await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(liveTick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
+    expect(launches).toEqual([]);
+    const [stillActive] = await rootSql<{ status: string }[]>`
+      SELECT status FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stillActive?.status).toBe('active');
+
+    // Negative control: no post-wake turn activity still produces the confirmed
+    // miss and lets the same read/respawn path classify the holder as lost.
+    sessions.set(INITIAL_HOLDER, { ...liveSignals(), liveTurn: false, wakeAttemptMiss: true });
+    const missedRows = await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: [GOAL] });
+    const missedVerdicts = await resolveLiveness(missedRows.map((holder) => holder.ownerId));
+    const missedFold = resolveGoalHoldersFromRows(GOAL, WS, missedRows, missedVerdicts);
+    expect(missedFold.liveness).toBe('lost');
+
+    const missTick = await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(missTick).toMatchObject({ scanned: 1, eligible: 1, attempted: 1, respawned: 1 });
     expect(launches).toEqual([GOAL]);
   }, 60_000);
 

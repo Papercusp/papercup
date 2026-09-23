@@ -89,36 +89,6 @@ const DEFAULT_FOCUS =
 const FALLBACK_EFFECTIVE_WINDOW_TOKENS = 200_000;
 
 /**
- * EI-21225280634310458: the no-psu-host `cold-loop-settle` reply below is an
- * EXPECTATION, not a confirmed cut — unlike the primary carry-respawn path
- * (`injectIntoHost`), nothing on this branch verifies that the owning process
- * will actually EXIT before the next loop wake fires. `getLoopStatus` here
- * carries no wake-reachability signal (that lives only in `probeWakeReachability`,
- * consulted by loop:status, not by this tool), so a persistent process that
- * never exits between turns — the documented `resume`-channel dead zone in
- * wake-reachability.ts — silently falls through to re-entering THIS SAME
- * process (or parking inbox-only) instead of a fresh cold wake, while this
- * reply told the caller the cut was as good as done. Root-caused 2026-08-23;
- * a since-superseded checkpoint on this item cited an unrelated cross-harness
- * item (a different pot's "D-021 source freeze") as the reason no fix landed —
- * that citation does not resolve in this harness and never blocked this file.
- *
- * Durable fix, matching the honesty pattern the primary path already uses
- * (EI-19326331501849713 — state the QUEUE, never the outcome): make the same
- * self-diagnosing falsifier available here, so a caller that is still running
- * in the same process on its next turn can tell the settle did not happen
- * instead of trusting a claim this branch cannot actually verify.
- */
-const COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT =
-  ' This expectation is NOT verified from here: a cold-loop wake still has to win the same ' +
-  'delivery channel a carry-respawn would, and a process that never actually exits between ' +
-  'turns silently misses it (wakes then park inbox-only or re-inject into THIS SAME process ' +
-  'instead of a fresh one) — this branch has no visibility into which will happen. Falsifier: ' +
-  'if your very next turn is still running in this process at anywhere near your current ' +
-  'context, the fresh cold wake did NOT happen — flush state again immediately and escalate ' +
-  'or relaunch rather than trusting this note a second time.';
-
-/**
  * EI-18686525818431054: `injectIntoHost`'s DEFAULT client-side socket timeout
  * (2000ms) is sized for an ordinary wake `turn` — the psu-pty-host acks
  * 'accepted' immediately after early validation (payload/ownerId/coalesce
@@ -511,15 +481,14 @@ export default defineTool({
     // EI-20209826138488049: the host gate is read through the SHARED predicate the
     // continuation gate / context gauge / inbox use to decide whether to RECOMMEND
     // self-compaction — so a recommendation and this refusal cannot drift apart.
-    // The cold-loop escape below stays here: it is a handler-level equivalent
-    // boundary, not part of "is a host available".
+    // Loop state can prepare durable carry, but it cannot prove a fresh turn
+    // will be delivered without a host. Keep the no-host response explicit.
     const availability = selfCompactionAvailability(identity.ownerId);
     if (!availability.available && availability.reason === 'no_live_pty_host') {
-      // EI-20211379927723290: an event-resumed Codex loop has no persistent
-      // psu-pty host by design. A cold loop already provides the same
-      // deterministic boundary on the next settled wake; accept that path only
-      // when its durable carry-note exists, so this never discards unflushed
-      // state or pretends an unarmed session can respawn itself.
+      // A saved carry-note and an armed cold loop are registration evidence,
+      // not proof that this process can receive a fresh turn. The no-host cold
+      // wake path can park without resume, so never call that configuration a
+      // successful compaction request.
       const loop = await getLoopStatus(identity.ownerId).catch(() => null);
       if (loop?.active && loop.carry === 'cold' && loop.harnessSlug) {
         const carry = await getLoopCarryNoteWithMeta({
@@ -533,14 +502,18 @@ export default defineTool({
               {
                 type: 'text' as const,
                 text: JSON.stringify({
-                  ok: true,
-                  respawn: 'cold-loop-settle',
+                  ok: false,
+                  requested: false,
+                  respawn: false,
+                  error: 'no_live_pty_host',
+                  carry: 'cold',
+                  carryNote: { verified: true },
                   note:
-                    'No psu-pty host is required: end this turn now. The armed cold loop is expected to start the next wake in fresh context from the verified loop:checkpoint carry-note.' +
-                    COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT,
+                    'No live psu-pty host is available, so no carry-respawn was queued. An armed cold loop and saved carry-note do not prove the next turn can be delivered. Keep this process active after flushing state, or relaunch through a managed psu host before relying on a fresh-context boundary.',
                 }),
               },
             ],
+            isError: true,
           };
         }
       }
@@ -573,19 +546,20 @@ export default defineTool({
             {
               type: 'text' as const,
               text: JSON.stringify({
-                ok: true,
-                requested: true,
-                respawn: 'cold-loop-settle',
+                ok: false,
+                requested: false,
+                respawn: false,
+                error: 'no_live_pty_host',
                 carry: 'cold',
                 retuned: true,
                 carryNote: recovery.carryNote,
                 loop: recovery.loop,
                 note:
-                  'No live psu-pty host is available for an in-place carry-respawn. The active warm loop was retuned to cold with its mission, cadence, mode, and kickoff preserved, and its carry-note was written and verified through the cold-wake reader. End this turn; the next loop wake is expected to start in fresh context from that note.' +
-                  COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT,
+                  'The active warm loop was retuned to cold and its carry-note was verified, but no live psu-pty host is available to trigger or verify a fresh successor. This is preparation only, not a respawn. Keep this process active after flushing state, or relaunch through a managed psu host before relying on a fresh-context boundary.',
               }),
             },
           ],
+          isError: true,
         };
       }
       return {
@@ -595,7 +569,9 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_live_pty_host',
-              note: 'No live psu-pty host for this session — a carry-respawn can only be driven through a psu-hosted TUI. If running interactively, end the session at a clean point and relaunch.',
+              requested: false,
+              respawn: false,
+              note: 'No live psu-pty host is available, so no carry-respawn was queued. Keep this process active after flushing state, or relaunch through a managed psu host before expecting a fresh-context successor.',
             }),
           },
         ],

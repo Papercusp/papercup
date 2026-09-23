@@ -180,7 +180,13 @@ describe('runToolWeightSelfCheck — SILENT under vitest (the anti-blast-radius 
 
 describe('reportViolations (EI-18685386548651513 — tiered: budget=log-only, hard-cap=also escalated)', () => {
   const budgetOnly: BudgetViolation = { name: 'budget-only-tool', weight: BUDGET + 44, hardCap: false, grandfathered: false, cutAtLeast: 44 };
-  const overCap: BudgetViolation = { name: 'over-cap-tool', weight: HARD_CAP + 106, hardCap: true, grandfathered: false, cutAtLeast: 106 };
+  const overCap: BudgetViolation = {
+    name: 'over-cap-tool',
+    weight: HARD_CAP + 106,
+    hardCap: true,
+    grandfathered: false,
+    cutAtLeast: HARD_CAP + 106 - BUDGET,
+  };
 
   it('no violations: neither warns nor escalates', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -248,7 +254,13 @@ describe('reportViolations (EI-18685386548651513 — tiered: budget=log-only, ha
 });
 
 describe('defaultEscalateHardCap (EI-18689219855601091 — authoritative watchdogKey pre-filter)', () => {
-  const violation: BudgetViolation = { name: 'dev:pg_query', weight: HARD_CAP + 50, hardCap: true, grandfathered: false, cutAtLeast: 50 };
+  const violation: BudgetViolation = {
+    name: 'dev:pg_query',
+    weight: HARD_CAP + 50,
+    hardCap: true,
+    grandfathered: false,
+    cutAtLeast: HARD_CAP + 50 - BUDGET,
+  };
 
   it('skips capture entirely when an OPEN issue already carries this watchdogKey', async () => {
     findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([{ id: 'EI-1', state: 'open' }]);
@@ -271,6 +283,12 @@ describe('defaultEscalateHardCap (EI-18689219855601091 — authoritative watchdo
       watchdogKey: 'tool-weight-hard-cap:dev:pg_query',
       dedupScope: 'open',
     });
+    const body = captureImprovementMock.mock.calls[0][0].body as string;
+    expect(body).toContain(`${violation.weight - HARD_CAP} over the ${HARD_CAP}-char HARD CAP`);
+    expect(body).toContain(
+      `cut at least ${violation.cutAtLeast} chars to clear the ${BUDGET}-char budget`,
+    );
+    expect(body).not.toContain(`${violation.cutAtLeast} over the ${HARD_CAP}-char HARD CAP`);
   });
 
   it('captures when a matching issue exists but is not open (resolved dup ⇒ let captureImprovement decide)', async () => {

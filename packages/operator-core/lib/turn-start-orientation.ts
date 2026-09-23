@@ -4367,8 +4367,9 @@ export function defaultOrientationDeps(): OrientationDeps {
         './agent-obligation-reader'
       );
       const { agenda, observedAt, portfolio, goalId } = await readAgentObligationAgenda({ workspaceId, ownerId });
-      // Record a NEW verified member effect, not a heartbeat/read timestamp.
-      // The read-only agenda consumes the persisted clock on subsequent reads.
+      // Record new verified member effects and recover durable completed-turn
+      // receipts. Reads and heartbeats cannot advance the effect clock; the
+      // read-only agenda consumes persisted progress on subsequent reads.
       if (goalId && portfolio) {
         void trackDetached(import('./goal-placement-progress-store').then((module) =>
           module.reconcileGoalPlacementProgress({ workspaceId, ownerId, goalId,

@@ -99,11 +99,12 @@ describe('completed eligibility joined on existing activity and cursor stores', 
   function proof(n: number) {
     const measured = (minute: number): GoalPlacementAdmissionObservation => ({ version: 1, planRef,
       observedAt: at(minute), planReason: 'ready', governor: 'open', attempts: 'none',
+      launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 },
       evidenceRefs: ['fixture:canonical-preflight', 'fixture:governor'] });
     const receipt = { version: 1, goalId: 'goal', planSlug: 'plan', planRef, obligationId: row.id,
       sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision, deliveryToken: `token-${n}`,
       offeredAt: at(n * 2), completedAt: at(n * 2 + 1), confirmedAt: at(n * 2 + 2),
-      completedTurnRef: `codex:${OWNER}:request-${n}`, admission: measured(n * 2) };
+      completedTurnRef: `codex:${OWNER}:request-${n}`, launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 }, admission: measured(n * 2) };
     const end = { version: 1, goalId: 'goal', completedTurnRef: receipt.completedTurnRef,
       completedAt: receipt.completedAt, observedAt: receipt.completedAt, deliveryToken: receipt.deliveryToken,
       rows: [{ planSlug: 'plan', planRef, status: 'due', applicableDemand: 1, actionKind: 'delegate',
@@ -146,6 +147,14 @@ describe('completed eligibility joined on existing activity and cursor stores', 
     const next = proof(2); next.end.admissions[0]!.admission.governor = 'unknown';
     await next.append('end', next.end); await next.append('turn', next.receipt);
     expect((await next.settle()).recorded).toBe(false);
+    expect(await read()).toBeNull();
+  });
+  it('does not persist debt when the admission was measured for another fleet or seat count', async () => {
+    const first = proof(1); first.receipt.admission.launch!.fleetSlug = 'other-fleet';
+    await first.append('end', first.end); await first.append('turn', first.receipt);
+    const second = proof(2); second.end.admissions[0]!.admission.launch!.requestedSeats = 2;
+    await second.append('end', second.end); await second.append('turn', second.receipt);
+    expect(await reconcileConfirmedGoalPlacementTurns({ ownerId: OWNER, workspaceId: WS, goalId: 'goal' })).toBe(0);
     expect(await read()).toBeNull();
   });
   it('reads actual scoped governor receipts as interval exclusions, without treating another fleet as a blocker', async () => {

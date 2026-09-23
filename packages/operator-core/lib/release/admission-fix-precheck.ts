@@ -15,17 +15,18 @@
  *
  * Unmeasured files (route error, matched=0, runner crash) NEVER count as passing.
  *
- * The checkpoint tree is the gate's own instrument. When a gate run holds it, the runner reports
- * `checkpoint-tree-busy` and the door ACCEPTS the admission with a loud `precheck:{ran:false}`
- * marker — the R-1 event-driven re-judge measures it. A fail-closed door here would stall every
- * fixer admission for the length of a gate run and defeat R-1/R-2.
+ * The pre-check uses its own checkout beside the gate's checkpoint tree. A gate run that is
+ * already active still reports `checkpoint-tree-busy` and the door ACCEPTS the admission with a
+ * loud `precheck:{ran:false}` marker — the R-1 event-driven re-judge measures it. A gate run
+ * starting later cannot re-pin the pre-check's checkout midway through its test files.
  *
  * Layering: `precheckPopulation` + `evaluateFixPrecheck` are PURE (unit-tested without a tree);
  * `FixPrecheckRunner` is the seam the door injects; `createCheckpointTreeFixPrecheckRunner` is
- * the real runner (setup-release-checkout into the checkpoint tree, `scripts/test-files.mjs`
- * per file), guarded by the gate's run-lock probe.
+ * the real runner (setup-release-checkout into its dedicated checkout,
+ * `scripts/test-files.mjs` per file), guarded by the gate's initial run-lock probe.
  */
 import { execFileSync, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
@@ -368,8 +369,23 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         holder: { pid: held.pid, elapsedSec: held.elapsedSec },
       };
     }
+    // The gate may acquire its run lock and re-pin checkpointRoot AFTER the one-time
+    // probe above. Keep admission measurement in a different, queue-serialized worktree.
+    // setup-release-checkout already creates/refreshes this checkout at the exact ref.
+    const precheckRoot = `${path.resolve(opts.checkpointRoot)}-admission-precheck`;
+    if (existsSync(precheckRoot)) {
+      const integrationGitDir = defaultGitCommonDir(opts.integrationRoot);
+      const precheckGitDir = defaultGitCommonDir(precheckRoot);
+      if (!integrationGitDir || !precheckGitDir || path.resolve(integrationGitDir) !== path.resolve(precheckGitDir)) {
+        return {
+          ran: false,
+          reason: 'runner-failed',
+          detail: `dedicated admission checkout ${precheckRoot} exists but is not a worktree of ${opts.integrationRoot}; refusing to reset it`,
+        };
+      }
+    }
     const setupScript = path.join(opts.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
-    log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${opts.checkpointRoot}`);
+    log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${precheckRoot}`);
     const setup = await exec(
       [
         'bash',
@@ -379,7 +395,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         '--integration',
         opts.integrationRoot,
         '--release',
-        opts.checkpointRoot,
+        precheckRoot,
         '--node-modules',
         'auto',
         '--node-modules-copy',
@@ -418,7 +434,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       });
       log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
       const r = await exec(['node', 'scripts/test-files.mjs', file], {
-        cwd: opts.checkpointRoot,
+        cwd: precheckRoot,
         timeoutMs: perFileTimeoutMs,
         env: { PAPERCUSP_ADMISSION_PRECHECK: '1', PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}` },
       });

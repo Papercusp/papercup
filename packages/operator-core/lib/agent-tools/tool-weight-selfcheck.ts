@@ -26,7 +26,7 @@
  * Fail-soft: a bug in the check — or a failed escalation capture — must never
  * block operator boot (mirrors every other side-effect block in index.ts).
  */
-import { budgetViolations, formatViolations, HARD_CAP, type BudgetViolation } from './tool-guidance-budget';
+import { BUDGET, budgetViolations, formatViolations, HARD_CAP, type BudgetViolation } from './tool-guidance-budget';
 
 /**
  * Escalate ONE hard-cap breach into the work queue. Injectable (mirrors the
@@ -78,7 +78,9 @@ export async function defaultEscalateHardCap(v: BudgetViolation): Promise<void> 
     ],
     body:
       `${v.name} weighs ${v.weight} chars (description + all guidance fields) — ` +
-      `${v.cutAtLeast} over the ${HARD_CAP}-char HARD CAP. This GUARANTEES a green-checkpoint ` +
+      `${v.weight - HARD_CAP} over the ${HARD_CAP}-char HARD CAP; cut at least ${v.cutAtLeast} ` +
+      `chars to clear the ${v.grandfathered ? `${HARD_CAP}-char HARD CAP` : `${BUDGET}-char budget`}. ` +
+      `This GUARANTEES a green-checkpoint ` +
       `red the moment a candidate touching it is judged (P-011), which freezes deploys ` +
       `fleet-wide until triaged. Trim the guidance — prefer a docs pointer over prose-in-place ` +
       `— before the next checkpoint. (Filed automatically at catalog-registration time; re-runs ` +

@@ -48,10 +48,10 @@ describe('evaluatePlanSpecQuality', () => {
     for (const [criterion, entry] of Object.entries(result.ratings)) {
       expect(entry.evidence).toContain('Source store: plans:get-specs { slug:"quality-plan", harness:"papercusp" }.');
       expect(entry.evidence).toContain(
-        'Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship", expectedSpecSetHash:"' +
-          result.specSetHash +
-          '" }',
+        'Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship" }',
       );
+      expect(entry.evidence).toContain(`confirm the returned specSetHash equals "${result.specSetHash}"`);
+      expect(entry.evidence).not.toContain('expectedSpecSetHash:');
       expect(entry.evidence).toContain(`inspect ratings["${criterion}"]`);
     }
   });

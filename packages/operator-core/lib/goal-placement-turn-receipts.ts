@@ -16,6 +16,7 @@ const planRefSchema = z.string().regex(/^plan:[^/\s]+\/\S+$/);
 const launchSchema = z.object({ fleetSlug: nonempty, requestedSeats: z.number().int().min(1).max(100) }).strict();
 const admissionSchema = z.object({
   version: z.literal(1), planRef: planRefSchema, observedAt: dateTime,
+  launch: launchSchema.optional(),
   planReason: z.enum(['ready', 'plan-not-found', 'no-actionable-plan-items', 'promotion-lag', 'duplicate-coverage',
     'lane-unknown', 'floor-diagnostics-unavailable', 'floor-gated', 'family-disagreement', 'insufficient-executable-width', 'unknown']),
   governor: z.enum(['open', 'restricted', 'unknown']),
@@ -86,7 +87,8 @@ export async function observeGoalPlacementAdmission(input: AdmissionInput, deps:
 }): Promise<GoalPlacementAdmissionObservation> {
   const now = deps.now();
   const out: GoalPlacementAdmissionObservation = { version: 1, planRef: input.row.planRef,
-    observedAt: new Date(now).toISOString(), planReason: 'unknown', governor: 'unknown', attempts: 'unknown', evidenceRefs: [] };
+    observedAt: new Date(now).toISOString(), planReason: 'unknown', governor: 'unknown', attempts: 'unknown', evidenceRefs: [],
+    ...(input.row.launch ? { launch: { ...input.row.launch } } : {}) };
   if (!input.row.launch || (input.window && (!Number.isFinite(Date.parse(input.window.offeredAt)) ||
     !Number.isFinite(Date.parse(input.window.completedAt)) || Date.parse(input.window.offeredAt) > Date.parse(input.window.completedAt)))) return out;
   const [plan, governor, attempts] = await Promise.allSettled([
@@ -383,6 +385,10 @@ export function qualifyGoalPlacementTurn(input: {
   const b = turnEndSchema.safeParse(input.turnEnd);
   if (!a.success || !b.success) return null;
   const receipt = a.data, end = b.data;
+  const matchesLaunch = (observation: GoalPlacementAdmissionObservation | undefined) =>
+    receipt.launch !== undefined && observation?.launch !== undefined &&
+    observation.launch.fleetSlug === receipt.launch.fleetSlug &&
+    observation.launch.requestedSeats === receipt.launch.requestedSeats;
   if (!['claude', 'codex', 'omp'].some((kind) => receipt.completedTurnRef.startsWith(`${kind}:${input.nativeSessionId}:`)) ||
     end.goalId !== receipt.goalId || end.deliveryToken !== receipt.deliveryToken ||
     end.completedTurnRef !== receipt.completedTurnRef || end.completedAt !== receipt.completedAt) return null;
@@ -394,7 +400,7 @@ export function qualifyGoalPlacementTurn(input: {
   if (rows.length !== 1 || rows[0]!.ruleRevision !== receipt.ruleRevision) return null;
   const row = rows[0]!;
   const offer = receipt.admission;
-  if (!offer || offer.planRef !== receipt.planRef || Date.parse(offer.observedAt) > offeredAt ||
+  if (!offer || !matchesLaunch(offer) || offer.planRef !== receipt.planRef || Date.parse(offer.observedAt) > offeredAt ||
     offeredAt - Date.parse(offer.observedAt) > GOAL_PLACEMENT_TURN_END_MAX_LAG_MS) return null;
   const eligibleAtOffer = admissionEligibility(offer);
   let eligibleAtCompletion: boolean | null;
@@ -407,7 +413,7 @@ export function qualifyGoalPlacementTurn(input: {
     if (admissions.length !== 1) return null;
     const finish = admissions[0]!.admission;
     const at = Date.parse(finish.observedAt);
-    if (finish.planRef !== receipt.planRef || at < completedAt || at > confirmedAt ||
+    if (!matchesLaunch(finish) || finish.planRef !== receipt.planRef || at < completedAt || at > confirmedAt ||
       at - completedAt > GOAL_PLACEMENT_TURN_END_MAX_LAG_MS) return null;
     eligibleAtCompletion = admissionEligibility(finish);
   }

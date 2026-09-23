@@ -10,6 +10,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import {
   resolveWorkspaceHostProvider,
+  workspaceHostActionInvalidatesInitialization,
   workspaceHostWorkflowKeys,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
@@ -25,6 +26,8 @@ import {
   activateHostedCustomerWorkspace,
   enrollHostedWorkspaceConnector,
   hostedBringUpInitialization,
+  PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  readHostedBringUpBinding,
   workspaceHostBringUpOperationIds,
   type WorkspaceHostBringUp,
 } from '../workspace-host/hosted-bring-up';
@@ -42,7 +45,10 @@ import {
   runWorkspaceHostLifecycle,
   type RunWorkspaceHostLifecycleInput,
 } from '../workspace-host/lifecycle-runner';
-import { recordWorkspaceHostOperationTerminalFailure } from '../workspace-host/observability-store';
+import {
+  readWorkspaceHostDestroyTarget,
+  recordWorkspaceHostOperationTerminalFailure,
+} from '../workspace-host/observability-store';
 import {
   WORKSPACE_HOST_ADMISSION_WINDOW_MS,
   type WorkspaceHostOperationAcceptance,
@@ -201,7 +207,47 @@ async function workspaceHostProvisioningWorkflowImpl(
   if (input.action === 'provision' && input.bringUp && result.status === 'succeeded') {
     await bringUpWorkspaceHost(input, input.bringUp);
   }
+  if (isExistingHostLifecycle(input) && result.status === 'succeeded') {
+    await bringUpHostedHostAgain(input);
+  }
   return result;
+}
+
+function isExistingHostLifecycle(input: WorkspaceHostWorkflowInput): input is WorkspaceHostLifecycleWorkflowInput {
+  return (
+    input.action !== 'provision' &&
+    input.action !== 'destroy' &&
+    input.action !== 'initialize' &&
+    input.action !== 'install-desktop-pack'
+  );
+}
+
+/**
+ * D-407: an upgrade recreates the machine on a new boot disk and a repair re-runs its bootstrap,
+ * so both invalidate what the bring-up installed -- the desktop pack and the connector's credential
+ * with it. A host that was brought up for a Papercusp-hosted workspace (it holds a live connector
+ * enrollment) is brought up again under the same operation; a BYOC host is left to its owner, as
+ * before. `restore` builds a DIFFERENT host, which this does not cover.
+ */
+async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput): Promise<void> {
+  if (input.action === 'restore' || !workspaceHostActionInvalidatesInitialization(input.action)) return;
+  const binding = await DBOS.runStep(
+    () => readHostedBringUpBinding({ controlPlaneWorkspaceId: input.workspaceId, hostId: input.hostId }),
+    { name: 'workspace-host-bring-up-again-read-binding', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
+  );
+  if (!binding) return;
+  const desired = await DBOS.runStep(
+    async () => {
+      const target = await readWorkspaceHostDestroyTarget(input.workspaceId, input.hostId);
+      if (!target) throw new Error(`host ${input.hostId} has no recorded spec to bring up again`);
+      return target.desired;
+    },
+    { name: 'workspace-host-bring-up-again-read-desired', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
+  );
+  await bringUpWorkspaceHost(
+    { workspaceId: input.workspaceId, operationId: input.operationId, desired },
+    { customerWorkspaceId: binding.customerWorkspaceId, requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS },
+  );
 }
 
 /**
@@ -212,7 +258,7 @@ async function workspaceHostProvisioningWorkflowImpl(
  * the portal shows as the host's progress, and a stage failure is recorded on that record.
  */
 async function bringUpWorkspaceHost(
-  input: WorkspaceHostProvisioningWorkflowInput,
+  input: Pick<WorkspaceHostProvisioningWorkflowInput, 'workspaceId' | 'operationId' | 'desired'>,
   bringUp: WorkspaceHostBringUp,
 ): Promise<void> {
   const hostId = input.desired.hostId;

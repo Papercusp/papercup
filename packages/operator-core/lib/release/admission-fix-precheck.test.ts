@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   classifyTestFileRun,
@@ -141,7 +144,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it('materializes the commit with setup-release-checkout then runs each file through scripts/test-files.mjs in the checkpoint tree', async () => {
+  it('materializes the commit with setup-release-checkout then runs each file in a dedicated admission checkout', async () => {
     const calls: Array<{ argv: readonly string[]; cwd: string }> = [];
     const events: string[] = [];
     const progress: Array<{
@@ -182,10 +185,56 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       'test:lib/new.test.ts',
     ]);
     expect(calls[0].argv.slice(0, 2)).toEqual(['bash', '/repo/apps/operator/bin/release/setup-release-checkout.sh']);
-    expect(calls[0].argv).toEqual(expect.arrayContaining(['--ref', C, '--integration', '/repo', '--release', '/ckpt']));
+    expect(calls[0].argv).toEqual(expect.arrayContaining(['--ref', C, '--integration', '/repo', '--release', '/ckpt-admission-precheck']));
     expect(calls[0].cwd).toBe('/repo');
-    expect(calls[1]).toEqual({ argv: ['node', 'scripts/test-files.mjs', 'lib/red.test.ts'], cwd: '/ckpt' });
+    expect(calls[1]).toEqual({ argv: ['node', 'scripts/test-files.mjs', 'lib/red.test.ts'], cwd: '/ckpt-admission-precheck' });
     expect(calls[2].argv[2]).toBe('lib/new.test.ts');
+  });
+
+  it('cannot measure a gate-repinned checkout as an admission failure', async () => {
+    let gateCheckoutHead = 'old-gate-head';
+    const measuredRoots: string[] = [];
+    const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string }) => {
+      if (argv[0] === 'bash') {
+        expect(argv).toEqual(expect.arrayContaining(['--release', '/ckpt-admission-precheck']));
+      } else {
+        const racedOntoOldGateTree = gateCheckoutHead === 'new-gate-head' && opts.cwd === base.checkpointRoot;
+        measuredRoots.push(opts.cwd);
+        if (measuredRoots.length === 1) gateCheckoutHead = 'new-gate-head';
+        return {
+          exitCode: racedOntoOldGateTree ? 1 : 0,
+          signal: null,
+          timedOut: false,
+          output: racedOntoOldGateTree ? 'No getDatatype export is defined on the old mock' : '',
+          durationMs: 5,
+        } as ExecResult;
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 5 } as ExecResult;
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const out = await runner({ commit: C, files: ['lib/first.test.ts', 'lib/second.test.ts'] });
+    expect(gateCheckoutHead).toBe('new-gate-head');
+    expect(measuredRoots).toEqual(['/ckpt-admission-precheck', '/ckpt-admission-precheck']);
+    expect(out).toMatchObject({ ran: true, results: [{ status: 'pass' }, { status: 'pass' }] });
+  });
+
+  it('refuses to reset an existing directory that is not its own admission worktree', async () => {
+    const checkpointRoot = mkdtempSync(join(tmpdir(), 'admission-checkout-'));
+    const unrelated = `${checkpointRoot}-admission-precheck`;
+    mkdirSync(unrelated);
+    try {
+      const exec = vi.fn();
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        integrationRoot: '/repo', checkpointRoot, exec,
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
+      expect(out).toMatchObject({ ran: false, reason: 'runner-failed' });
+      expect(exec).not.toHaveBeenCalled();
+    } finally {
+      rmSync(unrelated, { recursive: true, force: true });
+      rmSync(checkpointRoot, { recursive: true, force: true });
+    }
   });
 
   it('isolates progress persistence failures from the measured file verdict', async () => {

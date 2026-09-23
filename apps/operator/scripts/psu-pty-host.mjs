@@ -640,9 +640,78 @@ export function findNativeTranscriptMarker({
   home = homedir(),
   nativeId = null,
 }) {
+  return scanNativeTranscriptMarker({ agent, env, marker, sinceMs, home, nativeId })?.nativeRef ?? null;
+}
+
+/** WI-10002745: how many trailing nonce characters a truncated provenance
+ * marker must still carry to count as this injection's. 8 hex characters are
+ * 32 random bits, and the row must also pass the same timestamp fence and
+ * native-id restriction as an exact match. */
+export const TRUNCATED_MARKER_MIN_NONCE_CHARS = 8;
+
+/** WI-10002745: a Codex kickoff can reach the native transcript missing its
+ * first 34-47 characters (measured on 21 of 82 Codex launches on 2026-09-23;
+ * one rollout began `bd294b2da8⟧`, the tail of
+ * `⟦turn-origin:fleet-kickoff nonce:87d062bd294b2da8⟧`). The turn DID start, but
+ * the exact-marker proof never matched, so the host declared the kickoff
+ * unverified and tore down an auditor that was mid-work (310K input tokens,
+ * last rollout write 4s before the teardown).
+ *
+ * Returns how many leading characters of `marker` were lost when `value`
+ * begins with a proper suffix of it that still keeps at least `minNonceChars`
+ * nonce characters and the closing bracket; otherwise null. An exact marker
+ * returns null because the exact proof owns that case. Pure and exported for
+ * tests. */
+export function truncatedTurnOriginMarkerLoss(
+  marker,
+  value,
+  { minNonceChars = TRUNCATED_MARKER_MIN_NONCE_CHARS } = {},
+) {
+  const exact = String(marker ?? '');
+  if (!/^⟦turn-origin:[a-z0-9][a-z0-9-]* nonce:[a-f0-9]{16,64}⟧$/i.test(exact)) return null;
+  const text = String(value ?? '');
+  const minSuffixLength = minNonceChars + 1; // nonce tail + closing bracket
+  for (let lost = 1; lost <= exact.length - minSuffixLength; lost++) {
+    if (text.startsWith(exact.slice(lost))) return lost;
+  }
+  return null;
+}
+
+/** The smallest truncation of `marker` that starts any string in `row`
+ * (walked to a bounded depth), or null. */
+function truncatedMarkerLossInRow(marker, row, depth = 0) {
+  if (typeof row === 'string') return truncatedTurnOriginMarkerLoss(marker, row);
+  if (!row || typeof row !== 'object' || depth > 8) return null;
+  let best = null;
+  for (const value of Array.isArray(row) ? row : Object.values(row)) {
+    const lost = truncatedMarkerLossInRow(marker, value, depth + 1);
+    if (lost != null && (best == null || lost < best)) best = lost;
+  }
+  return best;
+}
+
+/** The ONE native-transcript marker scan behind the exact and truncated proofs.
+ * With `allowTruncated`, a row qualifies when one of its strings begins with a
+ * truncated suffix of the marker (see truncatedTurnOriginMarkerLoss); the same
+ * recency fence and native-id restriction apply either way.
+ * @returns {{nativeRef: string, lostChars: number} | null} */
+function scanNativeTranscriptMarker({
+  agent,
+  env = process.env,
+  marker,
+  sinceMs,
+  home = homedir(),
+  nativeId = null,
+  allowTruncated = false,
+}) {
   const root = nativeTranscriptRoot(agent, env, home);
   if (!root || !existsSync(root) || !marker) return null;
-  const markerBytes = Buffer.from(marker, 'utf8');
+  const nonceTail = allowTruncated
+    ? /nonce:([a-f0-9]{16,64})⟧$/i.exec(marker)?.[1]?.slice(-TRUNCATED_MARKER_MIN_NONCE_CHARS) ?? null
+    : null;
+  if (allowTruncated && !nonceTail) return null;
+  const needle = allowTruncated ? nonceTail : marker;
+  const markerBytes = Buffer.from(needle, 'utf8');
   const stack = [{ path: root, depth: 0 }];
   let visited = 0;
   while (stack.length && visited < 4096) {
@@ -668,10 +737,12 @@ export function findNativeTranscriptMarker({
         if (st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
         const body = readFileSync(path, 'utf8');
         for (const line of body.split(/\r?\n/)) {
-          if (!line.includes(marker)) continue;
+          if (!line.includes(needle)) continue;
           let row;
           try { row = JSON.parse(line); }
           catch { continue; }
+          const lostChars = allowTruncated ? truncatedMarkerLossInRow(marker, row) : 0;
+          if (lostChars == null) continue;
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
           if (rawTimestamp != null) {
             let rowTimestampMs = typeof rawTimestamp === 'number'
@@ -680,7 +751,7 @@ export function findNativeTranscriptMarker({
             if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0 && rowTimestampMs < 10_000_000_000) {
               rowTimestampMs *= 1_000; // numeric Unix seconds
             }
-            if (Number.isFinite(rowTimestampMs) && rowTimestampMs >= sinceMs) return path;
+            if (Number.isFinite(rowTimestampMs) && rowTimestampMs >= sinceMs) return { nativeRef: path, lostChars };
             // An explicitly old or malformed row must never fall back to the
             // file's mtime; a later metadata append cannot refresh its proof.
             continue;
@@ -688,7 +759,7 @@ export function findNativeTranscriptMarker({
           // Legacy native rows without their own timestamp are usable only when
           // the transcript itself was created after this injection began. An
           // existing transcript's mtime can move for unrelated row types.
-          if (Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs) return path;
+          if (Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs) return { nativeRef: path, lostChars };
         }
       } catch {
         /* a concurrently-rotated transcript is simply not proof yet */
@@ -1049,6 +1120,18 @@ export async function waitForNativeTranscriptMarker({
   do {
     const nativeRef = findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, nativeId });
     if (nativeRef) return { persisted: true, nativeRef };
+    // WI-10002745: the turn started even though its first characters were
+    // lost. It is delivered, with degraded provenance the caller must report.
+    const truncated = scanNativeTranscriptMarker({
+      agent, env, marker, sinceMs, home, nativeId, allowTruncated: true,
+    });
+    if (truncated) {
+      return {
+        persisted: true,
+        nativeRef: truncated.nativeRef,
+        markerTruncated: { lostChars: truncated.lostChars },
+      };
+    }
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   } while (true);
@@ -1114,6 +1197,9 @@ export async function verifyNativeTurnStartWithRetry({
       timeoutMs,
       nativeId,
     });
+  // WI-10002745: carry a truncated-marker proof through so callers can
+  // report the degraded provenance instead of silently treating it as exact.
+  const truncation = (p) => (p?.markerTruncated ? { markerTruncated: p.markerTruncated } : {});
   let proof = await readProof();
   if (proof?.persisted) {
     return {
@@ -1121,6 +1207,7 @@ export async function verifyNativeTurnStartWithRetry({
       nativeRef: proof.nativeRef ?? null,
       retried: false,
       reason: null,
+      ...truncation(proof),
     };
   }
   try {
@@ -1139,6 +1226,7 @@ export async function verifyNativeTurnStartWithRetry({
     nativeRef: proof?.nativeRef ?? null,
     retried: true,
     reason: proof?.persisted ? null : 'native-turn-marker-timeout',
+    ...truncation(proof),
   };
 }
 
@@ -4451,19 +4539,27 @@ export function codexTuiStartObserved(output) {
  * window measured from the probe therefore fired 0.3s and 0.6s BEFORE the
  * first frame on two grading auditors: each kickoff lost its leading
  * provenance marker, the native proof timed out, and the host tore down the
- * working session. The first frame Codex PAINTS after its latest probe (the
- * `OpenAI Codex` header or the `›` composer glyph) is positive proof that the
- * reply wait is over.
+ * working session.
+ *
+ * FALSE PREMISE (retracted 2026-09-23 17:45Z): this used to treat the first
+ * `OpenAI Codex` header or `›` composer glyph as readiness. Codex 0.156.1 paints
+ * both ~0.25s after its probe while its header still reads `model: loading`,
+ * BEFORE its session exists. On the slow launches, that pre-session frame came
+ * 14s before Codex's own `initial frame scheduled` line, so the fallback clock
+ * again started too early. Readiness is the header repainted with a real model
+ * (`model: GPT-5.6-Sol high`), which Codex writes in full once the session is
+ * configured (captured: scratch/su-bd109afe/wi2745-capture-*.jsonl).
  *
  * `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
-export function codexInitialFrameObserved(output, { probeAlreadySeen = false } = {}) {
+const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
+export function codexSessionFrameObserved(output, { probeAlreadySeen = false } = {}) {
   const raw = String(output ?? '');
   const probeAt = raw.lastIndexOf('\x1b[6n');
   if (probeAt < 0 && !probeAlreadySeen) return false;
   const visible = stripAnsi(probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length));
-  return visible.includes('OpenAI Codex') || visible.includes('›');
+  return CODEX_SESSION_MODEL_RE.test(visible);
 }
 
 /** If the Codex first frame is never observed (a future Codex that stops
@@ -4476,7 +4572,8 @@ export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER = 4;
 
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from
- * the first frame the Codex TUI paints (see codexInitialFrameObserved). It is
+ * the first frame Codex paints once its session exists (see
+ * codexSessionFrameObserved). It is
  * not measured from the launcher banner: the PTY child is the psu launcher,
  * which bootstraps the role for ~20s under load before Codex execs. It is not
  * measured from Codex's startup probe either, because Codex can then read
@@ -6833,6 +6930,14 @@ export function hostThroughPty(o) {
             error: String(error?.message ?? error).slice(0, 200),
           });
         }
+        if (proof.markerTruncated) {
+          // WI-10002745: delivered, but the provenance marker lost its head.
+          // Kept visible so the byte-loss cause stays measurable.
+          appendHostEvent(ownerId, 'launch-kickoff-marker-truncated', {
+            lostChars: proof.markerTruncated.lostChars,
+            nativeRef: proof.nativeRef ?? null,
+          });
+        }
         // Publish the native transcript verdict before any caller-facing
         // handling. The detached parent owns the placeholder and uses this
         // receipt as the only authority for whether its kickoff ran.
@@ -8271,10 +8376,10 @@ export function hostThroughPty(o) {
       if (
         childBackendTuiStartedAt &&
         !childBackendFirstFrameAt &&
-        codexInitialFrameObserved(childStartupOutput, { probeAlreadySeen: true })
+        codexSessionFrameObserved(childStartupOutput, { probeAlreadySeen: true })
       ) {
         childBackendFirstFrameAt = Date.now();
-        appendHostEvent(ownerId, 'backend-first-frame-observed', {
+        appendHostEvent(ownerId, 'backend-session-frame-observed', {
           agent: 'codex',
           msAfterTuiStart: childBackendFirstFrameAt - childBackendTuiStartedAt,
         });
@@ -9368,6 +9473,13 @@ export function hostThroughPty(o) {
             });
           },
         });
+        if (turnStartProof.markerTruncated) {
+          appendHostEvent(ownerId, 'respawn-carry-marker-truncated', {
+            mode: respawnMode,
+            nativeId: nativeId ?? null,
+            lostChars: turnStartProof.markerTruncated.lostChars,
+          });
+        }
         if (!turnStartProof.persisted) {
           appendHostEvent(ownerId, 'turn-start-unverified', {
             mode: respawnMode,

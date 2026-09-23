@@ -108,12 +108,11 @@ function rerunnableEvidence(
   const evaluationArgs =
     planArgs +
     ', classRef:' +
-    JSON.stringify(input.classRef) +
-    ', expectedSpecSetHash:' +
-    JSON.stringify(expectedSpecSetHash);
+    JSON.stringify(input.classRef);
   return (
     `Source store: plans:get-specs { ${planArgs} }. ` +
     `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
+    `confirm the returned specSetHash equals ${JSON.stringify(expectedSpecSetHash)}; ` +
     `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}`
   );
 }

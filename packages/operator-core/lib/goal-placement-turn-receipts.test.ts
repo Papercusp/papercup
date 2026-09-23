@@ -27,6 +27,7 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
 
 const admission = (minute: number, overrides: Partial<GoalPlacementAdmissionObservation> = {}): GoalPlacementAdmissionObservation => ({
   version: 1, planRef: 'plan:harness/plan', observedAt: at(minute).toISOString(), planReason: 'ready',
+  launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 },
   governor: 'open', attempts: 'none', evidenceRefs: ['fixture:preflight', 'fixture:governor'], ...overrides,
 });
 
@@ -74,7 +75,7 @@ describe('exact completed-opportunity proof join', () => {
     const receipt = { version: 1, goalId: 'goal', planSlug: 'plan', planRef: 'plan:harness/plan', obligationId: row.id,
       sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision, deliveryToken: 'token',
       offeredAt: at(2).toISOString(), completedAt: at(3).toISOString(), confirmedAt: at(5).toISOString(),
-      completedTurnRef: 'codex:native-1:request', admission: admission(2) };
+      completedTurnRef: 'codex:native-1:request', launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 }, admission: admission(2) };
     const end = { version: 1, goalId: 'goal', completedTurnRef: receipt.completedTurnRef, completedAt: receipt.completedAt,
       observedAt: at(4).toISOString(), deliveryToken: 'token', rows: [{ planSlug: 'plan', planRef: receipt.planRef,
         status: 'due', applicableDemand: 1, actionKind: 'delegate', obligationId: row.id,
@@ -105,6 +106,18 @@ describe('exact completed-opportunity proof join', () => {
   it.each(['blocked', 'in-progress', 'not-applicable', 'satisfied'])('consumes a %s interval as excluded', (status) => {
     const f = proof(); f.end.rows[0]!.status = status;
     expect(f.qualify()).toMatchObject({ eligibleAtOffer: true, eligibleAtCompletion: false });
+  });
+  it.each(['offer-fleet', 'offer-seats', 'completion-fleet', 'completion-seats'])('rejects a mismatched %s admission binding', (change) => {
+    const f = proof();
+    const measured = change.startsWith('offer') ? f.receipt.admission : f.end.admissions[0]!.admission;
+    if (change.endsWith('fleet')) measured.launch!.fleetSlug = 'another-fleet';
+    else measured.launch!.requestedSeats = 2;
+    expect(f.qualify()).toBeNull();
+  });
+  it('keeps an older receipt without a launch binding unmeasured', () => {
+    const f = proof();
+    const { launch: _launch, ...legacy } = f.receipt;
+    expect(qualifyGoalPlacementTurn({ receipt: legacy, turnEnd: f.end, nativeSessionId: 'native-1' })).toBeNull();
   });
   it('excludes actual admission activity and keeps unknown measurement unknown', () => {
     const f = proof(); f.end.admissions[0]!.admission.attempts = 'present';
