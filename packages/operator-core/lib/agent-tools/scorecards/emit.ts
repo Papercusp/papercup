@@ -281,6 +281,9 @@ const specTestAdequacyRerunRecipeSchema = z
     evaluator: z.literal('plans:evaluate-spec-test-adequacy'),
     // Optional for historical cards; current evaluator output always stamps it.
     evaluatorBuild: specTestAdequacyEvaluatorBuildSchema.optional(),
+    // P-043: the evaluator RULE revision the verdicts were graded under. Optional for
+    // cards minted before the stamp; current evaluator output always stamps it.
+    evaluatorRevision: z.number().int().positive().optional(),
     // The plan class the recorded verdicts were produced under. REQUIRED by the
     // evaluator and it materially moves `plan-class-risk-floor`, so a card that did
     // not record it forced a re-runner to GUESS one of four values — a wrong guess
