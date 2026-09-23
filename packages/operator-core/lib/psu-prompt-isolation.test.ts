@@ -89,6 +89,38 @@ describe('blueprint su prompt — launch-tool routing survives the live render p
     expect(r.text).toContain('orders:disposition');
     expect(r.text).not.toContain('orders:resolve-pending');
   });
+
+  // R-10 (turn-start-memory-two-class-2026-09-21, rev-9 bar set): the prompt a
+  // freshly launched session receives must state the disposition obligation for
+  // BOTH su roles. The case above renders one profile (the 'engineer' default), so
+  // it cannot fail if the POWER su assembly ever loses the rail — which is precisely
+  // what this bar claims.
+  //
+  // `baseSource` is passed because that mirrors the real launch: role-launch-spec.ts
+  // calls renderSuPlaybook({ profile, baseSource: suBaseSource, ... }). Rendering
+  // WITHOUT it yields the playbook alone ('# Papercusp power-engineer tool playbook…'),
+  // which is not what a launched session receives. What this therefore proves is that
+  // each profile's ASSEMBLY preserves the rail — a profile that dropped or truncated
+  // the spliced base fails here. It does NOT prove the two roles resolve different
+  // bases; they share one, by design.
+  for (const profile of ['engineer', 'power'] as const) {
+    it(`${profile} su: the live launch render states the disposition obligation`, async () => {
+      const r = await renderSuPlaybook({
+        agent: 'codex',
+        profile,
+        operatorAppRoot,
+        baseSource: blueprintSuBase,
+        projectGuideSource: '',
+      });
+
+      expect(r.text).toContain('ends in exactly one of two ways');
+      expect(r.text).toContain("orders:disposition { id, status: 'done'|'declined', note }");
+      expect(r.text).toContain('Close your own directives as you finish them');
+      // Read from the render path, not a materialized copy — and the retired
+      // triage verb must not come back for either role.
+      expect(r.text).not.toContain('orders:resolve-pending');
+    });
+  }
 });
 
 describe('psu prompt isolation — assembled engineer prompt (P-005, real playbook + CLAUDE.md)', () => {
