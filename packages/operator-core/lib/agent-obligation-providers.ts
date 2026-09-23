@@ -425,13 +425,29 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     actionablePlans.find((plan) => plan.placement.state === 'unplaced' || plan.placement.state === 'admitting') ??
     actionablePlans[0];
   const progressPlan = selected ?? applicablePlans[0];
+  let progressStalledAt: string | null = null;
   if (progressPlan && input.read.value.progress) {
     const state = input.read.value.progress[progressPlan.ref];
     const view = advanceGoalPlacementProgress({
       scopeKey: goalPlacementProgressScopeKey({ workspaceId: input.workspaceId, ownerId: input.ownerId,
         goalId: input.goalId, planRef: progressPlan.ref }), previous: state ?? null, now: input.observedAt,
     });
+    if (selected && view.status === 'unknown') {
+      return defineAgentObligation({
+        ...common,
+        scope: { ...scope, planSlug: selected.slug },
+        ...unknownPlacement(input, {
+          title: `Placement progress for ${selected.slug} is unavailable`,
+          code: 'goal-placement-progress-invalid',
+          detail: view.reason ?? 'the stored progress receipt is invalid',
+          retry: 'inspect and repair the scoped progress receipt before treating another launch as progress',
+          applicableDemand: applicablePlans.length,
+          plan: selected,
+        }),
+      });
+    }
     ageMs = view.status === 'known' ? view.ageMs ?? undefined : undefined;
+    progressStalledAt = selected && view.stalled ? view.state.stalledAt : null;
   }
   const portfolioReadFailure = portfolio.degradedReasons.find((reason) => /portfolio read failed/i.test(reason));
   if (portfolioReadFailure) {
@@ -572,6 +588,30 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
         kind: 'repair',
         summary: guidance.summary,
         targetRef: `goal:${input.goalId}`,
+      },
+      ...(ageMs == null ? {} : { ageMs }),
+    });
+  }
+
+  // A completed two-opportunity stall is a repair obligation. Repeating the
+  // original launch would count another attempt while leaving the failure's
+  // cause unknown. An admitting transaction remains in progress, and a current
+  // typed launch refusal above keeps its more specific repair guidance.
+  if (progressStalledAt && placement.state === 'unplaced') {
+    return defineAgentObligation({
+      ...common,
+      title: `Diagnose stalled goal plan placement for ${selected.slug}`,
+      scope: { ...scope, planSlug: selected.slug },
+      episode: `stalled:${selected.slug}:${progressStalledAt}`,
+      status: 'due',
+      reason: 'two distinct delivered, completed, eligible decisions produced no verified placement effect',
+      causalRank: 1,
+      applicableDemand: applicablePlans.length,
+      evidence: placementEvidence(input, selected),
+      action: {
+        kind: 'repair',
+        summary: `inspect the canonical launch transaction, admission refusal, fleet and member claims for ${selected.slug}; repair the failed leg before retrying placement`,
+        targetRef: selected.ref,
       },
       ...(ageMs == null ? {} : { ageMs }),
     });

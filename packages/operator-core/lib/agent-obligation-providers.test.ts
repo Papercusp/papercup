@@ -19,7 +19,8 @@ import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPo
 import { compileGoalPlanPlacement } from './goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
-import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
+import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey,
+  type GoalPlacementProgressState } from './goal-placement-progress';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -304,6 +305,7 @@ function knownPlacement(value: {
   alert?: ReturnType<typeof planAlert> | null;
   evidenceRef: string;
   ageMs?: number;
+  progress?: Record<string, GoalPlacementProgressState | null>;
 }): PlanPlacementProviderInput['read'] {
   return { status: 'known', value: { alert: null, ...value } };
 }
@@ -327,6 +329,49 @@ describe('persisted placement effect clock', () => {
         portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'fixture', progress: { [plan.ref]: stored },
       } } }).ageMs).toBeUndefined();
     }
+  });
+
+  it('turns two eligible completed decisions into one repair, while retaining current admission and in-flight boundaries', () => {
+    const unplaced = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
+    const scopeKey = goalPlacementProgressScopeKey({ workspaceId: base.workspaceId, ownerId: base.ownerId,
+      goalId: 'goal-1', planRef: unplaced.ref });
+    const first = advanceGoalPlacementProgress({ scopeKey, previous: null,
+      now: '2026-09-05T19:57:00.000Z', opportunity: { deliveryToken: 'delivery-1',
+        completedTurnRef: 'native-1', offeredAt: '2026-09-05T19:56:00.000Z',
+        completedAt: '2026-09-05T19:57:00.000Z', eligibleAtOffer: true, eligibleAtCompletion: true } });
+    const stalled = advanceGoalPlacementProgress({ scopeKey, previous: first.state,
+      now: '2026-09-05T19:59:00.000Z', opportunity: { deliveryToken: 'delivery-2',
+        completedTurnRef: 'native-2', offeredAt: '2026-09-05T19:58:00.000Z',
+        completedAt: '2026-09-05T19:59:00.000Z', eligibleAtOffer: true, eligibleAtCompletion: true } });
+    expect(stalled.stalled).toBe(true);
+    const input = (plan: typeof unplaced, resolved = launch()): PlanPlacementProviderInput => ({
+      ...base, goalId: 'goal-1', read: knownPlacement({ portfolio: portfolio([plan]), launch: resolved,
+        evidenceRef: 'cohort:stalled', progress: { [plan.ref]: stalled.state } }),
+    });
+    const repair = planPlacementObligation(input(unplaced));
+    expect(repair).toMatchObject({ status: 'due', action: { kind: 'repair', targetRef: unplaced.ref } });
+    expect(repair.action?.tool).toBeUndefined();
+    expect(repair.episode).toContain('stalled:');
+    const refused = planPlacementObligation(input(unplaced, launch({ refusal: {
+      reason: 'goal_budget_unmeasurable', current: null, limit: 10_000, requested: 1,
+      currentScope: 'goal-pots', message: 'authoritative spend is unknown',
+    } })));
+    expect(refused).toMatchObject({ status: 'blocked', action: { kind: 'repair', targetRef: 'goal:goal-1' } });
+    const admitting = worklistPlan(placement('admitting', 'resume-partial-launch'));
+    expect(planPlacementObligation(input(admitting))).toMatchObject({ status: 'in-progress' });
+  });
+
+  it('keeps a corrupt scoped progress receipt unknown instead of offering another launch', () => {
+    const plan = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
+    const result = planPlacementObligation({ ...base, goalId: 'goal-1', read: knownPlacement({
+      portfolio: portfolio([plan]), launch: launch(), evidenceRef: 'cohort:corrupt',
+      progress: { [plan.ref]: { version: 1, scopeKey: 'another-goal', firstEligibleAt: null,
+        lastEffect: null, lastDeliveryToken: null, lastCompletedTurnRef: null, lastCompletedAt: null,
+        opportunities: 0, stalledAt: null } },
+    }) });
+    expect(result).toMatchObject({ status: 'unknown', measurementFailure: { code: 'goal-placement-progress-invalid' },
+      action: { kind: 'inspect', targetRef: plan.ref } });
+    expect(result.action?.tool).toBeUndefined();
   });
 });
 
