@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   resolveAgentMcpBaseUrl,
   resolveInheritedOperatorBaseUrl,
+  resolveLongLivedSessionMcpBaseUrl,
   resolveSpawnHostOperatorBaseUrl,
 } from './mcp-base-url';
 
@@ -111,5 +112,26 @@ describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
 
   it('HONO_PORT set, no inherited OPERATOR_URL at all → still pins to own identity', () => {
     expect(resolveSpawnHostOperatorBaseUrl({ PAPERCUSP_HONO_PORT: '4100' })).toBe('http://localhost:4100');
+  });
+});
+
+describe('resolveLongLivedSessionMcpBaseUrl', () => {
+  it('uses the stable proxy fallback instead of inheriting a staging host port', () => {
+    expect(
+      resolveLongLivedSessionMcpBaseUrl({
+        PAPERCUSP_HONO_PORT: '3170',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3170',
+      }),
+    ).toBe('http://127.0.0.1:9071');
+  });
+
+  it('prefers the configured stable proxy and trims trailing slashes', () => {
+    expect(
+      resolveLongLivedSessionMcpBaseUrl({
+        PAPERCUSP_HONO_PORT: '3170',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3170',
+        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9171/',
+      }),
+    ).toBe('http://127.0.0.1:9171');
   });
 });

@@ -42,6 +42,16 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
 }
 
 /**
+ * Resolve the stable MCP endpoint for a long-lived CLI session. The operator
+ * that starts a session may be a staging host whose direct port restarts often;
+ * persistent clients use the stable proxy instead.
+ */
+export function resolveLongLivedSessionMcpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const configuredProxy = env.PAPERCUSP_MCP_PROXY_BASE?.trim();
+  return (configuredProxy || 'http://127.0.0.1:9071').replace(/\/+$/, '');
+}
+
+/**
  * Resolve an INHERITED `PAPERCUSP_OPERATOR_URL` (which may already carry a
  * `/api/mcp` suffix — some producers, e.g. dbos/orchestrator-runner.ts, set it
  * that way) down to the bare origin a native MCP client's OWN `.mcp.json`
