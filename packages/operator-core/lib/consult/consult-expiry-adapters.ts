@@ -261,3 +261,144 @@ export function consultExpiryFindSilentResponders(
     return silent;
   };
 }
+
+/** Condition-key namespace for a review consult converted to pullable work (P-014). */
+export const REVIEW_CONSULT_CONDITION_NAMESPACE = 'review-consult:v1';
+
+/** What this module needs from `upsertConditionWorkItem` (condition-upsert.ts). */
+export type ConditionWorkItemUpserter = (
+  conditionKey: string,
+  input: {
+    kind: 'task';
+    title: string;
+    summary: string;
+    harness?: string;
+    workspaceId: string;
+    createdBy: string;
+    payload: Record<string, unknown>;
+  },
+) => Promise<{ id: string | null }>;
+
+export interface ReviewWorkItemFilerDeps {
+  upsert: ConditionWorkItemUpserter;
+  /** The harness whose claimable backlog should carry the item when the consult's
+   * routing does not name one (a vetting consult opened without a harness). */
+  resolveHarness: (workspaceId: string, conversationId: string) => Promise<string | null>;
+}
+
+const REVIEW_SUMMARY_QUESTION_CAP = 4000;
+
+/**
+ * P-014 (review-system-rework-reduction-2026-09-23, spec RSR-P-014-A): file the
+ * pullable review work item for a silent review consult.
+ *
+ * What this adapter decides:
+ *   - IDENTITY. The condition key is per conversation, so a retry on a later tick
+ *     adopts the same row instead of filing a sibling (migration 741's unique index
+ *     makes that race-proof). An acceptance-grading consult already has a durable
+ *     review-target reservation (`routing.cascade.reservation`); the adapter files
+ *     under THAT key so the reservation itself becomes the pullable item, with its
+ *     canonical title kept, rather than a second row competing with it.
+ *   - HARNESS. `work_items:claimable` is per harness, so an item with no harness
+ *     is never pulled. The routing snapshot's harness wins, then the resolver
+ *     (conversation harness, then the workspace's home pot).
+ *   - CLAIMABILITY. kind 'task', unassigned, in the open state — the shape the
+ *     claimable backlog serves. Rigor is unchanged: scorecards:emit still refuses
+ *     a critique by the emitter or the rubric author, and grader eligibility still
+ *     excludes the plan's implementers, whoever claims the item.
+ */
+export function consultExpiryFileReviewWorkItem(
+  deps: ReviewWorkItemFilerDeps,
+): NonNullable<ExpirySweepDeps['fileReviewWorkItem']> {
+  return async (req) => {
+    const cascade = readCascadeBlock(req.routing);
+    const reservationKey =
+      req.kind === 'acceptance-grading' && typeof cascade?.reservation?.conditionKey === 'string'
+        ? cascade.reservation.conditionKey
+        : null;
+    const conditionKey = reservationKey ?? `${REVIEW_CONSULT_CONDITION_NAMESPACE}:${req.conversationId}`;
+    const harness =
+      (typeof cascade?.harnessSlug === 'string' && cascade.harnessSlug) ||
+      (await deps.resolveHarness(req.workspaceId, req.conversationId).catch(() => null)) ||
+      undefined;
+
+    const question = req.question.length > REVIEW_SUMMARY_QUESTION_CAP
+      ? `${req.question.slice(0, REVIEW_SUMMARY_QUESTION_CAP)}…`
+      : req.question;
+    const title = reservationKey && typeof cascade?.planSlug === 'string' && typeof cascade?.rubricId === 'string'
+      ? `Acceptance review-target reservation — ${cascade.planSlug} (${cascade.rubricId})`
+      : `Review needed (${req.kind}) — ${firstLine(req.question, 110)}`;
+    const summary =
+      `PULLABLE REVIEW (review-system-rework-reduction-2026-09-23 P-014). Consult ${req.conversationId} ` +
+      `(${req.kind}) had no reviewer exchange at half its window, so instead of cascading to another ` +
+      `responder it was converted to this work item. Requester: ${req.requesterId}; silent selectee: ` +
+      `${req.silentResponderId ?? '(none)'}. You may take it unless you are the requester, the rubric's ` +
+      `author, or an implementer of the subject plan — the emit gates refuse those parties anyway. ` +
+      reviewInstructions(req.kind) +
+      `\n\nOriginal request:\n${question}`;
+
+    const result = await deps.upsert(conditionKey, {
+      kind: 'task',
+      title,
+      summary,
+      ...(harness ? { harness } : {}),
+      workspaceId: req.workspaceId,
+      createdBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
+      payload: {
+        reviewConsult: {
+          conversationId: req.conversationId,
+          kind: req.kind,
+          requesterId: req.requesterId,
+          silentResponderId: req.silentResponderId,
+        },
+      },
+    });
+    if (!result.id) throw new Error(`review work item upsert returned no id for ${conditionKey}`);
+    return { id: result.id };
+  };
+}
+
+function reviewInstructions(kind: ReviewWorkItemRequestKind): string {
+  if (kind === 'rubric-vetting') {
+    return (
+      'To review: claim this item, read the rubric named below, and post your critique with ' +
+      'work_items:comment on THIS item. The rubric author then records vetting with ' +
+      "scorecards:emit { vettingWorkItem: '<this id>' }; your comment is the third-party critique it requires."
+    );
+  }
+  if (kind === 'acceptance-grading') {
+    return (
+      'To review: claim this item and grade the rubric with scorecards:emit, with concrete evidence per ' +
+      'criterion, following the request below.'
+    );
+  }
+  return (
+    'To review: claim this item and emit the single terminal grading-integrity audit described below ' +
+    'with scorecards:emit.'
+  );
+}
+
+type ReviewWorkItemRequestKind = Parameters<NonNullable<ExpirySweepDeps['fileReviewWorkItem']>>[0]['kind'];
+
+function readCascadeBlock(routing: unknown): {
+  harnessSlug?: unknown;
+  planSlug?: unknown;
+  rubricId?: unknown;
+  reservation?: { conditionKey?: unknown } | null;
+} | null {
+  let snap = routing;
+  if (typeof snap === 'string') {
+    try {
+      snap = JSON.parse(snap);
+    } catch {
+      return null;
+    }
+  }
+  const block = (snap as { cascade?: unknown } | null)?.cascade;
+  return block && typeof block === 'object' ? (block as ReturnType<typeof readCascadeBlock>) : null;
+}
+
+function firstLine(text: string, cap: number): string {
+  const line = text.split('\n').find((l) => l.trim().length > 0)?.trim() ?? '(no question text)';
+  return line.length > cap ? `${line.slice(0, cap)}…` : line;
+}

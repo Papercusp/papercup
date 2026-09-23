@@ -34,14 +34,17 @@ registerSystemAction('consult-expiry-sweep', async () => {
       consultExpiryFindSilentResponders,
       consultExpiryNotifyRequester,
       consultExpiryDispatch,
+      consultExpiryFileReviewWorkItem,
     },
     { makeConsultReachDispatcher },
+    { upsertConditionWorkItem },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('../../consult/consult-expiry-core'),
     import('../../events/await/engine'),
     import('../../consult/consult-expiry-adapters'),
     import('../../consult/consult-dispatch'),
+    import('../../coord/condition-upsert'),
   ]);
 
   await sweepExpiredConsults({
@@ -55,6 +58,21 @@ registerSystemAction('consult-expiry-sweep', async () => {
     // their transcript) instead of waking them. notifyAgents is no longer on
     // this binding at all, so the sweep cannot silently regain a wake.
     dispatch: consultExpiryDispatch((ctx) => makeConsultReachDispatcher(ctx)),
+    // P-014: a silent review consult at half its TTL becomes a pullable work item
+    // (filed in the consult's harness, else the workspace's home pot) instead of
+    // cascading to another silent responder.
+    fileReviewWorkItem: consultExpiryFileReviewWorkItem({
+      upsert: upsertConditionWorkItem,
+      resolveHarness: async (workspaceId, conversationId) => {
+        const rows = (await getOrgPg().sql`
+          SELECT harness_slug FROM harness_shared.coord_conversations
+           WHERE workspace_id = ${workspaceId} AND id = ${conversationId}
+        `) as unknown as Array<{ harness_slug: string | null }>;
+        if (rows[0]?.harness_slug) return rows[0].harness_slug;
+        const { resolveHomePotSlug } = await import('../../agent-tools/pot/_resolve');
+        return resolveHomePotSlug(workspaceId);
+      },
+    }),
     findSilentResponders: consultExpiryFindSilentResponders({
       getPresence: async (ownerId) => {
         const { getPresence } = await import('../../agent-tools/coordination/presence');

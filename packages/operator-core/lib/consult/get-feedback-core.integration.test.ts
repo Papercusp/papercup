@@ -1180,6 +1180,19 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
     expect(sel?.selected.map((s) => s.ownerId)).toEqual(['agent-1', 'agent-2']);
   });
 
+  it('persists the selection policy on the routing snapshot so the expiry sweep can recognize a review consult (P-014)', async () => {
+    const qs = [cand('agent-1', { score: 0.9 }), cand('agent-2', { score: 0.8 })];
+    const vetting = makeDeps(routeOf(qs));
+    const r = asOk(await getFeedbackCore({ ...baseReq, question: 'vet rubric X', policy: 'rubric-vetting' }, vetting.deps));
+    expect((await stateRow(r.conversation_id)).routing).toMatchObject({ policy: 'rubric-vetting' });
+
+    // A consult opened without a policy stays unmarked — the sweep must not
+    // mistake an ordinary consult for a review.
+    const plain = makeDeps(routeOf(qs));
+    const p = asOk(await getFeedbackCore({ ...baseReq, question: 'an ordinary question' }, plain.deps));
+    expect((await stateRow(p.conversation_id)).routing).not.toHaveProperty('policy');
+  });
+
   it('minResponders 0 restores pure-floor selection: a live below-floor pool is an honest below_floor', async () => {
     const below = cand('agent-min', { score: 0.31 });
     const { deps, reached } = makeDeps(routeOf([], { all: [below] }));

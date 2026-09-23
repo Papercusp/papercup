@@ -840,3 +840,159 @@ describe('P-005 requester alert — real message writer and PG replay boundary',
     await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${id}`;
   });
 });
+
+// ── P-014 / RSR-P-014-A: a silent review consult at half its TTL becomes pullable work ──
+describe('review consult conversion at half TTL (review-system-rework-reduction-2026-09-23 P-014)', () => {
+  const MIN = 60_000;
+  const at = (offsetMin: number) => new Date(NOW.getTime() + offsetMin * MIN).toISOString();
+  const VETTING = { policy: 'rubric-vetting', ...menuSnapshot(['resp-1', 'resp-2']) };
+  const GRADING = {
+    ...menuSnapshot(['resp-1', 'resp-2']),
+    cascade: { flavor: 'acceptance-grading', planSlug: 'plan-x', rubricId: 'rubric-x', harnessSlug: 'hx' },
+  };
+  const seeded: string[] = [];
+
+  /** Seed with an explicit TTL window (created_at → expires_at) and exchange count. */
+  async function seedReview(opts: {
+    routing: unknown;
+    createdMin: number;
+    expiresMin: number;
+    exchangesUsed?: number;
+    latency?: 'proceed' | 'hard-blocked';
+  }): Promise<string> {
+    seq += 1;
+    const id = `conv-review-${seq}`;
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, expires_at, routing, cascade_cursor, exchanges_used, created_at, updated_at)
+      VALUES
+        (${WS}, ${id}, 'rubric-author', 'resp-1', 'awaiting_responder', 'Vet acceptance rubric R rev 2',
+         ${opts.latency ?? 'proceed'}, ${at(opts.expiresMin)}::timestamptz,
+         ${rootSql.json(opts.routing as never)}, 0, ${opts.exchangesUsed ?? 0},
+         ${at(opts.createdMin)}::timestamptz, ${at(opts.createdMin)}::timestamptz)`;
+    await rootSql`
+      INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
+      VALUES (${WS}, ${id}, 'consult', 'open', ${at(opts.createdMin)}::timestamptz)`;
+    seeded.push(id);
+    return id;
+  }
+
+  function withFiler(fail = false) {
+    const base = makeDeps({ withReach: true });
+    const filed: Array<Parameters<NonNullable<ExpirySweepDeps['fileReviewWorkItem']>>[0]> = [];
+    base.deps.fileReviewWorkItem = async (req) => {
+      filed.push(req);
+      if (fail) throw new Error('work-item store down');
+      return { id: `WI-review-${req.conversationId}` };
+    };
+    return { ...base, filed };
+  }
+
+  async function rowOf(id: string) {
+    const rows = (await rootSql`
+      SELECT state, closed_at, cascade_cursor, outcome, responder_id FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<Record<string, unknown>>;
+    const row = rows[0]!;
+    if (typeof row.outcome === 'string') row.outcome = JSON.parse(row.outcome);
+    return row;
+  }
+
+  afterAll(async () => {
+    if (seeded.length > 0) {
+      await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()}
+                     WHERE conversation_id = ANY(${seeded}) AND closed_at IS NULL`;
+    }
+  });
+
+  it('converts a silent rubric-vetting consult past half its TTL to a work item instead of cascading', async () => {
+    // Window -70min → +50min: the midpoint (-10min) is behind NOW; nobody has engaged.
+    const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50 });
+    const { deps, filed, reachCalls, alerts } = withFiler();
+    const result = await sweepExpiredConsults(deps);
+
+    expect(filed.filter((f) => f.conversationId === id)).toEqual([
+      expect.objectContaining({
+        workspaceId: WS, conversationId: id, kind: 'rubric-vetting',
+        requesterId: 'rubric-author', silentResponderId: 'resp-1',
+      }),
+    ]);
+    expect(result.converted).toContainEqual({ conversationId: id, workItemId: `WI-review-${id}`, kind: 'rubric-vetting' });
+    // NOT cascaded: no dispatch to resp-2, the cursor never moved.
+    expect(reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
+    const row = await rowOf(id);
+    expect(row).toMatchObject({ state: 'expired', cascade_cursor: 0 });
+    expect(row.closed_at).not.toBeNull();
+    expect(row.outcome).toMatchObject({
+      disposition: 'converted_to_review_work_item', work_item_id: `WI-review-${id}`, review_kind: 'rubric-vetting',
+    });
+    expect((await conversationStateOf(id)).state).toBe('expired');
+    // The requester is told where the review went and how to record vetting from it.
+    const alert = alerts.find((a) => a.conversationId === id)!;
+    expect(alert.msgId).toContain('consult-review-conversion');
+    expect(alert.body).toContain(`vettingWorkItem: 'WI-review-${id}'`);
+  });
+
+  it('converts a due silent review consult rather than cascading or expiring it without a work item', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -130, expiresMin: -10 });
+    const { deps, filed, reachCalls } = withFiler();
+    await sweepExpiredConsults(deps);
+    expect(filed.map((f) => f.conversationId)).toContain(id);
+    expect(reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
+    expect((await rowOf(id)).outcome).toMatchObject({ disposition: 'converted_to_review_work_item' });
+  });
+
+  it('converts an acceptance-grading cascade and hands the filer its routing (reservation reuse)', async () => {
+    const id = await seedReview({ routing: GRADING, createdMin: -70, expiresMin: 50 });
+    const { deps, filed } = withFiler();
+    const result = await sweepExpiredConsults(deps);
+    const req = filed.find((f) => f.conversationId === id)!;
+    expect(req.kind).toBe('acceptance-grading');
+    expect(req.routing).toMatchObject({ cascade: { flavor: 'acceptance-grading', planSlug: 'plan-x' } });
+    expect(result.converted).toContainEqual(expect.objectContaining({ conversationId: id, kind: 'acceptance-grading' }));
+  });
+
+  it('leaves a review consult alone before half its TTL, once someone has engaged, or when it is not a review', async () => {
+    const early = await seedReview({ routing: VETTING, createdMin: -10, expiresMin: 110 });
+    const engaged = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50, exchangesUsed: 1 });
+    const ordinary = await seedReview({ routing: menuSnapshot(['resp-1', 'resp-2']), createdMin: -70, expiresMin: 50 });
+    const { deps, filed } = withFiler();
+    const result = await sweepExpiredConsults(deps);
+    const touched = filed.map((f) => f.conversationId);
+    for (const id of [early, engaged, ordinary]) {
+      expect(touched).not.toContain(id);
+      expect(result.converted.map((c) => c.conversationId)).not.toContain(id);
+      expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    }
+  });
+
+  it('retries a failed conversion on the next tick; the consult stays open until the item is filed', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50 });
+    const failing = withFiler(true);
+    const first = await sweepExpiredConsults(failing.deps);
+    expect(first.conversionFailures).toContain(id);
+    expect(failing.reachCalls.filter((c) => c.conversationId === id)).toEqual([]);
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+
+    const healthy = withFiler();
+    const second = await sweepExpiredConsults(healthy.deps);
+    expect(second.converted.map((c) => c.conversationId)).toContain(id);
+    expect((await rowOf(id)).outcome).toMatchObject({ work_item_id: `WI-review-${id}` });
+  });
+
+  it('wakes a hard-blocked requester with the work item instead of leaving them parked', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -3, expiresMin: 2, latency: 'hard-blocked' });
+    const { deps, emits } = withFiler();
+    await sweepExpiredConsults(deps);
+    const emit = emits.find((e) => e.payload.conversation_id === id)!;
+    expect(emit).toMatchObject({ to: ['rubric-author'], workspaceId: WS });
+    expect(emit.payload).toMatchObject({ kind: 'converted', work_item_id: `WI-review-${id}` });
+  });
+
+  it('keeps the pre-P-014 cascade when no filer is bound', async () => {
+    const id = await seedReview({ routing: VETTING, createdMin: -130, expiresMin: -10 });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+    expect(reachCalls.filter((c) => c.conversationId === id).map((c) => c.responder)).toEqual(['resp-2']);
+  });
+});
