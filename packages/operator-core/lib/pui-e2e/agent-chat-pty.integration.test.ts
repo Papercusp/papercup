@@ -1949,27 +1949,25 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     }
   }, 180_000);
 
-  test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async () => {
+  test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async ({ onTestFailed }) => {
     await putViewState('Plans');
+    let stage = 'help';
     const pane = new PuiPane(bin, operatorPort, home);
+    onTestFailed(() => console.info('PUI_COMMANDS_FAILURE', JSON.stringify({ stage, ...pane.failureEvidence() })));
     try {
       await pane.waitFor('?:help', { timeoutMs: 40_000 });
       pane.write('?');
       await pane.waitFor('command palette');
       await pane.waitFor(':theme');
       pane.escape();
-      pane.write(':');
-      await pane.waitFor('Command (Esc closes)');
-      pane.write('tutorial');
-      pane.enter();
-      await pane.waitFor('Welcome to pui — the Papercusp workbench');
-      pane.escape();
-      await pane.waitForGone('Welcome to pui — the Papercusp workbench');
 
       // PUBLIC_RELEASE_UX.md: `:` is the one palette, and live catalog/recipe
       // search discovers commands, skills, plugins and tools — then runs one.
       // The executed action is a read-only catalog tool (`tools:find`) invoked
       // through `tools:invoke`, the same server-gated plane extensions use.
+      // It runs BEFORE `:tutorial`: dismissing the tutorial with no bound
+      // conversation starts the first-run setup, which would take the keys.
+      stage = 'catalog';
       pane.write(':');
       await pane.waitFor('Command (Esc closes)');
       pane.write('tool find tools by intent');
@@ -1982,13 +1980,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
           throw new Error('tool palette selection is not tools:find yet');
         }
       }, { timeout: 20_000, interval: 250 });
+      stage = 'arguments';
       pane.enter();
       await pane.waitFor('Tools · arguments · tools:find');
-      await pane.waitFor('required 1/1  query');
-      pane.write('command palette');
-      pane.enter();
+      // tools:find declares no REQUIRED field (q?/query?), so the palette asks
+      // only for the optional-extras JSON object.
       await pane.waitFor('optional extras JSON object');
+      pane.write('{"query":"command palette"}');
       pane.enter();
+      stage = 'invoke';
       await pane.waitFor('Tools · result · tools:find', { timeoutMs: 40_000 });
       // The result card leads with ✓ on success and ✗ on failure; the palette
       // popup owns these rows, so read them from the popup, not the page.
@@ -1996,6 +1996,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
         .filter((line) => line.includes('✓') || line.includes('✗') || line.includes('error  '));
       expect(popup.some((line) => line.includes('✓'))).toBe(true);
       expect(popup.filter((line) => line.includes('✗') || line.includes('error  '))).toEqual([]);
+      pane.escape();
+      await pane.waitForGone('Tools · result · tools:find');
+
+      stage = 'tutorial';
+      pane.write(':');
+      await pane.waitFor('Command (Esc closes)');
+      pane.write('tutorial');
+      pane.enter();
+      await pane.waitFor('Welcome to pui — the Papercusp workbench');
       console.info('PUI_COMMANDS_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, commands: [':tutorial', ':tool find tools by intent → tools:find'],
         frame: pane.screen(),
