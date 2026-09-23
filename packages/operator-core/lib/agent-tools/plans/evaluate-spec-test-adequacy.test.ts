@@ -79,7 +79,7 @@ const clause = (lifecycleStatus: 'draft' | 'active' | 'accepted' = 'draft') =>
     acceptedAt: lifecycleStatus === 'draft' ? null : '2026-09-07T00:01:00.000Z',
     acceptanceRef: lifecycleStatus === 'draft' ? null : 'D-001',
     sourceBar: null,
-  }) as never;
+  }) as unknown as Awaited<ReturnType<typeof listSpecClauses>>[number];
 
 beforeEach(() => {
   vi.clearAllMocks();

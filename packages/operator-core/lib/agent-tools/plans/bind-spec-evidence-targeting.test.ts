@@ -112,7 +112,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 /** A successful, ledger-backed negative control carrying `targeted` (or none when undefined). */
 function counterexampleRow(targeted: unknown): SpecEvidenceForAdequacy {
   const base = evidence();
-  const adequacy = { ...(base.details.adequacy as Record<string, unknown>), outcome: 'killed' };
+  const adequacy: Record<string, unknown> = { ...(base.details.adequacy as Record<string, unknown>), outcome: 'killed' };
   if (targeted !== undefined) adequacy.targeted = targeted;
   return evidence({ evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', details: { adequacy } });
 }
@@ -169,6 +169,35 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     const verdicts = cases.map(({ clause: makeClause, targeted }) => isAcceptedMutationTarget(makeClause(), targeted));
     expect(verdicts).toContain(true);
     expect(verdicts).toContain(false);
+  });
+
+  // Falsifiability controls, kept permanently beside the subject instead of mutating
+  // bind-spec-evidence.ts in the shared tree. The same agreement check must REJECT a bind that
+  // never refuses (the pre-P-043 behaviour) and one that refuses every targeted binding, and must
+  // ACCEPT the real guard, or the matrix above could pass for a reason unrelated to the rule.
+  type Refuse = (b: Binding, c: SpecClauseRevision) => Promise<unknown>;
+  async function disagreements(refuse: Refuse): Promise<string[]> {
+    const out: string[] = [];
+    for (const { name, clause: makeClause, targeted } of cases) {
+      const c = makeClause();
+      const evaluatorPasses =
+        evaluateSpecTestAdequacy({
+          clause: c,
+          evidence: [evidence(), counterexampleRow(targeted)],
+          classRef: 'plan-class-feature-ship',
+        }).ratings.falsifiability.rating === 'pass';
+      if (((await refuse(binding(targeted), c)) === null) !== evaluatorPasses) out.push(name);
+    }
+    return out;
+  }
+
+  it('controls: the agreement check catches a never-refusing and an always-refusing bind', async () => {
+    expect(await disagreements(async () => null)).not.toEqual([]);
+    expect(await disagreements(async () => ({ ok: false, error: 'mutation_target_rejected' }))).not.toEqual([]);
+  });
+
+  it('calibration: the real guard disagrees with the evaluator on no case', async () => {
+    expect(await disagreements((b, c) => mutationTargetingRefusal(b, SCOPE, loaderFor(c)))).toEqual([]);
   });
 
   it('a refusal names the accepted targets and a correctedCall the evaluator then accepts', async () => {
