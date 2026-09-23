@@ -262,7 +262,6 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       ownerDirectives: [
         {
           id: 17,
-          captureStatus: 'pending',
           verbatimText: 'implement hybrid capture',
           recordedBy: 'su-probe-other-session',
           capturedByHook: true,
@@ -626,8 +625,8 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
           value: [
             {
               id: 17,
-              state: 'pending',
-              excerpt: 'Implement owner-directive capture as HYBRID',
+              state: 'open',
+              displayText: '"Implement owner-directive capture as HYBRID"',
               recordedAt: '2026-09-21T15:27:44.000Z',
               recordedBy: 'su-c03852cb',
               capturedByHook: true,
@@ -768,15 +767,16 @@ describe('turn-start orientation obligation-family coverage', () => {
   });
 
   it('carries the owner-directive disposition verb and recovery pointer into the agenda', () => {
-    // The class-B row contract P-006 specifies: id, verbatim excerpt, the
-    // disposition verb, and the `orders:get` recovery pointer. The turn-start
+    // The class-B row contract: id, the disposition verb, and the `orders:get`
+    // recovery pointer; the uncut D-004 text rides in `reason` (P-004). The turn-start
     // sink is budgeted to the ACTION line, so the pointer is asserted on the
     // agenda entry the recovery reader retains, not on the 400-char slice.
-    const [pending] = FAMILY_PROBES['owner-directive']!.build();
-    expect(pending!.status).toBe('due');
-    expect(pending!.action?.tool).toBe('orders:resolve-pending');
-    expect(pending!.action?.targetRef).toBe('orders:get #17');
-    expect(pending!.reason).toContain('Implement owner-directive capture as HYBRID');
+    const [open] = FAMILY_PROBES['owner-directive']!.build();
+    expect(open!.status).toBe('due');
+    // D-001: an open directive closes only by disposition — no triage verb.
+    expect(open!.action?.tool).toBe('orders:disposition');
+    expect(open!.action?.targetRef).toBe('orders:get #17');
+    expect(open!.reason).toContain('Implement owner-directive capture as HYBRID');
   });
 });
 
