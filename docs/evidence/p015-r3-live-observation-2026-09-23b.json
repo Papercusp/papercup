@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane observation on the STAGING operator (2026-09-23b): ideate on/off stack transition served by :3170 d57def4280, desired->prepared->applied receipts, actor/principal stability, per-layer span join",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "rubricCriterion": "R-3 (AUTO-BAR-R-3-P-008/P-009/P-040/P-041@5)",
+  "observer": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "recordedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-23T12:16:01.738Z",
+  "command": [
+    "bash .papercusp/scratch/r7/r3-drill2.sh   # mode:set via node scripts/mcp-call.mjs --port 3170; turn-start boundary = POST http://127.0.0.1:3170/api/agent-mcp/turn-start-memory with the UserPromptSubmit hook's body shape; all in ONE shell so no :3070 hook acknowledged a generation",
+    "sudo -n -u postgres psql -d papercusp -f .papercusp/scratch/r7/r3-drill2/q-activation.sql | q-spans.sql | q-serving.sql | q-usage.sql   # read-only; SQL in replication[]"
+  ],
+  "commandBasis": "Copied from the drill script and the four read-only query files saved beside its outputs (timeline .papercusp/scratch/r7/r3-drill2/timeline.txt).",
+  "exitCode": 0,
+  "startedAt": "2026-09-23T12:07:15.404Z",
+  "finishedAt": "2026-09-23T12:16:01.741Z",
+  "timeBasis": "startedAt is the :3170 /api/health read that opened the drill (12:07:15.404Z, sha d57def4280); the drill finished 12:07:23.472Z (timeline.txt). The reads used database clock_timestamp(): spans 12:13:27Z, serving shas 12:13:54Z, activation events + control_state 12:16:01Z (finishedAt).",
+  "summary": "The 2026-09-23 01:17Z observation could not show a transition served by the STAGING operator, because this session's MCP path is :9071 -> :3070 and :3070 (80521d598f) serves older identity-grants-port.ts and control-anchor.ts blobs. This drill ran the transition through :3170 at d57def4280, whose four R-3 source blobs equal the canonical tree's. Enabling ideate produced generation 64 (desired 16871, prepared 16872, applied 16873), and disabling it produced generation 65 (16876 / 16877 / 16878). Every event carries actor == owner, principal system:superuser and adv session 29827. The applied events opened layer spans: gen 64 has the ideation slot, and gen 65 closes it at exactly the gen-65 applied time. The five drill tool calls were all recorded with serving_host port-3170 and serving_build_sha d57def4280.",
+  "subject": {
+    "ownerId": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+    "workspaceId": "papercusp-workspace",
+    "advSessionId": 29827,
+    "stagingOperator": {
+      "port": 3170,
+      "healthSha": "d57def4280"
+    },
+    "note": "The observer's own psu session. The transient ideate overlay was enabled and disabled within 8 seconds purely as a stack transition to observe; the session's AUTO mode and fleet-member posture were unchanged throughout."
+  },
+  "sourceBlobs": {
+    "basis": "git rev-parse <ref>:<path> at 12:14Z; identical in canonical HEAD, the working tree and d57def4280",
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": "56a76a0d51",
+    "packages/operator-core/lib/identity-management.ts": "492f1fe36b",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts": "4a74fffb9d",
+    "packages/operator-core/lib/session-identity-attribution.ts": "cb25149512"
+  },
+  "replication": [
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-drill2/q-activation.sql",
+      "sql": "SELECT clock_timestamp() AS observed_at, e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at FROM harness_shared.session_identity_activation_events e WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' AND e.id > 16832 AND e.recorded_at BETWEEN '2026-09-23 12:07:15+00' AND '2026-09-23 12:07:24+00' ORDER BY e.id; SELECT clock_timestamp() AS observed_at, control_state->'activation'->>'status' AS status, (control_state->>'controlGeneration') AS gen FROM harness_shared.session_briefs WHERE owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd';"
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-drill2/q-spans.sql",
+      "sql": "SELECT clock_timestamp() AS read_at; SELECT count(*) AS span_count_now FROM harness_shared.session_identity_layer_spans WHERE owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd'; SELECT activation_event_id, control_generation, actor_id, principal_id, layer_slot, layer_ref, active_from, active_until FROM harness_shared.session_identity_layer_spans WHERE owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' AND activation_event_id IN (16873,16878) ORDER BY activation_event_id, layer_slot;"
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-drill2/q-serving.sql",
+      "sql": "SELECT clock_timestamp() AS read_at; SELECT id, tool_name, status, serving_host, serving_build_sha, invoked_at FROM harness_shared.tool_invocations WHERE id > 29125051 AND coord_owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' AND invoked_at BETWEEN '2026-09-23T12:07:15Z' AND '2026-09-23T12:07:24Z' ORDER BY id;"
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-drill2/q-usage.sql",
+      "sql": "SELECT clock_timestamp() AS read_at; SELECT id, to_timestamp(ts/1000.0) AS at, source, model_class, session_id, identity_activation_event_id, identity_owner_id FROM harness_shared.agent_usage_samples_identity_attribution WHERE ts BETWEEN 1790165235000 AND 1790165244000 AND (identity_owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd' OR identity_activation_event_id IN (16873,16878) OR session_id ILIKE '%38e71009%') ORDER BY id;"
+    },
+    {
+      "tool": "shell",
+      "file": ".papercusp/scratch/r7/r3-drill2.sh",
+      "note": "re-running it performs a new transient ideate on/off transition for the invoking owner; take new baselines first (max session_identity_activation_events.id, span count, max tool_invocations.id)"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "desired-prepared-applied-receipts",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "Served by :3170 d57def4280. mode:set ideate=on (12:07:15.4-16.1Z) wrote 16871 desired gen 64 (spec d1a7f0664d90, state 61d8bb41ea8d, stack auto+fleet-member+ideate, 12:07:15.748Z). The turn-start boundary (12:07:16.1-17.8Z) then wrote 16872 prepared (16.216Z) and 16873 applied (16.283Z) with the same revision pair. mode:set ideate=off wrote 16876 desired gen 65 (state 16ca1bfd8aee, stack auto+fleet-member, 19.965Z); the next boundary wrote 16877 prepared (20.916Z) and 16878 applied (20.962Z). Each applied row follows its own prepared row for the same pair, no row carries a failure, and the final control_state status is applied."
+    },
+    {
+      "id": "actor-principal-session-stability",
+      "scope": "actor-principal-session-stability",
+      "passed": true,
+      "evidence": "All six events carry actor_id == owner_id (su-38e71009...), principal_id system:superuser and adv_session_id 29827. The five spans opened by 16873/16878 carry the same actor and principal. The transition did not re-attribute the session."
+    },
+    {
+      "id": "per-layer-span-join",
+      "scope": "per-layer-span-usage-join",
+      "passed": true,
+      "evidence": "session_identity_layer_spans for the owner: activation 16873 (gen 64) opened three spans (autonomy:su.mode-auto, fleet-posture:su.fleet-member, ideation:su.mode-ideate), active 12:07:16.283Z-12:07:20.962Z. Activation 16878 (gen 65) opened two (autonomy, fleet-posture) from 12:07:20.962Z, with no ideation span. So each layer's span boundary equals the applied time of the generation that attached or detached it. Drill calls 12 and 13 (state:read, work_items:get at 12:07:18.2-18.7Z) fall inside the gen-64 ideation span; call 16 (state:read at 12:07:23.1Z) falls inside gen 65 with no ideation span."
+    },
+    {
+      "id": "served-by-staging-build",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "tool_invocations for the owner in 12:07:15-12:07:24Z: all five drill calls (mode:set x2, state:read x2, work_items:get) carry serving_host port-3170 and serving_build_sha d57def4280. The only :3070 rows in the window are hook-side activity:report (15.475Z) and coord:glance (17.863Z, 19.786Z). The gen-64 prepared/applied rows (16.216/16.283Z) precede the first glance, and the 19.786Z glance precedes gen-65 desired (19.965Z), so neither :3070 call can have acknowledged either generation."
+    },
+    {
+      "id": "turn-start-delivers-stack-and-ctrl",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "The :3170 turn-start-memory responses carried both payloads: 11 (after ideate on) a ⟦stack⟧ attach op for slot ideation / su.mode-ideate plus a ⟦CTRL:transition⟧ block with modes [auto, ideate]; 15 (after ideate off) a ⟦stack⟧ detach op for the same slot plus a CTRL block with modes [auto]."
+    }
+  ],
+  "notProven": [
+    "coord:orient {afterCompaction} as the acknowledgement path. Drill v1 used it and it acked the CTRL generation without the activation revision, leaving events 16831/16832 at desired only. Filed as WI-10002717. This evidence covers the turn-start (UserPromptSubmit hook) acknowledgement path only.",
+    "A REAL hook-originated boundary. The turn-start POST was issued by the drill script with the hook's body shape (client claude, memoryEnabled false) so the call hit :3170. The installed hook targets :3070.",
+    "compile-once-per-adapter across more than one adapter. Only the claude adapter was observed.",
+    "A live failed REDUCTION transition. Fail-closed is established by the tree-plane mutant (test runs 19114118 pass / 19114120 caught), not forced live.",
+    "Usage-sample attribution inside the 8-second window. agent_usage_samples_identity_attribution has no row for this owner in 12:07:15-12:07:24Z (q-usage.sql, read 12:17:43Z), or anywhere in 12:05-12:10Z. The instrument works: its positive control shows 8 samples for this owner since 10:47Z, all carrying an identity_activation_event_id, the latest at 12:12:04Z. Samples are too sparse to land inside a transient span.",
+    "Independent passing grading."
+  ],
+  "sourcePaths": [
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "testRunIds": [
+    19114109,
+    19114118,
+    19114120
+  ]
+}
