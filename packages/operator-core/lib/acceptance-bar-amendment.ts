@@ -250,8 +250,27 @@ export async function resolveAcceptanceBarApproval(
        AND origin = 'local' AND octet_length(body) <= 262144
      FOR SHARE`;
   if (!post?.author_id?.trim()) throw new Error('acceptance_bar_approval_unreadable');
+  // The requester posts the preview's exact approval JSON once. The outside-lineage
+  // reviewer can then sign that immutable workspace-local post with a short pointer,
+  // avoiding a second manual transcription of dozens of SHA characters. The signer
+  // and approval time still come exclusively from the reviewer's post above.
+  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(post.body.trim());
+  let receiptBody = post.body;
+  if (previewPointer) {
+    if (previewPointer[1] === match[1]) {
+      throw new Error('acceptance_bar_approval_preview_self_reference');
+    }
+    const [previewPost] = await sql<Array<{ author_id: string | null; body: string }>>`
+      SELECT author_id, body
+        FROM harness_shared.coord_thread_posts
+       WHERE workspace_id = ${args.workspaceId} AND id = ${previewPointer[1]}::bigint
+         AND origin = 'local' AND octet_length(body) <= 262144
+       FOR SHARE`;
+    if (!previewPost?.author_id?.trim()) throw new Error('acceptance_bar_approval_preview_unreadable');
+    receiptBody = previewPost.body;
+  }
   let body: unknown;
-  try { body = JSON.parse(approvalReceiptJsonSource(post.body)); } catch { throw new Error('acceptance_bar_approval_unparseable: the approval post body does not contain JSON. Post the preview approval object directly or inside a ```json fence.'); }
+  try { body = JSON.parse(approvalReceiptJsonSource(receiptBody)); } catch { throw new Error("acceptance_bar_approval_unparseable: the approval post must contain JSON or exactly `approve thread-post:<preview-post-id>` pointing to the requester's preview."); }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
@@ -274,11 +293,22 @@ export async function resolveAcceptanceBarApproval(
         `which the approval does not cover — have the reviewer approve the full preview delta`,
     );
   }
-  if (
-    args.expected.bars.some((expected) => !receipt.bars.some((bar) =>
-      bar.barKey === expected.barKey && bar.priorBarHash === expected.priorBarHash && bar.nextBarHash === expected.nextBarHash))
-  ) {
-    throw new Error('acceptance_bar_approval_stale_or_mismatched');
+  const mismatched = args.expected.bars.flatMap((expected) => {
+    const approved = receipt.bars.find((bar) => bar.barKey === expected.barKey);
+    return approved && (approved.priorBarHash !== expected.priorBarHash || approved.nextBarHash !== expected.nextBarHash)
+      ? [{ expected, approved }]
+      : [];
+  });
+  if (mismatched.length > 0) {
+    const { expected, approved } = mismatched[0]!;
+    const showHash = (hash: string | null) => hash ?? 'null';
+    throw new Error(
+      `acceptance_bar_approval_stale_or_mismatched: ${expected.barKey} hash mismatch ` +
+        `(reviewed prior=${showHash(approved.priorBarHash)}, next=${showHash(approved.nextBarHash)}; ` +
+        `current prior=${showHash(expected.priorBarHash)}, next=${showHash(expected.nextBarHash)}). ` +
+        'Re-run dryRun and obtain review of the current preview; do not repost the same stale receipt.' +
+        (mismatched.length > 1 ? ` ${mismatched.length - 1} additional BAR hash mismatch(es).` : ''),
+    );
   }
   if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {
     throw new Error('acceptance_bar_approval_author_mismatch');
@@ -358,6 +388,17 @@ export async function synchronizeAcceptanceBarRevision(
       barKeyBySpecId.set(`AUTO-BAR-${mapping.barKey}-${planItemId}`, mapping.barKey);
     }
   }
+  const generatedProjectionIdentity = (specId: string): { barKey: string; planItemId: string } | null => {
+    const match = specId.match(/^AUTO-BAR-(R-[0-9]+)-(P-[0-9]{3,})$/);
+    return match ? { barKey: match[1]!, planItemId: match[2]! } : null;
+  };
+  const projectionPairKey = (barKey: string, planItemId: string) => `${barKey}\0${planItemId}`;
+  const currentProjectionPairs = new Set(
+    mappings.mappings.flatMap((mapping) => {
+      if (byKey.get(mapping.barKey)?.role === 'disclosure') return [];
+      return mapping.planItemIds.map((planItemId) => projectionPairKey(mapping.barKey, planItemId));
+    }),
+  );
   const ownedSpecIds = [...barKeyBySpecId.keys()];
   type ProjectedClause = {
     spec_id: string;
@@ -389,7 +430,8 @@ export async function synchronizeAcceptanceBarRevision(
          AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
        WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
          AND c.plan_slug = ${subjectPlan}
-         AND (r.source_bar_key IS NOT NULL OR c.spec_id = ANY(${ownedSpecIds}::text[]))
+         AND (r.source_bar_key IS NOT NULL OR c.spec_id = ANY(${ownedSpecIds}::text[])
+              OR c.spec_id ~ '^AUTO-BAR-R-[0-9]+-P-[0-9]{3,}$')
        ORDER BY c.spec_id LIMIT 1001`;
     if (rows.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
     return rows;
@@ -398,7 +440,7 @@ export async function synchronizeAcceptanceBarRevision(
   // The stored linkage when present, else the canonical identity. A clause matching neither is
   // hand-authored and not ours to touch, so it keeps failing `unmapped` exactly as before.
   const barKeyOf = (clause: ProjectedClause): string | null =>
-    clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? null;
+    clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? generatedProjectionIdentity(clause.spec_id)?.barKey ?? null;
   const revisions = new Map<string, number>();
   // The subject plan is the canonical discharge map. Diff every desired
   // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
@@ -470,6 +512,59 @@ export async function synchronizeAcceptanceBarRevision(
     if (revisions.has(clause.spec_id)) continue;
     const effectiveBarKey = barKeyOf(clause);
     const criterion = effectiveBarKey ? byKey.get(effectiveBarKey) : undefined;
+    const generatedIdentity = generatedProjectionIdentity(clause.spec_id);
+    if (
+      generatedIdentity &&
+      (generatedIdentity.planItemId !== clause.plan_item_id ||
+        (clause.source_bar_key !== null && generatedIdentity.barKey !== clause.source_bar_key))
+    ) {
+      throw new Error(`acceptance_bar_revision_projection_identity_mismatch:${clause.spec_id}`);
+    }
+    const currentPair = effectiveBarKey !== null && currentProjectionPairs.has(
+      projectionPairKey(effectiveBarKey, clause.plan_item_id),
+    );
+    // AUTO-BAR identity is the full (bar key, plan-item) pair. When an approved
+    // rubric/map amendment moves a bar to another item, re-projecting by bar key
+    // alone rewrites the old item's active clause with the new item's behavior.
+    // Retire only the canonical generated projection and only when the previous
+    // rubric proves that bar existed there; reviewed additive clauses are not
+    // canonical IDs and remain governed by their own authored contract.
+    if (generatedIdentity && !currentPair) {
+      if (!effectiveBarKey || !previousByKey.has(effectiveBarKey)) {
+        throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
+      }
+      const retired = await setSpecClause(
+        {
+          planSlug: subjectPlan,
+          specId: clause.spec_id,
+          sourceValId: clause.source_val_id,
+          expectedRevision: Number(clause.current_revision),
+          planItemId: clause.plan_item_id,
+          behavior:
+            `RETIRED with acceptance bar ${effectiveBarKey} (rubric ${args.rubricSlug} rev ${args.rubricRevision}). ` +
+            `The (${effectiveBarKey}, ${clause.plan_item_id}) pair is absent from the current map; ` +
+            `its prior behavior is preserved in revision ${clause.current_revision}.`,
+          behaviorClass: clause.behavior_class,
+          requiredEvidence: clause.required_evidence,
+          requiredTestLayers: clause.required_test_layers,
+          lifecycleStatus: 'superseded',
+          falsifier: null,
+          acceptanceRef: null,
+          sourceBar: null,
+          actorId: args.actorId,
+        },
+        { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
+      );
+      if (retired.status !== 'created' && retired.status !== 'revised' && retired.status !== 'unchanged') {
+        throw new Error(
+          `acceptance_bar_revision_projection_conflict:${clause.spec_id}:${retired.status}`
+            + (retired.status === 'conflict'
+              ? `:expected=${retired.expectedRevision}:actual=${retired.actualRevision}` : ''),
+        );
+      }
+      revisions.set(clause.spec_id, retired.revision);
+      continue;
+    }
     // A bar the PREVIOUS revision carried and this one does not was RETIRED by an
     // approved amendment, so its projection is an orphan and retiring it is this
     // transaction's job. Throwing `unmapped` instead made the orphan the caller's
