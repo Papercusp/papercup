@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { dropDatabaseWithLock, getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../../gym/gym-db-init';
 import {
   clearPotLearningScope,
@@ -46,7 +46,11 @@ afterAll(async () => {
   if (sql) await sql.end({ timeout: 5 });
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try {
-    await maint.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+    // R-009 is an acceptance detector, so its teardown must also be bounded.
+    // A raw DROP can wait behind another integration process's I/O-heavy DROP
+    // until Vitest kills this hook. The shared helper uses a cluster-wide
+    // try-lock, caps the statement, and safely defers instead of queueing.
+    await dropDatabaseWithLock(maint, dbName);
   } catch {
     /* best-effort */
   } finally {
