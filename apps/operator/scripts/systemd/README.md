@@ -1376,3 +1376,57 @@ curl -s http://127.0.0.1:8792/api/health | jq '{ok, sha, tree}'   # calendar
 is not restarting on change (the exact WI-10001633 symptom) — check the unit's
 `ExecStart` still says `tsx watch` and the log at
 `~/.papercusp/logs/papercusp-<app>-sidecar.log`.
+
+# Rig macOS VM watchdog — installation (WI-10002582, EI-24019740313758959)
+
+`papercusp-mac-vm-watchdog.timer` runs
+`papercusp-desktop/bin/mac-vm-watchdog.mjs` every minute against
+`papercusp-vm-mac.service`. It exists because a guest panic → firmware reset
+loop (QMP `RESET` about once a second) went unnoticed for 10+ minutes:
+`mac-vm-health.sh` calls that state `booting`.
+
+Signals: QMP `query-status` plus the RESET count over a 5s window; ping + ARP
+state of `172.31.44.2` on `macbr0` (never ssh `:2222`, a slirp hostfwd that
+accepts TCP while the guest is dead); the P-203 fold cursor (alert-only).
+Remedy: a coord alert, then — after 2 consecutive reset-loop checks, or 3
+unreachable-guest checks past the 600s boot grace — a COLD restart (QMP
+`quit`, wait for qemu to exit, `systemctl --user start`). It never sends
+`system_reset`, which re-enters the loop. At most one cold restart per hour.
+
+A rig operation that must not be interrupted holds restarts off (alerts still
+fire):
+
+```bash
+node ~/papercupai-workspace/papercusp/papercusp-desktop/bin/mac-vm-watchdog.mjs \
+  hold --for 1800 --by <your-su-id> --reason '<op>'
+node ~/papercupai-workspace/papercusp/papercusp-desktop/bin/mac-vm-watchdog.mjs release
+```
+
+A pending systemd job on the VM unit or a contended QMP slot also skips the run.
+
+## Install or update
+
+Only the holder of the `hive-git-physical-rig` resource lock installs this: it
+can restart the rig VM.
+
+```bash
+cp apps/operator/scripts/systemd/papercusp-mac-vm-watchdog.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+node papercusp-desktop/bin/mac-vm-watchdog.mjs --dry-run   # read-only; prints the verdict
+systemctl --user enable --now papercusp-mac-vm-watchdog.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercusp-mac-vm-watchdog.timer
+journalctl --user -u papercusp-mac-vm-watchdog.service -n 5
+node papercusp-desktop/bin/mac-vm-watchdog.mjs status     # streak, last restart, hold
+tail -n 5 ~/.papercusp/mac-vm-watchdog/actions.jsonl
+```
+
+## Roll back
+
+```bash
+systemctl --user disable --now papercusp-mac-vm-watchdog.timer
+```

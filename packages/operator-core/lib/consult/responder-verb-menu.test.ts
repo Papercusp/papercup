@@ -5,7 +5,27 @@ import { fileURLToPath } from 'node:url';
 
 import { consultReadDoorLine, consultResponderVerbMenu, consultVoidExitLine } from './responder-verb-menu';
 import { cascadeWakeBody } from './cascade-core';
-import { revivalBrief } from './get-feedback-core';
+import { consultDispatchBrief } from './consult-dispatch';
+
+/** The first turn a DISPATCHED answering session actually receives: the cascade
+ * wake copy, wrapped in the dispatch frame (D-002 replaced the revival brief
+ * with this). Composed from the REAL builders, so a brief that stops routing
+ * through the menu fails these guards. */
+const dispatchedFirstTurn = (conversationId: string) =>
+  consultDispatchBrief({
+    conversationId,
+    sourceOwnerId: 'su-expert',
+    operation: 'fork',
+    summary: `🧭 consult: why did the cross-run cache always miss?`,
+    body: cascadeWakeBody({
+      question: 'why did the cross-run cache always miss?',
+      conversationId,
+      position: 1,
+      menuSize: 2,
+      next: { ownerId: 'su-expert', score: 0.72, relevance: 0.74, similarity: 0.66, via: 'floor', liveness: 'ended' },
+      digest: [],
+    }),
+  });
 
 const CONSULT_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 
@@ -107,18 +127,8 @@ describe('every real responder wake body carries the void exit', () => {
     expect(body).toMatch(/NON-ADVANCING/);
   });
 
-  it('the revival brief does — a revived grader is the most expensive one to spend', () => {
-    const body = revivalBrief({
-      requesterId: 'su-requester',
-      question: 'why did the cross-run cache always miss?',
-      conversationId: 'conv-revival-void',
-      candidate: {
-        score: 0.72,
-        relevance: 0.74,
-        signals: { similarity: 0.66 },
-        evidence: [{ session_id: 'sess-1', turn_idx: 4, sim: 0.66 }],
-      },
-    });
+  it('the dispatch brief does — a launched answering session has no inbox to find the menu in', () => {
+    const body = dispatchedFirstTurn('conv-dispatch-void');
     expect(body).toContain("consult:close { outcome: 'cant_help', reason }");
     expect(body).toMatch(/NON-ADVANCING/);
   });
@@ -162,21 +172,13 @@ describe('every real responder wake body carries the read door', () => {
     expect(body).toContain('consult:reply { kind }');
   });
 
-  it('the revival brief does', () => {
-    const body = revivalBrief({
-      requesterId: 'su-requester',
-      question: 'why did the cross-run cache always miss?',
-      conversationId: 'conv-revival',
-      candidate: {
-        score: 0.72,
-        relevance: 0.74,
-        signals: { similarity: 0.66 },
-        evidence: [{ session_id: 'sess-1', turn_idx: 4, sim: 0.66 }],
-      },
-    });
-    expect(body).toContain("conversations:get { id: 'conv-revival' }");
-    // The revival brief's own trailing instruction must survive the refactor.
-    expect(body).toContain('you were revived for this consult, not for a standing mission');
+  it('the dispatch brief does', () => {
+    const body = dispatchedFirstTurn('conv-dispatch');
+    expect(body).toContain("conversations:get { id: 'conv-dispatch' }");
+    // The dispatch frame's own provenance must survive the refactor: a fork has
+    // to be told it is a fork, or it answers as if it were the original.
+    expect(body).toContain('You are a FORK of su-expert');
+    expect(body).toContain('They were NOT notified and must not be');
   });
 });
 
