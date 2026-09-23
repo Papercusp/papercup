@@ -5321,13 +5321,13 @@ async function publishRepairManifestToGateWorkItem(
  *
  * `expectedUpdatedAtMs` is the `updatedAtMs` the caller's copy of the row carried when it was
  * READ (a number), or `null` to assert that the routine row carries NO queue yet (the create
- * path). When present, the UPDATE matches only a row still at that version; a miss throws
+ * path). The UPDATE always matches only a row at that version; a miss throws
  * `FrozenRepairQueueWriteConflictError` carrying the fresh read so the caller can re-apply its
- * pure reducer to the row that actually exists. Absent ⇒ the legacy unconditional write, kept
- * for callers that hold the only writer (a fresh create) — never for a run-end write-back.
+ * pure reducer to the row that actually exists. Every write states either the version it read
+ * or null to assert that the routine row carries no queue yet.
  */
 export interface WriteFrozenCandidateRepairQueueOptions {
-  expectedUpdatedAtMs?: number | null;
+  expectedUpdatedAtMs: number | null;
 }
 
 export class FrozenRepairQueueWriteConflictError extends Error {
@@ -5422,24 +5422,24 @@ export async function applyFrozenCandidateRepairQueueTransition(
 export async function writeFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
   queue: FrozenCandidateRepairQueue | null,
-  opts: WriteFrozenCandidateRepairQueueOptions = {},
+  opts: WriteFrozenCandidateRepairQueueOptions,
 ): Promise<void> {
+  if (!opts || opts.expectedUpdatedAtMs === undefined) {
+    throw new Error('writeFrozenCandidateRepairQueue requires an explicit expectedUpdatedAtMs');
+  }
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  // P-027 (D-014): the optional CAS predicate. `updatedAtMs` is compared as TEXT (integer-ms
+  // P-027 (D-014): the required CAS predicate. `updatedAtMs` is compared as TEXT (integer-ms
   // digits are exact on both sides; the reserve/renew CAS further down does the same), and an
   // expected ABSENCE matches only a row that carries no queue at all. `$N` is the next
   // positional parameter after the statement's own — each branch below passes its base count.
   const expected = opts.expectedUpdatedAtMs;
   const casClause = (nextParam: number): string =>
-    expected === undefined
-      ? ''
-      : expected === null
-        ? `\n          AND metadata->'repair_queue' IS NULL`
-        : `\n          AND metadata->'repair_queue'->>'updatedAtMs' = $${nextParam}::text`;
+    expected === null
+      ? `\n          AND metadata->'repair_queue' IS NULL`
+      : `\n          AND metadata->'repair_queue'->>'updatedAtMs' = $${nextParam}::text`;
   const casParams: string[] = typeof expected === 'number' ? [String(expected)] : [];
   const assertWritten = async (rows: unknown): Promise<void> => {
-    if (expected === undefined) return;
     const written = Array.isArray(rows)
       ? rows.length
       : typeof (rows as { count?: unknown } | null)?.count === 'number'
