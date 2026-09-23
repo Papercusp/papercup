@@ -2509,6 +2509,11 @@ pub struct App {
     pub keyboard_host: crate::keyboard::Host,
     /// Exact draft and command retained until the host acknowledges this turn.
     pub su_pending_turn: Option<PendingSuTurn>,
+    /// An open (`OpenSuSession`/`OpenContinuedSuSession`) has been emitted and
+    /// has not yet answered with `SuSessionOpened` or `SuSessionError`. Startup
+    /// adoption must not attach meanwhile: the session an inventory frame shows
+    /// for this chat is the one the open is still creating.
+    pub su_open_in_flight: bool,
     pub su_active_command_id: Option<String>,
     su_rendered_owner_turns: BTreeSet<String>,
     pub conversation_id: Option<String>,
@@ -2893,6 +2898,7 @@ impl App {
             chat_queued: Vec::new(),
             keyboard_host: crate::keyboard::from_env(),
             su_pending_turn: None,
+            su_open_in_flight: false,
             su_active_command_id: None,
             su_rendered_owner_turns: BTreeSet::new(),
             conversation_id: None,
@@ -3456,6 +3462,9 @@ impl App {
     pub fn reset_agent_chat_binding(&mut self) {
         self.session_setup_accepted = false;
         self.chat_load_token = self.chat_load_token.saturating_add(1);
+        // The new load token drops an abandoned open's result, so nothing that
+        // could clear the flag will arrive for it.
+        self.su_open_in_flight = false;
         self.agent_chat_id = None;
         self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
         self.su_session = None;
@@ -4468,14 +4477,17 @@ impl App {
             crate::su_session::SuDispatchTarget::AttachedSuSession => {
                 Action::SendSuSessionTurn(text)
             }
-            crate::su_session::SuDispatchTarget::OpenSuSession(backend) => Action::OpenSuSession {
-                harness: self.harness.clone(),
-                role: self.agent_chat_role.clone(),
-                backend,
-                carry: "warm".into(),
-                launch: self.su_session_launch_options(),
-                initial_turn: Some(text),
-            },
+            crate::su_session::SuDispatchTarget::OpenSuSession(backend) => {
+                self.su_open_in_flight = true;
+                Action::OpenSuSession {
+                    harness: self.harness.clone(),
+                    role: self.agent_chat_role.clone(),
+                    backend,
+                    carry: "warm".into(),
+                    launch: self.su_session_launch_options(),
+                    initial_turn: Some(text),
+                }
+            }
             // Unreachable — returned above — but matched rather than
             // `unreachable!()` so a new target variant is a compile error here
             // instead of a panic in the owner's terminal.
@@ -7094,6 +7106,7 @@ impl App {
                     return self.dispatch_chat_turn(setup.message).unwrap_or(Action::Render);
                 }
                 self.chat_streaming = true;
+                self.su_open_in_flight = true;
                 Action::OpenSuSession {
                     harness: self.harness.clone(), role: "operator".into(), backend: setup.backend,
                     carry: "warm".into(), launch: self.su_session_launch_options(), initial_turn: None,
@@ -9499,6 +9512,7 @@ impl App {
                 let backend = self
                     .su_backend
                     .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+                self.su_open_in_flight = true;
                 Action::OpenContinuedSuSession {
                     harness,
                     chat_id,
@@ -10464,6 +10478,7 @@ impl App {
                 }
             }
             Event::SuSessionOpened(binding) => {
+                self.su_open_in_flight = false;
                 self.set_su_session_binding(binding);
                 Action::Render
             }
@@ -10473,6 +10488,7 @@ impl App {
             }
             Event::SuSessionEvent(event) => self.apply_su_session_event(event),
             Event::SuSessionError(error) => {
+                self.su_open_in_flight = false;
                 self.su_connection_error = Some(error.clone());
                 if let Some(state) = self.su_session.as_mut() {
                     state.error = Some(error.clone());
@@ -10620,8 +10636,10 @@ impl App {
                 //    `FailedOrphaned` rows are preserved for inspection but
                 //    must NOT be respawned, and `RuntimeReplaced` is handled by
                 //    the rebind path above rather than by a fresh attach;
-                //  - at most once per advSessionId (see `su_adopted_sessions`).
-                if self.su_session.is_none() {
+                //  - at most once per advSessionId (see `su_adopted_sessions`);
+                //  - never while this pane's own open is in flight, since the
+                //    row it would adopt is the session that open is creating.
+                if self.su_session.is_none() && !self.su_open_in_flight {
                     let adoptable = self
                         .su_session_inventory
                         .iter()
@@ -16216,6 +16234,49 @@ mod tests {
                 "restart {restart}: exactly the two live backends were adopted, each once"
             );
         }
+    }
+
+    /// The run loop binds a new chat (`AgentChatBound`) before launch-su returns
+    /// its binding, and a real engine starts slowly enough for an inventory
+    /// frame to report that chat `Attached` in between. Adopting it then sent a
+    /// second launch-su for the session PUI was still creating (measured on the
+    /// installed real-Claude greeting journey: launch-su count 2, one engine).
+    #[test]
+    fn su_inventory_does_not_adopt_the_session_its_own_open_is_creating() {
+        use crate::su_session::SuSessionBackend as B;
+        use crate::su_session::SuSessionLifecycleState as L;
+        use crate::su_session::SuSessionReconciliation as R;
+        let opening = |a: &mut App| {
+            a.tab = Tab::Operator;
+            a.chat_composing = true;
+            a.chat_input = "hello".into();
+            assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
+            for _ in [1, 2] {
+                a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            }
+            assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::OpenSuSession { .. }));
+            a.update(Event::AgentChatBound("chat-new".into()));
+        };
+        let frame = |a: &App| Event::SuSessionInventory {
+            harness: a.harness.clone(),
+            selected_chat_id: Some("chat-new".into()),
+            entries: vec![backend_row("chat-new", 7, B::Claude, L::Starting, R::Attached)],
+        };
+
+        let mut a = setup_app();
+        opening(&mut a);
+        let inventory = frame(&a);
+        assert_eq!(a.update(inventory), Action::Render, "the open in flight owns this session");
+        a.update(Event::SuSessionOpened(su_binding()));
+        let inventory = frame(&a);
+        assert_eq!(a.update(inventory), Action::Render, "a bound pane is never re-attached");
+
+        // A failed open leaves nothing bound, so a live row is adoptable again.
+        let mut a = setup_app();
+        opening(&mut a);
+        a.update(Event::SuSessionError("launch-su refused".into()));
+        let inventory = frame(&a);
+        assert!(matches!(a.update(inventory), Action::AttachSuSession { adv_session_id: 7, .. }));
     }
 
     /// The inventory row must honour the host's non-attachable verdicts, or a
