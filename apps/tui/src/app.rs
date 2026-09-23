@@ -5441,10 +5441,9 @@ impl App {
                 )
             })
         });
+        // The setup note describes the owner's last action; blockers render live
+        // from `setup_blocker()`, so a config refresh has nothing stale to clear.
         self.operator_config = c;
-        if let Some(setup) = self.session_setup.as_mut() {
-            setup.note = None;
-        }
         let Some((axis, selected_id)) = open_selection else {
             return;
         };
@@ -7058,8 +7057,10 @@ impl App {
                 if setup.step == 0 {
                     setup.project = projects.get(setup.project_cursor).cloned().unwrap_or_default();
                 }
-                if let Some(reason) = self.setup_blocker() {
-                    self.session_setup.as_mut().unwrap().note = Some(reason);
+                if self.setup_blocker().is_some() {
+                    // Clear the action note so the LIVE blocker renders; a stored
+                    // copy would outlive the condition it describes.
+                    self.session_setup.as_mut().unwrap().note = None;
                     return Action::Render;
                 }
                 if self.session_setup.as_ref().unwrap().step < 2 {
@@ -14945,6 +14946,34 @@ mod tests {
     }
 
     #[test]
+    fn an_operator_config_refresh_keeps_the_new_session_note() {
+        // Opening a picker refetches /api/agent-config; the reply can land after
+        // the pick. It must not erase what the pick told the owner.
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.agent_chat_id = Some("chat-1".into());
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        a.set_operator_config(a.operator_config.clone());
+        let note = a.session_setup.as_ref().unwrap().note.as_deref();
+        assert!(note.unwrap().starts_with("Applies to a new session"), "note survived the refresh: {note:?}");
+    }
+
+    #[test]
+    fn enter_on_a_blocked_setup_shows_the_live_blocker_not_a_stored_copy() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.agent_chat_id = Some("chat-1".into());
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        assert!(a.setup_blocker().is_some(), "fixture has no operator identity, so setup is blocked");
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let setup = a.session_setup.as_ref().unwrap();
+        assert_eq!(setup.step, 0, "a blocked Enter does not advance");
+        assert_eq!(setup.note, None, "the render falls back to setup_blocker(), which is always current");
+    }
+
+    #[test]
     fn a_bound_pick_during_a_turn_is_refused_without_opening_the_form() {
         let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
         a.agent_chat_id = Some("chat-1".into());
@@ -15381,7 +15410,10 @@ mod tests {
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         a.harnesses.clear();
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        assert!(a.session_setup.as_ref().unwrap().note.as_deref().unwrap().contains("current project"));
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 2, "a blocked start does not launch");
+        // The form renders `note` or, when none, the live blocker.
+        assert_eq!(a.session_setup.as_ref().unwrap().note, None);
+        assert!(a.setup_blocker().unwrap().contains("current project"));
         a.harnesses.push(HarnessRef { slug: "chosen-project".into(), path: None });
         a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Omp;
         assert!(a.setup_blocker().unwrap().contains("OMP"));
