@@ -132,7 +132,7 @@ export default defineTool({
     'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
   guidance: {
     returns:
-      'On success { ok, rows, count, verdicts, wouldBlock } with ok:true. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
+      'On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } with ok:true. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
@@ -155,6 +155,14 @@ export default defineTool({
       error: z.string().optional(),
       rows: z.array(z.record(z.string(), z.unknown())).optional(),
       count: z.number().int().nonnegative(),
+      includeDraft: z.boolean().optional(),
+      excludedDraftCount: z.number().int().nonnegative().optional(),
+      excludedDraftSpecIds: z.array(z.string()).optional(),
+      excludedClauses: z.array(z.object({
+        specId: z.string(),
+        revision: z.number().int(),
+        lifecycleStatus: z.string(),
+      })).optional(),
       verdicts: z.record(z.string(), z.number()).optional(),
       wouldBlock: z.array(z.record(z.string(), z.unknown())).optional(),
     })
@@ -256,9 +264,17 @@ export default defineTool({
     const pinnedClauses = args.specFingerprint
       ? clauses.filter((clause) => clause.contentHash === args.specFingerprint)
       : clauses;
-    const eligible = pinnedClauses.filter(
-      (clause) => args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted',
-    );
+    const isEligibleClause = (clause: (typeof pinnedClauses)[number]) =>
+      args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted';
+    const eligible = pinnedClauses.filter(isEligibleClause);
+    const excludedClauses = pinnedClauses
+      .filter((clause) => !isEligibleClause(clause))
+      .map((clause) => ({
+        specId: clause.specId,
+        revision: clause.revision,
+        lifecycleStatus: clause.lifecycleStatus,
+      }));
+    const excludedDraftClauses = excludedClauses.filter((clause) => clause.lifecycleStatus === 'draft');
     // EI-23420771213407749: this vacuous-success guard must fire on an UNSELECTED call too.
     // Keyed on `explicitSelection` alone, a no-selector call whose clauses all get filtered
     // out (draft, or pinned away by specFingerprint) fell through to ok:true/rows:[]/count:0 —
@@ -287,11 +303,7 @@ export default defineTool({
             evidenceRefs: args.evidenceRefs ?? null,
             planItemIds: args.planItemIds ?? null,
           },
-          excludedClauses: pinnedClauses.map((clause) => ({
-            specId: clause.specId,
-            revision: clause.revision,
-            lifecycleStatus: clause.lifecycleStatus,
-          })),
+          excludedClauses,
           remedy:
             clauses.length > 0 && args.includeDraft !== true
               ? `${explicitSelection ? 'The selection matched' : 'This plan has'} ${clauses.length} clause(s), but none is eligible — pass includeDraft:true to evaluate draft clauses, or select active/accepted clauses. Nothing was graded, so this is NOT a clean adequacy result.`
@@ -385,6 +397,10 @@ export default defineTool({
         classRef: args.classRef,
         rubricRef: 'spec-test-adequacy',
         governing,
+        includeDraft: args.includeDraft === true,
+        excludedDraftCount: excludedDraftClauses.length,
+        excludedDraftSpecIds: excludedDraftClauses.map((clause) => clause.specId),
+        excludedClauses,
         ...(governingNote ? { governingNote } : {}),
         ...(isFullDetail(args.detail)
           ? { detail: 'full' as const, rows: scorecardRows }

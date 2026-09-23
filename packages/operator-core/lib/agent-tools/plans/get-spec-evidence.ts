@@ -67,14 +67,14 @@ const argsSchema = z.object({
     .min(1)
     .max(3)
     .optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
+  limit: z.number().int().min(1).max(1000).optional().describe('Maximum evidence rows returned; bounded.truncatedByLimit reports whether additional rows exist.'),
   detail: reviewReadDetailArg,
 });
 
 export default defineTool({
   name: 'plans:get-spec-evidence',
   description:
-    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details.',
+    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details.',
   guidance: {
     when: 'Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.',
     notWhen: 'Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.',
@@ -97,7 +97,15 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const { detail, ...listArgs } = args;
-    const evidence = await listSpecEvidence({ ...listArgs, planSlugs: [args.slug], harnessSlug });
+    const limit = args.limit ?? 200;
+    const evidenceWithLookahead = await listSpecEvidence({
+      ...listArgs,
+      limit: limit + 1,
+      planSlugs: [args.slug],
+      harnessSlug,
+    });
+    const truncatedByLimit = evidenceWithLookahead.length > limit;
+    const evidence = truncatedByLimit ? evidenceWithLookahead.slice(0, limit) : evidenceWithLookahead;
     const counts = { current: 0, stale: 0, unknown: 0 };
     for (const row of evidence) counts[row.currentness.overall] += 1;
     return {
@@ -105,6 +113,7 @@ export default defineTool({
         ok: true,
         slug: args.slug,
         harnessSlug,
+        bounded: { limit, truncatedByLimit },
         ...(isFullDetail(detail)
           ? { detail: 'full' as const, evidence }
           : {
