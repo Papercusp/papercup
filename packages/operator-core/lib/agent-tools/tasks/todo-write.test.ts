@@ -39,7 +39,8 @@ function task(status: SessionTask['status'] = 'in_progress'): SessionTask {
 
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   const emit = vi.fn();
-  const tx = vi.fn();
+  // No adv_sessions attachment: the SU owner keeps its own task list (D-019).
+  const tx = vi.fn(async () => []);
   const promise = tool.handler(args as never, {
     workspaceId: 'ws-ctx',
     tx,

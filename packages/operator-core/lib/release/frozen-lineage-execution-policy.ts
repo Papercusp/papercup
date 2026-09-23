@@ -732,8 +732,6 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
   for (const originalClause of clauses) {
     const clause = normalizedCarryClause(originalClause);
     if (!clause) continue;
-    const hasJudgedContext = CARRY_JUDGED_CONTEXT.test(clause);
-
     for (const { source, pattern } of CARRY_SOURCE_PATTERNS) {
       const sourceMatches = Array.from(clause.matchAll(new RegExp(pattern, 'gi')));
       for (let sourceMatchIndex = 0; sourceMatchIndex < sourceMatches.length; sourceMatchIndex += 1) {
@@ -772,6 +770,10 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
           String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
+        const strongActionHasJudgedContext =
+          strongAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(strongAction.index, sourceEnd));
+        const executionActionHasJudgedContext =
+          executionAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(executionAction.index, sourceEnd));
         const relation = directRelationBefore
           ? comparativeSourceRelation
             ? null
@@ -780,13 +782,13 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
             ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
             : null;
         const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
-        const strongActionIsCandidateSpecific = ['pin', 'cut', 'recut'].includes(strongActionName);
+        const strongActionIsCandidateSpecific = strongActionName === 'pin';
         const positive =
           relation ??
-          (strongAction && (hasJudgedContext || strongActionIsCandidateSpecific)
+          (strongAction && (strongActionHasJudgedContext || strongActionIsCandidateSpecific)
             ? { index: strongAction.index, end: sourceEnd }
             : null) ??
-          (executionAction && hasJudgedContext
+          (executionAction && executionActionHasJudgedContext
             ? { index: executionAction.index, end: sourceEnd }
             : null);
         if (!positive || carryDirectiveIsNegated(clause, positive.index, positive.end)) continue;

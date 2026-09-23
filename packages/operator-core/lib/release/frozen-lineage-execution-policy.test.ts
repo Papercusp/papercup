@@ -581,8 +581,18 @@ describe('frozen lineage carry policy', () => {
     'Select staging as the judged candidate even though it is 32 commits behind the repair head.',
     'Run the canonical verification against staging as the judged candidate.',
     'Pin staging as the candidate for the next verdict.',
+    'Cut staging as the judged candidate for the next canonical verdict.',
   ])('still detects an explicit selection or execution instruction: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource: 'staging' });
+  });
+
+  it('does not pair an unrelated release-cut description with its source-check reference', () => {
+    const text =
+      'Committing the gitlink would make the worktree clean — and would have broken the next leg: ' +
+      "release-local.sh:187-204 binds every cut to ONE full superproject sha (EI-20505417131773854) " +
+      "and errors 'release source drift' when current HEAD != the passed sourceSha.";
+
+    expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
 
   it('fails closed with the exact incident identity and actionable repair route', () => {
