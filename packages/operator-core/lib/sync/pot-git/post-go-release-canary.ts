@@ -11,6 +11,10 @@ import {
   validatePhysicalPhaseG,
   type PhysicalPhaseGInput,
 } from './physical-drill-phase-g';
+import {
+  validatePostGoCanaryEvidence,
+  type PostGoCanaryEvidence,
+} from './post-go-canary-observations';
 
 export const POST_GO_RELEASE_CANARY_SCHEMA = 'hive-git-post-go-release-canary/v1' as const;
 export const POST_GO_RELEASE_CANARY_MIN_DURATION_MS = 72 * 60 * 60 * 1_000;
@@ -30,7 +34,12 @@ export type PostGoReleaseCanaryInput = {
     implementationOwnerId: string;
     attestationRef: string;
   };
-  canary: {
+  /**
+   * The soak window plus its P-501 substance (C1-C6): hourly observations of
+   * the canary hive, the adjudicated alarm history and the alarm-rail proof.
+   * See post-go-canary-observations.ts.
+   */
+  canary: PostGoCanaryEvidence & {
     candidateSha: string;
     startedAt: string;
     finishedAt: string;
@@ -66,6 +75,8 @@ export type PostGoReleaseCanaryVerdict = {
     independentGoApprovedAt: string;
     canaryDurationMs: number;
     minimumDurationMs: typeof POST_GO_RELEASE_CANARY_MIN_DURATION_MS;
+    canaryHive: string;
+    canaryObservationCount: number;
     ownerFreezeVerified: true;
     ownerRecoveryVerified: true;
     observedAt: string;
@@ -141,6 +152,15 @@ export function validatePostGoReleaseCanary(
     Number.isFinite(canaryDurationMs) &&
       canaryDurationMs >= POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
     'canary must run for an actual minimum of 72 hours',
+  );
+  // Duration alone would pass a 72h window full of divergence escalations and
+  // STALLED pages (WI-10002545): every P-501 predicate must hold throughout.
+  errors.push(
+    ...validatePostGoCanaryEvidence(
+      input?.canary,
+      { startedAt: input?.canary?.startedAt ?? '', finishedAt: input?.canary?.finishedAt ?? '' },
+      input?.evaluatedAt ?? '',
+    ),
   );
 
   const chaos = input?.ownerFreezeChaos;
@@ -233,6 +253,8 @@ export function validatePostGoReleaseCanary(
       independentGoApprovedAt: go.approvedAt,
       canaryDurationMs,
       minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
+      canaryHive: input.canary.hive,
+      canaryObservationCount: input.canary.observations.length,
       ownerFreezeVerified: true,
       ownerRecoveryVerified: true,
       observedAt: input.evaluatedAt,

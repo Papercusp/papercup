@@ -72,6 +72,11 @@ import {
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
+import {
+  appendCanaryObservation,
+  capturePostGoCanaryObservation,
+  type PostGoCanaryObservation,
+} from './post-go-canary-observations';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -559,6 +564,24 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'post-go-canary-observe') {
+    // One hourly P-501 sample (WI-10002545). The first sample of a soak is its
+    // START, refused unless the hive's bridge egress is real (endgame D-044).
+    const [hive, samplesPath] = args;
+    if (!hive || !samplesPath) {
+      throw new Error('usage: physical-drill-producer post-go-canary-observe <canary-hive> <samples.json>');
+    }
+    const existing = existsSync(samplesPath) ? readJson(samplesPath) : [];
+    if (!Array.isArray(existing)) {
+      throw new Error(`physical-drill-producer: ${samplesPath} must hold a JSON array of P-501 observations`);
+    }
+    const sample = await capturePostGoCanaryObservation(hive);
+    const samples = appendCanaryObservation(existing as PostGoCanaryObservation[], sample);
+    const tmpPath = `${samplesPath}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, `${JSON.stringify(samples, null, 2)}\n`);
+    renameSync(tmpPath, samplesPath);
+    return { ok: true, hive, samplesPath, count: samples.length, sample };
+  }
   if (mode === 'finalize') {
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
@@ -574,7 +597,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
 }
 

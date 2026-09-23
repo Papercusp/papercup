@@ -11,6 +11,7 @@ import {
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
+import type { PostGoCanaryObservation } from './post-go-canary-observations';
 
 const CANDIDATE = 'a'.repeat(40);
 const RUN = 'p524-post-go-phase-g-0001';
@@ -21,6 +22,35 @@ const PHASE_G_START = '2026-08-13T20:00:00.000Z';
 const PHASE_G_OBSERVED = '2026-08-13T20:30:00.000Z';
 const PHASE_G_FINISH = '2026-08-13T21:00:00.000Z';
 const EVALUATED_AT = '2026-08-13T21:01:00.000Z';
+
+const CANARY_HIVE = 'hello-world-3-pot';
+const EGRESS_HEAD = 'd'.repeat(40);
+
+/** A quiet, healthy sample every hour across the whole 72h window (73 samples). */
+function hourlyObservations(): PostGoCanaryObservation[] {
+  const start = Date.parse(CANARY_START);
+  return Array.from({ length: 73 }, (_, hour) => {
+    const at = new Date(start + hour * 3_600_000).toISOString();
+    return {
+      at,
+      hive: CANARY_HIVE,
+      active: true,
+      lastFiredAt: at,
+      lastStatus: 'ok',
+      watchdogAlerted: false,
+      eligibilityAlerted: false,
+      bridgeRan: true,
+      bridgeSkipped: null,
+      divergence: 'clear',
+      needsOwner: false,
+      bridgeErrors: [],
+      egressTarget: 'fork',
+      egressHead: EGRESS_HEAD,
+      forkHead: EGRESS_HEAD,
+      openEscalations: 0,
+    };
+  });
+}
 
 let phaseG: PhysicalPhaseGInput;
 
@@ -63,6 +93,16 @@ function validInput(): PostGoReleaseCanaryInput {
       candidateSha: CANDIDATE,
       startedAt: CANARY_START,
       finishedAt: CANARY_FINISH,
+      hive: CANARY_HIVE,
+      routineIntervalSec: 300,
+      observations: hourlyObservations(),
+      alarms: [],
+      alarmRail: {
+        divergenceNotifiesUrgent: true,
+        stallWatchdogNotifiesUrgent: true,
+        deliveredPageAt: '2026-08-12T09:00:00.000Z',
+        deliveredPageRef: 'attention_notifications:real-page',
+      },
     },
     ownerFreezeChaos: {
       candidateSha: CANDIDATE,
@@ -83,6 +123,28 @@ function validInput(): PostGoReleaseCanaryInput {
 }
 
 describe('post-GO public-release canary readiness', () => {
+  it('reports the canary hive and sample count on a passing receipt', () => {
+    const verdict = validatePostGoReleaseCanary(validInput());
+    expect(verdict.errors).toEqual([]);
+    expect(verdict.result).toMatchObject({ canaryHive: CANARY_HIVE, canaryObservationCount: 73 });
+  });
+
+  it('rejects a 72h window that carries no P-501 observations (WI-10002545)', () => {
+    const input = validInput();
+    const bare = { ...input, canary: { candidateSha: CANDIDATE, startedAt: CANARY_START, finishedAt: CANARY_FINISH } };
+    const verdict = validatePostGoReleaseCanary(bare as unknown as PostGoReleaseCanaryInput);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/hourly observations/);
+  });
+
+  it('rejects a full-length soak whose window contained a divergence escalation', () => {
+    const input = validInput();
+    input.canary.observations[40] = { ...input.canary.observations[40]!, divergence: 'diverged', openEscalations: 1 };
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.some((e) => e.startsWith('C1:'))).toBe(true);
+    expect(verdict.errors.some((e) => e.startsWith('C2:'))).toBe(true);
+  });
   it('does not accept future-dated elapsed time from a caller-supplied receipt', () => {
     const input = validInput();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(CANARY_FINISH) - 1);
