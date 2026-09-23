@@ -384,6 +384,19 @@ export interface WorkspaceHostPlanStep {
   idempotencyKey: string;
   destructive: boolean;
   input: Readonly<Record<string, unknown>>;
+  /**
+   * Compensating apply for when this step cannot complete after its destructive predecessor
+   * already applied (an upgrade's re-insert after the old VM is deleted). The controller applies
+   * it in this step's place so the host is not left without what the predecessor removed.
+   * Precomputed at plan time: once the predecessor has applied, the resource it describes can no
+   * longer be read, so the rollback cannot be planned later.
+   */
+  rollback?: WorkspaceHostPlanStepRollback;
+}
+export interface WorkspaceHostPlanStepRollback {
+  /** Distinct from the step's own key; the rollback apply may itself be replayed. */
+  idempotencyKey: string;
+  input: Readonly<Record<string, unknown>>;
 }
 export interface WorkspaceHostPlan {
   planId: string;
