@@ -51,6 +51,7 @@ import {
   quotaBannerPatternsForAgent,
   makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
+  findNativeTranscriptMarker,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
   shouldRetryCarryOnFreshEpoch,
@@ -2544,6 +2545,54 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
     expect(d.isBlocked()).toBe(true);
     expect(d.observe('x'.repeat(64))).toBe('cleared');
     expect(d.isBlocked()).toBe(false);
+  });
+});
+
+describe('findNativeTranscriptMarker (fresh row provenance)', () => {
+  const scratch = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'kickoff-marker-freshness-'));
+  afterAll(() => nodeFs.rmSync(scratch, { recursive: true, force: true }));
+
+  it('rejects an old marker row even when unrelated fresh metadata updates the transcript file', () => {
+    const claudeConfig = pathJoin(scratch, 'claude-home');
+    const transcript = pathJoin(claudeConfig, 'projects', 'session', 'conversation.jsonl');
+    nodeFs.mkdirSync(pathJoin(claudeConfig, 'projects', 'session'), { recursive: true });
+    const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+    const sinceMs = Date.now() - 1_000;
+    const staleUser = {
+      type: 'user',
+      timestamp: new Date(sinceMs - 60_000).toISOString(),
+      message: { role: 'user', content: marker },
+    };
+    const unrelatedFreshMetadata = {
+      type: 'mode',
+      timestamp: new Date().toISOString(),
+      mode: 'auto',
+    };
+    nodeFs.writeFileSync(transcript, `${JSON.stringify(staleUser)}\n${JSON.stringify(unrelatedFreshMetadata)}\n`);
+
+    // The transcript's mtime is recent, but the matching provenance row is old.
+    expect(nodeFs.statSync(transcript).mtimeMs).toBeGreaterThanOrEqual(sinceMs);
+    expect(findNativeTranscriptMarker({
+      agent: 'claude',
+      env: { CLAUDE_CONFIG_DIR: claudeConfig },
+      marker,
+      sinceMs,
+      home: scratch,
+    })).toBeNull();
+
+    const freshUser = {
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: marker },
+    };
+    nodeFs.writeFileSync(transcript, `${JSON.stringify(staleUser)}\n${JSON.stringify(unrelatedFreshMetadata)}\n${JSON.stringify(freshUser)}\n`);
+    expect(findNativeTranscriptMarker({
+      agent: 'claude',
+      env: { CLAUDE_CONFIG_DIR: claudeConfig },
+      marker,
+      sinceMs,
+      home: scratch,
+    })).toBe(transcript);
   });
 });
 
