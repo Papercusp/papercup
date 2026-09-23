@@ -17,8 +17,8 @@ import {
   SPEC_EVIDENCE_KINDS,
   supersedeSpecEvidenceAtRevision,
 } from './spec-evidence-store';
-import { supersedeEligibilityGaps } from './spec-test-adequacy';
-import { SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
+import { isAcceptedMutationTarget, mutationTargetRequirement, supersedeEligibilityGaps } from './spec-test-adequacy';
+import { listSpecClauses, SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
@@ -317,6 +317,70 @@ async function supersedeSiblings(input: {
   return outcomes;
 }
 
+export interface MutationTargetRefusal {
+  clause: string;
+  targeted: unknown;
+  acceptedTargets: string[];
+  reason: string;
+  correctedCall: { tool: 'plans:bind-spec-evidence'; args: Record<string, unknown> };
+}
+
+/**
+ * P-043 (review-system-rework-reduction-2026-09-23): judge falsifiability TARGETING at bind time
+ * with the evaluator's own rule (`mutationTargetRequirement`), so a mutation/counterexample
+ * binding the evaluator will reject is refused here instead of being accepted, proven, audited,
+ * and only then refused at completion (the measured case: proof 11:54Z, audit 12:08Z, completion
+ * refused 12:11Z, re-emitted and re-audited on unchanged evidence, closed 12:38Z). Every
+ * mutation/counterexample binding feeds that criterion and falsifiability has no not-applicable
+ * branch, so a mis-targeted one can never help it. The rule is moved earlier, never lowered.
+ * Legacy `sourceValId` bindings and unknown specs fall through to the store, which owns those
+ * refusals.
+ */
+export async function mutationTargetingRefusal(
+  binding: z.infer<typeof bindingSchema>,
+  scope: { planSlug: string; harnessSlug: string | undefined; slugArg?: string; harnessArg?: string },
+  loadClauses: typeof listSpecClauses = listSpecClauses,
+): Promise<MutationTargetRefusal | null> {
+  if ((binding.evidenceKind !== 'mutation' && binding.evidenceKind !== 'counterexample') || !binding.specId) return null;
+  const [clause] = await loadClauses({
+    harnessSlug: scope.harnessSlug,
+    planSlug: scope.planSlug,
+    specIds: [binding.specId],
+    ...(binding.specRevision !== undefined ? { revision: binding.specRevision } : {}),
+    limit: 1,
+  });
+  if (!clause) return null;
+  const adequacy =
+    binding.details?.adequacy && typeof binding.details.adequacy === 'object' && !Array.isArray(binding.details.adequacy)
+      ? (binding.details.adequacy as Record<string, unknown>)
+      : {};
+  if (isAcceptedMutationTarget(clause, adequacy.targeted)) return null;
+  const { acceptedTargets, requirement } = mutationTargetRequirement(clause);
+  const label = `${clause.specId}@${clause.revision}`;
+  const given =
+    adequacy.targeted === undefined ? 'no adequacy.targeted' : `adequacy.targeted = ${JSON.stringify(adequacy.targeted)}`;
+  return {
+    clause: label,
+    targeted: adequacy.targeted ?? null,
+    acceptedTargets,
+    reason:
+      `${label}: this ${binding.evidenceKind} binding carries ${given}, which plans:evaluate-spec-test-adequacy ` +
+      `would reject for falsifiability — it requires ${requirement}; a boolean or sibling-case target never ` +
+      `qualifies. Accepted: ${acceptedTargets.join(', ')}.`,
+    correctedCall: {
+      tool: 'plans:bind-spec-evidence',
+      args: {
+        ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
+        ...(scope.slugArg ? { slug: scope.slugArg } : {}),
+        binding: {
+          ...binding,
+          details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
+        },
+      },
+    },
+  };
+}
+
 const OK = new Set(['created', 'unchanged']);
 
 export default defineTool({
@@ -371,6 +435,15 @@ export default defineTool({
     const env = await runBulk(
       bindings,
       async (binding) => {
+        const targetingRefusal = await mutationTargetingRefusal(binding, {
+          planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
+          harnessSlug,
+          ...(args.slug ? { slugArg: args.slug } : {}),
+          ...(args.harness ? { harnessArg: args.harness } : {}),
+        });
+        if (targetingRefusal) {
+          return { ok: false as const, slug: reportedSlug, error: 'mutation_target_rejected' as const, ...targetingRefusal };
+        }
         const measured = binding.measurement
           ? await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
           : null;
