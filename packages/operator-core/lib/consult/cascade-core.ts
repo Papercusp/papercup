@@ -367,7 +367,7 @@ export async function advanceCascade(
             updated_at = ${params.nowIso}::timestamptz,
             outcome = jsonb_build_object('source', 'grading-integrity', 'issueId', ${sourceAudit.issueId}::text)
         WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
-          AND state IN ('awaiting_responder', 'active')`;
+          AND state IN ('awaiting_responder', 'active', 'no_qualified_responder')`;
       return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
     }
   }

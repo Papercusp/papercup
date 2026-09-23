@@ -42,6 +42,7 @@ import {
 import { peersKnowLookup } from './peers-know';
 import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
+import { advanceCascade } from './cascade-core';
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
@@ -561,6 +562,93 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {}, notifyRequester: async () => {}, dispatch });
     expect((await stateRow(result.conversation_id)).state).toBe('closed_answered');
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('closes a no-qualified source-audit consult when the exact target settles', async () => {
+    const issueId = 'EI-settled-no-qualified-close-helper';
+    const fixture = makeDeps(routeOf([cand('settled-close-a'), cand('settled-close-b')]));
+    const result = asOk(await getFeedbackCore({
+      ...baseReq,
+      question: 'settled source audit with no qualified responder',
+      archiveFloor: 2,
+      cascade: {
+        flavor: 'grading-integrity', issueId, reservationKey: 'settled-close-helper',
+        reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, brief: 'Audit the exact settled card.',
+      },
+    }, fixture.deps));
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, payload)
+      VALUES (${issueId}, '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)
+    `;
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET state = 'no_qualified_responder', expires_at = NULL
+       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+    `;
+
+    await closeSourceAuditConsults(WS, issueId, rootSql);
+
+    const row = await stateRow(result.conversation_id);
+    expect(row.state).toBe('closed_answered');
+    expect(row.closed_at).not.toBeNull();
+    expect(row.outcome).toMatchObject({ source: 'grading-integrity', issueId });
+  });
+
+  it('repairs a missed no-qualified settlement cleanup before any further cascade dispatch', async () => {
+    const issueId = 'EI-settled-no-qualified-cascade';
+    const fixture = makeDeps(routeOf([cand('settled-cascade-a'), cand('settled-cascade-b')]));
+    const result = asOk(await getFeedbackCore({
+      ...baseReq,
+      question: 'settled source audit before cascade advance',
+      archiveFloor: 2,
+      cascade: {
+        flavor: 'grading-integrity', issueId, reservationKey: 'settled-cascade',
+        reservationReservedAt: SOURCE_AUDIT_RESERVED_AT, brief: 'Audit the exact settled card.',
+      },
+    }, fixture.deps));
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, payload)
+      VALUES (${issueId}, '{"observation":{"gradingAudit":{"state":"passed"}}}'::jsonb)
+    `;
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET state = 'no_qualified_responder', expires_at = NULL
+       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+    `;
+    const [row] = await rootSql<Array<{
+      question: string;
+      latencyContract: string;
+      requesterId: string;
+      routing: unknown;
+      cascadeCursor: number;
+      cascadeDigest: unknown;
+    }>>`
+      SELECT question, latency_contract AS "latencyContract", requester_id AS "requesterId",
+             routing, cascade_cursor AS "cascadeCursor", cascade_digest AS "cascadeDigest"
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${result.conversation_id}
+    `;
+    const dispatch = vi.fn(async () => ({ woke: 1 }));
+
+    const advance = await advanceCascade({
+      workspaceId: WS,
+      conversationId: result.conversation_id,
+      question: row!.question,
+      latencyContract: row!.latencyContract,
+      requesterId: row!.requesterId,
+      routing: row!.routing,
+      cascadeCursor: row!.cascadeCursor,
+      digest: row!.cascadeDigest,
+      event: { ownerId: 'settled-cascade-a', kind: 'decline', at: NOW.toISOString(), excerpt: 'target already settled' },
+      stateOnAdvance: 'awaiting_responder',
+      nowIso: NOW.toISOString(),
+    }, rootSql, dispatch);
+
+    expect(advance).toMatchObject({ advanced: false, raced: true, woke: 0 });
+    expect(dispatch).not.toHaveBeenCalled();
+    const settledRow = await stateRow(result.conversation_id);
+    expect(settledRow.state).toBe('closed_answered');
+    expect(settledRow.outcome).toMatchObject({ source: 'grading-integrity', issueId });
   });
 
   it('a DEAD audit expert is dispatched (not revived) and carries the audit brief, not a transcript-answer brief', async () => {

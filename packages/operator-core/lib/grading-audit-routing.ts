@@ -201,5 +201,5 @@ export async function closeSourceAuditConsults(workspaceId: string, issueId: str
     WHERE workspace_id = ${workspaceId}
       AND routing->'cascade'->>'flavor' = 'grading-integrity'
       AND routing->'cascade'->>'issueId' = ${issueId}
-      AND state IN ('awaiting_responder', 'active')`;
+      AND state IN ('awaiting_responder', 'active', 'no_qualified_responder')`;
 }

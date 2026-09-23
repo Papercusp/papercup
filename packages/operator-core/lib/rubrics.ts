@@ -39,7 +39,7 @@ import {
 } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
-  stripUnknownCriterionKeys,
+  stripUnknownRubricKeys,
   rubricTemplateDataAuthoringSchema,
   rubricKindOf,
   isUnknownRatingEquivalent,
@@ -223,6 +223,13 @@ export interface Rubric {
   rubricId: string;
   /** Current `harness_plans.version`; omitted for legacy/unversioned rows. */
   revision?: number;
+  /**
+   * Present ONLY when this build could project the stored rubric solely by ignoring fields it
+   * does not understand — a newer build wrote them (WI-10002803). The rubric is still readable
+   * and gradeable here, but it is NOT safe to rebuild-and-write from this projection: the
+   * rewrite would delete `strippedKeys`. Editing verbs refuse via {@link assertRubricWritable}.
+   */
+  readCompat?: { strippedKeys: string[] };
   workspaceId: string;
   /**
    * The rubric's kind (acceptance-rubrics-on-every-plan-2026-08-11): 'standard' = a
@@ -499,12 +506,18 @@ export function rubricStatusToPlanStatus(status: RubricStatus): string {
  */
 export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: number | null): Rubric | null {
   let parsed = rubricTemplateDataSchema.safeParse(row.template_data);
+  let strippedKeys: string[] = [];
   if (!parsed.success) {
-    // acceptance-runtime-plane P-002: an ADDITIVE criterion field written by a newer build
-    // must not make the whole rubric vanish for this (older) reader. Strict stays strict on
-    // write; on read, retry once without the unknown criterion keys.
-    const tolerant = stripUnknownCriterionKeys(row.template_data);
-    if (tolerant.stripped.length) parsed = rubricTemplateDataSchema.safeParse(tolerant.data);
+    // An ADDITIVE field written by a newer build — inside a criterion (acceptance-runtime-plane
+    // P-002) or at the top level (WI-10002803, goal-mode-e2e's `gradingAuthority`) — must not
+    // make the whole rubric vanish for this (older) reader. Strict stays strict on write; on
+    // read, retry once without the unknown keys, and record them so no writer rebuilds the
+    // document from this lossy projection.
+    const tolerant = stripUnknownRubricKeys(row.template_data);
+    if (tolerant.stripped.length) {
+      parsed = rubricTemplateDataSchema.safeParse(tolerant.data);
+      strippedKeys = tolerant.stripped;
+    }
   }
   if (!parsed.success) return null;
   const d = parsed.data;
@@ -518,6 +531,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
   return {
     rubricId: row.plan_slug,
     ...(revision !== undefined && Number.isFinite(revision) ? { revision } : {}),
+    ...(strippedKeys.length ? { readCompat: { strippedKeys } } : {}),
     workspaceId: row.workspace_id,
     kind,
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
@@ -926,17 +940,46 @@ async function existingRubricPlanRows(): Promise<ExistingRubricRow[]> {
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${rubricsScopeWorkspace()}
        AND template = ${RUBRIC_TEMPLATE_NAME}`;
-  return rows.map((r) => {
-    const parsed = rubricTemplateDataSchema.safeParse(r.template_data);
-    return {
-      rubricId: r.plan_slug,
-      owner: r.owner,
-      valid: parsed.success,
-      // EI-12932: the comparable fields the seed's content-drift detection needs — only
-      // meaningful (and only supplied) for a row that actually parses.
-      ...(parsed.success ? { templateData: parsed.data } : {}),
-    };
-  });
+  return rows.map((r) => existingRubricRowForSeed(r.plan_slug, r.owner, r.template_data));
+}
+
+/**
+ * The seed decision core's view of one stored row (pure; exported for tests).
+ *
+ * `valid` means "not a wedged placeholder", so a row that parses once a NEWER build's unknown
+ * fields are ignored is valid — reclaiming it (WI-3617) would overwrite that build's rubric
+ * with this build's bundle and delete the fields (WI-10002803). `templateData` is supplied only
+ * when THIS build parses the row completely: without it the EI-12932 content-drift upgrade
+ * skips the row, because a whole-document upgrade from a partial view would delete the same
+ * fields.
+ */
+export function existingRubricRowForSeed(
+  rubricId: string,
+  owner: string | null,
+  templateData: unknown,
+): ExistingRubricRow {
+  const parsed = rubricTemplateDataSchema.safeParse(templateData);
+  if (parsed.success) return { rubricId, owner, valid: true, templateData: parsed.data };
+  const tolerant = stripUnknownRubricKeys(templateData);
+  const readableByNewerBuild =
+    tolerant.stripped.length > 0 && rubricTemplateDataSchema.safeParse(tolerant.data).success;
+  return { rubricId, owner, valid: readableByNewerBuild };
+}
+
+/**
+ * Refuse a whole-document rewrite built from a lossy projection (WI-10002803). A rubric whose
+ * read had to ignore fields written by a newer build (`readCompat`) is readable and gradeable
+ * here, but every rebuild-and-write verb reconstructs `template_data` from the fields THIS build
+ * knows — so writing it back would silently delete the newer build's fields.
+ */
+export function assertRubricWritable(rubric: Pick<Rubric, 'rubricId' | 'readCompat'>, verb: string): void {
+  const stripped = rubric.readCompat?.strippedKeys ?? [];
+  if (!stripped.length) return;
+  throw new Error(
+    `rubric_newer_than_this_build: ${verb}: rubric '${rubric.rubricId}' carries fields this build does not ` +
+      `understand (${stripped.join(', ')}); rewriting it here would delete them. Retry against a build that ` +
+      `knows these fields — the staging operator runs the current source.`,
+  );
 }
 
 /**
@@ -2866,6 +2909,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
   const stored = await getRubric(input.rubricId);
+  if (stored) assertRubricWritable(stored, 'proposeRubric');
   if (stored?.subjectHarnessSlug) {
     if ((input.subjectHarnessSlug && input.subjectHarnessSlug !== stored.subjectHarnessSlug) ||
         input.subjectPlan !== stored.subjectPlan) {
@@ -3940,6 +3984,7 @@ async function amendAcceptanceBarRubric(
       const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
       if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint ||
           (stored.subjectHarnessSlug && stored.subjectHarnessSlug !== subjectScope.harnessSlug)) return null;
+      assertRubricWritable(stored, 'rubrics:amend');
 
       // An explicit replay token identifies the original request, including its
       // approval receipt. Handle retries before CAS and re-applying append text.
@@ -4806,6 +4851,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     async (current, meta) => {
       const stored = rubricFromLockedPlan(input.rubricId, current, meta?.templateData ?? null, scope);
       if (!current || !stored) return { newBody: null, value: null };
+      assertRubricWritable(stored, 'rubrics:amend');
       if (methodOnlyRevision !== undefined && meta?.version !== methodOnlyRevision) {
         throw new Error('acceptance_bar_amendment_revision_conflict: rubric changed before method update');
       }

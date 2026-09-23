@@ -10,9 +10,39 @@
  * levers.
  */
 import { describe, it, expect } from 'vitest';
-import { renderPresenceVolume } from './token-report-action';
+import { renderPresenceVolume, renderDim, type AggRow } from './token-report-action';
 
 type Vol = { tool: string; calls: string; bytes: string | null; avg_bytes: string | null };
+
+describe('cache reporting coverage', () => {
+  const row = (changes: Partial<AggRow> = {}): AggRow => ({ dim: 'interactive [request-time]', calls: '10',
+    in_t: '100', out_t: '100', cr_t: '800', cw_t: null, usd: null,
+    incomplete_tokens: '10', unpriced: '10', estimated_usd: null, reported_usd: null,
+    comparable_read: '800', comparable_input: '1000', comparable_samples: '10',
+    request_observations: '10', request_hits: '9', ...changes });
+  it('separates token reuse, request hits and unknown write/pricing coverage', () => {
+    const text = renderDim('source', [row()], new Map());
+    expect(text).toContain('Token reuse 80.00% (10/10 comparable samples)');
+    expect(text).toContain('requests with any cache read 90.00%');
+    expect(text).toContain('unknown cache-write');
+    expect(text).toContain('10/10 unpriced samples');
+    expect(text).not.toContain('$0.00');
+    expect(text).toContain('≥');
+  });
+  it('does not pretend legacy aggregates are requests or an empty denominator is a zero-percent hit rate', () => {
+    const text = renderDim('source', [row({ dim: 'interactive [ingestion-time; request time unavailable]',
+      request_observations: '0', request_hits: '0', comparable_input: null, comparable_read: null,
+      comparable_samples: '0' })], new Map());
+    expect(text).toContain('ingestion-time; request time unavailable');
+    expect(text).toContain('Token reuse unknown');
+    expect(text).toContain('requests with any cache read unknown');
+    expect(text).not.toContain('0.00%');
+  });
+  it('suppresses misleading change percentages when either population has incomplete counts', () => {
+    const text = renderDim('source', [row({ in_t: '1000000' })], new Map([[row().dim, row({ in_t: '1000' })]]));
+    expect(text).not.toMatch(/\([+-]\d+%\)/);
+  });
+});
 
 describe('renderPresenceVolume (P-016 guardrail)', () => {
   it('surfaces calls + payload + avg with WoW deltas for each presence read tool', () => {

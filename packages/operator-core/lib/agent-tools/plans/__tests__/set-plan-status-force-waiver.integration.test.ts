@@ -147,11 +147,15 @@ describe('plans:set-plan-status — narrow BAR proof metadata force through the 
     const saved = await storedPlan();
     expect(saved.content).toContain('status: shipped');
     expect(saved.forced_past).toMatchObject({
-      reason: REASON,
-      checks: [WAIVED_CHECK],
-      forcedBy: { ownerId: ACTOR },
+      count: 1,
+      latest: {
+        reason: REASON,
+        checks: [WAIVED_CHECK],
+        legacy: false,
+        forcedBy: { ownerId: ACTOR },
+      },
     });
-    expect(saved.forced_past?.forcedAt).toEqual(expect.any(String));
+    expect((saved.forced_past?.latest as Record<string, unknown>).forcedAt).toEqual(expect.any(String));
     expect(await revisionCount()).toBe(1);
   });
 });
