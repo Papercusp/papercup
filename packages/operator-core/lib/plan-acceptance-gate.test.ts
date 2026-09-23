@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   ACCEPTANCE_VERDICT_REQUIRED_AFTER,
   evaluatePlanAcceptanceGate,
+  planAcceptanceRepairAction,
   unfinishedItemsAreAuditedNonCode,
 } from './plan-acceptance-gate';
 import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
@@ -173,7 +174,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(planDesignEvidenceGate).mockResolvedValue([]);
   mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
-    codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, message: null });
+    codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null,
+    staleGradingScorecardId: null, message: null });
   mockRubrics.mockImplementation(async (planSlug) => {
     const one = await mockRubric(planSlug);
     return one ? [one] : [];
@@ -457,11 +459,17 @@ describe('evaluatePlanAcceptanceGate', () => {
   });
 
   describe('BAR missing-or-stale-grade recruitment', () => {
+    // `staleGradingScorecardId` defaults to null: these cases describe a BAR whose
+    // stale reading names a card OTHER than the ones under test (or none at all).
+    // A case about the stale card ITSELF must pass its id, which is the whole
+    // distinction WI-10002509 turns on.
     const verdict = (phase: AcceptanceBarLifecycleVerdict['phase'],
-      codes: AcceptanceBarLifecycleVerdict['codes']): AcceptanceBarLifecycleVerdict => ({
+      codes: AcceptanceBarLifecycleVerdict['codes'],
+      staleGradingScorecardId: string | null = null): AcceptanceBarLifecycleVerdict => ({
       phase, applicable: true, satisfied: codes.length === 0, codes,
       blockingBars: [], contractCodes: codes, codeAttribution: codes.map((code) => ({ code, barKeys: [] })),
-      nextRepair: null, message: codes.length ? 'BAR proof or grading is incomplete' : null,
+      nextRepair: null, staleGradingScorecardId,
+      message: codes.length ? 'BAR proof or grading is incomplete' : null,
     });
 
     it('requires original contract adoption for legacy Requirements even with an as-built rubric and force', async () => {
@@ -522,6 +530,44 @@ describe('evaluatePlanAcceptanceGate', () => {
 
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true }))
         .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+    });
+
+    // WI-10002509: the cohort-stale dead end. The BAR stales a below-pass grading once
+    // the evidence cohort moves under it, but the rubric REVISION never changed — so the
+    // door's rubric-identity filter read the card as current, found a complete grading,
+    // and returned its deferred BAR refusal forever. `acceptance_bar_not_met` /
+    // `acceptance_bar_contract_not_ready` are outside ACCEPTANCE_GRADER_GATE_CODES, so
+    // nothing recruited the re-grade the BAR lifecycle explicitly asks for.
+    it('recruits a re-grade when the BAR staled the card by COHORT movement under an unchanged rubric', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      // Graded against THIS revision and this criteriaHash: rubric identity is current.
+      mockScorecards.mockResolvedValue([scorecard({ issueId: 'EI-cohort-staled', rubricRevision: 3 })]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_grading_stale', 'bar_snapshot_author_verdict_missing']
+        : [], phase === 'ship' ? 'EI-cohort-staled' : null));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_ungraded', rubricId: 'ar-some-plan' });
+      // The code is what dispatches recruitment, and it must route to exactly ONE
+      // independent grading — not a self-grade and not a parallel reviewer.
+      expect(planAcceptanceRepairAction('some-plan-2026-08-11', v)).toMatchObject({ kind: 'independent-grading' });
+    });
+
+    // The anti-storm half of the same change: widening recruitment to every BAR refusal
+    // would re-roll a grader on every ship attempt against a genuinely failing plan.
+    // A `not-pass` BAR names no stale card, so the card survives and stays terminal.
+    it('CONTROL: a genuine unchanged FAIL does not recruit — the card is not dropped', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      mockScorecards.mockResolvedValue([scorecard({ issueId: 'EI-honest-fail', rubricRevision: 3 })]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_grading_not_pass', 'bar_snapshot_author_verdict_missing']
+        : []));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(v.code).not.toBe('acceptance_ungraded');
     });
 
     it('does not recruit through incomplete METHOD or vetting prerequisites', async () => {
