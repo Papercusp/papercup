@@ -1,11 +1,14 @@
 /**
  * Recurrence guard for WI-10002186, extended for P-007.
  *
- * Clause AUTO-BAR-R-10-P-007@2 requires that "the prompt text delivered to a
+ * Clause AUTO-BAR-R-10-P-007@2 required that "the prompt text delivered to a
  * freshly launched session states that the agent must promote or dismiss each
- * captured directive, for both the engineer and the power su role", and names
+ * captured directive, for both the engineer and the power su role", and named
  * its own falsifier: "the instruction is present only in a generated or legacy
- * copy that no live session is launched from."
+ * copy that no live session is launched from." Plan
+ * `owner-directive-delivery-redesign-2026-09-22` (D-001) removed the triage, so
+ * the instruction this guards is now "every turn lands open and closes only by
+ * disposition" — the same live-launch falsifier still applies to it.
  *
  * So the subject here is deliberately the LIVE launch composition: this renders
  * through `renderSuPlaybook`, the same function `role-launch-spec.ts` calls to
@@ -66,7 +69,7 @@ const ENGINEER_ONLY_NOTE = '## The deploy pipeline is ASYNC';
 
 const SU_PROFILES = ['engineer', 'power'] as const;
 
-describe('rendered SU persona — hybrid owner-directive capture (WI-10002186, P-007)', () => {
+describe('rendered SU persona — owner-directive capture and resolution (WI-10002186, P-007)', () => {
   it.each(SU_PROFILES)(
     'keeps capture and next-turn resolution instructions in the live %s render',
     async (profile) => {
@@ -85,14 +88,15 @@ describe('rendered SU persona — hybrid owner-directive capture (WI-10002186, P
       // render, so the power case is not the engineer case run twice.
       expect(rendered.text.includes(ENGINEER_ONLY_NOTE)).toBe(profile === 'engineer');
 
-      // The clause itself: the promote/dismiss instruction reaches BOTH roles.
+      // The clause itself reaches BOTH roles: every turn lands open (D-001),
+      // closes only by disposition, and a long one is shown through a summary
+      // (D-004). The retired promote/dismiss triage must be gone from both.
       expect(rendered.text).toContain('## Owner directives — durable capture and resolution');
-      expect(rendered.text).toContain(
-        'UserPromptSubmit hook records the owner turn verbatim as a PENDING row',
-      );
-      expect(rendered.text).toContain("orders:resolve-pending { id, action: 'promote' }");
-      expect(rendered.text).toContain("orders:resolve-pending { id, action: 'dismiss', reason }");
+      expect(rendered.text).toContain('records the turn verbatim as an OPEN row, and there is no triage step');
       expect(rendered.text).toContain("orders:disposition { id, status: 'done'|'declined', note }");
+      expect(rendered.text).toContain('orders:summarize { id, summary }');
+      expect(rendered.text).toContain('orders:clear { id, reason }');
+      expect(rendered.text).not.toContain('orders:resolve-pending');
     },
   );
 });
