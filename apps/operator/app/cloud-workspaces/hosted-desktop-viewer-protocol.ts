@@ -34,6 +34,7 @@ export type HostedDesktopProtocolEvent =
     }
   | { kind: "data"; data: Uint8Array }
   | { kind: "roster"; requestId: string; desktops: HostedDesktopRosterEntry[] }
+  | { kind: "started"; requestId: string; desktop: HostedDesktopRosterEntry }
   | {
       kind: "thumbnail";
       requestId: string;
@@ -112,6 +113,17 @@ export function buildDesktopRosterRequest(requestId: string): string {
   });
 }
 
+/**
+ * Ask the workspace host to start its desktop, or return the running one
+ * (D-405). The host answers only on a controller session.
+ */
+export function buildDesktopStartRequest(requestId: string): string {
+  return JSON.stringify({
+    type: "desktop.start",
+    requestId,
+  });
+}
+
 export function buildDesktopThumbnailRequest(
   requestId: string,
   desktopSessionId: string,
@@ -162,6 +174,13 @@ export function parseHostedDesktopProtocolMessage(
     const requestId = nonEmptyString(payload.requestId);
     if (!requestId) return null;
     return { kind: "roster", requestId, desktops: roster(payload.desktops) };
+  }
+
+  if (type === "desktop.start.result") {
+    const requestId = nonEmptyString(payload.requestId);
+    const [desktop] = roster([payload.desktop]);
+    if (!requestId || !desktop) return null;
+    return { kind: "started", requestId, desktop };
   }
 
   if (type === "desktop.thumbnail.result") {
