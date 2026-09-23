@@ -667,6 +667,7 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
         contractCodes: [],
         codeAttribution: [],
         nextRepair: null,
+        staleGradingScorecardId: null,
         message: 'acceptance BAR contract is not ready for start — 1 of 1 BAR(s) blocking',
       },
       ...NO_EDGES,

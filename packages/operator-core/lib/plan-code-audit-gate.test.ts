@@ -126,7 +126,7 @@ beforeEach(() => {
   mockEffectiveAudits.mockResolvedValue([]);
   mockPlanItems.mockResolvedValue([]);
   vi.mocked(readAndEvaluateAcceptanceBarLifecycle).mockResolvedValue({
-    phase: 'ship', applicable: false, satisfied: true, codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, message: null,
+    phase: 'ship', applicable: false, satisfied: true, codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, staleGradingScorecardId: null, message: null,
   });
   // P-014 default: no activation audit, so the requirement-realization join is
   // inert. Every pre-P-014 case therefore keeps its original meaning.
@@ -443,7 +443,7 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
     mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
     mockFlag.mockImplementation(async flag => flag === FLAGS.PLAN_CODE_AUDIT_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
     vi.mocked(readAndEvaluateAcceptanceBarLifecycle).mockResolvedValue({
-      phase: 'ship', applicable: true, satisfied: true, codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, message: null,
+      phase: 'ship', applicable: true, satisfied: true, codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, staleGradingScorecardId: null, message: null,
       nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
     });
     const current = [{ evidenceKind: 'operational' as const, evidenceRef: 'probe:current', sourceFingerprint: 'now' }];

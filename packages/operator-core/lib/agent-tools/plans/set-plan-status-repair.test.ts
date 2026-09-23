@@ -14,6 +14,7 @@ const lifecycle = (code: AcceptanceBarSnapshotCode, action = 'Measured repair.')
   blockingBars: [],
   contractCodes: [code],
   codeAttribution: [{ code, barKeys: [] }],
+  staleGradingScorecardId: null,
   message: 'inspect',
   nextRepair: { code, barKey: null, action },
 });
