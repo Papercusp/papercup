@@ -67,8 +67,10 @@ function announcementState(row: AwaitRow): 'declared' | 'fired' | 'cancelled' | 
 function currentState(
   currentAnnouncement: AwaitRow | null,
   fireLatch: KeyFireRow | null,
-): 'declared' | 'fired' | 'cancelled' | 'expired' | 'superseded' | 'fired_undeclared' | 'undeclared' {
+  composedRoot?: { state: 'active' | 'fired' | 'cancelled' | 'missing' } | null,
+): 'declared' | 'fired' | 'cancelled' | 'expired' | 'superseded' | 'fired_undeclared' | 'undeclared' | 'composed_active' | 'composed_fired' | 'composed_cancelled' | 'composed_missing' {
   if (currentAnnouncement) return announcementState(currentAnnouncement);
+  if (composedRoot) return `composed_${composedRoot.state}`;
   if (fireLatch) return 'fired_undeclared';
   return 'undeclared';
 }
@@ -247,6 +249,7 @@ export default defineTool({
     );
     const currentAnnouncement = eventHistory?.announcements.find((a) => !a.supersededAt) ?? null;
     const fireLatch = eventHistory?.fireLatch ?? null;
+    const composedRoot = eventHistory?.composedRoot ?? null;
     const authoritativeGeneration = currentAnnouncement?.causalGeneration ?? null;
     const resyncRequired = args.after_generation != null && args.after_generation !== authoritativeGeneration;
     const resyncReason = args.after_generation == null
@@ -265,7 +268,21 @@ export default defineTool({
       ? {
           event: args.event,
           current_generation: authoritativeGeneration,
-          current_state: currentState(currentAnnouncement, fireLatch),
+          current_state: currentState(currentAnnouncement, fireLatch, composedRoot),
+          ...(composedRoot
+            ? {
+                composed_root: {
+                  root_id: composedRoot.rootId,
+                  state: composedRoot.state,
+                  ...(composedRoot.requiredCount != null ? { required: composedRoot.requiredCount } : {}),
+                  ...(composedRoot.firedCount != null ? { fired_count: composedRoot.firedCount } : {}),
+                  ...(composedRoot.firedAt !== undefined ? { fired_at: composedRoot.firedAt } : {}),
+                  ...(composedRoot.cancelledAt !== undefined ? { cancelled_at: composedRoot.cancelledAt } : {}),
+                  ...(composedRoot.expiresTs !== undefined ? { expires_ts: composedRoot.expiresTs } : {}),
+                  ...(composedRoot.timeoutBehavior ? { on_timeout: composedRoot.timeoutBehavior } : {}),
+                },
+              }
+            : {}),
           ...(fireLatch
             ? {
                 fire_latch: {
@@ -308,7 +325,15 @@ export default defineTool({
             await_id: a.id,
             subscriber_id: a.subscriberId,
             policy: a.policy,
-            state: a.cancelledAt ? 'cancelled' : a.firedAt ? (a.firedReason === 'expired' ? 'expired' : 'fired') : 'registered',
+            state: a.rootId != null && composedRoot?.rootId === a.rootId
+              ? composedRoot.state === 'fired'
+                ? 'fired'
+                : composedRoot.state === 'cancelled'
+                  ? 'cancelled'
+                  : composedRoot.state === 'missing'
+                    ? 'orphaned'
+                    : 'registered'
+              : a.cancelledAt ? 'cancelled' : a.firedAt ? (a.firedReason === 'expired' ? 'expired' : 'fired') : 'registered',
             registered_at: a.createdAt,
             fired_at: a.firedAt,
             fired_reason: a.firedReason,

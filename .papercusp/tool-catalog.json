@@ -19659,7 +19659,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You finished (or consciously declined) a recorded owner directive — close it WITH evidence the moment the completion report goes to the owner. An open directive keeps rendering to you and every workspace peer; a stale-open one erodes the surface.",
-        "notWhen": "The work is merely in progress — the row rendering every wake IS the point; checkpoint progress on the work-item instead. Never disposition a directive you did not verify done.",
+        "notWhen": "Work still in progress (checkpoint the work-item). Never pick the id by matching text — use the \"YOUR owner directive #N\" your turn carried; identical text is often open in other sessions.",
         "chaining": "orders:list { open: true } → work → orders:disposition. Re-record a re-issued order as a new row."
       }
     },
@@ -19734,7 +19734,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Orienting on what the workspace still OWES the owner, before loop:end / wind-down, or auditing how past directives were closed. Use { state } to separate done from declined.",
-        "notWhen": "You have the id and want the full verbatim — orders:get. Do NOT filter the returned page client-side: `limit` truncates in SQL first, so a match can be cut before you see it — pass { state } instead."
+        "notWhen": "Finding YOUR directive: use the id your turn gave you, or `mine`/`yours` — never a text match (the same text is often open in other sessions). Full verbatim by id: orders:get. Filter state with { state }, not client-side (`limit` cuts first)."
       }
     },
     {

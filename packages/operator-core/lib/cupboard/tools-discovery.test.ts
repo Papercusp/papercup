@@ -13,6 +13,8 @@
  *   - q/status filters narrow without breaking counts.
  */
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+import { addresseeArg } from '../agent-tools/_addressee-arg';
 import { assemblePackCatalog, type PackCatalogInputs } from './pack-catalog';
 import {
   buildToolsDiscovery,
@@ -304,6 +306,19 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toContain('stallReds?:integer');
     expect(txt).toContain('enabled?:boolean');
     expect(txt).toContain('reason?:string');
+  });
+
+  it('retains nested discriminated-union prohibitions in discovery text', () => {
+    const schema = z.toJSONSchema(z.object({ addressee: addresseeArg }).strict());
+    const text = schemaToText(schema);
+
+    expect(text).toContain('constraint:addressee (');
+    expect(text).toContain('when from=contact => contactExternalId required');
+    expect(text).toContain('when from!=contact => contactExternalId forbidden');
+    expect(text).toContain('when from=thread-participant => source required');
+    expect(text).toContain('when from!=thread-participant => source forbidden');
+    expect(text).toContain('when from=thread-participant => externalId required');
+    expect(text).toContain('when from!=thread-participant => externalId forbidden');
   });
 
   it('preserves explicit discriminator-dependent required and forbidden fields', () => {

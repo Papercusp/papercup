@@ -528,6 +528,7 @@ export async function reservePendingGradingAudit(
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND payload->'observation'->'retracted' IS NULL
          AND (
            (
              payload->'observation'->'gradingAudit'->>'state' = 'pending'
@@ -595,18 +596,24 @@ export async function reservePendingGradingAudit(
     }
 
     const current = await tx<
-      { state: string | null; has_reservation: boolean; backoff: GradingAuditDispatchBackoff | null }[]
+      {
+        state: string | null;
+        has_reservation: boolean;
+        backoff: GradingAuditDispatchBackoff | null;
+        retracted: boolean;
+      }[]
     >`
       SELECT payload->'observation'->'gradingAudit'->>'state' AS state,
              (payload->'observation'->'gradingAudit' ? 'dispatchReservation') AS has_reservation,
-             payload->'observation'->'gradingAudit'->'dispatchBackoff' AS backoff
+             payload->'observation'->'gradingAudit'->'dispatchBackoff' AS backoff,
+             payload->'observation'->'retracted' IS NOT NULL AS retracted
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
        FOR UPDATE`;
     const row = current[0];
-    if (row?.state !== 'pending') return { status: 'not-pending' as const };
+    if (row?.state !== 'pending' || row.retracted) return { status: 'not-pending' as const };
     // Report the quota wall ahead of the reservation: a backoff is only written
     // as the reservation is released, so a live one is the specific reason this
     // claim was refused — and a caller that reads 'already-reserved' would wait
@@ -666,7 +673,8 @@ export async function releasePendingGradingAudit(
 function currentPendingScorecard(card: ScorecardRow): boolean {
   const audit = card.gradingAudit;
   const reopenableSettled =
-    audit !== undefined && audit.state !== 'pending' && reopenableSettledAuditIdentity(card.gradingAuditCurrentness);
+    (audit?.state === 'passed' || audit?.state === 'failed') &&
+    reopenableSettledAuditIdentity(card.gradingAuditCurrentness);
   return (
     (audit?.state === 'pending' || reopenableSettled) &&
     !card.supersededBy &&
@@ -688,7 +696,7 @@ function gradingAuditBrief(card: ScorecardRow): string {
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
-    `Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state (and its superseded/retracted status): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is 'passed' or 'failed', or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
+    `Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state (and its superseded/retracted status): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is not 'pending' (including 'passed', 'failed', or 'cancelled'), or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
   ].join('\n\n');
 }

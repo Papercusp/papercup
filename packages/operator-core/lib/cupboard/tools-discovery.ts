@@ -189,19 +189,40 @@ export function schemaCallConstraintAnnotation(
   inputSchema: unknown,
   options: { compact?: boolean } = {},
 ): string {
-  const annotations = new Map<string, string>();
+  const annotations = new Map<string, { path: string; constraint: string }>();
   const ancestors = new Set<object>();
+  let inferredNestedUnion = false;
+  const addAnnotation = (path: string, constraint: string): void => {
+    const displayPath = path || '$';
+    annotations.set(`${displayPath}\u0000${constraint}`, { path: displayPath, constraint });
+  };
   const walk = (value: unknown, path: string): void => {
     if (!value || typeof value !== 'object' || Array.isArray(value) || ancestors.has(value)) return;
     ancestors.add(value);
     const node = value as Record<string, unknown>;
     const constraint = node['x-papercusp-call-constraint'];
     if (typeof constraint === 'string' && constraint.trim()) {
-      annotations.set(path || '$', constraint.trim());
+      addAnnotation(path, constraint.trim());
     }
     for (const key of ['anyOf', 'oneOf']) {
       const branches = node[key];
       if (Array.isArray(branches)) {
+        // Keep inference conservative: explicit validator-owned constraints are
+        // authoritative and must not be crowded out by a second inferred layer.
+        // For otherwise-unannotated tools, one bounded nested-union hint repairs
+        // the lossy flattened view without flooding large contracts such as
+        // work_items:complete with branch prose.
+        if (path && !inferredNestedUnion && annotations.size === 0) {
+          const objectBranches = branches.filter(
+            (branch): branch is Record<string, unknown> =>
+              !!branch && typeof branch === 'object' && !Array.isArray(branch),
+          );
+          const conditional = unionConditionalHint(objectBranches);
+          if (conditional) {
+            addAnnotation(path, conditional);
+            inferredNestedUnion = true;
+          }
+        }
         for (const branch of branches) walk(branch, path);
       }
     }
@@ -216,8 +237,8 @@ export function schemaCallConstraintAnnotation(
   };
   walk(inputSchema, '');
   const firstPathByConstraint = new Map<string, string>();
-  return [...annotations.entries()]
-    .map(([path, constraint]) => {
+  return [...annotations.values()]
+    .map(({ path, constraint }) => {
       const firstPath = firstPathByConstraint.get(constraint);
       firstPathByConstraint.set(constraint, firstPath ?? path);
       // Compact discovery has a hard result budget. Repeating a long

@@ -385,12 +385,26 @@ export function formatStandingRedRow(r: PerFileGateEntry, { dirtyPathCount, comm
  * the lot as fleet drift. Filed four separate times before the wording was fixed
  * (EI-18731016038876755, which added `--files`, plus three later duplicates).
  *
- * @param {{count: number, explicit: boolean}} opts
+ * WHY THE COUNT SPLITS (EI-23783377300333258). "YOU NAMED" is a claim about the caller's
+ * ARGUMENTS, and under `--files` the reported set is deliberately WIDER than the argument:
+ * cause-aware widening (EI-18756182128903253) also gates a file reached from a type one of the
+ * named files exports — the "I added a required field, the fixture that constructs it broke, and
+ * the fixture is not in my diff" shape. Measured: TWO paths named, NINE reported, all nine
+ * labelled `file(s) YOU NAMED`. The result was correct and the widening is the whole point; only
+ * the label lied. It lies expensively, because the natural reading of a false claim about your
+ * arguments is "I passed the wrong --files", which sends the reader off to re-type the flag at
+ * exactly the moment the gate is handing them a real finding — and re-scoping can NEVER clear a
+ * type-reached file. `typeAttributed` is already carried separately for precisely this purpose
+ * ("so callers/reporting can say WHY a file outside the diff still gates"), so the honest wording
+ * costs one count. It defaults to 0, which reproduces the earlier wording verbatim.
+ *
+ * @param {{count: number, explicit: boolean, typeAttributedCount?: number}} opts
  * @returns {string}
  */
-export function formatAttributionHeadline({ count, explicit }: {
+export function formatAttributionHeadline({ count, explicit, typeAttributedCount }: {
     count: number;
     explicit: boolean;
+    typeAttributedCount?: number;
 }): string;
 /**
  * The explanation printed under a `fail-new-file` verdict, worded per how the changed-set was

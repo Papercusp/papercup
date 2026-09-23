@@ -231,6 +231,52 @@ describe('P-007 owner-directive buckets', () => {
     });
   });
 
+  describe('grouped by addressee (directive-ownership-clarity-2026-09-23 P-003)', () => {
+    const PEER_B = 'su-bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+    const REPORT = 'Another agent ran into similar issues and wrote this report and plan';
+
+    it('two directives of ONE peer render as ONE line under that peer, with its state and current work', () => {
+      const rendered = lines(
+        directive({ id: 189, recordedBy: PEER, addressedToMe: false, addresseeState: 'live', addresseeIntent: 'fixing dead-agent ranking', verbatimText: 'rank dead agents' }),
+        directive({ id: 190, recordedBy: PEER, addressedToMe: false, addresseeState: 'live', addresseeIntent: 'fixing dead-agent ranking', verbatimText: 'do not overuse it' }),
+      );
+
+      expect(rendered).toHaveLength(1);
+      expect(rendered[0]).toMatch(new RegExp(`^- 👥 ${PEER.slice(0, 12)}`));
+      expect(rendered[0]).toContain('(live; working on: fixing dead-agent ranking)');
+      expect(rendered[0]).toContain('THEIR open owner directives');
+      expect(rendered[0]).toContain('#189: ');
+      expect(rendered[0]).toContain('#190: ');
+      expect(rendered[0]).toContain('work_items:create { directiveRef: <189|190> }');
+    });
+
+    it('THE 2026-09-23 SHAPE: identical text pasted into my session and two peers renders under three different owners', () => {
+      const rendered = lines(
+        directive({ id: 268, recordedBy: ME, addressedToMe: true, verbatimText: REPORT }),
+        directive({ id: 248, recordedBy: PEER, addressedToMe: false, verbatimText: REPORT }),
+        directive({ id: 256, recordedBy: PEER_B, addressedToMe: false, addresseeState: 'ended', verbatimText: REPORT }),
+      );
+
+      expect(rendered).toHaveLength(3);
+      // Only MY copy carries the obligation and the close instruction.
+      expect(rendered[0]).toContain('YOURS · owner directive #268');
+      expect(rendered[0]).toContain('orders:disposition { id: 268');
+      // Each peer copy sits under its own agent, and never says YOURS or offers a close.
+      expect(rendered[1]).toMatch(new RegExp(`^- 👥 ${PEER.slice(0, 12)}.*#248`));
+      expect(rendered[2]).toMatch(new RegExp(`^- 👥 ${PEER_B.slice(0, 12)} \\(ended\\).*#256`));
+      for (const peerLine of rendered.slice(1)) {
+        expect(peerLine).not.toContain('YOURS');
+        expect(peerLine).not.toContain('orders:disposition');
+      }
+    });
+
+    it('a peer whose state and intent are unknown still renders its group, without an empty "()"', () => {
+      const [line] = lines(directive({ id: 42, recordedBy: PEER, addressedToMe: false }));
+      expect(line).toMatch(new RegExp(`^- 👥 ${PEER.slice(0, 12)} — THEIR open owner directives: #42`));
+      expect(line).not.toContain('()');
+    });
+  });
+
   /**
    * PERMANENT CONTROL — proves these assertions are sensitive to the field the
    * whole split turns on. A renderer that stopped reading `addressedToMe` would

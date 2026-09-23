@@ -691,8 +691,8 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
       candidates: [
         liveCand('r-a', 0.9, 0.8), // the original (expiring) selectee
         liveCand('r-b', 0.6, 0.5), // above-floor live → refill via 'floor'
-        liveCand('r-dead', 0.55, 0.5, 'ended'), // route-time-dead → excluded
-        liveCand('r-d', 0.3, 0.2), // below-floor live → refill via 'minimum'
+        liveCand('r-dead', 0.55, 0.5, 'ended'), // above-floor DEAD → refill via 'floor' too (D-002)
+        liveCand('r-d', 0.3, 0.2), // below-floor live → NOT promoted past the dead one
       ],
       selection: { min: 2, max: 2, selected: [selEntry('r-a')] },
     };
@@ -709,8 +709,13 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     const routingRow = routingOf(row);
     expect(routingRow.selection?.selected).toHaveLength(3);
     expect(routingRow.selection?.selected?.[1]).toMatchObject({ ownerId: 'r-b', via: 'floor', refill: true });
-    expect(routingRow.selection?.selected?.[2]).toMatchObject({ ownerId: 'r-d', via: 'minimum', refill: true });
-    expect(routingRow.selection?.refill).toMatchObject({ added: ['r-b', 'r-d'] });
+    // R-2 in the EXPIRY refill: the above-floor DEAD candidate is refilled via
+    // 'floor' in its own rank position, and the below-floor LIVE `r-d` is never
+    // promoted past it. Before D-002 this slot held r-d via 'minimum' — the
+    // liveness gate skipped r-dead and the min was then filled by a worse match.
+    expect(routingRow.selection?.selected?.[2]).toMatchObject({ ownerId: 'r-dead', via: 'floor', refill: true });
+    expect(routingRow.selection?.refill).toMatchObject({ added: ['r-b', 'r-dead'] });
+    expect(routingRow.selection?.selected?.map((s) => s.ownerId)).not.toContain('r-d');
     expect(reachCalls).toHaveLength(1);
     expect(reachCalls[0]).toMatchObject({ responder: 'r-b', conversationId: id });
     expect(reachCalls[0].summary).toContain('min-answers refill');

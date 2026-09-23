@@ -14,6 +14,7 @@ use crate::models::{
     ToolPaletteHit, ToolPaletteRecipe, TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
+use crate::self_install::{LifecycleOp, LifecycleView};
 use crate::su_session::SuSessionInventoryEntry;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pui_companion_proto::Topology;
@@ -209,6 +210,13 @@ pub enum Action {
     /// A command-palette workbench command (P12b) — the run loop dispatches it to
     /// the workbench-command task (list/save/restore layouts + crews).
     Workbench(PaletteCommand),
+    /// Preview (`confirmed: false`) or apply an install-lifecycle action
+    /// (P-011 / D-016) off the UI thread; the result returns as
+    /// `Event::Lifecycle`. Apply is only ever emitted by `y` on an armed panel.
+    Lifecycle {
+        op: LifecycleOp,
+        confirmed: bool,
+    },
     /// Execute one P-013 Inbox quick action against the immutable item snapshot
     /// captured before the answer composer opened. The run loop performs the
     /// owning backend writes, then refetches `plans:attention`.
@@ -900,6 +908,10 @@ pub enum PaletteCommand {
     /// `:stack` — gather the work area into one stacked group (dockview D-008).
     /// Resolved to `DockCmd::Stack` against the live topology at Enter.
     Stack,
+    /// `:about` · `:update [path]` · `:rollback` · `:diagnostics` · `:uninstall
+    /// [purge]` — the install lifecycle (P-011 / D-016). Routed to
+    /// `Action::Lifecycle`, never to the operator-bound workbench task.
+    Lifecycle(LifecycleOp),
     /// `:float [target]` — float/embed the HUD (bare) or a named work pane.
     /// `target` is a pane id or a title/command substring; resolved at Enter.
     Float {
@@ -1036,6 +1048,28 @@ fn parse_optional_tool_args(input: &str) -> Result<Map<String, Value>, String> {
         Ok(Value::Object(map)) => Ok(map),
         Ok(_) => Err("optional arguments must be a JSON object".into()),
         Err(error) => Err(format!("optional arguments are not valid JSON: {error}")),
+    }
+}
+
+/// The palette's install-lifecycle panel (P-011 / D-016): a preview, a result,
+/// or `busy` while the run loop works on it. `y` applies `view.armed`; keys are
+/// ignored while busy so a change in flight cannot be dismissed into ambiguity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecyclePanel {
+    pub view: LifecycleView,
+    pub busy: bool,
+}
+
+impl LifecyclePanel {
+    fn working(op: &LifecycleOp, what: &str) -> Self {
+        Self {
+            view: LifecycleView {
+                title: op.title().to_string(),
+                lines: vec![what.to_string()],
+                armed: None,
+            },
+            busy: true,
+        }
     }
 }
 
@@ -1184,6 +1218,25 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
         "dock" if !arg.is_empty() => Some(PaletteCommand::Dock { side: arg }),
         // `:layout <next|prev|name>` — cycle or select a swap preset.
         "layout" if !arg.is_empty() => Some(PaletteCommand::Layout { which: arg }),
+        // ── install lifecycle (P-011 / D-016; PUBLIC_RELEASE_UX "Files,
+        // installation, and support"). Local — no operator needed. Every change
+        // previews first and applies only on `y`. ──
+        "about" => Some(PaletteCommand::Lifecycle(LifecycleOp::About)),
+        "updates" | "check-updates" => Some(PaletteCommand::Lifecycle(LifecycleOp::CheckUpdates)),
+        "update" if arg.is_empty() => Some(PaletteCommand::Lifecycle(LifecycleOp::CheckUpdates)),
+        "update" => Some(PaletteCommand::Lifecycle(LifecycleOp::Update {
+            from: arg,
+            sha256: None,
+        })),
+        "rollback" | "roll-back" => Some(PaletteCommand::Lifecycle(LifecycleOp::Rollback)),
+        "uninstall" => match arg.as_str() {
+            "" => Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall { purge: false })),
+            "purge" | "--purge" => {
+                Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall { purge: true }))
+            }
+            _ => None,
+        },
+        "diagnostics" | "diag" => Some(PaletteCommand::Lifecycle(LifecycleOp::Diagnostics)),
         _ => None,
     }
 }
@@ -2193,6 +2246,8 @@ pub struct App {
     pub cupboard_total: Option<usize>,
     pub cupboard_kind_facets: std::collections::BTreeMap<String, usize>,
     pub cupboard_confirm: Option<String>,
+    /// The install-lifecycle panel (P-011 / D-016) opened from the palette.
+    pub lifecycle: Option<LifecyclePanel>,
     /// Conversations tab (Brief 25): the fetched conversation list under the
     /// active state/kind filter (`conv_state_idx` indexes `CONV_STATES`,
     /// `conv_kind_idx` indexes `CONV_KINDS`; "all" sends no filter), an optional
@@ -2752,6 +2807,7 @@ impl App {
             cupboard_total: None,
             cupboard_kind_facets: std::collections::BTreeMap::new(),
             cupboard_confirm: None,
+            lifecycle: None,
             conversations: Vec::new(),
             conversation_sel: 0,
             conv_state_idx: 0,
@@ -10232,6 +10288,10 @@ impl App {
                 self.last_error = Some(e);
                 Action::Render
             }
+            Event::Lifecycle(view) => {
+                self.lifecycle = Some(LifecyclePanel { view, busy: false });
+                Action::Render
+            }
             Event::SetupProjectCreated { slug, result } => {
                 match result {
                     Ok(projects) => {
@@ -10993,7 +11053,39 @@ impl App {
         }
     }
 
+    /// Keys for the install-lifecycle panel: `y` applies the armed change (and
+    /// only that), Esc / Enter / q close. Nothing reacts while it is busy.
+    fn lifecycle_key(&mut self, code: KeyCode) -> Action {
+        let Some(panel) = self.lifecycle.as_mut() else {
+            return Action::None;
+        };
+        if panel.busy {
+            return Action::None;
+        }
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => match panel.view.armed.take() {
+                Some(op) => {
+                    *panel = LifecyclePanel::working(&op, "working… (do not quit)");
+                    Action::Lifecycle {
+                        op,
+                        confirmed: true,
+                    }
+                }
+                None => Action::None,
+            },
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.lifecycle = None;
+                Action::Render
+            }
+            _ => Action::None,
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        // The install-lifecycle panel is modal while open (P-011 / D-016).
+        if self.lifecycle.is_some() {
+            return self.lifecycle_key(code);
+        }
         // First-run tutorial (P9): Esc skips; any other key advances a step and
         // closes after the last. Swallows the key (nothing else reacts).
         if self.show_tutorial {
@@ -11631,6 +11723,15 @@ impl App {
                         // loop (companion or CLI fallback). ──
                         // `:stack` — gather the work area; needs the companion
                         // (no topology → no ids → a helpful error, not a no-op).
+                        // Install lifecycle (P-011 / D-016): local, so it works with
+                        // no operator; the run loop previews and `y` applies.
+                        Some(PaletteCommand::Lifecycle(op)) => {
+                            self.lifecycle = Some(LifecyclePanel::working(&op, "checking…"));
+                            Action::Lifecycle {
+                                op,
+                                confirmed: false,
+                            }
+                        }
                         Some(PaletteCommand::Stack) => {
                             let ids = self.work_pane_ids();
                             if ids.len() >= 2 {
@@ -20489,6 +20590,104 @@ mod tests {
             json!(3)
         );
         assert!(parse_optional_tool_args("[]").is_err());
+    }
+
+    #[test]
+    fn install_lifecycle_palette_commands_parse() {
+        use crate::self_install::LifecycleOp as L;
+        let lifecycle = |op| Some(PaletteCommand::Lifecycle(op));
+        assert_eq!(parse_palette_command(":about"), lifecycle(L::About));
+        assert_eq!(parse_palette_command(":update"), lifecycle(L::CheckUpdates));
+        assert_eq!(parse_palette_command("updates"), lifecycle(L::CheckUpdates));
+        assert_eq!(
+            parse_palette_command(":update /tmp/pui-0.2.0-linux-x86_64.tar.gz"),
+            lifecycle(L::Update {
+                from: "/tmp/pui-0.2.0-linux-x86_64.tar.gz".into(),
+                sha256: None,
+            })
+        );
+        assert_eq!(parse_palette_command(":rollback"), lifecycle(L::Rollback));
+        assert_eq!(
+            parse_palette_command(":uninstall"),
+            lifecycle(L::Uninstall { purge: false })
+        );
+        assert_eq!(
+            parse_palette_command(":uninstall purge"),
+            lifecycle(L::Uninstall { purge: true })
+        );
+        assert_eq!(
+            parse_palette_command(":uninstall everything"),
+            None,
+            "an unknown uninstall argument is refused, never guessed"
+        );
+        assert_eq!(parse_palette_command(":diagnostics"), lifecycle(L::Diagnostics));
+    }
+
+    #[test]
+    fn install_lifecycle_changes_apply_only_on_y_after_a_preview() {
+        use crate::self_install::{LifecycleOp as L, LifecycleView};
+        let mut app = App::new();
+        app.palette_open = true;
+        app.palette_input = ":rollback".into();
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Lifecycle {
+                op: L::Rollback,
+                confirmed: false
+            }
+        );
+        assert!(app.lifecycle.as_ref().is_some_and(|panel| panel.busy));
+        assert_eq!(
+            app.on_key(KeyCode::Char('y'), KeyModifiers::NONE),
+            Action::None,
+            "nothing reacts while the preview is being computed"
+        );
+
+        app.update(Event::Lifecycle(LifecycleView {
+            title: "Roll back PUI".into(),
+            lines: vec!["rollback: 0.2.0-b → 0.1.0-a".into()],
+            armed: Some(L::Rollback),
+        }));
+        assert_eq!(app.on_key(KeyCode::Char('n'), KeyModifiers::NONE), Action::None);
+        assert_eq!(
+            app.on_key(KeyCode::Char('y'), KeyModifiers::NONE),
+            Action::Lifecycle {
+                op: L::Rollback,
+                confirmed: true
+            }
+        );
+        assert!(app
+            .lifecycle
+            .as_ref()
+            .is_some_and(|panel| panel.busy && panel.view.armed.is_none()));
+
+        app.update(Event::Lifecycle(LifecycleView {
+            title: "Roll back PUI".into(),
+            lines: vec!["✓ rolled back to 0.1.0-a".into()],
+            armed: None,
+        }));
+        assert_eq!(
+            app.on_key(KeyCode::Char('y'), KeyModifiers::NONE),
+            Action::None,
+            "a result has nothing armed"
+        );
+        assert_eq!(app.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render);
+        assert!(app.lifecycle.is_none());
+    }
+
+    #[test]
+    fn closing_an_armed_lifecycle_preview_applies_nothing() {
+        use crate::self_install::{LifecycleOp as L, LifecycleView};
+        for close in [KeyCode::Esc, KeyCode::Enter, KeyCode::Char('q')] {
+            let mut app = App::new();
+            app.update(Event::Lifecycle(LifecycleView {
+                title: "Uninstall PUI".into(),
+                lines: vec!["remove releases: …".into()],
+                armed: Some(L::Uninstall { purge: true }),
+            }));
+            assert_eq!(app.on_key(close, KeyModifiers::NONE), Action::Render, "{close:?}");
+            assert!(app.lifecycle.is_none(), "{close:?}");
+        }
     }
 
     #[test]

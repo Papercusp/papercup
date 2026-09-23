@@ -548,7 +548,7 @@ describe('dispatchPendingGradingAudits', () => {
     const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
     expect(brief).toContain("Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state");
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");
-    expect(brief).toContain("state is 'passed' or 'failed'");
+    expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');
   });
 
@@ -583,6 +583,39 @@ describe('dispatchPendingGradingAudits', () => {
       workspaceId: 'ws-test',
       currentness,
     });
+  });
+
+  it('never reopens a cancelled audit stamp even when its recorded audit identity is stale', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-cancelled-audit', {
+        retracted: { at: '2026-09-20T04:02:52.814Z', by: 'su-author', reason: 'withdrawn' },
+        gradingAudit: {
+          state: 'cancelled',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-09-20T04:02:01.584Z',
+          rubricRevision: 6,
+          criteriaHash: 'hash-before-retraction',
+        },
+        gradingAuditCurrentness: {
+          state: 'stale',
+          reason: 'revision-mismatch',
+          recordedRevision: 6,
+          currentRevision: 7,
+          recordedCriteriaHash: 'hash-before-retraction',
+          currentCriteriaHash: 'hash-current',
+        },
+      }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-cancelled-audit'], ctx }, d);
+
+    expect(result.receipts).toEqual([
+      expect.objectContaining({ issueId: 'EI-cancelled-audit', state: 'skipped' }),
+    ]);
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('reopens a settled legacy card whose recorded audit identity is missing', async () => {

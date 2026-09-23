@@ -13,6 +13,7 @@ function transactionHarness(options: {
   claim: boolean;
   currentState?: string;
   hasReservation?: boolean;
+  retracted?: boolean;
   backoff?: unknown;
   confirmReservation?: boolean;
 }) {
@@ -33,10 +34,15 @@ function transactionHarness(options: {
           state: options.currentState ?? 'failed',
           has_reservation: options.hasReservation ?? false,
           backoff: options.backoff ?? null,
+          retracted: options.retracted ?? false,
         },
       ];
     }
-    if (text.trim() === 'FALSE' || text.includes("gradingAudit'->>'state' IN ('passed', 'failed')")) return [];
+    if (
+      text.trim() === 'FALSE' ||
+      text.includes("gradingAudit'->>'state' IN ('passed', 'failed')") ||
+      text.includes("payload->'observation'->'retracted' IS NULL")
+    ) return [];
     throw new Error(`unexpected query: ${text}`);
   }) as never;
   h.boundedOrgTxn.mockImplementation(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx));
@@ -74,6 +80,25 @@ describe('reservePendingGradingAudit', () => {
       "superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'",
     );
     expect(confirmation?.text).toContain('FOR UPDATE');
+  });
+
+  it('does not report a live reservation for a retracted card from a stale candidate snapshot', async () => {
+    const { statements } = transactionHarness({
+      claim: false,
+      currentState: 'pending',
+      hasReservation: true,
+      retracted: true,
+    });
+
+    const result = await reservePendingGradingAudit('EI-retracted', 'grading-audit:retracted', {
+      workspaceId: 'ws-test',
+    });
+
+    expect(result).toEqual({ status: 'not-pending' });
+    const claim = statements.find((statement) => statement.text.includes('RETURNING feature_id'));
+    expect(claim?.text).toContain("payload->'observation'->'retracted' IS NULL");
+    const current = statements.find((statement) => statement.text.includes('SELECT payload->'));
+    expect(current?.text).toContain("payload->'observation'->'retracted' IS NOT NULL AS retracted");
   });
 
   it('executes the legacy identity reopen writer with the current rubric identity', async () => {

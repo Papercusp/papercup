@@ -28,7 +28,7 @@ export default defineTool({
     when:
       'Orienting on what the workspace still OWES the owner, before loop:end / wind-down, or auditing how past directives were closed. Use { state } to separate done from declined.',
     notWhen:
-      'You have the id and want the full verbatim — orders:get. Do NOT filter the returned page client-side: `limit` truncates in SQL first, so a match can be cut before you see it — pass { state } instead.',
+      'Finding YOUR directive: use the id your turn gave you, or `mine`/`yours` — never a text match (the same text is often open in other sessions). Full verbatim by id: orders:get. Filter state with { state }, not client-side (`limit` cuts first).',
     seeAlso: ['orders:get', 'orders:record', 'orders:disposition'],
   },
   capability: 'coord:read',
@@ -59,12 +59,21 @@ export default defineTool({
     // agenda action. They are ANNOTATED instead — that annotation is also what
     // explains why a row visible here is absent from your Orientation banner.
     let clearedByMe = new Set<number>();
+    let me: string | null = null;
     try {
-      const ownerId = resolveAgentIdentity(ctx).ownerId;
-      clearedByMe = await listClearedDirectiveIds({ ownerId, workspaceId });
+      me = resolveAgentIdentity(ctx).ownerId;
+      clearedByMe = await listClearedDirectiveIds({ ownerId: me, workspaceId });
     } catch {
       /* unattributable caller — no agenda to annotate against */
     }
+    // directive-ownership-clarity-2026-09-23 P-003 / D-001: every row says whose it
+    // is, your own rows come first, and `byAddressee` groups the rest under their
+    // session. On 2026-09-23 an agent regex-filtered this list by text and closed
+    // five other sessions' copies of the same pasted report; `mine` is the field
+    // to filter on, and your own directive's id arrived with the turn itself.
+    const ordered = [...rows.filter((r) => r.recordedBy === me), ...rows.filter((r) => r.recordedBy !== me)];
+    const byAddressee: Record<string, number[]> = {};
+    for (const r of ordered) if (r.recordedBy !== me) (byAddressee[r.recordedBy] ??= []).push(r.id);
     return {
       content: [
         {
@@ -72,8 +81,12 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             count: rows.length,
-            directives: rows.map((r) => ({
+            yours: ordered.filter((r) => r.recordedBy === me).map((r) => r.id),
+            byAddressee,
+            directives: ordered.map((r) => ({
               id: r.id,
+              mine: r.recordedBy === me,
+              addressedTo: r.recordedBy,
               open: r.dispositionedAtMs == null,
               state: ownerDirectiveState(r),
               ...(clearedByMe.has(r.id)

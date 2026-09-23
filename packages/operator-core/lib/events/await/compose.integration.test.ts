@@ -300,6 +300,14 @@ describe('composed threshold-tree awaits — store+engine end-to-end (real PG)',
          WHERE d.await_id = ${r.anchorAwaitId}
       `;
       expect(settled).toEqual([{ status: 'delivered', channel: 'inbox', last_error: null, cancelled_at: null }]);
+
+      const eventStatus = await store.inspectEventKey(`composed-root:${r.rootId}`);
+      expect(eventStatus.composedRoot).toMatchObject({
+        rootId: r.rootId,
+        state: 'fired',
+        timeoutBehavior: 'wake',
+      });
+      expect(eventStatus.waiters).toMatchObject([{ id: r.anchorAwaitId, rootId: r.rootId }]);
     } finally {
       engine.setAutoPumpEnabledForTests(previousAutoPump);
     }

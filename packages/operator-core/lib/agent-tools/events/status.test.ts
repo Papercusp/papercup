@@ -473,6 +473,48 @@ describe('events:status projection', () => {
     expect('advice' in out.event_inspection).toBe(false);
   });
 
+  it('reports a fired composed-root anchor as consumed, not an undeclared registered waiter', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [],
+      waiters: [{
+        id: 187540,
+        eventKey: 'composed-root:406',
+        rootId: 406,
+        subscriberId: 'su-peer',
+        policy: 'wake',
+        firedAt: null,
+        cancelledAt: null,
+      }],
+      deliveries: [{
+        ...DELIVERY_ROW,
+        id: 364289,
+        awaitId: 187540,
+        eventKey: 'composed-root:406',
+        channel: 'psu-socket-inject',
+      }],
+      fireLatch: null,
+      composedRoot: {
+        rootId: 406,
+        state: 'fired',
+        requiredCount: 2,
+        firedCount: 0,
+        firedAt: '2026-09-19T14:20:37.613Z',
+        cancelledAt: null,
+        expiresTs: '2026-09-19T14:20:35.167Z',
+        timeoutBehavior: 'wake',
+      },
+    } as never);
+
+    const out = await call({ event: 'composed-root:406' });
+
+    expect(out.event_inspection).toMatchObject({
+      current_state: 'composed_fired',
+      composed_root: { root_id: 406, state: 'fired', fired_count: 0, on_timeout: 'wake' },
+      waiters: [{ await_id: 187540, state: 'fired' }],
+      wake_outcomes: [{ delivery_id: 364289, turn_invoked: true }],
+    });
+  });
+
   it('an active announcement wins over a stale fire latch (declared/fired states unaffected)', async () => {
     vi.mocked(inspectEventKey).mockResolvedValueOnce({
       announcements: [{

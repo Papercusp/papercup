@@ -13,6 +13,7 @@
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
+import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
@@ -841,6 +842,19 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       },
     });
     expect(compact).toBe('wait?:object{max_sec:integer seconds}');
+  });
+
+  it('publishes nested addressee-union prohibitions in the compact tools:find schema', () => {
+    const schema = z.toJSONSchema(z.object({ addressee: addresseeArg }).strict());
+    const compact = compactSchemaForResult(schema);
+
+    expect(addresseeArg.safeParse({ from: 'owner-instruction' }).success).toBe(true);
+    expect(addresseeArg.safeParse({ from: 'owner-instruction', source: 'campaign' }).success).toBe(false);
+    expect(compact).toContain('constraint:addressee (');
+    expect(compact).toContain('when from=contact => contactExternalId required');
+    expect(compact).toContain('when from!=contact => contactExternalId forbidden');
+    expect(compact).toContain('when from=thread-participant => source required');
+    expect(compact).toContain('when from!=thread-participant => source forbidden');
   });
 
   it('retains required shallow fields beside a wide nested field in the bounded fallback (EI-21985077629322871)', () => {

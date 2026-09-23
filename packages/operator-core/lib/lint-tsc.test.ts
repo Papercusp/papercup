@@ -1203,6 +1203,59 @@ describe('formatAttributionHeadline — the gate may only claim authorship it ca
     expect(headline).toContain('YOU NAMED');
     expect(headline).toContain('2 file(s)');
   });
+
+  // WHY THIS IS PINNED (EI-23783377300333258). Under `--files` the REPORTED set is deliberately
+  // wider than the argument: cause-aware widening also gates a file reached from a type one of
+  // the named files exports. Measured, two paths named produced NINE reported — all nine under
+  // `file(s) YOU NAMED`. That is a false claim about the caller's ARGUMENTS, and its natural
+  // reading ("I passed the wrong --files") sends the reader to re-type the flag exactly when the
+  // gate is handing them a correct finding. Re-scoping can never clear a type-reached file, so
+  // the misdirection has no self-correcting end.
+  it('does NOT attribute the whole reported set to the caller when widening reached past --files', () => {
+    const headline = formatAttributionHeadline({ count: 9, explicit: true, typeAttributedCount: 7 });
+    // The exact falsehood: the TOTAL presented as the named count. "YOU NAMED" itself survives —
+    // 2 of them genuinely were named — so asserting on the bare phrase would pin the wrong thing.
+    expect(headline).not.toMatch(/9 file\(s\) YOU NAMED/);
+    expect(headline).toContain('9 file(s)');
+    expect(headline).toContain('2 YOU NAMED');
+    expect(headline).toContain('7');
+    // Must not send the reader back to their arguments: the argument was correct.
+    expect(headline).toMatch(/--files set was not wrong/);
+  });
+
+  it('says plainly when NONE of the reported files were named', () => {
+    const headline = formatAttributionHeadline({ count: 3, explicit: true, typeAttributedCount: 3 });
+    expect(headline).toContain('NONE of them are files you named');
+    expect(headline).not.toMatch(/3 file\(s\) YOU NAMED/);
+  });
+
+  // The split must be additive-only: every pre-existing caller omits the new count, and the
+  // fleet reads this verdict as authoritative (see tsc-red-observations.mjs), so the un-split
+  // wording has to come back byte-identical rather than merely similar.
+  it('reproduces the original wording verbatim when no file was reached past the named set', () => {
+    expect(formatAttributionHeadline({ count: 2, explicit: true, typeAttributedCount: 0 })).toBe(
+      formatAttributionHeadline({ count: 2, explicit: true }),
+    );
+    expect(formatAttributionHeadline({ count: 2, explicit: true })).toContain(
+      '2 file(s) YOU NAMED added type errors above their baseline:',
+    );
+  });
+
+  // A wrong-implementation control: the count arrives from a sibling array, so an inconsistent
+  // pair must degrade to a clamped, still-true headline rather than emit a negative subset.
+  it('clamps an out-of-range subset instead of printing a negative count', () => {
+    const headline = formatAttributionHeadline({ count: 2, explicit: true, typeAttributedCount: 99 });
+    expect(headline).not.toMatch(/-\d/);
+    expect(headline).toContain('NONE of them are files you named');
+  });
+
+  it('splits the --mine headline too, without losing its peer-drift caveat or its remedy', () => {
+    const headline = formatAttributionHeadline({ count: 5, explicit: false, typeAttributedCount: 2 });
+    expect(headline).not.toMatch(/5 file\(s\) DIRTY IN THE WORKING TREE/);
+    expect(headline).toContain('3 DIRTY IN THE WORKING');
+    expect(headline).toContain("yours AND every peer's");
+    expect(headline).toContain('--files=');
+  });
 });
 
 describe('formatNewFileGuidance — never prescribe the flag the caller already passed', () => {

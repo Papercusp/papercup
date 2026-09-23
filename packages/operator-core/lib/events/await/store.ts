@@ -3137,6 +3137,16 @@ export async function inspectEventKey(eventKey: string): Promise<{
   waiters: AwaitRow[];
   deliveries: DeliveryRow[];
   fireLatch: KeyFireRow | null;
+  composedRoot: {
+    rootId: number;
+    state: 'active' | 'fired' | 'cancelled' | 'missing';
+    requiredCount?: number;
+    firedCount?: number;
+    firedAt?: string | null;
+    cancelledAt?: string | null;
+    expiresTs?: string | null;
+    timeoutBehavior?: TimeoutBehavior;
+  } | null;
 }> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -3164,16 +3174,52 @@ export async function inspectEventKey(eventKey: string): Promise<{
        WHERE workspace_id = ${ws} AND event_key = ${eventKey}
        LIMIT 1
     `;
+    const composedRootText = /^composed-root:([1-9]\d*)$/.exec(eventKey)?.[1] ?? null;
+    const composedRootId = composedRootText == null ? null : Number(composedRootText);
+    const composedRootRows = composedRootId != null && Number.isSafeInteger(composedRootId)
+      ? await tx`
+          SELECT id, required_count, fired_count, fired_at, cancelled_at, expires_ts, timeout_behavior
+            FROM harness_shared.event_await_nodes
+           WHERE workspace_id = ${ws} AND id = ${composedRootId} AND parent_id IS NULL
+           LIMIT 1
+        `
+      : [];
+    const composedRootRow = composedRootRows[0] as any | undefined;
+    const composedRoot = composedRootId == null || !Number.isSafeInteger(composedRootId)
+      ? null
+      : composedRootRow
+        ? {
+            rootId: composedRootId,
+            state: composedRootRow.cancelled_at != null ? 'cancelled' as const : composedRootRow.fired_at != null ? 'fired' as const : 'active' as const,
+            requiredCount: Number(composedRootRow.required_count),
+            firedCount: Number(composedRootRow.fired_count),
+            firedAt: composedRootRow.fired_at ? new Date(composedRootRow.fired_at).toISOString() : null,
+            cancelledAt: composedRootRow.cancelled_at ? new Date(composedRootRow.cancelled_at).toISOString() : null,
+            expiresTs: composedRootRow.expires_ts ? new Date(composedRootRow.expires_ts).toISOString() : null,
+            timeoutBehavior: composedRootRow.timeout_behavior as TimeoutBehavior,
+          }
+        : { rootId: composedRootId, state: 'missing' as const };
     return {
       announcements: announcementRows.map(mapAwait),
       waiters: waiterRows.map(mapAwait),
       deliveries: deliveryRows.map(mapDelivery),
       fireLatch: fireLatchRows.length > 0 ? mapKeyFire(fireLatchRows[0]) : null,
+      composedRoot,
     };
   }) as Promise<{
     announcements: AwaitRow[];
     waiters: AwaitRow[];
     deliveries: DeliveryRow[];
     fireLatch: KeyFireRow | null;
+    composedRoot: {
+      rootId: number;
+      state: 'active' | 'fired' | 'cancelled' | 'missing';
+      requiredCount?: number;
+      firedCount?: number;
+      firedAt?: string | null;
+      cancelledAt?: string | null;
+      expiresTs?: string | null;
+      timeoutBehavior?: TimeoutBehavior;
+    } | null;
   }>;
 }

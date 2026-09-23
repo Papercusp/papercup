@@ -2264,6 +2264,13 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             ...live.filter((d) => d.addressedToMe !== true),
           ];
           const lines: string[] = [];
+          // directive-ownership-clarity-2026-09-23 P-003 / D-001: another session's
+          // directives render as ONE line per addressee — that agent, its state and
+          // current work, then its directives — so where a directive appears says
+          // whose it is. The flat list (a one-word YOURS/team label per row) is what
+          // an agent misread on 2026-09-23. Groups collect here and flush after the
+          // loop; the 5-directive cap is unchanged, and a group is never more lines.
+          const groups = new Map<string, { head: OrientationOwnerDirective; parts: string[]; routes: number[]; related: boolean }>();
           for (const directive of ordered.slice(0, 5)) {
             // DEFENSIVE, and load-bearing rather than belt-and-braces: this render
             // runs on the turn-start hot path inside projectOrientationRows, which
@@ -2324,13 +2331,31 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // a line here is never an obligation — acting on another session's
             // directive without taking it is how rows got destroyed
             // (WI-10002426 / WI-10002437).
-            const related = directive.relatedToMe === true ? ' [related to your work]' : '';
+            const group = groups.get(by) ?? { head: directive, parts: [], routes: [], related: false };
+            group.related ||= directive.relatedToMe === true;
             // A directive a peer already holds carries no route at all: offering
             // work_items:create there is how in-flight work gets duplicated.
-            const tail = claimedBy
-              ? `, claimed by ${shortOwner(claimedBy)}${related}${origin}: ${shown} — awareness only, already taken; do not act on or resolve it.`
-              : `${related}${origin}: ${shown} — awareness only, NOT yours to resolve; take it only via work_items:create { directiveRef: ${directive.id} }.`;
-            lines.push(`- 📌 team · owner directive #${directive.id} addressed to ${by}${tail}`);
+            if (claimedBy) {
+              group.parts.push(`#${directive.id}${origin} (claimed by ${shortOwner(claimedBy)} — awareness only, already taken; do not act on or resolve it.): ${shown}`);
+            } else {
+              group.parts.push(`#${directive.id}${origin}: ${shown}`);
+              group.routes.push(directive.id);
+            }
+            groups.set(by, group);
+          }
+          // Related-to-your-work groups first; otherwise first-appearance order.
+          const orderedGroups = [...groups.entries()].sort(([, a], [, b]) => Number(b.related) - Number(a.related));
+          for (const [by, group] of orderedGroups) {
+            const state = typeof group.head.addresseeState === 'string' && group.head.addresseeState ? group.head.addresseeState : null;
+            const rawIntent = typeof group.head.addresseeIntent === 'string' ? group.head.addresseeIntent.trim() : '';
+            const intent = rawIntent.length > 80 ? `${rawIntent.slice(0, 80)}…` : rawIntent;
+            const context = [state, intent ? `working on: ${intent}` : null].filter(Boolean).join('; ');
+            const related = group.related ? ' [related to your work]' : '';
+            const route =
+              group.routes.length === 0
+                ? ''
+                : ` — NOT yours to resolve; take one only via work_items:create { directiveRef: ${group.routes.length === 1 ? group.routes[0] : `<${group.routes.join('|')}>`} }.`;
+            lines.push(`- 👥 ${by}${context ? ` (${context})` : ''}${related} — THEIR open owner directives: ${group.parts.join(' · ')}${route}`);
           }
           if (ordered.length > 5) lines.push(`- 📌 +${ordered.length - 5} more open owner directives — orders:list { open: true }.`);
           return lines;
@@ -3737,16 +3762,22 @@ export function defaultOrientationDeps(): OrientationDeps {
       // its addressee has declared the same current plan as this session. One
       // batched presence read; failure only loses the flag, never the line.
       let relatedAddressees = new Set<string>();
+      // P-003 (directive-ownership-clarity-2026-09-23): each addressee's current
+      // intent rides the SAME presence read; its session state comes from the one
+      // liveness oracle (via the routing deps), never re-derived here.
+      let intents = new Map<string, string | null>();
+      let states = new Map<string, string | null>();
+      const addressees = [...new Set(live.map((r) => r.recordedBy).filter((id) => id && id !== ownerId))];
       try {
         const { getOrgPg } = await import('@papercusp/db-org');
-        const addressees = [...new Set(live.map((r) => r.recordedBy).filter((id) => id && id !== ownerId))];
         if (addressees.length > 0) {
           const plans = (await getOrgPg().sql`
-            SELECT DISTINCT ON (owner_id) owner_id, current_plan_slug
+            SELECT DISTINCT ON (owner_id) owner_id, current_plan_slug, intent
               FROM harness_shared.coord_presence
              WHERE owner_id = ANY(${[ownerId, ...addressees]})
              ORDER BY owner_id, last_active_at DESC NULLS LAST
-          `) as { owner_id: string; current_plan_slug: string | null }[];
+          `) as { owner_id: string; current_plan_slug: string | null; intent: string | null }[];
+          intents = new Map(plans.map((p) => [p.owner_id, p.intent ?? null]));
           const myPlan = plans.find((p) => p.owner_id === ownerId)?.current_plan_slug ?? null;
           if (myPlan) {
             relatedAddressees = new Set(
@@ -3756,6 +3787,14 @@ export function defaultOrientationDeps(): OrientationDeps {
         }
       } catch {
         relatedAddressees = new Set();
+      }
+      if (addressees.length > 0) {
+        try {
+          const { defaultDirectiveRoutingDeps } = await import('./owner-directive-routing');
+          states = await defaultDirectiveRoutingDeps().sessionStates(addressees);
+        } catch {
+          states = new Map();
+        }
       }
 
       // ONE batched join for the whole banner, never one query per row: this runs on
@@ -3789,6 +3828,8 @@ export function defaultOrientationDeps(): OrientationDeps {
         capturedByHook: row.capturedByHook === true,
         // LABEL, not filter — every row is returned either way (D-004).
         addressedToMe: row.recordedBy === ownerId,
+        addresseeState: row.recordedBy === ownerId ? null : (states.get(row.recordedBy) ?? null),
+        addresseeIntent: row.recordedBy === ownerId ? null : (intents.get(row.recordedBy) ?? null),
         status: deriveDirectiveStatus(row, byDirective.get(row.id) ?? []),
       }));
     },

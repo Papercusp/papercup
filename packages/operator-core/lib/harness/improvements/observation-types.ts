@@ -658,7 +658,8 @@ export type ObservationSubjectKind =
  * card itself (rubricRef = grading-integrity) is never stamped pending.
  */
 export interface ScorecardGradingAudit {
-  state: 'pending' | 'passed' | 'failed';
+  /** `cancelled` means the source scorecard was retracted before its audit settled. */
+  state: 'pending' | 'passed' | 'failed' | 'cancelled';
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
   stampedAt: string;
@@ -1496,7 +1497,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.gradingAudit && typeof o.gradingAudit === 'object' && !Array.isArray(o.gradingAudit)) {
     const g = o.gradingAudit as Record<string, unknown>;
     if (
-      (g.state === 'pending' || g.state === 'passed' || g.state === 'failed') &&
+      (g.state === 'pending' || g.state === 'passed' || g.state === 'failed' || g.state === 'cancelled') &&
       typeof g.metaRubricRef === 'string' &&
       g.metaRubricRef.trim() &&
       typeof g.stampedAt === 'string' &&

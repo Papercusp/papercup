@@ -1145,8 +1145,12 @@ export async function getFeedbackCore(
   // stamped onto the selection the moment dispatch reports it.
   let dispatchProvenance: GetFeedbackResult['dispatch'] | undefined;
   let finalSelected = provisionalSelected;
-  let finalChosen = chosen;
-  let finalChosenVia = chosenVia;
+  // Nullable from here down: the D-002 dispatch walk can end with EVERY
+  // selectee's allowlist exhausted, and the honest terminal for that is
+  // `no_available_responder` with NO responder named (see 7c). `chosen` itself
+  // is non-null on this path, so the widening is the walk's, not the route's.
+  let finalChosen: RoutingCandidate | null = chosen;
+  let finalChosenVia: SelectionVia | null = chosenVia;
   const provisionalState: GetFeedbackResult['state'] = finalChosen
     ? 'awaiting_responder'
     : 'no_qualified_responder';

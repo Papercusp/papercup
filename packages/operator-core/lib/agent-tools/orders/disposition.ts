@@ -34,7 +34,7 @@ export default defineTool({
     when:
       'You finished (or consciously declined) a recorded owner directive — close it WITH evidence the moment the completion report goes to the owner. An open directive keeps rendering to you and every workspace peer; a stale-open one erodes the surface.',
     notWhen:
-      'The work is merely in progress — the row rendering every wake IS the point; checkpoint progress on the work-item instead. Never disposition a directive you did not verify done.',
+      'Work still in progress (checkpoint the work-item). Never pick the id by matching text — use the "YOUR owner directive #N" your turn carried; identical text is often open in other sessions.',
     chaining: 'orders:list { open: true } → work → orders:disposition. Re-record a re-issued order as a new row.',
     seeAlso: ['orders:record', 'orders:list', 'orders:get'],
   },

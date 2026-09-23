@@ -1103,16 +1103,55 @@ export function formatStandingRedRow(r, { dirtyPathCount = 0, commitAgeSec = nul
  * the lot as fleet drift. Filed four separate times before the wording was fixed
  * (EI-18731016038876755, which added `--files`, plus three later duplicates).
  *
- * @param {{count: number, explicit: boolean}} opts
+ * WHY THE COUNT SPLITS (EI-23783377300333258). "YOU NAMED" is a claim about the caller's
+ * ARGUMENTS, and under `--files` the reported set is deliberately WIDER than the argument:
+ * cause-aware widening (EI-18756182128903253) also gates a file reached from a type one of the
+ * named files exports — the "I added a required field, the fixture that constructs it broke, and
+ * the fixture is not in my diff" shape. Measured: TWO paths named, NINE reported, all nine
+ * labelled `file(s) YOU NAMED`. The result was correct and the widening is the whole point; only
+ * the label lied. It lies expensively, because the natural reading of a false claim about your
+ * arguments is "I passed the wrong --files", which sends the reader off to re-type the flag at
+ * exactly the moment the gate is handing them a real finding — and re-scoping can NEVER clear a
+ * type-reached file. `typeAttributed` is already carried separately for precisely this purpose
+ * ("so callers/reporting can say WHY a file outside the diff still gates"), so the honest wording
+ * costs one count. It defaults to 0, which reproduces the earlier wording verbatim.
+ *
+ * @param {{count: number, explicit: boolean, typeAttributedCount?: number}} opts
  * @returns {string}
  */
-export function formatAttributionHeadline({ count, explicit }) {
+export function formatAttributionHeadline({ count, explicit, typeAttributedCount = 0 }) {
+  // Clamp rather than trust: this count arrives from a sibling array, and a headline reporting a
+  // negative or over-large subset would just be a NEW false claim in place of the old one.
+  const reached = Math.max(0, Math.min(typeAttributedCount, count));
+  const named = count - reached;
   if (explicit) {
-    return `❌ ${count} file(s) YOU NAMED added type errors above their baseline:`;
+    if (reached === 0) {
+      return `❌ ${count} file(s) YOU NAMED added type errors above their baseline:`;
+    }
+    if (named === 0) {
+      return (
+        `❌ ${count} file(s) added type errors above their baseline — NONE of them are files you ` +
+        `named: each is reached from a type one of your files exports. Your --files set was not ` +
+        `wrong and re-scoping it cannot clear them:`
+      );
+    }
+    return (
+      `❌ ${count} file(s) added type errors above their baseline — ${named} YOU NAMED, and ` +
+      `${reached} you did NOT name but which are reached from a type one of your files exports. ` +
+      `Your --files set was not wrong and re-scoping it cannot clear the latter:`
+    );
+  }
+  if (reached === 0) {
+    return (
+      `❌ ${count} file(s) DIRTY IN THE WORKING TREE added type errors above their baseline — ` +
+      `on this shared checkout that set is yours AND every peer's, so a file here may not be yours ` +
+      `(re-run with --files=<the files you edited> to scope it to your own):`
+    );
   }
   return (
-    `❌ ${count} file(s) DIRTY IN THE WORKING TREE added type errors above their baseline — ` +
-    `on this shared checkout that set is yours AND every peer's, so a file here may not be yours ` +
+    `❌ ${count} file(s) added type errors above their baseline — ${named} DIRTY IN THE WORKING ` +
+    `TREE and ${reached} reached from a type a dirty file exports. On this shared checkout the ` +
+    `dirty set is yours AND every peer's, so a file here may not be yours ` +
     `(re-run with --files=<the files you edited> to scope it to your own):`
   );
 }
@@ -3503,7 +3542,15 @@ export async function runTscBaselineGate({
     }
     case 'fail-attributed': {
       console.error(
-        formatAttributionHeadline({ count: result.attributed.length, explicit: explicitFiles !== null }),
+        formatAttributionHeadline({
+          count: result.attributed.length,
+          explicit: explicitFiles !== null,
+          // The subset of `attributed` the caller did NOT name (cause-aware widening reached it
+          // from a type one of the named files exports). Defaulted here rather than assumed:
+          // `typeAttributed` rides only the fail-attributed verdict, and a missing array must
+          // degrade to the old wording, never to a wrong split.
+          typeAttributedCount: result.typeAttributed?.length ?? 0,
+        }),
       );
       // EI-19454211066351073 — this is the branch the `--files` flag exists to reach, and the one
       // where the omission cost the most: `--files` is the only trustworthy attribution on this
