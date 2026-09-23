@@ -420,6 +420,159 @@ describe('routeConsult — P-007 falsifiability controls', () => {
   });
 });
 
+/**
+ * consult-expert-routing-2026-09-22 P-001 — the two-stage router.
+ *
+ * These own their corpus in a DIFFERENT embedding plane from every fixture
+ * above: `vecInPlane(4, …)` / `vecInPlane(6, …)` are orthogonal to the
+ * `vecAt()` vectors, so a query here has cosine similarity EXACTLY 0 with the
+ * main corpus and none of its owners can clear simFloor. That isolation is
+ * load-bearing — the stage-2 reference point is the freshest QUALIFIED
+ * candidate, so a stray qualifier from another test's corpus would silently
+ * move the baseline these assertions are computed against.
+ */
+describe('routeConsult — D-001 two-stage: recency compares, never qualifies', () => {
+  const vecInPlane = (dim: number, theta: number): number[] => {
+    const v = new Array<number>(768).fill(0);
+    v[dim] = Math.cos(theta);
+    v[dim + 1] = Math.sin(theta);
+    return v;
+  };
+  const planeDeps = (dim: number, theta = 0): ConsultRouteDeps => ({
+    ...deps(0),
+    embed: async () => vecInPlane(dim, theta),
+  });
+
+  let planeSeq = 0;
+  async function insertPlaneTurn(owner: string, dim: number, theta: number, tsMsAgo: number) {
+    planeSeq += 1;
+    await rootSql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
+         text_embedding, text_embedding_mode, text_embedding_profile)
+      VALUES ('default', 'claude', ${'sess-' + owner}, ${planeSeq},
+              ${new Date(NOW.getTime() - tsMsAgo).toISOString()}::timestamptz,
+              ${owner}, 'assistant', ${'plane turn of ' + owner},
+              ${JSON.stringify(vecInPlane(dim, theta))}::vector,
+              'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId})`;
+  }
+
+  // Ordering corpus (plane 4). Similarity runs OPPOSITE to freshness on
+  // purpose: the STALEST transcript is the most similar. Recency-free
+  // relevance therefore ranks stale > mid > fresh, and only the stage-2
+  // multiplier can produce the fresh-first order R-9 demands — so an
+  // implementation that dropped stage 2 fails on ORDER, not on a tolerance.
+  const FRESH = 'plane-fresh';   // θ=0.3, 1d   → sim ≈ 0.955, relevance ≈ 0.618
+  const MID = 'plane-mid';       // θ=0.2, 8d   → sim ≈ 0.980, relevance ≈ 0.634
+  const STALE = 'plane-stale';   // θ=0.1, 30d  → sim ≈ 0.995, relevance ≈ 0.644
+  const ORDERING_OWNERS = [FRESH, MID, STALE];
+
+  const shiftDays = async (owners: string[], days: number) => {
+    await rootSql`
+      UPDATE harness_shared.session_turns
+         SET ts = ts - ${days} * interval '1 day'
+       WHERE owner = ANY(${owners}::text[])`;
+  };
+
+  beforeAll(async () => {
+    await insertPlaneTurn(FRESH, 4, 0.3, 1 * DAY);
+    await insertPlaneTurn(MID, 4, 0.2, 8 * DAY);
+    await insertPlaneTurn(STALE, 4, 0.1, 30 * DAY);
+    // Veteran corpus (plane 6): its ONLY committed completions are far older
+    // than the retired 90-day verification window.
+    await insertPlaneTurn('plane-veteran', 6, 0.1, 5 * DAY);
+    for (let i = 0; i < 4; i++) await insertWorkItem('plane-veteran', 'committed', (200 + i) * DAY, null);
+  });
+
+  it('R-13 clause 1 + R-9: every age qualifies, and freshness REVERSES the relevance order', async () => {
+    const r = await routeConsult(baseParams, planeDeps(4));
+    expect(r.verdict).toBe('routed');
+    // Stage 1: all three clear the floor. A 30-day-old transcript is not a
+    // worse transcript — this is the assertion the pre-D-001 router failed.
+    const byId = new Map(r.snapshot.candidates.map((c) => [c.ownerId, c]));
+    for (const owner of ORDERING_OWNERS) {
+      expect(byId.get(owner)!.relevance).toBeGreaterThanOrEqual(DEFAULT_RELEVANCE_FLOOR);
+    }
+    expect(r.qualified.map((c) => c.ownerId).sort()).toEqual([...ORDERING_OWNERS].sort());
+    // Recency-free relevance would order them stale-first…
+    expect(byId.get(STALE)!.relevance).toBeGreaterThan(byId.get(MID)!.relevance);
+    expect(byId.get(MID)!.relevance).toBeGreaterThan(byId.get(FRESH)!.relevance);
+    // …and stage 2 inverts that, which is what "materially higher" means.
+    expect(r.qualified.map((c) => c.ownerId)).toEqual([FRESH, MID, STALE]);
+  });
+
+  it('R-13 clause 2: a UNIFORM time shift leaves every score bit-for-bit unchanged', async () => {
+    const before = await routeConsult(baseParams, planeDeps(4));
+    const baseline = before.qualified.map((c) => [c.ownerId, c.score, c.relevance, c.relativeAgeDays] as const);
+    // Everyone's history ages by the same 90 days — the vacation case, applied
+    // to the whole workspace at once.
+    await shiftDays(ORDERING_OWNERS, 90);
+    try {
+      const after = await routeConsult(baseParams, planeDeps(4));
+      expect(after.qualified.map((c) => [c.ownerId, c.score, c.relevance, c.relativeAgeDays] as const)).toEqual(
+        baseline,
+      );
+      // Not merely the same ORDER: the same numbers. An absolute decay term
+      // would have multiplied every score by 2^(-90/H) here.
+      expect(after.qualified[0]!.score).toBe(before.qualified[0]!.score);
+    } finally {
+      await shiftDays(ORDERING_OWNERS, -90);
+    }
+  });
+
+  it('CONTROL: shifting ONE candidate DOES change the ranking — the invariance above is not vacuous', async () => {
+    // Same instrument, non-uniform shift. If this also came back unchanged,
+    // the test above would be proving that recency is ignored entirely rather
+    // than that it is measured relatively.
+    await shiftDays([FRESH], 60);
+    try {
+      const r = await routeConsult(baseParams, planeDeps(4));
+      expect(r.qualified.map((c) => c.ownerId)).not.toEqual([FRESH, MID, STALE]);
+      expect(r.qualified[0]!.ownerId).toBe(MID);
+      // Still QUALIFIED though — the shift moved its rank, never its eligibility.
+      expect(r.qualified.map((c) => c.ownerId)).toContain(FRESH);
+    } finally {
+      await shiftDays([FRESH], -60);
+    }
+  });
+
+  it('D-007(a): the floor sees the FULL candidate list, not the snapshot slice', async () => {
+    // maxCandidates:1 is the pre-D-007 killer — the score-ordered cut ran
+    // first, so only the top candidate could ever be measured against the
+    // floor and MID/STALE were dropped before qualification.
+    const r = await routeConsult({ ...baseParams, maxCandidates: 1 }, planeDeps(4));
+    expect(r.qualified.map((c) => c.ownerId).sort()).toEqual([...ORDERING_OWNERS].sort());
+    // And the persisted snapshot still explains its own verdict: a returned
+    // qualifier is never cut out of the audit record it is the result of.
+    for (const owner of ORDERING_OWNERS) {
+      expect(r.snapshot.candidates.map((c) => c.ownerId)).toContain(owner);
+    }
+  });
+
+  it('D-007(b): verification counts completions older than the retired 90-day window', async () => {
+    const r = await routeConsult(baseParams, planeDeps(6));
+    const vet = r.snapshot.candidates.find((c) => c.ownerId === 'plane-veteran');
+    expect(vet).toBeDefined();
+    // 4 committed closes, ALL ~200 days old. The old trailing window scored
+    // this 0 — an expert's track record decaying purely because they were idle,
+    // which is the same vacation defect one signal over.
+    expect(vet!.signals.verification).toBeCloseTo(4 / 8, 2);
+  });
+
+  it('the snapshot records the half-life it compared with, so an ordering stays re-derivable', async () => {
+    const r = await routeConsult({ ...baseParams, recencyHalfLifeDays: 3 }, planeDeps(4));
+    expect(r.snapshot.recencyHalfLifeDays).toBe(3);
+    // A shorter half-life punishes staleness harder — the setting is live, not
+    // decorative (P-005 is what will persist it).
+    const stale = r.snapshot.candidates.find((c) => c.ownerId === STALE)!;
+    const atDefault = (await routeConsult(baseParams, planeDeps(4))).snapshot.candidates.find(
+      (c) => c.ownerId === STALE,
+    )!;
+    expect(stale.score).toBeLessThan(atDefault.score);
+    expect(stale.relevance).toBe(atDefault.relevance); // …but qualification is untouched
+  });
+});
+
 describe('extractPathTokens', () => {
   it('extracts slash paths, trims trailing punctuation, caps at 4, dedupes', () => {
     expect(extractPathTokens('see packages/foo/bar.ts.')).toEqual(['packages/foo/bar.ts']);

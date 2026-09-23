@@ -778,7 +778,14 @@ describe('consultCloseCore — graduate', () => {
 // ── D-005/P-013 always-advance cascade (consult-min-max-and-rubric-vetting) ─
 
 /** A routing snapshot with a real selection menu (the 844 cascade drives off
- * selection.selected) plus route-time candidates for remaining_candidates. */
+ * selection.selected) plus route-time candidates for remaining_candidates.
+ *
+ * ⚠ DELIBERATELY PRE-D-001 SHAPED — do NOT "complete" it by adding `relevance`.
+ * consult_state.routing is a persisted column, so the cascade reads rows written
+ * before the two-stage router existed and its TypeScript type is a claim about
+ * what we WRITE, not a guarantee about what is stored. This fixture is the only
+ * thing that catches an unguarded `entry.relevance.toFixed(2)` in the wake copy
+ * — which is exactly how that bug reached a suite once already. */
 function menuSnapshot(owners: string[]) {
   return {
     candidates: owners.map((o, i) => ({ ownerId: o, score: 0.9 - i * 0.1, liveness: 'live' })),

@@ -10,6 +10,7 @@ import {
   selectResponders,
   selectionSnapshot,
   snapshotCandidateQualifies,
+  qualifyingScoreOf,
   relevanceOf,
   freshnessOf,
   FRESHNESS_BASE,
@@ -218,6 +219,20 @@ describe('snapshotCandidateQualifies — reads a persisted snapshot on its OWN t
     );
     expect(snapshotCandidateQualifies(null, { relevance: 0.9, signals: { similarity: 0.9 } })).toBe(false);
     expect(snapshotCandidateQualifies({ relevanceFloor: 0.41, simFloor: 0.4 }, null)).toBe(false);
+  });
+});
+
+describe('qualifyingScoreOf — the displayable number, across both snapshot generations', () => {
+  it('prefers relevance, falls back to the pre-D-001 blended score, and never throws on a partial record', () => {
+    expect(qualifyingScoreOf({ relevance: 0.62, score: 0.19 })).toBe(0.62);
+    // A pre-D-001 selection entry has NO relevance at all. The wake copy renders
+    // these straight out of consult_state.routing, so reaching for a missing
+    // field here is a TypeError mid-wake, not a cosmetic gap.
+    expect(qualifyingScoreOf({ score: 0.71 })).toBe(0.71);
+    expect(qualifyingScoreOf({})).toBe(0);
+    expect(qualifyingScoreOf(null)).toBe(0);
+    // Non-finite is not a number worth printing.
+    expect(qualifyingScoreOf({ relevance: Number.NaN, score: 0.5 })).toBe(0.5);
   });
 });
 
