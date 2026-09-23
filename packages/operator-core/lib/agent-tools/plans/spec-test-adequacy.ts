@@ -1016,6 +1016,7 @@ function rerunRecipeFor(
       sha: evaluatorBuild.sha,
       version: evaluatorBuild.version,
     },
+    evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
     classRef,
     // Submittable as-is. `selection` below spells planSlug/specId/specRevision/
     // specFingerprint, none of which the evaluator accepts — it takes slug/specIds and
@@ -1096,6 +1097,98 @@ function appendRatingRerunProbes(
         `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
     };
   }
+}
+
+/**
+ * P-043 (review-system-rework-reduction-2026-09-23): the evaluator RULE revision stamped on
+ * every adequacy card's rerun recipe. BUMP IT whenever a change here can alter a criterion
+ * verdict for unchanged evidence (a new/tightened rule, a moved threshold) — not for prose,
+ * refactors or new diagnostics. `evaluatorBuild` cannot serve: it moves on every deploy.
+ *   1 — cards minted before the stamp existed (absent field reads as 1).
+ *   2 — the a49fca9b96 scenario-scoped falsifiability target + the WI-10002724 own-specId
+ *       fallback (D-009), which the stamp was introduced alongside.
+ */
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 2;
+
+type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
+
+/**
+ * The falsifiability TARGETING rule, shared by the evaluator and plans:bind-spec-evidence so a
+ * binding the evaluator will reject is refused at bind (P-043) rather than discovered after its
+ * audit passed. A clause that declares falsifier.requiredScenarios accepts only those scenario
+ * ids. WI-10002724 / D-009: a clause that declares NONE has no scenario id to name, so under the
+ * scenario-only rule its falsifiability could never pass (4,026 of 4,136 active clauses on
+ * 2026-09-23); the clause itself is the case, so a target naming its own specId qualifies.
+ * Obligation ids are lower-case (SPEC_PROOF_OBLIGATION_ID_RE), so the specId is lower-cased. A
+ * boolean target, or one naming a sibling spec or scenario, never qualifies.
+ */
+export function mutationTargetRequirement(clause: MutationTargetClause): {
+  acceptedTargets: string[];
+  selfTarget: string | null;
+  requirement: string;
+} {
+  const scenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])];
+  const selfTarget = scenarios.length === 0 ? clause.specId.toLowerCase() : null;
+  return {
+    acceptedTargets: selfTarget !== null ? [selfTarget] : scenarios,
+    selfTarget,
+    requirement:
+      selfTarget !== null
+        ? `this clause's own specId (adequacy.targeted = '${selfTarget}'; it declares no falsifier.requiredScenarios)`
+        : "a scenario id in this clause's falsifier.requiredScenarios",
+  };
+}
+
+export function isAcceptedMutationTarget(clause: MutationTargetClause, targeted: unknown): boolean {
+  return typeof targeted === 'string' && mutationTargetRequirement(clause).acceptedTargets.includes(targeted);
+}
+
+export type AdequacyCardRevisionDisposition = {
+  recordedRevision: number;
+  currentRevision: number;
+  /**
+   * current  — graded under the current rule revision and every verdict still matches.
+   * carried  — graded under an OLDER rule revision, re-evaluated from the stored runs, and
+   *            every verdict is unchanged: the card and its settled audit stay valid.
+   * verdict-changed — at least one criterion verdict differs; only this needs a new card
+   *            and a new audit.
+   */
+  state: 'current' | 'carried' | 'verdict-changed';
+  changed: Array<{ criterion: string; recorded: string | null; current: string | null }>;
+};
+
+/**
+ * P-043: decide whether a stored adequacy card survives re-evaluation under the live rule.
+ * Pure: the caller supplies the live ratings recomputed from the card's stored bindings. The
+ * verdict comparison is per criterion and exact, so the rule is never lowered — a card only
+ * carries when EVERY live verdict equals the recorded one.
+ */
+export function adequacyCardRevisionDisposition(input: {
+  recordedRevision: number | undefined;
+  recordedRatings: Record<string, unknown>;
+  liveRatings: Record<string, { rating: string }>;
+  currentRevision?: number;
+}): AdequacyCardRevisionDisposition {
+  const recordedRevision = input.recordedRevision ?? 1;
+  const currentRevision = input.currentRevision ?? SPEC_TEST_ADEQUACY_EVALUATOR_REVISION;
+  const ratingOf = (value: unknown): string | null =>
+    value && typeof value === 'object' && !Array.isArray(value) && typeof (value as { rating?: unknown }).rating === 'string'
+      ? (value as { rating: string }).rating
+      : null;
+  const criteria = [...new Set([...Object.keys(input.recordedRatings), ...Object.keys(input.liveRatings)])].sort();
+  const changed = criteria
+    .map((criterion) => ({
+      criterion,
+      recorded: ratingOf(input.recordedRatings[criterion]),
+      current: input.liveRatings[criterion]?.rating ?? null,
+    }))
+    .filter((entry) => entry.recorded !== entry.current);
+  return {
+    recordedRevision,
+    currentRevision,
+    changed,
+    state: changed.length > 0 ? 'verdict-changed' : recordedRevision < currentRevision ? 'carried' : 'current',
+  };
 }
 
 /** Grade one clause/evidence row into the exact ratings map accepted by scorecards:emit. */
@@ -1229,24 +1322,12 @@ export function evaluateSpecTestAdequacy(input: {
       (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') && isSuccessfulExecutableEvidence(row)
     );
   });
-  const clauseFalsifierScenarioIds = new Set(clause.falsifier?.requiredScenarios ?? []);
-  // WI-10002724: a clause that declares NO falsifier.requiredScenarios has no scenario id to name,
-  // so under the scenario-only rule its falsifiability could never pass (4,026 of 4,136 active
-  // clauses on 2026-09-23). For such a clause the clause itself is the case: a target naming its
-  // own specId is the clause-scoped claim. Obligation ids are lower-case
-  // (SPEC_PROOF_OBLIGATION_ID_RE), so the specId is compared lower-cased. A boolean target and a
-  // target naming a sibling spec or scenario stay insufficient, and a clause that DOES declare
-  // scenarios keeps the scenario-only rule.
-  const clauseSelfTarget = clauseFalsifierScenarioIds.size === 0 ? clause.specId.toLowerCase() : null;
-  const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) => {
-    const targeted = detailsOf(row).targeted;
-    if (typeof targeted !== 'string') return false;
-    return clauseFalsifierScenarioIds.has(targeted) || (clauseSelfTarget !== null && targeted === clauseSelfTarget);
-  });
-  const clauseTargetRequirement =
-    clauseSelfTarget !== null
-      ? `this clause's own specId (adequacy.targeted = '${clauseSelfTarget}'; it declares no falsifier.requiredScenarios)`
-      : "a scenario id in this clause's falsifier.requiredScenarios";
+  // The targeting rule (scenario ids, or the WI-10002724 own-specId fallback) lives in
+  // mutationTargetRequirement so plans:bind-spec-evidence refuses at bind exactly what fails here.
+  const { selfTarget: clauseSelfTarget, requirement: clauseTargetRequirement } = mutationTargetRequirement(clause);
+  const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) =>
+    isAcceptedMutationTarget(clause, detailsOf(row).targeted),
+  );
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );
