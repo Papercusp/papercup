@@ -37,7 +37,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 // The store fans sync invalidations on some writes; that transport is not under test here.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
-const { readWorkspaceHostDesiredSpec, upsertWorkspaceHost } = await import('./observability-store');
+const { readWorkspaceHostDesiredSpec, recordWorkspaceHostImage, upsertWorkspaceHost } = await import(
+  './observability-store'
+);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 let n = 0;
@@ -147,6 +149,51 @@ describe('workspace-host provisioning intent (real PG + real RLS)', () => {
 
     const lookup = await readWorkspaceHostDesiredSpec(ws, 'host-replace');
     expect(lookup.desired?.zone).toBe('us-central1-b');
+  });
+
+  it('an upgrade records its runtime release with its image; a rollback (no release) keeps the recorded one', async () => {
+    // WI-10002798: the upgraded machine ran only r42 while its row still named r41.
+    const ws = freshWs();
+    const connectionId = await seedConnection(ws);
+    const release = (version: string) => ({
+      version,
+      bundleSha256: 'a'.repeat(64),
+      signingKeySha256: 'b'.repeat(64),
+      protocolVersion: 'papercusp-workspace-host.v1',
+      schemaVersion: 'schema-1202',
+    });
+    await upsertWorkspaceHost({
+      ...hostInput(ws, connectionId, 'host-upgrade'),
+      desiredSpec: spec({ hostId: 'host-upgrade' }),
+      runtimeRelease: release('0.0.21-p318r41'),
+    });
+    const runtimeVersion = async () =>
+      (
+        await db.adminSql`
+          SELECT runtime_release->>'version' AS version, desired_spec->'image'->>'id' AS image
+            FROM harness_shared.workspace_hosts WHERE workspace_id = ${ws} AND id = 'host-upgrade'`
+      )[0];
+
+    await recordWorkspaceHostImage({
+      workspaceId: ws,
+      hostId: 'host-upgrade',
+      image: { id: 'projects/p/global/images/papercusp-host-v2' },
+      runtimeRelease: release('0.0.21-p318r42'),
+    });
+    expect(await runtimeVersion()).toEqual({
+      version: '0.0.21-p318r42',
+      image: 'projects/p/global/images/papercusp-host-v2',
+    });
+
+    await recordWorkspaceHostImage({
+      workspaceId: ws,
+      hostId: 'host-upgrade',
+      image: { id: 'projects/p/global/images/papercusp-host-v1' },
+    });
+    expect(await runtimeVersion()).toEqual({
+      version: '0.0.21-p318r42',
+      image: 'projects/p/global/images/papercusp-host-v1',
+    });
   });
 
   it('distinguishes an unknown host from a host that recorded no intent', async () => {
