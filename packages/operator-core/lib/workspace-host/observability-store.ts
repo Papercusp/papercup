@@ -672,11 +672,16 @@ export async function recordWorkspaceHostRecoveryPoint(input: {
  * together: the `image` column the UI reads and `desired_spec.image`, which every later recreate
  * (repair, restore) builds from — leaving either on the pre-upgrade image made the next recreate
  * silently revert the host. Controller-fenced like every other write an operation makes.
+ *
+ * `runtimeRelease` is the release the recreated host's bootstrap installed. Omitted keeps the
+ * recorded one (a rollback boots the pre-upgrade instance, so its release never changed); without
+ * it an upgraded host read its pre-upgrade runtime forever (WI-10002798).
  */
 export async function recordWorkspaceHostImage(input: {
   workspaceId: string;
   hostId: string;
   image: WorkspaceHostImageRef;
+  runtimeRelease?: WorkspaceHostRuntimeRelease;
   operationId?: string;
   controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
@@ -699,6 +704,10 @@ export async function recordWorkspaceHostImage(input: {
             WHEN desired_spec IS NULL THEN desired_spec
             ELSE jsonb_set(desired_spec, '{image}', ${tx.json(image as never)}, true)
           END,
+          runtime_release = COALESCE(
+            ${input.runtimeRelease === undefined ? null : tx.json(input.runtimeRelease as never)}::jsonb,
+            runtime_release
+          ),
           updated_at = now()
       WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
     `;

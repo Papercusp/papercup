@@ -440,6 +440,32 @@ describe('runWorkspaceHostLifecycle', () => {
     });
   });
 
+  it('records the runtime release an upgrade installed beside its image', async () => {
+    // WI-10002798: host-560adc ran only r42 after its upgrade while its row still read r41, so the
+    // UI and the release journal named a runtime the machine no longer had.
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue(successfulProviderResult());
+    const runtimeRelease = {
+      version: '0.0.21-p318r42',
+      bundleSha256: 'a'.repeat(64),
+      signingKeySha256: 'b'.repeat(64),
+      protocolVersion: 'papercusp-workspace-host.v1',
+      schemaVersion: 'schema-1202',
+    };
+
+    await runWorkspaceHostLifecycle({
+      ...input(provider, store),
+      action: 'upgrade',
+      image: { id: 'projects/images/global/images/papercusp-v2' },
+      runtimeRelease,
+    });
+
+    expect(store.recordImage).toHaveBeenCalledWith(
+      expect.objectContaining({ image: { id: 'projects/images/global/images/papercusp-v2' }, runtimeRelease }),
+    );
+  });
+
   it('reports repair as provider-succeeded but not servable, in the result AND the ledger', async () => {
     // WI-2146639: repair refreshes startup metadata and resets the existing VM. Provider success
     // proves those mutations completed; it does not prove the replacement startup bootstrap has
