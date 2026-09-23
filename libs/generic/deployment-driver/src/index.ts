@@ -73,6 +73,7 @@ export type {
   WorkspaceHostSnapshotRef,
   WorkspaceHostPlanRequest,
   WorkspaceHostPlanStep,
+  WorkspaceHostPlanStepRollback,
   WorkspaceHostPlan,
   WorkspaceHostApplyRequest,
   WorkspaceHostApplyResult,
