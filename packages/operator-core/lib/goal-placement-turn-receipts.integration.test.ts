@@ -15,7 +15,8 @@ import { recordVerifiedGoalPlacementEffects, readGoalPlacementProgress } from '.
 import { compileGoalPlanPlacement, type GoalPortfolioBrief } from './goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { confirmGoalPlacementDelivery, prepareGoalPlacementDelivery, GOAL_PLACEMENT_DELIVERY_KEY,
-  type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
+  settleGoalPlacementTurn, reconcileConfirmedGoalPlacementTurns, readGoalPlacementAdmissionAttempts,
+  type GoalPlacementAdmissionObservation, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
 
 const OWNER = `su-goal-receipt-${Date.now()}`;
 const WS = 'default';
@@ -44,6 +45,8 @@ beforeAll(async () => {
 afterEach(async () => {
   await fx.admin`DELETE FROM harness_shared.coord_read_cursors WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
+  await fx.admin`DELETE FROM harness_shared.resource_governor_admissions
+    WHERE workspace_id = ${WS} AND record->'metadata'->>'launchedBy' = ${OWNER}`;
 });
 afterAll(async () => {
   resetReadCursorStore();
@@ -88,6 +91,83 @@ async function records() {
   return fx.admin`SELECT owner_id, workspace_id, session_id, harness_slug, tool_use_id, detail
     FROM harness_shared.agent_activity WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
 }
+
+describe('completed eligibility joined on existing activity and cursor stores', () => {
+  const planRef = 'plan:papercusp/plan';
+  const read = async () => (await readGoalPlacementProgress({ workspaceId: WS, ownerId: OWNER,
+    goalId: 'goal', planRefs: [planRef] }))[planRef];
+  function proof(n: number) {
+    const measured = (minute: number): GoalPlacementAdmissionObservation => ({ version: 1, planRef,
+      observedAt: at(minute), planReason: 'ready', governor: 'open', attempts: 'none',
+      evidenceRefs: ['fixture:canonical-preflight', 'fixture:governor'] });
+    const receipt = { version: 1, goalId: 'goal', planSlug: 'plan', planRef, obligationId: row.id,
+      sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision, deliveryToken: `token-${n}`,
+      offeredAt: at(n * 2), completedAt: at(n * 2 + 1), confirmedAt: at(n * 2 + 2),
+      completedTurnRef: `codex:${OWNER}:request-${n}`, admission: measured(n * 2) };
+    const end = { version: 1, goalId: 'goal', completedTurnRef: receipt.completedTurnRef,
+      completedAt: receipt.completedAt, observedAt: receipt.completedAt, deliveryToken: receipt.deliveryToken,
+      rows: [{ planSlug: 'plan', planRef, status: 'due', applicableDemand: 1, actionKind: 'delegate',
+        obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision }],
+      admissions: [{ planRef, admission: measured(n * 2 + 1) }] };
+    const append = async (kind: 'turn' | 'end', value: unknown) => createPgTelemetryStore().append({
+      workspaceId: WS, owner: OWNER, agent: 'codex', sessionId: OWNER, scope: 'papercusp',
+      kind: 'lifecycle', toolName: null, phase: null, status: 'ok', cwd: null, summary: 'Placement proof fixture',
+      toolUseId: kind === 'end' ? `goal-placement-turn-end:${receipt.completedTurnRef}` : `goal-placement:${receipt.deliveryToken}:${row.id}`,
+      detail: kind === 'end' ? { goalPlacementTurnEnd: value } : { goalPlacementTurn: value },
+    });
+    return { receipt, end, append, settle: () => settleGoalPlacementTurn({ ownerId: OWNER, workspaceId: WS,
+      nativeSessionId: OWNER, receipt }) };
+  }
+  it('serializes duplicate ACK reductions and recovers a missed immediate write on a later orientation', async () => {
+    const one = proof(1); await one.append('end', one.end); await one.append('turn', one.receipt);
+    const outcomes = await Promise.all([one.settle(), one.settle()]);
+    expect(outcomes.filter((result) => result.recorded)).toHaveLength(1);
+    expect((await read())?.opportunities).toBe(1);
+    const two = proof(2); await two.append('end', two.end); await two.append('turn', two.receipt);
+    expect(await reconcileConfirmedGoalPlacementTurns({ ownerId: OWNER, workspaceId: WS, goalId: 'goal' })).toBe(1);
+    expect(await read()).toMatchObject({ opportunities: 2, stalledAt: two.receipt.completedAt });
+    expect(await reconcileConfirmedGoalPlacementTurns({ ownerId: OWNER, workspaceId: WS, goalId: 'goal' })).toBe(0);
+  });
+  it('cannot upgrade a blocked first observation by replaying a later eligible snapshot', async () => {
+    const f = proof(1); f.end.rows[0]!.status = 'blocked';
+    await f.append('end', f.end); await f.append('turn', f.receipt);
+    expect((await f.settle()).recorded).toBe(true);
+    expect((await read())?.opportunities).toBe(0);
+    f.end.rows[0]!.status = 'due'; await f.append('end', f.end);
+    expect((await f.settle()).recorded).toBe(false);
+    expect((await read())?.opportunities).toBe(0);
+  });
+  it('does not count missing, wrong-token, foreign-session or unknown admission proof', async () => {
+    const f = proof(1); await f.append('turn', f.receipt);
+    expect((await f.settle()).recorded).toBe(false);
+    f.end.deliveryToken = 'wrong'; await f.append('end', f.end);
+    expect((await f.settle()).recorded).toBe(false);
+    expect((await settleGoalPlacementTurn({ ownerId: OWNER, workspaceId: WS, nativeSessionId: 'other', receipt: f.receipt })).recorded).toBe(false);
+    const next = proof(2); next.end.admissions[0]!.admission.governor = 'unknown';
+    await next.append('end', next.end); await next.append('turn', next.receipt);
+    expect((await next.settle()).recorded).toBe(false);
+    expect(await read()).toBeNull();
+  });
+  it('reads actual scoped governor receipts as interval exclusions, without treating another fleet as a blocker', async () => {
+    const f = proof(1);
+    const input = { workspaceId: WS, ownerId: OWNER, row: { goalId: 'goal', planSlug: 'plan', planRef,
+      obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
+      launch: { fleetSlug: 'target-fleet', requestedSeats: 1 } },
+      window: { offeredAt: f.receipt.offeredAt, completedAt: f.receipt.completedAt } };
+    const record = { schemaVersion: 1, namespace: 'agent-process', idempotencyKey: `${OWNER}:attempt`,
+      requestFingerprint: 'fixture-fingerprint', admissionClass: 'agent', state: 'cancelled', priority: 0,
+      enqueuedAtMs: Date.parse(at(2)), updatedAtMs: Date.parse(at(3)), deadlineAtMs: null,
+      decision: { generation: 1, atMs: Date.parse(at(3)), reason: 'not-leaseable', evidence: {} },
+      metadata: { launchedBy: OWNER, fleetSlug: 'other-fleet' } };
+    const inserted = await fx.admin<Array<{ receipt_id: string }>>`INSERT INTO harness_shared.resource_governor_admissions
+      (workspace_id, record) VALUES (${WS}, ${JSON.stringify(record)}::text::jsonb) RETURNING receipt_id`;
+    expect(await readGoalPlacementAdmissionAttempts(input, Date.parse(at(4)))).toEqual([]);
+    record.metadata.fleetSlug = 'target-fleet';
+    await fx.admin`UPDATE harness_shared.resource_governor_admissions SET record = ${JSON.stringify(record)}::text::jsonb
+      WHERE workspace_id = ${WS} AND receipt_id = ${inserted[0]!.receipt_id}`;
+    expect(await readGoalPlacementAdmissionAttempts(input, Date.parse(at(4)))).toEqual([inserted[0]!.receipt_id]);
+  });
+});
 
 /** The claim compiler is production code; PG tests below exercise persistence.
  * Canonical fleet/claim writers themselves are covered by the P003 integration. */

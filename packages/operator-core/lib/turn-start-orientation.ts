@@ -4371,7 +4371,7 @@ export function defaultOrientationDeps(): OrientationDeps {
       // The read-only agenda consumes the persisted clock on subsequent reads.
       if (goalId && portfolio) {
         void trackDetached(import('./goal-placement-progress-store').then((module) =>
-          module.recordVerifiedGoalPlacementEffects({ workspaceId, ownerId, goalId,
+          module.reconcileGoalPlacementProgress({ workspaceId, ownerId, goalId,
             portfolio: { ...portfolio, worklist: portfolio.worklist.slice(0, PLAN_CONTEXT_MAX) } }))).catch(() => {});
       }
       // P-005: project the SAME evaluated agenda onto the existing durable await

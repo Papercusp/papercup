@@ -17,7 +17,7 @@ vi.mock('./agent-obligation-reader', async (original) => ({
   ...(await original<typeof import('./agent-obligation-reader')>()),
   readAgentObligationAgenda: progressWiring.read,
 }));
-vi.mock('./goal-placement-progress-store', () => ({ recordVerifiedGoalPlacementEffects: progressWiring.record }));
+vi.mock('./goal-placement-progress-store', () => ({ reconcileGoalPlacementProgress: progressWiring.record }));
 vi.mock('./agent-obligation-reminders', () => ({ reconcileAgentObligationReminders: vi.fn(async () => {}) }));
 
 // The per-turn telemetry write is fire-and-forget and reaches PG; stub it so a
