@@ -36,6 +36,24 @@ afterEach(() => {
 });
 
 describe('withIterativeScan capability probing', () => {
+  it('runs a transaction-scoped handle as-is, without probing or warning', async () => {
+    // The measured shape (WI-10002536): sessions:search passes its transaction
+    // handle, which has no `begin`, so every probe threw and warned "transiently".
+    const tx = vi.fn(async () => []) as unknown as FakeSql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bodies: PgHandle[] = [];
+
+    const result = await withIterativeScan(tx, async (handle) => {
+      bodies.push(handle);
+      return 'rows';
+    });
+
+    expect(result).toBe('rows');
+    expect(bodies).toEqual([tx]);
+    expect(tx).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('retries after a transient probe failure instead of poisoning the handle', async () => {
     const { sql, probeCount, bodyTransactions } = makeSql(
       Object.assign(new Error('connection reset by peer'), { code: '08006' }),

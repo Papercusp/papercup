@@ -154,6 +154,68 @@ export interface TableProjection<Row> {
     delHlc?: string,
     provenance?: ProvenanceContext,
   ) => Promise<void>;
+  /**
+   * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): OPTIONAL read-only
+   * lookup of the federation order (`fed_hlc`, `fed_ts`) STORED on the physical
+   * rows these Hyperbee keys address — exactly the pair this projection's own PG
+   * LWW guard compares an incoming op against.
+   *
+   * The incremental merge seeds its in-memory winners with the result, so an op
+   * whose clock is STRICTLY older than the stored row is skipped without a PG
+   * round trip (the guard would reject it anyway). Measured on the P-203 VM fold:
+   * ~99% of replayed work_items ops were such no-ops, each costing ~3 round trips.
+   *
+   * Contract for implementers:
+   *  - Return an entry ONLY for a key that maps to exactly one physical row, and
+   *    only when that row's `fed_hlc`/`fed_ts` are the values the put AND del
+   *    guards compare (both must reject any op whose order key is strictly lower).
+   *  - Omit keys you cannot resolve unambiguously (e.g. a bare legacy key whose
+   *    physical row depends on the op value). An omitted key is simply applied.
+   *  - Read-only and side-effect free; a throw is swallowed by the caller.
+   */
+  storedOrderForKeys?: (keys: readonly string[]) => Promise<Map<string, StoredFedOrder>>;
+}
+
+/** The federation order stored on a PG row (`fed_hlc`, `fed_ts`), as the LWW guard reads it. */
+export interface StoredFedOrder {
+  hlc: string | null;
+  ts: number | null;
+}
+
+/** One `(table, key)` pair the incremental merge is about to fold. */
+export interface StoredOrderLookupEntry {
+  table: string;
+  key: string;
+}
+
+/**
+ * Resolve the stored federation order for a window of upcoming ops, keyed by the
+ * merge's group key `${table}::${key}`. Tables whose projection does not
+ * implement `storedOrderForKeys` contribute nothing (their ops are applied as today).
+ */
+export type StoredOrderPrefetch = (
+  entries: readonly StoredOrderLookupEntry[],
+) => Promise<Map<string, StoredFedOrder>>;
+
+/** Build a {@link StoredOrderPrefetch} over a projection lookup (one query per opted-in table). */
+export function buildStoredOrderPrefetch(lookup: ProjectionLookup): StoredOrderPrefetch {
+  return async (entries) => {
+    const byTable = new Map<string, string[]>();
+    for (const { table, key } of entries) {
+      if (!table || !key) continue;
+      const list = byTable.get(table);
+      if (list) list.push(key);
+      else byTable.set(table, [key]);
+    }
+    const out = new Map<string, StoredFedOrder>();
+    for (const [table, keys] of byTable) {
+      const lookupFn = lookup(table)?.storedOrderForKeys;
+      if (!lookupFn) continue;
+      const found = await lookupFn(keys);
+      for (const [key, order] of found) out.set(`${table}::${key}`, order);
+    }
+    return out;
+  };
 }
 
 const registry = new Map<string, TableProjection<unknown>>();

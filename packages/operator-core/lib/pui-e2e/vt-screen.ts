@@ -219,6 +219,33 @@ export function screenContains(screen: string, needle: string): boolean {
   return lines.map(collapseWideCells).join('\n').includes(want);
 }
 
+/**
+ * Whether the bordered pane whose top border starts with `title` contains
+ * `needle`, reading its rows as one wrapped paragraph. A soft wrap splits a
+ * phrase across rows, and where it falls depends on which side panes are open;
+ * `screenContains` keeps row boundaries, and joining rows of the whole screen
+ * would splice neighbouring panes together. Only this pane's columns are read.
+ */
+export function paneContains(screen: string, title: string, needle: string): boolean {
+  const rows = screen.split('\n').map((row) => Array.from(row));
+  const want = needle.replace(/\s+/g, ' ').trim();
+  for (let top = 0; top < rows.length; top++) {
+    const line = rows[top].join('');
+    const at = line.indexOf(`┌ ${title}`);
+    if (at < 0) continue;
+    const column = Array.from(line.slice(0, at)).length;
+    const right = rows[top].indexOf('┐', column);
+    if (right < 0) continue;
+    const body: string[] = [];
+    for (const row of rows.slice(top + 1)) {
+      if (row[column] !== '│') break;
+      body.push(row.slice(column + 1, right).join(''));
+    }
+    if (body.join(' ').replace(/\s+/g, ' ').includes(want)) return true;
+  }
+  return false;
+}
+
 /** Match an assistant bubble, never an echoed owner prompt. */
 export function screenHasAssistantReply(screen: string, needle: string | RegExp): boolean {
   const rows = screen.split('\n');

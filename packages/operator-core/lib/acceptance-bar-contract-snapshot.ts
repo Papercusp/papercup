@@ -46,8 +46,10 @@ import {
   ACCEPTANCE_BAR_CONTRACT_EPOCH,
   MAX_BAR_PROJECTION_EDGES,
   MAX_REQUIREMENT_BARS,
+  acceptanceBarBehaviorClass,
   type AcceptanceBarCohort,
 } from './acceptance-bar-seed';
+import type { AcceptanceEvidencePlane } from './agent-tools/plans/rubric-template';
 
 export const ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION = 1 as const;
 export const ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT = 2;
@@ -350,6 +352,92 @@ export function barRequiresAutomatedProof(bar: AcceptanceBarTrace): boolean {
   if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
   return bar.behaviorClass !== 'non-automated' ||
     (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
+}
+
+/** The per-clause inputs of {@link projectedAutomatedProofRequired}. */
+export interface ProjectedClauseProofObligation {
+  behaviorClass: SpecBehaviorClass | null;
+  requiredTestLayers: readonly string[];
+  mutationRequired: boolean;
+}
+
+/**
+ * THE writer of {@link AcceptanceBarTrace.automatedProofRequired}: the projection's rule for
+ * whether a BAR owes automated proof, given its criterion and its enforceable clauses.
+ *
+ * A BAR whose author EXPLICITLY declared it manual (`check: {kind:'instrument',
+ * instrumentKey:'none'}`) carries no automated proof obligation, whichever plane its record
+ * lives on. Deliberately narrow, and fails closed: the criterion must itself declare no layers,
+ * it must have clauses, and NO clause may declare a layer or a mutation obligation. Otherwise
+ * any automated clause class, explicit layer or mutation keeps the automated floor.
+ *
+ * P-039 (review-system-rework-reduction-2026-09-23, R-9): extracted so the amendment dry run
+ * can predict the POST-amendment verdict with the same rule the projection will apply after
+ * the write, instead of carrying the pre-amendment verdict forward (see
+ * {@link predictAmendedBarProofFloor}).
+ */
+export function projectedAutomatedProofRequired(input: {
+  instrumentKey: string | null;
+  criterionTestLayers: readonly string[] | null | undefined;
+  clauses: readonly ProjectedClauseProofObligation[];
+}): boolean {
+  const explicitlyManual =
+    input.instrumentKey === 'none' &&
+    (input.criterionTestLayers?.length ?? 0) === 0 &&
+    input.clauses.length > 0 &&
+    input.clauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
+  return !explicitlyManual && (input.clauses.length === 0 || input.clauses.some((clause) =>
+    clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+  ));
+}
+
+/**
+ * P-039 (review-system-rework-reduction-2026-09-23, R-9): re-derive each amended BAR's
+ * automated-proof verdict for the amendment CANDIDATE.
+ *
+ * The candidate is built by spreading the pre-amendment trace, so without this it carried the
+ * OLD `automatedProofRequired`: a dry run that gave a manual (`instrumentKey:'none'`) BAR a tests
+ * check still predicted "manual, no automated proof owed", and the proof floor the apply would
+ * raise was invisible until the next gate probe. Measured 2026-09-23 (Avi #302): a 14-criterion
+ * amendment on consult-expert-routing-2026-09-22 would have flipped 13 manual BARs to automated.
+ *
+ * A BAR whose hash is unchanged keeps its projected verdict (its clauses keep their revision,
+ * P-001). A changed or new BAR is re-projected from the NEXT criterion: each mapped clause takes
+ * the class the re-projection derives (`acceptanceBarBehaviorClass` of plane and layers), the
+ * criterion's layers, and its current mutation obligation. Where an author hand-refined a clause
+ * class the prediction can read stricter than the apply — a false alarm in the preview, never a
+ * missed obligation.
+ */
+export function predictAmendedBarProofFloor(
+  prior: AcceptanceBarContractSnapshot,
+  candidate: AcceptanceBarContractSnapshot,
+  nextCriteria: readonly RubricCriterion[],
+): AcceptanceBarContractSnapshot {
+  const priorByKey = new Map(prior.bars.map((bar) => [bar.barKey, bar]));
+  const criterionByKey = new Map(nextCriteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
+  return {
+    ...candidate,
+    bars: candidate.bars.map((bar) => {
+      const before = priorByKey.get(bar.barKey);
+      const criterion = criterionByKey.get(bar.barKey);
+      if (!criterion || (before && before.barHash && before.barHash === (criterion.barHash ?? null))) return bar;
+      const plane = (criterion.evidencePlane ?? before?.evidencePlane ?? 'tree') as AcceptanceEvidencePlane;
+      const layers = criterion.requiredTestLayers ?? [];
+      const clause: ProjectedClauseProofObligation = {
+        behaviorClass: acceptanceBarBehaviorClass(plane, layers),
+        requiredTestLayers: layers,
+        mutationRequired: before?.mutationRequired === true,
+      };
+      return {
+        ...bar,
+        automatedProofRequired: projectedAutomatedProofRequired({
+          instrumentKey: effectiveCriterionInstrumentKey(criterion),
+          criterionTestLayers: layers,
+          clauses: bar.mappings.map(() => clause),
+        }),
+      };
+    }),
+  };
 }
 
 export interface AcceptanceBarContractSnapshot {
@@ -956,14 +1044,11 @@ export function projectAcceptanceBarContractSnapshot(
     // statements about the BAR, so the criterion was unshippable by construction.
     // Deliberately narrow, and fails closed: the criterion must itself declare no layers,
     // it must have clauses, and NO clause may declare a layer or a mutation obligation.
-    const explicitlyManual =
-      effectiveCriterionInstrumentKey(criterion) === 'none' &&
-      (criterion.requiredTestLayers?.length ?? 0) === 0 &&
-      enforceableClauses.length > 0 &&
-      enforceableClauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
-    const automatedProofRequired = !explicitlyManual && (enforceableClauses.length === 0 || enforceableClauses.some((clause) =>
-      clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
-    ));
+    const automatedProofRequired = projectedAutomatedProofRequired({
+      instrumentKey: effectiveCriterionInstrumentKey(criterion),
+      criterionTestLayers: criterion.requiredTestLayers,
+      clauses: enforceableClauses,
+    });
     const mappings = clauses.map((clause) => ({
       planItemId: clause.planItemId,
       planItemStatus: itemStatus.get(clause.planItemId) ?? null,

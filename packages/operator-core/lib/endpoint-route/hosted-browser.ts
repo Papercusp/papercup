@@ -56,6 +56,8 @@ export const HOSTED_BROWSER_PROVISION_PATH = '/hosted/browser/workspace-hosts/pr
 export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/action' as const;
 /** The ONE hosted browser route reachable without a selected workspace (D-384). */
 export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/first-workspace' as const;
+/** Selects the organization's existing workspace for a session that holds none. */
+export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -67,6 +69,7 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_PROVISION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {
@@ -646,8 +649,42 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     },
   });
 
+  const selectWorkspace = defineTool({
+    method: 'POST',
+    path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
+    auth: HOSTED_VIEW_AUTH,
+    cors: { origins: [origin] },
+    async handler(request, ctx) {
+      // Same door as first-workspace: only a session that holds NO workspace, so this can
+      // never move a session off a workspace it already has.
+      const selection = bootstrapHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      if (!deps.firstWorkspace || !deps.issueSessionCookie) return jsonError('first_workspace_unavailable', 501);
+      // Nothing is read from the body: the organization comes from the verified session.
+      const result = await deps.firstWorkspace.selectExisting({
+        organizationId: principal.activeOrganizationId,
+        sessionId: principal.sessionId,
+        sessionVersion: principal.sessionVersion,
+      });
+      if (!result.ok) return jsonError(result.code, result.status, { retryable: result.retryable });
+      return Response.json(
+        { ok: true, workspaceId: result.workspaceId },
+        {
+          status: 200,
+          headers: {
+            'cache-control': 'no-store',
+            'set-cookie': deps.issueSessionCookie(result.sessionId, result.sessionExpiresAt),
+          },
+        },
+      );
+    },
+  });
+
   return {
-    routes: [query, sse, connection, provision, action, firstWorkspace],
+    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

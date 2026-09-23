@@ -105,13 +105,18 @@ const DOORS: DoorEntry[] = [
   },
   {
     id: 'injection-door',
-    module: 'packages/operator-core/lib/events/await/wake-executor.ts',
+    // P-024 clause D (review-system-rework-reduction-2026-09-23): the door no longer
+    // slices text. wake-executor.ts applyInjectionDoor calls packWakeText, which lives
+    // here and emits the footer; nothing is cut mid-section any more.
+    module: 'packages/operator-core/lib/events/await/wake-text-budget.ts',
     disposition: {
       kind: 'prose-only',
       reason:
         'The payload is a wake PROMPT typed into a PTY — there is no result envelope to stamp, ' +
         'and the consumer is a model reading text. Prose is the only channel that exists here. ' +
-        'The full original is spilled to ~/.papercusp/wake-spills and the footer names the path.',
+        'Since P-024 clause D the door builds to the budget: whole sections are kept by priority, ' +
+        'every section left out is NAMED in the footer, and the full original plus a section ' +
+        'index is spilled to ~/.papercusp/wake-spills; the footer names that path.',
     },
     // turn-provenance strips the footer back off with a regex, so its exact
     // opening literal is load-bearing for CODE, not only for a reader.
@@ -209,10 +214,16 @@ describe('truncation honesty — every door is registered with an explicit dispo
     // If this fails, the detector stopped matching — every other assertion in
     // this file would then pass vacuously.
     // The result door stopped calling the character-slicing primitive when
-    // EI-20435986111760474 made every overflow structurally projected. Two
-    // genuine capInjectionText doors remain; the result door is still covered
-    // independently by its runtime `_meta.resultDoor` assertion below.
-    expect(found.filter((s) => s.kind === 'cap-call').length).toBeGreaterThanOrEqual(2);
+    // EI-20435986111760474 made every overflow structurally projected, and the
+    // injection door stopped slicing when P-024 clause D made it pack whole
+    // sections (review-system-rework-reduction-2026-09-23). The ambient-push door
+    // is the one remaining capInjectionText caller; pin it by FILE so the
+    // calibration cannot pass on some other, unrelated call site. The result door
+    // is still covered independently by its runtime `_meta.resultDoor` assertion.
+    expect(
+      found.filter((s) => s.kind === 'cap-call' && s.file === 'packages/operator-core/lib/ambient-push-delivery.ts')
+        .length,
+    ).toBeGreaterThanOrEqual(1);
     // Result overflows are now a single parseable JSON value with
     // `_projection` plus `_meta.resultDoor`, never a prose footer appended to a
     // sliced value. The runtime marker assertion below calibrates that arm.

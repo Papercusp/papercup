@@ -1685,24 +1685,32 @@ export function makeScrollbackGuard(): {
     /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
     flush(): string;
 };
-/** A launch seed must not reach a TUI before its editor exists. Most backends
- * are ready for the existing quiet-window check after their first output byte,
- * but OMP emits terminal capability probes before it paints any UI, and Codex
- * animates a multi-second character-by-character "Tip: ..." onboarding line
- * (plus, occasionally, an MCP-startup warning typed the same way) before its
- * composer ever paints — a mid-animation pause can look "quiet at a prompt"
- * to the ordinary quiescence gate even though the real editable prompt has not
- * installed yet (WI-4943: a live Claude→Codex port wrote its managed seed
- * during this animation, the submit CR landed as inert paste text, and native
- * persistence correctly failed). OMP's stable `omp vN` banner is the earliest
- * backend-owned proof that startup reached the dashboard; Codex's own stable
- * proof is its composer footer's live context-budget readout ("NN% context
- * left"), which is chrome the TUI only paints once the input line is
- * installed — verified against the shipped `codex` binary's embedded UI
- * strings (`@openai/codex-linux-x64`). The ordinary output-quiescence gate
- * still runs after either marker. Pure and exported so backend readiness
- * cannot regress into timing folklore. */
 export function startupOutputReady(agent: any, output: any): boolean;
+/** WI-10002745: the first thing a Codex TUI writes is a burst of terminal
+ * capability queries (`ESC[?2004h ESC[>7u ESC[?1004h ESC[6n OSC10? OSC11?
+ * ESC[?u ESC[c`). A headless PTY answers none of them, so Codex spends ~3.6s
+ * reading stdin for the replies before it paints its first frame (its own log:
+ * `tui startup initial frame scheduled duration_ms=3618`) — and any input that
+ * arrives in that window is swallowed by the reply parser. The cursor-position
+ * request is the earliest byte that is unambiguously the Codex TUI rather than
+ * the psu launcher's own banner. Pure and exported for tests. */
+export function codexTuiStartObserved(output: any): boolean;
+/** Has the startup-ready fallback window elapsed? For most backends it is
+ * measured from the child's first output byte. For Codex it is measured from
+ * the Codex TUI's OWN start: the PTY child is the psu launcher, which prints
+ * its banner and then bootstraps the role (minting CODEX_HOME, etc.) for ~20s
+ * under load before Codex execs. Measured from the banner, the 15s window had
+ * already expired before Codex existed, so the output-quiet gate read Codex's
+ * silent capability-probe wait as "settled at a prompt" and typed the kickoff
+ * into it — losing the provenance marker, after which the host tore the
+ * working session down (WI-10002745). Pure and exported for tests. */
+export function startupFallbackElapsed({ agent, nowMs, firstOutputAt, backendTuiStartedAt, fallbackMs }: {
+    agent: any;
+    nowMs: any;
+    firstOutputAt: any;
+    backendTuiStartedAt: any;
+    fallbackMs: any;
+}): boolean;
 /** A fresh Claude child can repaint continuously (spinner/elapsed chrome), so
  * output quietness is not a reliable post-epoch settle signal. A standalone
  * composer glyph proves the editor is installed; menu rows include text and
@@ -2467,6 +2475,12 @@ export const CLAUDE_RESUME_COMPACTION_RECOVERY_MS: 30000;
  *  Pure factory — exported for tests.
  */
 export const SCROLLBACK_ERASE_RE: RegExp;
+/** If the Codex TUI-start probe is never observed (a future Codex that stops
+ * sending it, or bytes that landed before the listener attached), the host
+ * still delivers — but only after this multiple of the ordinary fallback, so
+ * a detector miss degrades to "slower" rather than to "typed into a booting
+ * TUI". */
+export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER: 4;
 /** Default TTL a delivery id is remembered as "already accepted" (EI-19311270129974785).
  *  Sized comfortably above the client's own retry envelope — `markDeliveryFailed`'s
  *  backoff caps at 10min and the pump gives up after a bounded attempt count — so a

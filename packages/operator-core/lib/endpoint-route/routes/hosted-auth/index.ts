@@ -225,6 +225,18 @@ function callbackRecoveryRedirect(origin: string, code: string): Response {
   return redirect(target.toString(), [deleteFlowCookie()]);
 }
 
+/**
+ * The callback's 503 exits swallow their cause so nothing internal reaches the
+ * browser — which left the server blind too: the owner's `session_create_failed`
+ * on 2026-09-23 was diagnosable only from the Postgres server log. Log the code
+ * and the cause's message (a driver/constraint message, never a token).
+ */
+function logCallbackFailure(code: string, cause: unknown): void {
+  console.warn(
+    `[hosted-auth] callback failed code=${code} cause=${cause instanceof Error ? cause.message : String(cause)}`,
+  );
+}
+
 function validProviderRedirect(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -457,7 +469,8 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
               ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
             }),
           };
-        } catch {
+        } catch (cause) {
+          logCallbackFailure('identity_binding_unavailable', cause);
           await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
           return {
             ok: false,
@@ -487,7 +500,8 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
             acceptedAt: now,
           };
           admitted = await deps.selfSignup.complete(input);
-        } catch {
+        } catch (cause) {
+          logCallbackFailure('signup_unavailable', cause);
           await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
           return jsonError('signup_unavailable', 'Account creation is temporarily unavailable.', 503, {
             'set-cookie': deleteFlowCookie(),
@@ -547,7 +561,8 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
             expiresAt: new Date(upstream.expiresAtMs),
           };
           session = await deps.sessionStore.create(createInput);
-        } catch {
+        } catch (cause) {
+          logCallbackFailure('session_create_failed', cause);
           await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
           return jsonError('session_create_failed', 'The hosted session could not be created.', 503, {
             'set-cookie': deleteFlowCookie(),

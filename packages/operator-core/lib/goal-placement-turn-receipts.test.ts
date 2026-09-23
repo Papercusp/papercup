@@ -3,11 +3,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
-import type { AgentObligationBrief } from './agent-obligation-reader';
+import type { AgentObligationBrief, AgentObligationAgendaRead } from './agent-obligation-reader';
 import { readVerbatimTail, type TranscriptTailTurn } from './turn-journal';
 import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
+  recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps,
 } from './goal-placement-turn-receipts';
 
 const at = (n: number) => new Date(Date.UTC(2026, 8, 23, 0, n));
@@ -96,6 +97,69 @@ function fixture() {
   return { deps, setTail: (value: TranscriptTailTurn[]) => { turns = value; },
     setNow: (minute: number) => { now = at(minute).getTime(); } };
 }
+
+describe('native turn-end policy observation', () => {
+  function endFixture() {
+    const f = fixture();
+    f.setTail([turn('prior', 1), turn('current', 3)]); f.setNow(4);
+    const read = { goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
+      agenda: { evaluations: [row] } } as AgentObligationAgendaRead;
+    const deps: GoalPlacementTurnEndDeps = { ...f.deps, agenda: vi.fn(async () => read) };
+    const endInput = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: session.sessionId, sourceKind: session.sourceKind };
+    return { ...f, read, deps, endInput };
+  }
+  it('records scoped policy against the exact native final with an explicit observation time', async () => {
+    const f = endFixture();
+    expect(await recordGoalPlacementTurnEnd(f.endInput, f.deps)).toMatchObject({ recorded: true });
+    expect(f.deps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: { goalPlacementTurnEnd: {
+      version: 1, goalId: 'goal', completedTurnRef: 'codex:native-1:current', completedAt: at(3).toISOString(),
+      observedAt: at(4).toISOString(), rows: [{ planSlug: 'plan', planRef: 'plan:harness/plan', status: 'due', applicableDemand: 1,
+        actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
+    } } }));
+  });
+  it.each(['blocked', 'unknown', 'not-applicable', 'in-progress', 'satisfied'] as const)('preserves %s instead of asserting eligibility', async (status) => {
+    const f = endFixture(); f.read.agenda.evaluations = [{ ...row, status }];
+    await recordGoalPlacementTurnEnd(f.endInput, f.deps);
+    expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEnd:
+      expect.objectContaining({ rows: [expect.objectContaining({ status })] }) } }));
+  });
+  it('refuses late replay, future timestamps, or a stale/foreign native session', async () => {
+    const f = endFixture(); f.setNow(5);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('turn-end-observation-stale');
+    f.setNow(2);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(false);
+    expect((await recordGoalPlacementTurnEnd({ ...f.endInput, nativeSessionId: 'old-session' }, f.deps)).reason).toBe('native-session-mismatch');
+    expect(f.deps.agenda).not.toHaveBeenCalled();
+    expect(f.deps.append).not.toHaveBeenCalled();
+  });
+  it.each(['progress', 'interrupted', null] as const)('refuses a %s latest response even with a prior completed one', async (disposition) => {
+    const f = endFixture(); f.setTail([turn('prior', 1), turn('current', 3, disposition)]);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('native-decision-not-complete');
+    expect(f.deps.agenda).not.toHaveBeenCalled();
+  });
+  it('refuses a newer user request or an unattributed tail, including a request starting during the policy read', async () => {
+    const f = endFixture();
+    for (const last of [{ ...turn('next', 4), speaker: 'user' as const }, { ...turn('next', 4), requestId: null }]) {
+      f.setTail([turn('current', 3), last]);
+      expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(false);
+    }
+    f.setTail([turn('current', 3)]);
+    f.deps.agenda = async () => { f.setTail([turn('current', 3), { ...turn('next', 4), speaker: 'user' }]); return f.read; };
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('native-decision-advanced-during-observation');
+    expect(f.deps.append).not.toHaveBeenCalled();
+  });
+  it('refuses stale policy reads, wrong owner scope and absent canonical goals', async () => {
+    const f = endFixture();
+    f.read.observedAt = at(1).toISOString();
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(false);
+    f.read.observedAt = at(4).toISOString();
+    f.read.agenda.evaluations = [{ ...row, scope: { ...row.scope, ownerId: 'other' } }];
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('placement-policy-unmeasured');
+    f.read.goalId = null;
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('no-canonical-goal');
+    expect(f.deps.append).not.toHaveBeenCalled();
+  });
+});
 
 describe('exact delivery plus native-final receipts', () => {
   it('captures a baseline but writes nothing until exact emission and a newer native final are proven', async () => {

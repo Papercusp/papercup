@@ -73,6 +73,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/browser/workspace-hosts/provision',
   'POST /hosted/browser/workspace-hosts/action',
   'POST /hosted/browser/onboarding/first-workspace',
+  'POST /hosted/browser/onboarding/select-workspace',
   'POST /hosted/workspaces/:workspaceId/connectors/enroll',
   'POST /hosted/workspaces/:workspaceId/connectors/rotate',
   'POST /hosted/workspaces/:workspaceId/connectors/revoke',

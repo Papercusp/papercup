@@ -426,3 +426,53 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record })).toMatchObject({ hostId: 'host-1' });
   });
 });
+
+describe('selecting the organization\'s existing workspace after sign-in', () => {
+  const SELECTION = { organizationId: 'org-a', sessionId: 'session-1', sessionVersion: 3 };
+
+  it("rotates the session onto the organization's one live workspace", async () => {
+    const { deps } = harness({ organizationWorkspaceIds: async (organizationId) => (organizationId === 'org-a' ? ['ws-own'] : []) });
+
+    const result = await createHostedFirstWorkspace(deps).selectExisting(SELECTION);
+
+    expect(result).toEqual({
+      ok: true,
+      workspaceId: 'ws-own',
+      sessionId: 'session-rotated',
+      sessionExpiresAt: new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(deps.selectWorkspace).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      workspaceId: 'ws-own',
+      expectedPermissionVersion: 3,
+    });
+  });
+
+  it('answers no_workspace, selecting nothing, for an organization without one', async () => {
+    const { deps } = harness();
+
+    expect(await createHostedFirstWorkspace(deps).selectExisting(SELECTION)).toMatchObject({ ok: false, code: 'no_workspace' });
+    expect(deps.selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('does not guess when more than one live workspace is somehow present', async () => {
+    const { deps } = harness({ organizationWorkspaceIds: async () => ['ws-1', 'ws-2'] });
+
+    expect(await createHostedFirstWorkspace(deps).selectExisting(SELECTION)).toMatchObject({ ok: false, code: 'no_workspace' });
+    expect(deps.selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('reports a session that moved on as retryable', async () => {
+    const { deps } = harness({
+      organizationWorkspaceIds: async () => ['ws-own'],
+      selectWorkspace: vi.fn(async () => null),
+    });
+
+    expect(await createHostedFirstWorkspace(deps).selectExisting(SELECTION)).toEqual({
+      ok: false,
+      code: 'session_selection_failed',
+      status: 409,
+      retryable: true,
+    });
+  });
+});

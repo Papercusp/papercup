@@ -22,9 +22,11 @@
 import {
   registerProjection,
   applyOpVia,
+  buildStoredOrderPrefetch,
   type TableProjection,
   type ProjectionLookup,
   type ApplyOpOpts,
+  type StoredOrderPrefetch,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PendingMembershipContent } from '../pending-membership-content';
@@ -555,9 +557,7 @@ export function registerAllHarnessProjections(opts: RegisterAllOpts): void {
  * put/del/decode/clobber logic the global path uses) with a lookup bound to a
  * private per-harness `Map<tableTag, projection>`.
  */
-export function buildHarnessProjectionApply(
-  opts: RegisterAllOpts,
-): (op: OpEnvelope) => Promise<boolean> {
+export function buildHarnessProjectionApply(opts: RegisterAllOpts): HarnessProjectionApply {
   if (!opts.workspaceId) throw new Error('buildHarnessProjectionApply: workspaceId required');
   if (!opts.harnessSlug) throw new Error('buildHarnessProjectionApply: harnessSlug required');
   const scoped = new Map<string, TableProjection<unknown>>();
@@ -566,5 +566,13 @@ export function buildHarnessProjectionApply(
   // G1 Provenance (P-002): thread ownLogKeyHex so the apply path can determine
   // origin via log-source (own log → 'local', admitted remote log → 'remote').
   const applyOpts: ApplyOpOpts = opts.ownLogKeyHex ? { ownLogKeyHex: opts.ownLogKeyHex } : {};
-  return (op: OpEnvelope) => applyOpVia(lookup, op, applyOpts);
+  const apply = (op: OpEnvelope) => applyOpVia(lookup, op, applyOpts);
+  // p2p-join-catchup-speed-2026-09-23 P-002: the SAME projection instances answer the
+  // merge's stored-order prefetch, so a rekey rebuild swaps both together.
+  return Object.assign(apply, { prefetchStoredOrder: buildStoredOrderPrefetch(lookup) });
 }
+
+/** The scoped apply plus the stored-order prefetch bound to the same projection set. */
+export type HarnessProjectionApply = ((op: OpEnvelope) => Promise<boolean>) & {
+  prefetchStoredOrder: StoredOrderPrefetch;
+};

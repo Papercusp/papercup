@@ -4363,10 +4363,17 @@ export function defaultOrientationDeps(): OrientationDeps {
       return value ? { planSlug: value.planSlug, executableWidth: value.executableWidth } : null;
     },
     obligations: async (ownerId, workspaceId) => {
-      const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
+      const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief, PLAN_CONTEXT_MAX } = await import(
         './agent-obligation-reader'
       );
-      const { agenda, observedAt } = await readAgentObligationAgenda({ workspaceId, ownerId });
+      const { agenda, observedAt, portfolio, goalId } = await readAgentObligationAgenda({ workspaceId, ownerId });
+      // Record a NEW verified member effect, not a heartbeat/read timestamp.
+      // The read-only agenda consumes the persisted clock on subsequent reads.
+      if (goalId && portfolio) {
+        void trackDetached(import('./goal-placement-progress-store').then((module) =>
+          module.recordVerifiedGoalPlacementEffects({ workspaceId, ownerId, goalId,
+            portfolio: { ...portfolio, worklist: portfolio.worklist.slice(0, PLAN_CONTEXT_MAX) } }))).catch(() => {});
+      }
       // P-005: project the SAME evaluated agenda onto the existing durable await
       // plane. Reconciliation is fail-soft internally, so an unavailable optional
       // reminder can never suppress the load-bearing guidance rendered below.

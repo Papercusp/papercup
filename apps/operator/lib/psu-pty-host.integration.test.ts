@@ -226,6 +226,29 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupOutputReady('codex', ' 62%  context left ')).toBe(true);
   });
 
+  // WI-10002745: Codex ≥0.156 paints its idle readout as a status footer and
+  // shows the legacy "NN% context left" form only while a turn is RUNNING, so
+  // the legacy pattern alone never proved readiness before the first turn.
+  // Every fresh Codex kickoff then fell to the 15s blind-write fallback and lost
+  // its leading marker bytes. Frames below are verbatim (ANSI included) from a
+  // captured v0.156.1 grading-auditor boot.
+  it('recognises the Codex >=0.156 status footer, and only once its status is past Starting', () => {
+    const readyFooter =
+      '\x1b[2m╰──╯\x1b[0m  › Ask Codex to do anything   Ready' +
+      ' \xb7 GPT-5.6-Sol default\x1b[39;49m \xb7 \x1b[38;5;216;49mContext 100% left' +
+      '\x1b[39m\x1b[49m\x1b[0m\x1b[1;1H\x1b[0 q';
+    expect(startupOutputReady('codex', readyFooter)).toBe(true);
+    // Same footer while MCP servers are still booting: the composer is not yet
+    // accepting input, so this must NOT authorize the kickoff write.
+    const startingFooter =
+      '› Ask Codex to do anything   Starting \xb7 GPT-5.6-Sol high \xb7 Context 100% left';
+    expect(startupOutputReady('codex', startingFooter)).toBe(false);
+    // A later Ready repaint in the same accumulated buffer does prove readiness.
+    expect(startupOutputReady('codex', startingFooter + '\x1b[22;3H' + readyFooter)).toBe(true);
+    // The footer text inside ordinary prose (no status/model segments) is not chrome.
+    expect(startupOutputReady('codex', 'the Context 100% left readout')).toBe(false);
+  });
+
   it('recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows', () => {
     expect(freshChildPromptReady('claude', '\x1b[2J spinner / loading')).toBe(false);
     expect(freshChildPromptReady('claude', '❯ 1. Resume from summary')).toBe(false);

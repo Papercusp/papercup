@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { screenContains, screenHasAssistantReply } from './vt-screen';
+import { paneContains, screenContains, screenHasAssistantReply } from './vt-screen';
 
 function frame(left: string[], right?: string[], title = 'Agent Chat'): string {
   const header = `┌ ${title} `.padEnd(36, '─') + '┐';
@@ -63,5 +63,24 @@ describe('rendered assistant reply evidence', () => {
   test('rejects an apparent answer in a different pane', () => {
     expect(screenHasAssistantReply(frame(['you', 'still waiting'], ['agent', 'PUI-REPLY']), 'PUI-REPLY')).toBe(false);
     expect(screenHasAssistantReply(frame(['agent', 'PUI-REPLY'], undefined, 'Plans'), 'PUI-REPLY')).toBe(false);
+  });
+});
+
+describe('pane-scoped wrapped text', () => {
+  const composer = 'Message not accepted';
+  test('reads a phrase the pane soft-wrapped across rows, which the row-bound matcher cannot', () => {
+    // The measured shape: the composer wrapped the operator error between
+    // "connection" and "interrupted", and where it wraps depends on open panes.
+    const screen = frame(['503: PUI-E2E startup connection', 'interrupted draft kept'], ['omp', 'active'], composer);
+    expect(screenContains(screen, 'PUI-E2E startup connection interrupted')).toBe(false);
+    expect(paneContains(screen, composer, 'PUI-E2E startup connection interrupted')).toBe(true);
+  });
+  test('never splices the neighbouring pane into the phrase', () => {
+    const screen = frame(['PUI-E2E startup', 'draft kept'], ['connection', 'interrupted'], composer);
+    expect(paneContains(screen, composer, 'PUI-E2E startup connection')).toBe(false);
+    expect(paneContains(screen, 'Presence', 'connection interrupted')).toBe(true);
+  });
+  test('only reads the pane the title names', () => {
+    expect(paneContains(frame(['PUI-E2E startup connection interrupted']), 'Plans', 'startup connection')).toBe(false);
   });
 });

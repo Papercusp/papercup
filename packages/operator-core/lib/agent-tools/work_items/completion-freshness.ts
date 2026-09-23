@@ -264,6 +264,121 @@ export async function completionHeadBlobMap(
   }
 }
 
+type CompletionHistoryLocation = {
+  repositoryRoot: string;
+  commitSha: string;
+  path: string;
+};
+
+/**
+ * Resolve a declared path to the repository and commit that own it at one
+ * superproject commit. Gitlinks are read from that commit's tree, not from the
+ * checkout's possibly stale .gitmodules or working tree.
+ */
+async function completionHistoryLocation(
+  repoRoot: string,
+  commitSha: string,
+  path: string,
+  opts: GitSpawnOptions,
+): Promise<CompletionHistoryLocation | undefined> {
+  if (opts.signal?.aborted) return undefined;
+  const root = nodePath.resolve(repoRoot);
+  const prefixes = path
+    .split('/')
+    .slice(0, -1)
+    .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+  if (prefixes.length === 0) return { repositoryRoot: root, commitSha, path };
+
+  const entries: string[] = [];
+  const outcome = await streamGitFields(
+    ['-C', root, 'ls-tree', '-z', commitSha, '--', ...prefixes.map((prefix) => ':(literal)' + prefix)],
+    (entry) => {
+      if (entry) entries.push(entry);
+    },
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
+  );
+  if (outcome !== 'complete' || opts.signal?.aborted) return undefined;
+
+  let bestPrefix: string | undefined;
+  let bestSha: string | undefined;
+  for (const entry of entries) {
+    const tab = entry.indexOf('\t');
+    if (tab < 0) continue;
+    const [mode, type, sha] = entry.slice(0, tab).split(/\s+/);
+    const candidate = entry.slice(tab + 1);
+    if (mode !== '160000' || type !== 'commit' || !sha || !OBJECT_SHA_RE.test(sha)) continue;
+    if (!path.startsWith(candidate + '/')) continue;
+    if (bestPrefix && bestPrefix.length >= candidate.length) continue;
+    bestPrefix = candidate;
+    bestSha = sha;
+  }
+  if (!bestPrefix || !bestSha) return { repositoryRoot: root, commitSha, path };
+
+  const nestedRoot = nodePath.resolve(root, bestPrefix);
+  if (!nestedRoot.startsWith(root + nodePath.sep)) return undefined;
+  const nestedPath = path.slice(bestPrefix.length + 1);
+  if (!nestedPath) return undefined;
+  return completionHistoryLocation(nestedRoot, bestSha, nestedPath, opts);
+}
+
+/**
+ * Prove that a blob was committed at this exact path between the completion's
+ * observed HEAD and the emitted commit. The location is resolved at both ends
+ * so a superproject file can never prove a submodule blob (or vice versa).
+ *
+ * Returns undefined when Git cannot answer; callers must preserve residue in
+ * that case. Successful empty history is a definitive false, which keeps ODB
+ * only and same-blob-at-another-path content from becoming settlement proof.
+ */
+export async function completionBlobHistoryContains(
+  repoRoot: string,
+  fromHeadSha: string,
+  toCommitSha: string,
+  rawPath: string,
+  blobSha: string,
+  opts: GitSpawnOptions = {},
+): Promise<boolean | undefined> {
+  if (
+    opts.signal?.aborted
+    || !SHA_RE.test(fromHeadSha)
+    || !SHA_RE.test(toCommitSha)
+    || !OBJECT_SHA_RE.test(blobSha)
+  ) {
+    return undefined;
+  }
+  const path = normalizedRepoPath(repoRoot, rawPath);
+  if (!path || path !== rawPath) return undefined;
+
+  const from = await completionHistoryLocation(repoRoot, fromHeadSha, path, opts);
+  const to = await completionHistoryLocation(repoRoot, toCommitSha, path, opts);
+  if (opts.signal?.aborted || !from || !to) return undefined;
+  if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;
+  if (from.commitSha === to.commitSha) return false;
+
+  let found = false;
+  const outcome = await streamGitFields(
+    [
+      '-C',
+      from.repositoryRoot,
+      'log',
+      '--format=%H%x00',
+      '--no-renames',
+      '--find-object=' + blobSha,
+      from.commitSha + '..' + to.commitSha,
+      '--',
+      ':(literal)' + from.path,
+    ],
+    (entry) => {
+      if (!entry.trim()) return;
+      found = true;
+      return true;
+    },
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
+  );
+  if (opts.signal?.aborted || outcome !== 'complete') return undefined;
+  return found;
+}
+
 async function contentIdentity(
   repositoryRoot: string,
   headSha: string,

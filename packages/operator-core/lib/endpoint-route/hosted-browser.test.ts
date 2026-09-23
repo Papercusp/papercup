@@ -10,6 +10,7 @@ import {
   HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
+  HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
   HOSTED_BROWSER_SSE_PATH,
   createHostedBrowserRoutes,
 } from './hosted-browser';
@@ -549,5 +550,96 @@ describe('hosted first-workspace bootstrap route', () => {
       template,
       connectionId: 'conn-derived',
     });
+  });
+});
+
+describe('hosted select-workspace route', () => {
+  // Sign-in never selects a workspace, so a returning member arrives here with none
+  // (the owner's own account, 2026-09-23).
+  const unselected = createHostedPrincipal({
+    workspaceId: CONTROL_PLANE_WORKSPACE,
+    userId: 'user-1',
+    activeOrganizationId: 'org-1',
+    sessionId: 'session-1',
+    sessionVersion: 3,
+    permissions: ['workspace:view'],
+  });
+  const expiresAt = new Date('2026-10-01T00:00:00.000Z');
+
+  function selecting(result: Awaited<ReturnType<HostedFirstWorkspace['selectExisting']>> = {
+    ok: true,
+    workspaceId: 'ws-existing',
+    sessionId: 'session-rotated',
+    sessionExpiresAt: expiresAt,
+  }) {
+    const selectExisting = vi.fn(async () => result);
+    const issueSessionCookie = vi.fn((sessionId: string) => `hosted_session=${sessionId}; HttpOnly`);
+    const handler = routeHandler(
+      createHostedBrowserRoutes({
+        publicOrigin: ORIGIN,
+        controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+        dependencies: {
+          firstWorkspace: { selectExisting } as unknown as HostedFirstWorkspace,
+          issueSessionCookie,
+        },
+      }).routes,
+      HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
+    );
+    return { selectExisting, issueSessionCookie, handler };
+  }
+
+  function post(body: unknown = {}, origin: string | null = ORIGIN): Request {
+    return new Request(`${ORIGIN}/api${HOSTED_BROWSER_SELECT_WORKSPACE_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('selects from the SESSION organization, ignores any body, and re-issues the rotated cookie', async () => {
+    const { selectExisting, issueSessionCookie, handler } = selecting();
+
+    const response = await handler(
+      post({ organizationId: 'org-victim', workspaceId: 'ws-victim' }),
+      context(unselected),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, workspaceId: 'ws-existing' });
+    expect(response.headers.get('set-cookie')).toBe('hosted_session=session-rotated; HttpOnly');
+    expect(issueSessionCookie).toHaveBeenCalledWith('session-rotated', expiresAt);
+    expect(selectExisting).toHaveBeenCalledWith({ organizationId: 'org-1', sessionId: 'session-1', sessionVersion: 3 });
+  });
+
+  it('never moves a session off a workspace it already holds', async () => {
+    const { selectExisting, handler } = selecting();
+
+    const response = await handler(post(), context(principal));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'workspace_already_selected' });
+    expect(selectExisting).not.toHaveBeenCalled();
+  });
+
+  it('requires the exact configured Origin', async () => {
+    const { selectExisting, handler } = selecting();
+
+    const missing = await handler(post({}, null), context(unselected));
+    const wrong = await handler(post({}, 'https://evil.example'), context(unselected));
+
+    expect(missing.status).toBe(403);
+    expect(wrong.status).toBe(403);
+    expect(selectExisting).not.toHaveBeenCalled();
+  });
+
+  it('reports an organization with no workspace yet as no_workspace, with no cookie', async () => {
+    const { handler, issueSessionCookie } = selecting({ ok: false, code: 'no_workspace', status: 404, retryable: false });
+
+    const response = await handler(post(), context(unselected));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: 'no_workspace', retryable: false });
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(issueSessionCookie).not.toHaveBeenCalled();
   });
 });

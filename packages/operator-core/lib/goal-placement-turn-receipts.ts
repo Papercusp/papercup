@@ -1,7 +1,7 @@
 /** Exact goal-plan exposure + native final-turn receipts, on existing stores. */
 import { z } from 'zod';
 import { formatAgentObligationLine } from './agent-obligations';
-import type { AgentObligationBrief } from './agent-obligation-reader';
+import type { AgentObligationBrief, AgentObligationAgendaRead } from './agent-obligation-reader';
 import type { TranscriptTailTurn } from './turn-journal';
 import type { SelfSession } from './search/self-session';
 import type { ActivityRecord } from '@papercusp/activity-bridge';
@@ -19,6 +19,12 @@ export const goalPlacementDeliverySchema = z.object({
   rows: z.array(rowSchema).min(1).max(3),
 }).strict();
 export type GoalPlacementDelivery = z.infer<typeof goalPlacementDeliverySchema>;
+
+/** A delayed journal must not relabel today's state as an old turn's state. */
+export const GOAL_PLACEMENT_TURN_END_MAX_LAG_MS = 60_000;
+export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptDeps, 'current' | 'tail' | 'append' | 'now'> {
+  agenda: (ownerId: string, workspaceId: string) => Promise<AgentObligationAgendaRead>;
+}
 
 export interface GoalPlacementTurnReceiptDeps {
   current: (ownerId: string) => Promise<SelfSession | null>;
@@ -43,6 +49,69 @@ function completedRef(session: SelfSession, turn: TranscriptTailTurn): string | 
   if (turn.speaker !== 'assistant' || turn.responseDisposition !== 'delivered' ||
     !turn.requestId || !turn.ts || !Number.isFinite(turn.ts.getTime())) return null;
   return `${session.sourceKind}:${session.sessionId}:${turn.requestId}`;
+}
+
+function latestCompletedDecision(session: SelfSession, turns: TranscriptTailTurn[]): TranscriptTailTurn | null {
+  // A newer user request or progress response is a LIVE call, not completion
+  // of the last delivered response still visible earlier in the tail.
+  const latest = turns[turns.length - 1];
+  return latest && completedRef(session, latest) ? latest : null;
+}
+
+/** Sample policy at the native turn-end seam, independently of the next-turn ACK.
+ * This is descriptive policy evidence, not a grade or a delivery receipt. Its
+ * observedAt remains explicit; a later replay cannot masquerade as timely proof. */
+export async function recordGoalPlacementTurnEnd(input: {
+  ownerId: string; workspaceId: string; nativeSessionId: string; sourceKind: SelfSession['sourceKind'];
+}, deps: GoalPlacementTurnEndDeps = { ...defaults,
+  agenda: async (ownerId, workspaceId) => (await import('./agent-obligation-reader')).readAgentObligationAgenda({ ownerId, workspaceId }),
+}): Promise<{ recorded: boolean; reason: string }> {
+  const session = await deps.current(input.ownerId);
+  if (!session || session.sessionId !== input.nativeSessionId || session.sourceKind !== input.sourceKind) {
+    return { recorded: false, reason: 'native-session-mismatch' };
+  }
+  const completed = latestCompletedDecision(session, await deps.tail(session));
+  if (!completed) return { recorded: false, reason: 'native-decision-not-complete' };
+  const endedAt = completed.ts!.getTime();
+  const timely = (now: number) => Number.isFinite(now) && now >= endedAt && now - endedAt <= GOAL_PLACEMENT_TURN_END_MAX_LAG_MS;
+  if (!timely(deps.now())) return { recorded: false, reason: 'turn-end-observation-stale' };
+  const read = await deps.agenda(input.ownerId, input.workspaceId);
+  if (!read.goalId) return { recorded: false, reason: 'no-canonical-goal' };
+  const observedAt = Date.parse(read.observedAt);
+  if (!timely(observedAt) || !timely(deps.now()) || observedAt > deps.now()) {
+    return { recorded: false, reason: 'turn-end-observation-stale' };
+  }
+  const again = latestCompletedDecision(session, await deps.tail(session));
+  if (!again || completedRef(session, again) !== completedRef(session, completed)) {
+    return { recorded: false, reason: 'native-decision-advanced-during-observation' };
+  }
+  const rows = read.agenda.evaluations.filter((row) => row.family === 'plan-placement' &&
+    row.scope.ownerId === input.ownerId && row.scope.workspaceId === input.workspaceId && row.scope.goalId === read.goalId)
+    .map((row) => ({ planSlug: row.scope.planSlug ?? null,
+      planRef: row.action?.targetRef?.startsWith('plan:') ? row.action.targetRef : null,
+      status: row.status, applicableDemand: row.applicableDemand, actionKind: row.action?.kind ?? null,
+      obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision }));
+  if (!rows.length) return { recorded: false, reason: 'placement-policy-unmeasured' };
+  await deps.append({ workspaceId: input.workspaceId, owner: input.ownerId, agent: session.sourceKind,
+    sessionId: session.sessionId, scope: read.portfolio?.worklist[0]?.harness ?? null,
+    kind: 'lifecycle', toolName: null, phase: null, toolUseId: `goal-placement-turn-end:${completedRef(session, completed)}`,
+    summary: 'Goal placement policy observed at native turn end', status: 'ok', cwd: null,
+    detail: { goalPlacementTurnEnd: { version: 1, goalId: read.goalId,
+      completedTurnRef: completedRef(session, completed), completedAt: completed.ts!.toISOString(),
+      observedAt: read.observedAt, rows } },
+  });
+  return { recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' };
+}
+
+/** Fail-soft bounded extension of the existing journal hook. No new Stop hook,
+ * local token file, model call or background routine is introduced. */
+export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof recordGoalPlacementTurnEnd>[0]) {
+  const [{ withBoundedTimeout }, { trackDetached }] = await Promise.all([
+    import('./bounded-timeout'), import('./detached-imports'),
+  ]);
+  return (await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEnd(input)), {
+    timeoutMs: 1000, label: 'goal-placement-turn-end', fallback: { recorded: false, reason: 'turn-end-read-unavailable' },
+  })).value;
 }
 
 /** Only whole, actually rendered actionable rows may become receipt candidates. */

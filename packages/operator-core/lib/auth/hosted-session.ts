@@ -314,6 +314,23 @@ export class HostedSessionStore {
     const now = this.clock();
     const normalized = normalizeCreateInput(input, now);
     const id = newSessionId();
+    // The identity provider keeps its own session far longer than the access
+    // token a local session is bound to, so signing in again from the same
+    // browser returns an upstream session id we have already seen. That is a
+    // re-authentication of the same person: retire their earlier local session
+    // for it. Only the SAME user's rows are retired — a live row for this
+    // upstream session owned by anyone else still refuses the insert below
+    // (unique among unrevoked rows, migration 1203).
+    await this.sql`
+      UPDATE papercusp_auth.hosted_sessions
+         SET revoked_at = ${now.toISOString()},
+             revocation_reason = 'superseded_by_reauthentication',
+             updated_at = ${now.toISOString()}
+       WHERE upstream_provider = ${normalized.upstreamProvider}
+         AND upstream_session_id = ${normalized.upstreamSessionId}
+         AND user_id = ${normalized.userId}
+         AND revoked_at IS NULL
+    `;
     const rows = await this.sql<HostedSessionRow[]>`
       INSERT INTO papercusp_auth.hosted_sessions
         (id, user_id, organization_id, workspace_id, permission_version,

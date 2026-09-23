@@ -19,7 +19,7 @@ import { execFile, fork, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -32,7 +32,7 @@ import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-e
 import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
@@ -3178,7 +3178,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
-      expect(pane.screen()).toContain('PUI-E2E startup connection interrupted');
+      // The composer soft-wraps the operator error; read it as one paragraph.
+      expect(paneContains(pane.screen(), 'Message not accepted', 'PUI-E2E startup connection interrupted'), pane.screen()).toBe(true);
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(commandPosts).toHaveLength(0);
       const chats = await persistedChats(db);
@@ -3316,13 +3317,22 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   });
 });
 
+/**
+ * The manifest the installed PUI itself reads (install.rs default_manifest_path):
+ * PUI_INSTALL_MANIFEST, else the release unit the binary runs from, else
+ * ~/.papercusp. HOME here is the runner's, so skipping the release step would
+ * read the developer's own install. Artifact paths are relative to the manifest
+ * (install.rs resolve_manifest_artifact).
+ */
 function installedManifest(): Record<string, unknown> {
+    const releaseManifest = path.join(path.dirname(path.dirname(realpathSync(bin))), 'pui-install.json');
     const manifestPath = process.env.PUI_INSTALL_MANIFEST
-      ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
+      ?? (existsSync(releaseManifest) ? releaseManifest : path.join(process.env.HOME!, '.papercusp', 'pui-install.json'));
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    expect(path.resolve(manifest.binaryPath)).toBe(path.resolve(bin));
+    const artifact = (raw: string) => path.resolve(path.dirname(manifestPath), raw);
+    expect(realpathSync(artifact(manifest.binaryPath))).toBe(realpathSync(bin));
     expect(manifest.binarySha256).toBe(binarySha256);
-    expect(createHash('sha256').update(readFileSync(manifest.companionPath)).digest('hex'))
+    expect(createHash('sha256').update(readFileSync(artifact(manifest.companionPath))).digest('hex'))
       .toBe(manifest.companionSha256);
     return manifest;
 }

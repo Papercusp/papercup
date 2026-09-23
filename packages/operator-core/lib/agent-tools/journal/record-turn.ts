@@ -71,6 +71,16 @@ export default defineTool({
     if (!filePath) {
       return { data: { ok: false, recorded: false, reason: 'transcript_not_found' } };
     }
+    // Sample placement policy at the existing native turn-end boundary, BEFORE
+    // slower journal enrichment. The producer independently verifies the acting
+    // owner's current native session and a final response; journal prose itself
+    // is never completion or eligibility evidence. Cross-owner journal writes
+    // cannot create a subject's opportunity evidence.
+    if (ownerId && ownerId === identity.ownerId) {
+      const { boundedRecordGoalPlacementTurnEnd } = await import('../../goal-placement-turn-receipts');
+      await boundedRecordGoalPlacementTurnEnd({ ownerId, workspaceId: journalWorkspaceId,
+        nativeSessionId: args.session_id, sourceKind }).catch(() => null);
+    }
     const turn = await readLastAssistantTurn(filePath, sourceKind);
     if (!turn) {
       return { data: { ok: false, recorded: false, reason: 'no_assistant_turn' } };
