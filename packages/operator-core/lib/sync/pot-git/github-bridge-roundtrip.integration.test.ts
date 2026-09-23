@@ -15,11 +15,27 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { OpenPrArgs } from '../../pr-host/types';
 import { defaultRunGit, deviceNamespaceKey, ensurePotGitRepo, namespaceRefPath, readNamespaceRef } from './storage';
-import { STAGING_REF, WORK_REF, integrateMemberHeads } from './integrator';
-import { egressCanonicalRefs } from './github-egress';
+import { STAGING_REF, WORK_REF, integrateMemberHeads as integrateMemberHeadsUnderTest } from './integrator';
+import { egressCanonicalRefs as egressCanonicalRefsUnderTest } from './github-egress';
 import { githubOriginDevicePubkey, githubOriginNamespaceKey, ingressOriginBranches } from './github-ingress';
 import { admitGithubOriginHead } from './github-ingress-admission';
-import { egressRatifiedRequestAsForkPr } from './github-fork-egress';
+import { egressRatifiedRequestAsForkPr as egressRatifiedRequestAsForkPrUnderTest } from './github-fork-egress';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
+
+// Integrate, egress and fork-egress are exclusive hive effects: since the
+// hive-effect-authority gate (sweep 2e87591134) each one requires the owning
+// hive's signing authority. Every leg runs as ONE owning hive, the same test
+// identity the sibling integrator/egress/fork-egress suites use.
+function integrateMemberHeads(...args: Parameters<typeof integrateMemberHeadsUnderTest>) {
+  const [repo, device, heads, opts] = args;
+  return integrateMemberHeadsUnderTest(repo, device, heads, { ...hiveEffectFixture(), ...opts });
+}
+function egressCanonicalRefs(input: Parameters<typeof egressCanonicalRefsUnderTest>[0]) {
+  return egressCanonicalRefsUnderTest({ ...hiveEffectFixture(), ...input });
+}
+function egressRatifiedRequestAsForkPr(input: Parameters<typeof egressRatifiedRequestAsForkPrUnderTest>[0]) {
+  return egressRatifiedRequestAsForkPrUnderTest({ ...hiveEffectFixture(), ...input });
+}
 
 const LEGACY_EMAIL = '777+legacy@users.noreply.github.com';
 
