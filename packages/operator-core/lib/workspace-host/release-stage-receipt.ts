@@ -52,6 +52,7 @@ export type WorkspaceHostReleaseBindingFailure =
   | 'bundle-mismatch'
   | 'source-unrecorded'
   | 'artifact-unidentified'
+  | 'stage-unobservable'
   | 'stage-committed'
   | 'stage-refused';
 
@@ -216,19 +217,42 @@ function refusal(stage: WorkspaceHostReleaseStage, action: string, state: string
     : new WorkspaceHostReleaseBindingError('stage-refused', stage.stage, `the stage is ${state} and not retryable`);
 }
 
+/**
+ * Whether the stage can be recorded now; throws when it never can. Read-only.
+ *
+ * `recordedBy` is an evidence ref naming the caller's own run. A COMMITTED receipt carrying it is
+ * that run's earlier attempt — a durable step re-executing after its settle landed — so it reads
+ * `recorded`, not a refusal: the run must be able to finish the work it already recorded.
+ */
+export async function workspaceHostReleaseStageReadiness(
+  binding: WorkspaceHostReleaseBinding,
+  stage: WorkspaceHostReleaseStage,
+  options: { ledger?: ReleaseTaskLedger; recordedBy?: string } = {},
+): Promise<'writable' | 'recorded'> {
+  const inspection = await inspectReleaseTaskStage(
+    workspaceHostReleaseStageContext(binding, options.ledger),
+    stageInput(binding, stage),
+  );
+  if (
+    inspection.action === 'reuse' &&
+    options.recordedBy !== undefined &&
+    inspection.receipt?.evidenceRefs.includes(options.recordedBy)
+  ) {
+    return 'recorded';
+  }
+  if (inspection.action === 'reuse' || inspection.action === 'refused') {
+    throw refusal(stage, inspection.action, inspection.state);
+  }
+  return 'writable';
+}
+
 /** Refuse an outcome whose receipt could never be written, BEFORE the work runs. Read-only. */
 export async function assertWorkspaceHostReleaseStageWritable(
   binding: WorkspaceHostReleaseBinding,
   stage: WorkspaceHostReleaseStage,
   ledger?: ReleaseTaskLedger,
 ): Promise<void> {
-  const inspection = await inspectReleaseTaskStage(
-    workspaceHostReleaseStageContext(binding, ledger),
-    stageInput(binding, stage),
-  );
-  if (inspection.action === 'reuse' || inspection.action === 'refused') {
-    throw refusal(stage, inspection.action, inspection.state);
-  }
+  await workspaceHostReleaseStageReadiness(binding, stage, { ledger });
 }
 
 /**
