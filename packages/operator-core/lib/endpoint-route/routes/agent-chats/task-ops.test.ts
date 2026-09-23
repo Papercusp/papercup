@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationContextProjection } from '../../../conversation-context-projection';
 import type { SessionTask, SessionTaskResult } from '../../../session-tasks';
-import { AgentChatTaskMutationError, mutateAgentChatTask, taskOpsRoute } from './task-ops';
+import { AgentChatTaskMutationError, mutateAgentChatTask, taskMutationActor, taskOpsRoute } from './task-ops';
 
 const BASE_TASK: SessionTask = {
   id: 'task-1',
@@ -72,6 +72,16 @@ describe('agent-chat user task operations', () => {
       path: '/harness/:slug/agent-chats/:chatId/tasks',
       auth: 'loopback',
     });
+  });
+
+  it('attributes a local owner without an endpoint principal to the loopback default user (WI-5044)', async () => {
+    const req = new Request('http://127.0.0.1/api/harness/papercusp/agent-chats/chat-1/tasks', { method: 'POST' });
+    const localUser = vi.fn(async () => ({ username: 'avi' }));
+    expect(await taskMutationActor(req, 'endpoint:pui', localUser)).toBe('endpoint:pui');
+    expect(localUser).not.toHaveBeenCalled();
+    expect(await taskMutationActor(req, undefined, localUser)).toBe('user:avi');
+    // No session user and no loopback default: the route refuses 401.
+    expect(await taskMutationActor(req, undefined, async () => null)).toBeNull();
   });
 
   it.each([

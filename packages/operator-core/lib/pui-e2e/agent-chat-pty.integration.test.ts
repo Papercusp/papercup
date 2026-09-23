@@ -2745,6 +2745,167 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop().catch(() => {}); }
   });
 
+  // P-012 'Editable task list' (plan D-019). The conversation and its SU session
+  // are created by PUI itself; the owner drives the canonical list with the
+  // Context keys; the attached agent reads and updates the SAME list through the
+  // production MCP route under the SU identity its launch was given. LISTEN is
+  // off in this fixture, so the agent update is pulled with `g` (the documented
+  // refresh), not pushed.
+  test('PUI-TASK: an SU-session task list is edited in Context by owner and agent and survives restart', async ({ onTestFailed }) => {
+    const prompt = 'PUI task journey kickoff';
+    let stage = 'launch';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => console.info('PUI_TASK_FAILURE', JSON.stringify({ stage, ...(pane?.failureEvidence() ?? {}) })));
+    type TaskRow = { task_id: string; content: string; status: string; blocker_ref: string | null };
+    const rows = (sessionId: string) => db.adminSql<TaskRow[]>`
+      SELECT task_id, content, status, blocker_ref FROM harness_shared.session_tasks
+       WHERE workspace_id = ${WORKSPACE} AND session_id = ${sessionId} ORDER BY position`;
+    const settled = async (sessionId: string, check: (tasks: TaskRow[]) => void) => {
+      await vi.waitFor(async () => check(await rows(sessionId)), { timeout: 15_000, interval: 150 });
+    };
+    const contextFocus = async (target: PuiPane) => {
+      target.escape();
+      target.resize(100, 30);
+      await target.waitForGone('Context · Ctrl-T');
+      target.write('\x14');
+      await target.waitFor('Esc/o Agent Chat');
+    };
+    const { readSuperuserToken } = await import('../superuser-token');
+    const agentTasks = async (ownerId: string, args: Record<string, unknown>) => {
+      const url = `http://127.0.0.1:${operatorPort}/api/mcp?superuser=1&workspace=${WORKSPACE}`
+        + `&harness=${HARNESS}&client=${encodeURIComponent(ownerId)}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${readSuperuserToken()}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call',
+          params: { name: 'tasks:ops', arguments: args } }),
+      });
+      const text = await response.text();
+      expect(response.status, text).toBe(200);
+      const body = response.headers.get('content-type')?.includes('text/event-stream')
+        ? text.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).at(-1)!
+        : text;
+      const result = (JSON.parse(body) as { result: { isError?: boolean; content: Array<{ text: string }> } }).result;
+      expect(result.isError, result.content[0]?.text).not.toBe(true);
+      return JSON.parse(result.content[0].text) as { sessionId: string; tasks: Array<{ id: string; content: string; status: string }> };
+    };
+
+    pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      const chat = await waitForSavedTurn(prompt);
+      const [binding] = await db.adminSql<Array<{ coord_owner_id: string; su_runtime_class: string }>>`
+        SELECT adv.coord_owner_id, chat.su_runtime_class
+          FROM harness_shared.adv_sessions adv
+          JOIN harness_shared.agent_chats_consolidated chat
+            ON chat.workspace_id = adv.workspace_id AND chat.id = adv.su_agent_chat_id
+         WHERE adv.workspace_id = ${WORKSPACE} AND adv.su_agent_chat_id = ${chat.id}`;
+      expect(binding).toMatchObject({ su_runtime_class: 'su-session' });
+      const ownerId = binding.coord_owner_id;
+      expect(ownerId).not.toBe(chat.id);
+
+      stage = 'agent-init';
+      const init = await agentTasks(ownerId, { op: 'init', tasks: [
+        { content: 'Draft the release notes', activeForm: 'Drafting the release notes' },
+        { content: 'Verify the installer', activeForm: 'Verifying the installer' },
+      ] });
+      expect(init.sessionId).toBe(chat.id);
+      const [notes, installer] = init.tasks.map((task) => task.id);
+
+      stage = 'context';
+      await contextFocus(pane);
+      await pane.waitFor('Draft the release notes', { timeoutMs: 30_000 });
+      await pane.waitFor('Verify the installer');
+
+      stage = 'owner-edit';
+      pane.write('e');
+      await pane.waitFor('Edit task > Draft the release notes');
+      pane.write('\x15');
+      pane.write('Draft the public release notes');
+      pane.enter();
+      await pane.waitForGone('Edit task >');
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, content: 'Draft the public release notes' }));
+
+      stage = 'owner-status';
+      pane.write('s');
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'in_progress' }));
+      pane.write('b');
+      await pane.waitFor('Block task on >');
+      // Short enough to render on one row of the 100-column Context rail; a
+      // longer reason wraps, and waitFor matches contiguous screen text.
+      pane.write('owner review');
+      pane.enter();
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ status: 'blocked', blocker_ref: 'owner review' }));
+      await pane.waitFor('blocked on owner review');
+      pane.write('u');
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, blocker_ref: null }));
+      pane.write('x');
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'completed' }));
+      pane.write('r');
+      await settled(chat.id, (tasks) => expect(tasks[0]).toMatchObject({ task_id: notes, status: 'pending' }));
+
+      stage = 'agent-update';
+      // The agent sees the owner's edits on the same stable ids, then updates one.
+      const seen = await agentTasks(ownerId, { op: 'view' });
+      expect(seen.tasks.map(({ id, content, status }) => ({ id, content, status }))).toEqual([
+        { id: notes, content: 'Draft the public release notes', status: 'pending' },
+        { id: installer, content: 'Verify the installer', status: 'pending' },
+      ]);
+      await agentTasks(ownerId, { op: 'start', task_id: installer, explanation: 'Agent is verifying the installer' });
+      pane.write('g');
+      await pane.waitFor('Agent is verifying the installer', { timeoutMs: 30_000 });
+
+      stage = 'owner-reorder';
+      pane.write('J');
+      await settled(chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([installer, notes]));
+      // Selection stays on the row index, so step onto the moved task before K.
+      pane.write('j');
+      pane.write('K');
+      await settled(chat.id, (tasks) => expect(tasks.map((task) => task.task_id)).toEqual([notes, installer]));
+
+      stage = 'owner-add-drop';
+      pane.write('a');
+      await pane.waitFor('Add task >');
+      pane.write('Added entirely in PUI');
+      pane.enter();
+      await pane.waitForGone('Add task >');
+      await settled(chat.id, (tasks) => expect(tasks.map((task) => task.content)).toContain('Added entirely in PUI'));
+      pane.write('kkkk');
+      pane.write('d');
+      await settled(chat.id, (tasks) => expect(tasks.find((task) => task.task_id === notes)?.status).toBe('dropped'));
+      const final = await rows(chat.id);
+      expect(final.map(({ content, status }) => ({ content, status }))).toEqual(expect.arrayContaining([
+        { content: 'Draft the public release notes', status: 'dropped' },
+        { content: 'Verify the installer', status: 'in_progress' },
+        { content: 'Added entirely in PUI', status: 'pending' },
+      ]));
+      expect(final).toHaveLength(3);
+      // The agent's own session key holds nothing: both halves wrote one list.
+      expect(await rows(ownerId)).toEqual([]);
+      const frame = pane.screen();
+      await pane.stop();
+
+      stage = 'restart';
+      await putViewState('Plans');
+      pane = new PuiPane(bin, operatorPort, home);
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      await pane.waitFor(prompt, { timeoutMs: 30_000 });
+      await contextFocus(pane);
+      await pane.waitFor('Added entirely in PUI', { timeoutMs: 30_000 });
+      const reloaded = pane.screen();
+      const order = final.map((task) => reloaded.indexOf(task.content));
+      expect(order.every((at) => at >= 0), reloaded).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      console.info('PUI_TASK_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
+        suOwnerId: ownerId, tasks: final, frame, reloadedFrame: reloaded }));
+    } finally { await pane?.stop().catch(() => {}); }
+  }, 240_000);
+
   test('Network loads on navigation, manual refresh, and saved-view restoration', async () => {
     const pane = new PuiPane(bin, operatorPort, home);
     const networkReads = () => namedQueryReplies.filter((reply) => reply.name === 'network.board' && reply.status === 200).length;

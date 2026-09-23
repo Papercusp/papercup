@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import {
   readConversationContextProjection,
   type ConversationContextProjection,
@@ -279,6 +280,22 @@ export async function mutateAgentChatTask(
   };
 }
 
+/**
+ * Who performs an owner task mutation. A `loopback` route never carries an
+ * endpoint principal for a local caller, and PUI and the desktop webview send
+ * no session cookie. So, as for card responses (WI-5044), fall back to the
+ * session user, then (loopback only) the seeded local default user.
+ */
+export async function taskMutationActor(
+  req: Request,
+  principalSlug: string | undefined,
+  resolveUser: (req: Request) => Promise<{ username: string } | null> = getSessionUserOrLocalDefault,
+): Promise<string | null> {
+  if (principalSlug) return principalSlug;
+  const user = await resolveUser(req);
+  return user ? `user:${user.username}` : null;
+}
+
 export const taskOpsRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/tasks',
@@ -292,7 +309,7 @@ export const taskOpsRoute = defineTool({
         throw new AgentChatTaskMutationError('body_invalid', 'A valid JSON object body is required.', 400);
       }
       const body = parseMutationBody(raw);
-      const actorId = ctx.principal?.slug;
+      const actorId = await taskMutationActor(req, ctx.principal?.slug);
       if (!actorId) {
         throw new AgentChatTaskMutationError(
           'principal_required',

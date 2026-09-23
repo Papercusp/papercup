@@ -24,9 +24,13 @@ const tool = (await import('./ops')).default;
 type Out = { content: { text: string }[]; isError?: boolean };
 const body = (out: Out) => JSON.parse(out.content[0]!.text);
 
+// The tagged-template tx answers the D-019 attachment lookup; `attachedChat`
+// is the adv_sessions.su_agent_chat_id bound to the caller, if any.
+let attachedChat: string | null = null;
+
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   const emit = vi.fn();
-  const tx = vi.fn();
+  const tx = vi.fn(async () => (attachedChat ? [{ su_agent_chat_id: attachedChat }] : []));
   const promise = tool.handler(
     args as never,
     {
@@ -39,7 +43,10 @@ function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) 
   return { emit, tx, promise };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  attachedChat = null;
+});
 
 describe('tasks:ops handler', () => {
   it('maps the public snake-case contract to the canonical store and emits a change event', async () => {
@@ -159,6 +166,23 @@ describe('tasks:ops handler', () => {
       sessionId: 'su-session-1',
       }),
     );
+  });
+
+  it('operates the attached PUI conversation list for an SU owner bound to one (D-019)', async () => {
+    const { createSessionTaskLedgerBridge } = await import('./runtime');
+    applyM.mockResolvedValue({ op: 'start', changedTaskId: 'task-a', tasks: [], links: [] });
+    attachedChat = 'chat-pui-1';
+
+    const { emit, tx, promise } = call({ op: 'start', task_id: 'task-a' });
+    expect(body(await promise)).toMatchObject({ ok: true, sessionId: 'chat-pui-1' });
+    expect(applyM).toHaveBeenLastCalledWith(tx, expect.objectContaining({ sessionId: 'chat-pui-1' }));
+    // Promotion stays attributed to, and seeded from, the SU owner's own claim.
+    expect(createSessionTaskLedgerBridge).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: 'chat-pui-1',
+      actorId: 'su-session-1',
+      claimOwnerId: 'su-session-1',
+    }));
+    expect(emit).toHaveBeenCalledWith('tasks_changed', { sessionId: 'chat-pui-1', op: 'start', changedTaskId: 'task-a' });
   });
 
   it('does not emit for view and returns precise validation failures', async () => {
