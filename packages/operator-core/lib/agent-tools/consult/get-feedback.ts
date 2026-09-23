@@ -40,16 +40,16 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Open a new feedback consult for one unresolved question — this is a request/creation verb, not a reader for an existing conversation. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts. A fresh consult dispatches an isolated answer session by same-backend fork or supported cross-backend conversion; it does not wake the expert’s live session. The dispatcher walks the ranked allowed-model list and skips walled backends or failed launches. To read a known conversation or consult thread, use conversations:get { id }. Below the relevance floor, it reports the honest routing outcome instead of inventing expertise.',
+    'Open a new feedback consult for one unresolved question — a request/creation verb, not a reader. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts; a fresh consult dispatches an isolated answer session and never wakes the expert’s live session. Below the relevance floor it reports the honest routing outcome instead of inventing expertise.',
   guidance: {
     when:
-      'A concrete, substantial technical question remains after a first-pass check of local code, docs, or search, and a peer may already have solved it in their transcript. Ask once before a long re-derivation; include what you tried, what you observed, and the decision the answer informs.',
+      'A concrete technical question survives a first-pass check of local code, docs and search, and a peer may already have solved it. Ask once before a long re-derivation; say what you tried, what you observed, and the decision it informs.',
     notWhen:
-      'Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); assigning work; or anything local code, docs, or search already answer. Do not open duplicate consults or repeat an unchanged question after no_available_responder. A consult is advice, never a work handoff.',
+      'Reading an existing conversation or consult thread (conversations:get { id }); live state (query it); owner decisions (coord:ask-owner); a known agent (coord:send); or anything code, docs or search already answer. Never duplicate a consult or repeat an unchanged question after no_available_responder — a consult is advice, never a handoff.',
     chaining:
-      "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id }. Archive matches may answer without launching a model session. Otherwise the expert's transcript is answered by an isolated session; the dispatcher already walks allowed model ranks and skips walled backends, so do not manually retry. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer; otherwise proceed and reconcile later. Declines/expiries advance the existing cascade; do not open a new consult for a follow-up.",
+      "For a known id use conversations:get { id }. An archive match may answer without launching a session; otherwise the dispatcher walks the allowed model ranks and skips walled backends, so never retry manually. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer. Declines and expiries advance the existing cascade.",
     returns:
-      '{ verdict, conversation_id, thread_id, responder, responder_via (floor | minimum), remaining_candidates, origin_task_ref, latency_contract, expires_at, wake:{ attempted, queued, pickupConfirmed, woke }, park_key, archive? (served_from_archive), hint }',
+      '{ verdict, conversation_id, thread_id, responder, responder_via, remaining_candidates, latency_contract, expires_at, archive?, hint }',
   },
   capability: 'coord:write',
   requirePrincipal: false,
