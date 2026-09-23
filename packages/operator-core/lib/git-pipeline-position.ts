@@ -938,7 +938,11 @@ export function assessPipelinePosition(input: {
   }
   const { committedLocal, onStaging, inMain, deployed } = input.positions;
   if ((onStaging && !committedLocal) || (inMain && !onStaging) || (deployed && !inMain)) return null;
-  if (input.dirtyUncommitted && !committedLocal) return 'uncommitted';
+  // EI-24049239243821100: a dirty path is 'uncommitted' however far its LAST COMMIT
+  // travelled. The positions describe that older commit, not the edit on disk, so
+  // gating this on `!committedLocal` let a dirty file whose previous commit was
+  // deployed read 'live' — the tool told an author their uncommitted fix was running.
+  if (input.dirtyUncommitted) return 'uncommitted';
   if (committedLocal && !onStaging) return 'awaiting-push';
   if (onStaging && !inMain) return 'awaiting-gate';
   if (inMain && !deployed) return 'awaiting-deploy';
@@ -1191,7 +1195,9 @@ export interface PipelinePosition {
   /**
    * D-038 axis 2 + D-039's HOIST: the `positions.*` legs whose git read FAILED, so
    * their boolean is `false` by DEGRADATION rather than by measurement. Empty means
-   * every leg was genuinely measured.
+   * every leg was genuinely measured. `workingTree` (EI-24049239243821100) names the
+   * path's `git status` read: when it failed, `dirtyUncommitted: false` is not
+   * evidence the path is clean.
    *
    * WHY THIS IS RESULT-LEVEL AND NOT A PER-LEG FLAG: a qualifier a caller can skip
    * past is how the defect survives contact with a hurried consumer, which is why
@@ -1243,7 +1249,13 @@ export interface PipelinePosition {
   positionsNewerCommit: string[];
   deployedSha: string | null;
   gate: {
-    stalled: boolean;
+    /**
+     * `null` = the stall signal was not measured. `GitPipelineSnapshot.gate.stalled`
+     * became `boolean | null` in 0a097dae4d (deriveInRoutineGateStalled). This
+     * resolver already branches on `=== null` and hoists the leg into
+     * `verdictUnknown`, but the declared type still said `boolean`.
+     */
+    stalled: boolean | null;
     consecutiveReds: number;
     /**
      * The gate writer's current actionable failing-file set. Optional for old fixtures and
@@ -3593,7 +3605,13 @@ export function computeStages(
     | 'serving'
     | 'changeInCandidate'
     | 'sweepExposure'
-  >,
+  > & {
+    /**
+     * EI-24049239243821100: read only for its `workingTree` leg (a failed `git status`).
+     * The resolver always passes it; a caller that omits it has no failed legs to report.
+     */
+    positionsUnknown?: readonly string[];
+  },
   /**
    * WI-6525: set when there is genuinely nothing to measure a position for — no
    * commit ever touched the path (and it is not merely a brand-new dirty file), an
@@ -3655,22 +3673,35 @@ export function computeStages(
   // with it so the caller can tell which situation they are in.
   const sweep = p.sweepExposure;
   const multiFileSweep = sweep.dirtyPathCount !== null && sweep.dirtyPathCount > 1;
+  // EI-24049239243821100: an unreadable working tree cannot put this stage behind us —
+  // "committed" is exactly the question the failed `git status` could not answer.
+  const workingTreeUnknown = !p.dirtyUncommitted && (p.positionsUnknown?.includes('workingTree') ?? false);
   stages.push({
     name: 'committed',
     plane: 'delivery',
-    position: p.positions.committedLocal && !p.dirtyUncommitted ? 'past' : 'pending',
-    health: p.dirtyUncommitted ? 'stalled' : targetUnresolvedDetail ? 'stalled' : 'advancing',
+    position: p.positions.committedLocal && !p.dirtyUncommitted && !workingTreeUnknown ? 'past' : 'pending',
+    health: p.dirtyUncommitted
+      ? 'stalled'
+      : workingTreeUnknown
+        ? 'unknown'
+        : targetUnresolvedDetail
+          ? 'stalled'
+          : 'advancing',
     detail: p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
         (sweep.detail ? ` ${sweep.detail}` : '')
-      : targetUnresolvedDetail,
+      : workingTreeUnknown
+        ? 'The working-tree status read failed, so whether this path has uncommitted edits is unknown. Treat nothing past this stage as proof the edit on disk is live.'
+        : targetUnresolvedDetail,
     lever: p.dirtyUncommitted
       ? multiFileSweep
         ? `git-sync:run (commit the working tree — the gate cannot see it) — ⚠ this sweeps ALL ${sweep.dirtyPathCount} dirty paths in the tree, not just yours; only fire it once the set is complete`
         : 'git-sync:run (commit the working tree — the gate cannot see it)'
-      : targetUnresolvedDetail
-        ? 'verify the path/sha is correct and re-call — there is nothing here for git-sync or the release gate to advance, so neither firing a sync nor greening the gate will resolve this'
-        : null,
+      : workingTreeUnknown
+        ? 're-call dev:pipeline_position — the git status read failed, so this stage was not measured'
+        : targetUnresolvedDetail
+          ? 'verify the path/sha is correct and re-call — there is nothing here for git-sync or the release gate to advance, so neither firing a sync nor greening the gate will resolve this'
+          : null,
   });
 
   // pushed — P-002. The push leg fails INDEPENDENTLY of the commit leg, and its
@@ -4346,8 +4377,29 @@ export function deriveBlocker(stages: StageState[]): {
   return { blockedOn, nextAction: owner?.lever ?? null, actionOwner: owner?.name ?? null };
 }
 
+/**
+ * EI-24049239243821100: the tree agents EDIT, which is what every working-tree read in
+ * {@link gitPipelinePosition} is about (dirty status, the path's last commit, HEAD
+ * containment, marker and mtime reads).
+ *
+ * `PAPERCUSP_INTEGRATION_ROOT` names the tree the PROCESS serves, and those are two
+ * different trees on :3170: `50-staging-checkout.conf` points it at the committed
+ * `papercusp-staging` mirror, on purpose, so the host runs committed code. Reading the
+ * working tree there answered every question about the mirror — a path with an
+ * uncommitted edit read clean and `live`. `PAPERCUSP_CANONICAL_TREE` is the explicit
+ * edit-tree declaration the lock hooks already honor (coordination-domain.ts), and the
+ * staging drop-in declares it. Where it is unset the serving tree IS the edit tree
+ * (:3070, bg-host), so the integration root is the right answer there.
+ */
+export function resolveEditTreeRoot(integrationRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  const declared = env.PAPERCUSP_CANONICAL_TREE?.trim();
+  return declared ? path.resolve(declared) : integrationRoot;
+}
+
 export interface PipelinePositionDeps {
   git?: GitRunner;
+  /** EI-24049239243821100: the edit-tree resolution; defaults to {@link resolveEditTreeRoot}. */
+  resolveEditTreeRoot?: (integrationRoot: string) => string;
   loadDeploy?: () => Promise<DevDeployState>;
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
   /**
@@ -4474,10 +4526,12 @@ const realReadCheckpointRunSnapshot = async (): Promise<{
  * `root` is `deploy.integrationRoot` — the SAME root `git-pipeline-stats` already passes
  * to `checkActiveCheckpointRun`, which matters because `checkpointRunLockDirMirror`
  * HASHES the root string: a different spelling would hash to a different lock dir and
- * report `held: false` forever, i.e. a silent false negative. Verified 2026-08-03 that
- * both the `papercup-dev-api` and `papercup-staging-api` units export the identical
- * `PAPERCUSP_INTEGRATION_ROOT`, which is what green-checkpoint's own `cfg.integrationRoot`
- * resolves from when it ACQUIRES the lock.
+ * report `held: false` forever, i.e. a silent false negative. The 2026-08-03 premise
+ * ("both units export the identical `PAPERCUSP_INTEGRATION_ROOT`") stopped holding when
+ * :3170 moved onto the `papercusp-staging` mirror (EI-22636310973765418); since
+ * EI-24049239243821100 `root` is the canonical EDIT tree ({@link resolveEditTreeRoot}),
+ * which is the tree bg-host's green-checkpoint uses as `cfg.integrationRoot` when it
+ * ACQUIRES the lock — so both operators hash the same string again.
  */
 interface CheckpointRunLockReading {
   held: boolean;
@@ -5300,7 +5354,17 @@ export async function gitPipelinePosition(
   // totality bound.  Start both together; every downstream consumer still sees
   // one settled deploy snapshot and one settled pipeline snapshot from this call.
   const [deploy, snap] = await Promise.all([loadDeploy(), loadSnapshot()]);
-  const root = deploy.integrationRoot;
+  // EI-24049239243821100: every read below asks about the tree agents EDIT (dirty
+  // status, the path's last commit, HEAD containment, marker and mtime reads).
+  // `deploy.integrationRoot` answers a different question — the tree THIS process
+  // serves — and on :3170 that is the clean `papercusp-staging` mirror, so every
+  // working-tree read there described the mirror and an edited path read clean + live.
+  const root = (deps.resolveEditTreeRoot ?? resolveEditTreeRoot)(deploy.integrationRoot);
+  if (root !== deploy.integrationRoot) {
+    notes.push(
+      `Working-tree reads use the canonical edit tree ${root} (PAPERCUSP_CANONICAL_TREE), not this process's serving checkout ${deploy.integrationRoot}.`,
+    );
+  }
   const deployedSha = deploy.deployed?.sha ?? null;
 
   // EI-21544761852770720: these path-independent probes used to start only after
@@ -5347,9 +5411,20 @@ export async function gitPipelinePosition(
   // only when the probed path is itself dirty, so a clean probe pays nothing for it
   // (this module is on dev:pipeline_position's hot path).
   let dirtyPaths: string[] | null = null;
+  // EI-24049239243821100: a FAILED status read (non-zero exit, the subprocess timeout)
+  // is not a clean tree. `GitRunner` yields null for it, and `!!st` used to fold that
+  // into `dirtyUncommitted: false`, i.e. a confident "clean" that let the assessment
+  // reach 'live'. It is hoisted as the `workingTree` leg of `positionsUnknown` below.
+  let workingTreeUnknown = false;
   if (inp.path) {
     const st = await git(gitDir, ['status', '--porcelain', '--', relPath || '.']);
+    workingTreeUnknown = st === null;
     dirtyUncommitted = !!st && st.length > 0;
+    if (workingTreeUnknown) {
+      notes.push(
+        `Could not read the working-tree status of '${relPath || '.'}' (git status failed or timed out), so whether it has uncommitted edits is UNKNOWN — not clean. Re-call before trusting any position below.`,
+      );
+    }
     if (dirtyUncommitted) {
       const all = await git(gitDir, ['status', '--porcelain']);
       dirtyPaths = all === null ? null : parsePorcelainPaths(all);
@@ -5411,6 +5486,7 @@ export async function gitPipelinePosition(
   // qualifier a caller who never inspects each position still cannot miss —
   // modelled directly on `unitsUnknown[]` and `ownerHidden`.
   const positionsUnknown: string[] = [];
+  if (workingTreeUnknown) positionsUnknown.push('workingTree');
   /** WI-6646 — legs whose false is a newer-commit artifact (see PipelinePosition). */
   const positionsNewerCommit: string[] = [];
   /** WI-6646 — per-leg marker verdicts, populated only when a marker was supplied. */
