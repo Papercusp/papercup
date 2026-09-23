@@ -13,9 +13,13 @@ import {
   workspaceHostWorkflowKeys,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
-  type WorkspaceHostInitializationRequest,
 } from '@papercusp/deployment-driver';
-import { executeAdmittedWorkspaceHostInitialization, executeAdmittedWorkspaceHostDesktopPack, type WorkspaceHostDesktopPackRequest } from '../workspace-host/initialization-admission';
+import {
+  executeAdmittedWorkspaceHostInitialization,
+  executeAdmittedWorkspaceHostDesktopPack,
+  type AdmittedWorkspaceHostInitialization,
+  type WorkspaceHostDesktopPackRequest,
+} from '../workspace-host/initialization-admission';
 import {
   runWorkspaceHostDestroy,
   runWorkspaceHostProvisioning,
@@ -92,7 +96,7 @@ type WorkspaceHostWorkflowInput =
   | WorkspaceHostProvisioningWorkflowInput
   | WorkspaceHostDestroyWorkflowInput
   | WorkspaceHostLifecycleWorkflowInput
-  | (WorkspaceHostInitializationRequest & { action: 'initialize' })
+  | (AdmittedWorkspaceHostInitialization & { action: 'initialize' })
   | WorkspaceHostDesktopPackRequest;
 
 type WorkspaceHostWorkflowResult = WorkspaceHostProvisioningResult | {
@@ -407,7 +411,7 @@ export class WorkspaceHostOperationIdentityConflictError extends Error {
 }
 
 /** Return once DBOS has durably enqueued, never await the remote result at an HTTP boundary. */
-export async function startWorkspaceHostInitializationWorkflow(request: WorkspaceHostInitializationRequest) {
+export async function startWorkspaceHostInitializationWorkflow(request: AdmittedWorkspaceHostInitialization) {
   return startWorkspaceHostRemoteOperation({ ...request, action: 'initialize' });
 }
 
@@ -415,7 +419,7 @@ export async function startWorkspaceHostDesktopPackWorkflow(request: WorkspaceHo
   return startWorkspaceHostRemoteOperation(request);
 }
 
-async function startWorkspaceHostRemoteOperation(input: (WorkspaceHostInitializationRequest & { action: 'initialize' }) | WorkspaceHostDesktopPackRequest) {
+async function startWorkspaceHostRemoteOperation(input: (AdmittedWorkspaceHostInitialization & { action: 'initialize' }) | WorkspaceHostDesktopPackRequest) {
   const keys = workspaceHostWorkflowKeys(input);
   try {
     const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
