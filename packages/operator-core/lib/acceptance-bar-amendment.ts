@@ -15,7 +15,12 @@ import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
-import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
+import {
+  setSpecClause,
+  specClauseContentHash,
+  type SpecClauseSql,
+  type SpecClauseWrite,
+} from './agent-tools/plans/spec-clauses-store';
 
 export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
 
@@ -417,13 +422,20 @@ export async function synchronizeAcceptanceBarRevision(
     supersedes_spec_id: string | null;
     supersedes_revision: number | null;
     exemption: Record<string, unknown> | null;
+    // P-001: the stored revision's own hash and rubric-wide provenance, so a
+    // re-projection whose MEANING is unchanged can be recognised and skipped.
+    content_hash?: string | null;
+    acceptance_ref?: string | null;
+    source_bar_set_hash?: string | null;
+    source_rubric_revision?: number | string | null;
   };
   const loadClauses = async (): Promise<ProjectedClause[]> => {
     const rows = await sql<ProjectedClause[]>`
       SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
              r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
              r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
-             r.supersedes_revision, r.exemption
+             r.supersedes_revision, r.exemption, r.content_hash, r.acceptance_ref,
+             r.source_bar_set_hash, r.source_rubric_revision
         FROM harness_shared.plan_spec_clauses c
         JOIN harness_shared.plan_spec_clause_revisions r
           ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -634,7 +646,7 @@ export async function synchronizeAcceptanceBarRevision(
           ...(criterion.requiredTestLayers ?? []),
         ])]
       : criterion.requiredTestLayers ?? clause.required_test_layers;
-    const result = await setSpecClause({
+    const next: SpecClauseWrite = {
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
       behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
@@ -653,7 +665,20 @@ export async function synchronizeAcceptanceBarRevision(
         barSetHash: data.barSetHash, rubricSlug: args.rubricSlug,
         rubricRevision: args.rubricRevision, evidencePlane: criterion.evidencePlane },
       actorId: args.actorId,
-    }, { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
+    };
+    // P-001 stable clause identity: a clause is keyed to ITS OWN meaning, not to the
+    // rubric-wide BAR set. When the only difference from the stored revision is the
+    // rubric-wide provenance (set hash, rubric revision, the revision inside
+    // acceptanceRef), keep the current revision. Writing it anyway minted a new revision
+    // for EVERY clause on EVERY amendment, which re-keyed their evidence bindings and
+    // scorecards; measured on turn-start-memory-two-class, 4 of R-11's 7 revisions
+    // changed only the set hash (D-003). Set-hash integrity stays on the plan + rubric.
+    if (isProvenanceOnlyReprojection(clause, next)) {
+      revisions.set(clause.spec_id, Number(clause.current_revision));
+      continue;
+    }
+    const result = await setSpecClause(
+      next, { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
     if (result.status !== 'created' && result.status !== 'revised' && result.status !== 'unchanged') {
       throw new Error(
         `acceptance_bar_revision_projection_conflict:${clause.spec_id}:${result.status}`
@@ -685,6 +710,93 @@ export async function synchronizeAcceptanceBarRevision(
  *     should have died;
  *   - a revision that did not move needs no carry (its proof is already current).
  */
+/**
+ * P-001: is this re-projection a no-op for the clause's MEANING?
+ *
+ * `next` is the write an amendment is about to make. The content hash covers the
+ * rubric-wide provenance (`sourceBar.barSetHash`, `sourceBar.rubricRevision`, and the
+ * revision inside `acceptanceRef`), so re-hashing `next` as written always differs
+ * after an amendment. Substituting the stored revision's OWN provenance isolates
+ * everything else: behavior, falsifier, evidence, layers, lifecycle, the bar hash,
+ * rubric slug and evidence plane. Equal hash => identical meaning => keep the revision.
+ *
+ * Deliberately exact rather than a field list, so a meaning field added to the hash later
+ * is covered without touching this. Missing stored provenance (a legacy or orphaned row)
+ * answers false, so that row is rewritten and healed exactly as before.
+ */
+export function isProvenanceOnlyReprojection(
+  stored: {
+    content_hash?: string | null;
+    acceptance_ref?: string | null;
+    source_bar_set_hash?: string | null;
+    source_rubric_revision?: number | string | null;
+  },
+  next: SpecClauseWrite,
+): boolean {
+  if (!stored.content_hash || !next.sourceBar || !stored.source_bar_set_hash) return false;
+  const rubricRevision = Number(stored.source_rubric_revision);
+  if (stored.source_rubric_revision == null || !Number.isInteger(rubricRevision) || rubricRevision <= 0) {
+    return false;
+  }
+  const asStored: SpecClauseWrite = {
+    ...next,
+    acceptanceRef: stored.acceptance_ref ?? null,
+    sourceBar: { ...next.sourceBar, barSetHash: stored.source_bar_set_hash, rubricRevision },
+  };
+  return specClauseContentHash(asStored) === stored.content_hash;
+}
+
+/**
+ * P-002 / P-027: split a dry run's bound proof into what the amendment KEEPS and what it
+ * INVALIDATES, so the amender re-proves only the changed bars.
+ *
+ * Before this the preview listed every bar's proof as invalidated. Unchanged bars keep
+ * their clause revision (P-001) and therefore their proof, so that list overstated the
+ * work, and agents answered it with hand-written re-bind scripts. A bar is invalidated
+ * when the preview names it in `changedBars` (added, removed or meaning-changed). A ref
+ * bound to BOTH a changed and an unchanged bar is listed only as invalidated, so
+ * `carriedProofRefs` is safe to read as "nothing to do".
+ */
+export function partitionAmendmentProof(
+  bars: ReadonlyArray<{ barKey: string; proof: { evidenceRefs: readonly string[] } }>,
+  changedBars: Iterable<string>,
+): { carriedProofRefs: string[]; invalidatedProofRefs: string[] } {
+  const changed = new Set(changedBars);
+  const invalidated = new Set<string>();
+  const carried = new Set<string>();
+  for (const bar of bars) {
+    const target = changed.has(bar.barKey) ? invalidated : carried;
+    for (const ref of bar.proof.evidenceRefs) target.add(ref);
+  }
+  for (const ref of invalidated) carried.delete(ref);
+  return { carriedProofRefs: [...carried].sort(), invalidatedProofRefs: [...invalidated].sort() };
+}
+
+/**
+ * P-002 spec B: name each spec-test-adequacy card an amendment makes stale.
+ *
+ * Adequacy cards are keyed by `<plan>#<spec>@<revision>`. After P-001 only a bar whose
+ * MEANING changed re-revisions its clauses, so only those clauses' cards must be
+ * re-emitted. A removed bar's clause is retired (no card is owed) and an added bar has no
+ * card yet, so both are excluded by requiring the bar to survive into the candidate.
+ */
+export function invalidatedAdequacyCardSubjects(
+  planSlug: string,
+  bars: ReadonlyArray<{ barKey: string; mappings: ReadonlyArray<{ specId: string; specRevision: number }> }>,
+  changedBars: Iterable<string>,
+  survivingBarKeys: ReadonlySet<string>,
+): string[] {
+  const changed = new Set(changedBars);
+  const subjects = new Set<string>();
+  for (const bar of bars) {
+    if (!changed.has(bar.barKey) || !survivingBarKeys.has(bar.barKey)) continue;
+    for (const mapping of bar.mappings) {
+      if (mapping.specRevision > 0) subjects.add(`${planSlug}#${mapping.specId}@${mapping.specRevision}`);
+    }
+  }
+  return [...subjects].sort();
+}
+
 export function shouldCarryBarEvidence(args: {
   sourceBarKey: string | null | undefined;
   changedBars: Iterable<string>;
@@ -717,9 +829,12 @@ export interface CarryUnchangedBarEvidenceArgs {
  * amendment just minted, for a BAR whose own meaning did NOT change
  * (acceptance-machinery-seam-fixes-2026-09-16 P-008).
  *
- * Every amendment re-projects EVERY clause so each one pins the global rubric
- * revision and BAR-set hash — deliberately, because the ship gate compares that
- * pin against the plan's current rubric revision. The cost was that an unchanged
+ * Every amendment used to re-project EVERY clause so each one pinned the global
+ * rubric revision and BAR-set hash, because the ship gate compared that pin against
+ * the plan's. Since review-system-rework-reduction P-001 an unchanged clause keeps
+ * its revision (isProvenanceOnlyReprojection) and the gate keys a clause to its own
+ * bar, so this carry now runs only for clauses that really are re-projected: a
+ * METHOD/check/layers-only change (layersOnly). Historically, an unchanged
  * BAR's clause still got a new revision, which stranded its proof at the old one:
  * amending BAR R-3 invalidated the evidence for R-1, R-2 and every other bar, and
  * the whole plan had to be re-proved. That is what made a single-criterion repair
