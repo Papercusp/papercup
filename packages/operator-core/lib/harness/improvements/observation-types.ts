@@ -1254,6 +1254,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.rerunRecipe && typeof o.rerunRecipe === 'object' && !Array.isArray(o.rerunRecipe)) {
     const recipe = o.rerunRecipe as Record<string, unknown>;
     const hasEvaluatorBuild = Object.prototype.hasOwnProperty.call(recipe, 'evaluatorBuild');
+    const hasEvaluatorRevision = Object.prototype.hasOwnProperty.call(recipe, 'evaluatorRevision');
     let evaluatorBuild: SpecTestAdequacyEvaluatorBuild | null | undefined;
     if (hasEvaluatorBuild) {
       const rawBuild = recipe.evaluatorBuild;
@@ -1273,6 +1274,12 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         evaluatorBuild = null;
       }
     }
+    const evaluatorRevision =
+      Number.isInteger(recipe.evaluatorRevision) && Number(recipe.evaluatorRevision) > 0
+        ? Number(recipe.evaluatorRevision)
+        : hasEvaluatorRevision
+          ? null
+          : undefined;
     const rawSelection = recipe.selection;
     const rawCurrent = recipe.current;
     const rawDerivation = recipe.derivation;
@@ -1403,6 +1410,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       recipe.schemaVersion === 1 &&
       recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
       (!hasEvaluatorBuild || evaluatorBuild !== null) &&
+      (!hasEvaluatorRevision || evaluatorRevision !== null) &&
       // A recipe that does not record classRef is NOT re-runnable: the evaluator
       // requires it, and a re-runner guessing among four values silently moves
       // plan-class-risk-floor. Legacy rows that predate this field therefore fail
@@ -1440,6 +1448,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         schemaVersion: 1,
         evaluator: 'plans:evaluate-spec-test-adequacy',
         ...(evaluatorBuild ? { evaluatorBuild } : {}),
+        ...(typeof evaluatorRevision === 'number' ? { evaluatorRevision } : {}),
         classRef: recipe.classRef as string,
         // Reconstruct from the validated selection AND currentness inputs, never
         // from stored args, so readback preserves the original evidence cohort.
