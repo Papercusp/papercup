@@ -3897,6 +3897,44 @@ test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', as
   assert.equal(s.cache.create, 4000, 'the cold cache-creation is still tallied');
 });
 
+test('[cache coverage] missing Claude writes stay unknown and do not bias the comparable token hit rate', async () => {
+  resetGovernorRegistry();
+  let calls = 0;
+  await boot((_req, res) => {
+    const usage = { input_tokens: 7, cache_read_input_tokens: 900, ...(calls++ ? { cache_creation_input_tokens: 100 } : {}) };
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(`data: ${JSON.stringify({ type: 'message_start', message: { id: 'coverage', usage } })}\n\n`);
+  });
+  for (let i = 0; i < 2; i++) {
+    const response = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+    await response.text();
+  }
+  const { cache } = await (await ask('/stats')).json() as import('./gateway').GatewayStats;
+  assert.equal(cache.create, null, 'partial reported writes are not the full total');
+  assert.equal(cache.knownTokenTotals.create, 100);
+  assert.equal(cache.read, 1800);
+  assert.equal(cache.hits, 2, 'both requests really have cache reads');
+  assert.equal(cache.hitRate, 0.894, 'only the fully known 900/1007 denominator is comparable');
+  assert.deepEqual(cache.tokenRateBasis, { read: 900, inputTotal: 1007 });
+  assert.deepEqual(cache.coverage, { requests: 2, readKnown: 2, writeKnown: 1, uncachedInputKnown: 2, inputTotalKnown: 1, tokenRateRequests: 1 });
+  assert.equal(Object.values(cache.byAccount)[0].create, null);
+});
+
+test('[cache coverage] no observed denominator means unknown hit rate, not zero percent', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"type":"message_start","message":{"usage":{"input_tokens":4000}}}\n\n');
+  });
+  await (await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] })).text();
+  const { cache } = await (await ask('/stats')).json() as import('./gateway').GatewayStats;
+  assert.equal(cache.read, null);
+  assert.equal(cache.create, null);
+  assert.equal(cache.hitRate, null);
+  assert.equal(cache.misses, 0, 'missing cache reads are not measured zero-read misses');
+  assert.equal(cache.coverage.tokenRateRequests, 0);
+});
+
 test('GET /admin/route retains the lowest exact input total per native session as an observed prompt floor', async () => {
   const totals = [168_100, 199_236, 180_000];
   let call = 0;

@@ -61,6 +61,9 @@ export interface TranscriptUsageEvent {
   sourceId: string;
   relativeOffset: number;
   eventTime: number | null;
+  /** Inclusive source input, independent of whether its cache breakdown is complete. */
+  inputTotalTokens?: number | null;
+  uncachedInputKnown?: boolean;
   turnId?: string;
   contextGeneration?: number;
   predecessorSessionId?: string;
@@ -537,9 +540,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 (previous.cache_creation_5m_tokens === null || previous.cache_creation_1h_tokens === null),
             } : emptyDelta();
             const d = previous ? mergeTranscriptUsage(before, event.usage) : event.usage;
+            const inputKnown = event.uncachedInputKnown !== false || (previous != null && previous.input_tokens !== null);
+            if (event.uncachedInputKnown === false && previous?.input_tokens != null) d.inputTokens = before.inputTokens;
             const change = emptyDelta();
             for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
+            if (!inputKnown) change.inputTokens = 0;
             if (previous && Object.values(change).every((n) => n === 0) &&
+              inputKnown === (previous.input_tokens !== null) &&
               Boolean(d.cacheCreationUnreported) === Boolean(before.cacheCreationUnreported) &&
               d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
               (previous.event_ts !== null || event.eventTime === null)) continue;
@@ -555,6 +562,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               parserStateSource: fileState.bootstrapSource ?? 'incremental',
               turnId: event.turnId ?? null,
               cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
+              uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
+              inputTotalTokens: event.inputTotalTokens ?? null,
               accountSource: 'unavailable', triggerSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null };
             // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
@@ -576,7 +585,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                  usage_event_key, event_ts, ingested_at, usage_provenance)
               VALUES (
                 ${ws}, ${eventTime ?? ingestedAt}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
-                ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationUnreported ? null : d.cacheCreationTokens},
+                ${inputKnown ? d.inputTokens : null}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationUnreported ? null : d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model === 'unknown-openai' ? null : model}, ${est.priced ? 'estimated' : null},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
                    ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),

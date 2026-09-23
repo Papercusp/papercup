@@ -3765,7 +3765,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const input = total !== null && read !== null && create !== null && read + create <= total ? total - read - create : null;
         // Inclusive OpenAI input still supplies the denominator when its write breakdown is absent.
         recordCacheUsage(accountId, input, read, create, total, didFailover);
-        if (total !== null && read !== null) stageSpan?.recordCacheUsage(Math.max(0, total - read - (create ?? 0)), read, create ?? undefined, parsed.response?.id ?? parsed.id);
+        if (total !== null && read !== null) stageSpan?.recordCacheUsage(input, read, create ?? undefined, parsed.response?.id ?? parsed.id);
         return true;
       } catch {
         return false;

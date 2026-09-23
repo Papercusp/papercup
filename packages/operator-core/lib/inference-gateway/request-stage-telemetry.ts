@@ -20,7 +20,7 @@ export interface GatewayCacheObservation {
   inputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
-  reuse: 'unobserved' | 'zero-read' | 'partial-hit' | 'full-hit' | 'hit-unknown-write';
+  reuse: 'unobserved' | 'zero-read' | 'partial-hit' | 'full-hit' | 'hit-unknown-write' | 'hit-unknown-input';
   /** A zero read alone cannot distinguish eviction, expiry, prefix drift or cold start. */
   missReason: 'unobserved' | 'unknown' | 'none';
   shape: 'unobserved' | 'observed' | 'oversized' | 'invalid';
@@ -460,13 +460,13 @@ export class GatewayRequestSpan {
     if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
   }
 
-  recordCacheUsage(input: number, read: number, write: number | undefined, requestId?: string): void {
-    if (this.finished || [input, read, ...(write === undefined ? [] : [write])].some((n) => !Number.isFinite(n) || n < 0)) return;
+  recordCacheUsage(input: number | null, read: number, write: number | undefined, requestId?: string): void {
+    if (this.finished || [...(input === null ? [] : [input]), read, ...(write === undefined ? [] : [write])].some((n) => !Number.isFinite(n) || n < 0)) return;
     this.cache.inputTokens = input;
     this.cache.cacheReadTokens = read;
     this.cache.cacheWriteTokens = write ?? null;
     this.cache.providerRequestId = boundedIdentifier(requestId, 160);
-    this.cache.reuse = read === 0 ? 'zero-read' : write === undefined ? 'hit-unknown-write' : input + write === 0 ? 'full-hit' : 'partial-hit';
+    this.cache.reuse = read === 0 ? 'zero-read' : write === undefined ? 'hit-unknown-write' : input === null ? 'hit-unknown-input' : input + write === 0 ? 'full-hit' : 'partial-hit';
     this.cache.missReason = read === 0 ? 'unknown' : 'none';
   }
 

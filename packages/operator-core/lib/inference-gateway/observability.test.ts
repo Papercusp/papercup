@@ -39,7 +39,13 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   beeFacing503: { egressExhausted: 0, tokenStall: 0 },
   pausedUntil: 0,
   pausedActuallyEnforced: false,
-  cache: { read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: 0, byAccount: {} },
+  cache: {
+    read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: null, byAccount: {},
+    knownTokenTotals: { read: 0, create: 0, input: 0 },
+    tokenRateBasis: { read: 0, inputTotal: 0 },
+    coverage: { requests: 0, readKnown: 0, writeKnown: 0, uncachedInputKnown: 0, inputTotalKnown: 0, tokenRateRequests: 0 },
+    affinity: { hits: 0, cold: 0, nokey: 0, yields: 0, enabled: true, ttlMs: 0 },
+  },
   ...over,
 });
 

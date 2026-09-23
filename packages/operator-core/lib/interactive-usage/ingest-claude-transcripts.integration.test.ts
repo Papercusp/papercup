@@ -225,4 +225,18 @@ describe('persistent transcript accounting', () => {
     expect(known.cost_usd).toBeGreaterThan(0);
     expect(known.usage_provenance.cacheWriteSource).toBe('reported');
   });
+
+  it('retains inclusive OpenAI input without labeling unknown fresh/write decomposition as measured', async () => {
+    const event = JSON.parse(usage(1000));
+    delete event.payload.info.last_token_usage.cache_write_input_tokens;
+    await fs.writeFile(path.join(root, 'inclusive.jsonl'), context('gpt-6-luna') + line(event));
+    expect((await ingestInteractiveUsage({ adapters: adapter() })).errors).toEqual([]);
+    const [row] = await sql`SELECT input_tokens,cache_creation_tokens,cache_read_tokens,cost_usd,usage_provenance
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(row.input_tokens).toBeNull();
+    expect(row.cache_creation_tokens).toBeNull();
+    expect(Number(row.cache_read_tokens)).toBe(600);
+    expect(row.cost_usd).toBeNull();
+    expect(row.usage_provenance).toMatchObject({ inputTotalTokens: 1000, uncachedInputSource: 'unknown-decomposition' });
+  });
 });

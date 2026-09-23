@@ -126,6 +126,8 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       cacheReadTokens: cached, cacheCreationTokens: written, outputTokens: output };
     if (typeof u.cache_write_input_tokens !== 'number' || !Number.isFinite(u.cache_write_input_tokens) || u.cache_write_input_tokens < 0) usage.cacheCreationUnreported = true;
     events.push({ model, usage, relativeOffset: lineOffset, eventTime: transcriptEventTime(evt.timestamp),
+      inputTotalTokens: typeof u.input_tokens === 'number' && Number.isFinite(u.input_tokens) && u.input_tokens >= 0 ? u.input_tokens : null,
+      uncachedInputKnown: !usage.cacheCreationUnreported,
       sourceId: fingerprint ? `cumulative:${parserState.contextGeneration ?? 0}:${fingerprint}` : `line:${lineOffset}`,
       contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId,
       turnId: parserState.turnId });
