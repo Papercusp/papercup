@@ -405,6 +405,16 @@ const scorecardEmitBaseShape = {
       .describe(
         "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card.",
       ),
+    gradingAuditReservation: z
+      .object({
+        key: z.string().min(1).max(240),
+        reservedAt: z.string().min(1).max(64),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'For a grading-integrity audit of a pending scorecard with dispatchReservation, copy the exact key and reservedAt from your dispatch brief. The server refuses a missing, stale, or mismatched lease before filing the audit card. Omit only for legacy pending cards with no reservation or explicit corrections to an already-settled audit.',
+      ),
     vettingUnanswered: z
       .boolean()
       .optional()
@@ -1926,6 +1936,7 @@ export async function emitScorecard(
       auditor: string;
       rubricRevision?: number;
       criteriaHash?: string;
+      dispatchReservation?: { key: string; reservedAt: string };
     } | null = null;
     if (args.rubricRef === GRADING_INTEGRITY_RUBRIC_REF) {
       if (args.subject?.kind !== 'scorecard' || !args.subject.ref) {
@@ -1951,6 +1962,23 @@ export async function emitScorecard(
         return {
           ok: false as const,
           error: `audit subject '${args.subject.ref}' carries no gradingAudit stamp — only terminal standard-rubric cards emitted under the audit gate are auditable`,
+        };
+      }
+      const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
+      const suppliedDispatchReservation = args.gradingAuditReservation;
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        (activeDispatchReservation || suppliedDispatchReservation) &&
+        (!activeDispatchReservation ||
+          !suppliedDispatchReservation ||
+          suppliedDispatchReservation.key !== activeDispatchReservation.key ||
+          suppliedDispatchReservation.reservedAt !== activeDispatchReservation.reservedAt)
+      ) {
+        return {
+          ok: false as const,
+          error:
+            `audit subject '${args.subject.ref}' has a different active dispatch reservation; ` +
+            'pass gradingAuditReservation with the exact key and reservedAt from your dispatch brief, then retry only if that lease is still current',
         };
       }
       if (gradedObservation.gradingAudit.state !== 'pending') {
@@ -2069,6 +2097,7 @@ export async function emitScorecard(
         auditor: input.createdBy,
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
+        ...(args.gradingAuditReservation ? { dispatchReservation: args.gradingAuditReservation } : {}),
       };
     }
     // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a
@@ -2588,6 +2617,7 @@ export async function emitScorecard(
         auditor: auditContext.auditor,
         verdict: auditVerdictFromRatings(ratings),
         requireCurrentIdentity: true,
+        ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
         ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
         ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
