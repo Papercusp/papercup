@@ -485,16 +485,35 @@ function humanAge(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
 }
 
-/** One row: id, age, addressee, and the D-004 display text. */
-export function renderOwnerDirectiveRow(row: OwnerDirectiveRow, nowMs: number = Date.now()): string {
+/**
+ * One row, labeled for the session that is reading the block.
+ *
+ * recordedBy is the addressed agent identity: orders:record writes
+ * identity.ownerId, and directiveActionVerdict checks recorded_by.
+ * sessionRef points at the source transcript and is provenance, not the
+ * viewer identity. Keep foreign rows visible, but never render their owner's
+ * words as an action assignment for another session.
+ */
+export function renderOwnerDirectiveRow(
+  row: OwnerDirectiveRow,
+  nowMs: number = Date.now(),
+  viewerOwnerId?: string | null,
+): string {
   const age = humanAge(Math.max(0, nowMs - row.createdAtMs));
-  return `  • #${row.id} [${age} old, recorded by ${shortOwner(row.recordedBy)}] ${directiveDisplayText(row)}`;
+  if (!viewerOwnerId || row.recordedBy !== viewerOwnerId) {
+    const sourceSession = row.sessionRef ? ` (source session ${shortOwner(row.sessionRef)})` : '';
+    return (
+      `  • #${row.id} [FYI] — recorded by ${shortOwner(row.recordedBy)}${sourceSession}; ` +
+      `not an action assignment for this session. Full text: orders:get #${row.id}`
+    );
+  }
+  return `  • #${row.id} [FOR THIS SESSION] — ${age} old, recorded by ${shortOwner(row.recordedBy)}: ${directiveDisplayText(row)}`;
 }
 
 export const OWNER_DIRECTIVES_BLOCK_HEADER =
-  '📌 OPEN OWNER DIRECTIVES — every owner turn is a directive, recorded verbatim. These OUTRANK your loop ' +
-  'agenda: re-read them BEFORE acting on the checkpoint below. Close each one you resolve with ' +
-  'orders:disposition { id, status: done|declined, note }.';
+  '📌 OPEN OWNER DIRECTIVES — workspace-wide visibility. Rows marked [FOR THIS SESSION] are this session\'s ' +
+  'action obligations and outrank its loop agenda; [FYI] rows are context only, not action assignments. ' +
+  'Only disposition a row marked [FOR THIS SESSION] with orders:disposition { id, status: done|declined, note }.';
 
 /**
  * The block every render point injects. Returns null when there are no open
@@ -503,7 +522,7 @@ export const OWNER_DIRECTIVES_BLOCK_HEADER =
  */
 export function renderOwnerDirectivesBlock(
   rows: ReadonlyArray<OwnerDirectiveRow>,
-  opts: { nowMs?: number; totalOpen?: number } = {},
+  opts: { nowMs?: number; totalOpen?: number; viewerOwnerId?: string | null } = {},
 ): string | null {
   if (!rows.length) return null;
   const nowMs = opts.nowMs ?? Date.now();
@@ -512,7 +531,7 @@ export function renderOwnerDirectivesBlock(
   let used = OWNER_DIRECTIVES_BLOCK_HEADER.length;
   let shown = 0;
   for (const row of rows) {
-    const line = renderOwnerDirectiveRow(row, nowMs);
+    const line = renderOwnerDirectiveRow(row, nowMs, opts.viewerOwnerId);
     if (used + line.length + 1 > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) break;
     lines.push(line);
     used += line.length + 1;
@@ -544,7 +563,11 @@ export async function renderOpenOwnerDirectivesBlock(
       rows.length >= OWNER_DIRECTIVES_RENDER_MAX_ROWS
         ? await countOpenOwnerDirectives(ws, opts.sql, opts.viewerOwnerId).catch(() => rows.length)
         : rows.length;
-    return renderOwnerDirectivesBlock(rows, { nowMs: opts.nowMs, totalOpen });
+    return renderOwnerDirectivesBlock(rows, {
+      nowMs: opts.nowMs,
+      totalOpen,
+      viewerOwnerId: opts.viewerOwnerId,
+    });
   } catch {
     return null;
   }
