@@ -48,6 +48,16 @@ export type HostedDesktopQueryState = "idle" | "loading" | "ready" | "error";
 const UPLOAD_CHUNK_ACK_TIMEOUT_MS = 30_000;
 
 /**
+ * How long a `desktop.start` may go unanswered before the viewer reports it.
+ *
+ * Above the host's own 60s provisioning deadline, so a slow start still lands.
+ * The deadline exists for version skew: a host on a runtime older than D-405
+ * ignores the request entirely, and without one the page would say "Starting
+ * your desktop…" forever.
+ */
+export const DESKTOP_START_TIMEOUT_MS = 90_000;
+
+/**
  * The PTY/control channel is the authenticated discovery plane for desktops.
  * The returned callbacks deliberately do not expose the raw socket: callers
  * can request bounded roster/thumbnail reads, while the selected desktop's
@@ -56,7 +66,15 @@ const UPLOAD_CHUNK_ACK_TIMEOUT_MS = 30_000;
 export interface HostedWorkspaceDesktopBridge {
   requestRoster: () => boolean;
   requestThumbnail: (desktopSessionId: string) => boolean;
+  /**
+   * Ask the host to start the workspace desktop, or return the running one
+   * (D-405). False without sending when this tab is not the controller: the
+   * host refuses an observer, and watching must never start a desktop.
+   */
+  requestStart: () => boolean;
 }
+
+export type HostedDesktopOperation = "roster" | "thumbnail" | "start";
 
 export interface HostedWorkspaceSessionProps {
   hostId: string;
@@ -66,9 +84,10 @@ export interface HostedWorkspaceSessionProps {
   onDesktopBridgeChange?: (bridge: HostedWorkspaceDesktopBridge | null) => void;
   onDesktopRosterChange?: (desktops: HostedDesktopRosterEntry[]) => void;
   onDesktopThumbnailChange?: (result: HostedDesktopThumbnailResult) => void;
+  onDesktopStarted?: (desktop: HostedDesktopRosterEntry) => void;
   onDesktopQueryStateChange?: (
     state: HostedDesktopQueryState,
-    operation?: "roster" | "thumbnail",
+    operation?: HostedDesktopOperation,
     code?: string,
   ) => void;
 }
@@ -150,6 +169,7 @@ export function HostedWorkspaceSession({
   onDesktopBridgeChange,
   onDesktopRosterChange,
   onDesktopThumbnailChange,
+  onDesktopStarted,
   onDesktopQueryStateChange,
 }: HostedWorkspaceSessionProps) {
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
@@ -173,7 +193,7 @@ export function HostedWorkspaceSession({
   const draftPathRef = useRef(".");
   const pendingListPathsRef = useRef(new Map<string, string>());
   const pendingDesktopRequestsRef = useRef(
-    new Map<string, "roster" | "thumbnail">(),
+    new Map<string, HostedDesktopOperation>(),
   );
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
@@ -185,11 +205,13 @@ export function HostedWorkspaceSession({
   const uploadLimitsRef = useRef<HostedWorkspaceUploadLimits | null>(null);
   /** Resolvers for in-flight chunk acks, keyed by uploadId. */
   const uploadAckRef = useRef(new Map<string, () => void>());
+  const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const callbackRefs = useRef({
     onWorkspaceIdChange,
     onDesktopBridgeChange,
     onDesktopRosterChange,
     onDesktopThumbnailChange,
+    onDesktopStarted,
     onDesktopQueryStateChange,
   });
   callbackRefs.current = {
@@ -197,6 +219,7 @@ export function HostedWorkspaceSession({
     onDesktopBridgeChange,
     onDesktopRosterChange,
     onDesktopThumbnailChange,
+    onDesktopStarted,
     onDesktopQueryStateChange,
   };
 
@@ -271,12 +294,39 @@ export function HostedWorkspaceSession({
     [send],
   );
 
+  const requestDesktopStart = useCallback(() => {
+    if (roleRef.current !== "controller") return false;
+    const requestIdValue = requestId("desktop-start");
+    if (!send({ type: "desktop.start", requestId: requestIdValue })) {
+      callbackRefs.current.onDesktopQueryStateChange?.(
+        "error",
+        "start",
+        "relay_unavailable",
+      );
+      return false;
+    }
+    pendingDesktopRequestsRef.current.set(requestIdValue, "start");
+    callbackRefs.current.onDesktopQueryStateChange?.("loading", "start");
+    if (startTimerRef.current) clearTimeout(startTimerRef.current);
+    startTimerRef.current = setTimeout(() => {
+      startTimerRef.current = null;
+      if (!pendingDesktopRequestsRef.current.delete(requestIdValue)) return;
+      callbackRefs.current.onDesktopQueryStateChange?.(
+        "error",
+        "start",
+        "desktop_start_timeout",
+      );
+    }, DESKTOP_START_TIMEOUT_MS);
+    return true;
+  }, [send]);
+
   const desktopBridge = useMemo<HostedWorkspaceDesktopBridge>(
     () => ({
       requestRoster: requestDesktopRoster,
       requestThumbnail: requestDesktopThumbnail,
+      requestStart: requestDesktopStart,
     }),
-    [requestDesktopRoster, requestDesktopThumbnail],
+    [requestDesktopRoster, requestDesktopThumbnail, requestDesktopStart],
   );
 
   const dispose = useCallback((notify = true) => {
@@ -285,6 +335,8 @@ export function HostedWorkspaceSession({
     socketRef.current = null;
     pendingListPathsRef.current.clear();
     pendingDesktopRequestsRef.current.clear();
+    if (startTimerRef.current) clearTimeout(startTimerRef.current);
+    startTimerRef.current = null;
     callbackRefs.current.onDesktopBridgeChange?.(null);
     callbackRefs.current.onDesktopQueryStateChange?.("idle");
     if (socket && notify && socket.readyState === WebSocket.OPEN) {
@@ -408,6 +460,12 @@ export function HostedWorkspaceSession({
         callbackRefs.current.onDesktopQueryStateChange?.("ready", "thumbnail");
         return;
       }
+      if (desktopEvent?.kind === "started") {
+        pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
+        callbackRefs.current.onDesktopStarted?.(desktopEvent.desktop);
+        callbackRefs.current.onDesktopQueryStateChange?.("ready", "start");
+        return;
+      }
       if (
         desktopEvent?.kind === "error" &&
         (desktopEvent.operation.startsWith("desktop.") ||
@@ -422,7 +480,9 @@ export function HostedWorkspaceSession({
           : undefined;
         callbackRefs.current.onDesktopQueryStateChange?.(
           "error",
-          operation === "roster" || operation === "thumbnail"
+          operation === "roster" ||
+            operation === "thumbnail" ||
+            operation === "start"
             ? operation
             : undefined,
           desktopEvent.code,

@@ -47,6 +47,7 @@ import runTool, {
   parseRouterTestResult,
   preserveConfinedTestOnHostShutdown,
   readManagedTestProcessResourceSnapshot,
+  mapHarnessTestRunIdsByFile,
   readHarnessTestRunIdsBounded,
   readTestProcessResourceSnapshot,
   runTestFilesCore,
@@ -58,7 +59,7 @@ import runTool, {
   shouldIngestVitestLedgerInProcess,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
-import { cancelRun, getRun } from '../../../testing-run-store';
+import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -117,6 +118,7 @@ interface RunResult {
   failuresTruncated?: boolean;
   durationMs?: number | null;
   testRunIds?: number[];
+  byFile?: Record<string, unknown>;
 }
 
 async function body(p: ReturnType<typeof call>): Promise<RunResult> {
@@ -943,6 +945,9 @@ describe('testing:run (integration)', () => {
       ]),
     );
     expect(out.testRunIds).toEqual(expect.arrayContaining(rows.map((row) => Number(row.id)).filter(Number.isFinite)));
+    const targetRow = rows.find((row) => row.file_path === GREEN_TARGET);
+    expect(targetRow).toBeDefined();
+    expect(out.byFile?.[GREEN_TARGET]).toMatchObject({ runId: Number(targetRow!.id) });
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {
@@ -1146,6 +1151,79 @@ describe('testing:run (integration)', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('maps reversed ledger rows to byFile paths instead of pairing IDs by array position', async () => {
+    const runGroupId = 'run-id-order-test';
+    const workspaceId = 'workspace-id-order-test';
+    const harnessSlug = 'harness-id-order-test';
+    const root = '/repo';
+    const byFile = {
+      'packages/alpha.test.ts': { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
+      '/sibling/packages/alpha.test.ts': { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
+    };
+    const details = (rowRoot: string, filePath: string) => ({
+      schemaVersion: 1 as const,
+      root: rowRoot,
+      filePath,
+      runGroupId,
+      workspaceId,
+      harnessSlug,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'abcdef1234567890',
+      worktreeDirty: false,
+    });
+    const rows: HarnessTestRunEvidence[] = [
+      {
+        id: 22,
+        file_path: 'packages/alpha.test.ts',
+        status: 'pass',
+        finished_at: null,
+        workspace_id: workspaceId,
+        harness_slug: harnessSlug,
+        run_group_id: runGroupId,
+        commit_sha: 'abcdef1234567890',
+        worktree_dirty: false,
+        execution_details: details('/sibling', 'packages/alpha.test.ts'),
+      },
+      {
+        id: 11,
+        file_path: 'packages/alpha.test.ts',
+        status: 'pass',
+        finished_at: null,
+        workspace_id: workspaceId,
+        harness_slug: harnessSlug,
+        run_group_id: runGroupId,
+        commit_sha: 'abcdef1234567890',
+        worktree_dirty: false,
+        execution_details: details(root, 'packages/alpha.test.ts'),
+      },
+    ];
+
+    const readback = await readHarnessTestRunIdsBounded(
+      { workspaceId, harnessSlug, runGroupId },
+      { findEvidence: async () => rows, timeoutMs: 100, root, roots: [root, '/sibling'], byFile },
+    );
+    expect(readback).toMatchObject({
+      ids: [11, 22],
+      idsByFile: {
+        'packages/alpha.test.ts': 11,
+        '/sibling/packages/alpha.test.ts': 22,
+      },
+      degraded: false,
+    });
+    expect(mapHarnessTestRunIdsByFile(byFile, rows, {
+      root,
+      roots: [root, '/sibling'],
+      workspaceId,
+      harnessSlug,
+      runGroupId,
+    })).toEqual(readback.idsByFile);
   });
 
   it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {

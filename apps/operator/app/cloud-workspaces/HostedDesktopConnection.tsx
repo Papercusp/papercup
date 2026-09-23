@@ -8,6 +8,7 @@ import {
 import type { HostedDesktopViewerState } from "./HostedDesktopViewer";
 import {
   HostedWorkspaceSession,
+  type HostedDesktopOperation,
   type HostedDesktopQueryState,
   type HostedWorkspaceDesktopBridge,
 } from "./HostedWorkspaceSession";
@@ -63,7 +64,11 @@ function DesktopConnection({
     useState<DesktopSelection | null>(null);
   const [viewerState, setViewerState] =
     useState<HostedDesktopViewerState | null>(null);
+  const [startState, setStartState] = useState<HostedDesktopQueryState>("idle");
+  const [startError, setStartError] = useState<string | null>(null);
   const requestedThumbnails = useRef(new Set<string>());
+  /** One automatic start per connection, so a failed start is shown, not retried in a loop. */
+  const startRequested = useRef(false);
 
   const onBridgeChange = useCallback(
     (next: HostedWorkspaceDesktopBridge | null) => {
@@ -71,10 +76,31 @@ function DesktopConnection({
       if (!next) {
         requestedThumbnails.current.clear();
         setThumbnails({});
+        startRequested.current = false;
+        setStartState("idle");
+        setStartError(null);
       }
     },
     [],
   );
+  // D-405: a new machine runs no desktop until someone opens one. Opening this
+  // page IS that ask, so an empty roster starts the workspace desktop and opens it.
+  useEffect(() => {
+    if (!bridge || rosterState !== "ready" || roster.length > 0) return;
+    if (startRequested.current) return;
+    startRequested.current = bridge.requestStart();
+  }, [bridge, roster, rosterState]);
+  const onDesktopStarted = useCallback((desktop: HostedDesktopRosterEntry) => {
+    setRoster((current) =>
+      current.some((entry) => entry.desktopSessionId === desktop.desktopSessionId)
+        ? current
+        : [...current, desktop],
+    );
+    setSelectedDesktop(
+      (current) =>
+        current ?? { desktopSessionId: desktop.desktopSessionId, mode: "watch" },
+    );
+  }, []);
   const onRosterChange = useCallback((next: HostedDesktopRosterEntry[]) => {
     setRoster(next);
     setRosterError(null);
@@ -99,9 +125,14 @@ function DesktopConnection({
   const onQueryStateChange = useCallback(
     (
       state: HostedDesktopQueryState,
-      operation?: "roster" | "thumbnail",
+      operation?: HostedDesktopOperation,
       code?: string,
     ) => {
+      if (operation === "start") {
+        setStartState(state);
+        setStartError(state === "error" ? (code ?? "desktop_start_failed") : null);
+        return;
+      }
       if (
         operation === "roster" ||
         (operation === undefined && state === "idle")
@@ -135,6 +166,8 @@ function DesktopConnection({
           roster={roster}
           rosterState={rosterState}
           rosterError={rosterError}
+          startState={startState}
+          startError={startError}
           thumbnails={thumbnails}
           selectedDesktop={selectedDesktop}
           viewerState={viewerState}
@@ -151,6 +184,7 @@ function DesktopConnection({
           onDesktopBridgeChange={onBridgeChange}
           onDesktopRosterChange={onRosterChange}
           onDesktopThumbnailChange={onThumbnailChange}
+          onDesktopStarted={onDesktopStarted}
           onDesktopQueryStateChange={onQueryStateChange}
         />
       )}

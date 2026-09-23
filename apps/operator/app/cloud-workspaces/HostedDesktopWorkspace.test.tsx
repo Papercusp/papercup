@@ -63,10 +63,16 @@ function Workspace(props: Partial<HostedDesktopWorkspaceProps>) {
       workspaceId="customer-1"
       hostId="host-1"
       routeLabel="relay-1"
-      bridge={{ requestRoster: () => true, requestThumbnail: () => true }}
+      bridge={{
+        requestRoster: () => true,
+        requestThumbnail: () => true,
+        requestStart: () => true,
+      }}
       roster={roster}
       rosterState="ready"
       rosterError={null}
+      startState="idle"
+      startError={null}
       thumbnails={{}}
       selectedDesktop={selectedDesktop}
       viewerState={null}
@@ -138,7 +144,11 @@ describe("<HostedDesktopWorkspace>", () => {
     const requestRoster = vi.fn(() => true);
     const { rerender } = render(
       <Workspace
-        bridge={{ requestRoster, requestThumbnail: () => true }}
+        bridge={{
+          requestRoster,
+          requestThumbnail: () => true,
+          requestStart: () => true,
+        }}
         thumbnails={{ "desk-1": { desktopSessionId: "desk-1", data: "frame" } }}
       />,
     );
@@ -181,6 +191,11 @@ describe("<HostedDesktopWorkspace>", () => {
     [{ bridge: null }, "Connect your workspace"],
     [{ rosterState: "loading", roster: [] }, "Finding your desktops…"],
     [{ roster: [] }, "No desktops are available yet"],
+    [{ roster: [], startState: "loading" }, "Starting your desktop…"],
+    [
+      { roster: [], startState: "error", startError: "desktop_start_failed" },
+      "Your desktop could not be started",
+    ],
     [
       { rosterState: "error", rosterError: "connection_lost", roster: [] },
       "Desktops could not be loaded",
