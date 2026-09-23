@@ -616,6 +616,46 @@ describe('native boot pre-destructive snapshot admission (EI-217072)', () => {
     expect(relation[0]?.name).toBeNull();
   });
 
+  // EI-21968380816102718: the refusal must name the receipt it judged, so the
+  // next agent goes straight to the cause instead of a bare "not completed".
+  it('names the newest receipt (id, status, error) when it refuses, and says so when none exists', async () => {
+    const failedFile = '1019-ei-21968-names-receipt.sql';
+    const noneFile = '1020-ei-21968-no-receipt-named.sql';
+    const failedDir = makeSqlDir({
+      [failedFile]: 'CREATE TABLE harness_shared.ei_21968_names_receipt (id int);',
+    });
+    await seedMigrationReservations([failedFile, noneFile]);
+
+    const noneDir = makeSqlDir({
+      [noneFile]: 'CREATE TABLE harness_shared.ei_21968_no_receipt_named (id int);',
+    });
+    const none = await withSuppressedConsoleError(() => applyPendingMigrationsNow({ sqlDir: noneDir }));
+    expect(none).toMatchObject({
+      applied: 0,
+      failed: [{ file: noneFile, error: expect.stringContaining('latest pre_destructive receipt: none recorded') }],
+    });
+
+    await rootSql`
+      INSERT INTO harness_shared.backup_snapshots
+        (id, workspace_id, trigger_reason, status, started_at, finished_at, kopia_snapshot_id, db_dump_ok, error_text)
+      VALUES
+        (104, ${PRE_DESTRUCTIVE_TEST_WORKSPACE}, 'pre_destructive', 'failed',
+          '2026-09-23T18:53:15Z', '2026-09-23T20:10:15Z', NULL, NULL,
+          'orphan-sweep: status=''running'' for >60min')`;
+
+    const result = await withSuppressedConsoleError(() => applyPendingMigrationsNow({ sqlDir: failedDir }));
+
+    expect(result).toMatchObject({ applied: 0 });
+    const error = String(result?.failed[0]?.error);
+    expect(error).toContain('pre-destructive snapshot admission failed');
+    expect(error).toContain('id=104 status=failed');
+    expect(error).toContain('kopia_snapshot=none db_dump_ok=null');
+    expect(error).toContain("error=orphan-sweep: status='running' for >60min");
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.ei_21968_names_receipt')::text AS name`;
+    expect(relation[0]?.name).toBeNull();
+  });
+
   it('applies a post-1006 migration once the newest receipt is complete and database-backed', async () => {
     const filename = '1018-ei-217072-complete.sql';
     const dir = makeSqlDir({

@@ -144,8 +144,16 @@ export function completedPreDestructiveSnapshotQuerySql(workspaceId: string): st
  */
 export function preDestructiveSnapshotAdmissionGuardSql(workspaceId: string): string {
   const workspace = sqlStringLiteral(workspaceId);
+  // The refusal NAMES the receipt it judged (EI-21968380816102718). A bare
+  // "not a completed database-backed snapshot" kept the staging operator dark
+  // for hours on 2026-09-23 while the actual cause, receipt 77476 orphan-swept
+  // after its dump never landed because the host db-dump had been skipping for
+  // backup-disk headroom, sat one query away in error_text. The detail is read
+  // only on the refusal branch, so the admission predicate above is unchanged.
   return (
     `DO $papercusp_pre_destructive_snapshot_guard$\n` +
+    `DECLARE\n` +
+    `  latest_receipt text;\n` +
     `BEGIN\n` +
     `  IF NOT EXISTS (\n` +
     completedPreDestructiveSnapshotQuerySql(workspaceId)
@@ -154,7 +162,18 @@ export function preDestructiveSnapshotAdmissionGuardSql(workspaceId: string): st
       .join('\n') +
     `\n` +
     `  ) THEN\n` +
-    `    RAISE EXCEPTION 'pre-destructive snapshot admission failed for workspace %: latest receipt is not a completed database-backed snapshot', ${workspace}\n` +
+    `    SELECT format('id=%s status=%s finished_at=%s kopia_snapshot=%s db_dump_ok=%s error=%s',\n` +
+    `                  id, status, coalesce(finished_at::text, 'null'),\n` +
+    `                  CASE WHEN kopia_snapshot_id IS NULL OR btrim(kopia_snapshot_id) = '' THEN 'none' ELSE 'present' END,\n` +
+    `                  coalesce(db_dump_ok::text, 'null'),\n` +
+    `                  coalesce(left(error_text, 300), 'none'))\n` +
+    `      INTO latest_receipt\n` +
+    `      FROM harness_shared.backup_snapshots\n` +
+    `     WHERE workspace_id = ${workspace}\n` +
+    `       AND trigger_reason = '${PRE_DESTRUCTIVE_SNAPSHOT_TRIGGER}'\n` +
+    `     ORDER BY started_at DESC, id DESC\n` +
+    `     LIMIT 1;\n` +
+    `    RAISE EXCEPTION 'pre-destructive snapshot admission failed for workspace %: latest receipt is not a completed database-backed snapshot (latest ${PRE_DESTRUCTIVE_SNAPSHOT_TRIGGER} receipt: %). Take a fresh pre-destructive snapshot; if its database dump keeps failing, check the host db-dump (db-backup.log and STATUS.json in the host dump directory), because a workspace snapshot skips its own dump only while the host dump is fresh.', ${workspace}, coalesce(latest_receipt, 'none recorded')\n` +
     `      USING ERRCODE = '55000';\n` +
     `  END IF;\n` +
     `END\n` +
