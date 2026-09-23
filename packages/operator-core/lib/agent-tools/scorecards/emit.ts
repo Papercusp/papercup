@@ -12,6 +12,7 @@ import {
   classifyRubricEvidenceCurrentness,
   getRubric,
   getRubricCriteriaHash,
+  getRubricEvidenceIdentity,
   getRubricPlanRevision,
   META_ACCEPTANCE_RUBRIC_ID,
   readRubricPlanRevision,
@@ -1137,13 +1138,15 @@ export async function emitScorecard(
     // Bind every scorecard to the exact rubric plan-row revision used for grading.
     // A failed read remains unrecorded; historical cards must not be back-filled
     // from whatever the rubric says today.
-    const rubricRevision = await getRubricPlanRevision(args.rubricRef);
+    const rubricEvidenceIdentity = await getRubricEvidenceIdentity(args.rubricRef);
+    const rubricRevision = rubricEvidenceIdentity.revision;
     // WI-1393208: also pin the rubric's criteriaHash (the field designed exactly
     // for this — see its doc comment) so a later criterion/method/description
     // edit is machine-detectable against this card, not just a plan-row revision
     // bump (which fires on ANY propose, typo included, and says nothing about
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
-    const criteriaHash = await getRubricCriteriaHash(args.rubricRef);
+    const criteriaHash = rubricEvidenceIdentity.criteriaHash;
+    const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
     const acceptanceOf = typeof args.acceptanceOf === 'string' ? args.acceptanceOf.trim() : undefined;
     // WI-2141007: set when this verdict is recorded by a SUCCESSOR to a dead
@@ -1357,21 +1360,27 @@ export async function emitScorecard(
           // revision would persist a grading of criteria no longer in force,
           // under the current revision's identity.
           const acceptedRubricCurrentness = classifyRubricEvidenceCurrentness(
-            { revision: named.rubricRevision, criteriaHash: named.criteriaHash },
-            { revision: rubricRevision, criteriaHash },
+            {
+              revision: named.rubricRevision,
+              criteriaHash: named.criteriaHash,
+              meaningRevision: named.rubricMeaningRevision,
+            },
+            { revision: rubricRevision, criteriaHash, meaningRevision: rubricMeaningRevision },
           );
           if (acceptedRubricCurrentness.state !== 'current') {
             return {
               ok: false as const,
               code:
-                acceptedRubricCurrentness.reason === 'criteria-hash-mismatch'
+                ['criteria-hash-mismatch', 'meaning-revision-mismatch'].includes(acceptedRubricCurrentness.reason)
                   ? ('acceptance_of_stale_criteria' as const)
                   : ('acceptance_of_stale_revision' as const),
               error:
                 `acceptanceOf '${acceptanceOf}' graded rubric identity ` +
-                `(revision ${named.rubricRevision ?? 'unversioned'}, criteriaHash ${named.criteriaHash ?? 'unrecorded'}), ` +
+                `(revision ${named.rubricRevision ?? 'unversioned'}, criteriaHash ${named.criteriaHash ?? 'unrecorded'}, ` +
+                `meaningRevision ${named.rubricMeaningRevision ?? 'unrecorded'}), ` +
                 `but '${args.rubricRef}' is now (revision ${rubricRevision ?? 'unversioned'}, ` +
-                `criteriaHash ${criteriaHash ?? 'unavailable'}) — ${acceptedRubricCurrentness.reason}. ` +
+                `criteriaHash ${criteriaHash ?? 'unavailable'}, meaningRevision ${rubricMeaningRevision ?? 'unavailable'}) — ` +
+                `${acceptedRubricCurrentness.reason}. ` +
                 'Have it re-graded against the current criteria, then accept that card',
             };
           }
@@ -1750,13 +1759,16 @@ export async function emitScorecard(
               `(vettingConsult + vettingUnanswered) so the waiver is recorded visibly`,
           };
         }
-        const rubricRevision = await getRubricPlanRevision(subjectRef);
-        const criteriaHash = await getRubricCriteriaHash(subjectRef);
+        const subjectIdentity = await getRubricEvidenceIdentity(subjectRef);
+        const rubricRevision = subjectIdentity.revision;
+        const criteriaHash = subjectIdentity.criteriaHash;
+        const rubricMeaningRevision = subjectIdentity.meaningRevision;
         vetting = {
           workItemId: args.vettingWorkItem,
           ...(vettingSeatSuccession ? { seat: vettingSeatSuccession } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
+          ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
           critiquePosts: critique.critiquePosts,
           ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
         };
@@ -1826,13 +1838,16 @@ export async function emitScorecard(
             `evidence this rubric's vetting.`,
         };
       }
-      const rubricRevision = await getRubricPlanRevision(subjectRef);
-      const criteriaHash = await getRubricCriteriaHash(subjectRef);
+      const subjectIdentity = await getRubricEvidenceIdentity(subjectRef);
+      const rubricRevision = subjectIdentity.revision;
+      const criteriaHash = subjectIdentity.criteriaHash;
+      const rubricMeaningRevision = subjectIdentity.meaningRevision;
       vetting = {
         consultId: args.vettingConsult,
         ...(vettingSeatSuccession ? { seat: vettingSeatSuccession } : {}),
         ...(rubricRevision != null ? { rubricRevision } : {}),
         ...(criteriaHash != null ? { criteriaHash } : {}),
+        ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
         critiquePosts: critique.critiquePosts,
         ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
         ...(waived ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason } : {}),
@@ -1865,6 +1880,7 @@ export async function emitScorecard(
         args.subject.ref,
         vetting?.rubricRevision ?? null,
         vetting?.criteriaHash ?? null,
+        vetting?.rubricMeaningRevision ?? null,
       );
       const seen = new Set(advisoryCritics);
       unionedAdvisoryCritics = [...advisoryCritics, ...otherChannelCritics.filter((c) => !seen.has(c))];
@@ -2177,8 +2193,12 @@ export async function emitScorecard(
             sameSubject &&
             card.rubricRef === args.rubricRef &&
             classifyRubricEvidenceCurrentness(
-              { revision: card.rubricRevision, criteriaHash: card.criteriaHash },
-              { revision: rubricRevision, criteriaHash },
+              {
+                revision: card.rubricRevision,
+                criteriaHash: card.criteriaHash,
+                meaningRevision: card.rubricMeaningRevision,
+              },
+              { revision: rubricRevision, criteriaHash, meaningRevision: rubricMeaningRevision },
             ).state === 'current' &&
             card.rubricResolved &&
             card.missingKeys.length === 0 &&
@@ -2251,8 +2271,16 @@ export async function emitScorecard(
       (latest?.vetting?.workItemId ?? null) !== (vetting?.workItemId ?? null) ||
       (latest?.vetting != null || vetting != null) &&
         classifyRubricEvidenceCurrentness(
-          { revision: latest?.vetting?.rubricRevision, criteriaHash: latest?.vetting?.criteriaHash },
-          { revision: vetting?.rubricRevision, criteriaHash: vetting?.criteriaHash },
+          {
+            revision: latest?.vetting?.rubricRevision,
+            criteriaHash: latest?.vetting?.criteriaHash,
+            meaningRevision: latest?.vetting?.rubricMeaningRevision,
+          },
+          {
+            revision: vetting?.rubricRevision,
+            criteriaHash: vetting?.criteriaHash,
+            meaningRevision: vetting?.rubricMeaningRevision,
+          },
         ).state !== 'current' ||
       (latest?.vetting?.unanswered ?? false) !== (vetting?.unanswered ?? false);
     // The rubric identity is part of the grading binding but deliberately remains
@@ -2261,8 +2289,12 @@ export async function emitScorecard(
     const rubricIdentityChanged =
       latest != null &&
       classifyRubricEvidenceCurrentness(
-        { revision: latest.rubricRevision, criteriaHash: latest.criteriaHash },
-        { revision: rubricRevision, criteriaHash },
+        {
+          revision: latest.rubricRevision,
+          criteriaHash: latest.criteriaHash,
+          meaningRevision: latest.rubricMeaningRevision,
+        },
+        { revision: rubricRevision, criteriaHash, meaningRevision: rubricMeaningRevision },
       ).state !== 'current';
     if (
       !args.force &&
@@ -2498,6 +2530,7 @@ export async function emitScorecard(
           rubricRef: args.rubricRef,
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
+          ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
           ratings,
           ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),
           ...(releaseGateBinding ? { releaseGateBinding } : {}),
