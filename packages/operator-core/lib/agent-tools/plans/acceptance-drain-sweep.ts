@@ -62,6 +62,7 @@ import {
   ensureAcceptanceDrainFiling,
   ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES,
   acceptanceDrainObservationSignals,
+  type AcceptanceDrainBacklogClass,
   type AcceptanceDrainGateObservation,
 } from './acceptance-drain-filing';
 import { listPlanIndexRowsForWorkspace, type PlanIndexRow } from './source';
@@ -105,6 +106,18 @@ export interface AcceptanceDrainSweepResult {
   escalated: number;
   /** Existing filings closed after observing a terminal plan disposition. */
   reconciled: number;
+  /**
+   * P-016: extra open filings for a plan that already has a canonical one
+   * (ACCEPTANCE_DRAIN_CANONICAL_ORDER), closed as duplicates. A duplicate
+   * somebody has claimed is left alone and counted in `duplicatesHeld`.
+   */
+  duplicatesRetired: number;
+  duplicatesHeld: number;
+  /**
+   * P-016: how this pass classified every plan it evaluated — the backlog census,
+   * recorded on each filing as `payload.backlogClass` + `payload.nextRepairAction`.
+   */
+  byClass: Partial<Record<AcceptanceDrainBacklogClass, number>>;
   filed: AcceptanceDrainSweepFiled[];
   /** Refusing plans left unfiled because the per-run cap was hit. */
   deferred: number;
@@ -162,6 +175,9 @@ function empty(summary: string, skipped?: AcceptanceDrainSweepResult['skipped'])
     unknown: 0,
     escalated: 0,
     reconciled: 0,
+    duplicatesRetired: 0,
+    duplicatesHeld: 0,
+    byClass: {},
     filed: [],
     deferred: 0,
     scopeSkipped: 0,
@@ -209,14 +225,19 @@ export async function runAcceptanceDrainSweepOnce(
     planStatus?: string | null;
     archived?: boolean | null;
   }>();
+  // P-016: open filings that lose to an earlier canonical filing for the same plan.
+  const duplicateFilings: Array<{ featureId: string; harnessSlug: string; ref: string; canonical: string; takenBy: string | null }> = [];
   try {
     const { sql } = getOrgPg();
+    // Ordered by ACCEPTANCE_DRAIN_CANONICAL_ORDER so the FIRST row per ref is the
+    // one the carry and refresh writers also pick; later rows are duplicates.
     const existing = (await sql`
       SELECT wi.feature_id,
              wi.harness_slug,
              wi.payload->>'acceptanceDrainPlan' AS ref,
              payload->>'gateObservation' AS gate_observation,
              wi.payload,
+             wi.taken_by,
              p.status AS plan_status,
              p.archived
         FROM harness_shared.work_items wi
@@ -225,12 +246,14 @@ export async function runAcceptanceDrainSweepOnce(
          AND (p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug) = wi.payload->>'acceptanceDrainPlan'
        WHERE payload->>'acceptanceDrainPlan' IS NOT NULL
          AND wi.status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
+       ORDER BY wi.created_ts, wi.feature_id
     `) as unknown as Array<{
       feature_id: string;
       harness_slug: string;
       ref: string | null;
       gate_observation?: string | null;
       payload?: Record<string, unknown> | null;
+      taken_by?: string | null;
       plan_status?: string | null;
       archived?: boolean | null;
     }>;
@@ -238,6 +261,16 @@ export async function runAcceptanceDrainSweepOnce(
     // observation. Let the first sweep evaluate it and replace the placeholder
     // in-place; only a known blocker suppresses duplicate filing.
     for (const e of existing) {
+      if (e.ref && existingFilings.has(e.ref)) {
+        duplicateFilings.push({
+          featureId: e.feature_id,
+          harnessSlug: e.harness_slug,
+          ref: e.ref,
+          canonical: existingFilings.get(e.ref)!.featureId,
+          takenBy: e.taken_by ?? null,
+        });
+        continue;
+      }
       if (e.ref) {
         existingFilings.set(e.ref, {
           featureId: e.feature_id,
@@ -273,6 +306,10 @@ export async function runAcceptanceDrainSweepOnce(
   let escalated = 0;
   let deferred = 0;
   let scopeSkipped = 0;
+  const byClass: Partial<Record<AcceptanceDrainBacklogClass, number>> = {};
+  const countClass = (c: AcceptanceDrainBacklogClass | undefined) => {
+    if (c) byClass[c] = (byClass[c] ?? 0) + 1;
+  };
 
   // PRIME BEFORE FILTERING (WI-10002448) — never drop this await. `isHarnessInScope`'s
   // default policy is a SYNC read of a cache an async refresh fills, and an empty cache
@@ -290,6 +327,8 @@ export async function runAcceptanceDrainSweepOnce(
     }
     const planSlug = row.planSlug;
     const harnessSlug = row.harnessSlug;
+    // P-016: the plan's last recorded write drives the abandonment-candidate class.
+    const planUpdated = row.updated ?? null;
     const ref = `${workspaceId}/${harnessSlug}/${planSlug}`;
     const existing = existingFilings.get(ref);
     // Existing accountability rows are always refreshed. The cap applies only
@@ -310,10 +349,11 @@ export async function runAcceptanceDrainSweepOnce(
         } else {
           shippableNow++;
         }
+        countClass('ready');
         if (existing) {
           await ensureAcceptanceDrainFiling({
             workspaceId, harnessSlug, planSlug, code: null,
-            message: verdict.message ?? 'acceptance gate satisfied', observation,
+            message: verdict.message ?? 'acceptance gate satisfied', observation, planUpdated,
           });
         }
         continue;
@@ -334,7 +374,9 @@ export async function runAcceptanceDrainSweepOnce(
         code: verdict.code ?? null,
         message: verdict.message ?? `(gate refused with ${verdict.code} and no message)`,
         observation,
+        planUpdated,
       });
+      countClass(res.backlogClass);
       if (res.outcome === 'created' && !existing) {
         filed.push({ planSlug, harnessSlug, code: verdict.code ?? 'unknown', workItemId: res.id });
       } else if (existing || res.outcome === 'already-open') {
@@ -346,10 +388,11 @@ export async function runAcceptanceDrainSweepOnce(
     } catch (err) {
       if (existing) {
         const observation: AcceptanceDrainGateObservation = { satisfied: false, message: (err as Error).message };
-        await ensureAcceptanceDrainFiling({
+        const res = await ensureAcceptanceDrainFiling({
           workspaceId, harnessSlug, planSlug, code: null,
-          message: (err as Error).message, observation,
+          message: (err as Error).message, observation, planUpdated,
         });
+        countClass(res.backlogClass);
         refreshed++;
         unknown++;
       }
@@ -379,10 +422,37 @@ export async function runAcceptanceDrainSweepOnce(
     }
   }
 
+  // P-016: a second open filing for a plan is never refreshed (the writers pick
+  // the canonical row) and never reconciled (the terminal pass above walks the
+  // canonical map), so without this it stays open forever. Retire it — unless
+  // somebody has claimed it, in which case retiring would silently drop their claim.
+  let duplicatesRetired = 0;
+  let duplicatesHeld = 0;
+  for (const dup of duplicateFilings) {
+    if (dup.takenBy) {
+      duplicatesHeld++;
+      continue;
+    }
+    try {
+      await setWorkItemState(dup.featureId, 'dropped', {
+        harness: dup.harnessSlug,
+        by: ACCEPTANCE_DRAIN_ACTOR,
+        completionRef: `Duplicate acceptance filing for ${dup.ref}; the canonical filing is ${dup.canonical}.`,
+      });
+      duplicatesRetired++;
+    } catch (err) {
+      errors.push(`${dup.ref}: duplicate filing ${dup.featureId} retirement failed: ${(err as Error).message}`);
+    }
+  }
+
   const byCode = new Map<string, number>();
   for (const f of filed) byCode.set(f.code, (byCode.get(f.code) ?? 0) + 1);
   const codeBreakdown = [...byCode.entries()]
     .sort((a, b) => b[1] - a[1])
+    .map(([c, n]) => `${c}×${n}`)
+    .join(', ');
+  const classBreakdown = Object.entries(byClass)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .map(([c, n]) => `${c}×${n}`)
     .join(', ');
 
@@ -391,6 +461,9 @@ export async function runAcceptanceDrainSweepOnce(
     `${alreadyFiled} already filed · ${shippableNow} SHIPPABLE NOW · ` +
     `${filed.length} filed${codeBreakdown ? ` (${codeBreakdown})` : ''} · ` +
     `${refreshed} refreshed · ${ready} ready · ${unknown} unknown · ${escalated} escalated · ${reconciled} reconciled` +
+    (classBreakdown ? ` · classes: ${classBreakdown}` : '') +
+    (duplicatesRetired > 0 ? ` · ${duplicatesRetired} duplicate filing(s) retired` : '') +
+    (duplicatesHeld > 0 ? ` · ${duplicatesHeld} claimed duplicate(s) left open` : '') +
     (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '') +
     (scopeSkipped > 0 ? ` · ${scopeSkipped} skipped (harness outside the work-scope policy)` : '') +
     (errors.length > 0 ? ` · ${errors.length} error(s)` : '');
@@ -404,6 +477,9 @@ export async function runAcceptanceDrainSweepOnce(
     unknown,
     escalated,
     reconciled,
+    duplicatesRetired,
+    duplicatesHeld,
+    byClass,
     filed,
     deferred,
     scopeSkipped,
