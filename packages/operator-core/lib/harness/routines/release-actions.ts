@@ -38,6 +38,7 @@ import {
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
+import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
@@ -6026,8 +6027,16 @@ export async function measureCandidateStaleness(
   // i.e. exactly how far the tree moved on past what this verdict judged.
   const behind = await runner(root, ['rev-list', '--count', `${candidate}..staging`]);
   const parsedBehind = behind.ok ? Number.parseInt(behind.stdout, 10) : Number.NaN;
+  const committedAt = committed.ok && committed.stdout ? committed.stdout : null;
   return {
-    candidateCommittedAt: committed.ok && committed.stdout ? committed.stdout : null,
+    // A repair-queue ADMISSION commit carries a fixed sentinel date so its dry-run preview and its
+    // confirmed write hash identically — so for a `repairHead` this reads `2000-01-01`, which is a
+    // constant, not a measurement. Recording it would hand the CANDIDATE-FOSSIL rule a ~26.7-year
+    // age for a commit made minutes ago, and under freeze-and-converge the judged candidate IS an
+    // admission commit — so the rule fired on every repairHead verdict (WI-10002121, measured
+    // live: "judged a commit that was ALREADY 234291.7h old"). Null is the honest record: the age
+    // is UNAVAILABLE, which the rule already handles by standing down, rather than wrong.
+    candidateCommittedAt: isAdmissionSyntheticCommitDate(committedAt) ? null : committedAt,
     commitsBehindTip: Number.isFinite(parsedBehind) ? parsedBehind : null,
   };
 }

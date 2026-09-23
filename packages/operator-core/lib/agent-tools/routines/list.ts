@@ -17,6 +17,7 @@ import { formatIdleAge } from '../../format/relative-time';
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
+import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
@@ -161,7 +162,14 @@ export function attestGateHealth(value: unknown, nowMs: number = Date.now()): un
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const gateHealth = value as Record<string, unknown>;
   const observedAtMs = epochMs(gateHealth.observedAt);
-  const candidateCommittedAtMs = epochMs(gateHealth.candidateCommittedAt);
+  // A repair-queue admission commit carries a fixed sentinel date, so a `repairHead` blob reports
+  // `2000-01-01` — a constant, not a measurement. Attesting an age derived from it would publish
+  // a ~26.7-year candidate age for a commit made minutes ago (WI-10002121). Unavailable, not wrong.
+  const candidateCommittedAtMs = isAdmissionSyntheticCommitDate(
+    gateHealth.candidateCommittedAt as string | number | null | undefined,
+  )
+    ? null
+    : epochMs(gateHealth.candidateCommittedAt);
   const snapshotAgeMs = observedAtMs === null ? null : Math.max(0, nowMs - observedAtMs);
   const candidateAgeAtObservationMs =
     observedAtMs !== null && candidateCommittedAtMs !== null && observedAtMs >= candidateCommittedAtMs

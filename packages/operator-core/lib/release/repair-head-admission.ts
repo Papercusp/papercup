@@ -31,6 +31,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
+import { ADMISSION_GIT_DATE } from './admission-commit-date';
 
 export const FROZEN_LINEAGE_REF_PREFIX = 'refs/papercusp/frozen/';
 
@@ -41,8 +42,11 @@ export const ADMISSION_GIT_IDENTITY = Object.freeze({
   email: 'green-checkpoint@papercusp.local',
 });
 
-/** Fixed commit dates keep a preview's plumbing commit identical to the confirmed commit. */
-export const ADMISSION_GIT_DATE = '2000-01-01T00:00:00Z';
+/** Fixed commit dates keep a preview's plumbing commit identical to the confirmed commit.
+ *  Defined in the leaf module `admission-commit-date` and re-exported here, unchanged, for every
+ *  existing importer: the pure gate-health readers need to RECOGNISE this date (it is a sentinel,
+ *  not a measurement) and cannot import this module, which pulls in node builtins. */
+export { ADMISSION_GIT_DATE };
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
 

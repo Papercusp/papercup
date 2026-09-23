@@ -50,6 +50,7 @@ import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
 import { pipelineName } from './release/pipeline-name';
+import { isAdmissionSyntheticCommitDate } from './release/admission-commit-date';
 import {
   projectCheckpointQualificationState,
   type CheckpointQualificationState,
@@ -1391,6 +1392,12 @@ export async function gitPipelineSnapshot(
    */
   const candidateCommittedAtMs = ((): number | null => {
     const raw = gateHealth.candidateCommittedAt;
+    // The one bad value that PARSES. A repair-queue admission commit carries a fixed sentinel
+    // date (so preview and confirmed write hash alike), so a `repairHead` reports `2000-01-01` —
+    // a constant, not a measurement. The writer stopped recording it, but blobs written before
+    // that fix still carry it, and reading one as a real date is precisely the "EVERY verdict is
+    // a fossil" false positive the `?? 0` guard above exists to prevent (WI-10002121).
+    if (isAdmissionSyntheticCommitDate(raw as string | number | null | undefined)) return null;
     if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
     if (typeof raw !== 'string' || raw.trim() === '') return null;
     const parsed = Date.parse(raw);
