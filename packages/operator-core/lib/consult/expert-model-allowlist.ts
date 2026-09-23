@@ -46,7 +46,7 @@ export const DEFAULT_EXPERT_MODEL_ALLOWLIST: readonly AllowedExpertModel[] = Obj
   { rank: 1, agent: 'claude', model: 'fable' },
   { rank: 2, agent: 'claude', model: 'opus' },
   { rank: 3, agent: 'codex', model: 'sol' },
-  { rank: 4, agent: 'codex', model: 'astra' },
+  { rank: 4, agent: 'codex', model: 'gpt-6-astra' },
 ] as const);
 
 /** Settings seam — P-005 binds the Postgres read; unbound falls back to the seed. */
