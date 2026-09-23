@@ -399,6 +399,38 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).not.toContain('orders:summarize');
   });
 
+  // directive-ownership-clarity-2026-09-23 P-001: on 2026-09-23 an agent that was never
+  // told its directive id found "its" row by matching text and closed five OTHER
+  // sessions' copies of the same pasted report. The id must reach the session on EVERY
+  // captured turn, short or long, so no agent ever has to match on text.
+  it('a SHORT captured directive tells the session its own id and to refer to it by number', async () => {
+    writeMachineRow();
+    captureReply = { ok: true, id: 7777, needsSummary: false };
+    const ctx = contextOf(await runHook({ prompt: 'short directive', session_id: 'native-session-kkk' }));
+
+    expect(ctx).toContain('YOUR owner directive #7777');
+    expect(ctx).toContain('never by matching its text');
+    expect(ctx).toContain('orders:disposition { id: 7777');
+  });
+
+  it('a LONG captured directive carries both its id and the summary instruction', async () => {
+    writeMachineRow();
+    captureReply = { ok: true, id: 7778, needsSummary: true };
+    const ctx = contextOf(await runHook({ prompt: 'a long directive stands in here', session_id: 'native-session-lll' }));
+
+    expect(ctx).toContain('YOUR owner directive #7778');
+    expect(ctx).toContain('orders:summarize { id: 7778');
+  });
+
+  it('CONTROL: a capture reply without an id adds no directive-id notice (never an invented number)', async () => {
+    writeMachineRow();
+    captureReply = { ok: true };
+    const ctx = contextOf(await runHook({ prompt: 'short directive', session_id: 'native-session-mmm' }));
+
+    expect(ctx).not.toContain('YOUR owner directive #');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
   it('a REJECTED capture is loud in additionalContext and still fail-open', async () => {
     writeMachineRow();
     rejectTools = new Set(['orders:capture', 'orders:capture-pending']);
