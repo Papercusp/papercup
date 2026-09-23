@@ -86,12 +86,14 @@ describe('orders:disposition — closing a FOREIGN directive is refused (P-008 /
     expect(h.dispositionOwnerDirective).not.toHaveBeenCalled();
   });
 
-  it("redirects to resolve-pending's clear, NOT to a clear action this verb does not have", async () => {
+  it('redirects to orders:clear, NOT to a clear action this verb does not have', async () => {
     h.directiveActionVerdict.mockResolvedValue(FOREIGN);
 
     const [row] = envelopeOf(await call({ id: 96, status: 'done', note: 'not mine' })).results as Result[];
 
-    expect(String(row!.hint)).toContain("orders:resolve-pending { action: 'clear' }");
+    expect(String(row!.hint)).toContain('orders:clear { id, reason }');
+    // The retired triage verb must not be offered as a route (D-001).
+    expect(String(row!.hint)).not.toContain('resolve-pending');
   });
 
   it('a MIXED batch closes the legitimate ids and refuses only the foreign one', async () => {

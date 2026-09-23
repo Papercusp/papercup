@@ -32,6 +32,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import type { SessionState } from './agent-tools/coordination/presence-wakeability';
+import type { DirectiveRoutingDeps } from './owner-directive-routing';
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -99,6 +101,39 @@ function directiveWorld(recordedBy: string | null, holders: Array<string | null>
   };
 }
 
+/**
+ * Routing facts for the ended-addressee branch (plan
+ * owner-directive-delivery-redesign-2026-09-22 P-008). The liveness oracle has
+ * no `sql` seam, so every foreign-directive case injects these instead; an
+ * owner id absent from `states` is UNKNOWN (null), which never reroutes.
+ */
+function routingWorld(opts: {
+  states?: Record<string, SessionState>;
+  fleets?: Record<string, string>;
+  leaders?: Record<string, string | null>;
+} = {}): DirectiveRoutingDeps {
+  return {
+    async sessionStates(ids) {
+      return new Map(ids.map((id) => [id, opts.states?.[id] ?? null]));
+    },
+    async lastFleets(_ws, ids) {
+      return new Map(ids.flatMap((id) => (opts.fleets?.[id] ? [[id, opts.fleets[id]] as const] : [])));
+    },
+    async fleetLeaders(_ws, slugs) {
+      return new Map(slugs.map((s) => [s, opts.leaders?.[s] ?? null]));
+    },
+    async directiveHolders() {
+      return new Map();
+    },
+    async fleetsLedBy() {
+      return [];
+    },
+  };
+}
+
+/** The addressee is alive: routing leaves every foreign directive where it is. */
+const THEM_LIVE = routingWorld({ states: { [THEM]: 'live' } });
+
 describe('directiveActionVerdict — who may ACT on an owner directive (P-008 / D-008)', () => {
   it('reports notFound for a directive id that does not exist in this workspace', async () => {
     const sql = fakeSql(directiveWorld(null));
@@ -128,7 +163,7 @@ describe('directiveActionVerdict — who may ACT on an owner directive (P-008 / 
   it('a FOREIGN directive with no linking work-item is refused, naming its addressee', async () => {
     const sql = fakeSql(directiveWorld(THEM));
 
-    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql);
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, THEM_LIVE);
 
     expect(verdict).toEqual({ allowed: false, addressedTo: THEM, holders: [] });
   });
@@ -144,15 +179,81 @@ describe('directiveActionVerdict — who may ACT on an owner directive (P-008 / 
   it('refusing names the OTHER holders, de-duplicated, so the caller can route to them', async () => {
     const sql = fakeSql(directiveWorld(THEM, ['su-peer-a', 'su-peer-a', 'su-peer-b']));
 
-    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql);
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, THEM_LIVE);
 
     expect(verdict).toEqual({ allowed: false, addressedTo: THEM, holders: ['su-peer-a', 'su-peer-b'] });
+  });
+
+  it('an ENDED addressee\'s live fleet leader inherits the directive', async () => {
+    const sql = fakeSql(directiveWorld(THEM));
+    const routing = routingWorld({
+      states: { [THEM]: 'ended', [ME]: 'live' },
+      fleets: { [THEM]: 'fleet-x' },
+      leaders: { 'fleet-x': ME },
+    });
+
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, routing);
+
+    expect(verdict).toEqual({ allowed: true, because: 'inherited-from-ended-session' });
+  });
+
+  it('a NON-leader is still refused when an ended addressee has a live leader', async () => {
+    // Inheritance goes to the leader only; without this case a verdict that let
+    // any session act on a fleet-routed directive would pass the one above.
+    const sql = fakeSql(directiveWorld(THEM));
+    const routing = routingWorld({
+      states: { [THEM]: 'ended', 'su-leader': 'live' },
+      fleets: { [THEM]: 'fleet-x' },
+      leaders: { 'fleet-x': 'su-leader' },
+    });
+
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, routing);
+
+    expect(verdict).toEqual({ allowed: false, addressedTo: THEM, holders: [] });
+  });
+
+  it('an UNHANDLED directive (ended addressee, no fleet) may be adopted by anyone', async () => {
+    const sql = fakeSql(directiveWorld(THEM));
+
+    const verdict = await directiveActionVerdict(
+      { directiveId: 96, ownerId: ME, workspaceId: WS },
+      sql,
+      routingWorld({ states: { [THEM]: 'ended' } }),
+    );
+
+    expect(verdict).toEqual({ allowed: true, because: 'adopting-unhandled' });
+  });
+
+  it('an UNKNOWN addressee state never reroutes — the refusal stands', async () => {
+    const sql = fakeSql(directiveWorld(THEM));
+
+    const verdict = await directiveActionVerdict(
+      { directiveId: 96, ownerId: ME, workspaceId: WS },
+      sql,
+      routingWorld(),
+    );
+
+    expect(verdict).toEqual({ allowed: false, addressedTo: THEM, holders: [] });
+  });
+
+  it('fails CLOSED: a routing read error leaves the refusal standing', async () => {
+    const sql = fakeSql(directiveWorld(THEM));
+    const broken: DirectiveRoutingDeps = {
+      ...routingWorld(),
+      async sessionStates() {
+        throw new Error('liveness oracle unavailable');
+      },
+    };
+
+    const verdict = await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, broken);
+
+    expect(verdict).toEqual({ allowed: false, addressedTo: THEM, holders: [] });
   });
 
   it('binds the CANONICAL terminal set, and EXCLUDES it rather than selecting it', async () => {
     const sql = fakeSql(directiveWorld(THEM, []));
 
-    await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql);
+    await directiveActionVerdict({ directiveId: 96, ownerId: ME, workspaceId: WS }, sql, THEM_LIVE);
 
     const workItemsCall = sql.calls.find((c) => c.text.includes('harness_shared.work_items'));
     expect(workItemsCall, 'a foreign directive must consult linking work-items').toBeDefined();
