@@ -3431,6 +3431,18 @@ export function forkFallbackAccountRoute(account?: null): {
     env: any;
     notice: any;
 };
+/**
+ * A caller that pre-pins a fresh coord identity is launching a managed agent,
+ * not an ordinary native fork. Such a fork cannot use Papercusp tools without
+ * the bootstrap launch record, so never silently degrade it to the raw,
+ * untracked resume path.
+ */
+export function forkBootstrapFallbackMessage(ownerId: any, reason: any): string;
+export function launchTrackedFork(session: any, args?: {}, acct?: {
+    id: null;
+    env: {};
+    notice: null;
+}, model?: null, deps?: {}): Promise<void>;
 /** WI-4891: the base-model rows a resume of `agent` may offer — ONLY models that
  *  backend can launch (a resume can't switch backend). claude → the claude
  *  family; codex → the codex family; omp is model-agnostic with an open,

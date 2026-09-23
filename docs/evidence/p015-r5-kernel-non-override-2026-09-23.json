@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "p015-r5-prompt-budget-evidence-v1",
+  "status": "pass",
+  "purpose": "Durable, independently re-runnable evidence for rubric accept-identities-v1-m1-2026-09-04 rev 10, criterion R-5 (m2-prompt-byte-budget-hold), covering its three clauses: derived D-127 budget, per-layer byte attribution, and kernel-text non-override. It answers the grading-integrity audit EI-24077309596313252, which found the rev-10 meta attestation EI-24076788555249283 cited a dirty-tree, output-less run (19167744) for the kernel assertion.",
+  "producedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "workItems": ["WI-10002756", "WI-2143764"],
+  "vettingCritique": "WI-10002756 thread post 1142775 (su-fed215be): R-5 kernel non-override was not falsifiable; the bound test counted the seal bytes but never asserted the canonical kernel block byte-identical in final position.",
+  "repair": "WI-10002756 thread post 1142783: added sealedKernelTailProblems() plus the case 'keeps the sealed kernel byte-identical to its source and last, beneath every stacked layer (P-036 R-5)', with four permanent in-test controls.",
+  "pinnedSources": {
+    "note": "All runs below executed with these exact blobs. Re-verify with git rev-parse <commit>:<path> (superproject) and git -C libs/papercusp rev-parse <gitlink>:<path> (submodule).",
+    "superprojectCommit": "2b5d5188d8e446bce587ef99a1d83641cc8ce040",
+    "testLandedInCommit": "ef7daafc9251ca27afc94e7d6344a9e3a90e273c",
+    "libsPapercuspGitlink": "9a7b64d6caa314632e72179056b6544e4cfecd3b",
+    "blobs": {
+      "packages/operator-core/lib/desktop-install/su-render-baseline.test.ts": "d00da26af711570a445b34461cf53941c019bac7",
+      "libs/papercusp/packages/orchestrator/src/blueprint/render-stack.ts": "6fadc58967f389f807896d4feaa7c81037867216",
+      "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts": "c22b8a1a2a8527b075d2967ffd14836d7214f9ac",
+      "scripts/project-doc-parts.mjs": "c09a3ec0a29a46f1f70f22a996b6d9234cd08d1f"
+    }
+  },
+  "suiteRun": {
+    "testRunId": 19167773,
+    "finishedAt": "2026-09-23T18:18:03.065Z",
+    "commit": "2b5d5188d8",
+    "testFileClean": true,
+    "worktreeDirtyNote": "worktree_dirty=true on the ledger row reflects peers' unrelated files in the shared tree; the tested file's blob equals the commit's (TEST_FILE_PROVENANCE tested files [clean], uncommitted=0).",
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "perCase": {
+      "source": "npm run test:file -- packages/operator-core/lib/desktop-install/su-render-baseline.test.ts --reporter=verbose, 2026-09-23T18:25:27Z, head 2b5d5188d8, tested file [clean], TEST_FILE_RESULT status=passed skippedTests=0",
+      "results": [
+        { "name": "pins the workspace map across canonical and isolated checkout environments", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > every required source/projection carries each declared splice marker exactly once (P-024)", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > the P-024 guard is falsifiable for both a missing and a duplicated marker", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > renders each tier deterministically (two renders are byte-identical)", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > leaks no internal PAPERCUSP-SU marker into either tier (psu-prompt-isolation)", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > the pinned render takes its wire legend from the injected seam, never from the process-global tool registry", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > fleet tier never renders MORE bytes than full (FULL-ONLY sections stripped, wire legend filtered)", "status": "pass" },
+        { "name": "su render baseline — pinned fixture inputs (P-018) > per-section bytes + hashes match baseline.json (BASELINE_UPDATE=1 re-pins)", "status": "pass" },
+        { "name": "su render baseline — live blueprint base (informational score + P-035 budget) > renders deterministically and scores against the pinned baseline", "status": "pass" },
+        { "name": "su render baseline — live blueprint base (informational score + P-035 budget) > keeps the composed engineer + fleet-leader stack within its derived budget: non-guide ratchet + the projector guide budget (P-035, D-127)", "status": "pass" },
+        { "name": "su render baseline — live blueprint base (informational score + P-035 budget) > attributes every composed-stack byte to a named layer, summing exactly to the total (P-036 R-5)", "status": "pass" },
+        { "name": "su render baseline — live blueprint base (informational score + P-035 budget) > keeps the sealed kernel byte-identical to its source and last, beneath every stacked layer (P-036 R-5)", "status": "pass" }
+      ]
+    }
+  },
+  "kernelNonOverrideAssertions": [
+    "composed stack text ENDS with renderKernelSeal output + '\\n\\n' + the kernel documents (agent-base-preamble, su.kernel) as read from SOURCE via suStackDocuments, trimmed, in source order, joined by '\\n\\n', then '\\n' (byte-equal)",
+    "the seal marker <!-- PAPERCUSP-KERNEL:SEAL --> appears exactly once, and the seal opens with its marker and heading",
+    "composeStack(kernel documents alone) ends with the same kernel bytes as the stacked render",
+    "composeStack given the kernel documents FIRST and the identity documents after still renders the kernel last",
+    "in-test control 1 (refused): a same-length one-byte rewrite inside the kernel tail, byte length asserted unchanged",
+    "in-test control 2 (refused): the two kernel documents reversed under the seal",
+    "in-test control 3 (refused): text rendered below the kernel",
+    "in-test control 4 (refused): a duplicated seal"
+  ],
+  "mutationProbes": {
+    "method": "scripts/mutation-probe.sh --in-tree --sweep-lock-held on libs/papercusp/packages/orchestrator/src/blueprint/render-stack.ts (file lock intent 'mutation probe' + exclusive git-sync:papercusp lease; restore verified byte-identical, TREE_CLEAN after each). Baseline and mutant are ledger rows in harness_shared.test_runs.",
+    "results": [
+      {
+        "clause": "kernel-text-non-override",
+        "mutant": "orderStackDocuments: return [...identities, ...kernel].map -> [...identities, ...kernel.reverse()].map (kernel documents re-ordered under the seal; same byte length)",
+        "targetCase": "keeps the sealed kernel byte-identical to its source and last, beneath every stacked layer (P-036 R-5)",
+        "runGroup": "p015-r5-kernel-reorder-20260923-1812",
+        "baselineTestRunId": 19167763,
+        "mutantTestRunId": 19167765,
+        "verdict": "caught",
+        "victimMessage": "the render does not END with the seal followed by the canonical kernel text (byte-equal, source order)"
+      },
+      {
+        "clause": "kernel-text-non-override (control: shows the pre-existing attribution case was blind to this mutant)",
+        "mutant": "same kernel re-order mutant",
+        "targetCase": "attributes every composed-stack byte to a named layer, summing exactly to the total (P-036 R-5)",
+        "runGroup": "p015-r5-kernel-reorder-20260923-1812",
+        "baselineTestRunId": 19167768,
+        "mutantTestRunId": 19167770,
+        "verdict": "survived (expected — this is the hole the vetting named)"
+      },
+      {
+        "clause": "prompt-byte-budget-derived-d127",
+        "mutant": "composeStack: layer papercusp-engineer text + 300 KiB of padding",
+        "targetCase": "keeps the composed engineer + fleet-leader stack within its derived budget: non-guide ratchet + the projector guide budget (P-035, D-127)",
+        "runGroup": "p015-r5-derived-d127-20260923-1819",
+        "baselineTestRunId": 19167789,
+        "mutantTestRunId": 19168295,
+        "verdict": "caught",
+        "victimMessage": "composed engineer + fleet-leader + AUTO prompt is 570,924 B = non-guide 451,715 B (ratchet 153,600 B, headroom -298,115 B) + guide 119,209 B / 118,081 chars (projector budget 160,000 chars)"
+      },
+      {
+        "clause": "per-layer-byte-attribution",
+        "mutant": "composeStack block separator join('\\n\\n') -> join('\\n\\n\\n')",
+        "targetCase": "attributes every composed-stack byte to a named layer, summing exactly to the total (P-036 R-5)",
+        "runGroup": "p015-r5-perlayer-reproof-20260923-1822",
+        "baselineTestRunId": 19168307,
+        "mutantTestRunId": 19168311,
+        "verdict": "caught",
+        "victimMessage": "per-layer attribution sums to 102,248 B but the composed stack is 102,257 B — 9 B unattributed"
+      }
+    ]
+  },
+  "rerun": [
+    "git checkout-free check: git show 2b5d5188d8:packages/operator-core/lib/desktop-install/su-render-baseline.test.ts | grep -n 'sealedKernelTailProblems\\|keeps the sealed kernel byte-identical'",
+    "testing:run { files: ['packages/operator-core/lib/desktop-install/su-render-baseline.test.ts'] } -> expect 12 passed, 0 skipped while the blobs above are current",
+    "testing:runs { testRunIds: [19167773, 19167763, 19167765, 19167768, 19167770, 19167789, 19168295, 19168307, 19168311] } -> expect pass/fail/pass/pass/pass/pass/fail/pass/fail"
+  ]
+}

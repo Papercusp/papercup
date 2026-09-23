@@ -12808,12 +12808,31 @@ export function forkFallbackAccountRoute(account = null) {
   };
 }
 
-async function launchTrackedFork(
+/**
+ * A caller that pre-pins a fresh coord identity is launching a managed agent,
+ * not an ordinary native fork. Such a fork cannot use Papercusp tools without
+ * the bootstrap launch record, so never silently degrade it to the raw,
+ * untracked resume path.
+ */
+export function forkBootstrapFallbackMessage(ownerId, reason) {
+  const pinnedOwnerId = typeof ownerId === "string" ? ownerId.trim() : "";
+  if (pinnedOwnerId) {
+    throw new Error(
+      `psu: ${reason}; refusing untracked fork ${pinnedOwnerId} because a pre-pinned managed identity requires a launch record.`,
+    );
+  }
+  return `psu: ${reason} — falling back to an UNTRACKED fork (resumable only by uuid).`;
+}
+
+export async function launchTrackedFork(
   session,
   args = {},
   acct = { id: null, env: {}, notice: null },
   model = null,
+  deps = {},
 ) {
+  const postBootstrap = deps.api ?? api;
+  const resumeFallback = deps.launchResume ?? launchResume;
   // The account re-pin: a TRACKED fork folds it server-side (forkBootstrapBody →
   // resolveAccountPin), like a fresh launch; an UNTRACKED fallback re-pins client-
   // side via accountEnv (it never hits bootstrap-su).
@@ -12830,10 +12849,14 @@ async function launchTrackedFork(
     // external caller can even address it until it boots and registers presence.
     kickoff: resumeKickoffText(args),
     // …unless the caller PRE-PINNED that identity (--owner-id), which is how a
-    // consult can name its responder before the answering session exists. Carried
-    // onto the untracked fallback below as well, so a bootstrap failure degrades
-    // to an untracked fork with the SAME id rather than an unaddressable one.
+    // consult can name its responder before the answering session exists. A
+    // pre-pinned identity requires the tracked bootstrap path; an untracked fork
+    // would have a live id but no launch record or Papercusp tools.
     ownerId: args.ownerId || null,
+  };
+  const fallbackToUntrackedFork = async (reason) => {
+    console.error(forkBootstrapFallbackMessage(args.ownerId, reason));
+    await resumeFallback(session, forkOpts);
   };
   const forkable =
     session.agent === "claude" &&
@@ -12842,13 +12865,14 @@ async function launchTrackedFork(
     session.id != null;
   if (!forkable) {
     // Untracked claude (no adv row) → the plain untracked fork; non-claude →
-    // launchResume refuses with a clear message. Either way defer to launchResume.
-    await launchResume(session, forkOpts);
+    // launchResume refuses with a clear message. Preserve that manual fallback,
+    // but fail closed when a managed caller pre-pinned an identity.
+    await fallbackToUntrackedFork(`tracked fork is unavailable for ${session.agent ?? "unknown"} source`);
     return;
   }
   let res;
   try {
-    res = await api("/api/agent-mcp/console/bootstrap-su", {
+    res = await postBootstrap("/api/agent-mcp/console/bootstrap-su", {
       method: "POST",
       body: JSON.stringify(
         forkBootstrapBody(
@@ -12860,19 +12884,13 @@ async function launchTrackedFork(
       ),
     });
   } catch (e) {
-    console.error(
-      `psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`,
-    );
-    await launchResume(session, forkOpts);
+    await fallbackToUntrackedFork(`fork bootstrap failed (${e?.message ?? e})`);
     return;
   }
   const forkId = res?.nativeSessionId || null;
   const forkConfigDir = res?.envelopeEnv?.CLAUDE_CONFIG_DIR || null;
   if (!forkId || !forkConfigDir) {
-    console.error(
-      "psu: fork bootstrap returned no native id / config dir — falling back to an UNTRACKED fork (resumable only by uuid).",
-    );
-    await launchResume(session, forkOpts);
+    await fallbackToUntrackedFork("fork bootstrap returned no native id / config dir");
     return;
   }
   // Seed the fork's empty per-session config dir with the original's transcript so
