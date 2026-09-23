@@ -27,9 +27,13 @@ import {
   findNativeTranscriptMarker,
   waitForNativeTranscriptMarker,
   leadingTurnOriginMarker,
+  composeCarryTurnText,
   tagSessionPortTurn,
   startupOutputReady,
   freshChildPromptReady,
+  codexTuiStartObserved,
+  startupFallbackElapsed,
+  CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER,
   killPtyProcessTree,
   handoffPathFor,
   MAX_CONTROL_PAYLOAD_BYTES,
@@ -247,6 +251,70 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupOutputReady('codex', startingFooter + '\x1b[22;3H' + readyFooter)).toBe(true);
     // The footer text inside ordinary prose (no status/model segments) is not chrome.
     expect(startupOutputReady('codex', 'the Context 100% left readout')).toBe(false);
+  });
+
+  // WI-10002752: a Codex carry-respawn types the carry document as its first
+  // turn. Replacing the operator's first prompt with it wholesale lost the
+  // leading turn-origin line, so every Codex carry failed its native turn-start
+  // proof ('missing-leading-turn-origin') and was recorded as dropped.
+  it('keeps the original turn-origin line first when composing a Codex carry turn', () => {
+    const marker = '⟦turn-origin:watchdog nonce:9a9f319ccba4fdf4⟧';
+    const original = `${marker}\nADDRESSED TO su-x — continue from the carry.`;
+    const minted = '# Carry document (deterministic)\n\nbody\n\n[lineage: predecessor 01a0]';
+
+    const composed = composeCarryTurnText(original, minted);
+    expect(leadingTurnOriginMarker(composed)).toBe(marker);
+    expect(composed).toBe(`${marker}\nADDRESSED TO su-x — continue from the carry.\n\n${minted}`);
+    // CRLF input still yields exactly one marker line and the whole minted text.
+    expect(composeCarryTurnText(`${marker}\r\nbody`, minted)).toBe(`${marker}\nbody\n\n${minted}`);
+    // A marker-only first prompt keeps the marker and appends the minted text.
+    expect(composeCarryTurnText(marker, minted)).toBe(`${marker}\n${minted}`);
+
+    // The composed text is what the proof reads: without the fix it refused.
+    expect(leadingTurnOriginMarker(minted)).toBeNull();
+
+    // Nothing to preserve: an unmarked original, or a minted text that already
+    // leads with its own marker, keeps the minted text unchanged.
+    expect(composeCarryTurnText('plain carry-note', minted)).toBe(minted);
+    const markedMinted = `${marker}\n${minted}`;
+    expect(composeCarryTurnText(original, markedMinted)).toBe(markedMinted);
+    // An empty mint never erases the operator's prompt.
+    expect(composeCarryTurnText(original, '')).toBe(original);
+    expect(composeCarryTurnText(original, undefined)).toBe(original);
+  });
+
+  // WI-10002745: the PTY child is the psu launcher, which prints its banner and
+  // then bootstraps the role for ~20s before Codex execs. Measured from that
+  // banner, the 15s startup fallback expired before Codex existed; the quiet
+  // gate then read Codex's silent terminal-capability-probe wait as "at a
+  // prompt" and typed the kickoff into it, where the reply parser swallowed the
+  // leading provenance marker. The fallback must be measured from the Codex
+  // TUI's own start.
+  it('measures the Codex startup fallback from the TUI start, not the launcher banner', () => {
+    // Verbatim first bytes of a captured v0.156.1 boot, after the launcher's lines.
+    const launcherBanner = 'psu: kickoff — seeding the role session’s first turn\n';
+    const codexProbe = '\x1b[?2004h\x1b[>4;0m\x1b[>7u\x1b[?1004h\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c';
+    expect(codexTuiStartObserved(launcherBanner)).toBe(false);
+    expect(codexTuiStartObserved(launcherBanner + codexProbe)).toBe(true);
+
+    const fallbackMs = 15_000;
+    const firstOutputAt = 1_000; // launcher banner
+    const base = { agent: 'codex', firstOutputAt, fallbackMs };
+    // The measured failure: 19.6s after the banner Codex has only just started.
+    // The old banner-relative clock called this "elapsed" and wrote blind.
+    expect(startupFallbackElapsed({ ...base, nowMs: 20_600, backendTuiStartedAt: 20_000 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: 34_999, backendTuiStartedAt: 20_000 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: 35_000, backendTuiStartedAt: 20_000 })).toBe(true);
+    // Probe never seen: still delivers, but only after the widened window.
+    const widened = firstOutputAt + fallbackMs * CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER;
+    expect(startupFallbackElapsed({ ...base, nowMs: 20_600, backendTuiStartedAt: 0 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: widened - 1, backendTuiStartedAt: 0 })).toBe(false);
+    expect(startupFallbackElapsed({ ...base, nowMs: widened, backendTuiStartedAt: 0 })).toBe(true);
+    // No output at all is never "elapsed".
+    expect(startupFallbackElapsed({ ...base, firstOutputAt: 0, nowMs: 999_999, backendTuiStartedAt: 0 })).toBe(false);
+    // Other backends keep the first-output clock unchanged.
+    expect(startupFallbackElapsed({ agent: 'claude', firstOutputAt, fallbackMs, nowMs: 16_000, backendTuiStartedAt: 0 })).toBe(true);
+    expect(startupFallbackElapsed({ agent: 'omp', firstOutputAt, fallbackMs, nowMs: 15_999, backendTuiStartedAt: 0 })).toBe(false);
   });
 
   it('recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows', () => {
