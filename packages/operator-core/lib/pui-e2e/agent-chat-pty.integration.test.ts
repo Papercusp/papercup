@@ -557,6 +557,29 @@ class PuiPane {
   private setupDriverArmed = false;
   private setupDriverRunning = false;
   private setupDriverError: unknown;
+  // A real engine asks before the SU's own papercusp-su writes (D-021); each
+  // wait answers a visible request as an owner would. Scripted engines never ask.
+  private readonly suToolApprovals: string[] | undefined = scriptedEngine.real ? [] : undefined;
+  private suToolApprovalAt = 0;
+
+  /** SU tool approvals this pane answered, in order. */
+  get answeredSuToolApprovals(): readonly string[] { return this.suToolApprovals ?? []; }
+
+  /** Answer a visible papercusp-su approval card: the remembered choice when
+   * the card offers one, otherwise Approve once. True when a key was sent. */
+  settleSuToolApproval(): boolean {
+    if (!this.suToolApprovals || Date.now() - this.suToolApprovalAt < 750) return false;
+    const lines = this.screen().split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
+    const tool = lines.map((line) => /^Allow (mcp__papercusp-su__[\w-]+)\?/.exec(line)?.[1]).find(Boolean);
+    if (!tool) return false;
+    const option = (label: string) => lines.map((line) => new RegExp(`^(?:› )?(\\d)\\. ${label}\\b`).exec(line)?.[1]).find(Boolean);
+    const pick = option('Always allow') ?? option('Approve');
+    if (!pick) return false;
+    this.pty.write(pick);
+    this.suToolApprovals.push(tool);
+    this.suToolApprovalAt = Date.now();
+    return true;
+  }
 
   /** Existing conversation tests explicitly drive the new pre-send setup
    * through real keys. Dedicated onboarding cases leave this disabled so
@@ -683,6 +706,7 @@ class PuiPane {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (screenContains(this.screen(), needle)) return;
+      this.settleSuToolApproval();
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     throw new Error(
@@ -721,6 +745,7 @@ class PuiPane {
         // Match the rendered assistant bubble itself. History can scroll the
         // echoed owner request away (especially after a long interrupted reply),
         // and a context-dependent answer need not occur in the request at all.
+        this.settleSuToolApproval();
         expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
       }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
@@ -3336,6 +3361,11 @@ function installedManifest(): Record<string, unknown> {
       .toBe(manifest.companionSha256);
     return manifest;
 }
+/** A real engine's approval for the SU's own papercusp-su call (D-021). */
+function isSuToolApprovalCard(card: { prompt: string }): boolean {
+  return /^Allow mcp__papercusp-su__[\w-]+\?/.test(card.prompt);
+}
+
 function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
   const closed = new Set(events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
   return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
@@ -4451,17 +4481,22 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         pane.write(request);
         pane.enter();
         await waitForSavedTurn(request);
+        const questionCards = () => pendingNativeCards().filter((pending) => !isSuToolApprovalCard(pending));
         const cardDeadline = Date.now() + 120_000;
-        while (pendingNativeCards().length === 0 && Date.now() < cardDeadline) {
+        while (questionCards().length === 0 && Date.now() < cardDeadline) {
+          pane.settleSuToolApproval();
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
-          if (lifecycle && ['waiting-for-owner', 'failed', 'ended'].includes(lifecycle)) {
+          // An SU tool approval parks the turn too; the pane answers it.
+          const approvalPending = pendingNativeCards().some(isSuToolApprovalCard);
+          if (lifecycle && ['waiting-for-owner', 'failed', 'ended'].includes(lifecycle)
+            && !(lifecycle === 'waiting-for-owner' && approvalPending)) {
             throw new Error(`The native turn reached ${lifecycle} without opening the requested question`);
           }
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        expect(pendingNativeCards()).toHaveLength(1);
+        expect(questionCards()).toHaveLength(1);
         const engine = scriptedEngine.engines[0];
-        const card = pendingNativeCards()[0];
+        const card = questionCards()[0];
         expect(card.prompt).toBe(question);
         if (card.presentation?.kind !== 'radio' || !card.presentation.options)
           throw new Error('The native question did not produce a PUI choice card');
@@ -4476,9 +4511,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
           ),
         ).toBe(false);
+        const repliesBefore = cardReplies.length;
         pane.write(String(choiceIndex + 1));
-        await vi.waitFor(() => expect(cardReplies).toHaveLength(1), { timeout: 15_000, interval: 100 });
-        expect(cardReplies[0]).toMatchObject({ status: 200 });
+        await vi.waitFor(() => expect(cardReplies.length).toBeGreaterThan(repliesBefore), { timeout: 15_000, interval: 100 });
+        expect(cardReplies[repliesBefore]).toMatchObject({ status: 200 });
         const chat = await waitForCorrelatedReply(request, expected);
         await pane.waitForReply(expected);
         const start = scriptedEngine.events.find(
@@ -4504,9 +4540,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             ]),
           );
         }
-        expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(
-          1,
-        );
+        expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened'
+          && !isSuToolApprovalCard(event.card))).toHaveLength(1);
         console.info(
           'PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE',
           JSON.stringify({
@@ -4520,6 +4555,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             selected: 'Change',
             card,
             cardReplies,
+            suToolApprovals: pane.answeredSuToolApprovals,
             expected,
             questionFrame,
             answeredFrame: pane.screen(),

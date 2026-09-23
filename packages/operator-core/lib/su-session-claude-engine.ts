@@ -116,6 +116,19 @@ export function formatStalledTurnMessage(idleMs: number, stderrTail: string): st
     + (stderrTail ? childStderrSuffix(stderrTail) : ' The child wrote nothing to stderr.');
 }
 
+/** D-021: the SU tools the connected server advertises read-only, in Claude's
+ * permission-name form. The host capability_* family stays out so file and code
+ * reads keep native approval parity; a tool listed later asks until reconnect. */
+export function claudeReadOnlySuTools(server: {
+  name: string; tools?: Array<{ name: string; annotations?: { readOnly?: boolean } }>;
+}): Set<string> {
+  const prefix = `mcp__${server.name}__`;
+  return new Set((server.tools ?? []).filter((tool) => tool.annotations?.readOnly === true)
+    .map((tool) => tool.name.startsWith(prefix) ? tool.name.slice(prefix.length) : tool.name)
+    .filter((name) => !name.startsWith('capability_'))
+    .map((name) => prefix + name));
+}
+
 export function startClaudeSuEngine(
   boot: BootstrapSuResult,
   binding: PuiSuSessionBinding & { backend: 'claude' },
@@ -146,6 +159,8 @@ export function startClaudeSuEngine(
   let inputTail = Promise.resolve();
   let activeInputUuid: string | undefined;
   let activeOwnerTurnId: string | undefined;
+  // Filled once the SU tool connection is up; until then every request asks.
+  let readOnlySuTools = new Set<string>();
   // Whether the active owner turn has produced any assistant frame. A turn that
   // ends having produced none is reported, never left to read as an answer.
   let activeTurnSawAssistant = false;
@@ -268,6 +283,11 @@ export function startClaudeSuEngine(
       : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
     canUseTool(toolName, input, permission) {
       if (closed || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
+      // D-021: a call the SU server itself advertises read-only needs no owner
+      // card. A user-configured ask rule still forces the prompt.
+      if (readOnlySuTools.has(toolName) && !permission.matchedAskRule) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
       return cards.handleClaude(toolName, input, activeOwnerTurnId, permission);
     },
     disallowedTools,
@@ -472,6 +492,7 @@ export function startClaudeSuEngine(
         .filter(Boolean).join('; ');
       throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
+    readOnlySuTools = claudeReadOnlySuTools(suServer);
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });

@@ -167,6 +167,19 @@ const server = createAdaptorServer({
         send({ type: 'host-state', descriptor: host.descriptor(), pid: row?.pid ?? null });
       }
     }
+    // Claude reports every unhandled MCP POST status as CLIENT_HTTP_NOT_IMPLEMENTED
+    // and drops the status and body, so the fixture keeps them.
+    if (pathname === '/api/mcp' && !response.ok) {
+      send({
+        type: 'diagnostic',
+        level: 'warn',
+        args: ['PUI_OPERATOR_MCP_REFUSED', {
+          method: request.method,
+          status: response.status,
+          body: (await response.clone().text().catch(() => '')).slice(0, 800),
+        }],
+      });
+    }
     if (launch || pathname.endsWith('/card-response')) {
       send({
         type: 'response',

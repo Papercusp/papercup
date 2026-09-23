@@ -2,12 +2,26 @@
  * The shared correlator validates the workspace and response exactly once. */
 import { z } from 'zod';
 import { cancelPendingCardsForRun, registerCard, resolveCardResponse } from '@papercusp/agent-mcp';
-import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
+import type { CanUseTool, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
 
 const record = (value: unknown): RpcFrame => value && typeof value === 'object' && !Array.isArray(value) ? value as RpcFrame : {};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
+
+/** Claude's allow suggestions, re-scoped to this runtime: a PUI card never
+ * writes a settings file (D-021). */
+export function sessionAllowRules(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
+  return (suggestions ?? []).flatMap((update) => update.type === 'addRules' && update.behavior === 'allow'
+    && update.rules.length ? [{ ...update, destination: 'session' as const }] : []);
+}
+
+/** The exact rule and lifetime the remembered choice grants. */
+export function rememberedApprovalLabel(updates: readonly PermissionUpdate[]): string | undefined {
+  const rules = updates.flatMap((update) => update.type === 'addRules'
+    ? update.rules.map((rule) => rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName) : []);
+  return rules.length ? `Always allow ${rules.join(', ')} until this session's runtime stops` : undefined;
+}
 
 export class SuNativeCards {
   private epoch = 0;
@@ -56,9 +70,16 @@ export class SuNativeCards {
       if (toolName !== 'AskUserQuestion') {
         const prompt = [options.title || `Allow ${toolName}?`, options.description, options.decisionReason,
           JSON.stringify(input, null, 2)].filter(Boolean).join('\n');
-        const choice = await this.askAnswers(turnId, prompt, [{ label: 'Approve' }, { label: 'Decline' }], false, options.signal);
-        return epoch === this.epoch && !options.signal.aborted && choice?.[0] === 'Approve'
-          ? { behavior: 'allow', updatedInput: input } : deny();
+        // The broader remembered permission is a separate, labelled choice and
+        // exists only when Claude offers one (PUBLIC_RELEASE_UX, Approvals).
+        const remembered = sessionAllowRules(options.suggestions);
+        const rememberLabel = rememberedApprovalLabel(remembered);
+        const choice = await this.askAnswers(turnId, prompt,
+          [{ label: 'Approve' }, { label: 'Decline' }, ...(rememberLabel ? [{ label: rememberLabel }] : [])], false, options.signal);
+        if (epoch !== this.epoch || options.signal.aborted) return deny();
+        if (choice?.[0] === 'Approve') return { behavior: 'allow', updatedInput: input };
+        return rememberLabel && choice?.[0] === rememberLabel
+          ? { behavior: 'allow', updatedInput: input, updatedPermissions: remembered } : deny();
       }
       const questions = z.array(z.object({
         question: z.string().min(1), multiSelect: z.boolean().optional(),

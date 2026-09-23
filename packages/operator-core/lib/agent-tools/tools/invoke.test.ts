@@ -17,6 +17,18 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 }));
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 
+// Stand-in projected targets for the per-call effect resolver (D-021).
+const targets = vi.hoisted(() => ({
+  'work_items:get': { effect: 'read' },
+  'orders:disposition': { effect: 'write' },
+  'release:deploy': { effect: 'write', effectForCall: (a: { op?: string }) => (a.op === 'status' ? 'read' : 'write') },
+  'broken:classifier': { effect: 'read', effectForCall: () => { throw new Error('boom'); } },
+}) as Record<string, { effect: 'read' | 'write'; effectForCall?: (a: never) => 'read' | 'write' }>);
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  resolveMcpName: vi.fn((name: string) => targets[name]),
+}));
+
 import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
@@ -44,6 +56,21 @@ describe('tools:invoke registration', () => {
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional
     expect(def.args.safeParse({}).success).toBe(false); // name required
     expect(def.args.safeParse({ name: '' }).success).toBe(false); // non-empty
+  });
+
+  it('is advertised as a write and resolves each call to its target\'s effect (D-021)', () => {
+    // readOnlyHint is derived from the static effect, so a delegator that can
+    // reach capability:bash must never read as read-only.
+    const tool = toolInvoke as unknown as { effect?: string; effectForCall?: (args: unknown) => string };
+    expect(tool.effect).toBe('write');
+    const effect = tool.effectForCall!;
+    expect(effect({ name: 'work_items:get', args: { id: 'WI-1' } })).toBe('read');
+    expect(effect({ name: ' orders:disposition ' })).toBe('write');
+    expect(effect({ name: 'release:deploy', args: '{"op":"status"}' })).toBe('read');
+    expect(effect({ name: 'release:deploy', args: { op: 'execute' } })).toBe('write');
+    for (const call of [{ name: 'broken:classifier' }, { name: 'no:such-tool' }, { name: 'tools:invoke' }, {}, null]) {
+      expect(effect(call)).toBe('write');
+    }
   });
 
   it('tolerates a JSON-stringified args payload (EI-6681 client-serialization quirk)', () => {

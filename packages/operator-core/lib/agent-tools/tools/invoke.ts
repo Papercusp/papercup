@@ -17,7 +17,7 @@
  * one-off call to an obscure tool without growing your working surface.
  */
 import { z } from 'zod';
-import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, resolveMcpName } from '@papercusp/agent-mcp';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import { decodeToolsInvokeArgs } from './invoke-args';
@@ -298,6 +298,25 @@ export default defineTool({
     ],
   },
   capability: 'agent_tools:read',
+  // The capability is the read-only facade (as for code:run), but the call can
+  // reach ANY write, capability:bash included. Inferred from the capability it
+  // was 'read', so tools/list advertised readOnlyHint:true, the MCP host skipped
+  // its idempotency-replay store, and an annotation-keyed approval policy could
+  // wave a shell command through (D-021). Per call it is the target's own effect.
+  effect: 'write',
+  effectForCall(raw) {
+    const call = raw && typeof raw === 'object' ? raw as { name?: unknown; args?: unknown } : {};
+    const name = typeof call.name === 'string' ? call.name.trim() : '';
+    const target = name && name !== 'tools:invoke' ? resolveMcpName(name) : undefined;
+    if (!target) return 'write';
+    try {
+      const dynamic = target.effectForCall?.(decodeToolsInvokeArgs(call.args ?? {}));
+      if (dynamic === 'read' || dynamic === 'write') return dynamic;
+    } catch {
+      return 'write';
+    }
+    return target.effect === 'read' ? 'read' : 'write';
+  },
   requirePrincipal: false,
   // EI-18803497769946984: this handler is a PURE DELEGATOR — it never touches
   // `ctx.tx`, it just awaits `ctx.dispatchTool(...)`. Without this flag it holds a

@@ -8,7 +8,7 @@ import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import {
-  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, createChildStderrTail,
+  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeReadOnlySuTools, createChildStderrTail,
   formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
   type ClaudeEngineOptions, type ClaudeSuEngine,
 } from './su-session-claude-engine';
@@ -45,7 +45,8 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; statusAck?: boolean; statusBeforeInput?: boolean; statusUuid?: string; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; statusAck?: boolean; statusBeforeInput?: boolean; statusUuid?: string; holdResult?: boolean; streamOnly?: boolean; streamParent?: string;
+  suTools?: Array<{ name: string; annotations?: { readOnly?: boolean } }> } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -92,7 +93,8 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
       mcpServerStatus: vi.fn(async () => {
         if (config.holdMcp) await new Promise(() => {});
         if (config.pendingMcp && mcpReads++ === 0) return [{ name: 'papercusp-su', status: 'pending' as const }];
-        return [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const }];
+        return [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const,
+          ...(config.suTools ? { tools: config.suTools } : {}) }];
       }),
       interrupt, close,
     };
@@ -499,6 +501,42 @@ describe('structured Claude SU engine', () => {
     await expect(questions).resolves.toMatchObject({ behavior: 'deny' });
     expect(openCards(engine)).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'card' && event.phase === 'opened' && event.card.prompt === 'Second?')).toBe(false);
+  });
+
+  it('allows only server-advertised read-only SU tools without a card (D-021)', async () => {
+    const p = peer({ holdResult: true, suTools: [
+      { name: 'work_items_get', annotations: { readOnly: true } },
+      { name: 'orders_disposition', annotations: { readOnly: false } },
+      { name: 'capability_read', annotations: { readOnly: true } },
+    ] });
+    const engine = open(p, { toolApproval: 'prompt' }); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const canUseTool = p.options()!.canUseTool!;
+    const request = (id: string) => ({ signal: new AbortController().signal, toolUseID: id, requestId: `${id}-request` });
+    await expect(canUseTool('mcp__papercusp-su__work_items_get', { id: 'WI-1' }, request('read')))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: { id: 'WI-1' } });
+    expect(openCards(engine)).toHaveLength(0);
+    // A user ask rule outranks the annotation; writes and host reads still ask.
+    for (const [name, id] of [['mcp__papercusp-su__work_items_get', 'ask-rule'], ['mcp__papercusp-su__orders_disposition', 'write'],
+      ['mcp__papercusp-su__capability_read', 'host-read'], ['mcp__other__work_items_get', 'other-server']] as const) {
+      void canUseTool(name, {}, { ...request(id), ...(id === 'ask-rule' ? { matchedAskRule: { source: 'userSettings', toolName: name } } : {}) });
+      await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+      const card = openCards(engine)[0];
+      expect(card.prompt).toContain(name);
+      resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+      await vi.waitFor(() => expect(openCards(engine)).toHaveLength(0));
+    }
+  });
+
+  it('names the exact SU tools it will allow from the advertised annotations', () => {
+    expect([...claudeReadOnlySuTools({ name: 'papercusp-su', tools: [
+      { name: 'coord_whoami', annotations: { readOnly: true } },
+      { name: 'mcp__papercusp-su__plans_get', annotations: { readOnly: true } },
+      { name: 'tools_invoke', annotations: { readOnly: false } },
+      { name: 'capability_read', annotations: { readOnly: true } },
+      { name: 'unannotated' },
+    ] })]).toEqual(['mcp__papercusp-su__coord_whoami', 'mcp__papercusp-su__plans_get']);
+    expect(claudeReadOnlySuTools({ name: 'papercusp-su' }).size).toBe(0);
   });
 
   it('cleans up a disconnected SU tool connection before ready', async () => {

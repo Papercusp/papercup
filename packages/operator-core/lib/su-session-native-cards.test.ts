@@ -17,6 +17,13 @@ function fixture() {
   return { cards, events, replies, answer, reply: (frame: RpcFrame) => replies.push(frame) };
 }
 const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+/** Labels of the most recently opened choice card. */
+function openedChoiceLabels(events: SuSessionEventInput[]): string[] {
+  const card = events.at(-1);
+  const presentation = card?.type === 'card' && card.phase === 'opened' ? card.card.presentation : undefined;
+  if (presentation?.kind !== 'radio' || !presentation.options) throw new Error('No permission card');
+  return presentation.options.map((option) => option.label);
+}
 
 describe('native requests through the shared PUI card correlator', () => {
   it('requires the matching workspace and an explicit approval before answering Codex', async () => {
@@ -102,5 +109,34 @@ describe('native requests through the shared PUI card correlator', () => {
     await expect(first).resolves.toMatchObject({ behavior: 'deny' });
     expect(resolveCardResponse({ correlationId: secondCard.card.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
     await expect(second).resolves.toMatchObject({ behavior: 'allow', updatedInput: { command: 'second' } });
+  });
+
+  it('offers Claude\'s remembered permission as a labelled session-only choice', async () => {
+    const f = fixture();
+    const toolName = 'mcp__papercusp-su__orders_disposition';
+    const pending = f.cards.handleClaude(toolName, { id: 282 }, 'turn', {
+      signal: new AbortController().signal, toolUseID: 'remember', requestId: 'remember-request',
+      suggestions: [
+        { type: 'addRules', rules: [{ toolName }], behavior: 'allow', destination: 'localSettings' },
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+      ],
+    });
+    expect(openedChoiceLabels(f.events)).toEqual(['Approve', 'Decline',
+      `Always allow ${toolName} until this session's runtime stops`]);
+    expect(f.answer({ picks: ['2'] }).ok).toBe(true);
+    // Never a settings-file write, and never a mode change the card did not name.
+    await expect(pending).resolves.toEqual({ behavior: 'allow', updatedInput: { id: 282 },
+      updatedPermissions: [{ type: 'addRules', rules: [{ toolName }], behavior: 'allow', destination: 'session' }] });
+  });
+
+  it('keeps the plain two-choice card when Claude offers nothing to remember', async () => {
+    const f = fixture();
+    const pending = f.cards.handleClaude('Bash', { command: 'ls' }, 'turn', {
+      signal: new AbortController().signal, toolUseID: 'plain', requestId: 'plain-request',
+      suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'deny', destination: 'session' }],
+    });
+    expect(openedChoiceLabels(f.events)).toEqual(['Approve', 'Decline']);
+    expect(f.answer({ picks: ['0'] }).ok).toBe(true);
+    await expect(pending).resolves.toEqual({ behavior: 'allow', updatedInput: { command: 'ls' } });
   });
 });
