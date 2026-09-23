@@ -11,7 +11,7 @@
  *
  * The properties asserted below are the ones whose silent loss would recreate
  * that hole: one row per directive (never an aggregate count), the row's own
- * disposition VERB, the `orders:get` recovery pointer, a VERBATIM excerpt, a
+ * disposition VERB, the `orders:get` recovery pointer, the uncut D-004 text, a
  * stable id across turns, provenance that never upgrades an agent's claim into
  * owner authority, and — most important — a failed read that becomes an
  * explicit `unknown` instead of an empty queue.
@@ -25,14 +25,15 @@ import {
   type OwnerDirectivesProviderInput,
 } from './agent-obligation-providers';
 import { readAgentObligationAgenda, type AgentObligationReaderDeps } from './agent-obligation-reader';
-import { ownerDirectiveExcerpt, OWNER_DIRECTIVE_WHOLE_MAX } from './owner-directives';
+import { directiveDisplayText, OWNER_DIRECTIVE_VERBATIM_CAP } from './owner-directive-display';
 
 const OBSERVED_AT = '2026-09-21T16:00:00.000Z';
 
-const PENDING_ROW: OwnerDirectiveObligationRow = {
+/** A hook-captured owner turn: open the moment it lands (D-001, no triage). */
+const HOOK_ROW: OwnerDirectiveObligationRow = {
   id: 17,
-  state: 'pending',
-  excerpt: 'Implement owner-directive capture as HYBRID',
+  state: 'open',
+  displayText: '"Implement owner-directive capture as HYBRID"',
   recordedAt: '2026-09-21T15:27:44.000Z',
   recordedBy: 'su-c03852cb',
   capturedByHook: true,
@@ -41,7 +42,7 @@ const PENDING_ROW: OwnerDirectiveObligationRow = {
 const OPEN_ROW: OwnerDirectiveObligationRow = {
   id: 18,
   state: 'open',
-  excerpt: 'carry this plan to shipped status yourself now',
+  displayText: '"carry this plan to shipped status yourself now"',
   recordedAt: '2026-09-21T15:27:44.000Z',
   recordedBy: 'su-c03852cb',
   capturedByHook: false,
@@ -63,33 +64,34 @@ function known(rows: OwnerDirectiveObligationRow[]): OwnerDirectivesProviderInpu
 
 describe('ownerDirectiveObligations', () => {
   it('emits ONE obligation per directive, not one aggregate count', () => {
-    const obligations = ownerDirectiveObligations(known([PENDING_ROW, OPEN_ROW]));
+    const obligations = ownerDirectiveObligations(known([HOOK_ROW, OPEN_ROW]));
     expect(obligations).toHaveLength(2);
     expect(new Set(obligations.map((entry) => entry.id)).size).toBe(2);
     // An aggregate could be acknowledged without acting on any single row.
     expect(obligations.map((entry) => entry.applicableDemand)).toEqual([1, 1]);
   });
 
-  it('routes a pending row to orders:resolve-pending and an open row to orders:disposition', () => {
-    const [pending, open] = ownerDirectiveObligations(known([PENDING_ROW, OPEN_ROW]));
-    expect(pending!.action?.tool).toBe('orders:resolve-pending');
-    expect(open!.action?.tool).toBe('orders:disposition');
-    expect(pending!.action?.summary).toMatch(/promote or dismiss/i);
-    expect(open!.action?.summary).toMatch(/orders:disposition/);
+  it('routes every directive, hook-captured or recorded, to orders:disposition — there is no triage verb', () => {
+    const obligations = ownerDirectiveObligations(known([HOOK_ROW, OPEN_ROW]));
+    for (const entry of obligations) {
+      expect(entry.action?.tool).toBe('orders:disposition');
+      expect(entry.action?.summary).toMatch(/orders:disposition/);
+      expect(entry.action?.summary).not.toMatch(/promote or dismiss|resolve-pending/i);
+    }
   });
 
   it('carries the orders:get recovery pointer for every row', () => {
-    const obligations = ownerDirectiveObligations(known([PENDING_ROW, OPEN_ROW]));
+    const obligations = ownerDirectiveObligations(known([HOOK_ROW, OPEN_ROW]));
     expect(obligations.map((entry) => entry.action?.targetRef)).toEqual(['orders:get #17', 'orders:get #18']);
   });
 
-  it('carries the VERBATIM excerpt, never a paraphrase', () => {
-    const [pending] = ownerDirectiveObligations(known([PENDING_ROW]));
-    expect(pending!.reason).toContain(PENDING_ROW.excerpt);
+  it('carries the D-004 display text in reason, never a paraphrase', () => {
+    const [pending] = ownerDirectiveObligations(known([HOOK_ROW]));
+    expect(pending!.reason).toContain(HOOK_ROW.displayText);
   });
 
   it('stays actionable so it re-injects until dispositioned', () => {
-    const obligations = ownerDirectiveObligations(known([PENDING_ROW, OPEN_ROW]));
+    const obligations = ownerDirectiveObligations(known([HOOK_ROW, OPEN_ROW]));
     expect(obligations.every((entry) => entry.status === 'due')).toBe(true);
     expect(obligations.every(agentObligationIsActionable)).toBe(true);
     const agenda = evaluateAgentObligations(obligations, OBSERVED_AT);
@@ -99,25 +101,17 @@ describe('ownerDirectiveObligations', () => {
   it('keeps a STABLE id for the same undispositioned row across turns', () => {
     // A churning id would read as a brand-new obligation on every warm turn and
     // defeat the unchanged-agenda dedup the reader depends on.
-    const first = ownerDirectiveObligations(known([PENDING_ROW]));
+    const first = ownerDirectiveObligations(known([HOOK_ROW]));
     const later = ownerDirectiveObligations({
-      ...known([PENDING_ROW]),
+      ...known([HOOK_ROW]),
       observedAt: '2026-09-21T18:00:00.000Z',
     });
     expect(later[0]!.id).toBe(first[0]!.id);
     expect(later[0]!.ageMs).toBeGreaterThan(first[0]!.ageMs!);
   });
 
-  it('changes the id when the SAME row is promoted from pending to open', () => {
-    // Promotion changes which verb clears it, so it must not be dedup-equal to
-    // the pending row it replaces.
-    const [pending] = ownerDirectiveObligations(known([PENDING_ROW]));
-    const [promoted] = ownerDirectiveObligations(known([{ ...PENDING_ROW, state: 'open' }]));
-    expect(promoted!.id).not.toBe(pending!.id);
-  });
-
   it('never upgrades an agent-recorded claim into verified owner authority', () => {
-    const [hookCaptured] = ownerDirectiveObligations(known([PENDING_ROW]));
+    const [hookCaptured] = ownerDirectiveObligations(known([HOOK_ROW]));
     const [agentRecorded] = ownerDirectiveObligations(known([OPEN_ROW]));
     expect(hookCaptured!.authority).toMatchObject({ kind: 'owner', turnOrigin: 'owner-typed' });
     // orders:record is an AGENT asserting the owner said it — real evidence,
@@ -127,7 +121,7 @@ describe('ownerDirectiveObligations', () => {
   });
 
   it('sorts ahead of policy-sourced duties (an owner directive outranks the loop agenda)', () => {
-    const [pending] = ownerDirectiveObligations(known([PENDING_ROW]));
+    const [pending] = ownerDirectiveObligations(known([HOOK_ROW]));
     expect(pending!.causalRank).toBe(0);
     expect(pending!.priority).toBe('critical');
   });
@@ -159,18 +153,25 @@ describe('ownerDirectiveObligations', () => {
   });
 });
 
-describe('ownerDirectiveExcerpt', () => {
-  it('returns a short directive whole', () => {
-    expect(ownerDirectiveExcerpt('  do the thing  ')).toBe('do the thing');
+describe('directiveDisplayText (D-004)', () => {
+  it('returns a directive up to the cap whole', () => {
+    expect(directiveDisplayText({ id: 1, verbatimText: '  do the thing  ' })).toBe('"do the thing"');
+    const atCap = 'x'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP);
+    expect(directiveDisplayText({ id: 1, verbatimText: atCap })).toBe(JSON.stringify(atCap));
   });
 
-  it('truncates a long directive to a strictly shorter excerpt', () => {
-    const long = 'x'.repeat(OWNER_DIRECTIVE_WHOLE_MAX + 50);
-    const excerpt = ownerDirectiveExcerpt(long);
-    expect(excerpt.length).toBeLessThan(long.length);
-    expect(excerpt.endsWith('…')).toBe(true);
-    // substr, never summarization: the kept prefix is byte-identical.
-    expect(long.startsWith(excerpt.slice(0, -1))).toBe(true);
+  it('over the cap, shows NO fragment of the text until a summary exists', () => {
+    const long = 'x'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP + 1);
+    const shown = directiveDisplayText({ id: 9, verbatimText: long });
+    expect(shown).not.toContain('xxxxx');
+    expect(shown).toContain('summary not written yet');
+    expect(shown).toContain('[full text: orders:get #9]');
+  });
+
+  it('over the cap, shows the summary labelled with its author', () => {
+    const long = 'x'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP + 1);
+    const shown = directiveDisplayText({ id: 9, verbatimText: long, summaryText: 'Do x.', summaryBy: 'su-author-123456' });
+    expect(shown).toBe('summary by su-author-12: "Do x." [full text: orders:get #9]');
   });
 });
 
@@ -198,7 +199,7 @@ describe('readAgentObligationAgenda owner-directive wiring', () => {
       ownerId: 'su-test',
       goalId: null,
       planSlugs: [],
-      deps: readerDeps(async () => [PENDING_ROW]),
+      deps: readerDeps(async () => [HOOK_ROW]),
     });
     const directive = read.agenda.evaluations.find((entry) => entry.family === 'owner-directive');
     expect(directive, 'the owner-directive class must reach the agenda without a goal').toBeDefined();
@@ -232,7 +233,7 @@ describe('readAgentObligationAgenda owner-directive wiring', () => {
   });
 
   it('keeps an unchanged queue at an unchanged sourceGeneration across turns', async () => {
-    const dep = vi.fn(async () => [PENDING_ROW]);
+    const dep = vi.fn(async () => [HOOK_ROW]);
     // Deliberately NOT `as const`: that widens `planSlugs` to `readonly []`,
     // which the reader's `string[]` parameter rejects — a type-only break a
     // green vitest run cannot see, because esbuild never typechecks.
