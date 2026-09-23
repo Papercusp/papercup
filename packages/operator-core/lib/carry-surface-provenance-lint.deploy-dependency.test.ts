@@ -1,0 +1,69 @@
+/**
+ * acceptance-runtime-plane-not-main-2026-09-23 P-005/P-006 — a carried dependency on
+ * main / :3070 / a deploy must travel WITH its probe.
+ *
+ * The motivating note rode ~5 cold wakes: "R-3 needs main before it can be graded" — the
+ * code ran in bg-host, which no deploy touches. Positive cases are phrased the way those
+ * notes were; negative cases pin the precision rule this module lives by (a lint that fires
+ * on the corrected behaviour gets tuned out).
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE,
+  lintCarrySurfaceProvenance,
+  provenanceLintField,
+} from './carry-surface-provenance-lint';
+import { withCarryNoteChecks } from './carry-note';
+
+const kinds = (text: string) => lintCarrySurfaceProvenance(text).matches.map((m) => m.kind);
+
+describe('unprobed-deploy-dependency', () => {
+  it.each([
+    'R-3 needs main before it can be graded',
+    'Waiting on the deploy to :3070, then re-grade R-1',
+    'blocked on green main — resume after release:deployed',
+    'Acceptance is pending deployment; nothing else to do',
+    "can't grade R-3 until it lands on main",
+  ])('flags: %s', (line) => {
+    expect(kinds(line)).toContain('unprobed-deploy-dependency');
+  });
+
+  it.each([
+    // a probe on the same line
+    'R-3 needs main? re-check: dev:pipeline_position { path } → servingRuntimes shows bg-host has it',
+    'waiting on the deploy — measured: :3070 /api/health be8396c6dd lacks the blob',
+    // hedged / tagged / questioned
+    'R-3 probably needs main [inferred]',
+    '[self-imposed] hold R-9 until the deploy lands (final shipment bar)',
+    'check whether R-3 actually needs main',
+    // the corrected premise
+    'R-3 does not need main — bg-host already runs it',
+    'no longer blocked on the deploy',
+    // unrelated uses of "main"
+    'the main risk is the parser; fix it first',
+    'merged the main loop refactor',
+  ])('does not flag: %s', (line) => {
+    expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
+  });
+
+  it('a checks row in the same write that probes the release plane clears the narrative line', () => {
+    const note = withCarryNoteChecks('Waiting on the deploy to finish R-3.', [
+      { claim: 'R-3 is blocked on the :3070 deploy', recheck: 'dev:pipeline_position { path } → servingRuntimes' },
+    ]);
+    expect(kinds(note)).not.toContain('unprobed-deploy-dependency');
+  });
+
+  it('a checks row about something else does not clear it', () => {
+    const note = withCarryNoteChecks('Waiting on the deploy to finish R-3.', [
+      { claim: 'the ingest routine fired at 00:18Z', recheck: 'routines:list { name }' },
+    ]);
+    expect(kinds(note)).toContain('unprobed-deploy-dependency');
+  });
+
+  it('an all-deploy-dependency write gets its own note; a mixed write keeps the louder one', () => {
+    expect(provenanceLintField('R-3 needs main before grading')?.note).toBe(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE);
+    expect(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE).toMatch(/servingRuntimes/);
+    const mixed = provenanceLintField('R-3 needs main before grading\nThe owner said to wait for main');
+    expect(mixed?.note).not.toBe(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE);
+  });
+});

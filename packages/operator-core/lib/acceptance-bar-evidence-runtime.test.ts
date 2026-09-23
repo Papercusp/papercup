@@ -16,6 +16,8 @@ import {
 import {
   acceptanceEvidenceRuntimeSchema,
   requirementAcceptanceSchema,
+  rubricTemplateDataSchema,
+  stripUnknownCriterionKeys,
 } from './agent-tools/plans/rubric-template';
 import { computeAcceptanceBarHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
@@ -78,6 +80,45 @@ describe('barHash', () => {
       verification: { method: 'census' },
     } as never);
     expect(normalized.evidenceRuntime).toBe('bg-host');
+  });
+});
+
+describe('rollout safety — an older reader must not lose a rubric that carries the new field', () => {
+  const stored = {
+    kind: 'acceptance',
+    subjectPlan: 'plan-a',
+    characteristic: 'plan-a acceptance',
+    ratingScale: ['healthy', 'broken', 'unknown'],
+    criteria: [
+      {
+        key: 'r-1',
+        title: 'Ingest',
+        model: 'The ingest drains every host ledger.',
+        method: 'census',
+        driftMarkers: 'rows stop arriving',
+        // a field THIS build knows, plus one a hypothetical newer build added
+        evidenceRuntime: 'bg-host',
+        someFutureField: { x: 1 },
+      },
+    ],
+  };
+
+  it('strips only UNKNOWN criterion keys, so the strict template schema parses the rest', () => {
+    expect(rubricTemplateDataSchema.safeParse(stored).success).toBe(false);
+    const tolerant = stripUnknownCriterionKeys(stored);
+    expect(tolerant.stripped).toEqual(['someFutureField']);
+    const parsed = rubricTemplateDataSchema.safeParse(tolerant.data);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && (parsed.data.criteria[0] as { evidenceRuntime?: string }).evidenceRuntime).toBe('bg-host');
+  });
+
+  it('never masks a malformed KNOWN field, and is a no-op on clean data', () => {
+    const bad = { ...stored, criteria: [{ ...stored.criteria[0], evidenceRuntime: 'not-a-runtime', someFutureField: undefined }] };
+    const tolerant = stripUnknownCriterionKeys(bad);
+    expect(rubricTemplateDataSchema.safeParse(tolerant.data).success).toBe(false);
+    const clean = { ...stored, criteria: [{ ...stored.criteria[0], someFutureField: undefined }] };
+    delete (clean.criteria[0] as Record<string, unknown>).someFutureField;
+    expect(stripUnknownCriterionKeys(clean)).toEqual({ data: clean, stripped: [] });
   });
 });
 

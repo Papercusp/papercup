@@ -39,6 +39,7 @@ import {
 } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
+  stripUnknownCriterionKeys,
   rubricTemplateDataAuthoringSchema,
   rubricKindOf,
   isUnknownRatingEquivalent,
@@ -479,7 +480,14 @@ export function rubricStatusToPlanStatus(status: RubricStatus): string {
  * legacy fallback for rows written before the fix.
  */
 export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: number | null): Rubric | null {
-  const parsed = rubricTemplateDataSchema.safeParse(row.template_data);
+  let parsed = rubricTemplateDataSchema.safeParse(row.template_data);
+  if (!parsed.success) {
+    // acceptance-runtime-plane P-002: an ADDITIVE criterion field written by a newer build
+    // must not make the whole rubric vanish for this (older) reader. Strict stays strict on
+    // write; on read, retry once without the unknown criterion keys.
+    const tolerant = stripUnknownCriterionKeys(row.template_data);
+    if (tolerant.stripped.length) parsed = rubricTemplateDataSchema.safeParse(tolerant.data);
+  }
   if (!parsed.success) return null;
   const d = parsed.data;
   const kind = rubricKindOf(d);

@@ -641,6 +641,43 @@ function classifyMechanismClaim(
   return MECHANISM_HEDGE_RE.test(line) ? 'hedged-mechanism-claim' : 'unverified-mechanism-claim';
 }
 
+/**
+ * acceptance-runtime-plane-not-main-2026-09-23 P-005 — an UNPROBED dependency on the
+ * release plane (main / :3070 / a deploy).
+ *
+ * The psu-pty plan's "needs main before R-3 can be graded" rode ~5 cold-wake carry notes
+ * with no probe attached. The code in question ran in bg-host, which a deploy never
+ * touches; one `dev:pipeline_position` read (servingRuntimes) would have killed the premise
+ * on the first wake. A carried dependency on the release plane is exactly the kind of
+ * claim that must travel WITH its probe, because "it is not on main yet" stays true for
+ * hours while being irrelevant.
+ *
+ * Cleared by: a probe on the same line (re-check / pipeline_position / servingRuntimes /
+ * state:read / measured …), a source tag, a hedge, a question — or ANY checks row in the
+ * same write that probes the release plane (the write "attaches a checks probe").
+ */
+const DEPLOY_DEPENDENCY_RE =
+  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.\n]{0,50}?(?:\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ed|ment|s)?\b|\bthe\s+release\b)/i;
+
+/** A probe of the release plane, on the line itself or on a checks row. */
+const RELEASE_PLANE_PROBE_RE =
+  /\bre-?check(?:ed)?\b|pipeline_position|servingRuntimes|state:read|\bprobe[ds]?\b|\/api\/health|\bmeasured\b|\bverified\b|\bconfirmed\b/i;
+
+const RELEASE_PLANE_TARGET_RE = /\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ed|ment|s)?\b/i;
+
+function classifyDeployDependency(line: string): 'unprobed-deploy-dependency' | null {
+  if (!DEPLOY_DEPENDENCY_RE.test(line)) return null;
+  if (RELEASE_PLANE_PROBE_RE.test(line)) return null;
+  if (MECHANISM_QUESTION_RE.test(line)) return null;
+  if (MECHANISM_HEDGE_RE.test(line)) return null;
+  if (SOURCE_TAG_RE.test(line)) return null;
+  // "does NOT need main" / "not blocked on the deploy" is the corrected premise, not the claim.
+  if (/\b(?:not|no\s+longer|never|doesn'?t|don'?t|isn'?t|without)\b[^.\n]{0,30}?\b(?:wait|block|need|require|depend|gated)/i.test(line)) {
+    return null;
+  }
+  return 'unprobed-deploy-dependency';
+}
+
 const PROVENANCE_BLOCK_MARKER_RE = /\bprovenance\b/i;
 
 export interface ProvenanceLintMatch {
@@ -682,7 +719,8 @@ export interface ProvenanceLintMatch {
     | 'unresolved-turn-ref'
     | 'unverified-action-claim'
     | 'unverified-mechanism-claim'
-    | 'hedged-mechanism-claim';
+    | 'hedged-mechanism-claim'
+    | 'unprobed-deploy-dependency';
 }
 
 export interface ProvenanceLintResult {
@@ -710,6 +748,11 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
   // must not launder, so it is still flagged per line.
   const hasTaggedProvenanceBlock =
     SOURCE_TAG_RE.test(text) && lines.some((l) => PROVENANCE_BLOCK_MARKER_RE.test(l));
+  // P-005 (acceptance-runtime-plane): a checks row in this write that probes the release
+  // plane attaches the probe to every release-plane dependency the write carries.
+  const hasReleasePlaneProbe = lines.some(
+    (l) => RELEASE_PLANE_TARGET_RE.test(l) && RELEASE_PLANE_PROBE_RE.test(l),
+  );
   const matches: ProvenanceLintMatch[] = [];
   for (const rawLine of lines) {
     if (matches.length >= MAX_MATCH_LINES) break;
@@ -743,6 +786,14 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     if (mechanismClaim) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: mechanismClaim });
       if (matches.length >= MAX_MATCH_LINES) continue;
+    }
+    // P-005: an unprobed dependency on main/:3070/a deploy. Independent of every other leg.
+    if (!hasReleasePlaneProbe) {
+      const deployDependency = classifyDeployDependency(line);
+      if (deployDependency) {
+        matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: deployDependency });
+        if (matches.length >= MAX_MATCH_LINES) continue;
+      }
     }
     if (OWNER_TAG_RE.test(line)) {
       // EI-18672153930631150: a `[owner:...]`-shaped token that reads as
@@ -879,6 +930,17 @@ const MECHANISM_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
   'hedged-mechanism-claim',
 ]);
 
+/** P-005 (acceptance-runtime-plane): the release-plane dependency class. */
+const DEPLOY_DEPENDENCY_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set(['unprobed-deploy-dependency']);
+
+export const PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE =
+  'provenance_lint: this carry-surface write says work is waiting on / blocked by main, :3070 or a deploy, with ' +
+  'no probe attached. "Not on main yet" stays TRUE for hours while being IRRELEVANT: most code on this box also ' +
+  'runs on runtimes a deploy never touches (bg-host, the staging operator, psu pty hosts), and acceptance is ' +
+  'measured where the code runs. Attach the probe — loop:checkpoint checks:[{ claim, recheck: "dev:pipeline_position ' +
+  '{ path } → servingRuntimes" }] — or re-read servingRuntimes now: if the runtime your bar is about already ' +
+  'contains the change, the dependency is false and the wait should be dropped. (acceptance-runtime-plane-not-main-2026-09-23)';
+
 /**
  * EI-20745229385305334 — the kinds that read as a STANDING INSTRUCTION rather than as
  * narrative: an imperative a successor will ACT ON, not merely believe. Kept here beside
@@ -964,6 +1026,10 @@ export function provenanceLintField(text: string | null | undefined):
   // cannot mask a louder, older class.
   if (result.matches.length > 0 && result.matches.every((m) => MECHANISM_KINDS.has(m.kind))) {
     return { flagged: true, note: PROVENANCE_LINT_MECHANISM_NOTE, matches: result.matches };
+  }
+  // P-005: same all-of-one-class rule — a mixed write keeps the louder, older note.
+  if (result.matches.length > 0 && result.matches.every((m) => DEPLOY_DEPENDENCY_KINDS.has(m.kind))) {
+    return { flagged: true, note: PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE, matches: result.matches };
   }
   const allDowngraded = result.matches.every((m) => DOWNGRADED_KINDS.has(m.kind));
   return {

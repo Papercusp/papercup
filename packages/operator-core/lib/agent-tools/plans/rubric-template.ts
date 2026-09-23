@@ -601,6 +601,44 @@ export const rubricCriterionSchema = rubricCriterionObjectSchema.superRefine((in
 });
 
 /**
+ * READ-side forward compatibility for stored criteria (acceptance-runtime-plane P-002).
+ *
+ * The criterion schema is `.strict()` on purpose — a typo'd field must fail loud on WRITE.
+ * But rubrics live in a database shared by the staging operator, bg-host and the release
+ * operator, which run DIFFERENT builds for hours at a time. When a newer writer adds a
+ * criterion field (as P-002 adds `evidenceRuntime`), an older reader's strict parse fails
+ * and `planRowToRubric` returns null — the whole rubric disappears for that reader, which
+ * strands grading on it. That is the same hazard `acceptanceBarContractSchema` documents
+ * for its server-owned envelope.
+ *
+ * So a reader whose strict parse fails retries once with each criterion's UNKNOWN keys
+ * removed. Known fields are untouched (a malformed known field still fails the retry), and
+ * writes stay strict. Returns the input unchanged when nothing was stripped.
+ */
+export function stripUnknownCriterionKeys(templateData: unknown): { data: unknown; stripped: string[] } {
+  if (!templateData || typeof templateData !== 'object' || Array.isArray(templateData)) {
+    return { data: templateData, stripped: [] };
+  }
+  const record = templateData as Record<string, unknown>;
+  if (!Array.isArray(record.criteria)) return { data: templateData, stripped: [] };
+  const known = new Set(Object.keys(rubricCriterionObjectSchema.shape));
+  const stripped = new Set<string>();
+  const criteria = record.criteria.map((criterion) => {
+    if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
+    const entries = Object.entries(criterion as Record<string, unknown>);
+    if (entries.every(([key]) => known.has(key))) return criterion;
+    return Object.fromEntries(
+      entries.filter(([key]) => {
+        if (known.has(key)) return true;
+        stripped.add(key);
+        return false;
+      }),
+    );
+  });
+  return stripped.size ? { data: { ...record, criteria }, stripped: [...stripped].sort() } : { data: templateData, stripped: [] };
+}
+
+/**
  * The acceptance-kind criterion: the SAME field vocabulary as a standard criterion (so
  * the grading path — ratings keyed by `key` against the rating scale — is identical,
  * D-010) but with the heavyweight prose fields OPTIONAL (plan D-007's light profile:
