@@ -9,8 +9,9 @@
 # the manifest/license tooling — is read from `git archive <sha>`, never from
 # the working tree, so an uncommitted edit cannot reach a release.
 #
-# Reproducible by construction: SOURCE_DATE_EPOCH is the commit time, paths are
-# remapped, and the tar/gzip stream is normalised. Build it twice and compare.
+# Reproducible by construction: SOURCE_DATE_EPOCH is the commit time, the
+# source tree is exported to one constant absolute path, paths are remapped,
+# and the tar/gzip stream is normalised. Build it twice and compare.
 set -euo pipefail
 
 usage() {
@@ -102,10 +103,20 @@ VERSION="$(git -C "$ROOT" show "$SHA:apps/tui/Cargo.toml" | sed -n 's/^version =
 [[ -n "$VERSION" ]] || die "could not read the pui version from $SHA:apps/tui/Cargo.toml"
 NAME="pui-$VERSION-$TARGET"
 
-# The build tree lives at a FIXED path inside the package target dir. The
-# source path is part of RUSTFLAGS (it is remapped), and RUSTFLAGS is part of
-# every crate's cargo fingerprint, so a fresh temp path per run would rebuild
-# every dependency cold. One packager per target dir at a time (flock).
+# The source tree is exported to ONE constant absolute path, whatever the
+# target dir, user or machine. Cargo hashes the absolute path of a path
+# dependency outside the building workspace (apps/pui-companion-proto, for both
+# apps/tui and apps/pui-zellij-plugin) into -C metadata, which renames and
+# reorders every symbol of the crates that depend on it: exporting under the
+# target dir made two builds of one commit differ byte-for-byte. The same path
+# also keeps RUSTFLAGS (which remaps it) constant, and RUSTFLAGS is part of
+# every crate's cargo fingerprint, so warm builds stay warm. Because the path
+# is shared, one packager runs per machine at a time (flock).
+SRC=/tmp/pui-release-src
+if command -v flock >/dev/null; then
+  exec 7>"$SRC.lock"
+  flock 7 || die "could not lock $SRC.lock"
+fi
 if [[ -z "${PUI_PACKAGE_TARGET_DIR:-}" ]]; then
   base_target="$(cd "$ROOT/apps/tui" && cargo metadata --format-version 1 --no-deps --offline 2>/dev/null \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' || true)"
@@ -113,34 +124,37 @@ if [[ -z "${PUI_PACKAGE_TARGET_DIR:-}" ]]; then
 fi
 mkdir -p "$PUI_PACKAGE_TARGET_DIR"
 export CARGO_TARGET_DIR="$(cd "$PUI_PACKAGE_TARGET_DIR" && pwd)"
-if command -v flock >/dev/null; then
-  exec 7>"$CARGO_TARGET_DIR/.package-release.lock"
-  flock 7 || die "could not lock $CARGO_TARGET_DIR"
-fi
 WORK="$CARGO_TARGET_DIR/work"
 cleanup() {
   if ((KEEP_WORK)); then
-    echo "package-release: kept work tree $WORK" >&2
+    echo "package-release: kept work tree $WORK and source $SRC" >&2
   else
-    rm -rf "$WORK"
+    rm -rf "$WORK" "$SRC"
   fi
 }
 trap cleanup EXIT
-rm -rf "$WORK"
-SRC="$WORK/src"
-mkdir -p "$SRC"
+rm -rf "$WORK" "$SRC" || die "could not clear $SRC (owned by another user?)"
+mkdir -p "$WORK" "$SRC"
 git -C "$ROOT" archive --format=tar "$SHA" apps/tui apps/pui-zellij-plugin apps/pui-companion-proto \
   | tar -x -C "$SRC"
 for required in apps/tui/release/install.sh apps/tui/release/compatibility.json \
                 apps/tui/scripts/write-install-manifest.py apps/tui/scripts/license-inventory.py; do
   [[ -f "$SRC/$required" ]] || die "$required is not in commit $SHA; commit the release tooling first"
 done
+# compatibility.json is committed before the candidate it ships in exists, so it
+# can never hold that candidate's installed-product evidence: a 'verified' target
+# there is always evidence of another generation (R-10). Refused before anything
+# is built; verified targets are advertised per candidate at the release stage.
+VERIFIED="$(python3 -c 'import json, sys
+print(" ".join(n for n, t in json.load(open(sys.argv[1]))["targets"].items() if t.get("status") == "verified"))' \
+  "$SRC/apps/tui/release/compatibility.json")" || die "could not read compatibility.json from $SHA"
+[[ -z "$VERIFIED" ]] || die "compatibility.json in ${SHA:0:12} marks $VERIFIED verified, but installed evidence for this candidate cannot exist before it is built; record it at the release stage, not in the committed file"
 echo "→ packaging $NAME from ${SHA:0:12} (commit time $EPOCH)"
 
 # ── build ───────────────────────────────────────────────────────────────────
 export SOURCE_DATE_EPOCH="$EPOCH"
 export PUI_BUILD_SHA="$SHA" PUI_BUILD_DIRTY=0 PUI_BUILD_EPOCH="$EPOCH"
-# Later prefixes win in rustc: most specific ($SRC, inside the target dir) last.
+# Later prefixes win in rustc: the source tree last, so it never reads as /build or /target.
 REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$CARGO_TARGET_DIR=/target --remap-path-prefix=$SRC=/pui-src"
 
 ZIG_DIR="${PAPERCUSP_ZIG_DIR:-$HOME/.papercusp/zig}"
