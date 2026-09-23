@@ -1695,6 +1695,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     let gitSyncOversizedCount = 0;
     let gitSyncWorstInstallSlug: string | null = null;
     let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
+    let gitSyncMaxMissedIntervals: number | null = null;
+    let gitSyncMissedIntervalsInstallSlug: string | null = null;
     try {
       const { sql } = getOrgPg();
       const { deriveGitSyncFreshness } = await import('../agent-tools/routines/list');
@@ -1737,6 +1739,19 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
               : NaN;
         if (!Number.isNaN(ls) && (gitSyncLastSyncedAtMs === null || ls > gitSyncLastSyncedAtMs)) gitSyncLastSyncedAtMs = ls;
         if (Array.isArray(md.last_oversized)) gitSyncOversizedCount += md.last_oversized.length;
+        // P-009 (ex-P-010): cadence-relative starvation. A failing install is excluded because
+        // the push-failure escalation already owns it; this measure is for 'not firing at all'.
+        const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
+        const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
+        if (
+          missed !== null &&
+          lastStatus !== 'error' &&
+          lastStatus !== 'conflict' &&
+          (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals)
+        ) {
+          gitSyncMaxMissedIntervals = missed;
+          gitSyncMissedIntervalsInstallSlug = r.install_slug;
+        }
       }
     } catch { /* routine metadata unreadable — leave git-sync delivery fields at defaults */ }
     // WI-1258129: every ref above is a GIT position; none can see a long-lived
@@ -1771,6 +1786,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncOversizedCount,
       gitSyncWorstInstallSlug,
       gitSyncFailingLeg,
+      gitSyncMaxMissedIntervals,
+      gitSyncMissedIntervalsInstallSlug,
       bgHostStartedAtMs,
       bgHostCodeStale,
     };
