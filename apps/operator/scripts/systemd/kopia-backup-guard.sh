@@ -234,7 +234,11 @@ has_live_priority_waiter() {
       continue
     fi
     cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-    if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ]]; then
+    # A scheduled-mode marker is only written after the staleness floor arms;
+    # it is therefore a priority waiter too. Ignoring it lets a hot sweep keep
+    # the lock while the recovery-point-critical DB dump is already waiting.
+    if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ||
+          "$cmd" == *kopia-backup-guard.sh*--mode\ scheduled* ]]; then
       return 0
     fi
     rm -f "$request" 2>/dev/null || true
@@ -381,8 +385,8 @@ if [ "$mode" = scheduled ]; then
   # Lock contention is another deferral path. Arm the staleness floor before
   # the nonblocking flock so a scheduled producer cannot defer forever without
   # ever recording that it has crossed its recovery-point deadline. Once the
-  # floor is armed, become a priority waiter: the existing wait-mode handoff
-  # lets a hot sweep yield the shared lock instead of starving this producer.
+  # floor is armed, become a priority waiter: the hot-sweep handoff recognizes
+  # this marker and yields the shared lock instead of starving this producer.
   arm_staleness_override || true
   if ! flock -n 9; then
     if [ "$pressure_escalated" = 1 ]; then

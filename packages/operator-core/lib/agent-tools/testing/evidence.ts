@@ -358,10 +358,49 @@ export type RemeasureSelection = { specId: string; testPath: string; bindingId: 
 export const REMEASURE_EVIDENCE_KINDS = ['test', 'mutation'] as const;
 
 /**
+ * A legacy hand-bound test can be re-run only when its immutable row still gives one exact
+ * test file, its source set, and the recorded test layer. Do not infer a recipe from a title,
+ * a test-run id, or free-form attestation text; and do not carry stale adequacy assertions into
+ * the new run. Mutation rows deliberately never enter this path.
+ */
+function handBoundTestBinding(
+  row: EvidenceRow,
+  measurement: z.infer<typeof repoFilesEvidenceMeasurementSchema>,
+): Request['bindings'][number] | null {
+  const testPaths = measurement.testPaths ?? [];
+  if (testPaths.length !== 1) return null;
+  const testPath = testPaths[0]!;
+  if (row.evidenceRef !== testPath) return null;
+
+  const adequacy = row.details?.adequacy;
+  if (adequacy === null || typeof adequacy !== 'object' || Array.isArray(adequacy)) return null;
+  const values = adequacy as Record<string, unknown>;
+  const scenarioIds = values.scenarioIds;
+  if (scenarioIds !== undefined && (!Array.isArray(scenarioIds) || !scenarioIds.every((id) => typeof id === 'string'))) return null;
+  const causalPairIds = values.causalPairIds;
+  if (
+    causalPairIds !== undefined &&
+    (!Array.isArray(causalPairIds) || causalPairIds.length > 1 || !causalPairIds.every((id) => typeof id === 'string'))
+  ) return null;
+
+  const parsed = bindingSchema.safeParse({
+    specId: row.specId,
+    specRevision: row.specRevision,
+    testPath,
+    sourcePaths: measurement.sourcePaths,
+    testLayer: values.testLayer,
+    ...(scenarioIds && scenarioIds.length > 0 ? { scenarioIds } : {}),
+    ...(causalPairIds && causalPairIds.length === 1 ? { causalPairId: causalPairIds[0] } : {}),
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/**
  * Pure selection over one work-item's evidence rows: the latest binding per (clause, kind,
- * test file). Only a test proof with a stored recipe can be re-run here; every other stale
- * proof is still REPORTED (`no-recipe` / `probe-required`), never silently dropped — a
- * silent drop let the completion gate fail freshness on bindings this pass said nothing about.
+ * test file). A stale test proof may be re-run from a stored binding or from an exact,
+ * unambiguous repo-files measurement plus its recorded test layer. Other stale proofs are
+ * still REPORTED (`no-recipe` / `probe-required`), never silently dropped — a silent drop
+ * let the completion gate fail freshness on bindings this pass said nothing about.
  */
 export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
   const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
@@ -372,11 +411,20 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
     if (!(REMEASURE_EVIDENCE_KINDS as readonly string[]).includes(row.evidenceKind)) continue;
     const execution = row.details?.testExecution as { phase?: string; binding?: unknown } | undefined;
     const parsed = row.evidenceKind === 'test' ? bindingSchema.safeParse(execution?.binding) : null;
-    const binding = parsed?.success ? parsed.data : null;
-    const recorded = (row.details?.currentMeasurement as { testPaths?: unknown } | undefined)?.testPaths;
-    const testPath = binding?.testPath
-      ?? (Array.isArray(recorded) && typeof recorded[0] === 'string' ? recorded[0] : '(unrecorded)');
-    const key = `${row.specId}\0${row.evidenceKind}\0${testPath}`;
+    const structuredBinding = parsed?.success ? parsed.data : null;
+    const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details?.currentMeasurement);
+    const recordedPaths = measurement.success ? measurement.data.testPaths ?? [] : [];
+    const handBoundBinding =
+      row.evidenceKind === 'test' && execution?.binding === undefined && measurement.success
+        ? handBoundTestBinding(row, measurement.data)
+        : null;
+    const binding = structuredBinding ?? handBoundBinding;
+    const testPath = binding?.testPath ?? recordedPaths[0] ?? '(unrecorded)';
+    const identityPaths = binding ? [binding.testPath] : recordedPaths;
+    const pathIdentity = identityPaths.length > 0
+      ? JSON.stringify([...new Set(identityPaths)].sort())
+      : `unrecorded:${row.evidenceRef}`;
+    const key = `${row.specId}\0${row.evidenceKind}\0${pathIdentity}`;
     if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) members.set(key, [...(members.get(key) ?? []), row.id]);
   }
@@ -386,13 +434,23 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
     const base = { specId: row.specId, testPath, bindingId: row.id };
     const { overall, dimensions, staleReasons } = row.currentness;
     const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
+    const hasNoStoredTestBinding =
+      row.evidenceKind === 'test' &&
+      (row.details?.testExecution as { binding?: unknown } | undefined)?.binding === undefined;
     if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
     else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
-    else if (overall === 'current' && (phase === 'settled' || !binding)) skipped.push({ ...base, reason: 'current' });
+    else if (overall === 'current' && (phase === 'settled' || !binding || hasNoStoredTestBinding))
+      skipped.push({ ...base, reason: 'current' });
     else if (!binding) {
       const why = (overall === 'unknown' ? row.currentness.unknownReasons : staleReasons).join(',') || overall;
       skipped.push(row.evidenceKind === 'mutation'
-        ? { ...base, reason: 'probe-required', detail: `${why}: re-run scripts/mutation-probe.sh and re-bind the verdict`.slice(0, 240) }
+        ? {
+            ...base,
+            reason: 'probe-required',
+            detail:
+              `${why}: re-run the same copy-out/historical scripts/mutation-probe.sh recipe, then re-bind its source='mutation-probe' ledger result; this test-only route cannot reproduce a mutant.`
+                .slice(0, 240),
+          }
         : { ...base, reason: 'no-recipe', detail: `${why}: bound by hand, so re-prove via testing:run { evidence } (which stores the recipe)`.slice(0, 240) });
     } else if (
       (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||

@@ -92,6 +92,7 @@ function fakeProjected(name: string): ProjectedTool {
     pluginName: 'route-test',
     description: `desc of ${name}`,
     inputSchema: { type: 'object', properties: {} },
+    needsWorkspaceTx: name.startsWith('tasks:'),
     expose: { mcp: { name } },
   } as unknown as ProjectedTool;
 }
@@ -103,6 +104,7 @@ const ROUTE_TOOL_REGISTRY = [
   fakeProjected('tasks:todo_write'),
   fakeProjected('tasks:update_plan'),
 ];
+const ROUTE_WORKSPACE_TX = { transaction: 'route-test' };
 
 const MOCKED_MODULES = [
   '../../agent-tools',
@@ -117,6 +119,7 @@ const MOCKED_MODULES = [
   '../../agent-loop/chat-engine',
   '../../agent-loop/approval-store',
   '../../agent-loop/capability-toolset',
+  '@papercusp/agent-mcp',
 ];
 
 beforeEach(() => {
@@ -130,6 +133,9 @@ interface LoopLaneMocks {
   assembleHarnessRolePrompt: ReturnType<typeof vi.fn>;
   assembleOperatorRolePrompt: ReturnType<typeof vi.fn>;
   runLoopChatTurn: ReturnType<typeof vi.fn>;
+  dispatchProjectedTool: ReturnType<typeof vi.fn>;
+  withWorkspace: ReturnType<typeof vi.fn>;
+  workspaceTx: typeof ROUTE_WORKSPACE_TX;
   resolveLoopApproval: ReturnType<typeof vi.fn>;
   listPendingLoopApprovals: ReturnType<typeof vi.fn>;
   updates: string[];
@@ -148,7 +154,14 @@ async function loopLaneRoutes(
   const runLoopChatTurn = vi.fn(async (opts: {
     sink: { event: (n: string, d: unknown) => void };
     deferTerminalEvent?: boolean;
+    tools?: Array<{ name: string; execute: (input: unknown) => Promise<unknown> }>;
   }) => {
+    const toolCall = engineResult.toolCall as { name: string; args: Record<string, unknown> } | undefined;
+    if (toolCall) {
+      const tool = opts.tools?.find((candidate) => candidate.name === toolCall.name);
+      if (!tool) throw new Error(`test tool not found: ${toolCall.name}`);
+      await tool.execute(toolCall.args);
+    }
     opts.sink.event('text_delta', { type: 'text_delta', stepIndex: 0, text: 'loop says hi' });
     if (!opts.deferTerminalEvent) {
       opts.sink.event('done', { type: 'done', stopReason: 'complete', finalText: 'loop says hi' });
@@ -175,8 +188,23 @@ async function loopLaneRoutes(
     text: 'OPERATOR ROLE PROMPT',
     sections: [],
   }));
+  const dispatchProjectedTool = vi.fn(async () => ({
+    ok: true,
+    result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+  }));
+  const withWorkspace = vi.fn(async (_workspaceId: string, run: (tx: unknown) => Promise<unknown>) =>
+    run(ROUTE_WORKSPACE_TX),
+  );
 
   vi.doMock('../../agent-tools', () => ({}));
+  vi.doMock('@papercusp/agent-mcp', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@papercusp/agent-mcp')>();
+    return {
+      ...actual,
+      dispatchProjectedTool,
+      lookupByMcpName: (name: string) => ROUTE_TOOL_REGISTRY.find((tool) => tool.expose?.mcp?.name === name),
+    };
+  });
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
   vi.doMock('../../memory/injection', () => ({ buildMemoryContextBlock: vi.fn(async () => null) }));
   vi.doMock('../../harness-registry', async (importOriginal) => {
@@ -228,6 +256,7 @@ async function loopLaneRoutes(
           run: async (...args: unknown[]) => { updates.push(sql.trim()); updateArgs.push(args); },
         }),
       }),
+      withWorkspace,
     };
   });
   vi.doMock('../../agent-loop/chat-engine', () => ({
@@ -263,6 +292,9 @@ async function loopLaneRoutes(
       assembleHarnessRolePrompt,
       assembleOperatorRolePrompt,
       runLoopChatTurn,
+      dispatchProjectedTool,
+      withWorkspace,
+      workspaceTx: ROUTE_WORKSPACE_TX,
       resolveLoopApproval,
       listPendingLoopApprovals,
       updates,
@@ -349,6 +381,48 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(finalUpdate[1]).toBe(12); // total_input_tokens increment
     expect(finalUpdate[2]).toBe(7); // total_output_tokens increment
     expect(finalUpdate[3]).toBe(5); // cost cents (0.05 USD)
+  });
+
+  it('dispatches owned-loop tools with a principal, workspace transaction and chat-scoped identity', async () => {
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow }, {
+      toolCall: { name: 'tasks:ops', args: { op: 'view' } },
+    });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = (await messages.handler(
+      postReq({ content: 'view the canonical task list', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
+    expect(res.status).toBe(200);
+    const { closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+
+    expect(mocks.withWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.withWorkspace).toHaveBeenCalledWith('default', expect.any(Function));
+    expect(mocks.dispatchProjectedTool).toHaveBeenCalledOnce();
+    const [, name, args, dispatchCtx, deps] = mocks.dispatchProjectedTool.mock.calls[0] as [
+      unknown,
+      string,
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(name).toBe('tasks:ops');
+    expect(args).toEqual({ op: 'view' });
+    expect(dispatchCtx).toMatchObject({
+      workspaceId: 'default',
+      harnessSlug: SLUG,
+      role: 'worker',
+      runId: CHAT,
+      spawnId: `agent-loop-${CHAT}`,
+      uiClientId: 'pui:local',
+      tx: mocks.workspaceTx,
+      principal: { slug: 'pui:local', workspaceId: 'default' },
+    });
+    expect((dispatchCtx.principal as { capabilities: Set<string> }).capabilities.has('*')).toBe(true);
+    expect(deps).toMatchObject({
+      computeQuotaWindow: expect.any(Function),
+      recordInvocation: expect.any(Function),
+    });
   });
 
   it('rejects an unsupported loop model before user-turn persistence or streaming', async () => {

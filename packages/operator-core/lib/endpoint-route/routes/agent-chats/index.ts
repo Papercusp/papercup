@@ -17,8 +17,8 @@
 import { join } from 'node:path';
 import { sseResponse } from '@papercusp/sse';
 import type { ChatEvent } from '@papercusp/chat-protocol';
-import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
-import { harnessQuery } from '@papercusp/db-org';
+import { dispatchProjectedTool, dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
+import { harnessQuery, withWorkspace } from '@papercusp/db-org';
 import { assembleRolePrompt as assembleHarnessRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { assembleRolePrompt as assembleOperatorRolePrompt } from '../../../prompt-assembly';
 import {
@@ -32,10 +32,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { buildMemoryContextBlock } from '../../../memory/injection';
 import { projectDirForSlug } from '../../../operator-notes';
+import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 import { readFeatureLockState, rowToChat, type ChatRow, type TranscriptTurn } from '../../../agent-chats-data';
 import '../../../agent-tools/index';
 import { acquireAgentChatLock, releaseAgentChatLock, type AgentChatLockHandle } from '../../../agent-chat-lock';
-import { dispatchProjectedTool } from '@papercusp/agent-mcp';
 import {
   capabilityToolNames,
   capabilityToolset,
@@ -675,44 +675,65 @@ const messagesRoute = defineTool({
       const workspaceId = activeWorkspaceId();
       const effectiveModel = resolvedLoopModel!;
       const accountRoute = account ?? 'auto';
-      const dispatchCtx = {
-        workspaceId,
-        harnessSlug: itemHarness.harness,
-        role: chat.role,
-        runId: assembled.runId,
-        interactiveCardCapability: true,
-        spawnId: `agent-loop-${chatId}`,
-        log: () => {
-          /* */
-        },
-        progress: () => {
-          /* */
-        },
-        emit: () => {
-          /* */
-        },
-        signal: req.signal,
-        spawn: async () => {
-          throw new Error('spawn not available inside the loop engine');
-        },
-        secret: async () => null,
-        projectDir: projectDir ?? '',
-        stateDir: '',
-      };
+      const ownedLoopSpawnId = `agent-loop-${chatId}`;
       // The principal-bound execution chokepoint (capability-toolset's seam):
       // every loop tool call rides the SAME dispatcher stack as tools:invoke —
-      // role gate, quota, telemetry all apply.
+      // role gate, quota, telemetry all apply. Bind the workspace transaction
+      // per call (never across the model turn), and use the chat id for both
+      // runId and the owned-loop spawn id so tasks:ops resolves this chat's
+      // canonical task list.
+      const principal = ctx.principal ?? {
+        kind: 'loopback' as const,
+        slug: 'pui:local',
+        workspaceId,
+        authMethod: 'host-loopback' as const,
+        trust: 'unverified-loopback' as const,
+        capabilities: new Set(['*']),
+      };
       const dispatch: ToolDispatcher = async (name, args) => {
         const t = lookupByMcpName(name);
         if (!t) return { isError: true, content: [{ type: 'text', text: `unknown tool: ${name}` }] };
-        const r = await dispatchProjectedTool(t, name, args, dispatchCtx as never, {});
-        if (!r.ok || !r.result) {
-          return {
-            isError: true,
-            content: [{ type: 'text', text: r.error?.message ?? `dispatch of ${name} failed` }],
+        const runDispatch = async (tx?: unknown) => {
+          const dispatchCtx = {
+            workspaceId,
+            harnessSlug: itemHarness.harness,
+            role: chat.role,
+            runId: chatId,
+            interactiveCardCapability: true,
+            spawnId: ownedLoopSpawnId,
+            uiClientId: ctx.principal?.slug ?? 'pui:local',
+            isSuperuser: false,
+            profile: 'engineer' as const,
+            transport: 'http' as const,
+            principal,
+            ...(tx !== undefined ? { tx } : {}),
+            log: () => {
+              /* */
+            },
+            progress: () => {
+              /* */
+            },
+            emit: () => {
+              /* */
+            },
+            signal: req.signal,
+            spawn: async () => {
+              throw new Error('spawn not available inside the loop engine');
+            },
+            secret: async () => null,
+            projectDir: projectDir ?? '',
+            stateDir: '',
           };
-        }
-        return r.result as DispatchResult;
+          const r = await dispatchProjectedTool(t, name, args, dispatchCtx as never, PROJECTED_DEPS);
+          if (!r.ok || !r.result) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: r.error?.message ?? `dispatch of ${name} failed` }],
+            };
+          }
+          return r.result as DispatchResult;
+        };
+        return t.needsWorkspaceTx ? withWorkspace(workspaceId, runDispatch) : runDispatch();
       };
       let tools: LoopTool[] = [];
       try {
@@ -753,7 +774,7 @@ const messagesRoute = defineTool({
               model: effectiveModel,
               ...(effort ? { effort } : {}),
               ...(account ? { account } : {}),
-              ownerId: dispatchCtx.spawnId,
+              ownerId: ownedLoopSpawnId,
               signal: req.signal,
               // This route is the interactive PUI chat surface. Untiered
               // inference is starved behind fleet work, so keep the admission
