@@ -70,8 +70,10 @@ let homeDir = '';
 let server: Server | undefined;
 let baseUrl = '';
 let calls: ToolCall[] = [];
-/** When set, the stub answers this tool with a rejected result instead of ok. */
-let rejectTool: string | null = null;
+/** The stub answers these tools with a rejected result instead of ok. */
+let rejectTools = new Set<string>();
+/** What a successful capture reports back; `needsSummary` drives the D-004 notice. */
+let captureReply: Record<string, unknown> = { ok: true, id: 1, needsSummary: false };
 
 function sha256Normalized(s: string): string {
   return createHash('sha256').update(s.replace(/\r\n?/g, '\n').trim(), 'utf8').digest('hex');
@@ -108,7 +110,8 @@ beforeEach(async () => {
   // hook got far enough to send a request.
   writeFileSync(join(homeDir, '.papercusp', 'superuser-token'), 'test-token-not-a-real-credential\n');
   calls = [];
-  rejectTool = null;
+  rejectTools = new Set();
+  captureReply = { ok: true, id: 1, needsSummary: false };
 
   server = createServer((req, res) => {
     let body = '';
@@ -128,9 +131,7 @@ beforeEach(async () => {
       calls.push({ name, args });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
-        rejectTool !== null && name === rejectTool
-          ? rejectedEnvelope('refused by the stub')
-          : okEnvelope({ ok: true, id: 1, captureStatus: 'pending' }),
+        rejectTools.has(name) ? rejectedEnvelope('refused by the stub') : okEnvelope(captureReply),
       );
     });
   });
@@ -166,7 +167,7 @@ function writeMachineRow(over: Record<string, unknown> = {}): void {
  * None, and the suite observes ZERO calls — which reads exactly like "the hook
  * never tried to capture", the very defect this file exists to detect. Measured:
  * with spawnSync every capture assertion failed while the identical hook
- * invocation from a shell recorded `orders:capture-pending` on the first try.
+ * invocation from a shell recorded `orders:capture` on the first try.
  */
 function runHook(payload: unknown): Promise<{ stdout: string; status: number | null }> {
   return new Promise((done, fail) => {
@@ -203,12 +204,14 @@ function contextOf(out: { stdout: string; status: number | null }): string {
   return parsed.hookSpecificOutput.additionalContext as string;
 }
 
+/** Every capture attempt, under either verb (the fallback is a second attempt). */
+const CAPTURE_VERBS = new Set(['orders:capture', 'orders:capture-pending']);
 function captureCalls(): ToolCall[] {
-  return calls.filter((c) => c.name === 'orders:capture-pending');
+  return calls.filter((c) => CAPTURE_VERBS.has(c.name));
 }
 
 describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail', () => {
-  it('an OWNER turn makes the hook itself capture the verbatim prompt as pending — the session calls nothing', async () => {
+  it('an OWNER turn makes the hook itself capture the verbatim prompt as an open directive — the session calls nothing', async () => {
     writeMachineRow();
     const prompt = 'please stop the release and roll back to the previous pin';
     const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-aaa' }));
@@ -218,6 +221,8 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
 
     const captures = captureCalls();
     expect(captures).toHaveLength(1);
+    // The current verb first; the older one is only a fallback.
+    expect(captures[0]!.name).toBe('orders:capture');
     // VERBATIM: the owner's literal words, not a paraphrase or a hash.
     expect(captures[0]!.args.verbatim).toBe(prompt);
     // Keyed on the turn, and carrying the session that produced it.
@@ -368,18 +373,44 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(captureCalls()).toHaveLength(0);
   });
 
+  it('an operator without orders:capture (the older green release) falls back to orders:capture-pending', async () => {
+    writeMachineRow();
+    rejectTools = new Set(['orders:capture']);
+    const ctx = contextOf(await runHook({ prompt: 'the release is older than this hook', session_id: 'native-session-hhh' }));
+
+    expect(captureCalls().map((c) => c.name)).toEqual(['orders:capture', 'orders:capture-pending']);
+    // Same turn, same key: the fallback is the same capture, not a second record.
+    expect(captureCalls()[0]!.args.sourceTurnRef).toBe(captureCalls()[1]!.args.sourceTurnRef);
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('a directive over the cap tells the addressed agent to write its summary (D-004)', async () => {
+    writeMachineRow();
+    captureReply = { ok: true, id: 4242, needsSummary: true };
+    const ctx = contextOf(await runHook({ prompt: 'a long directive stands in here', session_id: 'native-session-iii' }));
+
+    expect(ctx).toContain('Owner directive #4242 is over 500 characters');
+    expect(ctx).toContain('orders:summarize { id: 4242');
+  });
+
+  it('CONTROL: a directive under the cap gets no summary instruction', async () => {
+    writeMachineRow();
+    const ctx = contextOf(await runHook({ prompt: 'short directive', session_id: 'native-session-jjj' }));
+    expect(ctx).not.toContain('orders:summarize');
+  });
+
   it('a REJECTED capture is loud in additionalContext and still fail-open', async () => {
     writeMachineRow();
-    rejectTool = 'orders:capture-pending';
+    rejectTools = new Set(['orders:capture', 'orders:capture-pending']);
     const out = await runHook({
       prompt: 'this directive must not vanish quietly',
       session_id: 'native-session-fff',
     });
     const ctx = contextOf(out);
 
-    // The call WAS attempted — this is what separates "the server said no" from
+    // Both verbs WERE attempted — this is what separates "the server said no" from
     // "the hook never tried", which the failure notice alone cannot distinguish.
-    expect(captureCalls()).toHaveLength(1);
+    expect(captureCalls()).toHaveLength(2);
     expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
     // Fail-OPEN: the owner's turn is never blocked and the stamp survives.
     expect(out.status).toBe(0);
