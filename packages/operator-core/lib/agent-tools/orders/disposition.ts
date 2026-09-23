@@ -69,9 +69,25 @@ export default defineTool({
       // Applied PER ENTRY rather than rejecting the whole batch: one foreign id
       // in a batch of fifty must not discard forty-nine legitimate closes, and
       // a caller told only "batch refused" cannot tell which id was foreign.
-      const verdict = await directiveActionVerdict({ directiveId: e.id, ownerId: identity.ownerId, workspaceId })
-        .catch(() => null);
-      if (verdict && !verdict.allowed && !('notFound' in verdict)) {
+      // directive-ownership-clarity-2026-09-23 D-003: FAIL CLOSED. This used to be
+      // `.catch(() => null)`, which let the close through whenever the ownership
+      // read errored — the one moment the rail could not say whose directive it
+      // was. A refused close is retryable; a wrong close stops the directive
+      // rendering for its real addressee and is not observably reversible.
+      let verdict: Awaited<ReturnType<typeof directiveActionVerdict>>;
+      try {
+        verdict = await directiveActionVerdict({ directiveId: e.id, ownerId: identity.ownerId, workspaceId });
+      } catch (err) {
+        results.push({
+          ok: false,
+          id: e.id,
+          error: 'verdict_unavailable',
+          retryable: true,
+          hint: `Could not confirm whose directive #${e.id} is (${String(err).slice(0, 160)}), so it was NOT closed. Retry shortly.`,
+        });
+        continue;
+      }
+      if (!verdict.allowed && !('notFound' in verdict)) {
         results.push({
           ok: false,
           id: e.id,
