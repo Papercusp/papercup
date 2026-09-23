@@ -1143,6 +1143,20 @@ export async function backfillResultDoorOutputRef(input: {
 }
 
 /**
+ * True when the dispatch refusal carried a ready-to-send corrected call
+ * (`metadata.invalidInput.correctedCall`, written by the projected-tool-registry
+ * validator). The caller already holds the fix, so the refusal is not auto-filed
+ * as friction (review-system-rework-reduction-2026-09-23 D-010).
+ */
+export function refusalReturnedCorrectedCall(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== 'object') return false;
+  const invalidInput = (metadata as { invalidInput?: unknown }).invalidInput;
+  if (!invalidInput || typeof invalidInput !== 'object') return false;
+  const corrected = (invalidInput as { correctedCall?: unknown }).correctedCall;
+  return !!corrected && typeof corrected === 'object';
+}
+
+/**
  * Build the tool_invocations row params snapshot for one settled dispatch.
  * Synchronous + cheap (JSON.stringify of args); null when there is no workspace
  * to scope to. Pulls Principal audit fields off ctx.principal when present
@@ -1235,14 +1249,19 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   });
   const servingHost = getServingHostIdentity();
   const invokedAt = new Date().toISOString();
+  const deliveryMetadata = metadataJson ? JSON.parse(metadataJson) : {};
+  // D-010 (review-system-rework-reduction-2026-09-23): a refusal that already
+  // handed the caller its corrected call is not a defect worth a tracker row.
+  // The call is still recorded below, and the repeated-tool-error watchdog still
+  // reads it from this ledger, so recurring misuse of an affordance stays visible.
   const friction: InvocationFrictionRef | undefined =
     coordOwnerId && ['error', 'invalid-input', 'timeout'].includes(input.status) &&
-    !/^(improvements:|system:improvement-)/.test(input.toolName)
+    !/^(improvements:|system:improvement-)/.test(input.toolName) &&
+    !refusalReturnedCorrectedCall(deliveryMetadata)
       ? {
           workspaceId: input.ctx.workspaceId, id: '',
         }
       : undefined;
-  const deliveryMetadata = metadataJson ? JSON.parse(metadataJson) : {};
   delete deliveryMetadata.frictionCapture;
   delete deliveryMetadata.frictionAttemptAt;
   if (friction) deliveryMetadata.frictionCapture = 'pending';

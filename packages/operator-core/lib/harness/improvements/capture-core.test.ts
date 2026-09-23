@@ -20,7 +20,7 @@ import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
 import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
-import { normalizeSuspectedToolFailure } from './tool-error-classifier';
+import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
@@ -3958,7 +3958,7 @@ describe('captureToolInvocationFriction — one row per signature (review-system
       tagIssue: async () => {},
       untagIssue: async () => {},
     };
-    const capture = (ownerId: string, runtimeVersion: string, failure: Partial<typeof metadataToolFailure> = {}) =>
+    const capture = (ownerId: string, runtimeVersion: string, failure: Partial<SuspectedToolFailure> = {}) =>
       captureToolInvocationFriction({
         workspaceId: 'ws', harnessSlug: 'papercusp', ownerId, invokedAt: '2026-09-23T12:00:00Z',
         failure: { ...metadataToolFailure, runtimeVersion, ...failure },
