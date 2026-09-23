@@ -5696,6 +5696,21 @@ impl App {
                 return Action::Render;
             }
             Ok((id, label)) => {
+                // Backend/model/effort/account/mode are launch-time choices: a
+                // bound conversation's engine already runs with its own and no
+                // turn carries them. Route the pick to the in-PUI New SU session
+                // form instead of claiming it applied to this conversation.
+                let applies_to_new_session = self.session_setup.is_none()
+                    && !matches!(axis, crate::session_config::PickerAxis::Conversation)
+                    && (self.agent_chat_id.is_some() || self.su_session.is_some());
+                if applies_to_new_session {
+                    self.open_session_setup();
+                    if self.session_setup.is_none() {
+                        // Refused while a turn is in flight; the note says why.
+                        self.session_picker = None;
+                        return Action::Render;
+                    }
+                }
                 if let Some(setup) = self.session_setup.as_mut() {
                     use crate::session_config::{self, PickerAxis};
                     match axis {
@@ -5714,7 +5729,11 @@ impl App {
                         PickerAxis::Mode => setup.mode = session_config::mode_pick(&id),
                         PickerAxis::Conversation => return Action::Render,
                     }
-                    setup.note = Some(format!("Selected {label}"));
+                    setup.note = Some(if applies_to_new_session {
+                        format!("Applies to a new session: {label}. Review launches it; Esc keeps the current one.")
+                    } else {
+                        format!("Selected {label}")
+                    });
                     self.session_picker = None;
                     return Action::Render;
                 }
@@ -14909,6 +14928,43 @@ mod tests {
         a.open_model_picker(); // row 0 is inherit
         a.commit_session_picker();
         assert_eq!(a.chat_model, None, "None ⇒ send no model at all");
+    }
+
+    #[test]
+    fn a_model_pick_on_a_bound_conversation_applies_to_a_new_session() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.agent_chat_id = Some("chat-1".into());
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        let setup = a.session_setup.as_ref().expect("routes to the New SU session form");
+        assert_eq!(setup.model.as_deref(), Some("opus:high"));
+        assert!(setup.note.as_deref().unwrap().starts_with("Applies to a new session"));
+        assert_eq!(a.chat_model, None, "the running conversation is not claimed to change");
+        assert!(a.session_picker.is_none());
+    }
+
+    #[test]
+    fn a_bound_pick_during_a_turn_is_refused_without_opening_the_form() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.agent_chat_id = Some("chat-1".into());
+        a.chat_streaming = true;
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        assert!(a.session_setup.is_none());
+        assert!(a.session_note.as_deref().unwrap().contains("Finish or reconcile"));
+        assert_eq!(a.chat_model, None);
+    }
+
+    #[test]
+    fn an_unbound_pick_still_seeds_the_next_fresh_session_directly() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        assert!(a.session_setup.is_none());
+        assert_eq!(a.chat_model.as_deref(), Some("opus:high"));
     }
 
     #[test]
