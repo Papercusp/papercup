@@ -1,4 +1,7 @@
 /** scorecards:get — the evidence-first single-card audit read. */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchProjectedTool,
@@ -10,12 +13,17 @@ import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@pa
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
+const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
+vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
+
 vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
   return { ...actual, readScorecardEvidence: vi.fn() };
 });
 
 import { readScorecardEvidence } from '../../scorecards';
+import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result-door';
 
 const readScorecardEvidenceM = vi.mocked(readScorecardEvidence);
 const getTool = (await import('./get')).default;
@@ -59,17 +67,85 @@ const scorecard = {
 };
 
 describe('scorecards:get evidence-first projection', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
+    resetResultDoorAggregatesForTests();
+  });
 
-  it('keeps every exact evidence string through trimmed projected dispatch', async () => {
+  it('keeps a complete criterion page inside the outer model-facing result door', async () => {
+    const evidence = 'e'.repeat(6093);
+    const card = {
+      ...scorecard,
+      criteria: [{ key: 'traceability', rating: 'pass', evidence }],
+    };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'scorecards-get-result-door-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousDoorOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(scratchRoot, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    try {
+      const response = (await getTool.handler(
+        { issueId: card.issueId, criterionKey: 'traceability' } as never,
+        makeDispatchContext(),
+      )) as { data: unknown };
+      const resultText = JSON.stringify(response.data);
+      const budgetChars =
+        computeTurnDoors(0, BAKED_DOOR_CONSTANTS).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+      const unpagedText = JSON.stringify({
+        ok: true,
+        scorecard: card,
+        evidenceRead: { complete: true, scope: 'selected-criterion', offset: 0, totalChars: evidence.length },
+      });
+      expect(unpagedText.length).toBeGreaterThan(budgetChars);
+      const unpaged = applyResultDoor(
+        { content: [{ type: 'text' as const, text: unpagedText }], _meta: {} as Record<string, unknown> },
+        { toolName: 'scorecards:get', workspaceId: 'scorecards-get-test' },
+      );
+      const unpagedDoor = (unpaged._meta.resultDoor as { truncated?: boolean } | undefined);
+      expect(unpagedDoor?.truncated).toBe(true);
+      expect(resultText.length).toBeLessThanOrEqual(budgetChars);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: resultText }], _meta: {} as Record<string, unknown> },
+        { toolName: 'scorecards:get', workspaceId: 'scorecards-get-test' },
+      );
+      const resultDoor = doored._meta.resultDoor as { truncated?: boolean } | undefined;
+      expect(resultDoor?.truncated).not.toBe(true);
+      const payload = JSON.parse((doored.content[0] as { text: string }).text) as {
+        scorecard: { criteria: Array<{ evidence: string }> };
+        evidenceRead: {
+          complete: boolean;
+          offset: number;
+          totalChars: number;
+          next?: { args: { evidenceOffset: number } };
+        };
+      };
+      expect(payload.evidenceRead).toMatchObject({ complete: false, offset: 0, totalChars: evidence.length });
+      expect(payload.scorecard.criteria[0]?.evidence).toBe(evidence.slice(0, payload.scorecard.criteria[0].evidence.length));
+      expect(payload.scorecard.criteria[0]?.evidence.length).toBeLessThan(evidence.length);
+      expect(payload.evidenceRead.next?.args.evidenceOffset).toBe(payload.scorecard.criteria[0]?.evidence.length);
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      if (previousDoorOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps every exact evidence string recoverable through trimmed projected dispatch', async () => {
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard });
     const raw = (await getTool.handler(
       { issueId: scorecard.issueId } as never,
       { isSuperuser: true, uiClientId: 'su-scorecards-get-test', workspaceId: 'default' } as never,
     )) as { data: unknown };
-    const rawChars = JSON.stringify(raw).length;
-    expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
-    expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    const rawChars = JSON.stringify(raw.data).length;
+    const resultDoorChars =
+      computeTurnDoors(0, BAKED_DOOR_CONSTANTS).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+    expect(rawChars).toBeLessThan(PAYLOAD_TIER_RATCHET_CHARS);
+    expect(rawChars).toBeLessThanOrEqual(resultDoorChars);
 
     const projected = lookupByMcpName('scorecards:get');
     expect(projected).toBeDefined();
@@ -85,30 +161,36 @@ describe('scorecards:get evidence-first projection', () => {
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const payload = readJsonResult<{
       ok: boolean;
-      scorecard: typeof scorecard;
+      scorecard: { criteria: Array<{ key: string }>; evidenceFingerprint: string };
+      evidenceRead: {
+        complete: boolean;
+        criteria: Array<{ key: string; read: { args: Record<string, unknown> } }>;
+      };
       _projection?: unknown;
     }>(dispatched.result!);
+    if (!payload) throw new Error('scorecards:get dispatch should return JSON');
     expect(payload?._projection).toBeUndefined();
-    expect(payload?.scorecard.criteria).toHaveLength(8);
+    expect(payload?.scorecard.criteria).toHaveLength(0);
     expect(payload?.scorecard.evidenceFingerprint).toBe('evidence-fingerprint-v2');
-    expect(payload?.scorecard.criteria[0]?.evidence).toBe(scorecard.criteria[0]?.evidence);
-    expect(payload?.scorecard.criteria[7]?.evidence).toBe(scorecard.criteria[7]?.evidence);
-    expect(Object.keys(payload?.scorecard ?? {}).sort()).toEqual([
-      'createdAt',
-      'createdBy',
-      'criteriaHash',
-      'criteria',
-      'evidenceFingerprint',
-      'extraKeys',
-      'issueId',
-      'missingKeys',
-      'nKeys',
-      'rubricRef',
-      'rubricResolved',
-      'rubricRevision',
-      'subject',
-      'synthesized',
-    ].sort());
+    expect(payload?.evidenceRead.complete).toBe(false);
+    expect(payload?.evidenceRead.criteria.map(({ key }) => key)).toEqual(scorecard.criteria.map(({ key }) => key));
+    for (const expected of scorecard.criteria) {
+      const entry = payload.evidenceRead.criteria.find(({ key }) => key === expected.key)!;
+      const page = await dispatchProjectedTool(
+        projected!,
+        'scorecards:get',
+        entry.read.args,
+        makeDispatchContext(),
+        {},
+      );
+      expect(page.ok, JSON.stringify(page)).toBe(true);
+      const recovered = readJsonResult<{
+        scorecard: { criteria: Array<{ key: string; rating: string; evidence: string }> };
+        evidenceRead: { complete: boolean };
+      }>(page.result!);
+      expect(recovered?.evidenceRead.complete).toBe(true);
+      expect(recovered?.scorecard.criteria).toEqual([expected]);
+    }
   });
 
   it('returns precise missing/not-scorecard errors without a wide history row', async () => {

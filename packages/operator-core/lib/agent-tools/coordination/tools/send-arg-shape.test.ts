@@ -36,7 +36,7 @@ import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
 import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
-import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
+import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
 type JsonSchemaNode = {
   $ref?: string;
@@ -748,11 +748,13 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
     if (description === '') failures.push('empty');
     // The NUMBER a caller needs, carried from the constant the refusal enforces.
     if (!description.includes(String(DEFAULT_INBOX_BODY_CAP))) failures.push('no cap value');
-    // The CONDITION — a cap stated without it reads as unconditional and pushes
-    // callers into needlessly truncating an exempt FYI.
-    if (!/expects/i.test(description)) failures.push('cap not scoped to expects');
-    if (!/none/i.test(description)) failures.push("no 'none' exemption");
-    // The CONSEQUENCE. "Capped" reads as truncation; nothing is sent at all.
+    // RSR-P-008-B: an over-cap body is chunked, not refused. The caller needs to
+    // know it arrives as PARTS, how many parts the limit is, and that only the
+    // final part carries the ask — or they keep splitting messages by hand.
+    if (!description.includes(String(COORD_SEND_MAX_CHUNK_PARTS))) failures.push('no part limit');
+    if (!/parts/i.test(description)) failures.push('chunking not stated');
+    if (!/final part/i.test(description)) failures.push('ask placement not stated');
+    // The CONSEQUENCE past the part limit: nothing is sent at all.
     if (!/refus|reject|nothing is sent/i.test(description)) failures.push('refusal not stated');
     return failures;
   };
@@ -765,9 +767,9 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
 
   it('names durable long-form routes on every body schema surface', () => {
     for (const [surface, description] of Object.entries(bodyDescriptions())) {
-      expect(description, surface).toContain('work_items:comment { id, body }');
+      expect(description, surface).toContain('work_items:comment');
       expect(description, surface).toContain('coord:message-agent');
-      expect(description, surface).toMatch(/short `coord:send` pointer/);
+      expect(description, surface).toMatch(/short pointer/);
     }
   });
 
@@ -791,36 +793,29 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
     expect(capTeachingFailures(preFix)).toContain('no cap value');
   });
 
-  it('the documented cap is the one actually enforced — schema text and refusal agree', () => {
-    // Falsifiable end-to-end: a body one character over the documented number
-    // must really be refused, and one at the number must really parse. If the
-    // description and the enforcement ever disagree, one of these two goes red.
-    const overBy1 = 'x'.repeat(DEFAULT_INBOX_BODY_CAP + 1);
-    const refused = sendTool.args.safeParse({
-      to: ['peer'],
-      summary: 'hi',
-      expects: 'action',
-      body: [{ text: overBy1, forYouBecause: { relation: 'same-fleet' } }],
-    });
-    expect(refused.success, 'one char over the documented cap must be refused').toBe(false);
+  it('the documented limit is the one actually enforced — schema text and refusal agree', () => {
+    // Falsifiable end-to-end, for every expects: a body just over the inbox cap
+    // now PARSES (the handler chunks it), and a body needing more than the
+    // documented part limit is refused. If the description and the enforcement
+    // disagree, one of these goes red.
+    for (const expects of ['action', 'none'] as const) {
+      const section = (text: string) =>
+        expects === 'action' ? { text, forYouBecause: { relation: 'same-fleet' as const } } : { text };
+      const overBy1 = sendTool.args.safeParse({
+        to: ['peer'],
+        summary: 'hi',
+        expects,
+        body: [section('x'.repeat(DEFAULT_INBOX_BODY_CAP + 1))],
+      });
+      expect(overBy1.success, `expects:'${expects}' one char over the cap is chunked, not refused`).toBe(true);
 
-    const atCap = 'x'.repeat(DEFAULT_INBOX_BODY_CAP);
-    const accepted = sendTool.args.safeParse({
-      to: ['peer'],
-      summary: 'hi',
-      expects: 'action',
-      body: [{ text: atCap, forYouBecause: { relation: 'same-fleet' } }],
-    });
-    expect(accepted.success, 'exactly the documented cap must still parse').toBe(true);
-  });
-
-  it("does not impose the cap on an expects:'none' FYI, which the text calls exempt", () => {
-    const parsed = sendTool.args.safeParse({
-      to: ['peer'],
-      summary: 'hi',
-      expects: 'none',
-      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 3) }],
-    });
-    expect(parsed.success, "expects:'none' is documented as exempt and must parse").toBe(true);
+      const tooManyParts = sendTool.args.safeParse({
+        to: ['peer'],
+        summary: 'hi',
+        expects,
+        body: [section('x'.repeat(DEFAULT_INBOX_BODY_CAP * (COORD_SEND_MAX_CHUNK_PARTS + 1)))],
+      });
+      expect(tooManyParts.success, `expects:'${expects}' past the part limit must be refused`).toBe(false);
+    }
   });
 });

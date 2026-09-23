@@ -159,6 +159,20 @@ vi.mock('../stale-quote-stamp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../stale-quote-stamp')>()),
   resolveStaleQuoteStamps: vi.fn(async () => []),
 }));
+// RSR-P-008-B: the handler chunks an over-cap body. `bypass` simulates a chunker
+// REGRESSION (every message passes through whole), which is the only way left to
+// reach the lossy-envelope backstop below — and exactly the case it exists for.
+const chunking = vi.hoisted(() => ({ bypass: false }));
+vi.mock('./send-chunking', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./send-chunking')>();
+  return {
+    ...real,
+    chunkOverCapMessage: ((...args: Parameters<typeof real.chunkOverCapMessage>) =>
+      chunking.bypass
+        ? { kind: 'single', message: args[0] }
+        : real.chunkOverCapMessage(...args)) as typeof real.chunkOverCapMessage,
+  };
+});
 
 import {
   sendMessage,
@@ -180,6 +194,9 @@ import { deriveBasedOn } from '../based-on';
 import { resolvePremiseStamps } from '../premise-resolve';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
+import type { MessageSection } from '../message-fields';
+import { COORD_SEND_MAX_CHUNK_PARTS } from './inbox-content-bounds';
+import { reassembleChunkedBodies } from './send-chunking';
 const staleQuoteM = vi.mocked(resolveStaleQuoteStamps);
 const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
@@ -232,6 +249,7 @@ it('opts out of the ambient workspace transaction because the handler never read
 let n = 0;
 beforeEach(() => {
   vi.clearAllMocks();
+  chunking.bypass = false;
   n = 0;
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope
   mockImplementationTyped(sendM, async (identity, opts) => ({
@@ -332,14 +350,14 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it('WI-37972: reports sender-visible body clipping for an explicit FYI instead of a misleading clean delivery', async () => {
+    // RSR-P-008-B: the handler now chunks an over-cap body, so clipping can only
+    // happen if chunking regresses. Simulate that regression: the lossy verdict
+    // is the backstop that keeps a clipped send from ever reporting ok:true.
+    chunking.bypass = true;
     const longBody = 'x'.repeat(2_260);
     const b = await body({
       to: ['bee-1'],
       summary: 'decision with branches',
-      // Load-bearing action bodies above the default inbox cap are now refused
-      // before persistence (EI-21826596284846555). Keep this regression on the
-      // explicit FYI path, where the sender has consciously accepted that a
-      // crowded inbox may need coord:read for the complete detail.
       expects: 'none',
       body: [{ text: longBody, forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
     });
@@ -393,6 +411,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     // Each mutant is a rule send.ts could plausibly regress to, and the warning
     // text is taken from the REAL envelope so a straw man cannot drift away from
     // what the handler actually returns.
+    chunking.bypass = true; // simulate a chunker regression (RSR-P-008-B), see WI-37972 above
     const longBody = 'x'.repeat(2_260);
     const real = await body({
       to: ['bee-1'],
@@ -429,6 +448,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     // bodyDeliveredChars describes what a DEFAULT inbox read would surface. If a
     // future change ever "fixed" the ok:false by clipping at persistence instead,
     // this assertion is what fails.
+    chunking.bypass = true; // simulate a chunker regression (RSR-P-008-B), see WI-37972 above
     const longBody = 'y'.repeat(1_500);
     const b = await body({
       to: ['bee-1'],
@@ -447,23 +467,56 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(storedBody.length).toBeGreaterThanOrEqual(1_500);
   });
 
-  it('EI-21826596284846555: refuses an over-cap load-bearing body before persistence', async () => {
+  it('RSR-P-008-B: delivers an over-cap load-bearing body IN FULL as ordered parts; only the final part carries the ask', async () => {
+    // EI-21826596284846555's concern is kept: no part exceeds what one inbox read
+    // shows, so no part is clipped. What changed is that the sender no longer has
+    // to re-author the message by hand.
+    const paragraphs = Array.from({ length: 9 }, (_, i) => `Paragraph ${i + 1}: ${'detail '.repeat(30)}`);
+    const sections = [
+      { text: paragraphs.slice(0, 5).join('\n\n'), forYouBecause: { relation: 'owns' as const, ref: 'WI-1' } },
+      { text: paragraphs.slice(5).join('\n\n'), premises: ['WI-1#completion'] },
+    ];
     const b = await body({
       to: ['bee-1'],
       summary: 'decision with branches',
       expects: 'action',
-      body: [{ text: 'x'.repeat(601), forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
+      wake: 'required',
+      body: sections,
     });
 
-    expect(b).toMatchObject({
-      ok: false,
-      counts: { ok: 0, failed: 1 },
-      partial: true,
-      results: [{ ok: false, error: 'body_exceeds_inbox_cap' }],
+    const parts = sendM.mock.calls.map((call) => call[1] as { summary: string; body: string; extra?: Record<string, unknown> });
+    expect(parts.length).toBeGreaterThan(1);
+    expect(b.ok).toBe(true);
+    expect(b.bodyDeliveryLossy).toBeUndefined();
+    expect(b.counts).toEqual({ ok: parts.length, failed: 0 });
+    expect(b.chunked).toEqual([
+      expect.objectContaining({ parts: parts.length, askMsgId: b.results[parts.length - 1].msg_id }),
+    ]);
+    parts.forEach((part, index) => {
+      // Every part is fully visible in a default inbox read.
+      expect(part.body.length).toBeLessThanOrEqual(600);
+      expect(b.results[index]).toMatchObject({ ok: true, bodyTruncated: false, chunk: { part: index + 1, of: parts.length } });
+      expect(part.summary).toBe(`decision with branches (part ${index + 1}/${parts.length})`);
+      // One reply owed, one wake: the ask rides the final part only.
+      expect(part.extra?.expects).toBe(index === parts.length - 1 ? 'action' : 'none');
     });
+    // Continuations are plain injects; the recipient is woken once, by the final part.
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    // The recipient can rebuild exactly what was authored, metadata included.
+    const delivered = parts.map((part) => part.extra?.sections as MessageSection[]);
+    expect(reassembleChunkedBodies(delivered)).toEqual(sections);
+  });
+
+  it('RSR-P-008-B: refuses a body too long to chunk before anything is persisted', async () => {
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'a whole artifact',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(600 * (COORD_SEND_MAX_CHUNK_PARTS + 1)) }],
+    });
+    expect(b).toMatchObject({ ok: false, results: [{ ok: false, error: 'body_exceeds_chunk_limit' }] });
     expect(b.results[0].message).toMatch(/Nothing was sent/i);
     expect(b.results[0].message).toContain('work_items:comment { id, body }');
-    expect(b.results[0].message).toContain('coord:message-agent { to, body }');
     expect(sendM).not.toHaveBeenCalled();
   });
 
@@ -2367,31 +2420,30 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(msg).toContain('couldNotDetermine');
   });
 
-  it('REFUSES an over-cap body before load-bearing delivery, while preserving explicit FYI bodies', () => {
+  it('RSR-P-008-B: ACCEPTS an over-cap body for every expects (the handler chunks it), REFUSES one too long to chunk', () => {
     const overCap = 'x'.repeat(601);
-    for (const expects of ['ack', 'answer', 'action'] as const) {
-      const body =
+    const tooLong = 'x'.repeat(600 * (COORD_SEND_MAX_CHUNK_PARTS + 1));
+    for (const expects of ['none', 'ack', 'answer', 'action'] as const) {
+      const section = (text: string) =>
         expects === 'action' || expects === 'answer'
-          ? [{ text: overCap, forYouBecause: { relation: 'owns' as const, note: 'yours' } }]
-          : [{ text: overCap }];
-      const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, body });
+          ? { text, forYouBecause: { relation: 'owns' as const, note: 'yours' } }
+          : { text };
+      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, body: [section(overCap)] }).success, expects).toBe(
+        true,
+      );
+      const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, body: [section(tooLong)] });
       expect(r.success, expects).toBe(false);
       if (!r.success) {
         const msg = r.error.issues.map((i) => i.message).join(' | ');
-        expect(msg).toContain('600-character default inbox cap');
+        expect(msg).toContain(`at most ${COORD_SEND_MAX_CHUNK_PARTS} parts`);
         expect(msg).toContain('Nothing was sent');
         expect(msg).toContain('work_items:comment { id, body }');
         expect(msg).toContain('coord:message-agent { to, body }');
       }
     }
-
-    expect(
-      tool.args.safeParse({ to: ['bee-1'], summary: 'status detail', expects: 'none', body: [{ text: overCap }] })
-        .success,
-    ).toBe(true);
   });
 
-  it('applies the same over-cap refusal to every items[] message', () => {
+  it('applies the same too-long-to-chunk refusal to every items[] message', () => {
     const r = tool.args.safeParse({
       items: [
         {
@@ -2400,7 +2452,7 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
           expects: 'action',
           body: [
             {
-              text: 'x'.repeat(601),
+              text: 'x'.repeat(600 * (COORD_SEND_MAX_CHUNK_PARTS + 1)),
               forYouBecause: { relation: 'owns' as const, note: 'yours' },
             },
           ],
@@ -2409,7 +2461,9 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     });
     expect(r.success).toBe(false);
     if (!r.success) {
-      expect(r.error.issues.some((issue) => issue.message.includes('600-character default inbox cap'))).toBe(true);
+      expect(r.error.issues.some((issue) => issue.message.includes(`at most ${COORD_SEND_MAX_CHUNK_PARTS} parts`))).toBe(
+        true,
+      );
     }
   });
 

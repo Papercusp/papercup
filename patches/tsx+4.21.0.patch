@@ -1,4 +1,5 @@
 diff --git a/node_modules/tsx/dist/cli.mjs b/node_modules/tsx/dist/cli.mjs
+index 7e295b186b2e81b48140316672bfc3085b7ebce6..882c4dcdd5f301e5cb117698b68f9ce5b1a43e4d 100644
 --- a/node_modules/tsx/dist/cli.mjs
 +++ b/node_modules/tsx/dist/cli.mjs
 @@ -55,1 +55,1 @@

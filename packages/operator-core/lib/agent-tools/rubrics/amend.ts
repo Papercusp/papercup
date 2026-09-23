@@ -281,17 +281,75 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, dryRun: true, preview }) }],
       };
     }
+    // RSR-P-008-C: hold a receipt BEFORE the work starts. An amend that outlives
+    // the foreground budget returns that receipt instead of letting the transport
+    // time out with an unknown commit state; the work keeps running and its outcome
+    // is readable through rubrics:amend-status. A caller-supplied key is kept as-is;
+    // a minted one is deterministic, so a re-issued identical request still replays.
+    const idempotencyKey =
+      input.idempotencyKey ?? mintAmendmentIdempotencyKey(input, (await getRubric(args.rubricRef))?.revision);
+    const run = trackAmendRun(
+      idempotencyKey,
+      args.rubricRef,
+      executeAmend({ ...input, idempotencyKey }, args.rubricRef),
+    );
+    const settled = await settleWithin(run, amendForegroundBudgetMs());
+    if (settled.kind === 'rejected') throw settled.error;
+    const payload =
+      settled.kind === 'resolved'
+        ? { ...settled.value, idempotencyKey }
+        : {
+            ok: true,
+            pending: true,
+            idempotencyKey,
+            receipt: {
+              idempotencyKey,
+              rubricRef: args.rubricRef,
+              poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey } },
+            },
+            note:
+              `The amendment is still running after ${Math.round(amendForegroundBudgetMs() / 1000)}s and continues ` +
+              'server-side. Poll rubrics:amend-status with this receipt; do not re-issue the amend while it reads running.',
+          };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+  },
+});
+
+/** RSR-P-008-C: how long the handler waits before answering with a receipt.
+ *  Well under the 55s MCP transport deadline so the receipt always wins the
+ *  race. Overridable for tests through the env var. */
+export const AMEND_FOREGROUND_BUDGET_MS = 40_000;
+
+function amendForegroundBudgetMs(): number {
+  const override = Number(process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS);
+  return override > 0 ? override : AMEND_FOREGROUND_BUDGET_MS;
+}
+
+type Settled<T> = { kind: 'resolved'; value: T } | { kind: 'rejected'; error: unknown } | { kind: 'pending' };
+
+/** Wait up to `budgetMs` for `run`. On `pending`, `run` keeps going; its
+ *  rejection is already observed by trackAmendRun's receipt, so it is swallowed
+ *  here rather than surfacing as an unhandled rejection. */
+async function settleWithin<T>(run: Promise<T>, budgetMs: number): Promise<Settled<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = new Promise<Settled<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'pending' }), budgetMs);
+  });
+  const outcome = run.then(
+    (value): Settled<T> => ({ kind: 'resolved', value }),
+    (error: unknown): Settled<T> => ({ kind: 'rejected', error }),
+  );
+  try {
+    return await Promise.race([outcome, pending]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** The synchronous amend: apply, then build the response payload. */
+async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise<Record<string, unknown>> {
     const rubric = await amendRubric(input);
-    if (!rubric) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({ ok: false, error: `no rubric '${args.rubricRef}' — rubrics:list to see refs` }),
-          },
-        ],
-      };
-    }
+    if (!rubric) return { ok: false, error: `no rubric '${rubricRef}' — rubrics:list to see refs` };
     const completeness = rubricCompleteness(rubric);
     // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);

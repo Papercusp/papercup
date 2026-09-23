@@ -128,7 +128,12 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
-import { DEFAULT_INBOX_BODY_CAP, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
+import {
+  COORD_SEND_MAX_CHUNK_PARTS,
+  DEFAULT_INBOX_BODY_CAP,
+  senderBodyDeliveryDiagnostics,
+} from './inbox-content-bounds';
+import { chunkOverCapMessage, type ChunkPartMeta } from './send-chunking';
 import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 import {
   GOAL_OWNER_REPORT_FIELD,
@@ -378,6 +383,15 @@ function bodyTextLength(body: unknown): number | null {
     texts.push(text);
   }
   return texts.join('\n\n').length;
+}
+
+function overCapBodyMessage(bodyChars: number, expects: string): string {
+  return (
+    `coord:send body is ${bodyChars} characters, exceeding the ${DEFAULT_INBOX_BODY_CAP}-character default inbox cap for expects:'${expects}'. ` +
+    'Nothing was sent. This per-message backstop only fires for a caller that bypassed the coord:send handler, ' +
+    'which delivers an over-cap body as ordered inbox-sized parts (send-chunking.ts); route the send through it. ' +
+    'For content too long to chunk, store it with `work_items:comment { id, body }` or `coord:message-agent { to, body }` and send a short pointer.'
+  );
 }
 
 interface DispatchAdvisory {
@@ -868,12 +882,7 @@ async function sendOne(
       ok: false,
       to: msg.to,
       error: 'body_exceeds_inbox_cap',
-      message:
-        `coord:send body is ${authoredBodyChars} characters, exceeding the ` +
-        `${DEFAULT_INBOX_BODY_CAP}-character default inbox cap for expects:'${msg.expects}'. ` +
-        'Nothing was sent. Shorten the body so the recipient can see the complete ask; ' +
-        '`coord:read` is a recovery path, not a substitute for a load-bearing send. ' +
-        "An explicit expects:'none' remains allowed for FYI/status messages.",
+      message: overCapBodyMessage(authoredBodyChars, msg.expects),
     };
   }
 
@@ -2408,7 +2417,7 @@ export default defineTool({
     when: 'Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
+      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character inbox cap is delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading); one needing more than ' + COORD_SEND_MAX_CHUNK_PARTS + ' parts is refused. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',
@@ -2514,27 +2523,26 @@ export default defineTool({
         pctx.addIssue({ code: 'custom', path: [...path, 'body'], message: BODY_MUST_BE_ARRAY_MESSAGE });
       }
     };
-    // EI-21826596284846555: keep load-bearing bodies within the largest normal
-    // inbox projection. This is deliberately a schema-time refusal, so the
-    // sender learns before any handler-side enrichment or persistence runs.
+    // EI-21826596284846555 + RSR-P-008-B: a body over the largest normal inbox
+    // projection is no longer refused — the handler delivers it in full as ordered
+    // inbox-sized parts (send-chunking.ts). What stays a schema-time refusal is a
+    // body too long to chunk, so the sender learns before any persistence runs.
+    // Applies to every `expects`: an over-cap FYI used to persist and then report a
+    // lossy send; now it is chunked like any other message.
     const flagOverlongBody = (
-      message: { body?: unknown; expects?: unknown },
+      message: { body?: unknown; expects?: unknown; summary?: unknown },
       path: (string | number)[],
     ) => {
-      const expects = typeof message.expects === 'string' ? message.expects : undefined;
-      if (!expects || expects === 'none') return;
       const bodyChars = bodyTextLength(message.body);
       if (bodyChars === null || bodyChars <= DEFAULT_INBOX_BODY_CAP) return;
-      pctx.addIssue({
-        code: 'custom',
-        path: [...path, 'body'],
-        message:
-          `coord:send body is ${bodyChars} characters, exceeding the ` +
-          `${DEFAULT_INBOX_BODY_CAP}-character default inbox cap for expects:'${expects}'. ` +
-          'Nothing was sent. Shorten the body so the recipient can see the complete ask; ' +
-          '`coord:read` is a recovery path, not a substitute for a load-bearing send. ' +
-          "An explicit expects:'none' remains allowed for FYI/status messages.",
+      const plan = chunkOverCapMessage({
+        to: [],
+        summary: typeof message.summary === 'string' ? message.summary : '',
+        body: message.body as string | MessageSection[],
+        expects: typeof message.expects === 'string' ? message.expects : 'none',
       });
+      if (plan.kind !== 'refused') return;
+      pctx.addIssue({ code: 'custom', path: [...path, 'body'], message: plan.message });
     };
     // EI-20271510434650928: endTurn is an ESC-before-wake recovery operation. Without
     // an explicit wake mode it can end a recipient's current turn and then leave them
@@ -2903,9 +2911,29 @@ export default defineTool({
       senderCueAuthority = await resolveSenderCueAuthority(identity);
     }
 
+    // review-system-rework-reduction P-008 / RSR-P-008-B: an over-cap body is
+    // delivered IN FULL as ordered inbox-sized parts instead of being refused or
+    // clipped (send-chunking.ts owns the contract). Expanded BEFORE runBulk so each
+    // part is an ordinary message through the one per-message pipeline below, in
+    // order (runBulk's default concurrency is 1), and the final part — the one that
+    // carries the ask and the wake — persists last.
+    const expanded: Array<{
+      msg: SendMsg;
+      chunk?: ChunkPartMeta;
+      refusal?: { error: string; message: string };
+    }> = [];
+    for (const original of list) {
+      const plan = chunkOverCapMessage(original);
+      if (plan.kind === 'single') expanded.push({ msg: original });
+      else if (plan.kind === 'refused') {
+        expanded.push({ msg: original, refusal: { error: plan.error, message: plan.message } });
+      } else for (const part of plan.parts) expanded.push({ msg: part.message, chunk: part.meta });
+    }
+
     const env = await runBulk(
-      list,
-      async (msg, itemIndex) => {
+      expanded,
+      async ({ msg, refusal }, itemIndex) => {
+        if (refusal) return { ok: false, to: msg.to, ...refusal };
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -2978,9 +3006,35 @@ export default defineTool({
         );
       },
       {
-        keyOf: (msg) => ({ to: msg.to }),
+        keyOf: ({ msg }) => ({ to: msg.to }),
       },
     );
+    // RSR-P-008-B: stamp each delivered part with its place in the chunked message,
+    // and summarise every chunked message on the envelope, so the sender can see
+    // that one logical message became N rows (and which msg_id carries the ask).
+    const chunkedMessages = new Map<string, { group: string; of: number; msgIds: Array<string | null> }>();
+    env.results.forEach((result, index) => {
+      const chunk = expanded[index]?.chunk;
+      if (!chunk) return;
+      (result as Record<string, unknown>).chunk = chunk;
+      const entry = chunkedMessages.get(chunk.group) ?? { group: chunk.group, of: chunk.of, msgIds: [] };
+      entry.msgIds[chunk.part - 1] = typeof result.msg_id === 'string' ? result.msg_id : null;
+      chunkedMessages.set(chunk.group, entry);
+    });
+    const chunked = chunkedMessages.size
+      ? {
+          chunked: [...chunkedMessages.values()].map((entry) => ({
+            group: entry.group,
+            parts: entry.of,
+            msgIds: entry.msgIds,
+            askMsgId: entry.msgIds[entry.of - 1] ?? null,
+          })),
+          chunkedNote:
+            'A body over the inbox cap was delivered in full as ordered parts, each fully visible in a ' +
+            'normal inbox read. Only the final part (askMsgId) carries expects, the wake and reply ' +
+            'threading; earlier parts are expects:none continuations.',
+        }
+      : {};
     // The shared bulk contract DERIVES the envelope's `ok` from `results[].ok`
     // (EI-23737206446729041), so a thrown persistence error — for example a transient
     // PG lock timeout that becomes a nested `{ ok:false }` — already makes this call
@@ -3060,6 +3114,7 @@ export default defineTool({
     // busy the reader's page happens to be). Only a certain loss fails the send.
     const warnedEnv = {
       ...env,
+      ...chunked,
       ...(bodyDeliveryWarning
         ? { ok: false, bodyDeliveryLossy: true, bodyDeliveryWarning }
         : {}),

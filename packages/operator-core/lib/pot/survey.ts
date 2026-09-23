@@ -59,6 +59,18 @@ const MS_PER_DAY = 86_400_000;
  */
 export const POT_SURVEY_PLAN_READ_CONCURRENCY = 2;
 
+/**
+ * WI-10002668: how many POTS {@link surveyWorkspace} surveys at once. One
+ * `surveyPot` already peaks at four scope reads plus
+ * {@link POT_SURVEY_PLAN_READ_CONCURRENCY} plan reads (6), so a second concurrent
+ * pot would exceed the eight-connection org pool the constant above guards. The
+ * old unbounded `Promise.all` over every pot (29 on the dev tower) queued ~170
+ * acquisitions per call and put 42-80 concurrent frontier scans on the tower PG.
+ * Serial pots cost little now that {@link shareScopedSurveyReads} collapses
+ * every pot sharing a scope onto one read.
+ */
+export const WORKSPACE_SURVEY_POT_CONCURRENCY = 1;
+
 /** Importance rank for "hottest open item" (most → least). */
 const IMPORTANCE_RANK = Object.fromEntries(IMPORTANCE_LEVELS.map((level, i) => [level, i])) as Record<
   Importance,
@@ -1152,6 +1164,54 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
   };
 }
 
+/** Order-insensitive identity of a survey scope (`[]` = the workspace-wide fallback). */
+function surveyScopeKey(surveySlugs: readonly string[]): string {
+  return JSON.stringify([...surveySlugs].sort());
+}
+
+/** Share one in-flight/settled promise per key for the lifetime of the returned fn. */
+function shareByKey<A extends unknown[], R>(
+  fn: (...args: A) => Promise<R>,
+  keyOf: (...args: A) => string,
+): (...args: A) => Promise<R> {
+  const shared = new Map<string, Promise<R>>();
+  return (...args: A): Promise<R> => {
+    const key = keyOf(...args);
+    let pending = shared.get(key);
+    if (!pending) {
+      // Promise.resolve().then(...) turns a synchronous throw into a rejection every
+      // sharer observes, instead of throwing only at the first caller.
+      pending = Promise.resolve().then(() => fn(...args));
+      shared.set(key, pending);
+    }
+    return pending;
+  };
+}
+
+/**
+ * WI-10002668: make every SCOPE-KEYED survey read shared across pots for one
+ * {@link surveyWorkspace} call. The frontier, escalated-issue, quarantined-count
+ * and reconcile reads depend only on `(surveySlugs, limit)`, and the block graph
+ * only on the harness, so pots resolving to the SAME scope asked PG the same
+ * question N times. On the dev tower 20 of 29 pots fall back to the workspace-wide
+ * scope (`surveySlugs: []`), so each call ran 20 identical workspace-wide scans
+ * of each query (pg_stat_statements: 510k calls at a 1.3s / 0.46s mean, the #2
+ * and #5 DB consumers). Sharing collapses that to one read per distinct scope.
+ * Results are only read downstream (spread/mapped, never mutated), so sharing
+ * the rows between pot sections is safe. A rejection is shared too, so each
+ * pot's existing fail-open handling still applies exactly as before.
+ */
+export function shareScopedSurveyReads(deps: SurveyDeps): SurveyDeps {
+  return {
+    ...deps,
+    fetchFrontier: shareByKey(deps.fetchFrontier, (slugs, limit) => `${surveyScopeKey(slugs)}|${limit}`),
+    fetchEscalatedIssues: shareByKey(deps.fetchEscalatedIssues, (slugs, limit) => `${surveyScopeKey(slugs)}|${limit}`),
+    fetchQuarantinedCount: shareByKey(deps.fetchQuarantinedCount, (slugs) => surveyScopeKey(slugs)),
+    fetchReconcile: shareByKey(deps.fetchReconcile, (slugs, limit) => `${surveyScopeKey(slugs)}|${limit}`),
+    fetchBlockGraph: shareByKey(deps.fetchBlockGraph, (harness) => harness),
+  };
+}
+
 /**
  * Survey a Pot's member harnesses and return BOTH ranked views (P-010 + the
  * P-012 fix). The plan-survey harness set mirrors the frontier scope: the
@@ -1441,16 +1501,17 @@ export async function surveyWorkspace(
   // De-dup + stable order (registry order); a workspace==pot shape is one entry.
   potSlugs = Array.from(new Set(potSlugs));
 
-  const perPot = await Promise.all(
-    potSlugs.map(async (pot) => ({
-      pot,
-      survey: await surveyPot(workspaceId, pot, {
-        frontierLimit: opts.frontierLimit,
-        scopeFilter: opts.scopeFilter,
-        deps: opts.deps,
-      }),
-    })),
-  );
+  // WI-10002668: one shared read per distinct survey scope (not per pot), and a
+  // bounded pot fan-out that stays inside the org pool width.
+  const deps = shareScopedSurveyReads({ ...defaultSurveyDeps(workspaceId), ...opts.deps });
+  const perPot = await mapWithConcurrency(potSlugs, WORKSPACE_SURVEY_POT_CONCURRENCY, async (pot) => ({
+    pot,
+    survey: await surveyPot(workspaceId, pot, {
+      frontierLimit: opts.frontierLimit,
+      scopeFilter: opts.scopeFilter,
+      deps,
+    }),
+  }));
 
   // Merge every pot's candidates (each tagged with its source/target pot — the
   // P-001 routing tag) and re-rank through the ONE placement registry, so the

@@ -51,7 +51,7 @@ import type { DerivedCouplingRelation } from '../../coord/couplings';
 // discoverable from the REJECTION. Import the constant (a true leaf module —
 // that is why it was factored out) so the schema below states the real number
 // and cannot drift from the value the refusal enforces.
-import { DEFAULT_INBOX_BODY_CAP } from './tools/inbox-content-bounds';
+import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './tools/inbox-content-bounds';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // premises — what I or someone else ASSERTED (D-041's rename of `restsOn`)
@@ -1073,9 +1073,9 @@ export const messageBodyArg = shapeTaughtArray(
       '`youMayNotKnow: [{ ref: "WI-1234", provenance: "authored" }]`, or ' +
       '`couldNotDetermine: [{ what: "the thing you tried to establish", note: "optional detail" }]`, ' +
       '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
-      'are refused on a section. LENGTH: unless `expects` is \'none\', a body over ' +
-      `${DEFAULT_INBOX_BODY_CAP} characters is REFUSED and NOTHING is sent — default inbox reads show only that much. ` +
-      'Store long item detail with `work_items:comment { id, body }`; use `coord:message-agent` for direct peer artifacts, then send a short `coord:send` pointer.',
+      'are refused on a section. LENGTH: a body over ' +
+      `${DEFAULT_INBOX_BODY_CAP} characters (what one inbox read shows) is delivered in full as up to ${COORD_SEND_MAX_CHUNK_PARTS} ordered parts; ` +
+      'only the final part carries `expects` and the wake. Longer is REFUSED: put it on `work_items:comment` or `coord:message-agent`, then send a short pointer.',
   )
   .meta({
     // EI-23318249512516833: the same body schema is used by the single-message
@@ -1087,7 +1087,7 @@ export const messageBodyArg = shapeTaughtArray(
     // unconditional or per-section cap. The send validator uses this same
     // receiver-derived constant; its parity test covers both sides of the bound.
     'x-papercusp-call-constraint':
-      `expects!=none => body text joined with "\\n\\n" <=${DEFAULT_INBOX_BODY_CAP} characters`,
+      `body text joined with "\\n\\n" must fit ${COORD_SEND_MAX_CHUNK_PARTS} parts of <=${DEFAULT_INBOX_BODY_CAP} characters`,
   });
 
 export {

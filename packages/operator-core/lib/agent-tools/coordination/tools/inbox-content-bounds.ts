@@ -39,6 +39,13 @@ export function inboxBodyCharCap(
 /** The largest body a one-entry default `coord:inbox` read can show. */
 export const DEFAULT_INBOX_BODY_CAP = inboxBodyCharCap('full', 1);
 
+/** RSR-P-008-B: coord:send delivers an over-cap body as at most this many
+ *  inbox-sized parts (send-chunking.ts). Lives here, beside the cap it scales,
+ *  so the body schema's description can state it without importing the
+ *  chunker (which imports the schema module). 12 parts carry about 6.5k chars,
+ *  above the longest agent-authored coord:send body in the P-008 census. */
+export const COORD_SEND_MAX_CHUNK_PARTS = 12;
+
 export interface SenderBodyDeliveryDiagnostics {
   /** True when even the one-entry default inbox view clips the body. */
   bodyTruncated: boolean;

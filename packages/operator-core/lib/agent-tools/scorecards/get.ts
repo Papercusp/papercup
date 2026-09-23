@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS } from '@papercusp/tooldef';
 import { DbCallDeadlineError } from '@papercusp/db-org';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readScorecardEvidence, type ScorecardEvidenceRow } from '../../scorecards';
@@ -21,23 +23,32 @@ export const scorecardGetArgs = z.object({
     .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
 });
 
-// Bound the JSON-encoded result BEFORE transport shaping, including escaping.
-// An ambient full tier alone does not bypass the shared hard ceiling. A large
-// card must advertise incomplete evidence, not lose the executable probe at its
-// tail and invite a false "not re-runnable" audit (EI-22760702558473393).
-const INLINE_EVIDENCE_CHARS = Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2);
+// Bound the JSON-encoded result before both payload shaping and the later MCP
+// result door. The latter is much smaller than the shared 30k payload ceiling;
+// if it clips a complete criterion page, evidenceRead.complete lies about what
+// reached the model. Keep the exact same effective door settings as the host.
+function inlineResultBudgetChars(ownerId?: string | null): number {
+  const resultDoorChars =
+    computeTurnDoors(0, getDoorConstantsSync(ownerId)).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  return Math.max(1, Math.min(Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2), resultDoorChars));
+}
+
 const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0) => ({
   tool: 'scorecards:get',
   args: { issueId, criterionKey, evidenceOffset },
 });
 
-function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<typeof scorecardGetArgs>) {
+function boundedEvidenceRead(
+  scorecard: ScorecardEvidenceRow,
+  args: z.infer<typeof scorecardGetArgs>,
+  inlineBudgetChars: number,
+) {
   if (args.criterionKey === undefined) {
     if (args.evidenceOffset !== undefined) {
       return { ok: false as const, error: 'criterion_required_for_offset' };
     }
     const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
-    if (JSON.stringify(full).length <= INLINE_EVIDENCE_CHARS) return full;
+    if (JSON.stringify(full).length <= inlineBudgetChars) return full;
     const index = {
       ok: true as const,
       scorecard: { ...scorecard, criteria: [] },
@@ -51,7 +62,7 @@ function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<type
         })),
       },
     };
-    if (JSON.stringify(index).length > INLINE_EVIDENCE_CHARS) {
+    if (JSON.stringify(index).length > inlineBudgetChars) {
       return {
         ok: false as const,
         error: 'scorecard_index_exceeds_inline_budget',
@@ -66,7 +77,7 @@ function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<type
   if (offset > criterion.evidence.length || (offset === criterion.evidence.length && offset !== 0)) {
     return { ok: false as const, error: 'invalid_evidence_offset' };
   }
-  let count = Math.min(INLINE_EVIDENCE_CHARS, criterion.evidence.length - offset);
+  let count = Math.min(inlineBudgetChars, criterion.evidence.length - offset);
   const page = () => {
     const nextOffset = offset + count;
     const complete = nextOffset === criterion.evidence.length;
@@ -84,11 +95,11 @@ function boundedEvidenceRead(scorecard: ScorecardEvidenceRow, args: z.infer<type
     };
   };
   let result = page();
-  while (JSON.stringify(result).length > INLINE_EVIDENCE_CHARS && count > 1) {
+  while (JSON.stringify(result).length > inlineBudgetChars && count > 1) {
     count = Math.max(1, Math.floor(count / 2));
     result = page();
   }
-  if (JSON.stringify(result).length > INLINE_EVIDENCE_CHARS) {
+  if (JSON.stringify(result).length > inlineBudgetChars) {
     return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
   }
   return result;
@@ -140,7 +151,7 @@ export default defineTool({
         if (result.kind === 'not_scorecard') {
           return { data: { ok: false as const, error: `'${args.issueId}' is not a scorecard` } };
         }
-        return { data: boundedEvidenceRead(result.scorecard, args) };
+        return { data: boundedEvidenceRead(result.scorecard, args, inlineResultBudgetChars(identity.ownerId)) };
       } catch (error) {
         if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
           return {

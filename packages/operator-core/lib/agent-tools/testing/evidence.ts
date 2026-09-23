@@ -39,10 +39,29 @@ type Deps = {
   bind: typeof bindSpecEvidence; measure: typeof measureRepoFilesEvidenceAtRoot;
   ledger: typeof readHarnessTestRunEvidence; list: typeof listSpecEvidence;
   unattributed: typeof countUnattributedTestRunRows;
+  /**
+   * P-018 commit pin. Optional so a caller with a fake `measure` never silently gets a
+   * real filesystem/git probe mixed into its fixture; the production defaults supply it.
+   */
+  pin?: typeof measureAndPinRepoFilesEvidenceAtRoot;
 };
 const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEvidenceAtRoot,
   ledger: readHarnessTestRunEvidence, list: listSpecEvidence,
-  unattributed: countUnattributedTestRunRows };
+  unattributed: countUnattributedTestRunRows, pin: measureAndPinRepoFilesEvidenceAtRoot };
+
+/**
+ * The commit pin for a measurement, or null. The pin re-reads the files, so it is kept
+ * ONLY when its own fingerprints equal the ones being bound: a file that moved between
+ * the two reads would otherwise pin bytes the proof was never measured against.
+ */
+async function pinFor(root: string, measurement: RepoFilesEvidenceMeasurement,
+  fingerprints: { sourceFingerprint: string; testFingerprint: string | null }, deps: Deps): Promise<MeasurementPin | null> {
+  if (!deps.pin) return null;
+  const pinned = await deps.pin(root, measurement).catch(() => null);
+  if (!pinned) return null;
+  return pinned.sourceFingerprint === fingerprints.sourceFingerprint && pinned.testFingerprint === fingerprints.testFingerprint
+    ? pinned.pin : null;
+}
 
 /**
  * Why a scoped ledger read found no row. An absent run and an unattributed one

@@ -1413,9 +1413,9 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
 });
 
 describe('EI-237397 fixed prompt-floor livelock guard', () => {
-  it('raises a derived limit above the measured fixed floor and skips another respawn', async () => {
-    estimateMock.mockResolvedValue(340_000);
-    observedPromptFloorMock.mockReturnValue({ tokens: 340_000, observations: 3, at: Date.now() });
+  it('raises a fleet member limit above the measured fixed floor and skips another respawn', async () => {
+    estimateMock.mockResolvedValue(396_171);
+    observedPromptFloorMock.mockReturnValue({ tokens: 396_171, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
       fakeSql({
@@ -1424,6 +1424,8 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
           owner_label: 'su · floor-bound',
           compaction_limit: 250_000,
           compaction_limit_explicit: false,
+          fleet_slug: 'nonp2p-bug-drain-luna-max-50',
+          fleet_role: 'member',
         }],
       }),
     );
@@ -1432,7 +1434,7 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
     expect(out.relimited).toEqual([{ owner: 'floor-bound', from: 250_000, to: 450_000 }]);
     expect(out.unsatisfiableLimits).toEqual([{
       owner: 'floor-bound',
-      fixedFloor: 340_000,
+      fixedFloor: 396_171,
       limit: 250_000,
       forceAt: 325_000,
       repairedTo: 450_000,

@@ -377,7 +377,7 @@
     "mirror:push": "node scripts/templates-mirror-sync.mjs --push",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "patch:regen": "patch-package --exclude '(^package\\.json$|(^|/)\\.verdict-data/)'",
-    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && node scripts/install-onnxruntime-node.mjs && patch-package"
+    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && node scripts/install-onnxruntime-node.mjs && patch-package && node scripts/check-installed-patch-postimages.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.25",

@@ -1,7 +1,7 @@
 # Leading a fleet without polling — the composed await that replaces the monitor loop
 URL: /internal/docs/agent-insights/leading-a-fleet-without-polling
 
-A fleet leader's monitor loop was the exact clock-driven anti-pattern the plan it supervised existed to eliminate: ~14 wakes in one run, mostly near-noops, and still up to 3 minutes to notice a member had dropped its last claim. Leading is now PUSH-based — park on one composed events:await over the fleet transition keys, and demote loop:arm to a long fallback heartbeat. Includes the ready-to-paste spec, why two of the five transitions could NOT be served by the keys that already existed, and the id-scoped-vs-scope-keyed distinction that makes the difference.
+A fleet leader parks on transition events with a long fallback heartbeat. The ended-only member-dead event is paired with a claim-gated member-left event for clean departures that still hold work.
 
 ## The thing to change
 
@@ -24,6 +24,7 @@ payload.
 events:await {
   any: [
     { event: "fleet:member-dead:<my-fleet>" },
+    { event: "fleet:member-left:<my-fleet>" },
     { event: "fleet:context-critical:<my-fleet>" },
     { event: "fleet:claim-released:<my-fleet>" },
     { event: "fleet:item-completed:<my-fleet>" },
@@ -49,14 +50,15 @@ turn. The brief is how you look at the fleet; it is not how you watch it.
 
 ## What each key buys you
 
-| key                                             | you are woken when                              | replaces                                        |
-| ----------------------------------------------- | ----------------------------------------------- | ----------------------------------------------- |
-| `fleet:member-dead:<slug>`                      | a member reaches a CONFIRMED-dead verdict       | polling the brief for liveness                  |
-| `fleet:context-critical:<slug>`                 | a member crosses into critical context pressure | polling every member's `contextPressure`        |
-| `fleet:claim-released:<slug>`                   | a member's claim returns to the pool            | polling `fleet:assignments` for a dropped claim |
-| `fleet:item-completed:<slug>`                   | a member settles an item                        | polling the brief for burn-down delta           |
-| `work-item:claimable` + `payload_filter {plan}` | work exists for an idle member                  | the idle re-poll of `scheduler:get_next`        |
-| `fleet:drained:<slug>`                          | every claimable lane is done                    | polling to know when to `loop:end`              |
+| key                                             | you are woken when                                         | replaces                                                                        |
+| ----------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `fleet:member-dead:<slug>`                      | a member reaches a CONFIRMED-dead verdict                  | polling the brief for liveness                                                  |
+| `fleet:member-left:<slug>`                      | a member is recorded, non-wakeable, and still holds claims | waiting for the fallback heartbeat to discover a clean exit with in-flight work |
+| `fleet:context-critical:<slug>`                 | a member crosses into critical context pressure            | polling every member's `contextPressure`                                        |
+| `fleet:claim-released:<slug>`                   | a member's claim returns to the pool                       | polling `fleet:assignments` for a dropped claim                                 |
+| `fleet:item-completed:<slug>`                   | a member settles an item                                   | polling the brief for burn-down delta                                           |
+| `work-item:claimable` + `payload_filter {plan}` | work exists for an idle member                             | the idle re-poll of `scheduler:get_next`                                        |
+| `fleet:drained:<slug>`                          | every claimable lane is done                               | polling to know when to `loop:end`                                              |
 
 `fleet:context-critical` pairs directly with `fleet:require-checkpoint { member, itemId }`:
 you are woken *before* the member compacts, while forcing a checkpoint still helps.
@@ -75,7 +77,7 @@ and the catalog does not currently distinguish them:
   id. They are correct for a **delegator** awaiting a SPECIFIC child.
 * **global / payload-filtered** — `work-item:claimable`, `work-item:created`. Usable by
   anyone; narrow with `payload_filter`.
-* **scope-keyed** — `fleet:drained:<slug>` and the four above. Usable by anyone who knows
+* **scope-keyed** — `fleet:drained:<slug>` and the five above. Usable by anyone who knows
   a scope they already own.
 
 A **leader** does not know, in advance, which of its fleet's items will be released or
@@ -84,8 +86,9 @@ awaits and re-registering every time the set changes — a subscription treadmil
 polling the item set, which is the very thing being removed. `claim:released:<id>` and
 `work-item:done:<id>` keep firing unchanged; they are simply not a fleet feed.
 
-Of the five transitions, exactly one (`work-item:claimable`) was genuinely already
-usable. The other four had to be published.
+Of P-009’s five original transitions, exactly one (`work-item:claimable`) was genuinely already
+usable; its other four had to be published. The clean-exit-with-claims case was identified later and is
+covered by the companion `fleet:member-left` family.
 
 > If you are ever surveying "does this event already exist?", ask **who can subscribe
 > without already knowing the answer.** That question, not the key name, is the one that
@@ -94,11 +97,13 @@ usable. The other four had to be published.
 
 ## Why the heartbeat stays
 
-Two of the four transitions have no transition site at all. **Death is the ABSENCE of a
+Two of P-009’s four original transitions have no transition site at all. **Death is the ABSENCE of a
 write** — nothing happens at the moment a member dies; a verdict merely becomes derivable.
 Context pressure is derived from self-reported token counts, so the bucket changes with no
-event of its own. Both are therefore produced by a periodic sweep
+event of its own. Those two derived transitions use a periodic sweep
 (`system:fleet-transition-sweep`, every 60s) that diffs against the previous observation.
+The companion `member-left` edge uses the same sweep for a recorded, non-wakeable
+member with claims still attached.
 
 That sweep is still push, not poll, in the sense that matters: **one sweep for the whole
 box replaces N leaders each burning a turn to look.** The leader sleeps; the substrate
@@ -119,8 +124,11 @@ it. Two suppressions are load-bearing:
    orphaned-claim arithmetic, but per WI-4400 they require a wake confirmation first.
    Only `ended` fires `fleet:member-dead`.
 2. **A member DISAPPEARING is not a death.** A row reaped on its TTL and a member that
-   left the fleet are indistinguishable to the sweep, so it stays silent rather than
-   guessing.
+   left the fleet without an observed recorded transition are indistinguishable to the sweep, so it
+   stays silent rather than guessing.
+
+A cleanly recorded departure is different: when the member is non-wakeable and still holds claims,
+`fleet:member-left` wakes the leader to inspect `fleet:assignments`. The event does not assert that any claim is orphaned or reclaimable; claimless exits stay silent.
 
 Likewise the detector never fires on a **first sighting** (or the first sweep after an
 operator restart would wake every leader for every historically-dead row), and never

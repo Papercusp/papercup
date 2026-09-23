@@ -88,6 +88,34 @@ describe('session-port current-version test fixtures', () => {
 });
 
 describe('consult evidence-span session ports (P-007)', () => {
+  it('inspectAcquiredSessionPort uses the evidence window instead of retaining the full adapted history', () => {
+    const inspection = inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('needle evidence'),
+      target,
+      evidenceSpan: {
+        sessionId: row.sessionId!,
+        turnIndices: [0],
+        contextTurns: 0,
+        evidenceTurns: [{ turnIdx: 0, timestamp: null, speaker: 'user', text: 'needle evidence' }],
+      },
+    });
+
+    expect(inspection.internal.turns.map((turn) => turn.id)).toEqual(['u1']);
+    expect(inspection.warnings).toContain('consult evidence span: 1 matched turn(s), ±0 surrounding turn(s)');
+    expect(() => inspectAcquiredSessionPort({
+      sourceRow: row,
+      stableSource: source('needle evidence'),
+      target,
+      evidenceSpan: {
+        sessionId: 'different-session',
+        turnIndices: [0],
+        contextTurns: 0,
+        evidenceTurns: [{ turnIdx: 0, timestamp: null, speaker: 'user', text: 'needle evidence' }],
+      },
+    })).toThrow(/exact tracked source session/);
+  });
+
   it('maps exact indexed refs and includes only their bounded neighboring turns', () => {
     const turns: PortableTurn[] = Array.from({ length: 6 }, (_unused, index) => ({
       id: `turn-${index}`,

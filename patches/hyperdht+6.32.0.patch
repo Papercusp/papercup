@@ -1,5 +1,5 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..187a71b 100644
+index 86afb4eb582bad55f4b9bafba9c035a2882d1e40..8840641a89f321dbcb6e59a9063a0e5c79687576 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
 @@ -217,32 +217,149 @@ async function holepunch(c, opts) {

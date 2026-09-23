@@ -324,6 +324,9 @@ export function inspectAcquiredSessionPort(input: {
   if (!Number.isFinite(target.availableInputTokens) || target.availableInputTokens <= 0) {
     throw new Error('target launch has no available input budget');
   }
+  if (input.evidenceSpan && input.evidenceSpan.sessionId !== sourceRow.sessionId) {
+    throw new Error('consult evidence span must name the exact tracked source session');
+  }
   const adapted = adaptClaudeJsonl(stableSource.bytes.toString('utf8'));
   const selectedTurns = input.evidenceSpan
     ? selectSessionPortEvidenceSpan(adapted.turns, input.evidenceSpan)
