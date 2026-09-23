@@ -242,6 +242,9 @@ describe('selectionSnapshot — persisted provenance (D-002)', () => {
       score: 0.9,
       relevance: 0.95,
       signals: { similarity: 0.8, verification: 0.3, authorship: 0, freshness: 0.95 },
+      evidence: [
+        { session_id: 'session-a', turn_idx: 4, ts: '2026-09-23T00:00:00.000Z', sim: 0.8 },
+      ],
     });
     const b = cand('b', {
       score: 0.4,
@@ -260,7 +263,10 @@ describe('selectionSnapshot — persisted provenance (D-002)', () => {
       min: 2,
       max: 3,
       selected: [
-        { ownerId: 'a', via: 'floor', score: 0.9, relevance: 0.95, similarity: 0.8, liveness: 'live' },
+        {
+          ownerId: 'a', via: 'floor', score: 0.9, relevance: 0.95, similarity: 0.8, liveness: 'live',
+          evidence: [{ session_id: 'session-a', turn_idx: 4, ts: '2026-09-23T00:00:00.000Z', sim: 0.8 }],
+        },
         { ownerId: 'b', via: 'minimum', score: 0.4, relevance: 0.44, similarity: 0.3, liveness: 'parked' },
       ],
     });
