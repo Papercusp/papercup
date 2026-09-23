@@ -95,10 +95,10 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('typed by the human owner');
   });
 
-  it('owner branch keeps the hybrid pending-capture rail wired to the durable tool', () => {
+  it('owner branch keeps the capture rail wired to the durable tool, current verb first', () => {
     const source = readFileSync(SCRIPT, 'utf8');
-    expect(source).toContain('capture_pending_owner_prompt');
-    expect(source).toContain("_mcp_call('orders:capture-pending'");
+    expect(source).toContain('capture_owner_prompt(prompt');
+    expect(source).toContain("CAPTURE_VERBS = ('orders:capture', 'orders:capture-pending')");
     expect(source).toContain("'sourceTurnRef'");
   });
 
