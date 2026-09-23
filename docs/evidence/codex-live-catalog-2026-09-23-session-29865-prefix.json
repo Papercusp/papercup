@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "codex-live-catalog session session-29865",
+  "framework": "operational",
+  "command": [
+    "inspect",
+    "~/.papercusp/su-codex-homes/session-29865/config.toml",
+    "~/.papercusp/su-codex-homes/session-29865/models_cache.json"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-23T00:53:56.222Z",
+  "finishedAt": "2026-09-23T00:53:56.223Z",
+  "summary": "Fresh PSU --account=auto Codex home session-29865: discovery=false, model_catalog_url=absent, originator=absent, selector cache lists gpt-6-sol=false gpt-6-luna=false.",
+  "assertions": [
+    { "id": "discovery-feature-enabled", "passed": false, "evidence": "config.toml lacks api_key_model_discovery" },
+    { "id": "gateway-catalog-url", "passed": false, "evidence": "provider block has no model_catalog_url" },
+    { "id": "codex-originator", "passed": false, "evidence": "provider http_headers originator = absent" },
+    { "id": "selector-cache-lists-gpt-6-sol", "passed": false, "evidence": "no models_cache.json — Codex never discovered a catalog for this home" },
+    { "id": "selector-cache-lists-gpt-6-luna", "passed": false, "evidence": "no models_cache.json — Codex never discovered a catalog for this home" }
+  ],
+  "plan": "codex-gateway-live-model-catalog-2026-09-22",
+  "planItem": "P-003",
+  "role": "negative (counterexample) for causal pair fresh-auto-session-catalog: a fresh PSU --account=auto Codex home written 2026-09-23T00:01:10Z by the release launcher (pre-fix) has no discovery config and never obtains a catalog, so /model cannot list gpt-6-sol/gpt-6-luna.",
+  "generator": ".papercusp/scratch/codex-live-catalog-evidence.mjs session ~/.papercusp/su-codex-homes/session-29865"
+}

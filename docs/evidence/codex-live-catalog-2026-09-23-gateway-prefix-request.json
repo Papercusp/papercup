@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "codex-live-catalog gateway session-29865",
+  "framework": "operational",
+  "command": [
+    "GET",
+    "http://127.0.0.1:8788/v1/models?client_version=0.156.0",
+    "headers=[\"x-papercusp-owner\",\"x-papercusp-priority\"]"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-23T00:53:56.337Z",
+  "finishedAt": "2026-09-23T00:53:56.657Z",
+  "summary": "Live inference gateway :8788 /v1/models requested with the provider headers generated into PSU Codex home session-29865 (x-papercusp-owner, x-papercusp-priority; originator absent). Result: shape openai/anthropic{data[]}, gpt-6-sol absent, gpt-6-luna absent.",
+  "assertions": [
+    { "id": "http-200", "passed": true, "evidence": "HTTP 200" },
+    { "id": "codex-catalog-shape", "passed": false, "evidence": "response shape openai/anthropic{data[]}; 0 codex models" },
+    { "id": "lists-gpt-6-sol", "passed": false, "evidence": "gpt-6-sol absent; models[] = []" },
+    { "id": "lists-gpt-6-luna", "passed": false, "evidence": "gpt-6-luna absent; models[] = []" }
+  ],
+  "plan": "codex-gateway-live-model-catalog-2026-09-22",
+  "planItem": "P-003",
+  "role": "negative (counterexample) for causal pair live-gateway-catalog: the pre-fix provider header set (no originator=codex_cli_rs), as generated into session-29865 by the release launcher at 2026-09-23T00:01:10Z, still receives a non-Codex catalog without gpt-6-sol/gpt-6-luna from the same live gateway.",
+  "generator": ".papercusp/scratch/codex-live-catalog-evidence.mjs gateway ~/.papercusp/su-codex-homes/session-29865"
+}

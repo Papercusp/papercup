@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "codex-live-catalog session session-29867",
+  "framework": "operational",
+  "command": [
+    "inspect",
+    "~/.papercusp/su-codex-homes/session-29867/config.toml",
+    "~/.papercusp/su-codex-homes/session-29867/models_cache.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-23T00:53:56.475Z",
+  "finishedAt": "2026-09-23T00:53:56.486Z",
+  "summary": "Fresh PSU --account=auto Codex home session-29867: discovery=true, model_catalog_url=http://127.0.0.1:8788/v1/models, originator=codex_cli_rs, selector cache lists gpt-6-sol=true gpt-6-luna=true.",
+  "assertions": [
+    { "id": "discovery-feature-enabled", "passed": true, "evidence": "config.toml sets api_key_model_discovery = true" },
+    { "id": "gateway-catalog-url", "passed": true, "evidence": "model_catalog_url = http://127.0.0.1:8788/v1/models" },
+    { "id": "codex-originator", "passed": true, "evidence": "provider http_headers originator = codex_cli_rs" },
+    { "id": "selector-cache-lists-gpt-6-sol", "passed": true, "evidence": "models_cache.json (fetched_at 2026-09-23T00:12:54.828188507Z, client 0.156.0) lists gpt-6-sol" },
+    { "id": "selector-cache-lists-gpt-6-luna", "passed": true, "evidence": "models_cache.json (fetched_at 2026-09-23T00:12:54.828188507Z, client 0.156.0) lists gpt-6-luna" }
+  ],
+  "plan": "codex-gateway-live-model-catalog-2026-09-22",
+  "planItem": "P-003",
+  "role": "repaired proof for causal pair fresh-auto-session-catalog: a fresh PSU --account=auto Codex home launched through the canonical launcher (staging route) at 2026-09-23T00:12Z carries the discovery config and its selector cache, fetched from the gateway, lists gpt-6-sol and gpt-6-luna.",
+  "generator": ".papercusp/scratch/codex-live-catalog-evidence.mjs session ~/.papercusp/su-codex-homes/session-29867"
+}
