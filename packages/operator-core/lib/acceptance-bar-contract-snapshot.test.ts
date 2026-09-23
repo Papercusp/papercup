@@ -1486,3 +1486,28 @@ describe('scope-write cascade: dropping a BAR’s last live item (P-031 guard)',
     expect(body).toContain('Finish P-001.');
   });
 });
+
+// P-038 (R-9): every blocking-BAR row says whether the BAR owes automated proof or is an
+// explicit MANUAL contract, computed by the same predicate the proof floor uses — so a proof
+// code can never be misread as "bind a test" on a BAR that never owed one.
+describe('blocking BARs carry their contract kind (P-038 guard)', () => {
+  it('labels an instrumentKey:none BAR manual and a structured-tests BAR automated', () => {
+    const manual = fixture(1);
+    manual.rubrics.rows[0]!.criteria[0]!.check = { kind: 'instrument', instrumentKey: 'none' };
+    manual.planItems = rows([{ itemId: 'P-001', status: 'dropped' }], ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT);
+    const manualVerdict = evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(manual), 'ship');
+    expect(manualVerdict.blockingBars).toEqual([
+      expect.objectContaining({ barKey: 'R-1', contract: 'manual', codes: expect.arrayContaining(['bar_snapshot_mapping_dropped_only']) }),
+    ]);
+
+    const automated = fixture(1);
+    automated.rubrics.rows[0]!.criteria[0]!.check = {
+      kind: 'tests',
+      files: ['packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts'],
+    };
+    const automatedVerdict = evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(automated), 'ship');
+    expect(automatedVerdict.blockingBars).toEqual([
+      expect.objectContaining({ barKey: 'R-1', contract: 'automated', codes: expect.arrayContaining(['bar_snapshot_proof_depth_missing']) }),
+    ]);
+  });
+});
