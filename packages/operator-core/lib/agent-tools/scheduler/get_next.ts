@@ -269,12 +269,14 @@ export function getNextPreflightTimeoutResult(
   budgetMs = GET_NEXT_BUDGET_MS,
   reason: 'timeout' | 'aborted' | 'error' = 'timeout',
   errorMessage?: string,
+  lastPreflightStep?: string,
 ): {
   ok: false;
   error: 'timeout';
   retryable: true;
   phase: 'preflight';
   budgetMs: number;
+  lastPreflightStep?: string;
   message: string;
 } {
   const detail =
@@ -289,8 +291,11 @@ export function getNextPreflightTimeoutResult(
     retryable: true,
     phase: 'preflight',
     budgetMs,
+    ...(lastPreflightStep ? { lastPreflightStep } : {}),
     message:
-      `scheduler:get_next pre-claim setup${detail} (fleet reconciliation, pause-state, flag, or ` +
+      `scheduler:get_next pre-claim setup${detail}` +
+      (lastPreflightStep ? ` at preflight step "${lastPreflightStep}"` : '') +
+      ` (fleet reconciliation, pause-state, flag, or ` +
       `lock snapshot) and returned a fast retryable error instead of hanging until the MCP ` +
       `client's 300s idle-timeout abort. No claim was attempted; retry now.`,
   };
@@ -1324,6 +1329,7 @@ export default defineTool({
           specOn: boolean;
           contendedPaths: string[];
         };
+    let currentPreflightStep = 'context-pressure-flag';
     const preflightBudgetMs = remainingBudgetMs();
     const preflight = await withBoundedTimeout<PreflightState | null>(
       async () => {
@@ -1347,7 +1353,9 @@ export default defineTool({
         // Fails OPEN: an unreadable flag or presence row leaves the bucket unknown and the pull
         // proceeds exactly as today. Withholding work on an unproven reading would manufacture the
         // false drain this gate exists to prevent (see the gate module's hazard note).
+        currentPreflightStep = 'context-pressure-flag';
         const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
+        currentPreflightStep = 'context-pressure-read';
         const contextBucket = gateEnabled
           ? await fetchContextPressure([ident.ownerId])
               .then((m) => m.get(ident.ownerId) ?? null)
@@ -1361,6 +1369,7 @@ export default defineTool({
         // PARALLEL, and still inside the ONE shared budget this closure owns: the block comment
         // above forbids both hoisting these awaits out and giving them a second budget, so this
         // adds a concurrent leg rather than a sequential hop. Both fire only when already refusing.
+        currentPreflightStep = 'context-recovery-headroom';
         const [contextRecovery, contextHeadroom] =
           contextBucket === 'critical' && rawArgs.ignoreContextPressure !== true
             ? await Promise.all([
@@ -1396,11 +1405,13 @@ export default defineTool({
         // `work_items:claim_next` cannot drift apart. Fails OPEN: an unreadable flag or authority
         // leaves the verdict unknown and the pull proceeds — withholding work on an unproven
         // reading would manufacture a false drain (see the gate module's hazard note).
+        currentPreflightStep = 'goal-steward-flag';
         const stewardGateEnabled = await getFlag(FLAGS.SCHEDULER_GOAL_STEWARD_GATE, ident.ownerId).catch(() => true);
         // try/catch rather than .catch(): a synchronous getOrgPg() throw (no org pool in a
         // unit-test harness) must fail open too, not escape past the promise chain.
         let stewardAuthority = null as Awaited<ReturnType<typeof readGoalHolderAuthority>> | null;
         if (stewardGateEnabled && ident.workspaceId) {
+          currentPreflightStep = 'goal-holder-authority';
           try {
             stewardAuthority = await readGoalHolderAuthority(getOrgPg().sql, ident.workspaceId, ident.ownerId);
           } catch {
@@ -1414,6 +1425,7 @@ export default defineTool({
         if (stewardGate.refuse) {
           return { kind: 'goal-steward', refusal: goalStewardRefusalResult(stewardGate) };
         }
+        currentPreflightStep = 'fleet-scope-reconciliation';
         const reconciliation = await reconcileFleetScopeClaims({
           ownerId: ident.ownerId,
           workspaceId: ident.workspaceId,
@@ -1427,12 +1439,14 @@ export default defineTool({
         // its spec matches). The by-id claim path is gated at admission; this closes the
         // self-select sibling seam with the same durable-control-state read.
         if (reconciliation.scope) {
+          currentPreflightStep = 'fleet-pause-state';
           const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
           if (pause.windingDown) return { kind: 'paused', reconciliation, pause };
           // EI-22422975002985083: terminal plan work is already a successful
           // wind-down, even when the registered leader is no longer live. Check
           // this before routing the caller into fleet:take-leadership; a terminal
           // lane has nothing left for a replacement leader to drive.
+          currentPreflightStep = 'fleet-plan-terminality';
           const planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
           if (planTerminality?.allTerminal) {
             return { kind: 'plan-complete', reconciliation, planTerminality };
@@ -1442,6 +1456,7 @@ export default defineTool({
           // atomic claim instead of allowing members to continue into a lane whose
           // terminal acceptance and wind-down have no live driver. A null reading is
           // deliberately fail-open; only a successful negative blocks new work.
+          currentPreflightStep = 'fleet-leader-liveness';
           const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({
             scope: reconciliation.scope,
             ...(reconciliation.fleetAssignmentRows
@@ -1455,6 +1470,7 @@ export default defineTool({
         // A fleet member is the exception: scope is a correctness boundary, not a feature
         // preference, so the kill-switch may disable scheduler steering but cannot widen a
         // member into the generic backlog.
+        currentPreflightStep = 'scheduler-spec-flag';
         const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
         // EI-21238986333755666: coord:declare-intent persists currentPlanSlug even for a
         // non-fleet caller, but the old default-spec path ignored it and let DEFAULT_CLAIM_SPEC
@@ -1464,15 +1480,18 @@ export default defineTool({
         // positive evidence of a declared plan or a disabled spec path, do not invent a false
         // control-plane block for an otherwise valid solo pull.
         if (!reconciliation.scope) {
+          currentPreflightStep = 'declared-plan-presence';
           const presence = await getPresence(ident.ownerId).catch(() => null);
           const declaredPlanSlug = presence?.currentPlanSlug?.trim() || null;
           if (declaredPlanSlug) {
+            currentPreflightStep = 'declared-plan-claim-spec';
             const record = await getClaimSpecRecord({
               cupId: ident.ownerId,
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             }).catch(() => null);
             const effectiveDefault = !specOn || record?.source === 'default';
             if (effectiveDefault) {
+              currentPreflightStep = 'clear-stale-plan-declaration';
               const stalePlanCleared = await clearStaleTerminalPlanDeclaration({
                 identity: ident,
                 presence: { intent: presence?.intent },
@@ -1486,6 +1505,7 @@ export default defineTool({
         // P-015: authoritative lock-plane snapshot, holders only and excluding this
         // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
         // a pathological lock storm cannot inflate a claim request without bound.
+        currentPreflightStep = 'live-lock-paths';
         const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
@@ -1497,7 +1517,12 @@ export default defineTool({
           {
             type: 'text' as const,
             text: JSON.stringify(
-              getNextPreflightTimeoutResult(preflightBudgetMs, preflight.reason, preflight.errorMessage),
+              getNextPreflightTimeoutResult(
+                preflightBudgetMs,
+                preflight.reason,
+                preflight.errorMessage,
+                currentPreflightStep,
+              ),
             ),
           },
         ],

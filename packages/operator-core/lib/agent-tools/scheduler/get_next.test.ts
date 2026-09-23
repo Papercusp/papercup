@@ -1208,7 +1208,7 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     vi.useRealTimers();
   });
 
-  async function expectPreflightTimeout() {
+  async function expectPreflightTimeout(lastPreflightStep: string) {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
       content: Array<{ text: string }>;
@@ -1222,6 +1222,7 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
       retryable: true,
       phase: 'preflight',
       budgetMs: GET_NEXT_BUDGET_MS,
+      lastPreflightStep,
     });
     expect(body.message).toContain('No claim was attempted');
     expect(getNextM).not.toHaveBeenCalled();
@@ -1229,9 +1230,9 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     warnSpy.mockRestore();
   }
 
-  it('bounds fleet-scope reconciliation before any claim attempt', async () => {
+  it('identifies fleet-scope reconciliation when its preflight stalls', async () => {
     reconcileFleetScopeClaimsM.mockImplementation(() => new Promise(() => {}));
-    await expectPreflightTimeout();
+    await expectPreflightTimeout('fleet-scope-reconciliation');
   });
 
   it('bounds the paused-fleet control-state read before any claim attempt', async () => {
@@ -1243,20 +1244,20 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     };
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: scopeState.scope, quarantinedIds: [] });
     readFleetPauseStateM.mockImplementation(() => new Promise(() => {}));
-    await expectPreflightTimeout();
+    await expectPreflightTimeout('fleet-pause-state');
   });
 
-  it('bounds the scheduler flag read before any claim attempt', async () => {
+  it('identifies the context-pressure flag when its preflight read stalls', async () => {
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
     getFlagM.mockImplementation(() => new Promise(() => {}));
-    await expectPreflightTimeout();
+    await expectPreflightTimeout('context-pressure-flag');
   });
 
   it('bounds the live lock-plane snapshot before any claim attempt', async () => {
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
     getFlagM.mockResolvedValue(true);
     liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
-    await expectPreflightTimeout();
+    await expectPreflightTimeout('live-lock-paths');
   });
 });
 

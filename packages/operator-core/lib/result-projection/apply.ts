@@ -797,6 +797,9 @@ export function applyResultProjection<T extends ProjectableResult>(
         );
     if (bodyTruncationMarkers.length > 0) {
       const hasReadWindowMarker = bodyTruncationMarkers.some((marker) => marker.kind === 'read-window');
+      const hasSourcePageMarker = bodyTruncationMarkers.some((marker) =>
+        /(?:^|\.)(?:truncatedByLimit|rowsTruncated|itemsTruncated|pageTruncated)(?:\s|\(|\.|$)/.test(marker.path),
+      );
       if (hasReadWindowMarker) {
         note(
           `capability:read returned a bounded line window before this projection ` +
@@ -806,9 +809,13 @@ export function applyResultProjection<T extends ProjectableResult>(
             `or use capability:bash with rg for an exhaustive search before concluding a value is absent.`,
         );
       } else {
-        const recovery = opts.toolName
-          ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
-          : `re-call the tool with payloadTier:'full' (or narrower args)`;
+        const recovery = hasSourcePageMarker
+          ? `payloadTier:'full' changes response shaping but does not widen the source query; check ` +
+            `the tool's count/total/truncation fields and use its documented page-widening/pagination argument ` +
+            `(or a narrower exact lookup)`
+          : opts.toolName
+            ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
+            : `re-call the tool with payloadTier:'full' (or narrower args)`;
         note(
           `the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ` +
             `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +

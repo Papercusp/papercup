@@ -1996,7 +1996,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "At the END of an su IDEATE pass — after you have filed/routed the pass's ideas (improvements:capture / blender:route-idea) — to leave a durable, measurable trace of the pass (its yield + your attribution).",
+        "when": "At the end of an ideation pass or a scoped GOAL gap review. Record evidence and disposition in goalReview; ideasFiled may be zero when existing plans suffice or no eligible work exists. A recorded review is not proof of delegated execution.",
         "notWhen": "Filing an individual idea (improvements:capture) or routing one to a plan (blender:route-idea) — this records the PASS, not an idea. Recording a Scout-cycle tick — that is the scout-cycle routine, not this tool.",
         "chaining": "improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks."
       }
@@ -27860,7 +27860,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric revisions. Acceptance methods that prescribe native shell commands return a non-blocking methodLint advisory because judges cannot run shell; MCP tools such as testing:run remain valid. For a started BAR meaning change, use dryRun:true, store the returned approval on the work item, send the reviewer a pointer, then apply approvalRef:'thread-post:<id>'. Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],

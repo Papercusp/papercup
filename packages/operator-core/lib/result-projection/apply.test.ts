@@ -902,6 +902,27 @@ describe('applyResultProjection — structured-body and custom truncation disclo
     expect(reportOf(out).notes.join(' ')).toContain('omitted fields/items were never serialized');
   });
 
+  it('does not recommend payloadTier full as a source-page widening for facts:list', () => {
+    const body = JSON.stringify({
+      count: 4,
+      total: 26,
+      truncatedByLimit: true,
+      facts: [{ key: 'dead-end:example', body: 'excerpt', body_truncated: true }],
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['facts[].key'] }),
+      { toolName: 'facts:list' },
+    );
+
+    const note = reportOf(out).notes.join(' ');
+    expect(note).toContain("payloadTier:'full' changes response shaping");
+    expect(note).toContain('does not widen the source query');
+    expect(note).toContain('count/total/truncation fields');
+    expect(note).toContain('page-widening/pagination argument');
+    expect(note).not.toContain("re-call facts:list with payloadTier:'full'");
+  });
+
   it('warns on field-level and custom-shaper truncation markers', () => {
     const body = JSON.stringify({
       rows: [{ id: 'WI-1', title: 'retained', rankScore: 22.2 }],

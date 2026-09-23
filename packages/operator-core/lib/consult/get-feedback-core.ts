@@ -223,7 +223,7 @@ export interface GetFeedbackDeps {
  * the answering session may ALREADY have replied by the time this lands — the
  * guards keep this write additive so it cannot clobber that turn's work.
  */
-async function stampAnsweringOwner(
+export async function stampAnsweringOwner(
   sql: Sql,
   workspaceId: string,
   conversationId: string,

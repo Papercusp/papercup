@@ -418,6 +418,25 @@ describe('consultDispatchBrief', () => {
     expect(brief).toContain('CONVERTED onto another backend');
     expect(brief).not.toContain('FORK of');
   });
+
+  it('P-004: carries the ANSWER-ONLY posture on BOTH operations — the brief is the only thing that sets it', () => {
+    for (const operation of ['fork', 'convert'] as const) {
+      const brief = consultDispatchBrief({
+        conversationId: 'conv-1',
+        sourceOwnerId: 'su-expert',
+        operation,
+        summary: 'S',
+        body: 'B',
+      });
+      expect(brief).toContain('ANSWER-ONLY');
+      expect(brief).toContain('END YOUR TURN');
+      // The specific failure this exists to prevent: a session reading its
+      // inherited transcript as its own agenda and resuming the source's work
+      // under a second identity.
+      expect(brief).toContain('not an agenda to continue');
+      expect(brief).toContain('Do not claim work-items');
+    }
+  });
 });
 
 describe('expert-model allowlist (D-004)', () => {

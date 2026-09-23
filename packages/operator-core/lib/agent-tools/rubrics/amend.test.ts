@@ -88,6 +88,34 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     if (parsed.success) expect(parsed.data.criteria?.[0]?.bar).toBe(criterion.bar);
   });
 
+  it('rejects approval authorization without an amendment patch', () => {
+    const parsed = rubricsAmendArgs.safeParse({
+      rubricRef: 'acceptance-example',
+      approvalRef: 'thread-post:773433',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: expect.stringContaining('approvalRef authorizes a patch but does not supply one'),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('accepts approval authorization when an amendment patch is supplied', () => {
+    expect(
+      rubricsAmendArgs.safeParse({
+        rubricRef: 'acceptance-example',
+        approvalRef: 'thread-post:773433',
+        criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Also inspect the log.' },
+      }).success,
+    ).toBe(true);
+  });
+
   it('allows passRatings: [] for disclosure criteria and rejects the same shape for outcomes', () => {
     const disclosure = {
       ...criterion,

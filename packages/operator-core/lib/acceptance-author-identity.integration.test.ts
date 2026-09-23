@@ -170,6 +170,46 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
       },
     ];
     await db.adminSql`INSERT INTO harness_shared.adv_sessions ${db.adminSql(sessions)}`;
+    // P-004 consult-dispatch edges. `su-consult-fork` is launched by the SYSTEM
+    // sweep actor, exactly as a dispatched grader is — so the launch edge above
+    // says nothing about its source, and only this edge can relate it to the
+    // transcript it answers from.
+    const consults = [
+      {
+        workspace_id: workspaceId,
+        conversation_id: 'conv-lineage-1',
+        requester_id: 'su-consult-requester',
+        responder_id: 'su-consult-source',
+        state: 'awaiting_responder',
+        question: 'q',
+        latency_contract: 'proceed',
+        routing: {
+          selection: {
+            selected: [
+              { ownerId: 'su-consult-source', via: 'floor', answeringOwnerId: 'su-consult-fork' },
+              // A CONVERSION keeps the source identity; the edge must not
+              // manufacture a self-loop out of it.
+              { ownerId: 'su-consult-converted', via: 'floor', answeringOwnerId: 'su-consult-converted' },
+              // Not yet dispatched — no answering identity, no edge.
+              { ownerId: 'su-consult-untried', via: 'floor' },
+            ],
+          },
+        },
+      },
+      {
+        workspace_id: 'different-workspace',
+        conversation_id: 'conv-lineage-cross',
+        requester_id: 'su-consult-requester',
+        responder_id: 'su-author',
+        state: 'awaiting_responder',
+        question: 'q',
+        latency_contract: 'proceed',
+        routing: {
+          selection: { selected: [{ ownerId: 'su-author', answeringOwnerId: 'su-cross-tenant-consult-fork' }] },
+        },
+      },
+    ].map((row) => ({ ...row, routing: db.adminSql.json(row.routing as never) }));
+    await db.adminSql`INSERT INTO harness_shared.consult_state ${db.adminSql(consults)}`;
     const planWorkItems = [
       {
         workspace_id: workspaceId,
@@ -313,6 +353,25 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     await expect(areAcceptanceLineageRelated('su-author', 'su-cross-tenant-psu-child', opts)).resolves.toBe(false);
   });
 
+  it('P-004: a consult FORK is lineage-related to the transcript it answers from, in BOTH directions', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    // The whole point: exclusion follows the KNOWLEDGE. Without this edge the
+    // fork's only ancestor is whoever launched it — for a dispatched grader the
+    // system sweep actor — so an excluded expert's own transcript could grade
+    // the plan they implemented and read as an independent judge.
+    await expect(areAcceptanceLineageRelated('su-consult-source', 'su-consult-fork', opts)).resolves.toBe(true);
+    await expect(areAcceptanceLineageRelated('su-consult-fork', 'su-consult-source', opts)).resolves.toBe(true);
+    // A selectee with no answering identity yet has no edge — an untried rank
+    // must not pre-emptively relate anyone.
+    await expect(areAcceptanceLineageRelated('su-consult-untried', 'su-consult-fork', opts)).resolves.toBe(false);
+    // Two forks of DIFFERENT sources are siblings, not relatives.
+    await expect(areAcceptanceLineageRelated('su-consult-fork', 'su-consult-converted', opts)).resolves.toBe(false);
+    // Still workspace-scoped.
+    await expect(
+      areAcceptanceLineageRelated('su-author', 'su-cross-tenant-consult-fork', opts),
+    ).resolves.toBe(false);
+  });
+
   /**
    * D-008 / P-005. These MUST be real-PG: `lineagePartyKeys` fails toward "no
    * pairs found", which a stubbed test reads as a clean "no duplicate parties"
@@ -321,6 +380,16 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
    */
   describe('lineagePartyKeys', () => {
     const opts = () => ({ sql: db.adminSql, workspaceId });
+
+    it('P-004: a consult fork and its source collapse to ONE party, so a menu cannot seat both', async () => {
+      // The set-based reader must learn the edge at the same moment the pairwise
+      // one does — that is why identityEdges is defined once. A grading menu
+      // that seated an expert AND a fork of that expert would look like two
+      // independent judges while being one transcript twice.
+      const keys = await lineagePartyKeys(['su-consult-source', 'su-consult-fork', 'su-unrelated'], opts());
+      expect(keys.get('su-consult-fork')).toBe(keys.get('su-consult-source'));
+      expect(keys.get('su-unrelated')).toBe('su-unrelated');
+    });
 
     it('groups a spawn chain and a launch chain into one party each, keyed by CALLER order', async () => {
       const keys = await lineagePartyKeys(['su-author', 'su-child-1', 'su-grandchild', 'su-unrelated'], opts());
