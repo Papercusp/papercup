@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 import { readFileSync } from 'node:fs';
 import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
@@ -51,6 +51,7 @@ import {
   isAuthoritativeJudgingShaSource,
   AUTHORITATIVE_JUDGING_SHA_SOURCES,
   gateCandidateProgress,
+  resolveEditTreeRoot,
   MAIN_BUFFER_STALL_MS,
   type GateProgressReading,
   type GitRunner,
@@ -138,6 +139,16 @@ const NO_SWEEP: SweepExposure = {
 
 /** No logical qualification attempt exists in these otherwise fully measured fixtures. */
 const NO_QUALIFICATION = projectCheckpointQualificationState(null, 0);
+
+// EI-24049239243821100: the resolver's default edit-tree resolution reads
+// PAPERCUSP_CANONICAL_TREE. Every fixture here models ONE repo at `/repo`, so a shell
+// that exports that variable must not silently redirect them to a real checkout.
+beforeEach(() => {
+  vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
@@ -2084,6 +2095,106 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.targetSha).toBeNull();
     expect(res.dirtyUncommitted).toBe(true);
     expect(res.summary).toContain('no commit found');
+  });
+
+  // EI-24049239243821100: dev:pipeline_position told an author their uncommitted fix
+  // was live. The call ran on :3170, whose integration root is the clean
+  // papercusp-staging mirror, and two further defects let a dirty path read live on
+  // every port. Each case below fails on the pre-fix resolver.
+  describe('EI-24049239243821100: a dirty path is never reported live', () => {
+    const PATH = 'packages/operator-core/lib/agent-tools/work_items/untouched-paths.ts';
+    const OLDER = 'c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00';
+    // The path's PREVIOUS commit has gone all the way out: committed, pushed, promoted,
+    // deployed. Only the edit on disk is new.
+    const shippedOlderCommit = {
+      pathCommit: OLDER,
+      contains: {
+        HEAD: [OLDER],
+        'origin/staging': [OLDER],
+        'origin/main': [OLDER],
+        deployedsha0: [OLDER],
+      },
+      remoteStagingTip: OLDER,
+      remoteMainTip: OLDER,
+    };
+    const loaders = { loadDeploy: async () => deploy(), loadSnapshot: async () => snap() };
+
+    it('an edited file whose previous commit is deployed assesses uncommitted, not live', async () => {
+      const res = await gitPipelinePosition(
+        { path: PATH },
+        { git: fakeGit({ ...shippedOlderCommit, dirty: true }), ...loaders },
+      );
+      expect(res.dirtyUncommitted).toBe(true);
+      expect(res.positions).toEqual({ committedLocal: true, onStaging: true, inMain: true, deployed: true });
+      expect(res.assessments.pipelinePosition).toBe('uncommitted');
+      expect(res.stages.find((s) => s.name === 'committed')?.position).toBe('pending');
+    });
+
+    it('a FAILED git status is unknown, never clean', async () => {
+      const base = fakeGit(shippedOlderCommit);
+      const git: GitRunner = async (repo, args) => (args[0] === 'status' ? null : base(repo, args));
+      const res = await gitPipelinePosition({ path: PATH }, { git, ...loaders });
+      expect(res.positionsUnknown).toContain('workingTree');
+      expect(res.assessments.pipelinePosition).toBeNull();
+      const committed = res.stages.find((s) => s.name === 'committed');
+      expect(committed?.position).toBe('pending');
+      expect(committed?.health).toBe('unknown');
+      expect(res.notes.some((n) => /working-tree status .* UNKNOWN/.test(n))).toBe(true);
+    });
+
+    it('reads the working tree from the EDIT tree, not the serving mirror', async () => {
+      const base = fakeGit(shippedOlderCommit);
+      const statusRepos: string[] = [];
+      // The mirror is clean; the edit tree carries the uncommitted change — exactly the
+      // two checkouts :3170 sees.
+      const git: GitRunner = async (repo, args) => {
+        if (args[0] === 'status') {
+          statusRepos.push(repo);
+          return repo === '/edit-tree' ? ` M ${PATH}` : '';
+        }
+        return base(repo, args);
+      };
+      const res = await gitPipelinePosition(
+        { path: PATH },
+        {
+          git,
+          loadDeploy: async () => deploy({ integrationRoot: '/serving-mirror' }),
+          loadSnapshot: async () => snap(),
+          resolveEditTreeRoot: () => '/edit-tree',
+        },
+      );
+      expect(statusRepos.length).toBeGreaterThan(0);
+      expect(new Set(statusRepos)).toEqual(new Set(['/edit-tree']));
+      expect(res.repoRoot).toBe('/edit-tree');
+      expect(res.dirtyUncommitted).toBe(true);
+      expect(res.assessments.pipelinePosition).toBe('uncommitted');
+    });
+
+    it('the default edit-tree resolution honors PAPERCUSP_CANONICAL_TREE from the process env', async () => {
+      vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '/edit-tree');
+      try {
+        const statusRepos: string[] = [];
+        const base = fakeGit(shippedOlderCommit);
+        const git: GitRunner = async (repo, args) => {
+          if (args[0] === 'status') statusRepos.push(repo);
+          return base(repo, args);
+        };
+        const res = await gitPipelinePosition(
+          { path: PATH },
+          { git, loadDeploy: async () => deploy({ integrationRoot: '/serving-mirror' }), loadSnapshot: async () => snap() },
+        );
+        expect(new Set(statusRepos)).toEqual(new Set(['/edit-tree']));
+        expect(res.notes.some((n) => n.includes('canonical edit tree /edit-tree'))).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('resolveEditTreeRoot: a declared edit tree wins; unset or blank keeps the integration root', () => {
+      expect(resolveEditTreeRoot('/serving-mirror', { PAPERCUSP_CANONICAL_TREE: '/edit-tree' })).toBe('/edit-tree');
+      expect(resolveEditTreeRoot('/serving-mirror', {})).toBe('/serving-mirror');
+      expect(resolveEditTreeRoot('/serving-mirror', { PAPERCUSP_CANONICAL_TREE: '   ' })).toBe('/serving-mirror');
+    });
   });
 
   // EI-7846: verdict-provenance — the last green sha/age, main-FF status, and
@@ -7817,6 +7928,13 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
         dirtyUncommitted: true,
         positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
       },
+      expected: 'uncommitted',
+    },
+    {
+      // EI-24049239243821100: the positions describe the path's PREVIOUS commit, which
+      // shipped; the edit on disk did not. This row used to return 'live'.
+      name: 'dirty edit on top of a deployed older commit',
+      input: { ...pipelineBase, dirtyUncommitted: true },
       expected: 'uncommitted',
     },
     {
