@@ -633,3 +633,205 @@ describe('runWorkspaceHostLifecycle', () => {
     });
   });
 });
+
+/**
+ * WI-10002490: an upgrade deletes the runtime VM, then re-creates it from the new image. If the
+ * re-create cannot complete, the precomputed rollback re-creates it from the prior image instead —
+ * the host must never be left with no VM while the request's rollbackImage sits ignored.
+ */
+describe('runWorkspaceHostLifecycle upgrade rollback', () => {
+  const upgradeImage = { id: 'projects/images/global/images/papercusp-v2' };
+
+  function upgradeHarness() {
+    const { store, checkpoints } = storeHarness();
+    const { provider, apply, reconcile, planProvider } = providerHarness();
+    planProvider.mockImplementation(async () => ({
+      planId: 'plan-upgrade-1',
+      operationId: 'op-1',
+      target: 'gcp',
+      hostId: 'host-1',
+      generatedAt: '2026-08-27T00:00:00Z',
+      steps: [
+        {
+          id: 'delete-boot-runtime',
+          action: 'upgrade',
+          resourceKind: 'vm',
+          dependsOn: [],
+          idempotencyKey: 'delete-key',
+          destructive: true,
+          input: { op: 'delete-instance', resourceName: vm.providerId },
+        },
+        {
+          id: 'create-boot-runtime',
+          action: 'upgrade',
+          resourceKind: 'vm',
+          dependsOn: ['delete-boot-runtime'],
+          idempotencyKey: 'create-key',
+          destructive: false,
+          input: { op: 'insert-instance', sourceImage: upgradeImage.id },
+          rollback: {
+            idempotencyKey: 'create-key:rollback',
+            input: { op: 'insert-instance', sourceImage: desired.image.id },
+          },
+        },
+      ],
+      warnings: [],
+    }));
+    const destroyed = (stepId: string): WorkspaceHostApplyResult => ({
+      operationId: 'op-1',
+      stepId,
+      state: 'destroyed',
+      observedAt: '2026-08-27T00:00:02Z',
+      confirmation: {
+        hostId: 'host-1',
+        providerResourceId: vm.providerId,
+        confirmedAbsentAt: '2026-08-27T00:00:02Z',
+        source: 'provider-read',
+      },
+    });
+    const created = (stepId: string): WorkspaceHostApplyResult => ({
+      operationId: 'op-1',
+      stepId,
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+    const run = () =>
+      runWorkspaceHostLifecycle({ ...input(provider, store), action: 'upgrade', image: upgradeImage });
+    const stepCalls = (mock: typeof apply | typeof reconcile, stepId: string) =>
+      mock.mock.calls.filter(([request]) => request.step.id === stepId).length;
+    return { store, checkpoints, provider, apply, reconcile, destroyed, created, run, stepCalls };
+  }
+
+  it('re-creates the VM from the prior image when the upgraded re-create is refused after the delete', async () => {
+    const h = upgradeHarness();
+    h.apply.mockImplementation(async (request) => {
+      if (request.step.id === 'delete-boot-runtime') return h.destroyed(request.step.id);
+      if (request.step.id === 'create-boot-runtime') {
+        throw Object.assign(new Error('image papercusp-v2 is quarantined'), { status: 400 });
+      }
+      expect(request.step).toMatchObject({
+        id: 'create-boot-runtime:rollback',
+        idempotencyKey: 'create-key:rollback:desired-revision:2',
+        input: { op: 'insert-instance', sourceImage: desired.image.id },
+      });
+      return h.created(request.step.id);
+    });
+
+    const result = await h.run();
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      requiresInitialization: true,
+      rollback: { stepId: 'create-boot-runtime', status: 'succeeded', image: desired.image },
+    });
+    // No caller-supplied rollbackImage: the host's recorded image is the default, so the provider
+    // was asked to validate and precompute it before anything was deleted.
+    expect(h.provider.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'upgrade', image: upgradeImage, rollbackImage: desired.image }),
+      expect.anything(),
+    );
+    // The host row follows the VM back to the prior image — never onto the image it never got.
+    expect(h.store.recordImage).toHaveBeenCalledOnce();
+    expect(h.store.recordImage).toHaveBeenCalledWith(expect.objectContaining({ image: desired.image }));
+    expect(h.store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        message: expect.stringContaining('was rolled back'),
+        error: expect.objectContaining({ reason: 'image papercusp-v2 is quarantined', rolledBack: true }),
+      }),
+    );
+    expect(h.checkpoints()).toContainEqual(
+      expect.objectContaining({ logicalKey: 'create-boot-runtime:rollback', state: 'applied', providerResource: vm }),
+    );
+  });
+
+  it('resumes an in-flight rollback on the next turn by reconciling it, never re-issuing it', async () => {
+    const h = upgradeHarness();
+    h.apply.mockImplementation(async (request) => {
+      if (request.step.id === 'delete-boot-runtime') return h.destroyed(request.step.id);
+      if (request.step.id === 'create-boot-runtime') {
+        throw Object.assign(new Error('zone capacity exhausted'), { status: 400 });
+      }
+      return {
+        operationId: 'op-1',
+        stepId: request.step.id,
+        state: 'in-progress',
+        observedAt: '2026-08-27T00:00:05Z',
+        providerRequestId: 'rollback-op-1',
+        retryAfterMs: 4_000,
+      };
+    });
+    h.reconcile.mockImplementation(async (request) => h.created(request.step.id));
+
+    await expect(h.run()).resolves.toMatchObject({ status: 'in-progress', retryAfterMs: 4_000 });
+    await expect(h.run()).resolves.toMatchObject({ status: 'failed', rollback: { status: 'succeeded' } });
+
+    expect(h.stepCalls(h.apply, 'create-boot-runtime:rollback')).toBe(1);
+    expect(h.stepCalls(h.apply, 'create-boot-runtime')).toBe(1);
+    expect(h.reconcile).toHaveBeenCalledOnce();
+    expect(h.reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        step: expect.objectContaining({ id: 'create-boot-runtime:rollback' }),
+        previousProviderRequestId: 'rollback-op-1',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('reaches the rollback when the re-create halts after spending its retries across turns', async () => {
+    const h = upgradeHarness();
+    h.apply.mockImplementation(async (request) => {
+      if (request.step.id === 'delete-boot-runtime') return h.destroyed(request.step.id);
+      if (request.step.id === 'create-boot-runtime') {
+        throw Object.assign(new Error('rate limited'), { status: 429 });
+      }
+      return h.created(request.step.id);
+    });
+
+    for (let turn = 0; turn < 3; turn += 1) {
+      await expect(h.run()).resolves.toMatchObject({ status: 'in-progress' });
+    }
+    await expect(h.run()).resolves.toMatchObject({ status: 'failed', rollback: { status: 'succeeded' } });
+
+    expect(h.stepCalls(h.apply, 'create-boot-runtime')).toBe(3);
+    expect(h.stepCalls(h.apply, 'create-boot-runtime:rollback')).toBe(1);
+  });
+
+  it('does not roll back a failure that happened before the destructive step applied', async () => {
+    const h = upgradeHarness();
+    h.apply.mockRejectedValue(Object.assign(new Error('permission denied'), { status: 403 }));
+
+    const result = await h.run();
+
+    expect(result.status).toBe('failed');
+    expect(result.rollback).toBeUndefined();
+    expect(h.apply).toHaveBeenCalledOnce();
+    expect(h.store.recordImage).not.toHaveBeenCalled();
+    expect(h.checkpoints().map(({ logicalKey }) => logicalKey)).not.toContain('create-boot-runtime:rollback');
+  });
+
+  it('reports a rollback that failed too, without claiming the host was restored', async () => {
+    const h = upgradeHarness();
+    h.apply.mockImplementation(async (request) => {
+      if (request.step.id === 'delete-boot-runtime') return h.destroyed(request.step.id);
+      throw Object.assign(new Error(`refused ${request.step.id}`), { status: 400 });
+    });
+
+    const result = await h.run();
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      rollback: { stepId: 'create-boot-runtime', status: 'failed', error: 'refused create-boot-runtime:rollback' },
+    });
+    expect(result.requiresInitialization).toBeUndefined();
+    expect(h.store.recordImage).not.toHaveBeenCalled();
+    expect(h.store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        message: expect.stringContaining('NOT restored'),
+        error: expect.objectContaining({ rolledBack: false, rollbackError: 'refused create-boot-runtime:rollback' }),
+      }),
+    );
+  });
+});
