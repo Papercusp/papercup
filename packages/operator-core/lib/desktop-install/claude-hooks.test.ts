@@ -213,13 +213,17 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/workitem-verify-nudge.sh`,
     ]);
     // Stop: work-item nudge + per-turn journal ping (deterministic-context-carry P-012)
-    // + the ask-gate-mirror bounce/mirror (owner-inbox-single-pane P-001).
+    // + the ask-gate-mirror bounce/mirror (owner-inbox-single-pane P-001)
+    // + the owner-directive turn-end check (owner-directive-delivery-redesign P-007).
     expect(commandsFor(cfg, 'Stop')).toEqual([
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/stop-turn-journal.sh`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
+      `${DEST}/stop-owner-directive-check.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
+    // Matcher-less: the check is about the turn ending, not about any tool.
+    expect(hookMatcherOf(cfg, 'Stop', 'stop-owner-directive-check.mjs')).toBeUndefined();
     expect(hookMatcherOf(cfg, 'Stop', 'ask-gate-mirror.sh')).toBeUndefined(); // every turn end
     // EI-21844056581395228: MUST be matcher-less. The failure it guards lands in the
     // assistant's final PROSE, so a tool matcher here would leave it permanently inert

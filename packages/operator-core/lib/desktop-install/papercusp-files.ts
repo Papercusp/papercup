@@ -911,6 +911,10 @@ export const CC_HOOK_FILES = [
   // PostToolUse(Artifact) ledgers the ids real calls RETURNED, and Stop blocks a
   // final message citing one that was never returned. See the script's header.
   'artifact-url-delivery-guard.mjs',
+  // owner-directive-delivery-redesign-2026-09-22 P-007: the turn-end owner-directive
+  // check — Stop blocks once to ask done-or-still-open about a directive the session
+  // replied to, and until an over-cap directive addressed to it has a summary.
+  'stop-owner-directive-check.mjs',
   // owner-inbox-single-pane-2026-07-17 P-001: the owner-gate CAPTURE + MIRROR layer —
   // PreToolUse/PostToolUse around AskUserQuestion/ExitPlanMode, a Notification
   // permission-wait capture, and a Stop `<ask>`-tag mirror + question-shaped-ending
@@ -3135,6 +3139,13 @@ export function mergeClaudeHookSettings(
       hooks: cmd('artifact-url-delivery-guard.mjs'),
     });
   }
+  // merge_stop_owner_directive_check_hook — Stop, no matcher.
+  // owner-directive-delivery-redesign-2026-09-22 P-007: `stop_hook_active` bounds it
+  // to one bounce per turn; the verdict is computed by the local operator.
+  if (has('stop-owner-directive-check.mjs'))
+    hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-owner-directive-check.mjs'), {
+      hooks: cmd('stop-owner-directive-check.mjs'),
+    });
   // merge_ask_gate_hook — PreToolUse + PostToolUse (matcher 'AskUserQuestion|ExitPlanMode')
   // + matcher-less Notification + Stop. owner-inbox-single-pane-2026-07-17 P-001: the
   // owner-gate CAPTURE + MIRROR layer (see the script's own header for the four branches).
