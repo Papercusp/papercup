@@ -29,5 +29,7 @@ export const DBOS = new Proxy({}, trap) as never;
 export const WorkflowQueue = new Proxy(function WorkflowQueue() {
   serverOnly();
 }, trap) as never;
+// operator-core/lib/dbos/workspace-host-provision-client.ts calls DBOSClient.create(...).
+export const DBOSClient = new Proxy({}, trap) as never;
 
 export default new Proxy({}, trap) as never;

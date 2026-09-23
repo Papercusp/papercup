@@ -50,6 +50,11 @@ function json(obj: unknown) {
 
 export default defineTool({
   name: 'coord:orientation_telemetry',
+  // @no-coord-tier A read-only design-evidence aggregate, not an agent coordination behaviour:
+  // it reports past reach/action per turn-start orientation class so an AUTHOR can argue for
+  // adding or removing a class. D-001's ladder ranks how reliably an agent is made to perform a
+  // coordination behaviour; there is no coordination act here to enforce, and no agent should
+  // be steered to call it unbidden while coordinating (WI-10002544).
   profile: 'engineer',
   description:
     'Measured REACH (how often each turn-start orientation class actually reached an agent) and ACTION (turns-until-disposition for obligation classes), with a flag on any class that reached agents for 500+ turns causing zero dispositions. Evidence for adding or removing an orientation class.',
