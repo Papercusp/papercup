@@ -19,7 +19,7 @@ import { execFile, fork, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -36,12 +36,20 @@ import { screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 
+// A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
+// that load on the shared box trips at random; fail-on-console turned it into
+// spurious functional failures of unrelated cases. Read before any import.
+vi.hoisted(() => { process.env.PAPERCUSP_SYNC_SLOW_RESOLVE_MS ??= '60000'; });
+
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream' | 'approval'
     | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
   successText: 'PUI structured engine replied',
+  // One entry per native launch: an exact resume names the dead native id in
+  // `resume`; a fresh start names it in `sessionId`. The P-009 oracles read it.
+  sdkSessions: [] as Array<{ resume: string | null; sessionId: string | null }>,
   // Approval fixture (mode:'approval'). TWO isolated requests, raised at once,
   // because both approval clauses are about ISOLATION: answering one must not
   // decide the other. A single-request probe cannot detect "hits an unrelated
@@ -139,8 +147,19 @@ vi.mock('../su-session-claude-engine', async (original) => {
       const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options: sdkOptions }) => {
         scriptedEngine.sdkPermissions.push({ mode: sdkOptions.permissionMode,
           bypass: sdkOptions.allowDangerouslySkipPermissions });
+        scriptedEngine.sdkSessions.push({ resume: sdkOptions.resume ?? null, sessionId: sdkOptions.sessionId ?? null });
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
+        // Real Claude appends every native line to its per-session JSONL as it
+        // goes, and exact resume (su-session-resume.ts) requires that file. An
+        // engine that never received the prompt leaves none.
+        const configDir = sdkOptions.env?.CLAUDE_CONFIG_DIR;
+        const persist = (line: Record<string, unknown>) => {
+          if (!configDir || !nativeId) return;
+          mkdirSync(path.join(configDir, 'projects', 'pui-e2e'), { recursive: true });
+          appendFileSync(path.join(configDir, 'projects', 'pui-e2e', `${nativeId}.jsonl`),
+            `${JSON.stringify({ ...line, sessionId: nativeId })}\n`);
+        };
         const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
         void (async () => {
           for await (const message of prompt) {
@@ -149,6 +168,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
             scriptedEngine.requests.push(String(message.message.content));
             output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: args[0].cwd });
             output.write(message); // The engine's exact native receipt.
+            persist(message as unknown as Record<string, unknown>);
             if (scriptedEngine.mode === 'stall') {
               output.write({ type: 'assistant', session_id: nativeId, message: { content: [
                 { type: 'text', text: 'PUI tool is still running' },
@@ -1538,6 +1558,7 @@ beforeEach(async () => {
   scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
   scriptedEngine.sdkPermissions = [];
+  scriptedEngine.sdkSessions = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
@@ -2213,6 +2234,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([prompt, followUp]), { timeout: 30_000 });
       const saved = await waitForSavedTurn(followUp);
       expect(saved.transcript.filter((turn) => turn.role === 'user' && turn.content === prompt)).toHaveLength(1);
+      // A dead engine is recovered by the production path: an EXACT resume of
+      // the same native session, never a fresh one that forgot the turn.
+      if (mode === 'engine-death' || mode === 'stream-loss') {
+        const [dead, recovery] = scriptedEngine.sdkSessions.slice(-2);
+        expect(dead.sessionId).toBeTruthy();
+        expect(recovery).toEqual({ resume: dead.sessionId, sessionId: null });
+      }
       console.info('PUI_R06_RECOVERY_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, mode, recoveredAfterMs, deadlineMs: RECOVERY_DEADLINE_MS,
         chatId: saved.id, requests: scriptedEngine.requests, frame: pane.screen(),
@@ -2259,6 +2287,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       expect(scriptedEngine.requests).toEqual([prompt]);
       const saved = await waitForSavedTurn(prompt);
       expect(saved.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      // Nothing native existed to restore, so the retry starts the SAME native
+      // id fresh; an exact resume has no transcript and is refused forever.
+      const [failed, retried] = scriptedEngine.sdkSessions.slice(-2);
+      expect(failed.sessionId).toBeTruthy();
+      expect(retried).toEqual({ resume: null, sessionId: failed.sessionId });
       console.info('PUI_R06_RECOVERY_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, mode: 'startup-exit', recoveredAfterMs, deadlineMs: RECOVERY_DEADLINE_MS,
         chatId: saved.id, requests: scriptedEngine.requests, frame: pane.screen(),
