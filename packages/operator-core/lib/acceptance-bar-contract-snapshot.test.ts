@@ -1042,6 +1042,27 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     ]);
   });
 
+  it('names a structured-check change in a BAR amendment preview', () => {
+    const beforeInput = fixture(1);
+    const afterInput = fixture(1);
+    const changedCriterion = afterInput.rubrics.rows[0]!.criteria[0]!;
+    changedCriterion.check = {
+      kind: 'tests',
+      files: ['packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts'],
+    };
+    changedCriterion.barHash = computeAcceptanceBarHash(changedCriterion);
+
+    const diff = diffAcceptanceBarContractSnapshots(
+      projectAcceptanceBarContractSnapshot(beforeInput),
+      projectAcceptanceBarContractSnapshot(afterInput),
+      'amend',
+    );
+
+    expect(diff.changes).toEqual([
+      expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['check'] }),
+    ]);
+  });
+
   it('classifies BAR meaning, evidence plane, mapping, and provenance separately', () => {
     const before = projectAcceptanceBarContractSnapshot(fixture(1));
     const after = structuredClone(before);
