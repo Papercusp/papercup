@@ -20,7 +20,7 @@ import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
 } from '@papercusp/deployment-driver';
 import { taskReleaseJournalFromDetail, type TaskReleaseJournal } from '../../task-manager/store';
-import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
+import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal.mjs';
 import {
   projectByocReleaseCarry,
   type ByocReleaseCarrySnapshot,

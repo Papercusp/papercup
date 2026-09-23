@@ -3,7 +3,7 @@
  * (desktop-release-incremental-resume-2026-09-21 P-001).
  *
  * The phase journal itself is NOT new here. `release-local.sh` already implements one —
- * `release_task_journal_configure()` + `scripts/lib/release-task-journal.ts`, with stage
+ * `release_task_journal_configure()` + `scripts/lib/release-task-journal.mts`, with stage
  * receipts, reuse/reconcile decisions and content identity — and the NIGHTLY routine
  * (`harness/routines/nightly-release-cut-action.ts`) already drives it: it mints a task
  * id and an operation id, seeds `detail.release`, and threads both through the child's
@@ -387,7 +387,7 @@ export async function discoverCutOperations(
  * shells out.
  *
  * ⚠ A third copy of this logic (nightly-release-cut-action.ts and
- * scripts/lib/release-task-journal.ts hold the others). Consolidating the three is
+ * scripts/lib/release-task-journal.mts hold the others). Consolidating the three is
  * deliberately NOT done here — it touches the nightly release path, which is out of
  * P-001's scope — but they must agree, because a disagreement silently changes an
  * identity hash and voids receipt reuse across lanes.

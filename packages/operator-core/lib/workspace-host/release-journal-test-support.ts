@@ -3,7 +3,7 @@
  * workspace-host release-stage writers. It enforces the two ledger rules the writers rely on:
  * compare-and-swap on the cursor, and intent -> settle transitions per request identity.
  */
-import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import type {
   AppendTaskReleaseReceiptResult,
   TaskReleaseJournal,

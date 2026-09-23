@@ -19,7 +19,7 @@ import {
   type WorkspaceHostInitializationPlan,
   type WorkspaceHostInitializationStepReceipt,
 } from '@papercusp/deployment-driver';
-import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import type { WorkspaceHostAgentCredentialAdmissionEvidence } from './agent-credential-admission';
 import {
   WorkspaceHostReleaseBindingError,

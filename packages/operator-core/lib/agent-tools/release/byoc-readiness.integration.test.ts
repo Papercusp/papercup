@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { evaluateByocReadiness, readByocReadiness, readByocReleaseSubject } from './byoc-readiness';
-import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
+import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal.mjs';
 
 let db: FreshPgDb;
 const subject = { workspaceId: 'byoc-exact-subject', workItemId: 'WI-acceptance', taskId: 'selected-old-task' };

@@ -17,7 +17,7 @@ import {
   WORKSPACE_HOST_RELEASE_CHANNEL,
 } from '@papercusp/operator-core/lib/workspace-host/release-stage-receipt';
 
-import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import {
   WORKSPACE_HOST_BUILD_STAGE,
   WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE,

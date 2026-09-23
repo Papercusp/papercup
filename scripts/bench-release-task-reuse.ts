@@ -42,7 +42,7 @@ import {
   type ReleaseTaskLedger,
   type ReleaseTaskStageContext,
   type ReleaseTaskStageInput,
-} from './lib/release-task-journal';
+} from './lib/release-task-journal.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXED_NOW = new Date('2026-09-09T12:40:00.000Z');
@@ -425,7 +425,7 @@ async function main(): Promise<void> {
 
   const implementationFiles = [
     'packages/operator-core/lib/task-manager/store.ts',
-    'scripts/lib/release-task-journal.ts',
+    'scripts/lib/release-task-journal.mts',
     'packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts',
     'papercusp-desktop/bin/release-local.sh',
     'scripts/bench-release-task-reuse.ts',

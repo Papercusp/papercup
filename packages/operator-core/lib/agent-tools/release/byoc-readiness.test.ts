@@ -24,7 +24,7 @@ import tool, {
   readByocReleaseSubject,
   verifyPrehashedMinisign,
 } from './byoc-readiness';
-import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
+import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal.mjs';
 import type { TaskReleaseJournal } from '../../task-manager/store';
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from '../../workspace-host/artifact-trust';
 import {

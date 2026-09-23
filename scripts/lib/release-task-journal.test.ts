@@ -18,7 +18,7 @@ import {
   settleReleaseTaskStage,
   type ReleaseTaskLedger,
   type ReleaseTaskStageContext,
-} from './release-task-journal';
+} from './release-task-journal.mjs';
 
 const SOURCE_SHA = 'a'.repeat(40);
 const GITLINK = 'b'.repeat(40);

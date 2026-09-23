@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { releaseTaskStageInputHash } from '../../../../scripts/lib/release-task-journal';
+import { releaseTaskStageInputHash } from '../../../../scripts/lib/release-task-journal.mjs';
 import {
   BUNDLE,
   GITLINKS,

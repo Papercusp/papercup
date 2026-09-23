@@ -29,7 +29,7 @@ import {
   type ReleaseTaskLedger,
   type ReleaseTaskStageContext,
   type ReleaseTaskStageInput,
-} from '../../../../scripts/lib/release-task-journal';
+} from '../../../../scripts/lib/release-task-journal.mjs';
 import {
   appendTaskReleaseReceipt,
   getTask,

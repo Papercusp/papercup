@@ -6,7 +6,7 @@
  * no residue across these resource kinds", so its identity names the kinds, and a census whose
  * inventory did not cover every one of them cannot commit it — clean over fewer kinds is not clean.
  */
-import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import { workspaceHostBillingClosureStage, type WorkspaceHostBillingSubject } from './billing-closure-release-receipt';
 import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
 import {

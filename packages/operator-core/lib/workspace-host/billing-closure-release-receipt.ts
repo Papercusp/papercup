@@ -8,7 +8,7 @@
  * finality reading, naming the same destroy. Caller-cited cost evidence never closes billing.
  */
 import type { WorkspaceHostSpendFinality } from '@papercusp/deployment-driver';
-import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal';
+import type { ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import { openWorkspaceHostReleaseRecorder, type WorkspaceHostReleaseStage } from './release-stage-receipt';
 
 export const WORKSPACE_HOST_BILLING_CLOSURE_STAGE = 'billing.closure';

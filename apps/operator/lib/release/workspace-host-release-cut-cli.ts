@@ -66,7 +66,7 @@ import {
   type ReleaseTaskLedger,
   type ReleaseTaskStageContext,
   type ReleaseTaskStageInput,
-} from '../../../../scripts/lib/release-task-journal';
+} from '../../../../scripts/lib/release-task-journal.mjs';
 import {
   WORKSPACE_HOST_EVIDENCE_FILES,
   WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME,
