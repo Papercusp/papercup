@@ -24,7 +24,8 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { configureCoordLog, resetCoordLog } from '../log';
-import { listEscalations, listEscalationsPaginated } from '../escalations';
+import { listEscalations, listEscalationsPaginated, openEscalation } from '../escalations';
+import type { AgentIdentity } from '../identity';
 
 // Minimal coord_event_log shape (the migration references the table; the prod
 // table has more columns but the trigger only reads surface/workspace_id/msg_id/
@@ -503,5 +504,42 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     const miss = await listEscalationsPaginated({ status: 'open', maxRecords: 3, conditionKey: 'no-such-key' });
     expect(miss.escalations).toEqual([]);
     expect(miss.filterWindowCaveat).toBeUndefined();
+  });
+
+  // WI-10002540: openEscalation()'s PG dedup fast path must actually EXECUTE on
+  // real Postgres. bumpProjectionDuplicateWithSql shipped with four jsonb_set path
+  // clauses under only three `jsonb_set(` openers, so every call raised 42601 at
+  // '{summary}'. Both call sites swallowed it, and openEscalation fell through to
+  // the unlocked full-log fold, which reintroduced the EI-6840 duplicate race and
+  // read every escalation event on every open. Only the fast path bumps the open
+  // PROJECTION row and leaves the event-log row alone, and that is the observable
+  // this test pins. The fallback rewrites the event-log row, so repeatCount there
+  // would read 2.
+  it('a duplicate openEscalation bumps the open projection row through the PG fast path (WI-10002540)', async () => {
+    await db.sql.unsafe(MIG_1094).simple();
+    await db.sql.unsafe(MIG_1112).simple();
+    configureCoordLog(new PgCoordLog({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' }));
+    const identity = { ownerId: 'su-test' } as AgentIdentity;
+    const meta = { subjectSignature: 'disk-full:host-a' };
+
+    const first = await openEscalation(identity, { severity: 'advisory', summary: 'disk 80% full on host-a', meta });
+    const second = await openEscalation(identity, { severity: 'blocker', summary: 'disk 95% full on host-a', meta });
+
+    expect(second.msg_id).toBe(first.msg_id);
+    expect(await openMsgIds()).toEqual([first.msg_id]);
+
+    const [projection] = await db.sql<{ body: Record<string, unknown> }[]>`
+      SELECT body FROM harness_shared.coord_open_escalations
+       WHERE workspace_id = 'default' AND msg_id = ${first.msg_id}`;
+    expect(projection?.body.repeatCount).toBe(2);
+    expect(projection?.body.severity).toBe('blocker');
+    expect(projection?.body.summary).toBe('disk 95% full on host-a');
+    expect(typeof projection?.body.lastSeenTs).toBe('string');
+
+    const [logged] = await db.sql<{ body: Record<string, unknown> }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE workspace_id = 'default' AND surface = 'escalations' AND msg_id = ${first.msg_id}`;
+    expect(logged?.body.repeatCount).toBe(1);
+    expect(logged?.body.summary).toBe('disk 80% full on host-a');
   });
 });

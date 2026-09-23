@@ -364,28 +364,19 @@ async function bumpProjectionDuplicateWithSql(
   // current when a recurring signal's magnitude changes.
   summary: string,
 ): Promise<EscalationRecord | null> {
+  // WI-10002540: one flat top-level merge, not nested jsonb_set calls. The nested
+  // form needs one `jsonb_set(` opener per path clause. When '{summary}' was
+  // added, its opener was not, so every call failed with 42601 and the swallowing
+  // catches below hid it for a month. For top-level keys, `||` is exactly
+  // jsonb_set(..., create_missing => true), and it has no per-key opener to miss.
   const rows = await sql<{ body: EscalationRecord }[]>`
     UPDATE harness_shared.coord_open_escalations
-       SET body = jsonb_set(
-             jsonb_set(
-               jsonb_set(
-                 body,
-                 '{repeatCount}',
-                 to_jsonb(COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1),
-                 true
-               ),
-               '{lastSeenTs}',
-               to_jsonb(${nowIso}::text),
-               true
-             ),
-             '{severity}',
-             to_jsonb(${severity}::text),
-             true
-           ),
-           '{summary}',
-           to_jsonb(${summary}::text),
-           true
-         )
+       SET body = body || jsonb_build_object(
+             'repeatCount', COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1,
+             'lastSeenTs', ${nowIso}::text,
+             'severity', ${severity}::text,
+             'summary', ${summary}::text
+           )
      WHERE workspace_id = ${workspaceId}
        AND body->>'dedupKind' = ${dedup.dedupKind}
        AND body->>'subjectSignature' = ${dedup.subjectSignature}
@@ -441,9 +432,21 @@ async function openEscalationWithPgDedupLock(
       await insertEscalationEventWithSql(tx, ws, env);
       return { record: env, coalesced: false };
     });
-  } catch {
+  } catch (err) {
+    rethrowIfSqlSyntaxError(err);
     return null;
   }
+}
+
+/**
+ * WI-10002540: the PG fast-path catches exist so an unreachable store, or one
+ * that has not applied the projection migration yet, falls back to the
+ * event-log fold. A 42601 syntax error is never that condition. It is a defect
+ * in the statement itself, and swallowing it hid a malformed UPDATE for a month
+ * while every escalation silently took the slow, unlocked path.
+ */
+function rethrowIfSqlSyntaxError(err: unknown): void {
+  if ((err as { code?: unknown } | null)?.code === '42601') throw err;
 }
 
 async function tryBumpProjectionDuplicate(
@@ -457,7 +460,8 @@ async function tryBumpProjectionDuplicate(
     const sql = coordSql();
     const ws = coordWorkspaceId();
     return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso, severity, summary);
-  } catch {
+  } catch (err) {
+    rethrowIfSqlSyntaxError(err);
     return null;
   }
 }
