@@ -1896,6 +1896,27 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::Lifecycle { op, confirmed } => {
+                    // Install lifecycle (P-011 / D-016) is local filesystem work
+                    // that must succeed with no operator reachable, so it runs on
+                    // a blocking thread instead of the operator-bound workbench task.
+                    let tx = tx.clone();
+                    let endpoint = client::selected_endpoint_label();
+                    tokio::task::spawn_blocking(move || {
+                        let ctx = self_install::LifecycleContext::current(endpoint);
+                        let view = match self_install::Layout::from_env() {
+                            Ok(layout) if confirmed => self_install::apply(&op, &layout, &ctx),
+                            Ok(layout) => self_install::preview(&op, &layout, &ctx),
+                            Err(error) => self_install::LifecycleView {
+                                title: op.title().to_string(),
+                                lines: vec![format!("{error:#}")],
+                                armed: None,
+                            },
+                        };
+                        let _ = tx.send(Event::Lifecycle(view));
+                    });
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::RunInboxAction {
                     target,
                     action_id,
@@ -3447,11 +3468,12 @@ async fn execute_workbench_command(
                 }
             }
         }
-        // Config-tab (D-013) + plugin-settings (D-014) commands, and the
-        // dockview dock-verbs (Brief 50 / D-008), are routed to their own
-        // Actions in the reducer and never reach the workbench executor —
-        // defensive no-op.
-        P::ConfigSet { .. }
+        // Config-tab (D-013) + plugin-settings (D-014) commands, the dockview
+        // dock-verbs (Brief 50 / D-008) and the install lifecycle (P-011 /
+        // D-016) are routed to their own Actions in the reducer and never reach
+        // the workbench executor — defensive no-op.
+        P::Lifecycle(_)
+        | P::ConfigSet { .. }
         | P::ConfigUnset { .. }
         | P::PluginSet { .. }
         | P::PluginUnset { .. }
