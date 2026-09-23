@@ -38,6 +38,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { screenContains, VtScreen } from './vt-screen';
+import { HARNESS_TAG } from './release-acceptance';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
@@ -709,6 +710,9 @@ beforeAll(async () => {
   writeFileSync(path.join(tempHome, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
   operator = new FakeOperator();
   await operator.listen();
+  // Release acceptance (P-012 / D-018): this suite is lower-level coverage.
+  // Its node:http operator is a fixture, so nothing here is release evidence.
+  console.info(HARNESS_TAG, JSON.stringify({ operator: 'fake', binary: bin }));
 }, 900_000);
 
 afterAll(async () => {
@@ -1099,6 +1103,9 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
     } finally {
       switched.kill();
     }
+    // Printed under the release tag on purpose: the release check must refuse
+    // it because this suite's operator is a fixture (the R-12 negative control).
+    console.info('PUI_TASK_ACCEPTANCE', JSON.stringify({ binary: bin, chatId: CHAT_ID, secondChat }));
   }, 240_000);
 
   test('codex target is read-only: degraded footer, and task keys emit no wire ops', async () => {

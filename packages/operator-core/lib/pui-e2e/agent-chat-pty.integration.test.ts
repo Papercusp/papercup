@@ -35,6 +35,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
+import { HARNESS_TAG } from './release-acceptance';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
 // that load on the shared box trips at random; fail-on-console turned it into
@@ -1528,6 +1529,10 @@ beforeAll(async () => {
     workspaceId: WORKSPACE,
     agentChat: { scope: `workspace:${WORKSPACE}` },
   });
+  // Release acceptance (P-012 / D-018): every PUI_*_ACCEPTANCE line in this
+  // file was produced against the production operator app, not a fixture.
+  console.info(HARNESS_TAG, JSON.stringify({ operator: 'production', app: 'apps/operator/bin/host-app',
+    binary: bin, binarySha256 }));
 }, 900_000);
 
 afterAll(async () => {
