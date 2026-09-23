@@ -32,10 +32,25 @@ import {
   startWorkspaceHostProvisioningWorkflow,
   type StartWorkspaceHostProvisioningInput,
 } from '../../dbos/workspace-host-provision-workflow';
-import type {
-  HostedWorkspaceAdmissionDependencies,
-  HostedWorkspaceBinding,
+import {
+  HostedWorkspaceAdmissionError,
+  type HostedWorkspaceAdmissionDependencies,
+  type HostedWorkspaceBinding,
 } from './workspace-admission';
+
+/** Migration 1200: at most one live customer workspace per organization (D-397). */
+export const ONE_LIVE_WORKSPACE_PER_ORGANIZATION_INDEX = 'customer_workspaces_one_live_per_organization_uq';
+
+/** A 23505 raised by THIS index only; every other unique violation stays fatal. */
+function isUniqueViolation(error: unknown, indexName: string): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as Record<string, unknown>;
+  if (String(candidate.code ?? '') !== '23505') return false;
+  if (candidate.constraint === indexName || candidate.constraint_name === indexName) return true;
+  return [candidate.message, candidate.detail].some(
+    (value) => typeof value === 'string' && value.includes(`"${indexName}"`),
+  );
+}
 
 interface BindingRow {
   id: string;
@@ -129,24 +144,48 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
     },
 
     async bindWorkspace(input) {
-      return withWorkspace(input.controlPlaneWorkspaceId, async (query) => {
-        // ON CONFLICT DO NOTHING + RETURNING is what makes `created` truthful under a
-        // concurrent replay: exactly one caller gets a row back, and only that one goes on
-        // to enqueue provisioning.
-        const rows = await query<Array<{ id: string }>>`
-          INSERT INTO harness_shared.customer_workspaces (
-            workspace_id, id, organization_id, workspace_host_id, display_name, state,
-            created_by_principal_kind, created_by_principal_id
-          ) VALUES (
-            ${input.controlPlaneWorkspaceId}, ${input.workspaceId}, ${input.organizationId},
-            ${input.workspaceHostId}, ${input.displayName}, 'provisioning',
-            'user', ${input.userId}
-          )
-          ON CONFLICT (workspace_id, id) DO NOTHING
-          RETURNING id
-        `;
-        return { created: rows.length === 1 };
-      });
+      try {
+        return await withWorkspace(input.controlPlaneWorkspaceId, async (query) => {
+          // ON CONFLICT DO NOTHING + RETURNING is what makes `created` truthful under a
+          // concurrent replay: exactly one caller gets a row back, and only that one goes on
+          // to enqueue provisioning.
+          const rows = await query<Array<{ id: string }>>`
+            INSERT INTO harness_shared.customer_workspaces (
+              workspace_id, id, organization_id, workspace_host_id, display_name, state,
+              created_by_principal_kind, created_by_principal_id
+            ) VALUES (
+              ${input.controlPlaneWorkspaceId}, ${input.workspaceId}, ${input.organizationId},
+              ${input.workspaceHostId}, ${input.displayName}, 'provisioning',
+              'user', ${input.userId}
+            )
+            ON CONFLICT (workspace_id, id) DO NOTHING
+            RETURNING id
+          `;
+          return { created: rows.length === 1 };
+        });
+      } catch (error) {
+        // The ON CONFLICT target above is the row identity only, so a violation of the
+        // one-live-workspace-per-organization index still raises: a concurrent attempt for
+        // the same organization won (migration 1200, D-397).
+        if (!isUniqueViolation(error, ONE_LIVE_WORKSPACE_PER_ORGANIZATION_INDEX)) throw error;
+        // The host row admission wrote for THIS attempt now binds nothing and would read as a
+        // host being provisioned forever. Nothing references it yet (provisioning starts only
+        // after a created binding), so it is removed rather than left behind.
+        await withWorkspace(input.controlPlaneWorkspaceId, (query) => query`
+          DELETE FROM harness_shared.workspace_hosts host
+           WHERE host.workspace_id = ${input.controlPlaneWorkspaceId}
+             AND host.id = ${input.workspaceHostId}
+             AND NOT EXISTS (
+               SELECT 1 FROM harness_shared.customer_workspaces customer
+                WHERE customer.workspace_id = host.workspace_id
+                  AND customer.workspace_host_id = host.id
+             )
+        `);
+        throw new HostedWorkspaceAdmissionError(
+          'organization already has a live workspace',
+          'organization_has_live_workspace',
+        );
+      }
     },
 
     startProvisioning(input) {
