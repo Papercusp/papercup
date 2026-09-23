@@ -37,6 +37,7 @@
  */
 import type postgres from 'postgres';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { DEFAULT_WORKSPACE_HOST_SOAK_POLICY } from './soak';
 
 export const CLOUD_RESOURCE_OBLIGATION_VERSION = 'cloud-resource-obligations-v1';
 
@@ -59,6 +60,13 @@ export const CLOUD_RESOURCE_OBLIGATION_DEFAULT_ESCALATION_COOLDOWN_MS = 12 * 60 
 export const CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS = 7 * 24 * 60 * 60 * 1000; // 7d
 
 /**
+ * A healthy running-host attestation is considered current for the soak sampler's
+ * maximum allowed gap. After three missed five-minute samples, fail toward escalation.
+ */
+export const CLOUD_RESOURCE_ACTIVE_HOST_HEALTH_FRESHNESS_MS =
+  DEFAULT_WORKSPACE_HOST_SOAK_POLICY.intervalMs * DEFAULT_WORKSPACE_HOST_SOAK_POLICY.maxGapIntervals;
+
+/**
  * Key for the "is this obligation's originating work-item still open?" lookup.
  *
  * Composite on (workspaceId, sourceWorkItemId) rather than the bare work-item id: the
@@ -69,6 +77,11 @@ export const CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS = 7 * 24 * 
  */
 export function cloudResourceObligationSourceKey(workspaceId: string, sourceWorkItemId: string): string {
   return JSON.stringify([workspaceId, sourceWorkItemId]);
+}
+
+/** Workspace-host ids are tenant-local, so in-use keys include the workspace. */
+export function cloudResourceObligationHostKey(workspaceId: string, hostId: string): string {
+  return JSON.stringify([workspaceId, hostId]);
 }
 
 function requireNonEmpty(value: string, label: string): string {
@@ -458,6 +471,11 @@ export interface CloudResourceObligationEscalationOptions {
    * whereas a wrong suppression silently hides a metered resource.
    */
   openSourceWorkItemKeys?: ReadonlySet<string>;
+  /**
+   * Composite keys of hosts whose desired/observed state is running and whose healthy
+   * attestation is fresh. Omitted means the probe was not established, so suppress nothing.
+   */
+  freshHealthyActiveHostKeys?: ReadonlySet<string>;
   /** Override the in-use suppression ceiling (measured from obligation creation). */
   inUseSuppressionCeilingMs?: number;
 }
@@ -469,8 +487,8 @@ export interface CloudResourceObligationEscalationOptions {
  *   - never escalated before, OR the last escalation is older than escalateCooldownMs
  *     (so a live escalation work-item is re-nudged rather than silently going stale,
  *     but not re-filed every single tick), AND
- *   - NOT still in use — i.e. its originating work-item is terminal, unknown, or the
- *     in-use suppression ceiling has elapsed.
+   *   - NOT still in use — no fresh healthy active-host attestation, and its originating
+   *     work-item is terminal, unknown, or the in-use suppression ceiling has elapsed.
  *
  * The in-use gate exists because "teardown owed 23.1h" carries NO information about
  * whether the originating work finished: this sweep is owner-independent by design, so
@@ -509,8 +527,14 @@ export function selectCloudResourceObligationsToEscalate(
       openSourceKeys !== undefined &&
       row.sourceWorkItemId !== '' &&
       openSourceKeys.has(cloudResourceObligationSourceKey(row.workspaceId, row.sourceWorkItemId));
-    // In active use AND still inside the ceiling — not a leak, so stay quiet.
+    const freshHealthyHostIsActive =
+      options.freshHealthyActiveHostKeys !== undefined &&
+      row.hostId !== '' &&
+      options.freshHealthyActiveHostKeys.has(cloudResourceObligationHostKey(row.workspaceId, row.hostId));
+    // Open source work is suppressed only within its age ceiling; active-host proof has its own freshness bound.
     if (sourceStillOpen && ageMs < ceilingMs) continue;
+    // A currently healthy host owns its resources even when no source work-item was attached.
+    if (freshHealthyHostIsActive) continue;
     out.push({
       id: row.id,
       workspaceId: row.workspaceId,
@@ -555,6 +579,55 @@ export async function readOpenSourceWorkItemKeys(
   const out = new Set<string>();
   for (const raw of found) {
     out.add(cloudResourceObligationSourceKey(String(raw.workspace_id ?? ''), String(raw.feature_id ?? '')));
+  }
+  return out;
+}
+
+/**
+ * Which obligations belong to a currently running, freshly healthy workspace host?
+ * The bounded attestation window is tied to the host soak cadence: three missed samples
+ * make the state unknown, so the sweep falls back to escalation instead of hiding a leak.
+ */
+export async function readFreshHealthyActiveHostKeys(
+  sql: postgres.Sql,
+  rows: readonly CloudResourceObligationRow[],
+  evaluatedAtMs: number,
+  freshnessMs: number = CLOUD_RESOURCE_ACTIVE_HOST_HEALTH_FRESHNESS_MS,
+): Promise<Set<string>> {
+  if (!Number.isFinite(evaluatedAtMs)) throw new Error('evaluatedAtMs must be finite');
+  if (!Number.isSafeInteger(freshnessMs) || freshnessMs <= 0) {
+    throw new Error('freshnessMs must be a positive safe integer');
+  }
+  const hostPairs = [
+    ...new Map(
+      rows
+        .filter((row) => row.workspaceId !== '' && row.hostId !== '')
+        .map((row) => [cloudResourceObligationHostKey(row.workspaceId, row.hostId), row] as const),
+    ).values(),
+  ];
+  if (hostPairs.length === 0) return new Set();
+  const workspaceIds = hostPairs.map((row) => row.workspaceId);
+  const hostIds = hostPairs.map((row) => row.hostId);
+  const requestedKeys = new Set(hostPairs.map((row) => cloudResourceObligationHostKey(row.workspaceId, row.hostId)));
+  const freshAfter = new Date(evaluatedAtMs - freshnessMs).toISOString();
+  const evaluatedAt = new Date(evaluatedAtMs).toISOString();
+  const found = (await sql`
+    SELECT workspace_id, id AS host_id
+      FROM harness_shared.workspace_hosts
+     WHERE (workspace_id, id) IN (
+       SELECT * FROM unnest(${workspaceIds as string[]}::text[], ${hostIds as string[]}::text[])
+     )
+       AND desired_state = 'running'
+       AND observed_state = 'running'
+       AND observed_revision = desired_revision
+       AND health_status = 'healthy'
+       AND health_attested_at >= ${freshAfter}::timestamptz
+       AND health_attested_at <= ${evaluatedAt}::timestamptz
+  `) as unknown as Array<Record<string, unknown>>;
+  const out = new Set<string>();
+  for (const raw of found) {
+    const key = cloudResourceObligationHostKey(String(raw.workspace_id ?? ''), String(raw.host_id ?? ''));
+    if (requestedKeys.has(key)) out.add(key);
   }
   return out;
 }
@@ -862,10 +935,9 @@ export async function runCloudResourceObligationSweepOnce(
   const evaluatedAtMs = opts.evaluatedAtMs ?? Date.now();
   const open = await listOpenCloudResourceObligations(sql);
   const errors: Array<{ id: number; error: string }> = [];
-  // Which of these are still in ACTIVE USE? An obligation whose originating work-item is
-  // still open is not a leak — see selectCloudResourceObligationsToEscalate. A failure to
-  // establish this must not strand the sweep, so fall back to suppressing nothing (the
-  // pre-existing escalate-on-time behaviour) rather than aborting the tick.
+  // Which of these are still in ACTIVE USE? An open source work-item or a fresh healthy
+  // workspace-host attestation can establish use. A failed probe falls back to escalation,
+  // never to suppression.
   let openSourceWorkItemKeys: ReadonlySet<string> | undefined;
   try {
     openSourceWorkItemKeys = await readOpenSourceWorkItemKeys(sql, open);
@@ -873,8 +945,16 @@ export async function runCloudResourceObligationSweepOnce(
     errors.push({ id: 0, error: `source work-item state read failed: ${(err as Error).message}` });
     openSourceWorkItemKeys = undefined;
   }
+  let freshHealthyActiveHostKeys: ReadonlySet<string> | undefined;
+  try {
+    freshHealthyActiveHostKeys = await readFreshHealthyActiveHostKeys(sql, open, evaluatedAtMs);
+  } catch (err) {
+    errors.push({ id: 0, error: 'active workspace-host state read failed: ' + (err as Error).message });
+    freshHealthyActiveHostKeys = undefined;
+  }
   const candidates = selectCloudResourceObligationsToEscalate(open, evaluatedAtMs, opts.escalateCooldownMs, {
     openSourceWorkItemKeys,
+    freshHealthyActiveHostKeys,
     inUseSuppressionCeilingMs: opts.inUseSuppressionCeilingMs,
   });
   let escalated = 0;

@@ -32,7 +32,9 @@ import {
   startupOutputReady,
   freshChildPromptReady,
   codexTuiStartObserved,
-  codexInitialFrameObserved,
+  codexSessionFrameObserved,
+  truncatedTurnOriginMarkerLoss,
+  TRUNCATED_MARKER_MIN_NONCE_CHARS,
   startupFallbackElapsed,
   CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER,
   killPtyProcessTree,
@@ -304,16 +306,24 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(codexTuiStartObserved(launcherBanner + codexProbe)).toBe(true);
 
     // The probe alone is NOT readiness: Codex is still swallowing stdin.
-    expect(codexInitialFrameObserved(launcherBanner + codexProbe)).toBe(false);
-    expect(codexInitialFrameObserved(launcherBanner + codexProbe + firstFrame)).toBe(true);
-    // The composer glyph alone also proves a painted frame.
-    expect(codexInitialFrameObserved(codexProbe + '\x1b[9;1H› Ask Codex to do anything')).toBe(true);
+    expect(codexSessionFrameObserved(launcherBanner + codexProbe)).toBe(false);
+    // FALSE PREMISE retracted (17:45Z): Codex 0.156.1 paints its header and
+    // composer ~0.25s after the probe while its session is still loading. That
+    // pre-session chrome is NOT readiness (captured 2026-09-23, wi2745-capture-b).
+    const preSessionFrame =
+      firstFrame +
+      '\x1b[4;1H│ model:     \x1b[2mloading\x1b[22m   /model to change │' +
+      '\x1b[9;1H› Ask Codex to do anything';
+    expect(codexSessionFrameObserved(launcherBanner + codexProbe + preSessionFrame)).toBe(false);
+    // The header repainted with a real model is written once the session exists.
+    const sessionFrame = '\x1b[4;1H│ model:       \x1b[1mGPT-5.6-Sol high\x1b[22m   /model to change │';
+    expect(codexSessionFrameObserved(codexProbe + preSessionFrame + sessionFrame)).toBe(true);
     // Chrome painted BEFORE the latest probe does not count: the frame must follow it.
-    expect(codexInitialFrameObserved('OpenAI Codex ›' + codexProbe)).toBe(false);
+    expect(codexSessionFrameObserved(sessionFrame + codexProbe)).toBe(false);
     // No probe in the buffer is not a frame, unless the caller already saw the
     // probe and its bounded buffer has since trimmed it away.
-    expect(codexInitialFrameObserved(firstFrame)).toBe(false);
-    expect(codexInitialFrameObserved(firstFrame, { probeAlreadySeen: true })).toBe(true);
+    expect(codexSessionFrameObserved(sessionFrame)).toBe(false);
+    expect(codexSessionFrameObserved(sessionFrame, { probeAlreadySeen: true })).toBe(true);
 
     const fallbackMs = 15_000;
     const firstOutputAt = 1_000; // launcher banner
@@ -352,7 +362,11 @@ describe('session-port managed seed + native persistence helpers', () => {
   // window and the child reports it. The widened no-frame window (4 x 500ms
   // from the probe) is deliberately longer than the swallow, so only a clock
   // anchored on the frame can pass.
-  it('never types a Codex kickoff between the startup probe and the first painted frame', async () => {
+  // The fake Codex paints its pre-session chrome (`model: loading` + composer)
+  // right after the probe, as 0.156.1 does, and keeps swallowing until the
+  // session header arrives 1.2s later. A clock started at the pre-session chrome
+  // (the 16:45Z fix) types at ~0.6s and is swallowed.
+  it('never types a Codex kickoff between the startup probe and the session frame', async () => {
     const ownerId = `su-codex-first-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const { captured, io } = fakeIo();
@@ -363,7 +377,8 @@ describe('session-port managed seed + native persistence helpers', () => {
       "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
       "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
       "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
-      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.156.1) \\u2502\\n\\u203a Ask Codex to do anything\\n');},1200);},100);" +
+      "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.156.1) \\u2502\\n\\u2502 model:     loading   /model to change \\u2502\\n\\u203a Ask Codex to do anything\\n'),50);" +
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[2;1H\\u2502 model:       GPT-5.6-Sol high   /model to change \\u2502\\n');},1200);},100);" +
       'setTimeout(()=>process.exit(0),15000);';
     const done = hostThroughPty({
       command: execPath,
@@ -400,7 +415,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         expect(row).toBeDefined();
         return row;
       }, { timeout: 8000 });
-      const frame = hostEvents().find((e) => e.kind === 'backend-first-frame-observed');
+      const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
       expect(frame?.msAfterTuiStart).toBeGreaterThanOrEqual(1_000);
       expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'startup-fallback' });
       expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(500);
@@ -556,6 +571,51 @@ describe('session-port managed seed + native persistence helpers', () => {
         sinceMs: claudeSinceMs,
         home,
       })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // WI-10002745: a Codex kickoff reached its rollout as `bd294b2da8⟧\n…`, the
+  // tail of its marker. The exact proof missed it and the host tore down an
+  // auditor that was mid-work. A truncated marker that keeps enough nonce is
+  // proof the turn started, reported as degraded rather than exact.
+  it('accepts a kickoff whose marker lost its head, but only with enough nonce left', async () => {
+    const marker = '⟦turn-origin:fleet-kickoff nonce:87d062bd294b2da8⟧';
+    expect(truncatedTurnOriginMarkerLoss(marker, 'bd294b2da8⟧\nYou are the auditor')).toBe(39);
+    expect(truncatedTurnOriginMarkerLoss(marker, `${marker}\nexact`)).toBeNull();
+    const shortest = marker.slice(-(TRUNCATED_MARKER_MIN_NONCE_CHARS + 1));
+    expect(truncatedTurnOriginMarkerLoss(marker, `${shortest}\nbody`)).toBe(marker.length - shortest.length);
+    expect(truncatedTurnOriginMarkerLoss(marker, `${shortest.slice(1)}\nbody`)).toBeNull();
+    // A suffix that is not at the start of the text is not a truncated kickoff.
+    expect(truncatedTurnOriginMarkerLoss(marker, `quoted bd294b2da8⟧`)).toBeNull();
+    // A different nonce never matches.
+    expect(truncatedTurnOriginMarkerLoss(marker, 'cd294b2da8⟧\nbody')).toBeNull();
+
+    const home = mkdtempSync(join(tmpdir(), 'psu-truncated-marker-'));
+    try {
+      const env = { CODEX_HOME: join(home, 'codex') };
+      const dir = join(home, 'codex', 'sessions', '2026', '09', '23');
+      mkdirSync(dir, { recursive: true });
+      const rollout = join(dir, 'rollout-2026-09-23T13-12-43-0001.jsonl');
+      const sinceMs = Date.now();
+      const userRow = (text: string, ts: number) =>
+        JSON.stringify({
+          timestamp: new Date(ts).toISOString(),
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+        });
+      // An OLDER truncated row must not certify this injection.
+      writeFileSync(rollout, `${userRow('bd294b2da8⟧\nstale', sinceMs - 60_000)}\n`);
+      const stale = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 30, pollMs: 5 });
+      expect(stale).toEqual({ persisted: false, nativeRef: null });
+      writeFileSync(rollout, `${userRow('bd294b2da8⟧\nYou are the auditor', sinceMs + 1)}\n`, { flag: 'a' });
+      const proof = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
+      expect(proof).toEqual({ persisted: true, nativeRef: rollout, markerTruncated: { lostChars: 39 } });
+      // The exact marker still wins, with no degraded flag.
+      writeFileSync(rollout, `${userRow(`${marker}\nexact`, sinceMs + 2)}\n`, { flag: 'a' });
+      const exact = await waitForNativeTranscriptMarker({ agent: 'codex', env, marker, sinceMs, home, timeoutMs: 100, pollMs: 5 });
+      expect(exact).toEqual({ persisted: true, nativeRef: rollout });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -508,6 +508,34 @@ export type ServiceStartExec = (
 const defaultServiceStartExec: ServiceStartExec = async (command, args, options) =>
   execProbeCommand(command, args, options.timeout);
 
+export type SystemdDaemonReloadNeed = 'needed' | 'not-needed' | 'unknown';
+
+/**
+ * Ask systemd whether this unit's on-disk definition differs from the manager's
+ * loaded copy. `daemon-reload` refreshes the whole user manager, so code-only
+ * restarts must not invoke it when the unit files are already current.
+ * Unknown is conservative: callers keep the existing reload behavior.
+ */
+export async function probeSystemdDaemonReloadNeed(
+  unit: string,
+  exec: ServiceStartExec = defaultServiceStartExec,
+): Promise<SystemdDaemonReloadNeed> {
+  if (process.platform !== 'linux') return 'unknown';
+  try {
+    const { stdout } = await exec(
+      'systemctl',
+      ['--user', 'show', '-p', 'NeedDaemonReload', resolveUnitName(unit)],
+      { timeout: 3000 },
+    );
+    const value = parseSystemctlShowOutput(stdout).get('NeedDaemonReload')?.trim().toLowerCase();
+    if (value === 'yes') return 'needed';
+    if (value === 'no') return 'not-needed';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function probeServiceStart(
   unit: string,
   exec: ServiceStartExec = defaultServiceStartExec,

@@ -16,6 +16,8 @@ import {
   markCloudResourceObligationEscalated,
   runCloudResourceObligationSweepOnce,
   cloudResourceObligationSourceKey,
+  cloudResourceObligationHostKey,
+  CLOUD_RESOURCE_ACTIVE_HOST_HEALTH_FRESHNESS_MS,
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
   CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS,
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_RECLAIM_AFTER_MS,
@@ -198,6 +200,23 @@ describe('selectCloudResourceObligationsToEscalate — in-use suppression', () =
     expect(out).toHaveLength(1);
   });
 
+  it('suppresses a resource for a freshly healthy active host even without a source work-item', () => {
+    const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      freshHealthyActiveHostKeys: new Set([cloudResourceObligationHostKey(row.workspaceId, row.hostId)]),
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('does not let a same-named host in another workspace suppress a real leak', () => {
+    const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
+    const foreign = cloudResourceObligationHostKey('some-other-workspace', row.hostId);
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      freshHealthyActiveHostKeys: new Set([foreign]),
+    });
+    expect(out).toHaveLength(1);
+  });
+
   it('rejects a negative suppression ceiling rather than silently disabling the gate', () => {
     expect(() =>
       selectCloudResourceObligationsToEscalate([makeRow()], pastGrace, undefined, {
@@ -342,6 +361,7 @@ function toDbRow(row: CloudResourceObligationRow): Record<string, unknown> {
     purpose: row.purpose,
     created_by_owner_id: row.createdByOwnerId,
     source_work_item_id: row.sourceWorkItemId,
+    host_id: row.hostId,
     created_at: new Date(row.createdAtMs).toISOString(),
     grace_ms: row.graceMs,
     teardown_owed: row.teardownOwed,
@@ -361,9 +381,14 @@ function makeSweepFakeSql(
    * pre-existing sweep tests keep asserting the same escalate-on-time behaviour.
    */
   openSourceWorkItems: Array<{ workspaceId: string; featureId: string }> = [],
-  opts: { failSourceRead?: boolean } = {},
+  opts: {
+    failSourceRead?: boolean;
+    failActiveHostRead?: boolean;
+    activeHosts?: Array<{ workspaceId: string; hostId: string }>;
+  } = {},
 ) {
   const markCalls: Array<{ id: number; workItemId: string }> = [];
+  const activeHostProbeCalls: Array<{ text: string; values: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
@@ -375,6 +400,13 @@ function makeSweepFakeSql(
         openSourceWorkItems.map((w) => ({ workspace_id: w.workspaceId, feature_id: w.featureId })),
       );
     }
+    if (text.includes('FROM harness_shared.workspace_hosts')) {
+      activeHostProbeCalls.push({ text, values });
+      if (opts.failActiveHostRead) return Promise.reject(new Error('workspace_hosts probe exploded'));
+      return Promise.resolve(
+        (opts.activeHosts ?? []).map((host) => ({ workspace_id: host.workspaceId, host_id: host.hostId })),
+      );
+    }
     if (text.includes('SET last_escalated_at')) {
       // Template layout: UPDATE ... SET last_escalated_at = now(), escalation_work_item_id =
       // ${workItemId} ... WHERE id = ${id} — id is the LAST interpolated value.
@@ -383,7 +415,7 @@ function makeSweepFakeSql(
     }
     throw new Error(`unexpected query in sweep fake sql: ${text}`);
   }) as unknown as postgres.Sql;
-  return { sql, markCalls };
+  return { sql, markCalls, activeHostProbeCalls };
 }
 
 describe('runCloudResourceObligationSweepOnce', () => {
@@ -420,6 +452,45 @@ describe('runCloudResourceObligationSweepOnce', () => {
     );
     expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
     expect(markCalls).toEqual([]);
+  });
+
+  it('suppresses a no-source obligation for a fresh healthy active host', async () => {
+    const row = makeRow({ sourceWorkItemId: '', createdAtMs: 0 });
+    const evaluatedAtMs = CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
+    const { sql, markCalls, activeHostProbeCalls } = makeSweepFakeSql([row], [], {
+      activeHosts: [{ workspaceId: row.workspaceId, hostId: row.hostId }],
+    });
+    const capture: CloudResourceObligationCaptureDep = async () => {
+      throw new Error('capture must not run for a freshly healthy active host');
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, { evaluatedAtMs });
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
+    expect(markCalls).toEqual([]);
+    expect(activeHostProbeCalls).toHaveLength(1);
+    expect(activeHostProbeCalls[0]!.text).toContain("desired_state = 'running'");
+    expect(activeHostProbeCalls[0]!.text).toContain("observed_state = 'running'");
+    expect(activeHostProbeCalls[0]!.text).toContain("health_status = 'healthy'");
+    expect(activeHostProbeCalls[0]!.text).toContain('observed_revision = desired_revision');
+    expect(activeHostProbeCalls[0]!.values).toContain(
+      new Date(evaluatedAtMs - CLOUD_RESOURCE_ACTIVE_HOST_HEALTH_FRESHNESS_MS).toISOString(),
+    );
+  });
+
+  it('does not suppress a no-source obligation with a same-named host from another workspace', async () => {
+    const row = makeRow({ workspaceId: 'workspace-a', hostId: 'host-shared-name', sourceWorkItemId: '', createdAtMs: 0 });
+    const { sql, markCalls } = makeSweepFakeSql([row], [], {
+      activeHosts: [{ workspaceId: 'workspace-b', hostId: row.hostId }],
+    });
+    const capture: CloudResourceObligationCaptureDep = async () => ({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-foreign-host' },
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result.escalated).toBe(1);
+    expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-foreign-host' }]);
   });
 
   it('records a per-candidate capture failure without aborting the rest of the sweep', async () => {
@@ -502,6 +573,24 @@ describe('runCloudResourceObligationSweepOnce', () => {
       { id: 0, error: 'source work-item state read failed: work_items probe exploded' },
     ]);
     expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-fallback' }]);
+  });
+
+  it('falls back to escalating (and records the error) when the active-host probe fails', async () => {
+    const row = makeRow({ sourceWorkItemId: '', createdAtMs: 0 });
+    const { sql, markCalls } = makeSweepFakeSql([row], [], { failActiveHostRead: true });
+    const capture: CloudResourceObligationCaptureDep = async () => ({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-active-host-fallback' },
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result.escalated).toBe(1);
+    expect(result.errors).toEqual([
+      { id: 0, error: 'active workspace-host state read failed: workspace_hosts probe exploded' },
+    ]);
+    expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-active-host-fallback' }]);
   });
 
   it('probes source state with the DERIVED terminal vocabulary, not a hand-copied list', async () => {

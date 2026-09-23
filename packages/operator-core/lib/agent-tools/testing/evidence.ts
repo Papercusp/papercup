@@ -205,7 +205,16 @@ async function readSiblingEvidence(row: Prepared, scope: Scope, deps: Deps) {
 
 export async function finishTestEvidence(prepared: Prepared[], originRunId: string, runId: string, scope: Scope,
   result?: TestFilesCoreResult, deps: Deps = defaults) {
-  const ledger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
+  const primaryLedger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
+  // A foreground timeout can hand back a detached handle AFTER the reporter was
+  // already launched with the original run-group id. Recovery must try that
+  // persisted origin when the detached group has no rows; the exact reporter
+  // scope/file/details checks below still decide whether it proves anything.
+  const originLedger = originRunId !== runId && (primaryLedger?.length ?? 0) === 0
+    ? await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: originRunId })
+    : null;
+  const ledger = (primaryLedger?.length ?? 0) > 0 ? primaryLedger : originLedger ?? primaryLedger;
+  const ledgerRunGroupId = (originLedger?.length ?? 0) > 0 ? originRunId : runId;
   const rows = [];
   for (const row of prepared) {
     const matches = (ledger ?? []).filter(r => r.file_path === row.binding.testPath && r.finished_at !== null);
@@ -221,7 +230,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
         phase: sourceStable ? 'settled' : 'source-changed', outcome: priorProof?.outcome ?? 'unknown', bindingStatus: 'unchanged' });
       continue;
     }
-    const measuredResult = result ?? recoveredFileResult(run, row.binding, runId, scope);
+    const measuredResult = result ?? recoveredFileResult(run, row.binding, ledgerRunGroupId, scope);
     const outcome = testEvidenceOutcome(row.binding, measuredResult);
     const testNamePattern = measuredResult && !measuredResult.error ? measuredResult.testNamePattern : undefined;
     // A scoped read that found nothing cannot say WHY on its own. Probe the run
@@ -234,7 +243,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     if (matches.length > 1) attribution = 'ambiguous';
     else if (matches.length === 0) {
       unattributedRows = await deps
-        .unattributed({ runGroupId: runId, filePath: row.binding.testPath })
+        .unattributed({ runGroupId: ledgerRunGroupId, filePath: row.binding.testPath })
         .catch(() => null);
       attribution = unattributedRows === null ? 'unknown'
         : unattributedRows > 0 ? 'unattributed' : 'absent';
@@ -266,7 +275,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
           : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
     const details = {
       ...row.input.details,
-        testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
+        testExecution: { schemaVersion: 1, phase, runId, originRunId, ledgerRunGroupId, binding: row.binding,
           ...(testNamePattern ? { testNamePattern } : {}),
           ...(outcome.filteredSkipped !== undefined ? { filteredSkipped: outcome.filteredSkipped } : {}),
           sourceStable, ledgerStatus: run?.status ?? 'unknown', ledgerMatches: matches.length,

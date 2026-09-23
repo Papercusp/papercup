@@ -9,7 +9,10 @@ import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps,
+  observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
+  type GoalPlacementAdmissionObservation,
 } from './goal-placement-turn-receipts';
+import type { GovernorStateSnapshot } from './resource-governor/state-snapshot';
 
 const at = (n: number) => new Date(Date.UTC(2026, 8, 23, 0, n));
 const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', family: 'plan-placement',
@@ -20,6 +23,98 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
   sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
   clearsWhen: { id: 'claimed', summary: 'A verified member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
   action: { kind: 'delegate', summary: 'Staff the eligible plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
+});
+
+const admission = (minute: number, overrides: Partial<GoalPlacementAdmissionObservation> = {}): GoalPlacementAdmissionObservation => ({
+  version: 1, planRef: 'plan:harness/plan', observedAt: at(minute).toISOString(), planReason: 'ready',
+  governor: 'open', attempts: 'none', evidenceRefs: ['fixture:preflight', 'fixture:governor'], ...overrides,
+});
+
+describe('typed placement admission observations', () => {
+  function fixture() {
+    const snapshot = { observedAtMs: at(1).getTime(), validUntilMs: at(3).getTime(), evidenceRef: 'governor:1',
+      admission: { state: 'open', constrainedClasses: [] } } as unknown as GovernorStateSnapshot;
+    const deps: GoalPlacementAdmissionDeps = { preflight: vi.fn(async () => ({ ready: true, reason: 'ready' as const, plan: 'plan' })),
+      governor: vi.fn(async () => snapshot), attempts: vi.fn(async () => []), now: () => at(2).getTime() };
+    const input = { ownerId: 'holder', workspaceId: 'workspace', row: { goalId: 'goal', planSlug: 'plan',
+      planRef: 'plan:harness/plan', obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
+      launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 } } };
+    return { snapshot, deps, input };
+  }
+  it('requires measured plan readiness and a fresh unrestricted agent governor', async () => {
+    const f = fixture();
+    expect(await observeGoalPlacementAdmission(f.input, f.deps)).toMatchObject({ planReason: 'ready', governor: 'open', attempts: 'none' });
+    f.deps.preflight = async () => { throw new Error('read failed'); };
+    f.deps.attempts = async () => { throw new Error('ledger unavailable'); };
+    expect(await observeGoalPlacementAdmission(f.input, f.deps)).toMatchObject({ planReason: 'unknown', attempts: 'unknown' });
+  });
+  it.each(['plan-not-found', 'no-actionable-plan-items', 'promotion-lag', 'duplicate-coverage', 'lane-unknown',
+    'floor-diagnostics-unavailable', 'floor-gated', 'family-disagreement', 'insufficient-executable-width'] as const)(
+    'preserves exact preflight reason %s', async (reason) => {
+      const f = fixture(); f.deps.preflight = async () => ({ ready: false, reason, plan: 'plan' });
+      expect((await observeGoalPlacementAdmission(f.input, f.deps)).planReason).toBe(reason);
+    });
+  it('rejects stale/future snapshots and preserves class-specific restrictions and actual receipts', async () => {
+    const f = fixture();
+    f.deps.governor = async () => ({ ...f.snapshot, validUntilMs: at(1).getTime() });
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('unknown');
+    f.deps.governor = async () => ({ ...f.snapshot, observedAtMs: at(3).getTime() });
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('unknown');
+    f.deps.governor = async () => ({ ...f.snapshot, admission: { ...f.snapshot.admission, state: 'constrained', constrainedClasses: ['embedding'] } });
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('open');
+    f.deps.governor = async () => ({ ...f.snapshot, admission: { ...f.snapshot.admission, state: 'constrained', constrainedClasses: ['agent'] } });
+    f.deps.attempts = async () => ['RG-exact'];
+    expect(await observeGoalPlacementAdmission(f.input, f.deps)).toMatchObject({ governor: 'restricted', attempts: 'present',
+      evidenceRefs: expect.arrayContaining(['RG-exact']) });
+  });
+});
+
+describe('exact completed-opportunity proof join', () => {
+  function proof() {
+    const receipt = { version: 1, goalId: 'goal', planSlug: 'plan', planRef: 'plan:harness/plan', obligationId: row.id,
+      sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision, deliveryToken: 'token',
+      offeredAt: at(2).toISOString(), completedAt: at(3).toISOString(), confirmedAt: at(5).toISOString(),
+      completedTurnRef: 'codex:native-1:request', admission: admission(2) };
+    const end = { version: 1, goalId: 'goal', completedTurnRef: receipt.completedTurnRef, completedAt: receipt.completedAt,
+      observedAt: at(4).toISOString(), deliveryToken: 'token', rows: [{ planSlug: 'plan', planRef: receipt.planRef,
+        status: 'due', applicableDemand: 1, actionKind: 'delegate', obligationId: row.id,
+        sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision }],
+      admissions: [{ planRef: receipt.planRef, admission: admission(4) }] };
+    return { receipt, end, qualify: () => qualifyGoalPlacementTurn({ receipt, turnEnd: end, nativeSessionId: 'native-1' }) };
+  }
+  it('joins the exact token and native final with the timely policy, ignoring later confirmation prose', () => {
+    const f = proof();
+    expect(f.qualify()).toMatchObject({ deliveryToken: 'token', completedTurnRef: 'codex:native-1:request',
+      eligibleAtOffer: true, eligibleAtCompletion: true });
+    expect(qualifyGoalPlacementTurn({ receipt: { ...f.receipt, atConfirmation: { status: 'satisfied' } },
+      turnEnd: f.end, nativeSessionId: 'native-1' })).toEqual(f.qualify());
+  });
+  it.each(['token', 'goal', 'native', 'plan', 'generation', 'revision', 'late', 'admission'])(
+    'cannot count missing, stale or mismatched %s proof', (change) => {
+      const f = proof();
+      if (change === 'token') f.end.deliveryToken = 'wrong';
+      if (change === 'goal') f.end.goalId = 'other';
+      if (change === 'native') f.end.completedTurnRef = 'codex:other:request';
+      if (change === 'plan') f.end.rows[0]!.planRef = 'plan:harness/other';
+      if (change === 'generation') f.end.rows[0]!.sourceGeneration = 'new-generation';
+      if (change === 'revision') f.end.rows[0]!.ruleRevision = 'new-rule';
+      if (change === 'late') f.end.admissions[0]!.admission.observedAt = at(5).toISOString();
+      if (change === 'admission') f.end.admissions = [];
+      expect(f.qualify()).toBeNull();
+    });
+  it.each(['blocked', 'in-progress', 'not-applicable', 'satisfied'])('consumes a %s interval as excluded', (status) => {
+    const f = proof(); f.end.rows[0]!.status = status;
+    expect(f.qualify()).toMatchObject({ eligibleAtOffer: true, eligibleAtCompletion: false });
+  });
+  it('excludes actual admission activity and keeps unknown measurement unknown', () => {
+    const f = proof(); f.end.admissions[0]!.admission.attempts = 'present';
+    expect(f.qualify()?.eligibleAtCompletion).toBe(false);
+    f.end.admissions[0]!.admission.attempts = 'unknown';
+    expect(f.qualify()).toBeNull();
+    f.end.admissions[0]!.admission.attempts = 'none';
+    f.end.admissions[0]!.admission.governor = 'unknown';
+    expect(f.qualify()).toBeNull();
+  });
 });
 
 describe('native transcript parser to goal delivery receipt', () => {
@@ -116,6 +211,21 @@ describe('native turn-end policy observation', () => {
       observedAt: at(4).toISOString(), rows: [{ planSlug: 'plan', planRef: 'plan:harness/plan', status: 'due', applicableDemand: 1,
         actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
     } } }));
+  });
+  it('binds admission evidence to the pending token without claiming it was delivered', async () => {
+    const f = endFixture();
+    const candidate = { version: 1, ownerId: 'holder', workspaceId: 'workspace', token: 'pending-token',
+      offeredAt: at(2).toISOString(), nativeSessionId: 'native-1', sourceKind: 'codex', baselineTurnRef: 'codex:native-1:prior',
+      rows: [{ goalId: 'goal', planSlug: 'plan', planRef: 'plan:harness/plan', obligationId: row.id,
+        sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
+        launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 }, admission: admission(2) }] };
+    f.deps.pending = async () => candidate;
+    f.deps.admission = vi.fn(async () => admission(4));
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+    expect(f.deps.admission).toHaveBeenCalledWith(expect.objectContaining({ window: {
+      offeredAt: at(2).toISOString(), completedAt: at(3).toISOString() } }));
+    expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEnd:
+      expect.objectContaining({ deliveryToken: 'pending-token', admissions: [{ planRef: 'plan:harness/plan', admission: admission(4) }] }) } }));
   });
   it('does no native or policy IO for a non-GOAL caller, and refuses a mid-read goal change', async () => {
     const f = endFixture(); f.deps.goalSubject = async () => null;

@@ -19,7 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepStalePresence, listPresence } from './presence';
-import { fetchWakeability } from './presence-wakeability';
+import { fetchWakeability, LIVE_TURN_WINDOW_MS } from './presence-wakeability';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
 let fx: BaselineCoordFixture;
@@ -111,7 +111,7 @@ describe('sweepStalePresence (real PG)', () => {
 /**
  * fetchWakeability (the P-001 IO seam, fleet-dispatch-wake-clarity-2026-06-22)
  * against REAL Postgres. The `deriveSessionState` boundary is pure-unit-tested in
- * presence-wakeability.test.ts; here we pin the three batch SQL queries — the
+ * presence-wakeability.test.ts; here we pin the four batch SQL queries — the
  * column names + filter predicates that, if they ever drift, would SILENTLY
  * degrade the wakeable/sessionState fields to absent (the inert-feature failure
  * mode this plan exists to prevent). Reads through the module's own getOrgPg()
@@ -128,6 +128,7 @@ describe('fetchWakeability (real PG)', () => {
     await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${`${P}%`}`;
+    await admin`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
   }
   beforeEach(clean);
@@ -152,7 +153,7 @@ describe('fetchWakeability (real PG)', () => {
   async function seedDelivery(
     id: string,
     opts: { status: 'pending' | 'delivered' | 'dropped' | 'dead'; channel?: string | null; agoSec?: number },
-  ): Promise<void> {
+  ): Promise<Date> {
     const owner = own(id);
     const eventKey = `${COORD_INBOX_WAKE_PREFIX}${owner}`;
     const awaitRows = await admin<{ id: number }[]>`
@@ -178,6 +179,7 @@ describe('fetchWakeability (real PG)', () => {
       VALUES (${awaitId}, ${owner}, ${eventKey}, ${opts.status},
               ${opts.channel ?? null}, ${at},
               ${opts.status === 'delivered' ? at : null})`;
+    return at;
   }
 
   /** Seed a completed coord:send wake:'required' attempt at a chosen age. */
@@ -205,6 +207,21 @@ describe('fetchWakeability (real PG)', () => {
               ${new Date(Date.now() - (opts.agoSec ?? 0) * 1000)})`;
   }
 
+  /** Seed an owner-attributed tool call without advancing agent_activity. */
+  async function seedToolInvocation(id: string): Promise<Date> {
+    const owner = own(id);
+    const rows = await admin<{ invoked_at: Date | string }[]>`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id,
+         window_key, status, coord_owner_id)
+      VALUES ('default', 'papercusp', 'test', 'coord:inbox', 'operator', ${owner},
+              'test-window', 'ok', ${owner})
+      RETURNING invoked_at`;
+    const invokedAt = rows[0]?.invoked_at;
+    if (invokedAt == null) throw new Error(`missing tool_invocations row for ${owner}`);
+    return invokedAt instanceof Date ? invokedAt : new Date(invokedAt);
+  }
+
   it('a live inbox-wake await + a running turn → { wakeable, liveTurn } (the dispatch-now signal)', async () => {
     await seedAwait('live');
     await seedActivity('live', { kind: 'tool', summary: '▶ npm test', agoSec: 3 });
@@ -217,6 +234,33 @@ describe('fetchWakeability (real PG)', () => {
       liveTurn: true,
       lastActivityMs: expect.any(Number),
     });
+  });
+
+  it('WI-10002562: a Codex tool call after a delivered wake prevents a false wake miss without a newer agent_activity row', async () => {
+    await seedAwait('codex-active');
+    // Keep the prior agent_activity outside the live-turn window. The only
+    // post-wake activity below is the owner-attributed tool_invocations row.
+    await seedActivity('codex-active', {
+      kind: 'tool',
+      summary: 'pre-wake activity',
+      agoSec: Math.ceil(LIVE_TURN_WINDOW_MS / 1000) + 60,
+    });
+    const wakeAt = await seedDelivery('codex-active', {
+      status: 'delivered',
+      channel: 'pty-inject',
+      agoSec: 2,
+    });
+    const toolCallAt = await seedToolInvocation('codex-active');
+    expect(toolCallAt.getTime()).toBeGreaterThan(wakeAt.getTime());
+
+    const signals = (await fetchWakeability([own('codex-active')])).get(own('codex-active'));
+    expect(signals).toMatchObject({
+      wakeable: true,
+      liveTurn: true,
+      lastActivityMs: expect.any(Number),
+    });
+    expect(signals?.lastActivityMs).toBeGreaterThan(wakeAt.getTime());
+    expect(signals?.wakeAttemptMiss).toBeUndefined();
   });
 
   it('a cancelled / fired / expired await is NOT wakeable (it would be the `ended` row)', async () => {

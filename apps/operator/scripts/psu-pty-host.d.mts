@@ -245,6 +245,22 @@ export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, 
     home?: string;
     nativeId?: string | null;
 }): string | null;
+/** WI-10002745: a Codex kickoff can reach the native transcript missing its
+ * first 34-47 characters (measured on 21 of 82 Codex launches on 2026-09-23;
+ * one rollout began `bd294b2da8⟧`, the tail of
+ * `⟦turn-origin:fleet-kickoff nonce:87d062bd294b2da8⟧`). The turn DID start, but
+ * the exact-marker proof never matched, so the host declared the kickoff
+ * unverified and tore down an auditor that was mid-work (310K input tokens,
+ * last rollout write 4s before the teardown).
+ *
+ * Returns how many leading characters of `marker` were lost when `value`
+ * begins with a proper suffix of it that still keeps at least `minNonceChars`
+ * nonce characters and the closing bracket; otherwise null. An exact marker
+ * returns null because the exact proof owns that case. Pure and exported for
+ * tests. */
+export function truncatedTurnOriginMarkerLoss(marker: any, value: any, { minNonceChars }?: {
+    minNonceChars?: number | undefined;
+}): number | null;
 /** A carry requested in THIS turn may use its exact native completion as a
  * safe boundary even while the terminal keeps repainting. Never scan other
  * sessions or accept an older turn's completion. Missing/partial proof falls
@@ -400,9 +416,17 @@ export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, hom
 }): Promise<{
     persisted: boolean;
     nativeRef: string;
+    markerTruncated?: undefined;
+} | {
+    persisted: boolean;
+    nativeRef: string;
+    markerTruncated: {
+        lostChars: number;
+    };
 } | {
     persisted: boolean;
     nativeRef: null;
+    markerTruncated?: undefined;
 }>;
 /**
  * Prove that a provenance-tagged turn actually entered the backend's native
@@ -427,6 +451,13 @@ export function verifyNativeTurnStartWithRetry({ agent, env, text, sinceMs, home
     writeCr?: (() => void) | undefined;
     onRetry?: (() => void) | undefined;
 }): Promise<{
+    markerTruncated: any;
+    persisted: boolean;
+    nativeRef: string | null;
+    retried: boolean;
+    reason: string | null;
+} | {
+    markerTruncated?: undefined;
     persisted: boolean;
     nativeRef: string | null;
     retried: boolean;
@@ -1710,27 +1741,13 @@ export function startupOutputReady(agent: any, output: any): boolean;
  * request is the earliest byte that is unambiguously the Codex TUI rather than
  * the psu launcher's own banner. Pure and exported for tests. */
 export function codexTuiStartObserved(output: any): boolean;
-/** WI-10002745 (reopened): the probe above marks when the Codex TUI STARTS,
- * not when it is READY. Codex keeps reading stdin for the probe replies until
- * it schedules its first frame, and that wait is bimodal. Its own log line
- * `tui startup initial frame scheduled duration_ms=` measured min 33ms, p50
- * 698ms, p90 13.9s and max 14.1s over 41 launches on 2026-09-23. A fixed 15s
- * window measured from the probe therefore fired 0.3s and 0.6s BEFORE the
- * first frame on two grading auditors: each kickoff lost its leading
- * provenance marker, the native proof timed out, and the host tore down the
- * working session. The first frame Codex PAINTS after its latest probe (the
- * `OpenAI Codex` header or the `›` composer glyph) is positive proof that the
- * reply wait is over.
- *
- * `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
- * has already trimmed away: the whole buffer then counts as post-probe.
- * Pure and exported for tests. */
-export function codexInitialFrameObserved(output: any, { probeAlreadySeen }?: {
+export function codexSessionFrameObserved(output: any, { probeAlreadySeen }?: {
     probeAlreadySeen?: boolean | undefined;
 }): boolean;
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from
- * the first frame the Codex TUI paints (see codexInitialFrameObserved). It is
+ * the first frame Codex paints once its session exists (see
+ * codexSessionFrameObserved). It is
  * not measured from the launcher banner: the PTY child is the psu launcher,
  * which bootstraps the role for ~20s under load before Codex execs. It is not
  * measured from Codex's startup probe either, because Codex can then read
@@ -2367,6 +2384,11 @@ export const MAX_CONTROL_PAYLOAD_BYTES: number;
  * standalone ESM process and cannot import the TypeScript module. */
 export const KICKOFF_PROOF_PATH_ENV: "PAPERCUSP_KICKOFF_PROOF_PATH";
 export const KICKOFF_PROOF_TOKEN_ENV: "PAPERCUSP_KICKOFF_PROOF_TOKEN";
+/** WI-10002745: how many trailing nonce characters a truncated provenance
+ * marker must still carry to count as this injection's. 8 hex characters are
+ * 32 random bits, and the row must also pass the same timestamp fence and
+ * native-id restriction as an exact match. */
+export const TRUNCATED_MARKER_MIN_NONCE_CHARS: 8;
 /**
  * The registered row classifiers, by agent. Absent ⇒ unsupported backend.
  *

@@ -159,6 +159,30 @@ describe('test-time evidence continuity', () => {
       runId: 'faf310d9-ea4e-498c-be6b-6773fe46a276' }, scope, d)).rejects.toThrow('evidence_recovery_not_found');
   });
 
+  it('recovers a timed-out run whose reporter retained the origin group instead of the detached handle', async () => {
+    const d = deps();
+    const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    await finishTestEvidence(prepared, runId, detached, scope,
+      { ok: false, runId, root: scope.root, error: 'timeout' }, d);
+    const stored = d.bind.mock.calls.at(-1)![0];
+    d.list.mockResolvedValue([{ ...stored, id: 2, fingerprints: {
+      sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
+    d.ledger.mockImplementation(async ({ runGroupId: requested }) => requested === detached ? [] : [{
+      id: 42, file_path: binding.testPath, status: 'pass', finished_at: '2026-09-09T00:00:00Z',
+      execution_details: { schemaVersion: 1, root: scope.root, filePath: binding.testPath,
+        workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId,
+        testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        mutationPhase: null, commitSha: null, worktreeDirty: false },
+    }]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached }, scope, d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
+      runId: detached, ledgerRunGroupId: runId, ledgerAttribution: 'attributed' });
+  });
+
   it.each([{ id: 42, status: 'fail' }, { id: 43, status: 'pass' }])(
     'invalidates settled passing recovery when ledger attribution changes: %j', async changed => {
       const d = deps();

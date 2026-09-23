@@ -621,8 +621,17 @@ async function defaultNotifySubscribers(object: ObjectRef, ev: InjectEvent): Pro
   return fanoutForObject(object, ev);
 }
 
-const CRITICAL_WORK_ITEM_ALERT_PREFIX = 'critical-wi-alert:';
-const CRITICAL_WORK_ITEM_ALERT_RESOLVER = 'system:work-item-settle';
+// work-items.ts lazy-imports this module while this module imports work-items.ts.
+// A settled-item callback can re-enter before top-level const initialization is
+// complete, so keep these identifiers behind hoisted declarations rather than
+// triggering a TDZ error during otherwise valid alert reconciliation.
+function criticalWorkItemAlertSubject(workItemId: string): string {
+  return `critical-wi-alert:${workItemId}`;
+}
+
+function criticalWorkItemAlertResolver(): string {
+  return 'system:work-item-settle';
+}
 
 type OpenCriticalWorkItemAlert = {
   msg_id: string;
@@ -644,7 +653,7 @@ export function selectCriticalWorkItemAlerts(
   opens: readonly OpenCriticalWorkItemAlert[],
   workItemId: string,
 ): OpenCriticalWorkItemAlert[] {
-  const subject = `${CRITICAL_WORK_ITEM_ALERT_PREFIX}${workItemId}`;
+  const subject = criticalWorkItemAlertSubject(workItemId);
   return opens.filter((open) => open.subjectSignature === subject);
 }
 
@@ -660,7 +669,7 @@ export async function reconcileCriticalWorkItemAlert(
   if (!isSettledWorkItem(wi)) return;
 
   const adapter = await import('./agent-tools/coordination/escalations');
-  const subject = `${CRITICAL_WORK_ITEM_ALERT_PREFIX}${wi.id}`;
+  const subject = criticalWorkItemAlertSubject(wi.id);
   const listOpen =
     deps.listOpen ??
     (deps.listOpenBySubject
@@ -686,7 +695,7 @@ export async function reconcileCriticalWorkItemAlert(
     matches.map((open) => ({
       msg_id: open.msg_id,
       choice,
-      resolver: CRITICAL_WORK_ITEM_ALERT_RESOLVER,
+      resolver: criticalWorkItemAlertResolver(),
       note,
     })),
   );

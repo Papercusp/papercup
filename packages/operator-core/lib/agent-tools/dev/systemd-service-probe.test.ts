@@ -19,6 +19,7 @@ import {
   execProbeCommand,
   parseMultiUnitShowOutput,
   parseSystemctlShowOutput,
+  probeSystemdDaemonReloadNeed,
   probeServiceStart,
   probeUnitStates,
   resolveServiceStartMs,
@@ -85,6 +86,41 @@ describe('parseSystemctlShowOutput (EI-18700974567040702)', () => {
 
   it('empty input parses to an empty map', () => {
     expect(parseSystemctlShowOutput('').size).toBe(0);
+  });
+});
+
+describe('probeSystemdDaemonReloadNeed', () => {
+  it('reads systemd NeedDaemonReload for the requested unit', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const need = await probeSystemdDaemonReloadNeed('papercup-staging-api', async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: 'NeedDaemonReload=yes\n' };
+    });
+
+    expect(calls).toEqual([
+      {
+        command: 'systemctl',
+        args: ['--user', 'show', '-p', 'NeedDaemonReload', 'papercup-staging-api.service'],
+      },
+    ]);
+    expect(need).toBe('needed');
+  });
+
+  it('skips a global reload when systemd says the unit definition is current', async () => {
+    await expect(
+      probeSystemdDaemonReloadNeed('papercup-staging-api.service', async () => ({ stdout: 'NeedDaemonReload=no\n' })),
+    ).resolves.toBe('not-needed');
+  });
+
+  it('returns unknown, never a false no-reload reading, when the property is absent or the probe fails', async () => {
+    await expect(
+      probeSystemdDaemonReloadNeed('papercup-staging-api.service', async () => ({ stdout: 'LoadState=loaded\n' })),
+    ).resolves.toBe('unknown');
+    await expect(
+      probeSystemdDaemonReloadNeed('papercup-staging-api.service', async () => {
+        throw new Error('systemctl unavailable');
+      }),
+    ).resolves.toBe('unknown');
   });
 });
 

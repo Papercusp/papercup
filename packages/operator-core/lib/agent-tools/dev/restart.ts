@@ -80,7 +80,11 @@ import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
-import { probeServiceStart, type ServiceStartInfo } from './systemd-service-probe';
+import {
+  probeServiceStart,
+  probeSystemdDaemonReloadNeed,
+  type ServiceStartInfo,
+} from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
 import {
@@ -142,7 +146,10 @@ export const SYSTEMD_USER_DAEMON_RELOAD = {
   command: 'systemctl',
   args: ['--user', 'daemon-reload'],
 } as const;
-const SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS = 10_000;
+export const SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS = 20_000;
+function isExecFileTimeout(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ETIMEDOUT';
+}
 export type SystemdDaemonReloader = () => Promise<void>;
 const defaultSystemdDaemonReloader: SystemdDaemonReloader = async () => {
   await runExecFile(SYSTEMD_USER_DAEMON_RELOAD.command, [...SYSTEMD_USER_DAEMON_RELOAD.args], {
@@ -1466,6 +1473,35 @@ export default defineTool({
       await gitSyncBarrier.release().catch(() => {});
     };
 
+    // `daemon-reload` refreshes the whole user manager. Skip that global
+    // operation for code-only restarts when systemd confirms this unit's
+    // definition is already loaded. If unit files did change (or the probe is
+    // inconclusive), reload before guardResource drains target callers so a
+    // slow/failed manager reload cannot leave them drained without a restart.
+    let systemdDaemonReloaded = false;
+    if (target !== 'desktop-dev' && (await probeSystemdDaemonReloadNeed(cfg.unit)) !== 'not-needed') {
+      try {
+        await systemdDaemonReloader();
+        systemdDaemonReloaded = true;
+      } catch (error) {
+        await releaseCooldownOnAbort();
+        await releaseGitSyncBarrierOnAbort();
+        const detail = error instanceof Error ? error.message : String(error);
+        const timedOut = isExecFileTimeout(error);
+        return json({
+          ok: false,
+          target,
+          drained: false,
+          restarted: false,
+          systemdDaemonReloaded: false,
+          reason: timedOut ? 'systemd_daemon_reload_timed_out' : 'systemd_daemon_reload_failed',
+          note: timedOut
+            ? `Restart REFUSED before draining because systemctl --user daemon-reload exceeded the ${SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS}ms timeout: ${detail}. No target users were drained and ${cfg.unit} was not restarted.`
+            : `Restart REFUSED before draining because systemctl --user daemon-reload failed: ${detail}. No target users were drained and ${cfg.unit} was not restarted.`,
+        });
+      }
+    }
+
     // EI-22040822883429888: guardResource's exclusive drain wait supports an
     // onTick heartbeat (resource-acquire-wait.ts fires it every ~5s while
     // draining), but this call never wired one up — a genuinely-still-draining
@@ -1568,25 +1604,6 @@ export default defineTool({
             note: desktopRestart.note,
           });
         }
-        // EI-22480835928661383: systemctl restart does NOT reread changed unit
-        // files or drop-ins. Reload synchronously while our exclusive fence is
-        // current, then schedule the disruptive restart. A reload failure is a
-        // structured, fail-closed result: the still-running service is left
-        // untouched, and the caller cannot mistake a new PID on stale config for
-        // activation of the bytes currently on disk.
-        try {
-          await systemdDaemonReloader();
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          return json({
-            ok: false,
-            target,
-            drained: true,
-            restarted: false,
-            reason: 'systemd_daemon_reload_failed',
-            note: `Restart ABORTED after the drain because systemctl --user daemon-reload failed: ${detail}. ${cfg.unit} was not restarted.`,
-          });
-        }
         // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
         // real cycle happened (the restart is detached+delayed, so we cannot
         // confirm it synchronously — but a changed MainPID proves it landed).
@@ -1617,7 +1634,7 @@ export default defineTool({
             gitSyncBarrier?.acquired === true
               ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
               : null,
-          systemdDaemonReloaded: true,
+          systemdDaemonReloaded,
           quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
         });
         // Detached + delayed so this response returns before the service dies.
@@ -1660,7 +1677,7 @@ export default defineTool({
             restartedFromPid: before.mainPid ?? null,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
-            systemdDaemonReloaded: true,
+            systemdDaemonReloaded,
             ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
             ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
             ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
@@ -1689,7 +1706,7 @@ export default defineTool({
             restartedFromPid: before.mainPid ?? null,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
-            systemdDaemonReloaded: true,
+            systemdDaemonReloaded,
             ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
             ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
             stagingReadiness,
@@ -1710,7 +1727,7 @@ export default defineTool({
           restartedFromPid: before.mainPid ?? null,
           enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
           audited: true,
-          systemdDaemonReloaded: true,
+          systemdDaemonReloaded,
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
           ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),

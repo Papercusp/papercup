@@ -32,7 +32,7 @@
  * is the crisp instant signal that the turn is over even while the heartbeat is
  * still warm.
  *
- * STORE MAXIMAL, READ MINIMAL: two batch queries keyed by the roster's ownerIds
+ * STORE MAXIMAL, READ MINIMAL: four batch queries keyed by the roster's ownerIds
  * (a constant per read, never per-agent). `deriveSessionState` is pure (unit
  * tested); `fetchWakeability` is the IO seam. The caller treats it best-effort —
  * a query failure degrades the roster to today's behavior (no wakeable /
@@ -86,20 +86,19 @@ export function needsLivenessConfirmation(
 export interface WakeabilitySignals {
   /** A live `coord:inbox-wake:<id>` standing await exists → emit will deliver a wake. */
   wakeable: boolean;
-  /** A turn is running now: recent agent_activity with no trailing session-end marker. */
+  /** A turn is running now: recent activity with no trailing session-end marker. */
   liveTurn: boolean;
   /**
-   * A durable, terminal wake attempt completed recently and no agent activity
-   * followed it. This is deliberately separate from `liveTurn`: queued,
+   * A durable, terminal wake attempt completed recently and no recorded
+   * activity followed it. This is deliberately separate from `liveTurn`: queued,
    * parked, or still-delivering rows are not a confirmed miss.
    */
   wakeAttemptMiss?: boolean;
   /**
-   * Epoch-ms of this owner's most recent agent_activity, or null when it has
-   * none inside ACTIVITY_LOOKBACK_WINDOW_MS. Distinct from `liveTurn`, which
-   * is a 10-minute boolean: this is the raw age the ACTIVITY-clock ceilings
-   * below need (EI-21356812816484561). Free to emit — the widened activity
-   * query already selects it.
+   * Epoch-ms of this owner's most recent agent_activity or attributed tool
+   * invocation, or null when neither exists inside ACTIVITY_LOOKBACK_WINDOW_MS.
+   * Distinct from `liveTurn`, which is a 10-minute boolean: this is the raw
+   * age the ACTIVITY-clock ceilings below need (EI-21356812816484561).
    */
   lastActivityMs?: number | null;
 }
@@ -392,10 +391,11 @@ export function overrideIntentStaleForSessionState(
  */
 export async function fetchWakeability(
   ownerIds: string[],
+  sqlOverride?: ReturnType<typeof getOrgPg>['sql'],
 ): Promise<Map<string, WakeabilitySignals>> {
   const out = new Map<string, WakeabilitySignals>();
   if (ownerIds.length === 0) return out;
-  const { sql } = getOrgPg();
+  const sql = sqlOverride ?? getOrgPg().sql;
   const windowSec = Math.max(1, Math.round(LIVE_TURN_WINDOW_MS / 1000));
   // EI-21356139961831796: the wake-miss comparison needs a LONGER horizon than
   // liveTurn (see WAKE_MISS_EVIDENCE_WINDOW_MS). Both the attempts AND the
@@ -408,7 +408,7 @@ export async function fetchWakeability(
   const activityWindowSec = Math.max(windowSec, Math.round(ACTIVITY_LOOKBACK_WINDOW_MS / 1000));
   const nowMs = Date.now();
 
-  const [wake, turns, attempts] = await Promise.all([
+  const [wake, turns, attempts, toolCalls] = await Promise.all([
     sql<{ subscriber_id: string }[]>`
       SELECT DISTINCT subscriber_id
         FROM harness_shared.event_awaits
@@ -447,32 +447,54 @@ export async function fetchWakeability(
              AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
              AND attempted_at > now() - make_interval(secs => ${missWindowSec})
            GROUP BY subscriber_id
-        ) AS evidence
-       GROUP BY owner_id`,
+       ) AS evidence
+      GROUP BY owner_id`,
+    // Codex turns can emit tool_invocations without a newer agent_activity row.
+    // invoked_at is stamped at dispatch-settle time with coord_owner_id; this is
+    // the same per-owner freshness source already used by fleet presence.
+    sql<{ owner_id: string; last_tool_call_at: Date | string | null }[]>`
+      SELECT coord_owner_id AS owner_id, max(invoked_at) AS last_tool_call_at
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ANY(${ownerIds}::text[])
+         AND invoked_at > now() - make_interval(secs => ${activityWindowSec})
+       GROUP BY coord_owner_id`,
   ]);
 
   const wakeSet = new Set(wake.map((r) => r.subscriber_id));
   const turnByOwner = new Map(turns.map((r) => [r.owner_id, r]));
   const attemptByOwner = new Map(attempts.map((r) => [r.owner_id, r]));
+  const toolCallByOwner = new Map(toolCalls.map((r) => [r.owner_id, r]));
   for (const id of ownerIds) {
     const t = turnByOwner.get(id);
     const lastAny = t?.last_any ? Date.parse(t.last_any) : null;
     const lastEnd = t?.last_end ? Date.parse(t.last_end) : null;
+    const toolCallAt = toolCallByOwner.get(id)?.last_tool_call_at;
+    const lastToolCall =
+      toolCallAt == null
+        ? null
+        : toolCallAt instanceof Date
+          ? toolCallAt.getTime()
+          : Date.parse(toolCallAt);
+    const activityTimes = [lastAny, lastToolCall].filter(
+      (time): time is number => time != null && Number.isFinite(time),
+    );
+    const lastActivity = activityTimes.length > 0 ? Math.max(...activityTimes) : null;
     // A turn is in flight when there is recent activity AND it is not (only) the
     // trailing session-end marker — i.e. no end-marker, or activity after it.
+    // Combine agent_activity and owner-attributed tool calls so native Codex
+    // tool turns stay live when they do not emit a newer activity row.
     // EI-21356139961831796: the activity query now spans the (much longer)
     // miss-evidence window, so liveTurn MUST assert its own recency explicitly
     // — otherwise an owner whose last turn was hours ago would satisfy
     // "activity exists, no trailing end-marker" and read `live`. This check
     // restores exactly the previous 10-minute meaning.
     const liveTurn =
-      lastAny != null &&
-      !Number.isNaN(lastAny) &&
-      nowMs - lastAny <= LIVE_TURN_WINDOW_MS &&
-      (lastEnd == null || Number.isNaN(lastEnd) || lastAny > lastEnd);
+      lastActivity != null &&
+      nowMs - lastActivity <= LIVE_TURN_WINDOW_MS &&
+      (lastEnd == null || Number.isNaN(lastEnd) || lastActivity > lastEnd);
     const attempt = attemptByOwner.get(id)?.attempt_at;
     const attemptAt = attempt ? Date.parse(attempt) : null;
-    const wakeAttemptMiss = isConfirmedWakeAttemptMiss(attemptAt, lastAny);
+    const wakeAttemptMiss = isConfirmedWakeAttemptMiss(attemptAt, lastActivity);
     out.set(id, {
       wakeable: wakeSet.has(id),
       liveTurn,
@@ -485,7 +507,7 @@ export async function fetchWakeability(
       // the same backward-compatibility reason as `wakeAttemptMiss` — an owner
       // with no activity in the window emits NO key rather than a null, so a
       // reader cannot mistake "nothing in the window" for a measured value.
-      ...(lastAny != null && !Number.isNaN(lastAny) ? { lastActivityMs: lastAny } : {}),
+      ...(lastActivity != null ? { lastActivityMs: lastActivity } : {}),
     });
   }
   return out;

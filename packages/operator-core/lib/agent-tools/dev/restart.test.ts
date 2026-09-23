@@ -36,7 +36,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: vi.fn(() => ({ unref: vi.fn() })) };
 });
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
-vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
+vi.mock('./systemd-service-probe', () => ({
+  probeServiceStart: vi.fn(),
+  probeSystemdDaemonReloadNeed: vi.fn(),
+}));
 // EI-21651903020639415: gateway restarts must prove the new PID owns the
 // listener before reporting restarted:true. Mock the shared HTTP probe so the
 // regression suite stays hermetic and can assert the PID-before-health order.
@@ -91,7 +94,7 @@ import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
-import { probeServiceStart } from './systemd-service-probe';
+import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
 import { preflightRestartTarget } from './restart-preflight';
@@ -113,6 +116,7 @@ const workspaceTxnM = vi.mocked(inWorkspaceTxn);
 const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
+const daemonReloadNeedM = vi.mocked(probeSystemdDaemonReloadNeed);
 const gatewayHealthM = vi.mocked(probeHttpReachable);
 const listeningSocketsM = vi.mocked(listListeningSockets);
 const preflightM = vi.mocked(preflightRestartTarget);
@@ -218,6 +222,7 @@ const {
   configureSystemdDaemonReloaderForTests,
   evaluateBgHostRestartFreshness,
   restartVerificationHint,
+  SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS,
   SYSTEMD_USER_DAEMON_RELOAD,
   waitForStagingRestartReadiness,
 } = restartModule;
@@ -308,6 +313,8 @@ beforeEach(() => {
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   mockResolvedTyped(probeM, { ok: true, mainPid: 0 });
+  daemonReloadNeedM.mockResolvedValue('needed');
+  daemonReloadNeedM.mockResolvedValue('needed');
   listeningSocketsM.mockResolvedValue({
     sockets: [],
     matched: 0,
@@ -838,24 +845,43 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
 });
 
 describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
-  it('reloads current user-unit bytes before scheduling a systemd restart (EI-22480835928661383)', async () => {
+  it('reloads changed user-unit bytes before draining callers or scheduling a restart', async () => {
     guardM.mockImplementation(runGuard(fenceOk(4)) as never);
     systemdDaemonReloadM.mockImplementationOnce(async () => {
+      expect(guardM).not.toHaveBeenCalled();
       expect(spawnM).not.toHaveBeenCalled();
     });
 
     const b = body(await call({ confirm: true, authorize: true, reason: 'load changed drop-in', target: 'dev' }));
 
     expect(SYSTEMD_USER_DAEMON_RELOAD).toEqual({ command: 'systemctl', args: ['--user', 'daemon-reload'] });
+    expect(SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS).toBe(20_000);
+    expect(daemonReloadNeedM).toHaveBeenCalledWith('papercusp-dev-api.service');
     expect(systemdDaemonReloadM).toHaveBeenCalledTimes(1);
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(systemdDaemonReloadM.mock.invocationCallOrder[0]).toBeLessThan(guardM.mock.invocationCallOrder[0]!);
     expect(spawnM).toHaveBeenCalledTimes(1);
     expect(b).toMatchObject({ ok: true, restarted: true, systemdDaemonReloaded: true });
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     expect(details.systemdDaemonReloaded).toBe(true);
   });
 
-  it('fails closed before scheduling a restart when daemon-reload fails', async () => {
+  it('does not run a global manager reload when this unit has no pending definition change', async () => {
     guardM.mockImplementation(runGuard(fenceOk(4)) as never);
+    daemonReloadNeedM.mockResolvedValueOnce('not-needed');
+
+    const b = body(await call({ confirm: true, authorize: true, reason: 'load code change', target: 'dev' }));
+
+    expect(systemdDaemonReloadM).not.toHaveBeenCalled();
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true, restarted: true, systemdDaemonReloaded: false });
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details.systemdDaemonReloaded).toBe(false);
+  });
+
+  it('reports a non-timeout reload failure before draining callers', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(4)) as never);
+    daemonReloadNeedM.mockResolvedValueOnce('unknown');
     systemdDaemonReloadM.mockRejectedValueOnce(new Error('unit parse failed'));
 
     const b = body(await call({ confirm: true, authorize: true, reason: 'load changed drop-in', target: 'dev' }));
@@ -863,11 +889,35 @@ describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART
     expect(b).toMatchObject({
       ok: false,
       target: 'dev',
-      drained: true,
+      drained: false,
       restarted: false,
       reason: 'systemd_daemon_reload_failed',
     });
     expect(b.note).toMatch(/unit parse failed/);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels an exec timeout accurately and returns before draining callers', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(4)) as never);
+    systemdDaemonReloadM.mockRejectedValueOnce(
+      Object.assign(new Error('Command failed: systemctl --user daemon-reload'), { code: 'ETIMEDOUT' }),
+    );
+
+    const b = body(await call({ confirm: true, authorize: true, reason: 'load changed drop-in', target: 'dev' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      drained: false,
+      restarted: false,
+      systemdDaemonReloaded: false,
+      reason: 'systemd_daemon_reload_timed_out',
+    });
+    expect(b.note).toMatch(/exceeded the 20000ms timeout/i);
+    expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
     expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
