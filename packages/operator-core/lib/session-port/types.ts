@@ -1,6 +1,6 @@
 export const SESSION_PORT_SCHEMA = 'papercusp.session-port/v1' as const;
 export const SESSION_PORT_PROTOCOL_VERSION = 2 as const;
-export const SESSION_PORT_TRANSFORM_VERSION = 3 as const;
+export const SESSION_PORT_TRANSFORM_VERSION = 4 as const;
 export const SESSION_PORT_TOKEN_ESTIMATOR = 'utf8-byte-upper-bound-v1' as const;
 
 export type SessionBackend = 'claude' | 'codex' | 'omp';

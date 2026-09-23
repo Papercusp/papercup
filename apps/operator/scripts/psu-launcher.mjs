@@ -13098,7 +13098,7 @@ export function resumeSessionLineageLabel(session) {
 }
 
 export const SESSION_PORT_PROTOCOL_VERSION = 2;
-export const SESSION_PORT_TRANSFORM_VERSION = 3;
+export const SESSION_PORT_TRANSFORM_VERSION = 4;
 
 export function sessionPortUpgradeError(error) {
   const status = Number(error?.status ?? 0);
@@ -13260,6 +13260,16 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
       "cross-backend resume requires the tracked source coordination identity",
     );
   }
+  let consultEvidenceSpan = args.consultEvidenceSpan ?? null;
+  if (consultEvidenceSpan == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
+    try {
+      consultEvidenceSpan = JSON.parse(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN);
+    } catch {
+      throw new Error("PAPERCUSP_CONSULT_EVIDENCE_SPAN is not valid JSON");
+    } finally {
+      delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
+    }
+  }
   return {
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     transformVersion: SESSION_PORT_TRANSFORM_VERSION,
@@ -13271,6 +13281,7 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
     contextSize: args.contextSize ?? null,
     launchContext: args.launchContext ?? null,
     currentInstruction: resumeKickoffText(args),
+    ...(consultEvidenceSpan == null ? {} : { consultEvidenceSpan }),
   };
 }
 

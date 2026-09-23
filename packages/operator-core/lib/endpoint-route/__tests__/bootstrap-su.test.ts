@@ -856,7 +856,7 @@ describe('bootstrap-su', () => {
       owner_id: 'su-source-owner',
       bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
       session_port_protocol: 2,
-      session_port_transform_version: 3,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(200);
@@ -915,7 +915,7 @@ describe('bootstrap-su', () => {
       owner_id: 'su-source-owner',
       bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
       session_port_protocol: 2,
-      session_port_transform_version: 3,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
       session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
       cwd: '/workspace',
     });
@@ -937,7 +937,7 @@ describe('bootstrap-su', () => {
       owner_id: 'su-source-owner',
       bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
       session_port_protocol: 2,
-      session_port_transform_version: 3,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(409);
@@ -953,7 +953,7 @@ describe('bootstrap-su', () => {
       owner_id: 'su-different-owner',
       bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
       session_port_protocol: 2,
-      session_port_transform_version: 3,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(409);

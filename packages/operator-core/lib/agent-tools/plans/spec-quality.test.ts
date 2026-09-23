@@ -70,6 +70,36 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.wouldBlock).toContain('item-contract-coverage');
   });
 
+  it('routes failing AUTO-BAR repairs to the canonical rubric criterion', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause({
+          specId: 'AUTO-BAR-R-1-P-001',
+          behavior: 'The response contains the event. A second outcome is independently asserted.',
+          sourceBar: {
+            barKey: 'R-1',
+            barHash: 'a'.repeat(64),
+            barSetHash: 'b'.repeat(64),
+            rubricSlug: 'quality-plan-acceptance',
+            rubricRevision: 4,
+            evidencePlane: 'tree',
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const atomicity = result.ratings['atomic-observable-behavior'];
+    expect(atomicity.rating).toBe('fail');
+    expect(atomicity.evidence).toContain('rubric quality-plan-acceptance, BAR R-1, criterion.model');
+    expect(atomicity.suggestion).toContain('rubrics:amend');
+    expect(atomicity.suggestion).toContain('criterion.model');
+    expect(atomicity.suggestion).toContain('plans:set-specs');
+  });
+
   it('flags a multi-subject source-presence clause instead of returning a false all-pass', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

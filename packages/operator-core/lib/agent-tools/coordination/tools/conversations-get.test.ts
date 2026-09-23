@@ -173,6 +173,14 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       expires_at: '2026-08-26T07:44:56.262Z',
       closed_at: '2026-08-26T07:48:28.261Z',
       wakes_used: 1,
+      session_cost: {
+        status: 'partial' as const,
+        usd: 0.03,
+        sample_count: 2,
+        priced_sample_count: 1,
+        estimated_sample_count: 1,
+        unpriced_sample_count: 0,
+      },
     });
 
     it('surfaces `consult` for a consult conversation whose CONVERSATION row still reads open', async () => {
@@ -192,6 +200,14 @@ describe('conversations:get handler (bulk keyed-array)', () => {
         expires_at: '2026-08-26T07:44:56.262Z',
         closed_at: '2026-08-26T07:48:28.261Z',
         wakes_used: 1,
+        session_cost: {
+          status: 'partial',
+          usd: 0.03,
+          sample_count: 2,
+          priced_sample_count: 1,
+          estimated_sample_count: 1,
+          unpriced_sample_count: 0,
+        },
       });
     });
 

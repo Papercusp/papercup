@@ -184,6 +184,7 @@ type SessionPortRequestBody = {
   launchContext?: unknown;
   expectedSourceHash?: unknown;
   currentInstruction?: unknown;
+  consultEvidenceSpan?: unknown;
 };
 
 function json(body: unknown, status = 200): Response {
@@ -225,8 +226,9 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     return { response: json({ ok: false, error: `contextSize: ${normalizedContextSize.error}` }, 400) } as const;
   }
   const contextSize = normalizedContextSize.contextSize;
-  const [{ activeWorkspaceId }, { buildLaunchSpec }, service, budgetModule, store] = await Promise.all([
+  const [{ activeWorkspaceId }, { getOrgPg }, { buildLaunchSpec }, service, budgetModule, store] = await Promise.all([
     import('../../../workspace-registry'),
+    import('@papercusp/db-org'),
     import('../../../role-launch-spec'),
     import('../../../session-port/service'),
     import('../../../model-context-budget.mjs'),
@@ -238,6 +240,45 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   await store.assertSessionPortStorageReady();
   const sourceRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!sourceRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  let evidenceSpan: import('../../../session-port/service').SessionPortEvidenceSpan | undefined;
+  if (body.consultEvidenceSpan != null) {
+    const raw = body.consultEvidenceSpan;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { response: json({ ok: false, error: 'consultEvidenceSpan must be an object' }, 400) } as const;
+    }
+    const value = raw as { sessionId?: unknown; turnIndices?: unknown; contextTurns?: unknown };
+    const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : '';
+    const turnIndices = Array.isArray(value.turnIndices) ? [...new Set(value.turnIndices)] : [];
+    const contextTurns = value.contextTurns;
+    if (!sessionId || sessionId !== sourceRow.sessionId || turnIndices.length < 1 || turnIndices.length > 12 ||
+        !turnIndices.every((index) => Number.isSafeInteger(index) && Number(index) >= 0) ||
+        !Number.isSafeInteger(contextTurns) || Number(contextTurns) < 0 || Number(contextTurns) > 8) {
+      return { response: json({ ok: false, error: 'consultEvidenceSpan must name this exact source session, 1–12 valid turn indices, and a context window from 0–8' }, 400) } as const;
+    }
+    const { sql } = getOrgPg();
+    const indexed = await sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
+      SELECT t.turn_idx, t.ts AS timestamp, t.speaker, t.text
+        FROM harness_shared.session_turns t
+       WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+         AND t.source_kind = 'claude'
+         AND t.session_id = ${sessionId}
+         AND t.turn_idx = ANY(${turnIndices as number[]}::int[])
+    `;
+    if (indexed.length !== turnIndices.length) {
+      return { response: json({ ok: false, error: `consult evidence refs are not all present in the exact source session (${indexed.length}/${turnIndices.length})` }, 409) } as const;
+    }
+    evidenceSpan = {
+      sessionId,
+      turnIndices: turnIndices as number[],
+      contextTurns: Number(contextTurns),
+      evidenceTurns: indexed.map((row) => ({
+        turnIdx: row.turn_idx,
+        timestamp: row.timestamp,
+        speaker: row.speaker,
+        text: row.text,
+      })),
+    };
+  }
   const targetModel = typeof body.targetModel === 'string' && body.targetModel.trim() ? body.targetModel.trim() : null;
   const targetAccount = typeof body.targetAccount === 'string' && body.targetAccount.trim() ? body.targetAccount.trim() : 'default';
   const launchContextPath = typeof body.launchContext === 'string' && body.launchContext.trim() ? body.launchContext.trim() : null;
@@ -289,6 +330,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       launchContextHash: createHash('sha256').update(launchContextText).digest('hex'),
     },
     currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
+    ...(evidenceSpan ? { evidenceSpan } : {}),
   });
   return {
     inspection,

@@ -23985,7 +23985,7 @@
           "POST"
         ]
       },
-      "description": "Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict.",
+      "description": "Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict. Behavior on a sourceBar-pinned acceptance projection is read-only; amend its canonical rubric criterion with rubrics:amend.",
       "capabilities": [
         "plans:write"
       ],
@@ -24047,7 +24047,7 @@
       ],
       "guidance": {
         "when": "Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.",
-        "notWhen": "Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools.",
+        "notWhen": "Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools. Changing the behavior of a sourceBar-pinned AUTO-BAR projection — amend the canonical rubric with rubrics:amend.",
         "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify."
       }
     },

@@ -31,7 +31,7 @@ describe('goal obligation delivery receipt intent', () => {
   it('credits the whole action when it fits', () => {
     const out = render('Launch the independently led plan fleet');
     expect(out.agentObligations.projection.text).toBe('Launch the independently led plan fleet');
-    expect(out.agentObligations.projection.receipt).toMatchObject({ entriesDelivered: 1, entriesOmitted: 0 });
+    expect(out.agentObligations.projection.receipt).toMatchObject({ entriesDelivered: 1, entriesOmitted: 0, bodyTruncated: false });
   });
   it('never credits an action discarded by the final character cap', () => {
     const out = render('Launch the independently led plan fleet ' + 'x'.repeat(900));

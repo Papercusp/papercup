@@ -22,7 +22,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql: vi.fn(async () => []) }) };
 });
 vi.mock('../../consult/get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
-vi.mock('../../consult/relevance-router', () => ({ routeConsult: h.routeConsult }));
+vi.mock('../../consult/relevance-router', () => ({
+  DEFAULT_RECENCY_HALF_LIFE_DAYS: 7,
+  routeConsult: h.routeConsult,
+}));
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedderResolved: h.buildQueryEmbedderResolved,
   interactiveEmbedAcquireBudgetMs: h.interactiveEmbedAcquireBudgetMs,

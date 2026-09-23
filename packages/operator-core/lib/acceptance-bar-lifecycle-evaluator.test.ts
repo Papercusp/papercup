@@ -326,8 +326,6 @@ describe('operational realization from the canonical BAR snapshot', () => {
     ['wrong spec revision', s => { s.bars[0]!.proof.history![0]!.specRevision = 2; }],
     ['wrong spec fingerprint', s => { s.bars[0]!.proof.history![0]!.specFingerprint = 'old'; }],
     ['wrong BAR hash', s => { s.bars[0]!.mappings[0]!.sourceBarHash = 'old'; }],
-    ['wrong BAR set', s => { s.bars[0]!.mappings[0]!.sourceBarSetHash = 'old'; }],
-    ['wrong rubric revision', s => { s.bars[0]!.mappings[0]!.sourceRubricRevision = 2; }],
     ['no current work contract', s => { s.bars[0]!.workContracts[0]!.current = false; }],
     ['wrong adequacy revision', s => { s.bars[0]!.proof.adequacy!.checks[0]!.revision = 2; }],
     ['unknown adequacy', s => { s.bars[0]!.proof.adequacy!.checks[0]!.verdict = 'unknown'; }],
@@ -338,6 +336,19 @@ describe('operational realization from the canonical BAR snapshot', () => {
     const s = proven();
     change(s);
     expect(deriveNonCodeItemProofs(s)).toEqual([]);
+  });
+
+  // review-system-rework-reduction P-001: an amendment keeps an UNCHANGED bar's clause
+  // at its revision, so the clause legitimately carries the set hash and rubric revision
+  // it was projected under. Refusing it for that (the pre-P-001 rule) re-created the
+  // churn P-001 removes. Its own bar hash still has to match — see 'wrong BAR hash'.
+  it.each([
+    ['an older BAR set', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.mappings[0]!.sourceBarSetHash = 'old'; }],
+    ['an older rubric revision', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.mappings[0]!.sourceRubricRevision = 2; }],
+  ])('keeps a clause projected under %s current when its own bar hash matches', (_name, change) => {
+    const s = proven();
+    change(s);
+    expect(deriveNonCodeItemProofs(s).map(p => p.planItemId)).toEqual(['P-001']);
   });
 
   it('does not let a passing sibling spec prove a different item', () => {

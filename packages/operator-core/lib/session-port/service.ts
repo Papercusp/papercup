@@ -96,6 +96,103 @@ export interface SessionPortInspection {
   };
 }
 
+export interface SessionPortEvidenceTurn {
+  turnIdx: number;
+  timestamp: string | Date | null;
+  speaker: string;
+  text: string;
+}
+
+export interface SessionPortEvidenceSpan {
+  sessionId: string;
+  turnIndices: number[];
+  contextTurns: number;
+  evidenceTurns: SessionPortEvidenceTurn[];
+}
+
+function comparableEvidenceText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+}
+
+function portableTurnText(turn: PortableTurn): string {
+  return turn.blocks.map((block) => {
+    if (block.type === 'text') return block.text;
+    if (block.type === 'text_attachment') return block.text;
+    if (block.type === 'tool_narrative') return `${block.name} ${block.content}`;
+    return '';
+  }).filter(Boolean).join('\n');
+}
+
+/** Map exact indexed evidence rows onto the sanitized active Claude path, then
+ * retain a bounded neighborhood. A missing or ambiguous match refuses the
+ * narrow port; it never silently widens back to the full transcript. */
+export function selectSessionPortEvidenceSpan(
+  turns: PortableTurn[],
+  span: SessionPortEvidenceSpan,
+): { turns: PortableTurn[]; matchedTurnCount: number; contextTurns: number } {
+  if (!span.sessionId.trim() || span.turnIndices.length === 0) {
+    throw new Error('consult evidence span requires a source session and at least one turn index');
+  }
+  if (!Number.isSafeInteger(span.contextTurns) || span.contextTurns < 0 || span.contextTurns > 8) {
+    throw new Error('consult evidence contextTurns must be an integer from 0 to 8');
+  }
+  const rowsByIdx = new Map(span.evidenceTurns.map((row) => [row.turnIdx, row]));
+  const selected = new Set<number>();
+  for (const turnIdx of [...new Set(span.turnIndices)]) {
+    const evidence = rowsByIdx.get(turnIdx);
+    if (!evidence) throw new Error(`consult evidence turn ${turnIdx} is absent from the indexed source session`);
+    const timestampMs = evidence.timestamp == null ? null : new Date(evidence.timestamp).getTime();
+    const role = evidence.speaker === 'user' ? 'user' : evidence.speaker === 'assistant' ? 'assistant' : null;
+    const expectedText = comparableEvidenceText(evidence.text);
+    const candidates = turns.flatMap((turn, index) => {
+      if (role && turn.role !== role) return [];
+      const turnMs = turn.timestamp == null ? null : new Date(turn.timestamp).getTime();
+      if (timestampMs != null && Number.isFinite(timestampMs) && turnMs !== timestampMs) return [];
+      const actualText = comparableEvidenceText(portableTurnText(turn));
+      if (expectedText && actualText && !actualText.includes(expectedText) && !expectedText.includes(actualText)) return [];
+      return [{ index, textMatch: expectedText === actualText || actualText.includes(expectedText) }];
+    });
+    if (candidates.length === 0) {
+      throw new Error(`consult evidence turn ${turnIdx} is not present on the active portable source path`);
+    }
+    const exactText = candidates.filter((candidate) => candidate.textMatch);
+    const resolved = exactText.length === 1 ? exactText[0] : candidates.length === 1 ? candidates[0] : null;
+    if (!resolved) throw new Error(`consult evidence turn ${turnIdx} maps ambiguously onto the portable source path`);
+    selected.add(resolved.index);
+  }
+
+  for (const evidenceIndex of [...selected]) {
+    for (let offset = -span.contextTurns; offset <= span.contextTurns; offset += 1) {
+      const index = evidenceIndex + offset;
+      if (index >= 0 && index < turns.length) selected.add(index);
+    }
+  }
+  // A matched tool call/result is one historical unit. If either side falls
+  // inside the context window, keep the related side too.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const relations = new Set<string>();
+    for (const index of selected) {
+      for (const block of turns[index]!.blocks) {
+        if (block.type === 'tool_narrative' && block.relationId) relations.add(block.relationId);
+      }
+    }
+    for (let index = 0; index < turns.length; index += 1) {
+      if (selected.has(index)) continue;
+      if (turns[index]!.blocks.some((block) => block.type === 'tool_narrative' && block.relationId && relations.has(block.relationId))) {
+        selected.add(index);
+        changed = true;
+      }
+    }
+  }
+  return {
+    turns: turns.filter((_turn, index) => selected.has(index)),
+    matchedTurnCount: new Set(span.turnIndices).size,
+    contextTurns: span.contextTurns,
+  };
+}
+
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -218,6 +315,7 @@ export function inspectAcquiredSessionPort(input: {
   target: SessionPortTarget;
   summarizerProvider?: string | null;
   currentInstruction?: string | null;
+  evidenceSpan?: SessionPortEvidenceSpan;
 }): SessionPortInspection {
   const { sourceRow, stableSource, target } = input;
   if (sourceRow.agent !== 'claude' || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd) {
@@ -227,7 +325,10 @@ export function inspectAcquiredSessionPort(input: {
     throw new Error('target launch has no available input budget');
   }
   const adapted = adaptClaudeJsonl(stableSource.bytes.toString('utf8'));
-  const safe = sanitizePortableTurns(adapted.turns);
+  const selectedTurns = input.evidenceSpan
+    ? selectSessionPortEvidenceSpan(adapted.turns, input.evidenceSpan)
+    : null;
+  const safe = sanitizePortableTurns(selectedTurns?.turns ?? adapted.turns);
   const currentInstruction = canonicalizeSessionPortCurrentInstruction(input.currentInstruction);
   const rendered = renderPortableTurns(safe.turns);
   const fullHistoryEstimatedTokens = estimatePortableTokens(rendered.text);
@@ -265,7 +366,12 @@ export function inspectAcquiredSessionPort(input: {
     tokenEstimator: SESSION_PORT_TOKEN_ESTIMATOR,
     requiresSummary: fullPayloadEstimatedTokens > target.availableInputTokens,
     stats,
-    warnings: adapted.warnings,
+    warnings: [
+      ...adapted.warnings,
+      ...(selectedTurns
+        ? [`consult evidence span: ${selectedTurns.matchedTurnCount} matched turn(s), ±${selectedTurns.contextTurns} surrounding turn(s)`]
+        : []),
+    ],
     disclosure: {
       newTargetSession: true,
       sourceUntouched: true,

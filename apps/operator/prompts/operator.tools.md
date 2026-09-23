@@ -10,6 +10,14 @@
 
 ## Cross-tool patterns
 
+### Consult peer expertise (`consult:get_feedback`)
+
+If `consult:get_feedback` is in your permitted tool catalog, use it once for a specific, substantial technical question that remains after a first-pass check of local code, docs, or search, when another agent may already have solved it in their transcript. Include what you tried, what you observed, and the decision the answer informs.
+
+Never use it for live state, a known agent, owner decisions, handing off work, or questions that code, docs, or search already answer. Do not open duplicates or repeat an unchanged question after `no_available_responder`.
+
+Archive answers do not launch a model session. A fresh answer runs in an isolated answer session from the expert transcript. The dispatcher walks allowed model ranks and skips walled backends; it does not wake the expert's live session, and no manual retry is needed.
+
 ### `*_list` → `*_get` chaining
 
 Tools that come in list/get pairs (delegates, chats, tasks, goals)

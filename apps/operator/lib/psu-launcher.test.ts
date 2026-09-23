@@ -7312,6 +7312,32 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     ).toThrow(/tracked source/);
   });
 
+  it("carries the consult evidence-span selection into the session-port inspection request", () => {
+    const previous = process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
+    process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN = JSON.stringify({
+      sessionId: source.sessionId,
+      turnIndices: [2, 4],
+      contextTurns: 2,
+    });
+    try {
+      const request = sessionPortRequestBody(
+        source,
+        resolveResumeTarget(source, { agent: "codex", model: "sol:high" }),
+        {},
+        {},
+      );
+      expect(request.consultEvidenceSpan).toEqual({
+        sessionId: source.sessionId,
+        turnIndices: [2, 4],
+        contextTurns: 2,
+      });
+      expect(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
+      else process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN = previous;
+    }
+  });
+
   it("records resume provenance and forwards the opaque handshake/source cwd to bootstrap", () => {
     const args = sessionPortTargetArgs(
       source,

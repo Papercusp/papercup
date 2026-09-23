@@ -1074,9 +1074,8 @@ export const messageBodyArg = shapeTaughtArray(
       '`couldNotDetermine: [{ what: "the thing you tried to establish", note: "optional detail" }]`, ' +
       '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
       'are refused on a section. LENGTH: unless `expects` is \'none\', a body over ' +
-      `${DEFAULT_INBOX_BODY_CAP} characters is REFUSED and NOTHING is sent — that is all a ` +
-      'default inbox read shows, so a load-bearing ask must fit it. Put the detail on the ' +
-      'work-item and send a pointer.',
+      `${DEFAULT_INBOX_BODY_CAP} characters is REFUSED and NOTHING is sent — default inbox reads show only that much. ` +
+      'Store long item detail with `work_items:comment { id, body }`; use `coord:message-agent` for direct peer artifacts, then send a short `coord:send` pointer.',
   )
   .meta({
     // EI-23318249512516833: the same body schema is used by the single-message

@@ -36,6 +36,7 @@ import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-ro
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
+import { selectConsultEvidenceSource } from './consult-dispatch';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
@@ -186,6 +187,8 @@ export interface GetFeedbackDeps {
     conversationId: string;
     summary: string;
     body: string;
+    /** Exact session-turn evidence selected by the router. */
+    evidence?: Array<{ session_id: string; turn_idx: number; ts?: string | null; sim?: number; lexicalRank?: number }>;
     /** Persist the answering identity AS SOON AS that session is running —
      *  before the dispatcher's verification wait, which it can post during. */
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
@@ -574,11 +577,12 @@ export interface BriefCandidate {
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
 function evidenceLine(c: Pick<BriefCandidate, 'evidence'>): string {
-  return c.evidence
+  const source = selectConsultEvidenceSource(c.evidence);
+  return (source?.evidence ?? [])
     .map((e) =>
       e.lexicalRank !== undefined
         ? `${e.session_id}#${e.turn_idx} (lexical rank ${e.lexicalRank.toFixed(3)})`
-        : `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`,
+        : `${e.session_id}#${e.turn_idx} (sim ${(e.sim ?? 0).toFixed(2)})`,
     )
     .join('; ');
 }
@@ -1265,6 +1269,7 @@ export async function getFeedbackCore(
     const r = await deps.reach({
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
+      evidence: finalChosen.evidence,
       // Stamp the answering identity the moment that session starts, not when
       // the dispatcher returns: it can post during the verification wait, and
       // the reply gate refuses an author the row does not name yet. The

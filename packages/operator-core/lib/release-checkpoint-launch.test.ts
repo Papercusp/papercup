@@ -177,7 +177,10 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(stopPost).toContain(GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER);
     expect(stopPost).toContain('service_result=%s exit_code=%s exit_status=%s');
     expect(stopPost).not.toContain('%%s');
-    expect(stopPost).toContain('$$SERVICE_RESULT');
+    expect(stopPost).toContain('$SERVICE_RESULT');
+    expect(stopPost).toContain('$EXIT_CODE');
+    expect(stopPost).toContain('$EXIT_STATUS');
+    expect(stopPost).not.toContain('$$SERVICE_RESULT');
     expect(stopPost).toContain('>> "/tmp/cp.log"');
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
     expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);

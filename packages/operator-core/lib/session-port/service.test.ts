@@ -10,8 +10,10 @@ import {
   inspectAcquiredSessionPort,
   prepareInspectedSessionPort,
   publicSessionPortInspection,
+  selectSessionPortEvidenceSpan,
 } from './service';
 import type { StableSource } from './source';
+import type { PortableTurn } from './types';
 import { verifySessionPortSeed } from './render';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from './types';
 
@@ -82,6 +84,51 @@ describe('session-port current-version test fixtures', () => {
     for (const file of fixtureFiles) {
       expect(readFileSync(file, 'utf8'), file.pathname).not.toMatch(copiedWireVersion);
     }
+  });
+});
+
+describe('consult evidence-span session ports (P-007)', () => {
+  it('maps exact indexed refs and includes only their bounded neighboring turns', () => {
+    const turns: PortableTurn[] = Array.from({ length: 6 }, (_unused, index) => ({
+      id: `turn-${index}`,
+      parentId: index === 0 ? null : `turn-${index - 1}`,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      timestamp: `2026-09-23T00:00:0${index}.000Z`,
+      blocks: [{ type: 'text', text: `source turn ${index}` }],
+    }));
+
+    const selected = selectSessionPortEvidenceSpan(turns, {
+      sessionId: 'source-session',
+      turnIndices: [3],
+      contextTurns: 1,
+      evidenceTurns: [{
+        turnIdx: 3,
+        timestamp: '2026-09-23T00:00:03.000Z',
+        speaker: 'assistant',
+        text: 'source turn 3',
+      }],
+    });
+
+    expect(selected.turns.map((turn) => turn.id)).toEqual(['turn-2', 'turn-3', 'turn-4']);
+    expect(selected.matchedTurnCount).toBe(1);
+    expect(selected.contextTurns).toBe(1);
+    expect(selected.turns.some((turn) => turn.id === 'turn-0' || turn.id === 'turn-5')).toBe(false);
+  });
+
+  it('refuses an unmatched or ambiguous evidence ref instead of widening to full history', () => {
+    const turns: PortableTurn[] = [{
+      id: 'one', parentId: null, role: 'user', timestamp: '2026-09-23T00:00:00.000Z',
+      blocks: [{ type: 'text', text: 'same text' }],
+    }, {
+      id: 'two', parentId: 'one', role: 'user', timestamp: '2026-09-23T00:00:00.000Z',
+      blocks: [{ type: 'text', text: 'same text' }],
+    }];
+    const span = {
+      sessionId: 'source-session', turnIndices: [9], contextTurns: 1,
+      evidenceTurns: [{ turnIdx: 9, timestamp: '2026-09-23T00:00:00.000Z', speaker: 'user', text: 'same text' }],
+    };
+    expect(() => selectSessionPortEvidenceSpan(turns, span)).toThrow(/ambiguously/);
+    expect(() => selectSessionPortEvidenceSpan(turns, { ...span, evidenceTurns: [] })).toThrow(/absent/);
   });
 });
 

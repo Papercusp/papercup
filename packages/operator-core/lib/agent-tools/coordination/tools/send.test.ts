@@ -462,6 +462,8 @@ describe('coord:send handler (bulk keyed-array)', () => {
       results: [{ ok: false, error: 'body_exceeds_inbox_cap' }],
     });
     expect(b.results[0].message).toMatch(/Nothing was sent/i);
+    expect(b.results[0].message).toContain('work_items:comment { id, body }');
+    expect(b.results[0].message).toContain('coord:message-agent { to, body }');
     expect(sendM).not.toHaveBeenCalled();
   });
 
@@ -2378,6 +2380,8 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
         const msg = r.error.issues.map((i) => i.message).join(' | ');
         expect(msg).toContain('600-character default inbox cap');
         expect(msg).toContain('Nothing was sent');
+        expect(msg).toContain('work_items:comment { id, body }');
+        expect(msg).toContain('coord:message-agent { to, body }');
       }
     }
 

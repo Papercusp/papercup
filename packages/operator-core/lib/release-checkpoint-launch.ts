@@ -1857,12 +1857,13 @@ export function buildCheckpointSystemdArgv(
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
   // tuple to this run's immutable log. The transient property is passed over D-Bus, so
   // printf's `%s` placeholders must stay single-percent; `%%s` reaches printf unchanged and
-  // prints literal `%s` tokens. `$$` still deliberately survives systemd's environment
-  // expansion and becomes shell variables.
+  // prints literal `%s` tokens. Keep the manager variables single-dollar: if `$$` survives
+  // transient-property serialization, /bin/sh expands it to its PID plus the variable name
+  // (the observed `1922607SERVICE_RESULT` failure) instead of reading the terminal tuple.
   const terminalMarkerCommand =
     `/bin/sh -c 'printf "\\n${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} ` +
     `service_result=%s exit_code=%s exit_status=%s\\n" ` +
-    `"$$SERVICE_RESULT" "$$EXIT_CODE" "$$EXIT_STATUS" >> "${target}"'`;
+    `"$SERVICE_RESULT" "$EXIT_CODE" "$EXIT_STATUS" >> "${target}"'`;
   // WI-4494: a detached unit does NOT inherit the launcher's env (same reason the partial-green
   // flag above has to be forwarded explicitly), so the record target must be passed as --setenv or
   // the run has no idea whose gate it is judging and silently declines to record.

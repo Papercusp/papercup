@@ -67,4 +67,16 @@ describe('renderCompactionStrategy (Claude compaction floor)', () => {
     expect(source).toContain('label these under `left`');
     expect(source).toContain('use `walls` only when the next action belongs to');
   });
+
+  it('requires the explicit loop re-wake verdict before treating a loop as a turn-ending wake source', async () => {
+    const source = await fs.readFile(
+      new URL('../../../../apps/operator/prompts/papercusp-compaction.base.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('`loop:status.rewake.rewakeGuaranteed === true`');
+    expect(source).toContain('`loop.active === true` alone is not');
+    expect(source).toContain('`parked:true,nextFireAt:null`');
+    expect(source).not.toContain('VERIFY `loop:status.active === true`');
+  });
 });

@@ -673,12 +673,38 @@ describe('testing:runs tenant scoping and window bounds', () => {
     expect(where).toContain('id = ANY');
   });
 
-  it('CONTROL: an ordinary browse with no testRunIds still excludes mutation-probe rows', async () => {
-    // Calibration for the test above — without it, deleting the exclusion
-    // outright would satisfy the exact-ID case while reopening the
-    // contamination the exclusion exists to prevent.
-    await runsTool.handler({ filePath: 'some/file.test.ts' } as never, {} as never);
+  it('reports mutation-probe rows hidden by the default browse filter instead of a false not-recorded result', async () => {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      sqlCalls.push(call);
+      if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve([]);
+      if (call.strings.some((part) => part.includes('omitted_by_source_filter'))) {
+        return Promise.resolve([{ omitted_by_source_filter: '2' }]);
+      }
+      return call;
+    });
+
+    const result = (await runsTool.handler({ filePath: 'some/file.test.ts', sinceHours: 24 } as never, {} as never)) as {
+      data?: Record<string, unknown>;
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const countCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('omitted_by_source_filter')));
+
+    // The ordinary row-listing exclusion is still active, but the caller now
+    // sees that this "empty" filtered list omitted two matching receipt rows.
     expect(whereFragment()).toContain("source <> 'mutation-probe'");
+    expect(renderSqlFragment(countCall)).toContain('file_path ILIKE');
+    expect(renderSqlFragment(countCall)).toContain('started_at >=');
+    expect(renderSqlFragment(countCall)).toContain("source <> 'mutation-probe'");
+    expect(data).toMatchObject({
+      count: 0,
+      total: 0,
+      effectiveSourceFilter: "source <> 'mutation-probe' (default row-list exclusion)",
+      omittedBySourceFilter: 2,
+    });
+    expect(data).not.toHaveProperty('notRecorded');
+    expect(data).not.toHaveProperty('reason');
   });
 
   it('CONTROL: an explicit source filter still wins over the exact-ID path', async () => {

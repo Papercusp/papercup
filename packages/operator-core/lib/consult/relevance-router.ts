@@ -255,6 +255,9 @@ export interface SnapshotSelection {
     relevance: number;
     similarity: number;
     liveness: string;
+    /** Exact session-turn refs that justified selecting this expert. Kept in
+     * the routing snapshot so cascade dispatch can port the same evidence. */
+    evidence?: TurnEvidence[];
     fallback?: 'lexical';
     /** WI-39852 revival leg: this selectee's session was DEAD at route time and
      * a carry-respawn was launched to make them reachable (labeled, never
@@ -330,6 +333,7 @@ export function selectionSnapshot(min: number, max: number, selected: SelectedRe
       relevance: s.candidate.relevance,
       similarity: s.candidate.signals.similarity,
       liveness: s.candidate.liveness,
+      ...(s.candidate.evidence.length > 0 ? { evidence: s.candidate.evidence } : {}),
       ...(s.candidate.fallback ? { fallback: s.candidate.fallback } : {}),
     })),
   };

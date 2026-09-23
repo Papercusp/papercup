@@ -329,6 +329,29 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-start').codes).not.toContain('bar_snapshot_projection_stale');
   });
 
+  // review-system-rework-reduction P-001: the amendment keeps an unchanged bar's clause at
+  // its revision, so the clause carries the OLDER BAR-set hash it was projected under.
+  // That must not read as a stale projection — only its own bar moving may.
+  it('keeps a clause projected under an older BAR set current when its own bar is unchanged (P-001)', () => {
+    const input = provedFixture(1);
+    const clause = input.clauses.rows[0]!;
+    clause.sourceBar = { ...clause.sourceBar!, barSetHash: 'f'.repeat(64), rubricRevision: 1 };
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_projection_stale');
+  });
+
+  it('still marks the projection stale when the clause pins a different bar hash (P-001 calibration)', () => {
+    const input = provedFixture(1);
+    const clause = input.clauses.rows[0]!;
+    clause.sourceBar = { ...clause.sourceBar!, barHash: 'e'.repeat(64) };
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_projection_stale');
+  });
+
   it('rejects a clause that omits a required BAR test layer', () => {
     const input = provedFixture(1);
     input.clauses.rows[0]!.requiredTestLayers = ['e2e'];

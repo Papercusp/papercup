@@ -68,6 +68,15 @@ export interface CascadeSelectionEntry {
   relevance: number;
   similarity: number;
   liveness: string;
+  /** Exact session turns that made this expert relevant. Kept through the
+   * cascade so a cross-backend conversion carries only its evidence span. */
+  evidence?: Array<{
+    session_id: string;
+    turn_idx: number;
+    ts?: string | null;
+    sim?: number;
+    lexicalRank?: number;
+  }>;
   /**
    * D-002: the identity that will actually POST for this selectee, stamped when
    * dispatch launches the answering session. It differs from `ownerId` on a FORK
@@ -223,6 +232,7 @@ export type CascadeDispatch = (opts: {
   conversationId: string;
   summary: string;
   body: string;
+  evidence?: CascadeSelectionEntry['evidence'];
   /** Persist the answering identity AS SOON AS that session is running, rather
    *  than when dispatch returns: the launched session can post during the
    *  dispatcher's verification wait, and the reply gate refuses an author the
@@ -425,6 +435,7 @@ export async function advanceCascade(
           relevance,
           similarity,
           liveness: c.liveness ?? 'unknown',
+          ...(Array.isArray(c.evidence) ? { evidence: c.evidence as CascadeSelectionEntry['evidence'] } : {}),
           ...extra,
         };
       };
@@ -501,6 +512,7 @@ export async function advanceCascade(
             conversationId: params.conversationId,
             summary: copy.summary,
             body: copy.body,
+            ...(first.evidence ? { evidence: first.evidence } : {}),
             onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, cursorIdx, owner),
           });
           woke = r.woke;
@@ -605,6 +617,7 @@ export async function advanceCascade(
       conversationId: params.conversationId,
       summary: copy.summary,
       body: copy.body,
+      ...(next.evidence ? { evidence: next.evidence } : {}),
       onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, nextIdx, owner),
     });
     woke = r.woke;

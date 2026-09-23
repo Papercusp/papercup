@@ -671,6 +671,7 @@ describe('getFeedbackCore — routed', () => {
     // The dispatch brief carries the why-you-were-chosen evidence refs (D-008 §5).
     expect(reached).toHaveLength(1);
     expect(reached[0].responder).toBe('agent-a');
+    expect(reached[0].evidence).toEqual(top.evidence);
     expect(reached[0].body).toContain('sess-agent-a#3');
 
     // Row: snapshot verbatim, expiry from the proceed contract, wake debited.
@@ -678,6 +679,7 @@ describe('getFeedbackCore — routed', () => {
     expect(row.state).toBe('awaiting_responder');
     expect(row.responder_id).toBe('agent-a');
     expect(row.wakes_used).toBe(1);
+    expect((row.routing as RoutingSnapshot).selection?.selected[0]?.evidence).toEqual(top.evidence);
     // Verbatim EXCEPT the dispatch stamp (D-002): the answering identity is
     // written onto the cursor entry after the route, and is the ONLY thing this
     // path may add. Named explicitly rather than loosened to a partial match,

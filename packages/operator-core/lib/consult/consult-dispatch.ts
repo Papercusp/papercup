@@ -68,6 +68,45 @@ export const DISPATCH_VERIFY_TIMEOUT_MS = 15_000;
 
 export type DispatchOperation = 'fork' | 'convert';
 
+export interface ConsultDispatchEvidenceRef {
+  session_id: string;
+  turn_idx: number;
+  ts?: string | null;
+  sim?: number;
+  lexicalRank?: number;
+}
+
+export interface ConsultEvidenceSource {
+  sessionId: string;
+  evidence: ConsultDispatchEvidenceRef[];
+}
+
+/** A candidate can have evidence across several native sessions. A fork or
+ * session port has one source transcript, so choose the session with the
+ * strongest measured hit and retain only that session's exact refs. */
+export function selectConsultEvidenceSource(
+  refs: readonly ConsultDispatchEvidenceRef[] | undefined,
+): ConsultEvidenceSource | null {
+  const groups = new Map<string, ConsultDispatchEvidenceRef[]>();
+  for (const ref of refs ?? []) {
+    if (!ref || typeof ref.session_id !== 'string' || !ref.session_id.trim() ||
+        !Number.isSafeInteger(ref.turn_idx) || ref.turn_idx < 0) continue;
+    const group = groups.get(ref.session_id) ?? [];
+    group.push(ref);
+    groups.set(ref.session_id, group);
+  }
+  const score = (ref: ConsultDispatchEvidenceRef) =>
+    Number.isFinite(ref.lexicalRank) ? ref.lexicalRank! : Number.isFinite(ref.sim) ? ref.sim! : 0;
+  const ranked = [...groups.entries()].sort(([sessionA, a], [sessionB, b]) => {
+    const bestA = Math.max(...a.map(score));
+    const bestB = Math.max(...b.map(score));
+    return bestB - bestA || b.length - a.length || sessionA.localeCompare(sessionB);
+  });
+  const [sessionId, evidence] = ranked[0] ?? [];
+  if (!sessionId || !evidence) return null;
+  return { sessionId, evidence: [...evidence].sort((a, b) => a.turn_idx - b.turn_idx) };
+}
+
 /**
  * Why a rank did not produce the answering session. Machine-readable because the
  * requester's hint, the routing snapshot and the P-009 census all need to tell
@@ -81,6 +120,7 @@ export type DispatchSkipReason =
   | 'convert-needs-live-source-identity'
   | 'account-walled'
   | 'source-context-critical'
+  | 'evidence-span-unavailable'
   | 'launch-failed'
   | 'kickoff-not-persisted'
   | 'launch-exited';
@@ -276,6 +316,9 @@ export async function dispatchConsultResponder(
     /** The expert whose TRANSCRIPT is the knowledge source (the routed pick). */
     sourceOwnerId: string;
     conversationId: string;
+    /** Router-matched transcript turns; exact native session wins over the
+     * owner's newest session so the routed evidence and carried source agree. */
+    evidence?: ConsultDispatchEvidenceRef[];
     /**
      * Delivered as the answering session's first turn. A FUNCTION is resolved
      * per rank with the operation that rank actually implies, because a fork and
@@ -322,8 +365,17 @@ export async function dispatchConsultResponder(
   });
 
   try {
-    const target = await d.resolveResumeTarget({ agentId: opts.sourceOwnerId });
+    const evidenceSource = selectConsultEvidenceSource(opts.evidence);
+    const target = await d.resolveResumeTarget(
+      evidenceSource ? { sessionId: evidenceSource.sessionId } : { agentId: opts.sourceOwnerId },
+    );
     if (!target.ok) return give(`source session unresolvable: ${target.detail}`);
+    if (evidenceSource && target.sessionId !== evidenceSource.sessionId) {
+      return give(`evidence session mismatch: requested ${evidenceSource.sessionId}, resolved ${target.sessionId ?? 'no native session'}`);
+    }
+    if (evidenceSource && target.ownerId !== opts.sourceOwnerId) {
+      return give(`evidence session ownership changed: ${evidenceSource.sessionId} resolves to ${target.ownerId ?? 'no owner'}, expected ${opts.sourceOwnerId}`);
+    }
 
     let transcript: { available: boolean; detail: string };
     try {
@@ -382,6 +434,18 @@ export async function dispatchConsultResponder(
         continue;
       }
       const operation = plan.operation;
+      if (operation === 'convert' && !evidenceSource) {
+        attempts.push({
+          rank: rank.rank,
+          agent: rank.agent,
+          model: rank.model,
+          operation,
+          outcome: 'skipped',
+          reason: 'evidence-span-unavailable',
+          detail: 'cross-model conversion requires exact matched transcript turns; no evidence span was supplied',
+        });
+        continue;
+      }
       if (operation === 'fork' && forkBlockedByPressure) {
         attempts.push({
           rank: rank.rank,
@@ -409,7 +473,10 @@ export async function dispatchConsultResponder(
         continue;
       }
 
-      const attempt = await launchAnsweringSession(opts, ctx, d, target, rank, operation);
+      const attempt = await launchAnsweringSession({
+        ...opts,
+        ...(evidenceSource ? { evidenceSource } : {}),
+      }, ctx, d, target, rank, operation);
       attempts.push(attempt.record);
       if (attempt.record.outcome === 'dispatched') {
         return {
@@ -440,6 +507,7 @@ async function launchAnsweringSession(
   opts: {
     sourceOwnerId: string;
     conversationId: string;
+    evidenceSource?: ConsultEvidenceSource;
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   },
@@ -519,7 +587,21 @@ async function launchAnsweringSession(
         // The brief rides the ENV, never a --kickoff= value: free-form text
         // inside the console greeting one-liner breaks the shell.
         PAPERCUSP_KICKOFF_PROMPT:
-          typeof opts.brief === 'function' ? opts.brief(operation) : opts.brief,
+          `${typeof opts.brief === 'function' ? opts.brief(operation) : opts.brief}` +
+          (opts.evidenceSource
+            ? `\n\nEXACT TRANSCRIPT EVIDENCE: ${opts.evidenceSource.evidence
+                .map((ref) => `${ref.session_id}#${ref.turn_idx}`).join('; ')}. ` +
+              `These refs belong to this source session; use them as the grounding span.`
+            : ''),
+        ...(operation === 'convert' && opts.evidenceSource
+          ? {
+              PAPERCUSP_CONSULT_EVIDENCE_SPAN: JSON.stringify({
+                sessionId: opts.evidenceSource.sessionId,
+                turnIndices: opts.evidenceSource.evidence.map((ref) => ref.turn_idx),
+                contextTurns: 2,
+              }),
+            }
+          : {}),
       },
       greetingCmd: cmd,
       cwd: target.cwd ?? envelope.cwd,
@@ -611,7 +693,7 @@ async function launchAnsweringSession(
 export function makeConsultDispatcher(
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
-): (opts: { sourceOwnerId: string; conversationId: string; brief: string }) => Promise<ConsultDispatchResult> {
+): (opts: { sourceOwnerId: string; conversationId: string; brief: string; evidence?: ConsultDispatchEvidenceRef[] }) => Promise<ConsultDispatchResult> {
   return (opts) => dispatchConsultResponder(opts, ctx, deps);
 }
 
@@ -682,6 +764,7 @@ export function makeConsultReachDispatcher(
   conversationId: string;
   summary: string;
   body: string;
+  evidence?: ConsultDispatchEvidenceRef[];
   /** Persist the answering identity the moment the session starts — passed
    *  straight through to `dispatchConsultResponder`, which calls it before the
    *  verification wait so a fast first reply is not refused. */
@@ -698,6 +781,7 @@ export function makeConsultReachDispatcher(
       {
         sourceOwnerId: opts.responder,
         conversationId: opts.conversationId,
+        ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
         // the two inherit history differently.

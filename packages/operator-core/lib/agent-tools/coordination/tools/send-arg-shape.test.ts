@@ -763,6 +763,14 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
     }
   });
 
+  it('names durable long-form routes on every body schema surface', () => {
+    for (const [surface, description] of Object.entries(bodyDescriptions())) {
+      expect(description, surface).toContain('work_items:comment { id, body }');
+      expect(description, surface).toContain('coord:message-agent');
+      expect(description, surface).toMatch(/short `coord:send` pointer/);
+    }
+  });
+
   it('CONTROL — the pre-fix description (shape only, no length) fails this predicate', () => {
     // Verbatim tail of the description as it shipped before this fix. It is a
     // thorough, careful paragraph about SHAPE — which is exactly why the gap was

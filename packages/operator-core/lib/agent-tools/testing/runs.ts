@@ -303,6 +303,7 @@ export default defineTool({
       'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
+      'Row-list responses include `effectiveSourceFilter` and `omittedBySourceFilter`. The latter counts ledger rows matching all other selectors but removed by the effective source filter (before latestPerFile collapsing), so an empty filtered list is distinguishable from no recorded runs.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` is true only when a trustworthy host event-loop p95 sample was past the critical band, so the row is NOT reliable evidence of a genuine red — re-run before chasing it. false means a valid calm sample; null means the signal is unknown (no trustworthy host sample), not that the host was calm.',
       'SCOPE: no workspace/harness predicate is applied by default, deliberately. CI/gate rows carry NULL workspace_id/harness_slug (the CI reporter derives them from env vars CI never sets), so scoping by workspace silently excludes every CI row and reads as a clean "no failures" (EI-19324633485547042). Pass `workspace` only for per-hive Tests-tab rows, knowing it excludes CI.',
@@ -408,6 +409,8 @@ export default defineTool({
       latestPerFile: z.boolean(),
       rollup: z.enum(['commit', 'runGroup']).optional(),
       source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
+      effectiveSourceFilter: z.string().optional(),
+      omittedBySourceFilter: z.number().int().nonnegative().optional(),
       notRecorded: z.literal(true).optional(),
       reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
       runs: z.array(testingRunResultSchema).optional(),
@@ -474,6 +477,13 @@ export default defineTool({
     // Naming a file means you want THAT FILE'S HISTORY; asking broadly means
     // you want the current picture, where a stale red would mislead.
     const latestPerFile = args.latestPerFile ?? (args.filePath === undefined && args.testRunIds == null);
+    const effectiveSourceFilter =
+      args.source !== undefined
+        ? `source = '${args.source}' (explicit)`
+        : testRunIds == null
+          ? "source <> 'mutation-probe' (default row-list exclusion)"
+          : 'none (exact testRunIds receipt lookup)';
+    const shouldCountSourceOmissions = args.source !== undefined || testRunIds == null;
 
     const where = sql`
        WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
@@ -575,6 +585,20 @@ export default defineTool({
       ? sql`SELECT DISTINCT ON (file_path) * FROM filtered ORDER BY file_path, finished_at DESC NULLS LAST, id DESC`
       : sql`SELECT * FROM filtered`;
 
+    // Keep the policy that protects ordinary browsing, but report how many
+    // otherwise-matching rows it hid. Without this second count, a file-path
+    // lookup that found only mutation-probe rows looked exactly like no runs
+    // had ever been recorded.
+    const whereWithoutSource = sql`
+       WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
+         AND (${shaLike}::text IS NULL OR commit_sha ILIKE ${shaLike})
+         AND (${testRunIds}::bigint[] IS NULL OR id = ANY(${testRunIds}::bigint[]))
+         AND (${runGroup}::text IS NULL OR run_group_id = ${runGroup})
+         AND (${workspace}::text IS NULL OR workspace_id = ${workspace})
+         AND (${harness}::text IS NULL OR harness_slug = ${harness})
+         AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
+         AND (${sinceTs}::timestamptz IS NULL OR started_at >= ${sinceTs}::timestamptz)`;
+
     const rows = await sql<
       Array<{
         id: string;
@@ -616,14 +640,25 @@ export default defineTool({
        ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
        LIMIT ${limit}`;
 
+    const omittedRows = shouldCountSourceOmissions
+      ? await sql<Array<{ omitted_by_source_filter: string }>>`
+          SELECT count(*)::text AS omitted_by_source_filter
+            FROM harness_shared.test_runs
+            ${whereWithoutSource}
+             AND NOT COALESCE((${sourceFilter}), false)`
+      : [];
+    const omittedBySourceFilter = Number(omittedRows[0]?.omitted_by_source_filter ?? 0);
+
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
     return {
       data: {
         count: rows.length,
         total,
         truncatedByLimit: total > rows.length,
-        ...emptyResultMetadata(rows.length),
+        ...emptyResultMetadata(rows.length + omittedBySourceFilter),
         latestPerFile,
+        effectiveSourceFilter,
+        omittedBySourceFilter,
         runs: rows.map((r) => ({
           id: Number(r.id),
           workspaceId: r.workspace_id,

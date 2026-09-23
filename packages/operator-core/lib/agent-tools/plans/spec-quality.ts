@@ -66,6 +66,30 @@ function fail(evidence: string, suggestion: string): SpecQualityRatingEntry {
   return { rating: 'fail', evidence, suggestion };
 }
 
+function clauseReference(clause: SpecClauseRevision): string {
+  const source = clause.sourceBar;
+  return source
+    ? `${clause.specId} (AUTO-BAR projection from rubric ${source.rubricSlug}, BAR ${source.barKey}, criterion.model)`
+    : clause.specId;
+}
+
+function projectedRepairSuggestion(
+  clauses: readonly SpecClauseRevision[],
+  fallback: string,
+): string {
+  const projected = clauses.filter((clause) => clause.sourceBar || clause.specId.startsWith('AUTO-BAR-'));
+  if (projected.length === 0) return fallback;
+  const sources = [...new Set(projected.map((clause) => clause.sourceBar
+    ? `${clause.sourceBar.rubricSlug} BAR ${clause.sourceBar.barKey}`
+    : `${clause.specId} (source pin unavailable; inspect plans:get-specs)`))];
+  return (
+    `These AUTO-BAR clauses are projections from ${sources.join(', ')}. ` +
+    'Amend the canonical criterion.model/acceptance condition with rubrics:amend; do not repair ' +
+    'projected behavior through plans:set-specs, because a later BAR re-projection may replace it. ' +
+    fallback
+  );
+}
+
 function unknown(evidence: string): SpecQualityRatingEntry {
   return { rating: 'unknown', evidence };
 }
@@ -109,8 +133,17 @@ function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
   if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
-  if (/\b(?:function|class|method|variable|private field|implementation detail)\s+[`'"A-Za-z_$]/i.test(behavior)) {
-    return 'names an implementation construct instead of an observable contract';
+  const constructReference =
+    /\b(?:function|class|method|variable|private field|implementation detail)\s+(`[^`]+`|'[^']+'|"[^"]+"|[A-Za-z_$][A-Za-z0-9_$]*)/gi;
+  for (const match of behavior.matchAll(constructReference)) {
+    const token = match[1];
+    const explicitlyQuoted = new RegExp('^[`' + "'\"" + ']').test(token);
+    const identifier = explicitlyQuoted ? token.slice(1, -1) : token;
+    const identifierLooksLikeSymbol =
+      /^[A-Z_$]/.test(identifier) || /[_$]/.test(identifier) || /[A-Z0-9]/.test(identifier.slice(1));
+    if (explicitlyQuoted || identifierLooksLikeSymbol) {
+      return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
+    }
   }
   return null;
 }
@@ -261,8 +294,11 @@ export function evaluatePlanSpecQuality(input: {
       ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
       : atomicityFailures.length
         ? fail(
-            atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-            'Split compound outcomes into atomic clauses with one observable behavior each.',
+            atomicityFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
+            projectedRepairSuggestion(
+              atomicityFailures.map(({ clause }) => clause),
+              'Split compound outcomes into atomic clauses with one observable behavior each.',
+            ),
           )
         : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
 
@@ -274,8 +310,11 @@ export function evaluatePlanSpecQuality(input: {
       ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
       : falsifiabilityFailures.length
         ? fail(
-            falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-            'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
+            falsifiabilityFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
+            projectedRepairSuggestion(
+              falsifiabilityFailures.map(({ clause }) => clause),
+              'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
+            ),
           )
         : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
 
@@ -287,8 +326,11 @@ export function evaluatePlanSpecQuality(input: {
       ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
       : couplingFailures.length
         ? fail(
-            couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-            'Describe externally observable behavior instead of filenames or internal constructs.',
+            couplingFailures.map(({ clause, reason }) => `${clauseReference(clause)}:${reason}`).join('; '),
+            projectedRepairSuggestion(
+              couplingFailures.map(({ clause }) => clause),
+              'Describe externally observable behavior instead of filenames or internal constructs.',
+            ),
           )
         : pass('No active clause is coupled to an obvious implementation filename or construct.');
 

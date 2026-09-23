@@ -46,6 +46,24 @@ describe('coord:ack handler (bulk keyed-array)', () => {
     expect(appendM).toHaveBeenCalledWith({ ownerId: 'me' }, 'M-1', 'peer', null);
   });
 
+  it('rejects a self-authored message without appending a meaningless ack', async () => {
+    resolveRefM.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'M-self',
+      message: { msg_id: 'M-self', from: 'me' },
+      resolvedFrom: 'exact',
+    } as never);
+
+    const result = await body({ msg_id: 'M-self' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, msg_id: 'M-self', error: 'self_authored_message' }],
+    });
+    expect(appendM).not.toHaveBeenCalled();
+  });
+
   it('forwards the original message federation scope to appendAck', async () => {
     resolveRefM.mockResolvedValueOnce({
       status: 'found',

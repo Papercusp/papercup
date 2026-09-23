@@ -1,0 +1,449 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-7 integrated M2 journey (2026-09-23): attested listing -> install -> launch -> leadership -> UI switch -> applied spans, plus the prompt-only update diff",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "rubricCriterion": "R-7 integrated-m2-stack-and-gate-hold (AUTO-BAR-R-7-P-036@3)",
+  "journeyId": "r7-journey-20260923",
+  "observer": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "recordedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-23T08:52:14.270Z",
+  "command": [
+    "VERIFY_TAURI_DOM_TIMEOUT=60 scripts/verify-tauri-headless.sh --boot-only   # shared DB (not isolated): R-7 acts on the real launched agent",
+    "source /tmp/verify-tauri-headless.RqBjJi/env.sh; export VERIFY_TAURI_DOM_TIMEOUT=180 VERIFY_TAURI_SETTLE_TIMEOUT=60; R7_UI_TIMEOUT_MS=200000 R7_OWNER=su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e R7_JOURNEY_ID=r7-journey-20260923 R7_OUT=.papercusp/scratch/r7/ui-run node scripts/verify-identities-r7.mjs"
+  ],
+  "commandBasis": "Copied from the launching shell of run 9 (log .papercusp/scratch/r7/ui-run9.log, exit 0). Links 1-4 and 7 were run and recorded earlier in the same journey (WI-2143764 checkpoint 07:20Z); their artifacts are cited per link below.",
+  "exitCode": 0,
+  "startedAt": "2026-09-23T08:47:07Z",
+  "finishedAt": "2026-09-23T08:53:36Z",
+  "timeBasis": "startedAt/finishedAt bound the L5/L6 driver run (run 9): the launching shell's log file birth time (08:47:07.61Z) and the driver's final evidence write (08:53:36.53Z), read with TZ=UTC stat. Links L1-L4 and L7 were observed earlier in the same journey (listing approval and install ~07:00-07:02Z, launch 07:05:12Z, leadership applied 07:08:06Z). Their times are stated per link.",
+  "summary": "One journey id (r7-journey-20260923) connects every link on real infrastructure. The official papercusp-engineer 0.1.2 identity was published to Cupboard with a listed hash equal to a clone-first recompute. It was installed from that listing (release hash == listed) and resolved from the INSTALLED tier by a real headless agent whose launch receipt pins the installed document hash. That agent took fleet leadership (su.fleet-leader posture applied). It was then switched in the desktop UI with real X11 pointer input against the real backend: to research-steward, applied by the real host at gen 4, then back to the installed papercusp-engineer, applied at gen 5. The applied stack opened layer spans with a tool invocation recorded inside them. The 0.1.1->0.1.2 update diff was prompt-text only (10 files), with no grants and burn knobs [promptBytes].",
+  "subject": {
+    "workspaceId": "papercusp-workspace",
+    "ownerId": "su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e",
+    "advSessionId": 30010,
+    "fleet": "r7-journey-0923",
+    "bridgePid": 840129,
+    "treeHead": "ee617c6363f75f913ecdfb91783c9e398ad195aa",
+    "databaseDataDirectory": "/var/lib/postgresql/18/main",
+    "rosterSubjectAtStart": {
+      "ownerId": "su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e",
+      "sessionState": "parked",
+      "label": "su · su-3f4fd"
+    }
+  },
+  "links": [
+    {
+      "id": "L1-attested-listing",
+      "passed": true,
+      "evidence": "Cupboard listings papercusp-engineer 0.1.2 (listed release_content_hash sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32) and su.fleet-leader 0.1.2 (sha256:0a3158a396f1d708145fc0ead9e20c75d833fc172dd7f28ffcffd7cd8f7ad1de), published from the Papercusp/blueprints mirror db291b8 (identity docs stamped with the P-003 in-document attestation per D-124). A clone-first recompute equals the listed hash for both.",
+      "observed": {
+        "papercuspEngineer": {
+          "listed": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+          "cloneFirstRootHash": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+          "matchesListed": true
+        },
+        "suFleetLeader": {
+          "listed": "sha256:0a3158a396f1d708145fc0ead9e20c75d833fc172dd7f28ffcffd7cd8f7ad1de",
+          "cloneFirstRootHash": "sha256:0a3158a396f1d708145fc0ead9e20c75d833fc172dd7f28ffcffd7cd8f7ad1de",
+          "matchesListed": true
+        }
+      },
+      "artifact": ".papercusp/scratch/r7/listing-hash-0923-012.json (copied from /tmp/r7-listing-hash-0923-012.json)"
+    },
+    {
+      "id": "L2-install-from-listing",
+      "passed": true,
+      "evidence": "cupboard:install-blueprint from the papercusp-engineer 0.1.2 listing on staging :3170 returned release.contentHash equal to the listed hash, and wrote the identity to the workspace install tier.",
+      "observed": {
+        "operation": "update",
+        "version": "0.1.2",
+        "installedTo": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/papercusp-engineer",
+        "releaseContentHash": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+        "packageContentHash": "492caab96ec34a4b62bda838229c80359de756bab7daea82f7e06867d6f76f6e",
+        "equalsListed": true
+      },
+      "artifact": ".papercusp/scratch/r7/install-pe-012.json (full body install-pe-012-full.json)"
+    },
+    {
+      "id": "L3-launch-wearing-installed-identity",
+      "passed": true,
+      "evidence": "A real headless agent su-3f4fd9db (adv_sessions 30010, launchedBy su-38e71009, fleet r7-journey-0923, stack [domain:papercusp-engineer]) launched with a receipt whose papercusp-engineer blueprint-layer input is version 0.1.2 with document hash c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334. The launch-time resolver (getIdentitySource) picks papercusp-engineer from the INSTALLED tier file ~/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/papercusp-engineer/blueprint.yaml, whose content hash is that same c19c053c... and whose in-document attestation reads contentHash c19c053c..., signedBy papercupai.",
+      "observed": {
+        "launchSpecificationRevision": "43f88c48cc01cae3e15bbb87cd68ea86dd6b28d7adf69a6101c59425c2231ee1",
+        "receiptLayer": {
+          "ref": "papercusp-engineer",
+          "kind": "blueprint-layer",
+          "version": "0.1.2",
+          "contentHash": "c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334"
+        },
+        "resolverTier": "installed",
+        "resolverContentHash": "c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334",
+        "inDocumentAttestation": {
+          "contentHash": "c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334",
+          "signedBy": "papercupai"
+        }
+      },
+      "artifact": "harness_shared.adv_sessions id 30010 launch_spec; .papercusp/scratch/r7/probe-identity-source.mts (re-run 2026-09-23 ~09:00Z: ok:true, papercusp-engineer from the installed tier)"
+    },
+    {
+      "id": "L4-leadership-attach",
+      "passed": true,
+      "evidence": "After fleet:take-leadership in scratch fleet r7-journey-0923, the real host applied the su.fleet-leader posture: activation events 15459 desired -> 15479 prepared -> 15480 applied (gen 3, 2026-09-23T07:08:06Z), stack [autonomy:su.mode-auto, domain:papercusp-engineer, fleet-posture:su.fleet-leader].",
+      "observed": {
+        "activationEvents": [
+          15459,
+          15479,
+          15480
+        ],
+        "appliedGeneration": 3
+      },
+      "artifact": "harness_shared.session_identity_activation_events owner su-3f4fd9db ids 15459/15479/15480"
+    },
+    {
+      "id": "L5-ui-switch-real-backend",
+      "passed": true,
+      "evidence": "In the Tauri desktop webview (headless verifier on display :90, SHARED database, real operator backend), the driver used real X11 pointer input to inspect research-steward, review it (preview 200), and apply it (switch 200, relaunch-with-carry). The real host applied it at gen 4. The driver then did the same to switch back to the installed papercusp-engineer with a real switch, not a rollback, and the host applied it at gen 5. No synthetic host acknowledgement was posted, and the driver seeds and deletes nothing.",
+      "observed": {
+        "responses": [
+          {
+            "label": "to-target-review-response",
+            "status": 200,
+            "action": "preview",
+            "delivery": "relaunch-with-carry",
+            "stack": [
+              "domain:research-steward"
+            ],
+            "replaced": "papercusp-engineer",
+            "specificationRevision": "94c64f800f439cb20f7d053eb2c683386a081264d52040852203387ad8aaec90"
+          },
+          {
+            "label": "to-target-switch-response",
+            "status": 200,
+            "action": "switch",
+            "delivery": "relaunch-with-carry",
+            "stack": [
+              "domain:research-steward"
+            ],
+            "replaced": "papercusp-engineer",
+            "specificationRevision": "42566e8f61a970361afe837992e5e638683647379f66c2add43f8c74be29c926"
+          },
+          {
+            "label": "to-installed-review-response",
+            "status": 200,
+            "action": "preview",
+            "delivery": "relaunch-with-carry",
+            "stack": [
+              "domain:papercusp-engineer"
+            ],
+            "replaced": "research-steward",
+            "specificationRevision": "420437d76544765e595883dc2d3e0da7d9d588f85fa2c1e93478ee44e3c5c057"
+          },
+          {
+            "label": "to-installed-switch-response",
+            "status": 200,
+            "action": "switch",
+            "delivery": "relaunch-with-carry",
+            "stack": [
+              "domain:papercusp-engineer"
+            ],
+            "replaced": "research-steward",
+            "specificationRevision": "43f88c48cc01cae3e15bbb87cd68ea86dd6b28d7adf69a6101c59425c2231ee1"
+          }
+        ],
+        "hostApplied": [
+          {
+            "label": "to-target-host-applied",
+            "waitedMs": 80532,
+            "events": [
+              {
+                "id": "15795",
+                "phase": "desired",
+                "generation": "4",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:research-steward",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:47:33.009Z"
+              },
+              {
+                "id": "15800",
+                "phase": "prepared",
+                "generation": "4",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:research-steward",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:49:06.129Z"
+              },
+              {
+                "id": "15802",
+                "phase": "applied",
+                "generation": "4",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:research-steward",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:49:24.881Z"
+              }
+            ]
+          },
+          {
+            "label": "to-installed-host-applied",
+            "waitedMs": 110629,
+            "events": [
+              {
+                "id": "15809",
+                "phase": "desired",
+                "generation": "5",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:papercusp-engineer",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:50:13.274Z"
+              },
+              {
+                "id": "15810",
+                "phase": "prepared",
+                "generation": "5",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:papercusp-engineer",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:51:26.775Z"
+              },
+              {
+                "id": "15811",
+                "phase": "applied",
+                "generation": "5",
+                "stack": [
+                  "autonomy:su.mode-auto",
+                  "domain:papercusp-engineer",
+                  "fleet-posture:su.fleet-leader"
+                ],
+                "recordedAt": "2026-09-23T08:52:14.270Z"
+              }
+            ]
+          }
+        ],
+        "pointerSteps": [
+          {
+            "label": "to-target-select-identity",
+            "selector": "[aria-label=\"Inspect identity research-steward\"]",
+            "display": ":90"
+          },
+          {
+            "label": "to-target-review#1",
+            "selector": ".pc-identities__actions button",
+            "display": ":90"
+          },
+          {
+            "label": "to-target-apply#1",
+            "selector": "button[aria-label=\"Apply identity\"]",
+            "display": ":90"
+          },
+          {
+            "label": "to-installed-select-identity",
+            "selector": "[aria-label=\"Inspect identity papercusp-engineer\"]",
+            "display": ":90"
+          },
+          {
+            "label": "to-installed-review#1",
+            "selector": ".pc-identities__actions button",
+            "display": ":90"
+          },
+          {
+            "label": "to-installed-apply#1",
+            "selector": "button[aria-label=\"Apply identity\"]",
+            "display": ":90"
+          }
+        ],
+        "settles": [
+          "settle:to-target-navigate=settled",
+          "settle:to-target-select-identity=settled",
+          "settle:to-target-review=settled",
+          "settle:to-target-apply=settled",
+          "settle:to-installed-navigate=settled",
+          "settle:to-installed-select-identity=settled",
+          "settle:to-installed-review=settled",
+          "settle:to-installed-apply=settled"
+        ],
+        "clickRetries": 0
+      },
+      "artifact": "docs/evidence/p015-r7-live-switch-raw-2026-09-23.json"
+    },
+    {
+      "id": "L6-applied-spans-with-tool-calls",
+      "passed": true,
+      "evidence": "Activation 15811 (the installed identity) opened spans for all three layers on adv session 30010. A tool invocation by the subject (locks:check_command, id 29054027, at 2026-09-23T08:52:14.419Z) falls inside each of them. Spans were also opened for the research-steward stack (activation 15802, 08:49:24.881Z-08:52:14.270Z), and the subject's tool calls fell inside that window (locks:check_command 08:49:36Z, activity:report 08:49:53Z).",
+      "observed": {
+        "spans": [
+          {
+            "activation_event_id": "15811",
+            "session_id": "su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e",
+            "adv_session_id": "30010",
+            "control_generation": "5",
+            "layer_ref": "autonomy:su.mode-auto",
+            "layer_slot": "autonomy",
+            "layer_id": "su.mode-auto",
+            "active_from": "2026-09-23T08:52:14.270Z",
+            "active_until": null
+          },
+          {
+            "activation_event_id": "15811",
+            "session_id": "su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e",
+            "adv_session_id": "30010",
+            "control_generation": "5",
+            "layer_ref": "domain:papercusp-engineer",
+            "layer_slot": "domain",
+            "layer_id": "papercusp-engineer",
+            "active_from": "2026-09-23T08:52:14.270Z",
+            "active_until": null
+          },
+          {
+            "activation_event_id": "15811",
+            "session_id": "su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e",
+            "adv_session_id": "30010",
+            "control_generation": "5",
+            "layer_ref": "fleet-posture:su.fleet-leader",
+            "layer_slot": "fleet-posture",
+            "layer_id": "su.fleet-leader",
+            "active_from": "2026-09-23T08:52:14.270Z",
+            "active_until": null
+          }
+        ],
+        "spanToolCalls": [
+          {
+            "id": "29054027",
+            "tool_name": "locks:check_command",
+            "invoked_at": "2026-09-23T08:52:14.419Z",
+            "status": "ok",
+            "layer_ref": "autonomy:su.mode-auto"
+          },
+          {
+            "id": "29054027",
+            "tool_name": "locks:check_command",
+            "invoked_at": "2026-09-23T08:52:14.419Z",
+            "status": "ok",
+            "layer_ref": "domain:papercusp-engineer"
+          },
+          {
+            "id": "29054027",
+            "tool_name": "locks:check_command",
+            "invoked_at": "2026-09-23T08:52:14.419Z",
+            "status": "ok",
+            "layer_ref": "fleet-posture:su.fleet-leader"
+          }
+        ],
+        "sessions": [
+          {
+            "id": "30010",
+            "session_id": "7de62007-30a3-4f9a-8be5-ea7588baf55f",
+            "started_at": "2026-09-23T07:05:12.611Z",
+            "ended_at": null,
+            "specification_revision": "43f88c48cc01cae3e15bbb87cd68ea86dd6b28d7adf69a6101c59425c2231ee1",
+            "stack": [
+              "domain:papercusp-engineer"
+            ]
+          }
+        ]
+      },
+      "artifact": "docs/evidence/p015-r7-live-switch-raw-2026-09-23.json"
+    },
+    {
+      "id": "L7-prompt-only-update-diff",
+      "passed": true,
+      "evidence": "The in-journey update of the installed papercusp-engineer from 0.1.1 to 0.1.2 (operation update) returned a diff with promptText changes only: 10 files, all base/prompts/*. grants is [], and burnKnobs is [promptBytes], derived from the prompt-byte delta.",
+      "observed": {
+        "fromContentHash": "5ff00d6f678ea26cabdb7b3963e122cc5ab4116e60f5296b5c88f3eff2ddbb1d",
+        "toContentHash": "492caab96ec34a4b62bda838229c80359de756bab7daea82f7e06867d6f76f6e",
+        "promptTextPaths": [
+          "base/prompts/agent-base-preamble.md",
+          "base/prompts/architect.tools.md",
+          "base/prompts/debugger.tools.md",
+          "base/prompts/operator.tools.md",
+          "base/prompts/papercup-deep.tools.md",
+          null
+        ]
+      },
+      "artifact": ".papercusp/scratch/r7/install-pe-012.json"
+    }
+  ],
+  "rawArtifact": {
+    "path": "docs/evidence/p015-r7-live-switch-raw-2026-09-23.json",
+    "sha256": "ea37dda6436c7828e6dac29bf5ae1057818b5ebee7b6434c09401b152187c2b4",
+    "redaction": "serializeEvidence (redactIdentityLeaks) applied by the driver before write; scanned for token/secret/password/authorization/bearer/api-key strings and DSNs: none"
+  },
+  "driverDefectsFixedDuringThisJourney": [
+    "The first navigation pinned identityTab to the agent tab, but the identity rows render only on the default library tab, so the library assertion could never pass (runs 3-4). identitiesUrl() now carries no tab param; a unit test ties it to page.tsx's default.",
+    "A busy VERIFY_TAURI_SETTLE (exit 1) aborted the run (run 5). Settle is now recorded as best-effort (settleOutcome), and each dependent step polls its own target.",
+    "A real pointer click was swallowed with no request sent (run 6). clickUntil re-clicks only while no identity-management request has STARTED.",
+    "A response wait keyed on array length was pinned by an earlier run's orphaned request (runs 7-8). Responses are now matched by the start sequence number."
+  ],
+  "notProven": [
+    "Relaunch mechanics: both applies kept adv_sessions 30010 (no new adv_sessions row), so this evidence shows the host applying the switch but not a separate successor native session per switch.",
+    "The receipt's package-kind input for papercusp-engineer (ade7aacdd2e11ce91a00929eb1362962538d77b916185b37f87fae1f9453e77a) is the install-tier recompute, which differs from the listing's clone-first package hash (492caab96ec34a4b62bda838229c80359de756bab7daea82f7e06867d6f76f6e). The listing-to-launch link is carried by the attested document hash c19c053c..., not by that package hash.",
+    "L6's qualifying tool call is locks:check_command, which the subject's PreToolUse hook issues for a command the agent ran. It is attributed to the subject's coord owner, but it is not a model-initiated MCP call. A coord:send wake asking the subject for one read-only call was sent at ~08:53Z, AFTER that invocation (08:52:14.419Z), so the wake did not produce the qualifying call.",
+    "su.fleet-member 0.1.2 was not re-published (Cupboard's 5/hour cap); it is not part of this chain.",
+    "Links L1-L4 and L7 were observed earlier in the same journey (07:00-07:08Z) and are cited by artifact; only L5-L6 are in this run's raw artifact."
+  ],
+  "sourcePaths": [
+    "scripts/verify-identities-r7.mjs",
+    "apps/operator/lib/verify-identities-r7.test.ts",
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/agent-identities/source.ts",
+    "scripts/verify-tauri-headless.sh"
+  ],
+  "testRunIds": [],
+  "assertions": [
+    {
+      "id": "L1-attested-listing",
+      "passed": true,
+      "evidence": "Cupboard listings papercusp-engineer 0.1.2 (listed release_content_hash sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32) and su.fleet-leader 0.1.2 (sha256:0a3158a396f1d708145fc0ead9e20c75d833fc172dd7f28ffcffd7cd8f7ad1de), published from the Papercusp/blueprints mirror db291b8 (identity docs stamped with the P-003 in-document attestation per D-124). A clone-first recompute equals the listed hash for both."
+    },
+    {
+      "id": "L2-install-from-listing",
+      "passed": true,
+      "evidence": "cupboard:install-blueprint from the papercusp-engineer 0.1.2 listing on staging :3170 returned release.contentHash equal to the listed hash, and wrote the identity to the workspace install tier."
+    },
+    {
+      "id": "L3-launch-wearing-installed-identity",
+      "passed": true,
+      "evidence": "A real headless agent su-3f4fd9db (adv_sessions 30010, launchedBy su-38e71009, fleet r7-journey-0923, stack [domain:papercusp-engineer]) launched with a receipt whose papercusp-engineer blueprint-layer input is version 0.1.2 with document hash c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334. The launch-time resolver (getIdentitySource) picks papercusp-engineer from the INSTALLED tier file ~/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/papercusp-engineer/blueprint.yaml, whose content hash is that same c19c053c... and whose in-document attestation reads contentHash c19c053c..., signedBy papercupai."
+    },
+    {
+      "id": "L4-leadership-attach",
+      "passed": true,
+      "evidence": "After fleet:take-leadership in scratch fleet r7-journey-0923, the real host applied the su.fleet-leader posture: activation events 15459 desired -> 15479 prepared -> 15480 applied (gen 3, 2026-09-23T07:08:06Z), stack [autonomy:su.mode-auto, domain:papercusp-engineer, fleet-posture:su.fleet-leader]."
+    },
+    {
+      "id": "L5-ui-switch-real-backend",
+      "passed": true,
+      "evidence": "In the Tauri desktop webview (headless verifier on display :90, SHARED database, real operator backend), the driver used real X11 pointer input to inspect research-steward, review it (preview 200), and apply it (switch 200, relaunch-with-carry). The real host applied it at gen 4. The driver then did the same to switch back to the installed papercusp-engineer with a real switch, not a rollback, and the host applied it at gen 5. No synthetic host acknowledgement was posted, and the driver seeds and deletes nothing."
+    },
+    {
+      "id": "L6-applied-spans-with-tool-calls",
+      "passed": true,
+      "evidence": "Activation 15811 (the installed identity) opened spans for all three layers on adv session 30010. A tool invocation by the subject (locks:check_command, id 29054027, at 2026-09-23T08:52:14.419Z) falls inside each of them. Spans were also opened for the research-steward stack (activation 15802, 08:49:24.881Z-08:52:14.270Z), and the subject's tool calls fell inside that window (locks:check_command 08:49:36Z, activity:report 08:49:53Z)."
+    },
+    {
+      "id": "L7-prompt-only-update-diff",
+      "passed": true,
+      "evidence": "The in-journey update of the installed papercusp-engineer from 0.1.1 to 0.1.2 (operation update) returned a diff with promptText changes only: 10 files, all base/prompts/*. grants is [], and burnKnobs is [promptBytes], derived from the prompt-byte delta."
+    },
+    {
+      "id": "complete-end-to-end-chain",
+      "passed": true,
+      "evidence": "All seven links passed under journey id r7-journey-20260923 for subject su-3f4fd9db-5e3c-42f7-b1ac-931dcfa1065e (adv 30010): listing hash == clone-first recompute -> install release hash == listed -> launch receipt pins the installed document hash c19c053c... -> fleet-leader posture applied (gen 3) -> UI switch applied by the real host (gen 4 research-steward, gen 5 back to the installed papercusp-engineer) -> spans with a recorded tool invocation -> prompt-only update diff."
+    }
+  ]
+}

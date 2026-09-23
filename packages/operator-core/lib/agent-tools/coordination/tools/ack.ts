@@ -26,10 +26,10 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'coord:ack',
   description:
-    'Acknowledge one OR many coord messages by msg_id. Posts a `kind: "ack"` entry in your outbox addressed back at each original sender, so they can see you received it. Single: { msg_id }. Many: { msg_ids:[…] } or items:[{ msg_id }]. Returns { ok, results:[{ ok, msg_id, ack_msg_id? + acked_from? | error }], counts } — correlate by msg_id; an unknown msg_id never fails the rest.',
+    'Acknowledge one OR many coord messages you received by msg_id. Messages authored by the caller are refused with self_authored_message. Posts a `kind: "ack"` entry in your outbox addressed back at each original sender, so they can see you received it. Single: { msg_id }. Many: { msg_ids:[…] } or items:[{ msg_id }]. Returns { ok, results:[{ ok, msg_id, ack_msg_id? + acked_from? | error }], counts } — correlate by msg_id; an unknown msg_id never fails the rest.',
   guidance: {
     when: 'After acting on (or deliberately not acting on) coord message(s) — closes the loop for the sender. Ack several at once via msg_ids:[…].',
-    notWhen: 'For routine read-and-forget. Acks are most useful for hand-offs and questions where the sender is waiting.',
+    notWhen: 'For routine read-and-forget or messages you authored yourself. Acks are only meaningful for received messages and are most useful for hand-offs and questions where the sender is waiting.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -74,10 +74,18 @@ export default defineTool({
           return { ok: false as const, msg_id: it.msg_id, error: 'unknown_msg_id', detail: `no coord message with msg_id=${it.msg_id}` };
         }
         const target = resolution.message;
+        const resolvedMsgId = resolution.msgId;
+        if (target.from === identity.ownerId) {
+          return {
+            ok: false as const,
+            msg_id: resolvedMsgId,
+            error: 'self_authored_message',
+            detail: 'cannot acknowledge a coordination message authored by the caller',
+          };
+        }
         // Keep the canonical id when a unique leading prefix was supplied. The
         // related_msg_id on the ack must point at the durable projection id, and
         // the response should tell callers which id was actually acknowledged.
-        const resolvedMsgId = resolution.msgId;
         // Preserve the original message's federation scope. `null` is
         // deliberate for operator-local rows: leaving the option undefined
         // would let sendMessage's AUTO scope resolver stamp the ack into a

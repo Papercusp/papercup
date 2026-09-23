@@ -327,6 +327,19 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
   });
 
+  it('keeps the turn-settle wake guarantee for a parked loop with no concrete nextFireAt', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      parked: true,
+      nextFireAt: null,
+      lastWakeStatus: 'delivered',
+      lastWakeError: null,
+    });
+    const out = await run();
+    expect(out.loop).toMatchObject({ active: true, parked: true, nextFireAt: null });
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
   it('is null when no loop exists', async () => {
     getLoopStatusMock.mockResolvedValue(null);
     expect((await run()).rewake).toBeNull();

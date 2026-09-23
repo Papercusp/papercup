@@ -11,6 +11,7 @@ import {
   SPEC_CAUSAL_PAIRING_MODES,
   SPEC_LIFECYCLE_STATUSES,
   SPEC_PROOF_OBLIGATION_ID_RE,
+  listSpecClauses,
   setSpecClause,
 } from './spec-clauses-store';
 
@@ -122,11 +123,11 @@ const OK = new Set(['created', 'revised', 'unchanged']);
 export default defineTool({
   name: 'plans:set-specs',
   description:
-    'Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict.',
+    'Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict. Behavior on a sourceBar-pinned acceptance projection is read-only; amend its canonical rubric criterion with rubrics:amend.',
   guidance: {
     when: 'Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.',
     notWhen:
-      'Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools.',
+      'Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools. Changing the behavior of a sourceBar-pinned AUTO-BAR projection — amend the canonical rubric with rubrics:amend.',
     chaining: 'plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify.',
     seeAlso: ['plans:get-specs (current/exact/history read)', 'plans:get-item (owning outcome)'],
   },
@@ -145,9 +146,36 @@ export default defineTool({
     // resolves to the ad-hoc scope inside the store, and echoing `slug: undefined` would
     // hide which scope now owns the clause.
     const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
+    const currentClauses = args.slug
+      ? await listSpecClauses({
+          harnessSlug,
+          planSlug: args.slug,
+          specIds: specs.map((spec) => spec.specId),
+        })
+      : [];
+    const currentById = new Map(currentClauses.map((clause) => [clause.specId, clause]));
     const env = await runBulk(
       specs,
       async (spec) => {
+        const current = currentById.get(spec.specId);
+        if (
+          current &&
+          current.currentRevision === spec.expectedRevision &&
+          current.sourceBar &&
+          current.behavior !== spec.behavior.trim() &&
+          spec.lifecycleStatus !== 'superseded' &&
+          spec.lifecycleStatus !== 'retired'
+        ) {
+          return {
+            ok: false as const,
+            slug: reportedSlug,
+            error: 'projected_behavior_readonly',
+            specId: spec.specId,
+            reason:
+              `${spec.specId} behavior is projected from rubric ${current.sourceBar.rubricSlug} BAR ${current.sourceBar.barKey}. ` +
+              'Amend the canonical criterion.model/acceptance condition with rubrics:amend; plans:set-specs cannot persist edits to projected behavior.',
+          };
+        }
         const result = await setSpecClause({
           ...spec,
           ...(args.slug ? { planSlug: args.slug } : {}),
