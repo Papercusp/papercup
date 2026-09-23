@@ -23,6 +23,7 @@ import {
 } from '../workspace-host/initialization-admission';
 import {
   activateHostedCustomerWorkspace,
+  enrollHostedWorkspaceConnector,
   hostedBringUpInitialization,
   workspaceHostBringUpOperationIds,
   type WorkspaceHostBringUp,
@@ -243,6 +244,20 @@ async function bringUpWorkspaceHost(
     requestedAt: desktopRequestedAt,
     action: 'install-desktop-pack',
   }, BRING_UP_STEP_RETRY);
+
+  // D-403: before `active`, so an active workspace is one whose desktop can be opened. One step
+  // enrolls AND delivers, returning only { generation, routeLabel }: the ticket never becomes a
+  // persisted step output.
+  await DBOS.runStep(
+    () =>
+      enrollHostedWorkspaceConnector({
+        controlPlaneWorkspaceId: input.workspaceId,
+        customerWorkspaceId: bringUp.customerWorkspaceId,
+        hostId,
+        operationId: operationIds.connector,
+      }),
+    { name: 'workspace-host-bring-up-connector', retriesAllowed: true, ...BRING_UP_STEP_RETRY },
+  );
 
   const activated = await DBOS.runStep(
     () =>

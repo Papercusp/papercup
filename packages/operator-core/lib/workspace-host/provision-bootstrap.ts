@@ -61,6 +61,11 @@ export const WORKSPACE_HOST_PROVISION_ENV = {
   minimumNodeMajor: 'PAPERCUSP_WORKSPACE_HOST_MINIMUM_NODE_MAJOR',
   serviceName: 'PAPERCUSP_WORKSPACE_HOST_SERVICE_NAME',
   servicePort: 'PAPERCUSP_WORKSPACE_HOST_SERVICE_PORT',
+  /**
+   * D-403: bare HTTPS origin of the hosted control plane. When set, every host this controller
+   * builds gets the desktop connector's enrollment conduit bound to it; unset renders none.
+   */
+  connectorOrigin: 'PAPERCUSP_WORKSPACE_HOST_CONNECTOR_ORIGIN',
 } as const;
 
 export const DEFAULT_WORKSPACE_HOST_SERVICE_NAME = 'papercusp-workspace';
@@ -75,6 +80,8 @@ export interface WorkspaceHostProvisionBootstrapProfile {
   service: WorkspaceHostBootstrapService;
   /** Non-empty. The controller's own SSH public key(s). */
   workspaceAuthorizedKeys: readonly string[];
+  /** D-403: present when the controller is configured to enroll desktop connectors. */
+  hostedConnector?: { controlPlaneOrigin: string };
 }
 
 /** Raised when the controller cannot render a trusted bootstrap for a provision. */
@@ -206,6 +213,8 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
   );
   const serviceName =
     (env[WORKSPACE_HOST_PROVISION_ENV.serviceName] ?? '').trim() || DEFAULT_WORKSPACE_HOST_SERVICE_NAME;
+  // Validated by the render itself (bare HTTPS origin); an invalid value fails the provision there.
+  const connectorOrigin = (env[WORKSPACE_HOST_PROVISION_ENV.connectorOrigin] ?? '').trim();
 
   let controllerProfile = input.controllerProfile;
   if (!controllerProfile) {
@@ -234,6 +243,7 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
     minimumNodeMajor,
     service: { name: serviceName, port: servicePort },
     workspaceAuthorizedKeys,
+    ...(connectorOrigin ? { hostedConnector: { controlPlaneOrigin: connectorOrigin } } : {}),
   };
 }
 
@@ -258,6 +268,7 @@ export function renderWorkspaceHostProvisionBootstrap(
     service: profile.service,
     workspaceAuthorizedKeys: profile.workspaceAuthorizedKeys,
     agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
+    ...(profile.hostedConnector ? { hostedConnector: profile.hostedConnector } : {}),
   });
 }
 
