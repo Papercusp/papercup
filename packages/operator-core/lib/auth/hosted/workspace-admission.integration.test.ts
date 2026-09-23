@@ -47,6 +47,7 @@ const { createDefaultHostedWorkspaceAdmissionDependencies } = await import(
   './workspace-admission-dependencies'
 );
 const { upsertWorkspaceHostConnection } = await import('../../workspace-host/observability-store');
+const { activateHostedCustomerWorkspace } = await import('../../workspace-host/hosted-bring-up');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 const CONNECTION_ID = 'conn-hosted-admission';
@@ -95,7 +96,10 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     return workspaceId;
   }
 
-  function admissionFor(specHostId?: (derivedHostId: string) => string) {
+  function admissionFor(
+    specHostId?: (derivedHostId: string) => string,
+    options: { bringUp?: { requestedAgents: readonly ('claude' | 'codex' | 'omp')[] } } = {},
+  ) {
     const started: unknown[] = [];
     h.startProvisioning = async (input: unknown) => {
       started.push(input);
@@ -105,10 +109,81 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
       createDefaultHostedWorkspaceAdmissionDependencies({
         resolveDesiredSpec: async ({ hostId }) =>
           desiredSpecFor(specHostId ? specHostId(hostId) : hostId),
+        ...options,
       }),
     );
     return { port, started };
   }
+
+  /** Provisioning is fire-and-forget; wait for the enqueue it started to land. */
+  async function enqueued(started: unknown[]): Promise<Record<string, unknown>> {
+    for (let attempt = 0; attempt < 100 && started.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(started).toHaveLength(1);
+    return started[0] as Record<string, unknown>;
+  }
+
+  it('hands a bring-up to provisioning, and the bring-up can mark the workspace active under RLS (D-401)', async () => {
+    const workspaceId = await freshControlPlane();
+    const { port, started } = admissionFor(undefined, { bringUp: { requestedAgents: ['omp'] } });
+    const organizationId = '77777777-7777-4777-8777-777777777777';
+    const admitted = await port.ensureProvisioned({
+      organizationId,
+      userId: 'user-7',
+      provider: 'gcp',
+      connectionId: CONNECTION_ID,
+      displayName: 'Hosted workspace',
+      operationKey: 'signup-bring-up',
+    });
+    const derived = admissionIdentity(organizationId, 'signup-bring-up');
+    expect((await enqueued(started)).bringUp).toEqual({
+      customerWorkspaceId: admitted.workspaceId,
+      requestedAgents: ['omp'],
+    });
+
+    const state = async () => {
+      const rows = await db.adminSql`
+        SELECT state FROM harness_shared.customer_workspaces
+         WHERE workspace_id = ${workspaceId} AND id = ${admitted.workspaceId}
+      `;
+      return rows[0]?.state as string | undefined;
+    };
+    // POSITIVE CONTROL: the row exists and is not already active, so 'active' below is this write.
+    expect(await state()).toBe('provisioning');
+    const activate = () =>
+      activateHostedCustomerWorkspace({
+        controlPlaneWorkspaceId: workspaceId,
+        customerWorkspaceId: admitted.workspaceId,
+        hostId: derived.hostId,
+      });
+    await expect(activate()).resolves.toEqual({ state: 'active' });
+    expect(await state()).toBe('active');
+    // A replayed step is a no-op, not a failure.
+    await expect(activate()).resolves.toEqual({ state: 'active' });
+    // A host the workspace is not bound to is refused, never silently "activated".
+    await expect(
+      activateHostedCustomerWorkspace({
+        controlPlaneWorkspaceId: workspaceId,
+        customerWorkspaceId: admitted.workspaceId,
+        hostId: 'host-someone-else',
+      }),
+    ).rejects.toThrow(/not bound to host/);
+  }, 120_000);
+
+  it('hands no bring-up to an ordinary provision', async () => {
+    await freshControlPlane();
+    const { port, started } = admissionFor();
+    await port.ensureProvisioned({
+      organizationId: '88888888-8888-4888-8888-888888888888',
+      userId: 'user-8',
+      provider: 'gcp',
+      connectionId: CONNECTION_ID,
+      displayName: 'Plain workspace',
+      operationKey: 'signup-plain',
+    });
+    expect(await enqueued(started)).not.toHaveProperty('bringUp');
+  }, 120_000);
 
   it('admits a first workspace: host row, binding row, and exactly one provision enqueued', async () => {
     const workspaceId = await freshControlPlane();

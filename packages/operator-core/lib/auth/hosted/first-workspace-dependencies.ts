@@ -108,11 +108,12 @@ export function createHostedFirstWorkspaceDependencies(
     verifyDelegation: (organizationId, workspaceId, connectionId) =>
       manager(organizationId).verify(workspaceId, connectionId),
 
-    createAdmission: (resolveDesiredSpec) =>
+    createAdmission: (resolveDesiredSpec, admissionOptions) =>
       createHostedWorkspaceAdmission({
         ...createDefaultHostedWorkspaceAdmissionDependencies({
           resolveDesiredSpec,
           ...(provisioning ? { startWorkflow: (input) => provisioning.enqueue(input) } : {}),
+          ...(admissionOptions?.bringUp ? { bringUp: admissionOptions.bringUp } : {}),
         }),
         // The default reads the operator's active workspace; the hosted process is scoped by
         // its configured control plane instead, and the delegation store above uses the same.

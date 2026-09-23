@@ -19,6 +19,8 @@ const control = vi.hoisted(() => ({
   lastStarted: null as null | (() => Promise<unknown>),
   runInitialization: vi.fn(),
   runDesktopPack: vi.fn(),
+  prepareInitialization: vi.fn(),
+  activateCustomerWorkspace: vi.fn(),
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   /**
@@ -39,6 +41,13 @@ const control = vi.hoisted(() => ({
 vi.mock('../workspace-host/initialization-admission', () => ({
   executeAdmittedWorkspaceHostInitialization: control.runInitialization,
   executeAdmittedWorkspaceHostDesktopPack: control.runDesktopPack,
+  prepareWorkspaceHostInitialization: control.prepareInitialization,
+}));
+
+// The request builder stays REAL; only the database write is replaced.
+vi.mock('../workspace-host/hosted-bring-up', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-host/hosted-bring-up')>()),
+  activateHostedCustomerWorkspace: control.activateCustomerWorkspace,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -163,6 +172,8 @@ beforeEach(() => {
   control.getResult.mockClear();
   control.runInitialization.mockReset();
   control.runDesktopPack.mockReset();
+  control.prepareInitialization.mockReset();
+  control.activateCustomerWorkspace.mockReset();
   control.startOptions = null;
   control.stepOptions = null;
   control.stepOptionsByName = {};
@@ -227,6 +238,108 @@ describe('workspace-host provisioning DBOS admission', () => {
     control.runInitialization.mockRejectedValueOnce(failure);
     await expect(workspaceHostProvisioningWorkflow({ ...initialization, action: 'initialize' })).rejects.toBe(failure);
     expect(control.recordTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ operationId: 'init-1', error: failure }));
+  });
+
+  describe('hosted bring-up after the machine is built (D-401)', () => {
+    const bringUp = { customerWorkspaceId: 'customer-ws-1', requestedAgents: ['omp'] as const };
+    const provisioned = { status: 'succeeded' as const, operationId: 'op-1', hostId: 'host-1', plan, checkpoints: [] };
+
+    function recordOrder() {
+      const order: string[] = [];
+      control.prepareInitialization.mockImplementation(async (request: Record<string, unknown>) => {
+        order.push('admit-initialize');
+        return { ...request, deliveryCapabilities: { fileTransfer: true } };
+      });
+      control.runInitialization.mockImplementation(async (request: { operationId: string }) => {
+        order.push('initialize');
+        return { status: 'succeeded', operationId: request.operationId, hostId: 'host-1' };
+      });
+      control.runDesktopPack.mockImplementation(async (request: { operationId: string }) => {
+        order.push('desktop-pack');
+        return { status: 'succeeded', operationId: request.operationId, hostId: 'host-1' };
+      });
+      control.activateCustomerWorkspace.mockImplementation(async () => {
+        order.push('activate');
+        return { state: 'active' };
+      });
+      return order;
+    }
+
+    it('initializes, installs the desktop, then marks the workspace active, each under its own operation', async () => {
+      const order = recordOrder();
+      control.runProvisioning.mockResolvedValueOnce(provisioned);
+
+      await expect(workspaceHostProvisioningWorkflow({ ...input, action: 'provision', bringUp })).resolves.toMatchObject({
+        status: 'succeeded',
+        operationId: 'op-1',
+      });
+
+      expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'activate']);
+      // Built on the server from the host's own spec: an empty workspace, the machine's own
+      // identity, and only the agent that needs no customer account.
+      expect(control.prepareInitialization).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'ws-1',
+        hostId: 'host-1',
+        operationId: 'op-1.initialize',
+        source: { kind: 'empty' },
+        requestedAgents: ['omp'],
+        credentialRefs: { cloudCredentialRef: { kind: 'cloud', ref: 'pc-cloud-workload://gcp/project-1/host-1' } },
+      }));
+      expect(control.runInitialization).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'initialize',
+        operationId: 'op-1.initialize',
+        deliveryCapabilities: { fileTransfer: true },
+      }));
+      expect(control.runDesktopPack).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        hostId: 'host-1',
+        operationId: 'op-1.desktop-pack',
+        requestedAt: expect.any(String),
+        action: 'install-desktop-pack',
+      });
+      expect(control.activateCustomerWorkspace).toHaveBeenCalledWith({
+        controlPlaneWorkspaceId: 'ws-1',
+        customerWorkspaceId: 'customer-ws-1',
+        hostId: 'host-1',
+      });
+      // Admission and its timestamps are steps, so a replay reuses what was admitted.
+      expect(control.stepCalls).toEqual(expect.arrayContaining([
+        'workspace-host-bring-up-admit-initialize',
+        'workspace-host-bring-up-admit-desktop-pack',
+        'workspace-host-bring-up-activate',
+      ]));
+    });
+
+    it('leaves an ordinary provision at the machine, exactly as before', async () => {
+      const order = recordOrder();
+      control.runProvisioning.mockResolvedValueOnce(provisioned);
+      await workspaceHostProvisioningWorkflow({ ...input, action: 'provision' });
+      expect(order).toEqual([]);
+    });
+
+    it('does not set up a machine whose provision failed', async () => {
+      const order = recordOrder();
+      control.runProvisioning.mockResolvedValueOnce({ ...provisioned, status: 'failed' });
+      await workspaceHostProvisioningWorkflow({ ...input, action: 'provision', bringUp });
+      expect(order).toEqual([]);
+    });
+
+    it('records a failed stage on THAT stage, stops the chain, and leaves the built machine succeeded', async () => {
+      const order = recordOrder();
+      const failure = new Error('agent readiness did not pass for: omp');
+      control.runInitialization.mockRejectedValue(failure);
+      control.runProvisioning.mockResolvedValueOnce(provisioned);
+
+      await expect(workspaceHostProvisioningWorkflow({ ...input, action: 'provision', bringUp })).rejects.toBe(failure);
+
+      expect(control.recordTerminalFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: 'op-1.initialize', error: failure }),
+      );
+      expect(control.recordTerminalFailure).not.toHaveBeenCalledWith(expect.objectContaining({ operationId: 'op-1' }));
+      expect(order).toEqual(['admit-initialize']);
+      expect(control.runDesktopPack).not.toHaveBeenCalled();
+      expect(control.activateCustomerWorkspace).not.toHaveBeenCalled();
+    });
   });
 
   it('is registered by bootstrap before DBOS.launch so crash recovery can bind it', () => {
