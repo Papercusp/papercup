@@ -17,9 +17,16 @@ import {
 import {
   executeAdmittedWorkspaceHostInitialization,
   executeAdmittedWorkspaceHostDesktopPack,
+  prepareWorkspaceHostInitialization,
   type AdmittedWorkspaceHostInitialization,
   type WorkspaceHostDesktopPackRequest,
 } from '../workspace-host/initialization-admission';
+import {
+  activateHostedCustomerWorkspace,
+  hostedBringUpInitialization,
+  workspaceHostBringUpOperationIds,
+  type WorkspaceHostBringUp,
+} from '../workspace-host/hosted-bring-up';
 import {
   runWorkspaceHostDestroy,
   runWorkspaceHostProvisioning,
@@ -54,6 +61,11 @@ export interface StartWorkspaceHostProvisioningInput {
   connection: WorkspaceHostProviderConnection;
   operationId?: string;
   actorId?: string;
+  /**
+   * D-401: set up the machine once it is built (initialize -> desktop pack -> workspace active).
+   * Only the Papercusp-hosted first-workspace door sets this; see `hosted-bring-up.ts`.
+   */
+  bringUp?: WorkspaceHostBringUp;
 }
 
 export interface StartWorkspaceHostDestroyInput {
@@ -182,6 +194,73 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
 }
 
 async function workspaceHostProvisioningWorkflowImpl(
+  input: WorkspaceHostWorkflowInput,
+): Promise<WorkspaceHostWorkflowResult> {
+  const result = await runWorkspaceHostOperation(input);
+  if (input.action === 'provision' && input.bringUp && result.status === 'succeeded') {
+    await bringUpWorkspaceHost(input, input.bringUp);
+  }
+  return result;
+}
+
+/**
+ * D-401 bring-up, as further steps of the SAME workflow rather than new enqueues: this workflow
+ * still holds the host's deduplication id, so a separate initialize enqueued from here would be
+ * refused as "already has a provisioning operation in progress" (and one enqueued just after it
+ * ends was measured refused for ~25s). Each stage keeps its own operation record, which is what
+ * the portal shows as the host's progress, and a stage failure is recorded on that record.
+ */
+async function bringUpWorkspaceHost(
+  input: WorkspaceHostProvisioningWorkflowInput,
+  bringUp: WorkspaceHostBringUp,
+): Promise<void> {
+  const hostId = input.desired.hostId;
+  const operationIds = workspaceHostBringUpOperationIds(input.operationId);
+  // Admission reads the host's recorded spec and stamps a time, so it is a step: a replay must
+  // reuse the request it admitted, not build a new one.
+  const initialization = await DBOS.runStep(
+    () =>
+      prepareWorkspaceHostInitialization(
+        hostedBringUpInitialization({
+          workspaceId: input.workspaceId,
+          operationId: operationIds.initialize,
+          requestedAt: new Date().toISOString(),
+          desired: input.desired,
+          requestedAgents: bringUp.requestedAgents,
+        }),
+      ),
+    { name: 'workspace-host-bring-up-admit-initialize', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
+  );
+  await runWorkspaceHostOperation({ ...initialization, action: 'initialize' });
+
+  const desktopRequestedAt = await DBOS.runStep(async () => new Date().toISOString(), {
+    name: 'workspace-host-bring-up-admit-desktop-pack',
+  });
+  await runWorkspaceHostOperation({
+    workspaceId: input.workspaceId,
+    hostId,
+    operationId: operationIds.desktopPack,
+    requestedAt: desktopRequestedAt,
+    action: 'install-desktop-pack',
+  });
+
+  const activated = await DBOS.runStep(
+    () =>
+      activateHostedCustomerWorkspace({
+        controlPlaneWorkspaceId: input.workspaceId,
+        customerWorkspaceId: bringUp.customerWorkspaceId,
+        hostId,
+      }),
+    { name: 'workspace-host-bring-up-activate', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
+  );
+  if (activated.state !== 'active') {
+    console.warn(
+      `[workspace-host] host ${hostId} is set up, but customer workspace ${bringUp.customerWorkspaceId} is '${activated.state}'`,
+    );
+  }
+}
+
+async function runWorkspaceHostOperation(
   input: WorkspaceHostWorkflowInput,
 ): Promise<WorkspaceHostWorkflowResult> {
   try {
