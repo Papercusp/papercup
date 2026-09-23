@@ -20,6 +20,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CONSULT_EXPIRY_SWEEP_OWNER_ID,
+  REVIEW_CONSULT_CONDITION_NAMESPACE,
+  consultExpiryFileReviewWorkItem,
   consultExpiryEmitReplyEvent,
   consultExpiryFindSilentResponders,
   consultExpiryNotifyRequester,
@@ -28,7 +30,7 @@ import {
   type AwaitedEventEmitter,
   type ConsultDispatcherFactory,
 } from './consult-expiry-adapters';
-import { requesterAlertForRow, type DueConsultRow } from './consult-expiry-core';
+import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
@@ -383,4 +385,74 @@ describe('consultExpiryFindSilentResponders', () => {
       expect(getThreadStore).not.toHaveBeenCalled();
     },
   );
+});
+
+// review-system-rework-reduction-2026-09-23 P-014 (spec RSR-P-014-A).
+describe('review consult classification', () => {
+  it('recognizes the three review families and nothing else', () => {
+    expect(reviewConsultKind({ policy: 'rubric-vetting' })).toBe('rubric-vetting');
+    expect(reviewConsultKind({ cascade: { flavor: 'acceptance-grading' } })).toBe('acceptance-grading');
+    expect(reviewConsultKind(JSON.stringify({ cascade: { flavor: 'grading-integrity' } }))).toBe('grading-integrity');
+    expect(reviewConsultKind({ policy: 'consult-default' })).toBeNull();
+    expect(reviewConsultKind({ selection: { selected: [] } })).toBeNull();
+    expect(reviewConsultKind(null)).toBeNull();
+    expect(reviewConsultKind('{not json')).toBeNull();
+  });
+});
+
+describe('consultExpiryFileReviewWorkItem', () => {
+  const base = {
+    workspaceId: ROW_WS,
+    conversationId: 'conv-silent',
+    question: 'Vet acceptance rubric acceptance-foo revision 3 against meta-acceptance-rubric\nmore detail',
+    requesterId: 'rubric-author',
+    silentResponderId: 'resp-silent',
+  };
+
+  it('files a vetting review as an unassigned open task keyed per conversation, in the resolved harness', async () => {
+    const upsert = vi.fn(async () => ({ id: 'EI-review-1' }));
+    const resolveHarness = vi.fn(async () => 'papercusp');
+    const file = consultExpiryFileReviewWorkItem({ upsert, resolveHarness });
+    await expect(file({ ...base, kind: 'rubric-vetting', routing: { policy: 'rubric-vetting' } }))
+      .resolves.toEqual({ id: 'EI-review-1' });
+
+    expect(resolveHarness).toHaveBeenCalledWith(ROW_WS, 'conv-silent');
+    expect(upsert).toHaveBeenCalledTimes(1);
+    const [key, input] = upsert.mock.calls[0]! as unknown as [string, Record<string, unknown>];
+    expect(key).toBe(`${REVIEW_CONSULT_CONDITION_NAMESPACE}:conv-silent`);
+    expect(input).toMatchObject({
+      kind: 'task', harness: 'papercusp', workspaceId: ROW_WS, createdBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
+      payload: { reviewConsult: { conversationId: 'conv-silent', kind: 'rubric-vetting', requesterId: 'rubric-author' } },
+    });
+    // Claimable shape: no assignee is stamped at creation.
+    expect(input).not.toHaveProperty('assignee');
+    expect(input.title).toBe('Review needed (rubric-vetting) — Vet acceptance rubric acceptance-foo revision 3 against meta-acceptance-rubric');
+    expect(input.summary).toContain("scorecards:emit { vettingWorkItem: '<this id>' }");
+    expect(input.summary).toContain('more detail');
+  });
+
+  it('adopts the acceptance review-target reservation instead of minting a sibling', async () => {
+    const upsert = vi.fn(async () => ({ id: 'WI-reservation' }));
+    const resolveHarness = vi.fn(async () => 'should-not-be-used');
+    const file = consultExpiryFileReviewWorkItem({ upsert, resolveHarness });
+    const routing = {
+      cascade: {
+        flavor: 'acceptance-grading', planSlug: 'plan-x', rubricId: 'rubric-x', harnessSlug: 'hx',
+        reservation: { conditionKey: 'acceptance-review-target:v1:abc', id: 'WI-reservation' },
+      },
+    };
+    await expect(file({ ...base, kind: 'acceptance-grading', routing })).resolves.toEqual({ id: 'WI-reservation' });
+    const [key, input] = upsert.mock.calls[0]! as unknown as [string, Record<string, unknown>];
+    expect(key).toBe('acceptance-review-target:v1:abc');
+    expect(input).toMatchObject({ harness: 'hx', title: 'Acceptance review-target reservation — plan-x (rubric-x)' });
+    expect(resolveHarness).not.toHaveBeenCalled();
+  });
+
+  it('refuses to report success when the upsert yields no row', async () => {
+    const file = consultExpiryFileReviewWorkItem({
+      upsert: async () => ({ id: null }),
+      resolveHarness: async () => null,
+    });
+    await expect(file({ ...base, kind: 'grading-integrity', routing: {} })).rejects.toThrow(/no id/);
+  });
 });
