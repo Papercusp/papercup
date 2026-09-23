@@ -47,6 +47,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import type { DirectiveRoutingDeps } from './owner-directive-routing';
 import { TERMINAL_WORK_ITEM_STATES } from './work-items';
 
 function db(sql?: Sql): Sql {
@@ -168,7 +169,10 @@ export function agendaClearedExclusionSql(s: Sql, viewerOwnerId: string | null |
 }
 
 export type DirectiveActionVerdict =
-  | { allowed: true; because: 'addressee' | 'holds-linking-work-item' }
+  | {
+      allowed: true;
+      because: 'addressee' | 'holds-linking-work-item' | 'inherited-from-ended-session' | 'adopting-unhandled';
+    }
   | { allowed: false; addressedTo: string; holders: string[] };
 
 /**
@@ -194,10 +198,15 @@ export type DirectiveActionVerdict =
  *
  * The refusal names the addressee AND any current holders so the caller's next
  * move is obvious: message them, or clear it from your own agenda instead.
+ *
+ * `routing` overrides the ended-addressee routing reads. Only callers that must
+ * not reach the liveness oracle need it; the oracle has no `sql` seam and always
+ * reads the ambient pool.
  */
 export async function directiveActionVerdict(
   input: { directiveId: number; ownerId: string; workspaceId: string },
   sql?: Sql,
+  routing?: DirectiveRoutingDeps,
 ): Promise<DirectiveActionVerdict | { allowed: false; notFound: true }> {
   const s = db(sql);
   const rows = await s<Array<{ recorded_by: string }>>`
@@ -235,6 +244,23 @@ export async function directiveActionVerdict(
   `;
   const holderIds = holders.map((h) => h.taken_by!).filter(Boolean);
   if (holderIds.includes(input.ownerId)) return { allowed: true, because: 'holds-linking-work-item' };
+
+  // P-008 / R-7: an ended addressee does not strand its directive
+  // (owner-directive-routing.ts). Its live fleet leader inherits it; with no
+  // live leader or holder it is UNHANDLED — on the owner's "nobody is handling
+  // these" list — and any session may adopt it, or nobody could ever close it.
+  // Fail-closed: a routing read error leaves the refusal standing.
+  const { routeOpenDirectives, defaultDirectiveRoutingDeps } = await import('./owner-directive-routing');
+  const routes = await routeOpenDirectives(
+    input.workspaceId,
+    [{ id: input.directiveId, recordedBy: directive.recorded_by }],
+    routing ?? defaultDirectiveRoutingDeps(s),
+  ).catch(() => null);
+  const route = routes?.get(input.directiveId);
+  if (route?.kind === 'fleet-leader' && route.leaderOwnerId === input.ownerId) {
+    return { allowed: true, because: 'inherited-from-ended-session' };
+  }
+  if (route?.kind === 'unhandled') return { allowed: true, because: 'adopting-unhandled' };
 
   return { allowed: false, addressedTo: directive.recorded_by, holders: [...new Set(holderIds)] };
 }

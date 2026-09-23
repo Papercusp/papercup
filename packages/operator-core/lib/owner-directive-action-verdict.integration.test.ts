@@ -1,11 +1,13 @@
 /**
  * owner-directive-action-verdict.integration.test.ts — real-PG proof for
  * `directiveActionVerdict`, the authority gate shared by BOTH directive-clearing
- * verbs (`orders:resolve-pending` and `orders:disposition`).
+ * verbs (`orders:clear` and `orders:disposition`; `orders:clear` is the former
+ * `orders:resolve-pending`, whose promote/dismiss half was retired by D-001 of
+ * `owner-directive-delivery-redesign-2026-09-22`).
  *
- * WHY THIS FILE EXISTS, given resolve-pending.test.ts, resolve-pending-foreign-directive.test.ts
- * and disposition-foreign-directive.test.ts already pass 30/30 between them.
- * All three MOCK `directiveActionVerdict` outright (`vi.mock('../../owner-directive-agenda')`)
+ * WHY THIS FILE EXISTS, given the handler suites (clear.test.ts and
+ * disposition-foreign-directive.test.ts) already pass between them.
+ * Both MOCK `directiveActionVerdict` outright (`vi.mock('../../owner-directive-agenda')`)
  * and assert only on how the handler branches over a verdict object handed to it. That is
  * the right call at that layer — those files have no database — but it means the function's
  * own SQL had never once been executed by a test.
@@ -42,7 +44,6 @@ describe('directiveActionVerdict (real PG)', () => {
         sourceTurnRef: turnRef,
         verbatimText: 'an owner turn captured against one session',
         recordedBy,
-        captureStatus: 'pending',
       },
       db.adminSql,
     );
