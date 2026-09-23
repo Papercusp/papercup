@@ -149,7 +149,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'optional assertion of the reviewer identity; must match the approval post author. ALSO PASS IT ON dryRun:true TO SCREEN A CANDIDATE FIRST, not after they spent a review wake on an approval void from the start (EI-23806582233421348): returns approverEligibility { eligible, relatedImplementer, relatedVia, eligibleWithUnrelatedApplier }. eligible predicts YOUR OWN apply and implementers[] includes YOU, so screening YOURSELF is always false and proves nothing (WI-10002357); relatedVia:"caller" is a curable artifact — have a different agent apply.',
+        'optional assertion of the reviewer identity; must match the approval post author. Pass it on dryRun:true from the REQUESTER session to screen a candidate before spending their review wake (EI-23806582233421348). If approvedBy equals the caller, the preview returns approverEligibility { selfScreen:true, eligible:null, note } — this is no verdict, so have a different requester screen the candidate. Otherwise eligible predicts apply by this caller; relatedVia:"caller" is curable with an unrelated applier (WI-10002357).',
       ),
     approvedAt: z
       .string()
