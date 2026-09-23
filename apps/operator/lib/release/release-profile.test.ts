@@ -21,6 +21,9 @@ import {
   DEFAULT_RUBRIC_STALE_AFTER_MS,
   AUTOLOOP_COMPONENT_RUBRIC_REFS,
   AUTOLOOP_RELEASE_PROFILE_REF,
+  WINDOWS_SMOKE_FRESHNESS_MAX_AGE_MS,
+  WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME,
+  windowsSmokeFreshnessComponent,
 } from './release-profile';
 import { evaluateReleaseProfile } from '@papercusp/release-profile';
 import type { Rubric } from '@papercusp/operator-core/lib/rubrics';
@@ -523,15 +526,30 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
     getRubric: async (ref: string) => rubric({ rubricId: ref }),
   };
   const healthyScorecard = scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } });
+  const healthyWindowsSmokeOpts = {
+    markerPath: `/tmp/${WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME}`,
+    deps: {
+      readMarker: async () => JSON.stringify({
+        schemaVersion: 'papercusp-windows-smoke-success/v1',
+        result: 'pass',
+        platform: 'windows',
+        tag: 'desktop-v1.2.3',
+        version: '1.2.3',
+        buildSha: 'build-sha',
+        verifiedAtUtc: new Date(NOW).toISOString(),
+      }),
+      nowMs: () => NOW,
+    },
+  };
 
-  it('composes EXACTLY the fixed 4-rubric set + the deploy-staleness gate — never auto-discovery', async () => {
+  it('composes the fixed rubric set and both operational gates — never auto-discovery', async () => {
     const spec = await buildAutoloopReleaseProfile({
       deps: healthyDeps,
       gateOpts: healthyGateOpts,
       rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
     });
     expect(spec.profileRef).toBe(AUTOLOOP_RELEASE_PROFILE_REF);
-    expect(spec.components).toHaveLength(AUTOLOOP_COMPONENT_RUBRIC_REFS.length + 1); // 4 rubrics + 1 gate
+    expect(spec.components).toHaveLength(AUTOLOOP_COMPONENT_RUBRIC_REFS.length + 2); // 4 rubrics + 2 gates
     expect(AUTOLOOP_COMPONENT_RUBRIC_REFS).toEqual([
       'blender-release-readiness',
       'autonomy-owner-controls',
@@ -541,6 +559,64 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
     const keys = spec.components.map((c) => c.key);
     for (const ref of AUTOLOOP_COMPONENT_RUBRIC_REFS) expect(keys).toContain(`rubric:${ref}`);
     expect(keys).toContain('gate:deploy-staleness');
+    expect(keys).toContain('gate:windows-smoke-freshness');
+    expect(spec.components.find((component) => component.key === 'gate:windows-smoke-freshness')).toMatchObject({
+      mandatory: true,
+      maxAgeMs: 7 * 24 * 60 * 60_000,
+    });
+  });
+
+  it('passes only with a well-formed recent Windows smoke success watermark', async () => {
+    const marker = {
+      schemaVersion: 'papercusp-windows-smoke-success/v1',
+      result: 'pass',
+      platform: 'windows',
+      tag: 'desktop-v1.2.3',
+      version: '1.2.3',
+      buildSha: 'build-sha',
+      verifiedAtUtc: new Date(NOW - WINDOWS_SMOKE_FRESHNESS_MAX_AGE_MS + 1).toISOString(),
+    };
+    const component = windowsSmokeFreshnessComponent({
+      markerPath: `/tmp/${WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME}`,
+      deps: { readMarker: async () => JSON.stringify(marker), nowMs: () => NOW },
+    });
+
+    await expect(component.check()).resolves.toMatchObject({ verdict: 'pass', measuredAt: marker.verifiedAtUtc });
+  });
+
+  it('refuses GO when no successful Windows smoke watermark exists', async () => {
+    const verdict = await evaluateAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      evaluateOpts: { now: NOW },
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+      windowsSmokeOpts: { deps: { readMarker: async () => null, nowMs: () => NOW } },
+    });
+
+    expect(verdict.go).toBe(false);
+    expect(verdict.components.find((component) => component.key === 'gate:windows-smoke-freshness')?.verdict).toBe('unknown');
+  });
+
+  it('REFUSES GO when the latest successful Windows smoke is older than seven days', async () => {
+    const marker = {
+      schemaVersion: 'papercusp-windows-smoke-success/v1',
+      result: 'pass',
+      platform: 'windows',
+      tag: 'desktop-v1.2.3',
+      version: '1.2.3',
+      buildSha: 'build-sha',
+      verifiedAtUtc: new Date(NOW - WINDOWS_SMOKE_FRESHNESS_MAX_AGE_MS - 1).toISOString(),
+    };
+    const verdict = await evaluateAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      evaluateOpts: { now: NOW },
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+      windowsSmokeOpts: { deps: { readMarker: async () => JSON.stringify(marker), nowMs: () => NOW } },
+    });
+
+    expect(verdict.go).toBe(false);
+    expect(verdict.components.find((component) => component.key === 'gate:windows-smoke-freshness')?.verdict).toBe('stale');
   });
 
   /**
@@ -581,6 +657,7 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
       gateOpts: healthyGateOpts,
       evaluateOpts: { now: NOW },
       rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+      windowsSmokeOpts: healthyWindowsSmokeOpts,
     });
     expect(verdict.go).toBe(true);
   });
@@ -598,6 +675,7 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
               : [healthyScorecard],
         },
       },
+      windowsSmokeOpts: healthyWindowsSmokeOpts,
     });
     expect(verdict.go).toBe(false);
     expect(verdict.components.find((c) => c.key === 'rubric:blender-release-readiness')?.verdict).toBe('fail');
@@ -621,6 +699,7 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
         },
         thresholds: { maxPinAgeMs: 6 * 3_600_000, maxCommitsBehind: 20 },
       },
+      windowsSmokeOpts: healthyWindowsSmokeOpts,
     });
     expect(verdict.go).toBe(false);
     expect(verdict.components.find((c) => c.key === 'gate:deploy-staleness')?.verdict).toBe('fail');

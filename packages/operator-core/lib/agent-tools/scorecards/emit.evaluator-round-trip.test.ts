@@ -139,7 +139,8 @@ const ADEQUACY = {
   collected: true,
   skipped: false,
   executed: true,
-  targeted: true,
+  // This fixture's clause declares no falsifier scenarios, so name the clause itself.
+  targeted: SPEC.toLowerCase(),
   coverageRungs: { l3: true, l4: false },
 };
 

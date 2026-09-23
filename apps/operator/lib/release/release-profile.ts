@@ -25,6 +25,9 @@
  * this composes; this module's job is the reusable schema/evaluator + a REAL, proven
  * wiring of at least one of each component kind.
  */
+import { readFile } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   evaluateReleaseProfile,
   type ComponentCheckResult,
@@ -319,6 +322,97 @@ export function deployStalenessGateComponent(opts: DeployStalenessGateOpts = {})
   };
 }
 
+// ─── installed Windows smoke freshness gate ────────────────────────────────────────
+
+export const WINDOWS_SMOKE_FRESHNESS_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+export const WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME = 'latest-windows-smoke.json';
+const WINDOWS_SMOKE_SUCCESS_SCHEMA = 'papercusp-windows-smoke-success/v1';
+
+export interface WindowsSmokeFreshnessDeps {
+  readMarker?: (markerPath: string) => Promise<string | null>;
+  nowMs?: () => number;
+}
+
+export interface WindowsSmokeFreshnessOpts {
+  markerPath?: string;
+  deps?: WindowsSmokeFreshnessDeps;
+}
+
+function defaultWindowsSmokeMarkerPath(): string {
+  const root =
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT ??
+    path.join(os.homedir(), '.papercusp', 'release-retention');
+  return path.join(root, WINDOWS_SMOKE_SUCCESS_MARKER_FILENAME);
+}
+
+async function readWindowsSmokeMarker(markerPath: string): Promise<string | null> {
+  try {
+    return await readFile(markerPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** A missing or malformed marker refuses GO; a valid pass is subject to the
+ *  shared evaluator's seven-day staleness policy. The release-artifacts helper
+ *  writes this watermark only after validating a successful Windows install. */
+export function windowsSmokeFreshnessComponent(opts: WindowsSmokeFreshnessOpts = {}): ComponentSpec {
+  const markerPath = opts.markerPath ?? defaultWindowsSmokeMarkerPath();
+  const readMarker = opts.deps?.readMarker ?? readWindowsSmokeMarker;
+  const nowMs = opts.deps?.nowMs ?? Date.now;
+
+  return {
+    key: 'gate:windows-smoke-freshness',
+    title: 'Windows installed-artifact smoke freshness',
+    mandatory: true,
+    maxAgeMs: WINDOWS_SMOKE_FRESHNESS_MAX_AGE_MS,
+    async check(): Promise<ComponentCheckResult> {
+      const measuredNow = nowMs();
+      const now = new Date(measuredNow).toISOString();
+      const raw = await readMarker(markerPath);
+      if (raw === null) {
+        return { verdict: 'unknown', reason: 'no successful Windows smoke watermark exists', measuredAt: now, evidence: [] };
+      }
+
+      let marker: Record<string, unknown>;
+      try {
+        marker = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        return { verdict: 'unknown', reason: 'Windows smoke watermark is not valid JSON', measuredAt: now, evidence: [] };
+      }
+      const { schemaVersion, result, platform, tag, version, buildSha, verifiedAtUtc } = marker;
+      if (
+        schemaVersion !== WINDOWS_SMOKE_SUCCESS_SCHEMA ||
+        result !== 'pass' ||
+        platform !== 'windows' ||
+        typeof tag !== 'string' ||
+        typeof version !== 'string' ||
+        typeof buildSha !== 'string' ||
+        typeof verifiedAtUtc !== 'string' ||
+        !verifiedAtUtc.endsWith('Z')
+      ) {
+        return { verdict: 'unknown', reason: 'Windows smoke watermark is malformed or not a verified pass', measuredAt: now, evidence: [] };
+      }
+      const verifiedMs = Date.parse(verifiedAtUtc);
+      if (!Number.isFinite(verifiedMs) || verifiedMs > measuredNow) {
+        return { verdict: 'unknown', reason: 'Windows smoke watermark has an invalid or future timestamp', measuredAt: now, evidence: [] };
+      }
+
+      return {
+        verdict: 'pass',
+        reason: `latest Windows smoke passed for ${tag} at ${verifiedAtUtc}`,
+        measuredAt: verifiedAtUtc,
+        evidence: [{
+          ref: markerPath,
+          kind: 'smoke-success-watermark',
+          detail: { tag, version, buildSha },
+        }],
+      };
+    },
+  };
+}
+
 // ─── the assembled papercusp profile ────────────────────────────────────────────────
 
 export const PAPERCUSP_RELEASE_PROFILE_REF = 'papercusp-public-release-readiness';
@@ -394,9 +488,9 @@ export async function evaluatePapercuspReleaseProfile(
 // above auto-discovers EVERY active releaseGating rubric in the workspace — which, now that
 // per-product rubrics exist (desktop-voice-release-readiness, papercup-chat-release-readiness,
 // mobile-app-release-readiness, …), would mix unrelated products into one monolithic GO/NO-GO.
-// The auto-loop product needs its OWN scoped profile: the blender leg (P-006) plus the
-// still-live component rubrics P-007 ratified, plus the strict live deploy-staleness gate
-// P-006 already wired — nothing else auto-discovered in.
+// The auto-loop product needs its OWN scoped profile: the fixed live rubric set, the
+// strict live deploy-staleness gate, and the installed-Windows-smoke freshness gate —
+// nothing else auto-discovered in.
 //
 // NOTE (WI-5379, 2026-08-12): this profile was authored when the product was
 // "Mug → Cup → Kettle → Blender". The Mug/Cup/Kettle tier is RETIRED (2026-08-09); what
@@ -440,21 +534,20 @@ export interface BuildAutoloopReleaseProfileDeps {
 
 export interface BuildAutoloopReleaseProfileOpts {
   profileRef?: string;
-  /** Extra components (e.g. a future P-009 addition) to compose alongside the fixed
-   *  rubric set + the deploy-staleness gate. */
+  /** Extra components to compose alongside the fixed rubric set and operational gates. */
   extraComponents?: ComponentSpec[];
   rubricOpts?: Omit<RubricComponentOpts, 'mandatory'>;
   gateOpts?: DeployStalenessGateOpts;
+  windowsSmokeOpts?: WindowsSmokeFreshnessOpts;
   deps?: BuildAutoloopReleaseProfileDeps;
 }
 
 /**
- * Assemble the public auto-loop release profile: the fixed 7-rubric set
- * ({@link AUTOLOOP_COMPONENT_RUBRIC_REFS}) + the deploy-staleness hard gate (the "strict
- * live gate" — a real-time operational check, not a periodically-graded scorecard),
- * stamped with the RUNNING generation as `expectedLineage` so evidence graded against a
- * stale/different generation is refused as 'lineage-mismatch', exactly like the general
- * profile above.
+ * Assemble the public auto-loop release profile: the fixed rubric set
+ * ({@link AUTOLOOP_COMPONENT_RUBRIC_REFS}), deploy-staleness hard gate, and Windows
+ * installed-smoke freshness gate, stamped with the RUNNING generation as
+ * `expectedLineage` so evidence graded against a stale/different generation is refused
+ * as 'lineage-mismatch', exactly like the general profile above.
  */
 export async function buildAutoloopReleaseProfile(
   opts: BuildAutoloopReleaseProfileOpts = {},
@@ -477,6 +570,7 @@ export async function buildAutoloopReleaseProfile(
     components: [
       ...AUTOLOOP_COMPONENT_RUBRIC_REFS.map((ref) => rubricReleaseComponent(ref, { ...opts.rubricOpts, deps: rubricDeps })),
       deployStalenessGateComponent(opts.gateOpts),
+      windowsSmokeFreshnessComponent(opts.windowsSmokeOpts),
       ...(opts.extraComponents ?? []),
     ],
   };

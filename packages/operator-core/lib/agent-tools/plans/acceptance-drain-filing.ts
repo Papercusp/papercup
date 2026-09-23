@@ -49,8 +49,10 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_STALLED_AFTER_DAYS } from '@papercusp/plan-parser';
 import type { TransactionSql } from 'postgres';
 import { agentObligationSourceGeneration } from '../../agent-obligations';
+import { GATE_CODE_OWNERSHIP } from '../../agent-obligation-providers';
 import {
   upsertConditionWorkItem,
   upsertConditionWorkItemInTransaction,
@@ -96,6 +98,14 @@ export interface AcceptanceDrainFilingInput {
   observation?: AcceptanceDrainGateObservation;
   /** Observation clock. Tests may pin it; production defaults to now. */
   observedAt?: Date;
+  /**
+   * The plan's last recorded write (`PlanIndexRow.updated`). When the caller
+   * passes it — `undefined` means "not supplied", `null` means "unreadable" —
+   * the filing records a backlog class and its next repair action
+   * ({@link acceptanceDrainBacklogClass}). Omitting it leaves any previously
+   * recorded class untouched rather than overwriting it with a guess.
+   */
+  planUpdated?: string | null;
 }
 
 export type AcceptanceDrainFilingOutcome = 'created' | 'already-open' | 'unknown' | 'error';
@@ -104,7 +114,179 @@ export interface AcceptanceDrainFilingResult {
   outcome: AcceptanceDrainFilingOutcome;
   id: string | null;
   ref: string;
+  /** The backlog class recorded on this filing, when one was computed. */
+  backlogClass?: AcceptanceDrainBacklogClass;
   error?: string;
+}
+
+/**
+ * The canonical order among open filings for ONE plan. Every reader that picks
+ * "the" filing uses it, so the carry writer, the refresh writer and the sweep's
+ * duplicate retirement all agree on which row survives. Before P-016 the refresh
+ * writer took an unordered `LIMIT 1` while the sweep kept whichever row its Map
+ * saw last, so with two open rows each could refresh a different one and the
+ * other was never refreshed or retired.
+ */
+export const ACCEPTANCE_DRAIN_CANONICAL_ORDER = 'created_ts, feature_id' as const;
+
+/**
+ * P-016 of review-system-rework-reduction-2026-09-23 — what KIND of stuck a held
+ * plan is. The blocker code says which gate refused; the class says who has to
+ * move and what they do first:
+ *
+ *  - `ready`                 — the gate passes; one ship call finishes it.
+ *  - `recruitment`           — only an independent grader is missing
+ *                              ({@link GATE_CODE_OWNERSHIP} → `grader`). Waiting
+ *                              on review capacity, not on its author, so idle
+ *                              age never makes it an abandonment candidate.
+ *  - `author-repair`         — author work remains and the plan moved recently.
+ *  - `abandonment-candidate` — author work remains AND the plan has not been
+ *                              written for at least the lifecycle stall threshold
+ *                              ({@link DEFAULT_STALLED_AFTER_DAYS}). Grading it
+ *                              would compare stale work against moved code, so
+ *                              the first action is to decide whether it still
+ *                              matters — supersede it with a rationale, or carry
+ *                              the gate repair.
+ *  - `unmeasured`            — the gate could not read the plan; re-measure.
+ *
+ * A candidate is a CLASSIFICATION, not a disposition: nothing here supersedes a
+ * plan. Whoever claims the filing makes that call.
+ */
+export type AcceptanceDrainBacklogClass =
+  | 'ready'
+  | 'recruitment'
+  | 'author-repair'
+  | 'abandonment-candidate'
+  | 'unmeasured';
+
+export interface AcceptanceDrainNextRepairAction {
+  kind: 'ship' | 'recruit-grader' | 'gate-repair' | 'abandonment-triage' | 're-measure';
+  instruction: string;
+  /** Machine-callable verbs, in the order to try them. */
+  verbs: Array<{ name: string; args?: Record<string, unknown> }>;
+}
+
+export interface AcceptanceDrainBacklogClassification {
+  backlogClass: AcceptanceDrainBacklogClass;
+  /** Whole days since the plan's last recorded write; null when unreadable. */
+  planIdleDays: number | null;
+  stalledAfterDays: number;
+  nextRepairAction: AcceptanceDrainNextRepairAction;
+}
+
+function gateRepairVerbs(repairAction: unknown): Array<{ name: string; args?: Record<string, unknown> }> {
+  if (!repairAction || typeof repairAction !== 'object') return [];
+  const r = repairAction as { repairVerb?: unknown; nextVerb?: { name?: unknown; args?: unknown } };
+  const verbs: Array<{ name: string; args?: Record<string, unknown> }> = [];
+  if (typeof r.repairVerb === 'string' && r.repairVerb) verbs.push({ name: r.repairVerb });
+  if (r.nextVerb && typeof r.nextVerb.name === 'string' && r.nextVerb.name) {
+    verbs.push({
+      name: r.nextVerb.name,
+      ...(r.nextVerb.args && typeof r.nextVerb.args === 'object'
+        ? { args: r.nextVerb.args as Record<string, unknown> }
+        : {}),
+    });
+  }
+  return verbs;
+}
+
+function gateRepairInstruction(repairAction: unknown, fallback: string): string {
+  const instruction = (repairAction as { instruction?: unknown } | null | undefined)?.instruction;
+  return typeof instruction === 'string' && instruction.trim() ? instruction : fallback;
+}
+
+/** Whole days between an ISO date/datetime and `now`; null when unparseable. */
+export function planIdleDays(updated: string | null | undefined, now: Date): number | null {
+  if (typeof updated !== 'string' || !updated.trim()) return null;
+  const at = Date.parse(updated);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, Math.floor((now.getTime() - at) / 86_400_000));
+}
+
+/** Pure P-016 classifier. See {@link AcceptanceDrainBacklogClass}. */
+export function acceptanceDrainBacklogClass(input: {
+  planSlug: string;
+  harnessSlug: string;
+  observation: AcceptanceDrainGateObservation | undefined;
+  planUpdated: string | null | undefined;
+  now: Date;
+  stalledAfterDays?: number;
+}): AcceptanceDrainBacklogClassification {
+  const stalledAfterDays = input.stalledAfterDays ?? DEFAULT_STALLED_AFTER_DAYS;
+  const idle = planIdleDays(input.planUpdated, input.now);
+  const base = { planIdleDays: idle, stalledAfterDays };
+  const { planSlug, harnessSlug, observation } = input;
+  const shipArgs = { slug: planSlug, harness: harnessSlug, status: 'shipped', expectedCurrent: 'awaiting-acceptance' };
+  const readArgs = { slug: planSlug, harness: harnessSlug, shipReadiness: true };
+  if (observation?.satisfied) {
+    return {
+      ...base,
+      backlogClass: 'ready',
+      nextRepairAction: {
+        kind: 'ship',
+        instruction: `plan '${planSlug}' passes the acceptance gate; ship it.`,
+        verbs: [{ name: 'plans:set-plan-status', args: shipArgs }],
+      },
+    };
+  }
+  const code = observation?.code;
+  const ownership = code ? (GATE_CODE_OWNERSHIP as Record<string, string | undefined>)[code] : undefined;
+  if (!code || ownership === 'unmeasured') {
+    return {
+      ...base,
+      backlogClass: 'unmeasured',
+      nextRepairAction: {
+        kind: 're-measure',
+        instruction: `the acceptance gate could not measure plan '${planSlug}'${code ? ` (${code})` : ''}; re-read it before any repair.`,
+        verbs: [{ name: 'plans:get', args: readArgs }],
+      },
+    };
+  }
+  const gateVerbs = gateRepairVerbs(observation?.repairAction);
+  if (ownership === 'grader') {
+    return {
+      ...base,
+      backlogClass: 'recruitment',
+      nextRepairAction: {
+        kind: 'recruit-grader',
+        instruction: gateRepairInstruction(
+          observation?.repairAction,
+          `plan '${planSlug}' is waiting only on an independent grader (${code}); retry the ship, which recruits one.`,
+        ),
+        verbs: gateVerbs.length > 0 ? gateVerbs : [{ name: 'plans:set-plan-status', args: shipArgs }],
+      },
+    };
+  }
+  const gateRepair: AcceptanceDrainNextRepairAction = {
+    kind: 'gate-repair',
+    instruction: gateRepairInstruction(
+      observation?.repairAction,
+      `plan '${planSlug}' is blocked by ${code}; read the gate for its repair.`,
+    ),
+    verbs: gateVerbs.length > 0 ? gateVerbs : [{ name: 'plans:get', args: readArgs }],
+  };
+  if (idle !== null && idle >= stalledAfterDays) {
+    return {
+      ...base,
+      backlogClass: 'abandonment-candidate',
+      nextRepairAction: {
+        kind: 'abandonment-triage',
+        instruction:
+          `plan '${planSlug}' has not been written for ${idle} days (stall threshold ${stalledAfterDays}) and ` +
+          `still owes author work (${code}). Decide first whether it still matters. If the work is obsolete ` +
+          `or already replaced, set it superseded with a rationale naming what replaced it. Otherwise carry ` +
+          `the gate repair: ${gateRepair.instruction}`,
+        verbs: [
+          {
+            name: 'plans:set-plan-status',
+            args: { slug: planSlug, harness: harnessSlug, status: 'superseded', expectedCurrent: 'awaiting-acceptance' },
+          },
+          ...gateRepair.verbs,
+        ],
+      },
+    };
+  }
+  return { ...base, backlogClass: 'author-repair', nextRepairAction: gateRepair };
 }
 
 export const ACCEPTANCE_DRAIN_AGE_WARN_AFTER_MS = 2 * 60 * 60 * 1000;
@@ -329,17 +511,35 @@ export async function ensureAcceptanceDrainFiling(
     code: input.code,
     message: input.message,
   });
+  // P-016: classify only when the caller supplied the plan's write date, so a
+  // caller without it never overwrites a recorded class with an idle-blind one.
+  const classification = input.planUpdated === undefined
+    ? null
+    : acceptanceDrainBacklogClass({
+        planSlug: input.planSlug,
+        harnessSlug: input.harnessSlug,
+        observation,
+        planUpdated: input.planUpdated,
+        now: observedAt,
+      });
+  const classPatch = classification
+    ? { ...classification, backlogClassifiedAt: observedAt.toISOString() }
+    : {};
+  const classResult = classification ? { backlogClass: classification.backlogClass } : {};
   try {
     const { sql } = getOrgPg();
     // Payload fast-path, mirroring spec-triad-filing: adopt an existing open
     // filing rather than letting a keyed sibling join it. Cheap, and it also
-    // covers any row filed before this condition key existed.
+    // covers any row filed before this condition key existed. The ORDER BY is
+    // ACCEPTANCE_DRAIN_CANONICAL_ORDER, the same rule the carry writer and the
+    // sweep's duplicate retirement use.
     const open = (await sql`
       SELECT feature_id, harness_slug, payload, payload->>'gateObservation' AS gate_observation
         FROM harness_shared.work_items
        WHERE workspace_id = ${input.workspaceId}
          AND payload->>'acceptanceDrainPlan' = ${ref}
          AND status = ANY(${ACCEPTANCE_DRAIN_NON_TERMINAL_STATUSES})
+       ORDER BY created_ts, feature_id
        LIMIT 1
     `) as unknown as Array<{ feature_id: string; harness_slug: string; payload?: Record<string, unknown> | null; gate_observation?: string | null }>;
     if (open.length > 0) {
@@ -355,6 +555,7 @@ export async function ensureAcceptanceDrainFiling(
         gradingRef: observation?.gradingRef ?? null,
         rubricId: observation?.rubricId ?? null,
         gradedBy: observation?.gradedBy ?? null,
+        ...classPatch,
       };
       {
         await sql`
@@ -373,6 +574,7 @@ export async function ensureAcceptanceDrainFiling(
         outcome: 'already-open',
         id: incumbent.feature_id,
         ref,
+        ...classResult,
       };
     }
 
@@ -406,12 +608,13 @@ export async function ensureAcceptanceDrainFiling(
           gradingRef: observation?.gradingRef ?? null,
           rubricId: observation?.rubricId ?? null,
           gradedBy: observation?.gradedBy ?? null,
+          ...classPatch,
         },
       },
     );
     return res.created
-      ? { outcome: 'created', id: res.id, ref }
-      : { outcome: 'already-open', id: res.id, ref };
+      ? { outcome: 'created', id: res.id, ref, ...classResult }
+      : { outcome: 'already-open', id: res.id, ref, ...classResult };
   } catch (err) {
     return { outcome: 'error', id: null, ref, error: (err as Error).message };
   }

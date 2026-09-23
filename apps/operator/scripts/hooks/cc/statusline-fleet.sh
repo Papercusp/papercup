@@ -59,7 +59,7 @@ if [ -z "${PAPERCUSP_STATUSLINE_FIXTURE:-}" ]; then
 fi
 
 python3 - "$OPERATOR_URL" "$TOKEN_PATH" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' 2>/dev/null || exit 0
-import hashlib, json, os, sys, tempfile, textwrap, time, urllib.request, urllib.parse
+import datetime, hashlib, json, os, re, sys, tempfile, textwrap, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token_path, me, fixture = sys.argv[1:5]
@@ -76,7 +76,22 @@ HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
 OBJECTIVE_MAX = 48  # clip a long objective so the 🔭 segment can't swallow line 1
-GLANCE_CACHE_TTL_SEC = float(os.environ.get('PAPERCUSP_STATUSLINE_GLANCE_TTL_SEC') or '5')
+# Own-cache TTL. It was 5s, which is SHORTER than a coord:glance round-trip under fleet load
+# (measured 2026-09-23: p50 4.9s, avg 8.1s), so Claude's statusline bursts missed the cache
+# and the statusline alone issued ~3.5k glance RPCs/hour (P-012, review-system-rework-reduction).
+GLANCE_CACHE_TTL_SEC = float(os.environ.get('PAPERCUSP_STATUSLINE_GLANCE_TTL_SEC') or '30')
+# The PostToolUse activity hook already hydrates a glance into its per-owner bundle cursor, and
+# refreshes it ONLY when coordination state changes (generation) or it is older than 60s
+# (posttooluse-activity-report.sh GLANCE_MAX_AGE_SEC). Reading that snapshot first is what
+# gates the statusline's glance on change: while the agent is working, the statusline makes no
+# RPC of its own.
+BUNDLE_GLANCE_MAX_AGE_SEC = float(os.environ.get('PAPERCUSP_STATUSLINE_BUNDLE_MAX_AGE_SEC') or '60')
+BUNDLE_CACHE_DIR = os.environ.get('PAPERCUSP_LOCKS_CACHE_DIR') or os.path.join(
+    os.path.expanduser('~'), '.papercusp', 'locks-cache')
+# Single-flight: while one render's glance RPC is in flight, concurrent renders reuse the last
+# snapshot instead of each firing their own (a burst used to stack N identical slow calls).
+INFLIGHT_MAX_SEC = float(os.environ.get('PAPERCUSP_STATUSLINE_INFLIGHT_MAX_SEC') or '20')
+STALE_FALLBACK_MAX_SEC = 600  # never show a snapshot older than this while a refresh runs
 GLANCE_CACHE_DIR = os.environ.get(
     'PAPERCUSP_STATUSLINE_CACHE_DIR',
     os.path.join(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir(), 'papercusp-statusline-glance'),
@@ -138,25 +153,80 @@ def _cache_path():
     return os.path.join(GLANCE_CACHE_DIR, f'{key}.json')
 
 
-def _read_cached_glance():
-    """Return a fresh-enough cached coord:glance payload, or None.
+def _own_cached_glance():
+    """(payload, epoch) of this statusline's own last coord:glance snapshot, or (None, None).
 
-    Claude may invoke the statusline several times in a burst. A short cache turns those
-    identical burst reads into one MCP call while keeping the bottom line fresh enough for
-    human use. The cache is a best-effort optimization only: corrupt/missing/stale files
-    fall through to a live read.
+    Age is NOT checked here — get_glance() decides whether the snapshot is fresh enough or
+    only usable as a stale fallback. Corrupt/missing files read as absent (best-effort cache).
     """
     if GLANCE_CACHE_TTL_SEC <= 0:
-        return None
+        return None, None
     try:
         path = _cache_path()
-        if time.time() - os.path.getmtime(path) > GLANCE_CACHE_TTL_SEC:
-            return None
+        mtime = os.path.getmtime(path)
         with open(path) as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else None
+        return (data, mtime) if isinstance(data, dict) else (None, None)
     except Exception:
-        return None
+        return None, None
+
+
+def _bundle_glance():
+    """(glance, epoch) from the PostToolUse activity hook's bundle cursor, or (None, None).
+
+    Same file + owner-key normalisation as posttooluse-activity-report.sh's cursor_path() and
+    posttooluse-objective-title.sh's read_cached_glance(). The epoch is the SERVER observation
+    time (glanceObservedAt), not the file mtime — the hook rewrites the file on every call,
+    including calls that carried no fresh glance.
+    """
+    try:
+        safe = re.sub(r'[^A-Za-z0-9._-]', '_', me)[:120]
+        with open(os.path.join(BUNDLE_CACHE_DIR, f'activity-hook-bundle-{safe}.json')) as f:
+            state = json.load(f)
+        glance = state.get('glance') if isinstance(state, dict) else None
+        observed = state.get('glanceObservedAt') if isinstance(state, dict) else None
+        if not isinstance(glance, dict) or not isinstance(observed, str) or not observed:
+            return None, None
+        parsed = datetime.datetime.fromisoformat(observed.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return glance, parsed.timestamp()
+    except Exception:
+        return None, None
+
+
+def _inflight_path():
+    return _cache_path() + '.inflight'
+
+
+def _claim_refresh():
+    """True when THIS render should issue the glance RPC; False when a peer render already is.
+
+    O_EXCL create of a marker file. A marker older than INFLIGHT_MAX_SEC belongs to a render
+    that died mid-call, so it is replaced rather than honoured forever.
+    """
+    try:
+        os.makedirs(GLANCE_CACHE_DIR, mode=0o700, exist_ok=True)
+        path = _inflight_path()
+        try:
+            if time.time() - os.path.getmtime(path) <= INFLIGHT_MAX_SEC:
+                return False
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True  # cache dir unusable → behave as before (one live read)
+
+
+def _release_refresh():
+    try:
+        os.unlink(_inflight_path())
+    except Exception:
+        pass
 
 
 def _write_cached_glance(data):
@@ -174,16 +244,38 @@ def _write_cached_glance(data):
 
 
 def get_glance():
-    cached = _read_cached_glance()
-    if cached is not None:
-        return cached
-    fresh = call_tool('coord:glance', {
-        'audience': 'user',
-        'activity_limit': ACTIVITY_WINDOW,
-        'display_only': True,
-    })
-    _write_cached_glance(fresh)
-    return fresh
+    """The newest usable glance, issuing a coord:glance RPC only when nothing fresh exists.
+
+    Order: the newer of (own snapshot within GLANCE_CACHE_TTL_SEC, bundle snapshot within
+    BUNDLE_GLANCE_MAX_AGE_SEC) → otherwise ONE render refreshes while concurrent renders show
+    the newest snapshot up to STALE_FALLBACK_MAX_SEC old → otherwise a live read.
+    """
+    now = time.time()
+    own, own_at = _own_cached_glance()
+    bundle, bundle_at = _bundle_glance()
+    candidates = []
+    if own is not None and 0 <= now - own_at <= GLANCE_CACHE_TTL_SEC:
+        candidates.append((own_at, own))
+    if bundle is not None and 0 <= now - bundle_at <= BUNDLE_GLANCE_MAX_AGE_SEC:
+        candidates.append((bundle_at, bundle))
+    if candidates:
+        return max(candidates, key=lambda c: c[0])[1]
+    if not _claim_refresh():
+        stale = [(at, g) for at, g in ((own_at, own), (bundle_at, bundle))
+                 if g is not None and 0 <= now - at <= STALE_FALLBACK_MAX_SEC]
+        if stale:
+            return max(stale, key=lambda c: c[0])[1]
+        return None
+    try:
+        fresh = call_tool('coord:glance', {
+            'audience': 'user',
+            'activity_limit': ACTIVITY_WINDOW,
+            'display_only': True,
+        })
+        _write_cached_glance(fresh)
+        return fresh
+    finally:
+        _release_refresh()
 
 
 def peer_glance(rows):

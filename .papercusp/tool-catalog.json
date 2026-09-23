@@ -30965,7 +30965,7 @@
       "guidance": {
         "when": "You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.",
         "notWhen": "Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.",
-        "chaining": "testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression."
+        "chaining": "testing:run → use `byFile[path].runId` to bind a file to its exact row. The legacy `testRunIds[]` is ordered by ID, not by `files[]`; never zip them. A red here is real (the router refuses false-greens); testing:flakiness { } tells you whether a failing file is a known flake."
       }
     },
     {

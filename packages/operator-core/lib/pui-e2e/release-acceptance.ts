@@ -26,8 +26,10 @@ export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptan
 
 /** Printed once per suite by the code that started its operator. */
 export const HARNESS_TAG = 'PUI_ACCEPTANCE_HARNESS';
-const ACCEPTANCE_LINE = /^((?:PUI|AUTO_BAR)_[A-Z0-9_]+_ACCEPTANCE) (\{[\s\S]*\})\s*$/;
-const HARNESS_LINE = new RegExp(`^${HARNESS_TAG} (\\{[\\s\\S]*\\})\\s*$`);
+const ACCEPTANCE_TAG = /^(?:PUI|AUTO_BAR)_[A-Z0-9_]+_ACCEPTANCE$/;
+// A record starts at a line beginning `<TAG> {`. Vitest batches console writes
+// that land close together into ONE log, so a chunk can hold several records.
+const RECORD_START = /^([A-Z][A-Z0-9_]*) (?=\{)/gm;
 
 export interface RequiredMatrix {
   backends: string[];
@@ -76,6 +78,8 @@ export interface EvidenceRow {
   binarySha256: string | null;
   /** The journey's own correlation: its chat and the operator routes it hit. */
   correlation: { chatId: string | null; traffic: unknown[] } | null;
+  /** The test printed this tag but its JSON did not parse. */
+  unparsed?: true;
 }
 
 export interface Candidate {
@@ -170,25 +174,52 @@ export function loadAcceptanceMatrix(file = ACCEPTANCE_MATRIX): AcceptanceMatrix
   return JSON.parse(readFileSync(file, 'utf8')) as AcceptanceMatrixFile;
 }
 
-export function parseAcceptanceLine(content: string): { tag: string; payload: Record<string, unknown> } | null {
-  const match = ACCEPTANCE_LINE.exec(content.trim());
-  if (!match) return null;
-  try {
-    return { tag: match[1], payload: JSON.parse(match[2]) as Record<string, unknown> };
-  } catch {
-    return null;
-  }
+/**
+ * Every `<TAG> <json>` record in one console chunk. A record's JSON runs to the
+ * next record start (or the end), so a pretty-printed payload still parses. A
+ * record whose JSON does not parse is returned with `payload: null`.
+ */
+function taggedRecords(content: string): Array<{ tag: string; payload: Record<string, unknown> | null }> {
+  const starts = [...content.matchAll(RECORD_START)];
+  return starts.map((start, i) => {
+    const end = i + 1 < starts.length ? starts[i + 1].index : content.length;
+    const body = content.slice(start.index + start[0].length, end).trim();
+    try {
+      const payload = JSON.parse(body) as unknown;
+      return { tag: start[1], payload: payload && typeof payload === 'object' ? payload as Record<string, unknown> : null };
+    } catch {
+      return { tag: start[1], payload: null };
+    }
+  });
 }
 
-export function parseHarnessLine(content: string): HarnessStamp | null {
-  const match = HARNESS_LINE.exec(content.trim());
-  if (!match) return null;
-  try {
-    const stamp = JSON.parse(match[1]) as HarnessStamp;
-    return stamp.operator === 'production' || stamp.operator === 'fake' ? stamp : null;
-  } catch {
-    return null;
+/**
+ * The acceptance records in one console chunk. `unparsed` names tags whose JSON
+ * did not parse, so a caller can report them instead of losing them silently.
+ */
+export function parseAcceptanceLines(content: string): {
+  lines: Array<{ tag: string; payload: Record<string, unknown> }>;
+  unparsed: string[];
+} {
+  const lines: Array<{ tag: string; payload: Record<string, unknown> }> = [];
+  const unparsed: string[] = [];
+  for (const record of taggedRecords(content)) {
+    if (!ACCEPTANCE_TAG.test(record.tag)) continue;
+    if (record.payload) lines.push({ tag: record.tag, payload: record.payload });
+    else unparsed.push(record.tag);
   }
+  return { lines, unparsed };
+}
+
+/** The last harness stamp in one console chunk, if any. */
+export function parseHarnessLine(content: string): HarnessStamp | null {
+  let stamp: HarnessStamp | null = null;
+  for (const record of taggedRecords(content)) {
+    if (record.tag !== HARNESS_TAG || !record.payload) continue;
+    const candidate = record.payload as unknown as HarnessStamp;
+    if (candidate.operator === 'production' || candidate.operator === 'fake') stamp = candidate;
+  }
+  return stamp;
 }
 
 /** The curated mapping must name exactly the doc's rows, in both directions. */
@@ -214,6 +245,7 @@ function exclusionProblem(exclusion: Exclusion, required: RequiredMatrix): strin
 
 /** Why a harvested row cannot stand for this candidate, or null when it can. */
 export function disqualification(row: EvidenceRow, candidate: Candidate): string | null {
+  if (row.unparsed) return 'its acceptance line did not parse';
   if (row.state !== 'passed') return `its test ${row.state === 'pending' ? 'did not finish' : row.state}`;
   if (!row.harness) return 'its suite declared no acceptance harness';
   if (row.harness.operator !== 'production') return `its suite drove a ${row.harness.operator} operator`;

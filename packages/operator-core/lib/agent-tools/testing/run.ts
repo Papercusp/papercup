@@ -76,21 +76,24 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import {
   boundTestRunPayload,
   captureWorktreeSnapshot,
   computeWorktreeDirty,
   distillVitestRun,
-  findHarnessTestRunIds,
   mergeDistilledRuns,
   parseFailureDetailsSidecar,
   parseVitestJsonForHarnessRows,
   persistHarnessTestRuns,
+  readHarnessTestRunEvidence,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
   startRun,
   startRunDurable,
-  type SpawnRequest,
   type DistilledTestRun,
+  type HarnessTestRunEvidence,
+  type HarnessTestRunIdQuery,
+  type SpawnRequest,
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
@@ -1349,29 +1352,96 @@ export const TEST_RUN_ID_READBACK_TIMEOUT_MS = 5_000;
 
 export interface TestRunIdReadback {
   ids: number[] | null;
+  /** Exact ledger IDs keyed by the public `byFile[path]` path. */
+  idsByFile: Record<string, number> | null;
   degraded: boolean;
   reason?: BoundedTimeoutResult<number[]>['reason'];
   elapsedMs: number;
 }
 
+/** Match scoped ledger rows to public byFile keys using measured root/path, never row order. */
+export function mapHarnessTestRunIdsByFile(
+  byFile: DistilledTestRun['byFile'],
+  rows: readonly HarnessTestRunEvidence[],
+  opts: { root: string; roots?: readonly string[]; workspaceId: string; harnessSlug: string; runGroupId: string },
+): Record<string, number> {
+  const ambientRoot = resolve(opts.root);
+  const rootCount = new Set((opts.roots ?? [ambientRoot]).map((root) => resolve(root))).size;
+  const candidates = new Map<string, number[]>();
+
+  for (const row of rows) {
+    if (row.workspace_id !== opts.workspaceId || row.harness_slug !== opts.harnessSlug
+      || row.run_group_id !== opts.runGroupId) continue;
+
+    const details = parseTestRunExecutionDetails(row.execution_details);
+    let publicPath = row.file_path;
+    if (details) {
+      if (details.filePath !== row.file_path || details.workspaceId !== opts.workspaceId
+        || details.harnessSlug !== opts.harnessSlug || details.runGroupId !== opts.runGroupId) continue;
+      const rowRoot = resolve(details.root);
+      publicPath = rowRoot === ambientRoot ? details.filePath : resolve(rowRoot, details.filePath);
+    } else if (rootCount > 1) {
+      // A legacy row has no root identity. Duplicate relative paths across checkouts are ambiguous.
+      continue;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(byFile, publicPath)) continue;
+    const pathIds = candidates.get(publicPath) ?? [];
+    pathIds.push(row.id);
+    candidates.set(publicPath, pathIds);
+  }
+
+  return Object.fromEntries(
+    [...candidates.entries()]
+      .filter(([, ids]) => ids.length === 1)
+      .map(([filePath, ids]) => [filePath, ids[0]!]),
+  );
+}
+
 export async function readHarnessTestRunIdsBounded(
-  query: Parameters<typeof findHarnessTestRunIds>[0],
+  query: HarnessTestRunIdQuery,
   opts: {
-    findIds?: typeof findHarnessTestRunIds;
+    findIds?: (query: HarnessTestRunIdQuery) => Promise<number[]>;
+    findEvidence?: typeof readHarnessTestRunEvidence;
     timeoutMs?: number;
+    root?: string;
+    roots?: readonly string[];
+    byFile?: DistilledTestRun['byFile'];
   } = {},
 ): Promise<TestRunIdReadback> {
+  if (opts.findIds) {
+    const bounded = await withBoundedTimeout(
+      () => opts.findIds!(query),
+      {
+        fallback: null,
+        timeoutMs: opts.timeoutMs ?? TEST_RUN_ID_READBACK_TIMEOUT_MS,
+        label: 'testing:run harness test-run ID readback',
+      },
+    );
+    return {
+      ids: bounded.value,
+      idsByFile: null,
+      degraded: bounded.degraded,
+      ...(bounded.reason === undefined ? {} : { reason: bounded.reason }),
+      elapsedMs: bounded.elapsedMs,
+    };
+  }
+
   const bounded = await withBoundedTimeout(
-    () => (opts.findIds ?? findHarnessTestRunIds)(query),
+    () => (opts.findEvidence ?? readHarnessTestRunEvidence)(query),
     {
       fallback: null,
       timeoutMs: opts.timeoutMs ?? TEST_RUN_ID_READBACK_TIMEOUT_MS,
       label: 'testing:run harness test-run ID readback',
     },
   );
+  const rows = bounded.value;
   return {
-    ids: bounded.value,
-    degraded: bounded.degraded,
+    ids: rows === null ? null : rows.map((row) => row.id).sort((a, b) => a - b),
+    idsByFile: rows === null || opts.root === undefined || opts.byFile === undefined
+      ? null
+      : mapHarnessTestRunIdsByFile(opts.byFile, rows, { ...query, root: opts.root, roots: opts.roots }),
+    degraded: bounded.degraded || rows === null,
     ...(bounded.reason === undefined ? {} : { reason: bounded.reason }),
     elapsedMs: bounded.elapsedMs,
   };
@@ -2907,7 +2977,7 @@ export default defineTool({
     notWhen:
       'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
     chaining:
-      'testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression.',
+      'testing:run → use `byFile[path].runId` to bind a file to its exact row. The legacy `testRunIds[]` is ordered by ID, not by `files[]`; never zip them. A red here is real (the router refuses false-greens); testing:flakiness { } tells you whether a failing file is a known flake.',
   },
   capability: 'testing:run',
   requirePrincipal: false,
@@ -3141,7 +3211,9 @@ export default defineTool({
             workspaceId: ctx.workspaceId,
             harnessSlug,
             runGroupId: result.runId,
-          })
+          }, result.error === undefined
+            ? { root: result.root, roots: result.roots, byFile: result.byFile }
+            : {})
         : null;
     // Evidence needs to distinguish tests intentionally excluded by an explicit
     // name selector from tests that were actually skipped by the suite. Keep the
@@ -3154,6 +3226,15 @@ export default defineTool({
     const surfacedResult = {
       ...result,
       ...(testRunIdsReadback?.ids === null ? {} : { testRunIds: testRunIdsReadback?.ids }),
+      ...(result.error === undefined && testRunIdsReadback?.idsByFile !== null
+        && testRunIdsReadback?.idsByFile !== undefined
+        ? {
+            byFile: Object.fromEntries(Object.entries(result.byFile).map(([filePath, counts]) => {
+              const runId = testRunIdsReadback?.idsByFile?.[filePath];
+              return [filePath, runId === undefined ? counts : { ...counts, runId }];
+            })),
+          }
+        : {}),
       ...(testRunIdsReadback?.degraded
         ? {
             testRunIdsReadback: {

@@ -39,6 +39,15 @@ import { censusCoordFold, coordFoldObserverFor, type CoordFoldCensus } from './c
 
 export const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
 export const INBOX_CURSOR_SURFACE = 'inbox';
+/**
+ * Activity rows the bundle's glance leg renders its `display` block from. It MUST equal the
+ * Claude statusline's `ACTIVITY_WINDOW` (apps/operator/scripts/hooks/cc/statusline-fleet.sh):
+ * the statusline now prints this cached glance instead of issuing its own coord:glance RPC
+ * (P-012, review-system-rework-reduction-2026-09-23), and `renderStatusDisplay` derives the
+ * peer chip from these rows before `display_only` blanks them. With 0 the reused display
+ * would silently read "solo". Pinned by hook-bundle-statusline-parity.test.ts.
+ */
+export const HOOK_BUNDLE_GLANCE_ACTIVITY_LIMIT = 12;
 const HOST_EPOCH = `${process.pid.toString(36)}-${Date.now().toString(36)}`;
 
 export interface ActivityHookBundleRequest {
@@ -231,7 +240,11 @@ const defaultDeps: ActivityHookBundleDeps = {
   glance: async (ctx) =>
     parseToolPayload(
       await glanceTool.handler(
-        { audience: 'user', activity_limit: 0, display_only: true } as Parameters<typeof glanceTool.handler>[0],
+        {
+          audience: 'user',
+          activity_limit: HOOK_BUNDLE_GLANCE_ACTIVITY_LIMIT,
+          display_only: true,
+        } as Parameters<typeof glanceTool.handler>[0],
         ctx as Parameters<typeof glanceTool.handler>[1],
       ),
     ),

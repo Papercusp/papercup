@@ -1043,3 +1043,116 @@ describe("cc fleet statusline — render + fail-open", () => {
     expect(r.stdout).not.toContain("ctx");
   });
 });
+
+// P-012 (review-system-rework-reduction-2026-09-23): activity:report was ~8k calls/hour, most of
+// them bursts. Both hooks now keep a minimum interval, recorded in shared per-session marker
+// files. Async spawn against a same-process fake operator (spawnSync would block the server —
+// see the note above the pre-hook source test) that COUNTS activity:report requests.
+describe("cc activity-report hooks — minimum interval (P-012)", () => {
+  const PRE = join(__dirname, "..", "pretooluse-activity-report.sh");
+  const POST = join(__dirname, "..", "posttooluse-activity-report.sh");
+  const event = (name: string) =>
+    JSON.stringify({
+      hook_event_name: name,
+      tool_name: "Read",
+      tool_input: { file_path: "/x" },
+      tool_response: "ok",
+      tool_use_id: "t1",
+      session_id: "s1",
+      cwd: "/x",
+    });
+
+  async function withOperator(fn: (url: string, sent: () => number) => Promise<void>) {
+    let n = 0;
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.setEncoding("utf8");
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        if (raw.includes('"activity:report"')) n += 1;
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("fixture server did not bind TCP");
+    try {
+      await fn(`http://127.0.0.1:${address.port}`, () => n);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  async function fire(hook: string, url: string, locks: string, extra: Record<string, string> = {}) {
+    const child = spawn("bash", [hook], {
+      env: {
+        ...process.env,
+        HOME: home,
+        PAPERCUSP_SID: "su-p012-throttle",
+        PAPERCUSP_OPERATOR_URL: url,
+        PAPERCUSP_LOCKS_CACHE_DIR: locks,
+        PAPERCUSP_ACTIVITY_SYNC: "1",
+        PAPERCUSP_COORD_FOLD: "0",
+        ...extra,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end(event(hook === PRE ? "PreToolUse" : "PostToolUse"));
+    const code = await Promise.race([
+      new Promise<number | null>((resolve) => child.once("close", resolve)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("hook timed out")), 8_000)),
+    ]);
+    expect(code).toBe(0); // a throttled report is still a clean no-op, never a failure
+  }
+  const locksDir = () => fs.mkdtempSync(join(os.tmpdir(), "act-throttle-"));
+
+  it("pre: a second dispatch report within 30s is skipped (control: interval 0 sends it)", async () => {
+    await withOperator(async (url, sent) => {
+      const locks = locksDir();
+      await fire(PRE, url, locks);
+      expect(sent()).toBe(1);
+      await fire(PRE, url, locks);
+      expect(sent()).toBe(1);
+      await fire(PRE, url, locks, { PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC: "0" });
+      expect(sent()).toBe(2);
+    });
+  });
+
+  it("pre: a recent POST report also suppresses the dispatch report", async () => {
+    await withOperator(async (url, sent) => {
+      const locks = locksDir();
+      await fire(POST, url, locks);
+      expect(sent()).toBe(1);
+      await fire(PRE, url, locks);
+      expect(sent()).toBe(1);
+    });
+  });
+
+  it("post: a second completion report within 10s is skipped (control: interval 0 sends it)", async () => {
+    await withOperator(async (url, sent) => {
+      const locks = locksDir();
+      await fire(POST, url, locks);
+      expect(sent()).toBe(1);
+      await fire(POST, url, locks);
+      expect(sent()).toBe(1);
+      await fire(POST, url, locks, { PAPERCUSP_ACTIVITY_POST_MIN_INTERVAL_SEC: "0" });
+      expect(sent()).toBe(2);
+    });
+  });
+
+  it("post: the same call's dispatch report never suppresses its completion report", async () => {
+    await withOperator(async (url, sent) => {
+      const locks = locksDir();
+      await fire(PRE, url, locks);
+      await fire(POST, url, locks);
+      expect(sent()).toBe(2);
+    });
+  });
+});
