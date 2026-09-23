@@ -399,6 +399,20 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(calls.some((c) => c.name === 'sessions:record-prompt-origin')).toBe(false);
   });
 
+  it('Claude usage-limit reset continuation never invokes directive capture', async () => {
+    const prompt =
+      'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-claude-usage-reset' }),
+    );
+
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
   it('a checkpoint-only carry prompt with no owner words is never captured as an owner directive', async () => {
     const prompt =
       'loop:checkpoint { checks }):\n' +
