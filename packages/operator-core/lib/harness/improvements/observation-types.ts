@@ -233,6 +233,15 @@ export interface SpecTestAdequacyRerunRecipe {
    */
   evaluatorBuild?: SpecTestAdequacyEvaluatorBuild;
   /**
+   * P-043 (review-system-rework-reduction-2026-09-23): the evaluator RULE revision
+   * (`SPEC_TEST_ADEQUACY_EVALUATOR_REVISION`) that produced these verdicts. Unlike
+   * `evaluatorBuild`, which changes on every deploy, this moves only when a rule
+   * change can alter a verdict for unchanged evidence. A card graded under an older
+   * revision is re-evaluated from its stored runs; only a changed verdict needs a new
+   * audit. Absent on cards minted before the stamp (treated as revision 1).
+   */
+  evaluatorRevision?: number;
+  /**
    * The plan class the recorded verdicts were produced under.
    *
    * REQUIRED by `evaluator`, which rejects a call that omits it, and it materially
