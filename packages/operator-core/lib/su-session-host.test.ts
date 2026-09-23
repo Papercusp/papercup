@@ -413,6 +413,40 @@ describe('SuSessionHost', () => {
     expect(host.reconcileRuntimeExit({ expected: false, exitCode: 137, signal: 'SIGKILL' })).toBeNull();
   });
 
+  it('settles an in-flight command quietly when its host is disposed before the engine returns', async () => {
+    // The HTTP door returns on acceptance and never awaits `terminal`, so a host
+    // disposed mid-command (startup exit, reopen, end) must not leave that promise
+    // to reject unobserved: it surfaced as an unhandled rejection in the operator.
+    const settle: Array<(outcome: 'completed' | 'throw') => void> = [];
+    const execute = vi.fn<SuSessionCommandExecutor<'claude'>>(() => new Promise((resolve, reject) => {
+      settle.push((outcome) => (outcome === 'completed'
+        ? resolve({ status: 'completed' })
+        : reject(new Error('engine exited during startup'))));
+    }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    const completes = host.startCommand(command('owner_turn', 'disposed-completes'));
+    const throws = host.startCommand(command('owner_turn', 'disposed-throws'));
+    expect(completes.accepted).not.toBeNull();
+    expect(throws.accepted).not.toBeNull();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      host.dispose('engine exited during startup');
+      settle[0]!('completed');
+      settle[1]!('throw');
+      for (let tick = 0; tick < 3; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    // A caller that does await the terminal still learns the host is gone.
+    await expect(completes.terminal).rejects.toMatchObject({ code: 'host_disposed' });
+    await expect(throws.terminal).rejects.toMatchObject({ code: 'host_disposed' });
+  });
+
   it('releases a crashed runtime\'s executor so a replacement attaches to the same host', () => {
     const execute = vi.fn<SuSessionCommandExecutor<'claude'>>(async () => ({ status: 'completed' }));
     const saved = descriptor();

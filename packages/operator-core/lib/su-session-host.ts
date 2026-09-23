@@ -693,6 +693,14 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
         this.activeCommands = Math.max(0, this.activeCommands - 1);
       }
     });
+    // A host disposed mid-command (startup exit, reopen or end released it) can
+    // no longer emit, so this chain rejects with host_disposed. The HTTP door
+    // returns on acceptance and never awaits it, so mark the rejection handled
+    // here; a caller that does await `terminal` still observes it.
+    terminal.catch((error: unknown) => {
+      if (error instanceof SuSessionHostError && error.code === 'host_disposed') return;
+      console.warn('[su-session] command terminal failed', error);
+    });
 
     this.commands.set(command.commandId, { fingerprint, accepted, terminal });
     return { accepted, terminal, replayed: false };
