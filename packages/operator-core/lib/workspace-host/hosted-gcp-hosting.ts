@@ -4,11 +4,12 @@
  *
  * The organization's own Papercusp account (hosted-gcp-auth.ts, D-397) is the identity that
  * acts on its host, and it holds exactly two roles in the hosting project:
- * - OBSERVER, unconditional: project facts, lists (the destroy census filters them by label)
- *   and operation polling. Nothing in it creates, changes or deletes a resource.
+ * - OBSERVER, unconditional: project facts, lists (the destroy census filters them by label),
+ *   operation polling, and IAP tunnelling (below). Nothing in it creates, changes or deletes
+ *   a resource.
  * - HOST, conditioned on resource NAME: every mutating permission, but only for resources whose
  *   names carry the reserved host's prefixes ({@link gcpWorkspaceHostNamePrefixes}).
- * So GCP itself refuses an action on another tenant's machine even if Papercusp's own code
+ * So GCP itself refuses a change to another tenant's machine even if Papercusp's own code
  * asked for one, and the customer holds no credential for the project at all: every action
  * routes through the control plane, which mints the organization's token for one hour.
  * The instance runs WITHOUT a service account, so nothing on it can reach the project either
@@ -19,6 +20,19 @@
  * for the reserved prefix and denied for another on network, instance, disk and snapshot;
  * subnetwork, firewall, router and NAT creation were allowed; creating an instance with the
  * default service account was denied; project-wide instance listing was allowed.
+ *
+ * IAP TUNNELLING IS NOT NAME-SCOPED, because it cannot be. Measured 06:45-06:56Z
+ * (.papercusp/scratch/d399-iap-probe-2.log, -3.log): IAP authorizes a tunnel against the
+ * instance's NUMERIC id, so the name-conditioned grant was refused even for the reserved
+ * host's own machine (with and without an `iap_tunnel/.../instances/<prefix>` clause), while
+ * the same permission granted unconditionally reached it. The tunnel permission therefore sits
+ * in the unconditional role. What still separates tenants on that path: the tunnel reaches
+ * only port 22 (each host's firewall admits nothing else from the IAP range), a login needs
+ * that host's own SSH key, and no tenant ever holds a token. The stricter shape is measured to
+ * work (-3.log round B): a host-role clause
+ * `resource.name == 'projects/<project NUMBER>/iap_tunnel/zones/<zone>/instances/<instance id>'`
+ * admitted that instance and refused its neighbour. It needs the grant rewritten after every
+ * instance (re)create, so it is tracked separately rather than done here.
  *
  * Capacity: an allow policy holds at most 1,500 principal appearances and each organization
  * uses two, so one hosting project serves roughly 700 organizations before it must shard.
@@ -73,11 +87,11 @@ export const PAPERCUSP_HOSTED_HOST_PERMISSIONS = [
   'compute.snapshots.delete',
   'compute.snapshots.setLabels',
   'compute.snapshots.useReadOnly',
-  'iap.tunnelInstances.accessViaIAP',
 ] as const;
 
-/** Unconditional and read-only. */
+/** Unconditional: read-only, plus the IAP tunnel that no name condition can scope. */
 export const PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS = [
+  'iap.tunnelInstances.accessViaIAP',
   'resourcemanager.projects.get',
   'serviceusage.services.get',
   'compute.projects.get',

@@ -72,13 +72,17 @@ describe("Papercusp-hosted GCP reservation (D-399)", () => {
     expect(title.length).toBeLessThanOrEqual(100);
   });
 
-  it('never lets the host role attach a machine identity or touch IAM', () => {
-    for (const permission of PAPERCUSP_HOSTED_HOST_PERMISSIONS) {
+  it('never lets either role attach a machine identity or touch IAM', () => {
+    for (const permission of [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS]) {
       expect(permission).not.toMatch(/actAs|setIamPolicy|serviceAccounts|getAccessToken/);
     }
-    for (const permission of PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS) {
-      expect(permission).toMatch(/\.(get|list|useReadOnly)$/);
-    }
+  });
+
+  it('keeps the unconditional role read-only, except the IAP tunnel no name condition can scope', () => {
+    const writes = PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS.filter((permission) => !/\.(get|list|useReadOnly)$/.test(permission));
+    expect(writes).toEqual(['iap.tunnelInstances.accessViaIAP']);
+    // Measured: a name-conditioned tunnel grant is refused even for the host's own machine.
+    expect(PAPERCUSP_HOSTED_HOST_PERMISSIONS).not.toContain('iap.tunnelInstances.accessViaIAP');
   });
 
   it('adds the observer role and exactly one host reservation, keeping every other binding', () => {
