@@ -28,6 +28,11 @@ import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../../work-item-dispatch-states';
+import {
+  KEYLESS_TITLE_IDENTITY_INDEX,
+  RESOURCE_GOVERNOR_IDENTITY_INDEX,
+  WATCHDOG_IDENTITY_INDEX,
+} from './work-items-replay-identity-indexes';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -292,8 +297,6 @@ async function isRetiredLegacyTwinSource(
   return rows[0]?.retired === true;
 }
 
-const WATCHDOG_IDENTITY_INDEX = 'work_items_watchdog_identity_uq';
-
 interface WatchdogIdentity {
   watchdogKey: string;
   signalOrigin: string;
@@ -334,11 +337,64 @@ function watchdogIdentityFromPayload(payload: unknown): WatchdogIdentity | null 
  * retry can clear, and the merge path would hold the whole peer log behind it
  * (WI-2142873: tower cursor pinned 2.7 days / 32k attempts on one such op).
  */
-const KEYLESS_TITLE_IDENTITY_INDEX = 'work_items_keyless_title_identity_uq';
+/**
+ * Migration 986's resource-governor identity arbiter: one durable governor
+ * receipt per workspace + namespace + idempotencyKey. The index has no harness
+ * or status predicate, and an idempotencyKey can embed a commit sha, so two
+ * machines that admit work for the same key mint the same identity. Replaying
+ * the peer's receipt then raises a deterministic 23505 (WI-2142873: the Mac
+ * VM's cursor for the tower log pinned at position 5868039, 2026-09-23).
+ */
+interface ResourceGovernorIdentity {
+  namespace: string;
+  idempotencyKey: string;
+}
 
 /**
- * Only the named logical-identity arbiters (migrations 865 and 1157) are
- * recoverable; every other 23505 remains fatal and visible to the merge path.
+ * Read the exact identity migration 986 indexes from the incoming wire payload.
+ * The governor writes schemaVersion as the number 1, and jsonb `->>` renders
+ * both 1 and '1' as '1', so both are inside the predicate. Anything else fails
+ * closed.
+ */
+function resourceGovernorIdentityFromPayload(payload: unknown): ResourceGovernorIdentity | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const marker = (payload as Record<string, unknown>).resource_governor;
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return null;
+  const { schemaVersion, namespace, idempotencyKey } = marker as Record<string, unknown>;
+  if (schemaVersion !== 1 && schemaVersion !== '1') return null;
+  if (typeof namespace !== 'string' || typeof idempotencyKey !== 'string') return null;
+  return { namespace, idempotencyKey };
+}
+
+/**
+ * Exactly one DIFFERENT physical row holding the identity. The index is
+ * workspace-wide, so the winner may sit under another harness slug; the
+ * physical row identity is (harness_slug, feature_id).
+ */
+async function findResourceGovernorIdentityWinner(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  incomingIssueId: string,
+  identity: ResourceGovernorIdentity,
+): Promise<string | null> {
+  const rows = await sql<{ harness_slug: string; feature_id: string }[]>`
+    SELECT harness_slug, feature_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND NOT (harness_slug = ${harnessSlug} AND feature_id = ${incomingIssueId})
+       AND payload -> 'resource_governor' ->> 'schemaVersion' = '1'
+       AND payload -> 'resource_governor' ->> 'namespace' = ${identity.namespace}
+       AND payload -> 'resource_governor' ->> 'idempotencyKey' = ${identity.idempotencyKey}
+     ORDER BY harness_slug, feature_id
+     LIMIT 2`;
+  return rows.length === 1 ? `${rows[0]!.harness_slug}/${rows[0]!.feature_id}` : null;
+}
+
+/**
+ * Only the named logical-identity arbiters are recoverable (see
+ * work-items-replay-identity-indexes.ts for the per-index policy); every other
+ * 23505 remains fatal and visible to the merge path.
  */
 function isNamedIdentityConflict(error: unknown, indexName: string): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -442,8 +498,32 @@ async function resolveIdentityConflict(
       `remote PUT treated as no-op`
     );
   }
+  if (isNamedIdentityConflict(error, RESOURCE_GOVERNOR_IDENTITY_INDEX)) {
+    const identity = resourceGovernorIdentityFromPayload(payload);
+    if (!identity) return null;
+    const winnerId = await findResourceGovernorIdentityWinner(
+      sql,
+      workspaceId,
+      harnessSlug,
+      incomingIssueId,
+      identity,
+    ).catch(() => null);
+    if (!winnerId) return null;
+    return (
+      `[engineer-issues projection] coalesced duplicate resource-governor receipt issue_id=${incomingIssueId} ` +
+      `onto existing winner=${winnerId} (harness_slug=${harnessSlug}, namespace=${identity.namespace}, ` +
+      `idempotencyKey=${identity.idempotencyKey}); remote PUT treated as no-op`
+    );
+  }
   return null;
 }
+
+/** Index names resolveIdentityConflict can coalesce; the replay-policy guard compares this set. */
+export const COALESCED_REPLAY_IDENTITY_INDEXES: readonly string[] = [
+  WATCHDOG_IDENTITY_INDEX,
+  KEYLESS_TITLE_IDENTITY_INDEX,
+  RESOURCE_GOVERNOR_IDENTITY_INDEX,
+];
 
 /**
  * Re-read the database arbiter after its named 23505. Returning a winner is
@@ -814,9 +894,12 @@ async function writeToPg(
     // Migration 1157's keyless title-identity index has the same shape: a peer
     // that had not yet replicated an open filing mints a duplicate with the same
     // server-authored titleKey, and its replay here is a deterministic 23505.
+    // Migration 986's resource-governor identity is the third instance: two
+    // machines admit work under the same idempotencyKey.
     //
     // Recover only those named indexes and only after the complete incoming
-    // identity resolves to exactly one different non-terminal row. That row is
+    // identity resolves to exactly one different row (non-terminal for 865 and
+    // 1157, whose predicates exclude terminal rows). That row is
     // the already-coalesced logical item, so the duplicate physical-row PUT is
     // a no-op. Any missing/malformed component, lookup failure, or other 23505
     // rethrows the original error and remains visible to the merge retry path.
