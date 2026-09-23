@@ -21,6 +21,13 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { recordScoutTick, type RecordScoutTickInput } from '../../scout/tick-ledger';
+import {
+  goalPlanningReviewInputSchema,
+  goalPlanningReviewSchema,
+  readGoalPlanningReviewContext,
+  type GoalPlanningReview,
+  type GoalPlanningReviewContext,
+} from '../../goal-planning-review';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { softText, LIMITS } from '../limits';
 
@@ -40,13 +47,16 @@ export const ideatePassRecordArgs = z
     notes: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('a short free-form note on the pass (theme, corpus, what was skipped) — stored on the tick detail'),
+    goalReview: goalPlanningReviewInputSchema.optional().describe(
+      'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. Zero new ideas is valid. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
+    ),
   })
   .strict();
 export type IdeatePassRecordArgs = z.infer<typeof ideatePassRecordArgs>;
 
 /** The tool's payload — what was recorded and who it was attributed to. */
-export interface IdeatePassRecordResult {
-  ok: boolean;
+export interface IdeatePassRecordSuccess {
+  ok: true;
   origin: 'su-ideate';
   status: 'ran';
   ideasFiled: number;
@@ -56,15 +66,24 @@ export interface IdeatePassRecordResult {
   owner: string;
   /** The harness the pass ran for (the tick's install_slug). */
   installSlug: string;
+  goalReview?: GoalPlanningReview;
 }
+
+export type IdeatePassRecordResult = IdeatePassRecordSuccess | {
+  ok: false;
+  reason: 'goal-review-unavailable' | 'goal-review-scope-mismatch';
+  message: string;
+};
 
 /** Injectable seam — unit tests drive the flow with a fake recorder (no PG). */
 export interface IdeatePassRecordDeps {
   recordTick: (input: RecordScoutTickInput) => Promise<void>;
+  readGoalReviewContext: (workspaceId: string, ownerId: string) => Promise<GoalPlanningReviewContext | null>;
 }
 
 const defaultDeps: IdeatePassRecordDeps = {
   recordTick: recordScoutTick,
+  readGoalReviewContext: readGoalPlanningReviewContext,
 };
 
 /**
@@ -84,14 +103,35 @@ export async function runIdeatePassRecord(
   const installSlug =
     typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : 'papercusp';
   const notes = typeof args.notes === 'string' && args.notes.trim() ? args.notes.trim() : undefined;
+  const workspaceId = identity.workspaceId?.trim();
+  let goalReview: GoalPlanningReview | undefined;
+  if (args.goalReview) {
+    const requested = goalPlanningReviewInputSchema.parse(args.goalReview);
+    const context = workspaceId && workspaceId !== '*'
+      ? await deps.readGoalReviewContext(workspaceId, identity.ownerId).catch(() => null)
+      : null;
+    if (!context) {
+      return { ok: false, reason: 'goal-review-unavailable', message: 'Cannot verify this caller\'s current GOAL scope; no review was recorded.' };
+    }
+    if (requested.goalId !== context.goalId) {
+      return { ok: false, reason: 'goal-review-scope-mismatch', message: 'The review does not name this caller\'s current GOAL; no review was recorded.' };
+    }
+    goalReview = goalPlanningReviewSchema.parse({
+      ...requested,
+      schemaVersion: 1,
+      portfolioFingerprint: context.portfolioFingerprint,
+      reviewedAt: context.observedAt,
+    });
+  }
 
   await deps.recordTick({
+    ...(goalReview && workspaceId ? { workspaceId } : {}),
     status: 'ran',
     origin: 'su-ideate',
     installSlug,
     ideasRouted: args.ideasFiled,
     ideasGenerated: args.observationsMined ?? 0,
-    detail: { owner: identity.ownerId, ...(notes ? { notes } : {}) },
+    detail: { owner: identity.ownerId, ...(notes ? { notes } : {}), ...(goalReview ? { goalReview } : {}) },
   });
 
   return {
@@ -103,6 +143,7 @@ export async function runIdeatePassRecord(
     ...(notes ? { notes } : {}),
     owner: identity.ownerId,
     installSlug,
+    ...(goalReview ? { goalReview } : {}),
   };
 }
 
@@ -123,7 +164,7 @@ export default defineTool({
     "Record one su IDEATE pass on the Scout tick ledger: a status='ran', origin='su-ideate' tick attributed to you, carrying the pass's yield. Pass `ideasFiled` (required), `observationsMined?`, `notes?`. origin='su-ideate' keeps the row OFF Scout's cadence floor and health reads — a su pass is observed, never mistaken for a Scout cycle. Best-effort observability: call it once at the end of an ideate pass.",
   capability: 'harness:write',
   guidance: {
-    when: 'At the END of an su IDEATE pass — after you have filed/routed the pass\'s ideas (improvements:capture / blender:route-idea) — to leave a durable, measurable trace of the pass (its yield + your attribution).',
+    when: 'At the end of an ideation pass or a scoped GOAL gap review. Record evidence and disposition in goalReview; ideasFiled may be zero when existing plans suffice or no eligible work exists. A recorded review is not proof of delegated execution.',
     notWhen:
       'Filing an individual idea (improvements:capture) or routing one to a plan (blender:route-idea) — this records the PASS, not an idea. Recording a Scout-cycle tick — that is the scout-cycle routine, not this tool.',
     chaining:
