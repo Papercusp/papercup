@@ -11,7 +11,11 @@ const NOW = '2026-08-27T12:00:00.000Z';
 const TENANT = '11111111-1111-4111-8111-111111111111';
 const CLIENT = '22222222-2222-4222-8222-222222222222';
 
+const ORG_PRINCIPAL = 'serviceAccount:pco-org-a@papercusp-identity.iam.gserviceaccount.com';
+const ORGANIZATION = { organizationId: 'org-a', gcpTrustedPrincipal: async () => ORG_PRINCIPAL };
+
 const common = {
+  organizationId: 'org-a',
   workspaceId: 'workspace-1',
   connectionId: 'connection-1',
   label: 'Production delegation',
@@ -146,6 +150,7 @@ describe('hosted provider delegation onboarding', () => {
     const manager = new HostedProviderDelegationManager(
       store,
       { gcp: adapter, aws: adapter, azure: adapter },
+      ORGANIZATION,
       () => new Date(NOW),
     );
 
@@ -192,5 +197,78 @@ describe('hosted provider delegation onboarding', () => {
     });
     expect(verify).toHaveBeenCalledTimes(2);
     expect(revoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('organization-bound delegations (D-397)', () => {
+  function memoryStore() {
+    const records = new Map<string, HostedProviderDelegationRecord>();
+    const store: HostedProviderDelegationStore = {
+      async read(workspaceId, connectionId) {
+        return records.get(`${workspaceId}/${connectionId}`) ?? null;
+      },
+      async save(next) {
+        records.set(`${next.workspaceId}/${next.connectionId}`, next);
+      },
+    };
+    return { records, store };
+  }
+  const adapter: HostedProviderDelegationAdapter = {
+    verify: async (value) => ({ identity: `${value.provider}:ok`, evidenceRef: 'audit://ok', checkedAt: NOW }),
+    revoke: async () => ({ evidenceRef: 'audit://revoked', revokedAt: NOW }),
+  };
+  const adapters = { gcp: adapter, aws: adapter, azure: adapter };
+  const impersonation = {
+    provider: 'gcp' as const,
+    source: {
+      method: 'service-account-impersonation' as const,
+      projectId: 'customer-project-1',
+      serviceAccountEmail: 'victim-host@customer-project-1.iam.gserviceaccount.com',
+      trustedPrincipal: 'serviceAccount:attacker-chosen@evil.iam.gserviceaccount.com',
+    },
+  };
+
+  it('stamps the bound organization and its own principal over whatever the caller sent', async () => {
+    const { store } = memoryStore();
+    const manager = new HostedProviderDelegationManager(store, adapters, ORGANIZATION, () => new Date(NOW));
+    const { record, template } = await manager.onboard({
+      ...common,
+      organizationId: 'org-victim',
+      configuration: impersonation,
+    });
+    expect(record.organizationId).toBe('org-a');
+    expect(record.configuration.source).toMatchObject({ trustedPrincipal: ORG_PRINCIPAL });
+    expect(JSON.stringify(template.document)).toContain(ORG_PRINCIPAL);
+    expect(JSON.stringify(template.document)).not.toContain('attacker-chosen');
+  });
+
+  it("treats another organization's delegation as not found for every lifecycle verb", async () => {
+    const { store } = memoryStore();
+    await new HostedProviderDelegationManager(store, adapters, ORGANIZATION).onboard({ ...common, configuration: impersonation });
+    const other = new HostedProviderDelegationManager(store, adapters, {
+      organizationId: 'org-b',
+      gcpTrustedPrincipal: async () => 'serviceAccount:pco-org-b@papercusp-identity.iam.gserviceaccount.com',
+    });
+    await expect(other.verify('workspace-1', 'connection-1')).rejects.toThrow('not_found');
+    await expect(other.revoke('workspace-1', 'connection-1')).rejects.toThrow('not_found');
+    await expect(other.rotate('workspace-1', 'connection-1', {
+      label: 'x', credentialRef: common.credentialRef, configuration: impersonation,
+    })).rejects.toThrow('not_found');
+  });
+
+  it('refuses GCP workload identity, which no organization owns', async () => {
+    const { records, store } = memoryStore();
+    await expect(new HostedProviderDelegationManager(store, adapters, ORGANIZATION).onboard({
+      ...common,
+      configuration: {
+        provider: 'gcp',
+        source: {
+          method: 'workload-identity', projectId: 'customer-project-1', projectNumber: '123456789012',
+          poolId: 'pool', providerId: 'provider', serviceAccountEmail: 'host@customer-project-1.iam.gserviceaccount.com',
+          issuer: 'https://app.papercusp.com/oidc', audience: 'aud', subject: 'workspace:workspace-1',
+        },
+      },
+    })).rejects.toThrow('method_not_organization_bound');
+    expect(records.size).toBe(0);
   });
 });

@@ -158,6 +158,7 @@ export function escapeJsonStringControls(text: string): string;
 export function parseJsonInput(text: any, { emptyAsObject }?: {
     emptyAsObject?: boolean | undefined;
 }): any;
+export function formatJsonInputError(jsonKind: any, error: any): string;
 /**
  * Decide where a direct `code:run` script comes from. The file/stdin forms
  * carry JavaScript as data, so the caller's shell never has to quote nested

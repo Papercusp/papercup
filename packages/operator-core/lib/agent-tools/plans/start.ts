@@ -357,10 +357,11 @@ export default defineTool({
         // candidate — floor-qualified or best-available minimum fill, labeled
         // via:'floor'|'minimum' (D-002) — nudge-refuses ONCE (override:
         // consulted:false + consult_reason — the similar_exists/force shape);
-        // a floor-qualified-but-all-dead set injects transcript excerpts
-        // instead (retrieval, not consult); the proceed verdicts survive only
-        // where the minimum is physically unfillable (D-003:
-        // no_live_responder / no_qualified_responder — recorded, not silent).
+        // a floor-qualified-but-all-owner-paused set injects transcript
+        // excerpts instead (retrieval, not consult); the proceed verdicts
+        // survive only where the minimum is physically unfillable (D-003:
+        // all_responders_paused / no_qualified_responder — recorded, not
+        // silent). Liveness partitions nothing here any more (D-002).
         // NUDGE, never a hard block: any router/infra fault proceeds.
         let checkpointConsult: Record<string, unknown> | undefined;
         if (args.consulted !== undefined) {
@@ -450,18 +451,19 @@ export default defineTool({
                   'Then re-call plans:start with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.',
               };
             }
-            if (outcome.outcome === 'proceed' && outcome.verdict === 'no_live_responder') {
-              // Not silent (P-002): a candidate pool existed but only liveness
-              // kept everyone out — record the honest verdict on the result.
+            if (outcome.outcome === 'proceed' && outcome.verdict === 'all_responders_paused') {
+              // Not silent (P-002): a candidate pool existed but the
+              // owner-pause gate kept every one of them out — record the
+              // honest verdict on the result.
               checkpointConsult = {
-                verdict: 'no_live_responder',
-                note: 'The plan-start consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the start proceeded. Consider get_feedback later if a relevant peer comes alive.',
+                verdict: 'all_responders_paused',
+                note: "The plan-start consult found candidate peer history, but every matched expert's OWNER is paused (min:1 physically unfillable) — the start proceeded. Consider get_feedback later once an owner resumes.",
               };
             }
             if (outcome.outcome === 'proceed_with_excerpts') {
               checkpointConsult = {
-                verdict: 'routed_dead_context',
-                note: 'The router found above-floor peer history for this plan, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
+                verdict: 'routed_paused_context',
+                note: "The router found above-floor peer history for this plan, but every matched expert's OWNER is paused, so no session may be started from them — their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.",
                 candidates: outcome.candidates.map((c) => ({
                   ownerId: c.ownerId,
                   score: c.score,

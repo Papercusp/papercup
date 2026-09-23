@@ -11,6 +11,7 @@ import {
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
+  formatJsonInputError,
   importSdkModuleWithInstallAwareness,
   parseArgs,
   parseJsonInput,
@@ -830,6 +831,32 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(message).toContain('outcome=unknown');
   });
 
+  it('does not replay an events:await after a post-connect ECONNRESET', async () => {
+    const failure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'socket hang up' },
+    });
+    const params = buildCallToolParams('events:await', { event: 'fleet:resume:test' }, {
+      idempotencyKey: 'ptool-await-reset-1',
+    });
+    const client = {
+      callTool: vi.fn().mockRejectedValue(failure),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn();
+
+    await expect(callToolWithReplayRecovery(client, params, { reconnect })).rejects.toBe(failure);
+    expect(client.callTool).toHaveBeenCalledTimes(1);
+    expect(reconnect).not.toHaveBeenCalled();
+
+    const message = formatToolCallFailure('events:await', failure, {
+      idempotencyKey: 'ptool-await-reset-1',
+    });
+    expect(message).toContain('the tool call may have executed');
+    expect(message).toContain('verify its state before retrying');
+    expect(message).toContain('outcome=unknown');
+    expect(message).not.toContain('no tool execution occurred');
+  });
+
   it('does not infer pre-connect safety from ECONNREFUSED inside an HTTP error response', () => {
     const error = Object.assign(new Error(
       'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_error","forwardingResult":"outcome_unknown","detail":"ECONNREFUSED after the upstream connected"}',
@@ -1509,6 +1536,26 @@ describe('ptool JSON input', () => {
   it('keeps empty inline and file payloads strict', () => {
     expect(() => parseJsonInput('')).toThrow();
     expect(() => parseJsonInput('  \n\t')).toThrow();
+  });
+
+  it('explains how to escape literal backslashes after invalid JSON escapes', () => {
+    let parseError: unknown = null;
+    try {
+      parseJsonInput('{"command":"find \\( -name \\)"}');
+    } catch (error) {
+      parseError = error;
+    }
+
+    expect(parseError).toBeInstanceOf(SyntaxError);
+    expect(formatJsonInputError('stdin', parseError)).toContain('double each one');
+    expect(formatJsonInputError('stdin', parseError)).toContain('JSON.stringify');
+    expect(parseJsonInput('{"command":"find \\\\( -name \\\\)"}'))
+      .toEqual({ command: 'find \\( -name \\)' });
+  });
+
+  it('does not add backslash guidance to unrelated JSON errors', () => {
+    const message = formatJsonInputError('stdin', new SyntaxError('Unexpected token at position 0'));
+    expect(message).not.toContain('JSON.stringify');
   });
 
   it('accepts literal newlines inside quoted values from a heredoc payload', () => {

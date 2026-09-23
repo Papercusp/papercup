@@ -359,20 +359,21 @@ export default defineTool({
                 ],
               };
             }
-            if (outcome.outcome === 'proceed' && outcome.verdict === 'no_live_responder') {
-              // Not silent (P-002): a candidate pool existed but only liveness
-              // kept everyone out — record the honest verdict on the result.
+            if (outcome.outcome === 'proceed' && outcome.verdict === 'all_responders_paused') {
+              // Not silent (P-002): a candidate pool existed but the
+              // owner-pause gate kept every one of them out — record the
+              // honest verdict on the result.
               kickoffConsult = {
-                verdict: 'no_live_responder',
+                verdict: 'all_responders_paused',
                 note:
-                  'The goal-kickoff consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the create proceeded. Consider get_feedback later if a relevant peer comes alive.',
+                  "The goal-kickoff consult found candidate peer history, but every matched expert's OWNER is paused (min:1 physically unfillable) — the create proceeded. Consider get_feedback later once an owner resumes.",
               };
             }
             if (outcome.outcome === 'proceed_with_excerpts') {
               kickoffConsult = {
-                verdict: 'routed_dead_context',
+                verdict: 'routed_paused_context',
                 note:
-                  'The router found above-floor peer history for this goal, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before committing the portfolio.',
+                  "The router found above-floor peer history for this goal, but every matched expert's OWNER is paused, so no session may be started from them — their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before committing the portfolio.",
                 candidates: outcome.candidates.map((c) => ({
                   ownerId: c.ownerId,
                   score: c.score,
@@ -530,8 +531,8 @@ export default defineTool({
         // work will not be attributable to this goal.
         mode_subject_stamped: modeSubjectStamped,
         ...(modeSubjectAdvisory ? { mode_subject_advisory: modeSubjectAdvisory } : {}),
-        // The kickoff-consult disposition (override, no_live_responder, or
-        // routed_dead_context + excerpts) — recorded so the create result
+        // The kickoff-consult disposition (override, all_responders_paused, or
+        // routed_paused_context + excerpts) — recorded so the create result
         // itself says what the routing found (P-002: honest, never silent).
         ...(kickoffConsult ? { kickoff_consult: kickoffConsult } : {}),
       },

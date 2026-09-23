@@ -98,7 +98,7 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. The scorecard includes its stored evidenceFingerprint when present, so auditors can verify the exact evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
   guidance: {
     when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.',
     notWhen:
@@ -106,7 +106,7 @@ export default defineTool({
     chaining:
       'scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots with Promise.all (keep each criterion’s evidenceRead.next page loop sequential) → concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead }`. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
+      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',

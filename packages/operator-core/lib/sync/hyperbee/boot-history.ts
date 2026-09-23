@@ -124,6 +124,12 @@ export type BootHistoryKind =
   | 'peer_capped'
   | 'peer_revoked'
   | 'peer_unrevoked'
+  // WI-10002600: ONE admitted log was retired by its own device's signed
+  // supersession (an own-log fork recovery re-keyed it). The device stays
+  // admitted under its new key — unlike 'peer_revoked', nothing is blocklisted.
+  // Also recorded for a REFUSED supersession (a device naming another device's
+  // log), with the refusal in the message.
+  | 'peer_log_superseded'
   | 'replication_stalled'
   // P-004 (WI-1840, WI-183 class): an admitted REMOTE log has a live replicator
   // session attached (peers > 0) but the merge position has not advanced past
@@ -361,6 +367,7 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   // Peer admissibility transitions + boot failure.
   'peer_revoked',
   'peer_unrevoked',
+  'peer_log_superseded',
   'boot_fail',
   // WI-6043 (2026-07-26, revocation_kcut post-ban content LEAK): these three are the
   // re-key/K-cut path's own "loud signal" kinds (WI-280's stated purpose: "NAMES itself

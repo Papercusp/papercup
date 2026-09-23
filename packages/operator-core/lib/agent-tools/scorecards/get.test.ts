@@ -44,6 +44,7 @@ const scorecard = {
   rubricRef: 'spec-test-adequacy',
   rubricRevision: 2,
   criteriaHash: 'criteria-hash-v2',
+  evidenceFingerprint: 'evidence-fingerprint-v2',
   subject: { kind: 'scorecard' as const, ref: 'EI-subject' },
   criteria: Array.from({ length: 8 }, (_, i) => ({
     key: `criterion-${i + 1}`,
@@ -89,6 +90,7 @@ describe('scorecards:get evidence-first projection', () => {
     }>(dispatched.result!);
     expect(payload?._projection).toBeUndefined();
     expect(payload?.scorecard.criteria).toHaveLength(8);
+    expect(payload?.scorecard.evidenceFingerprint).toBe('evidence-fingerprint-v2');
     expect(payload?.scorecard.criteria[0]?.evidence).toBe(scorecard.criteria[0]?.evidence);
     expect(payload?.scorecard.criteria[7]?.evidence).toBe(scorecard.criteria[7]?.evidence);
     expect(Object.keys(payload?.scorecard ?? {}).sort()).toEqual([
@@ -96,6 +98,7 @@ describe('scorecards:get evidence-first projection', () => {
       'createdBy',
       'criteriaHash',
       'criteria',
+      'evidenceFingerprint',
       'extraKeys',
       'issueId',
       'missingKeys',

@@ -11,6 +11,7 @@ import {
   resolveMcpClientId,
   resolveMcpWorkspace,
   resolveCandidatePorts,
+  resolveMcpProxyPort,
   isRecoverableAuthorityDenial,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
@@ -149,18 +150,39 @@ describe('mcp-call argument parsing', () => {
     )).toThrow('--all-workspaces cannot be combined with --workspace');
   });
 
-  it('falls back to the canonical operator when the inherited port hint is stale', () => {
+  it('uses the canonical operator and resilient proxy when the inherited port hint is stale', () => {
     expect(resolveCandidatePorts({}, { PAPERCUSP_HONO_PORT: '3271' })).toEqual({
       configuredPort: '3271',
-      candidatePorts: ['3271', '3070'],
+      candidatePorts: ['3271', '3070', '9071'],
       pinned: false,
     });
+  });
+
+  it('uses the resilient MCP proxy after the canonical operator by default', () => {
+    expect(resolveCandidatePorts({}, {})).toEqual({
+      configuredPort: '3070',
+      candidatePorts: ['3070', '9071'],
+      pinned: false,
+    });
+    expect(resolveMcpProxyPort({})).toBe('9071');
+  });
+
+  it('honors a configured MCP proxy port without changing operator precedence', () => {
+    expect(resolveCandidatePorts({}, {
+      PAPERCUSP_HONO_PORT: '3271',
+      PAPERCUSP_MCP_PROXY_PORT: '9171',
+    })).toEqual({
+      configuredPort: '3271',
+      candidatePorts: ['3271', '3070', '9171'],
+      pinned: false,
+    });
+    expect(resolveMcpProxyPort({ PAPERCUSP_MCP_PROXY_PORT: '9171' })).toBe('9171');
   });
 
   it('keeps an explicitly pinned operator port fail-closed', () => {
     expect(resolveCandidatePorts(
       { port: '3170' },
-      { PAPERCUSP_HONO_PORT: '3271' },
+      { PAPERCUSP_HONO_PORT: '3271', PAPERCUSP_MCP_PROXY_PORT: '9171' },
     )).toEqual({
       configuredPort: '3170',
       candidatePorts: ['3170'],

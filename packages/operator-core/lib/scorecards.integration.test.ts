@@ -131,6 +131,7 @@ async function fileScorecard(
     sourceHive?: string;
     rubricRevision?: number;
     criteriaHash?: string;
+    evidenceFingerprint?: StructuredObservation['evidenceFingerprint'];
     ratings: NonNullable<StructuredObservation['ratings']>;
     instrumentSnapshots?: Record<string, unknown>;
     subject?: StructuredObservation['subject'];
@@ -149,6 +150,7 @@ async function fileScorecard(
         ...(opts.rubricRef ? { rubricRef: opts.rubricRef } : {}),
         ...(opts.rubricRevision != null ? { rubricRevision: opts.rubricRevision } : {}),
         ...(opts.criteriaHash ? { criteriaHash: opts.criteriaHash } : {}),
+        ...(opts.evidenceFingerprint ? { evidenceFingerprint: opts.evidenceFingerprint } : {}),
         ...(opts.sourceHive ? { sourceHive: opts.sourceHive } : {}),
         ratings: opts.ratings,
         ...(opts.instrumentSnapshots ? { instrumentSnapshots: opts.instrumentSnapshots } : {}),
@@ -186,6 +188,7 @@ describe('listScorecards (P-013) — real PG', () => {
       rubricRef: RUBRIC,
       rubricRevision: 17,
       criteriaHash: 'criteria-hash-roundtrip',
+      evidenceFingerprint: 'evidence-fingerprint-roundtrip',
       subject: {
         kind: 'agent-run', ref: 'historical-holder',
         windowStart: '2026-06-05T00:00:00.000Z', windowEnd: '2026-06-06T00:00:00.000Z',
@@ -441,6 +444,7 @@ describe('listScorecards (P-013) — real PG', () => {
         issueId: roundtripScorecardId,
         rubricRevision: 17,
         criteriaHash: 'criteria-hash-roundtrip',
+        evidenceFingerprint: 'evidence-fingerprint-roundtrip',
         rollup: { verdict: 'fail' },
         criteria: expect.arrayContaining([expect.objectContaining({
           key: 'end-to-end-flow', evidenceRef: 'test:placement-snapshot', evidenceKind: 'test', attribution: 'subject',

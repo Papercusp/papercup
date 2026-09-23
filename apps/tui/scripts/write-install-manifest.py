@@ -84,6 +84,14 @@ def write_manifest(args: argparse.Namespace) -> None:
     # writer's manifest round-trips unchanged.
     if args.source_root and args.source_root.strip():
         payload["sourceRoot"] = args.source_root.strip()
+    # Optional: release version and `<os>-<arch>` target. The release packager
+    # (package-release.sh) always passes both; `pui self install` refuses a unit
+    # without a version and refuses one built for another target by name.
+    for key, value in (("version", args.version), ("target", args.target)):
+        if value is not None:
+            if not value.strip():
+                fail(f"--{key} must be non-empty when given")
+            payload[key] = value.strip()
     temporary = manifest.with_name(f"{manifest.name}.tmp.{os.getpid()}")
     try:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -131,6 +139,8 @@ def parser() -> argparse.ArgumentParser:
     write.add_argument("--companion", required=True)
     write.add_argument("--relative-paths", action="store_true")
     write.add_argument("--source-root")
+    write.add_argument("--version")
+    write.add_argument("--target")
     write.set_defaults(run=write_manifest)
 
     verify = commands.add_parser("verify")

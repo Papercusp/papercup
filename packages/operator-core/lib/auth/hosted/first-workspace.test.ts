@@ -11,6 +11,7 @@ import {
   type HostedFirstWorkspaceDependencies,
   type HostedFirstWorkspaceRequest,
 } from './first-workspace';
+import { HostedWorkspaceAdmissionError } from './workspace-admission';
 
 const GCP: HostedProviderDelegationConfiguration = {
   provider: 'gcp',

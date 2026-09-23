@@ -263,8 +263,17 @@ export function parseSse(raw, requestId = 1) {
   };
 }
 
+/** Resolve the local resilient MCP proxy port using the same default as ptool. */
+export function resolveMcpProxyPort(env = process.env) {
+  const DEFAULT_MCP_PROXY_PORT = '9071';
+  const envProxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT);
+  return Number.isInteger(envProxyPort) && envProxyPort > 0 && envProxyPort <= 65535
+    ? String(envProxyPort)
+    : DEFAULT_MCP_PROXY_PORT;
+}
+
 /** Resolve the operator ports to try. An explicit CLI port is a fail-closed pin;
- * the inherited environment hint retains its recovery fallback to canonical. */
+ * the inherited environment hint retains its recovery fallback to canonical and proxy. */
 export function resolveCandidatePorts(flags = {}, env = process.env) {
   const CANONICAL_PORT = '3070';
   if (flags.port !== undefined) {
@@ -275,9 +284,12 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
     return { configuredPort: pinned, candidatePorts: [pinned], pinned: true };
   }
   const configuredPort = env.PAPERCUSP_HONO_PORT ?? CANONICAL_PORT;
+  const proxyPort = resolveMcpProxyPort(env);
   return {
     configuredPort: String(configuredPort),
-    candidatePorts: [...new Set([String(configuredPort), CANONICAL_PORT])],
+    // The local MCP proxy stays up while its operator target restarts. Keep it
+    // last so an explicit runtime hint and canonical operator retain precedence.
+    candidatePorts: [...new Set([String(configuredPort), CANONICAL_PORT, proxyPort])],
     pinned: false,
   };
 }
@@ -434,8 +446,9 @@ async function main() {
   // this script IS the documented recovery path for a dropped MCP client, so when it
   // inherits the same stale port, the primary and its fallback fail together and the
   // symptom reads as "the server is down" while the server is answering in ~4ms.
-  // So: try the configured port, then the canonical one, and say exactly what happened.
+  // So: try the configured port, then canonical, then the resilient MCP proxy.
   const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts(flags);
+  const proxyPort = resolveMcpProxyPort();
 
   const init = {
     method: 'POST',
@@ -474,26 +487,27 @@ async function main() {
         },
       });
       const candidateRaw = await candidateRes.text();
-      const hasCanonicalFallback = index < candidatePorts.length - 1;
-      if (!pinned && hasCanonicalFallback && isRecoverableAuthorityDenial(candidateRaw)) {
+      const hasFallback = index < candidatePorts.length - 1;
+      if (!pinned && hasFallback && isRecoverableAuthorityDenial(candidateRaw)) {
         authorityFallback = true;
         continue;
       }
       res = candidateRes;
       raw = candidateRaw;
-      if (!pinned && port !== String(configuredPort) && authorityFallback) {
+      if (!pinned && port !== String(configuredPort)) {
+        const endpoint = port === proxyPort
+          ? `the resilient MCP proxy on port ${port}`
+          : `the canonical operator on port ${port}`;
+        const cause = authorityFallback
+          ? `PAPERCUSP_HONO_PORT=${configuredPort} answered with a stale session-authority denial; reached `
+          : `nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; reached `;
+        const repair = port === proxyPort
+          ? `unset PAPERCUSP_HONO_PORT or set it to the actual operator port`
+          : `export PAPERCUSP_HONO_PORT=${port} (or unset it)`;
         console.error(
-          `mcp-call: WARNING — PAPERCUSP_HONO_PORT=${configuredPort} answered with a ` +
-            'stale session-authority denial; reached the canonical operator on port ' +
-            `${port} instead. Your environment's port is STALE: export PAPERCUSP_HONO_PORT=${port} ` +
-            '(or unset it), or every other tool deriving its URL from that variable will keep failing.',
-        );
-      } else if (!pinned && port !== String(configuredPort)) {
-        console.error(
-          `mcp-call: WARNING — nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; ` +
-            `reached the operator on the canonical port ${port} instead. Your environment's port is ` +
-            `STALE: export PAPERCUSP_HONO_PORT=${port} (or unset it), or every other tool deriving ` +
-            `its URL from that variable will keep failing the same way.`,
+          `mcp-call: WARNING — ${cause}${endpoint} instead. ` +
+            `Your environment's port is STALE: ${repair}, ` +
+            'or every other tool deriving its URL from that variable will keep failing.',
         );
       }
       break;
@@ -508,8 +522,9 @@ async function main() {
         (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
         `  Nothing is listening there — but a HEALTHY operator on a DIFFERENT port is the common\n` +
         `  case, so do not read this as a dead server. Find the live port:\n` +
-        `    ss -ltn | grep -E ':(3070|3170)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
-        `  Confirm the server is actually fine with:\n` +
+        `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
+        `  The resilient MCP proxy usually listens on :9071 and can bridge an operator restart.\n` +
+        `  Confirm the canonical operator is healthy with:\n` +
         `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
         `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`,
     );

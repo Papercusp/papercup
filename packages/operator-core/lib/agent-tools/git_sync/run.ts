@@ -238,8 +238,10 @@ export default defineTool({
               },
               note:
                 'This operator declares PAPERCUSP_BACKGROUND_WORKERS=0 and cannot execute a mutating git-sync fire. ' +
-                'Route the same call to the current background-worker MCP host (on the canonical dev box, ptool ' +
-                '--url=http://127.0.0.1:3271) or let the scheduled routine run. dryRun:true remains available here.',
+                'Route the same call to the current background-worker MCP host with the sanctioned CLI ' +
+                '(node scripts/mcp-call.mjs git-sync:run --json-file <args.json> --client <your-su-id> --port 3271); ' +
+                'run it in your client\'s background mode and inspect its log because the fire may exceed a foreground timeout. ' +
+                'Or let the scheduled routine run. dryRun:true remains available here.',
             }),
           },
         ],

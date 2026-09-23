@@ -103,10 +103,27 @@ describe('buildHttpSpawnContext', () => {
     // time, so the per-launch SID rides x-papercusp-client and — header-first
     // — wins. (Claude/Codex put the SID in ?client= directly.)
     const ctx = buildHttpSpawnContext({
-      headers: { 'x-papercusp-client': 'su-per-session' },
-      searchParams: new URLSearchParams('client=28dbf719-machine-id'),
+      headers: {
+        'x-papercusp-client': 'su-per-session',
+        'mcp-session-id': 'transport-session',
+      },
+      searchParams: new URLSearchParams('superuser=1&client=28dbf719-machine-id'),
     });
     expect(ctx.uiClientId).toBe('su-per-session');
+  });
+
+  it('uses Mcp-Session-Id before a static client query for superuser requests only', () => {
+    const superuserCtx = buildHttpSpawnContext({
+      headers: { 'mcp-session-id': 'su-live-session' },
+      searchParams: new URLSearchParams('superuser=1&client=28dbf719-machine-id'),
+    });
+    const ordinaryCtx = buildHttpSpawnContext({
+      headers: { 'mcp-session-id': 'transport-only' },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(superuserCtx.uiClientId).toBe('su-live-session');
+    expect(ordinaryCtx.uiClientId).toBeUndefined();
   });
 
   it('returns null/undefined fields when nothing is supplied', () => {
@@ -609,6 +626,27 @@ describe('handleHttpToolRequestStreaming', () => {
         MAKE_EXTRAS({ validateSuperuser: () => true }),
       );
       expect(seen).toEqual(['su-real-session']);
+    });
+
+    it('uses the authenticated MCP session id before a static client fallback', async () => {
+      const seen: Array<string | null | undefined> = [];
+      registerProjectedTool(makeTool({
+        requirePrincipal: false,
+        fn: async (_input, ctx) => {
+          seen.push(ctx.uiClientId);
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      }));
+      const res = await handleHttpToolRequest(
+        MAKE_REQ({
+          headers: { 'mcp-session-id': 'su-live-session' },
+          searchParams: new URLSearchParams('superuser=1&client=28dbf719-machine-id'),
+        }),
+        MAKE_EXTRAS({ validateSuperuser: () => true }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['su-live-session']);
     });
 
     it('a NON-superuser call gets no identity default (unattributable stays rejected downstream)', async () => {

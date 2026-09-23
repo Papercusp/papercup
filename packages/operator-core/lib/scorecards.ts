@@ -892,6 +892,8 @@ export interface ScorecardEvidenceRow {
   rubricRef: string;
   rubricRevision?: number;
   criteriaHash?: string;
+  /** Stable identity of the exact rated evidence, when recorded at emit time. */
+  evidenceFingerprint?: string;
   sourceHive?: string;
   subject?: ObservationSubject;
   criteria: ScorecardEvidenceCriterion[];
@@ -918,6 +920,7 @@ interface ScorecardEvidenceDb {
   rubric_ref: string | null;
   rubric_revision: unknown;
   criteria_hash: string | null;
+  evidence_fingerprint: string | null;
   source_hive: string | null;
   subject: unknown;
   ratings: unknown;
@@ -947,6 +950,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
              scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
              scorecard.payload -> 'observation' ->> 'criteriaHash' AS criteria_hash,
+             scorecard.payload -> 'observation' ->> 'evidenceFingerprint' AS evidence_fingerprint,
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
              scorecard.payload -> 'observation' -> 'ratings' AS ratings,
@@ -968,6 +972,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     rubricRef: row.rubric_ref,
     rubricRevision: row.rubric_revision,
     criteriaHash: row.criteria_hash,
+    evidenceFingerprint: row.evidence_fingerprint,
     sourceHive: row.source_hive,
     subject: row.subject,
     ratings: row.ratings,
@@ -1012,6 +1017,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+      ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
       ...(observation.rollup ? { rollup: observation.rollup } : {}),

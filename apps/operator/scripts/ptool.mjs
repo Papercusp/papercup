@@ -454,6 +454,14 @@ export function parseJsonInput(text, { emptyAsObject = false } = {}) {
   return JSON.parse(escapeJsonStringControls(text));
 }
 
+export function formatJsonInputError(jsonKind, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const hint = /bad escaped character/i.test(message)
+    ? ' Hint: JSON strings must escape literal backslashes by doubling each one; JSON.stringify can build the payload safely.'
+    : '';
+  return `ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${message}${hint}`;
+}
+
 /**
  * Decide where a direct `code:run` script comes from. The file/stdin forms
  * carry JavaScript as data, so the caller's shell never has to quote nested
@@ -3030,7 +3038,7 @@ async function main() {
     try {
       inputArgs = parseJsonInput(jsonText, { emptyAsObject: jsonKind === 'stdin' });
     } catch (e) {
-      console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
+      console.error(formatJsonInputError(jsonKind, e));
       process.exit(1);
     }
   }

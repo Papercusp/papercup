@@ -69,7 +69,11 @@ export interface HostedWorkspaceAdmissionDependencies {
     connectionId: string;
     desiredSpec: WorkspaceHostDesiredSpec;
   }): Promise<void>;
-  /** Idempotent INSERT of the binding; reports whether THIS call created the row. */
+  /**
+   * Idempotent INSERT of the binding; reports whether THIS call created the row. Throws
+   * `organization_has_live_workspace` when the organization already holds another live
+   * workspace, after removing the host row this attempt wrote.
+   */
   bindWorkspace(input: {
     controlPlaneWorkspaceId: string;
     workspaceId: string;
@@ -103,7 +107,9 @@ export class HostedWorkspaceAdmissionError extends Error {
       | 'connection_not_found'
       | 'organization_mismatch'
       | 'identifier_unroutable'
-      | 'spec_host_mismatch',
+      | 'spec_host_mismatch'
+      /** One live workspace — and so one host — per organization (D-397, migration 1200). */
+      | 'organization_has_live_workspace',
   ) {
     super(message);
     this.name = 'HostedWorkspaceAdmissionError';

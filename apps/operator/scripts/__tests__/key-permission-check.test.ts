@@ -303,6 +303,37 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).not.toContain('node_modules');
     });
 
+    it('excludes dependency-generation temp trees with suffixed node_modules names', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const vendored = join(deep, 'node_modules', 'ssh2', 'test', 'fixtures');
+      const deployTemp = join(deep, 'node_modules.deploy-tmp.1592326.generation-tmp.1592326', 'ssh2', 'test', 'fixtures');
+      const deployOld = join(deep, 'node_modules.deploy-old.1592326', 'ssh2', 'test', 'fixtures');
+      const generationTemp = join(deep, 'node_modules.generation-tmp.1592326', 'ssh2', 'test', 'fixtures');
+      const generationOld = join(deep, 'node_modules.generation-old.1592326', 'ssh2', 'test', 'fixtures');
+      const loose = join(deep, 'app', 'config');
+      for (const directory of [vendored, deployTemp, deployOld, generationTemp, generationOld, loose]) {
+        mkdirSync(directory, { recursive: true });
+      }
+      for (const path of [
+        join(vendored, 'id_rsa'),
+        join(deployTemp, 'id_ecdsa'),
+        join(deployOld, 'ssh_host_rsa_key'),
+        join(generationTemp, 'id_dsa'),
+        join(generationOld, 'ssh_host_ecdsa_key'),
+        join(loose, 'deploy.pem'),
+      ]) {
+        writeFileSync(path, KEY_BODIES.opensshPlain);
+        chmodSync(path, 0o664);
+      }
+
+      const out = runProbe(fx, { KEYPERM_DEEP: '1', KEYPERM_DEEP_ROOTS: deep });
+      expect(out).toMatch(/FILE mode=664 .*config\/deploy\.pem/);
+      expect(out).not.toContain('node_modules/');
+      expect(out).not.toContain('node_modules.deploy-tmp.');
+      expect(out).not.toContain('node_modules.deploy-old.');
+    });
+
     it('does not double-report a .ssh key already reported by tier 1', () => {
       const fx = withControl(fixture());
       placeKey(fx, 'id_ed25519', KEY_BODIES.opensshPlain, 0o664);

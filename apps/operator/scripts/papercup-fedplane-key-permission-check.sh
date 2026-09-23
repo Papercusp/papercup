@@ -140,14 +140,15 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 # Two populations, both excluded for the same reason — a hit inside them is
 # never actionable — but worth telling apart when tuning:
 #   VENDORED third-party source, whose "keys" are published test vectors
-#     (node_modules, gomodcache*, openssl-src, postgresql-src, testdata,
-#      vendor, hetzner-rescue OS snapshots, dependency-generations);
+#     (node_modules and its deployment/generation temp trees, gomodcache*,
+#      openssl-src, postgresql-src, testdata, vendor, hetzner-rescue OS
+#      snapshots, dependency-generations);
 #   TOOLCHAIN/BUILD/CACHE trees, which are regenerable and dominate the file
 #     count rather than the risk (.git, target, .cargo-target, .cache, .cargo,
 #      .rustup, .npm, .pnpm-store, __pycache__).
 # The cache half is what makes a widened KEYPERM_DEEP_ROOTS survivable; see the
 # measurement on KEYPERM_DEEP_ROOTS below.
-EXCLUDE_DIRS_DEFAULT='node_modules gomodcache* .git target dependency-generations openssl-src postgresql-src hetzner-rescue testdata vendor site-packages dist-packages .venv venv .cargo-target .cache .cargo .rustup .npm .pnpm-store __pycache__'
+EXCLUDE_DIRS_DEFAULT='node_modules node_modules.deploy-tmp.* node_modules.deploy-old.* node_modules.generation-tmp.* node_modules.generation-old.* gomodcache* .git target dependency-generations openssl-src postgresql-src hetzner-rescue testdata vendor site-packages dist-packages .venv venv .cargo-target .cache .cargo .rustup .npm .pnpm-store __pycache__'
 KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS-$EXCLUDE_DIRS_DEFAULT}"
 
 log() { echo "[fedplane-key-perm $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }

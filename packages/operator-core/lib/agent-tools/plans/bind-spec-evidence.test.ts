@@ -142,6 +142,7 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
   it.each([
     { field: 'scenarioIds', value: ['valid-id', 'valid-id'], message: 'unique' },
     { field: 'scenarioIds', value: ['Not Stable'], message: 'Invalid' },
+    { field: 'scenarioIds', value: ['su-S01-harness-scope'], message: 'Invalid' },
     { field: 'causalPairIds', value: [], message: 'too small' },
   ])('rejects malformed or duplicate $field metadata', ({ field, value, message }) => {
     const parsed = bindingSchema.safeParse({

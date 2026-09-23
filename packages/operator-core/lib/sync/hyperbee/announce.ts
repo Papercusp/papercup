@@ -100,6 +100,21 @@ export interface AnnounceBody {
   scoped_logs?: string[];
   /** Optional random nonce for additional replay resistance. Covered by sig. */
   nonce?: string;
+  /**
+   * WI-10002600: own-log keys THIS device has retired and replaced with
+   * `log_core_key` (an own-log fork recovery re-keys the log). A receiver drops
+   * each listed key that it admitted from the SAME device.
+   *
+   * Deliberately NOT part of {@link announceSigningBytes}: an older receiver
+   * builds its signing bytes from the fields it knows, so signing over this
+   * field would make every older peer reject the recovered device's NEW log as
+   * `bad_sig`. The list is authenticated by its own signature, `supersedes_sig`
+   * (see {@link logSupersessionSigningBytes}), which older peers never read.
+   */
+  supersedes_log_keys?: string[];
+  /** Base64 Ed25519 signature, by `device_pubkey`, over
+   *  {@link logSupersessionSigningBytes}. Present iff `supersedes_log_keys` is. */
+  supersedes_sig?: string;
 }
 
 /** A full announce frame as sent on the wire. */
@@ -271,4 +286,129 @@ export function verifyAnnounce(
   opts?: { nowMs?: number; windowMs?: number },
 ): boolean {
   return verifyAnnounceDetailed(frame, opts).ok;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-10002600: own-log supersession.
+//
+// After an own-log fork recovery the device writes to a brand-new log key.
+// Every drop path on a receiver used to be DEVICE-level (revoke, published
+// revoke, channel-2 reverify), and a re-keyed device keeps a valid binding, so
+// the old key stayed admitted with no replicator for the rest of the receiver's
+// process lifetime. The device now states, under its own key, which of its logs
+// the announced log replaces.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Domain tag, so a supersession signature can never be replayed as (or from)
+ *  any other signed payload made with the device key. */
+export const LOG_SUPERSESSION_DOMAIN = 'papercusp/log-supersession/v1';
+
+/** Upper bound on keys one announce may retire. A device only re-keys on a
+ *  fork recovery, so a real list is one or two entries long. */
+export const MAX_SUPERSEDED_LOG_KEYS = 16;
+
+const LOG_KEY_HEX = /^[0-9a-f]{64}$/;
+
+/** Canonical bytes the device signs to retire `supersededLogKeys` in favour of
+ *  `logCoreKey`. Binding the replacement key and device means a statement lifted
+ *  onto another frame only ever re-asserts the same fact. */
+export function logSupersessionSigningBytes(input: {
+  device_pubkey: string;
+  log_core_key: string;
+  supersedes_log_keys: readonly string[];
+}): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      domain: LOG_SUPERSESSION_DOMAIN,
+      device_pubkey: input.device_pubkey,
+      log_core_key: input.log_core_key,
+      supersedes_log_keys: [...input.supersedes_log_keys],
+    }),
+    'utf8',
+  );
+}
+
+/** Normalize a candidate supersession list: lowercase 64-hex, de-duplicated,
+ *  never the replacement key itself, capped at {@link MAX_SUPERSEDED_LOG_KEYS}. */
+export function normalizeSupersededLogKeys(keys: readonly string[], logCoreKey: string): string[] {
+  const own = logCoreKey.toLowerCase();
+  const out: string[] = [];
+  for (const raw of keys) {
+    const key = raw.toLowerCase();
+    if (!LOG_KEY_HEX.test(key) || key === own || out.includes(key)) continue;
+    out.push(key);
+    if (out.length >= MAX_SUPERSEDED_LOG_KEYS) break;
+  }
+  return out;
+}
+
+/**
+ * Sign a supersession for an announce body. Returns the two frame fields to
+ * spread into the body, or `{}` when there is nothing to supersede (so a
+ * device that never re-keyed sends exactly the frame it always did).
+ */
+export async function buildLogSupersession(
+  body: { device_pubkey: string; log_core_key: string },
+  supersededLogKeys: readonly string[],
+  sign: (bytes: Buffer) => Promise<Buffer>,
+): Promise<Pick<AnnounceBody, 'supersedes_log_keys' | 'supersedes_sig'>> {
+  const keys = normalizeSupersededLogKeys(supersededLogKeys, body.log_core_key);
+  if (keys.length === 0) return {};
+  const sig = await sign(
+    logSupersessionSigningBytes({
+      device_pubkey: body.device_pubkey,
+      log_core_key: body.log_core_key,
+      supersedes_log_keys: keys,
+    }),
+  );
+  return { supersedes_log_keys: keys, supersedes_sig: sig.toString('base64') };
+}
+
+export type LogSupersessionVerdict =
+  | { status: 'absent' }
+  | { status: 'valid'; keys: string[] }
+  | { status: 'invalid'; reason: 'malformed' | 'bad_sig' };
+
+/**
+ * Verify a frame's supersession statement against its `device_pubkey`. Never
+ * throws. `invalid` is NOT a reason to reject the announce itself: the announce
+ * signature is checked separately, and a receiver simply ignores an unproven
+ * supersession (the old log then stays admitted, exactly as before this field).
+ */
+export function verifyLogSupersession(frame: SignedAnnounce): LogSupersessionVerdict {
+  const keys = frame.supersedes_log_keys;
+  const sigB64 = frame.supersedes_sig;
+  if (keys === undefined && sigB64 === undefined) return { status: 'absent' };
+  try {
+    if (
+      !Array.isArray(keys) ||
+      keys.length === 0 ||
+      keys.length > MAX_SUPERSEDED_LOG_KEYS ||
+      keys.some((k) => typeof k !== 'string' || !LOG_KEY_HEX.test(k)) ||
+      typeof sigB64 !== 'string' ||
+      typeof frame.device_pubkey !== 'string' ||
+      typeof frame.log_core_key !== 'string'
+    ) {
+      return { status: 'invalid', reason: 'malformed' };
+    }
+    const rawPubkey = Buffer.from(frame.device_pubkey, 'base64');
+    if (rawPubkey.length !== 32) return { status: 'invalid', reason: 'malformed' };
+    const publicKey = createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX, rawPubkey]),
+      format: 'der',
+      type: 'spki',
+    });
+    const bytes = logSupersessionSigningBytes({
+      device_pubkey: frame.device_pubkey,
+      log_core_key: frame.log_core_key,
+      supersedes_log_keys: keys,
+    });
+    if (!nodeVerify(null, bytes, publicKey, Buffer.from(sigB64, 'base64'))) {
+      return { status: 'invalid', reason: 'bad_sig' };
+    }
+    const normalized = normalizeSupersededLogKeys(keys, frame.log_core_key);
+    return normalized.length > 0 ? { status: 'valid', keys: normalized } : { status: 'invalid', reason: 'malformed' };
+  } catch {
+    return { status: 'invalid', reason: 'bad_sig' };
+  }
 }

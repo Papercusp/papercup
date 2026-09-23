@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "_about": "Curated support record rendered into every release unit's COMPATIBILITY.md by apps/tui/scripts/package-release.sh (P-011 / D-016). A target may only read 'verified' with an installed-product acceptance evidence reference (R-10; the release-stage check is P-012). Runtime requirements are NOT recorded here: the packager measures them from each built binary.",
+  "backend": {
+    "requirement": "A Papercusp operator endpoint: the Papercusp desktop app on this machine, a Papercusp workspace host, or a remote operator URL. PUI is the client; the operator runs the agents.",
+    "packaging": "The operator is packaged by the Papercusp desktop and workspace-host release bundles, which carry their own install and rollback. This archive does not duplicate it.",
+    "check": "`pui doctor` reports the selected endpoint and whether its source generation matches this PUI; with no endpoint, `pui` opens setup."
+  },
+  "targets": {
+    "linux-x86_64": {
+      "platforms": ["Linux x86_64 (glibc)", "Windows via WSL2 (x86_64)"],
+      "status": "built-unverified",
+      "evidence": null
+    },
+    "macos-aarch64": {
+      "platforms": ["macOS on Apple silicon (arm64)"],
+      "status": "built-unverified",
+      "evidence": null,
+      "blocker": "Installed-product acceptance needs a macOS host; this artifact is cross-built and has never been run."
+    },
+    "macos-x86_64": {
+      "platforms": ["macOS on Intel (x86_64)"],
+      "status": "built-unverified",
+      "evidence": null,
+      "blocker": "Installed-product acceptance needs a macOS host; this artifact is cross-built and has never been run."
+    }
+  },
+  "engines": {
+    "note": "Engines run inside the operator, not in PUI. Claude, Codex and OMP support is recorded per operator release; PUI selects among what the operator reports."
+  }
+}

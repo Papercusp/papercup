@@ -21440,7 +21440,7 @@
           "POST"
         ]
       },
-      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:\"selection_empty\", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.",
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:\"selection_empty\", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.",
       "capabilities": [
         "plans:read"
       ],
@@ -28638,7 +28638,7 @@
           "POST"
         ]
       },
-      "description": "Read ONE rubric scorecard by issue id using an evidence-first projection. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.",
+      "description": "Read ONE rubric scorecard by issue id using an evidence-first projection. The scorecard includes its stored evidenceFingerprint when present, so auditors can verify the exact evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.",
       "capabilities": [
         "coord:read"
       ],
