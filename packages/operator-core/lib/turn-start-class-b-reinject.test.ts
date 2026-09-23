@@ -73,12 +73,12 @@ function briefFor(rows: OwnerDirectiveObligationRow[]) {
   );
 }
 
-/** One PENDING owner directive — undischarged until promoted or dismissed. */
+/** One OPEN owner directive — undischarged until dispositioned done or declined. */
 const UNDISCHARGED = briefFor([
   {
     id: 17,
-    state: 'pending',
-    excerpt: 'Implement owner-directive capture as HYBRID',
+    state: 'open',
+    displayText: '"Implement owner-directive capture as HYBRID"',
     recordedAt: '2026-09-21T15:27:44.000Z',
     recordedBy: 'su-c03852cb',
     capturedByHook: true,
@@ -87,6 +87,28 @@ const UNDISCHARGED = briefFor([
 
 /** The SAME queue after disposition: measured empty, so nothing is actionable. */
 const DISCHARGED = briefFor([]);
+
+/**
+ * P-006 of owner-directive-delivery-redesign-2026-09-22 narrowed this policy for
+ * OWNER DIRECTIVES: their row is delivered once per context epoch and then
+ * reminded on context growth (turn-start-orientation-directive-reminder.test.ts).
+ * The per-turn re-emit still governs every OTHER family, so the re-emit cases
+ * below run the same real row re-labelled as an owner-report obligation: the row
+ * shape is what the composer renders, the family is what P-006 keys on.
+ */
+function relabelled(brief: typeof UNDISCHARGED): typeof UNDISCHARGED {
+  const asReport = (entries: typeof brief.primary) =>
+    entries.map((entry) => ({ ...entry, family: 'owner-report' as const }));
+  return projectAgentTurnStartObligationBrief({
+    schemaVersion: brief.schemaVersion,
+    evaluatedAt: brief.evaluatedAt,
+    sourceGeneration: brief.sourceGeneration,
+    evaluations: asReport(brief.evaluations),
+    primary: asReport(brief.primary),
+    conflicts: [],
+  });
+}
+const UNDISCHARGED_REPORT = relabelled(UNDISCHARGED);
 
 const withObligations = (brief: typeof UNDISCHARGED): OrientationState => ({ ...BASE, obligations: brief });
 
@@ -111,7 +133,7 @@ describe('class-B re-inject policy', () => {
   });
 
   it('renders an undispositioned row on turn N and AGAIN on turn N+1', () => {
-    const state = withObligations(UNDISCHARGED);
+    const state = withObligations(UNDISCHARGED_REPORT);
     const first = deliverTurn(state, null);
     expect(first.block).toContain('#17');
 
@@ -134,7 +156,7 @@ describe('class-B re-inject policy', () => {
   });
 
   it('keeps re-injecting across many unchanged turns, not just the second', () => {
-    const state = withObligations(UNDISCHARGED);
+    const state = withObligations(UNDISCHARGED_REPORT);
     let cursor = deliverTurn(state, null).nextCursor;
     for (let turn = 0; turn < 5; turn += 1) {
       const next = deliverTurn(state, cursor);
@@ -148,7 +170,7 @@ describe('class-B re-inject policy', () => {
     const first = deliverTurn(undischarged, null);
     expect(first.block).toContain('#17');
 
-    // The directive is promoted/dismissed, so the queue measures empty and the
+    // The directive is dispositioned, so the queue measures empty and the
     // obligation becomes not-applicable — never actionable, never in `primary`.
     const discharged = withObligations(DISCHARGED);
     const after = composeOrientationBlock({ state: discharged, committed: first.nextCursor, epoch: EPOCH });
@@ -159,7 +181,7 @@ describe('class-B re-inject policy', () => {
     // Re-emitting the whole block every turn for one standing row would repeat
     // classes that genuinely have not moved, manufacturing the signal decay
     // D-003 withdrew the improvement-triage line for.
-    const state = withObligations(UNDISCHARGED);
+    const state = withObligations(UNDISCHARGED_REPORT);
     const first = deliverTurn(state, null);
     expect(first.block).toContain('WI-10002197');
     expect(first.block).toContain('never-drop facts:');
@@ -168,6 +190,15 @@ describe('class-B re-inject policy', () => {
     expect(second.block).toContain('#17');
     expect(second.block, 'held items had not changed').not.toContain('WI-10002197');
     expect(second.block, 'facts had not changed').not.toContain('never-drop facts:');
+  });
+
+  it('an OWNER-DIRECTIVE row is the exception: delivered once per epoch, not every turn (P-006)', () => {
+    const state = withObligations(UNDISCHARGED);
+    const first = deliverTurn(state, null);
+    expect(first.block).toContain('#17');
+    // Same unchanged turn that re-emits the owner-report row above. For an owner
+    // directive it stays quiet until the reminder cadence says otherwise.
+    expect(deliverTurn(state, first.nextCursor).block).toBe('');
   });
 
   it('CONTROL: an unchanged turn with NO undischarged row is still suppressed', () => {
