@@ -96,6 +96,7 @@ export type AdmissionRefusalCode =
   | 'repair-head-unresolvable'
   | 'source-unresolvable'
   | 'path-not-found'
+  | 'path-under-gitlink'
   | 'nothing-to-admit'
   | 'stray-paths'
   | 'admission-incomplete'
@@ -380,6 +381,40 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     return { ok: true, entry: { path, kind, mode: m[1], sha: m[3] } };
   };
 
+  // `ls-tree <superproject> -- <path-inside-submodule>` returns no entry: gitlinks are
+  // commit pointers, not trees the superproject can walk. Find the nearest enclosing gitlink
+  // before treating an absent leaf as absent from the candidate/source/repairHead.
+  const gitlinkAncestor = (
+    commit: string,
+    path: string,
+  ): { ok: true; entry: AdmissionTreeEntry | null } | { ok: false; refusal: AdmissionRefusal } => {
+    const parts = path.split('/');
+    for (let length = parts.length - 1; length > 0; length -= 1) {
+      const ancestor = parts.slice(0, length).join('/');
+      const r = run(['ls-tree', '-z', commit, '--', ancestor]);
+      if (r.status !== 0) {
+        return { ok: false, refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${ancestor}`, r) };
+      }
+      const line = r.stdout.split('\0').find((candidate) => candidate.endsWith(`\t${ancestor}`));
+      if (!line) continue;
+      const m = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t(.*)$/.exec(line);
+      if (!m) {
+        return {
+          ok: false,
+          refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${ancestor}`, {
+            ...r,
+            stderr: `unparseable entry ${JSON.stringify(line)}`,
+          }),
+        };
+      }
+      if (m[2] === 'commit') {
+        return { ok: true, entry: { path: ancestor, kind: 'gitlink', mode: m[1], sha: m[3] } };
+      }
+      if (m[2] !== 'tree') return { ok: true, entry: null };
+    }
+    return { ok: true, entry: null };
+  };
+
   const atSource = new Map<string, AdmissionTreeEntry>();
   const atHead = new Map<string, AdmissionTreeEntry>();
   for (const path of allowlist) {
@@ -387,6 +422,31 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     if (!s.ok) return s.refusal;
     const h = lsTree(repairHeadSha, path);
     if (!h.ok) return h.refusal;
+    const c = lsTree(input.candidate, path);
+    if (!c.ok) return c.refusal;
+    const candidateGitlink = gitlinkAncestor(input.candidate, path);
+    if (!candidateGitlink.ok) return candidateGitlink.refusal;
+    const sourceGitlink = gitlinkAncestor(sourceSha, path);
+    if (!sourceGitlink.ok) return sourceGitlink.refusal;
+    const headGitlink = gitlinkAncestor(repairHeadSha, path);
+    if (!headGitlink.ok) return headGitlink.refusal;
+    if (candidateGitlink.entry || sourceGitlink.entry || headGitlink.entry) {
+      const describe = (entry: AdmissionTreeEntry | null) =>
+        entry ? `${entry.path}@${entry.sha}` : '(no gitlink ancestor)';
+      const ancestorPaths = [candidateGitlink.entry, sourceGitlink.entry, headGitlink.entry]
+        .filter((entry): entry is AdmissionTreeEntry => entry !== null)
+        .map((entry) => entry.path);
+      const suggestedGitlinks = [...new Set(ancestorPaths)].sort();
+      return {
+        ok: false,
+        code: 'path-under-gitlink',
+        detail:
+          `${path} is inside submodule gitlink(s); the superproject cannot admit an inner path. ` +
+          `Gitlink commits: candidate ${describe(candidateGitlink.entry)}, ` +
+          `source ${describe(sourceGitlink.entry)}, repairHead ${describe(headGitlink.entry)}. ` +
+          `If the whole submodule pointer is intended, retry with paths: [${suggestedGitlinks.map((p) => JSON.stringify(p)).join(', ')}].`,
+      };
+    }
     atSource.set(path, s.entry);
     atHead.set(path, h.entry);
   }
