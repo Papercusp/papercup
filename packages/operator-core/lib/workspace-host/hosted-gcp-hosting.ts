@@ -80,6 +80,7 @@ export const PAPERCUSP_HOSTED_HOST_PERMISSIONS = [
   'compute.instances.delete',
   'compute.instances.setLabels',
   'compute.instances.setMetadata',
+  'compute.instances.setTags',
   'compute.instances.osLogin',
   'compute.instances.osAdminLogin',
   'compute.snapshots.create',
