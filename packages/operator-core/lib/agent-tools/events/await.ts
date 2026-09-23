@@ -93,6 +93,7 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 import type { AwaitRow } from '../../events/await/types';
 import { projectAwaitWaitOperationalBrief } from '../../operational-brief/wait-brief';
+import { acceptancePlaneAdvisoryForWait } from '../../acceptance-runtime-wait-guard';
 
 type GenerationPinDetails = {
   eventKey: string;
@@ -1429,6 +1430,14 @@ export default defineTool({
 
     await extendClaimsForThisAwait(effectiveTimeoutSec);
 
+    // acceptance-runtime-plane P-003: a release-deploy wait by an agent whose held
+    // live/deployed acceptance bars are measured elsewhere gets told so. Advisory only;
+    // never throws and never alters the registration above.
+    const acceptancePlaneAdvisory = await acceptancePlaneAdvisoryForWait({
+      ownerId: identity.ownerId,
+      event: eventKey,
+    });
+
     // P-010 (OP-BRIEF-P010-WAIT): a pending one-shot wake registration is the await outcome
     // that blocks the caller across turns; every early return above (already_fired,
     // already_claimable, generation mismatch, refusals) is synchronous and carries none.
@@ -1630,6 +1639,7 @@ export default defineTool({
             on_timeout: row.timeoutBehavior,
             wake_handle: handleNote,
             ...(operationalBrief ? { operational_brief: operationalBrief } : {}),
+            ...(acceptancePlaneAdvisory ? { acceptance_plane_advisory: acceptancePlaneAdvisory } : {}),
             advice: patternAwait
               ? `Registered a PATTERN await on "${row.eventKey}". End your turn now — you will be re-invoked when the FIRST matching key fires (or at the deadline). It is one-shot: re-register if you need to wake on the next match too. Do not poll.`
               : 'Registered. End your turn now — you will be re-invoked when the event fires (or at the deadline). Do not poll.',

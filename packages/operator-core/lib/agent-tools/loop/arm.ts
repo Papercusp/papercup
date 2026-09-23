@@ -61,6 +61,7 @@ import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
+import { acceptancePlaneAdvisoryForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
   admitMonitorArm,
@@ -1556,6 +1557,8 @@ export default defineTool({
       ? ` 💡 Your blocker names \`${suggestedRef}\` but passes no \`ref\`, so each wake can only re-read your own sentence — it cannot check whether that agent is still ALIVE. Re-arm with blockedOn: { reason, kind: 'agent', ref: '${suggestedRef}' } and every wake tells you the moment they die, instead of you discovering it hours later.`
       : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
+    // acceptance-runtime-plane P-003 — never throws, never alters the arm.
+    const acceptancePlaneAdvisory = await acceptancePlaneAdvisoryForWait({ ownerId, goal });
     // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
     const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
     // EI-18792078711601844: a RE-ARM that PRESERVED the prior loop's carry gets
@@ -1648,6 +1651,9 @@ export default defineTool({
             unboundedWarmLoopWarning,
             coldNoCarryNoteWarning,
             priorLoopOverwrite: overwriteNote,
+            // acceptance-runtime-plane P-003: a loop whose goal waits on main/:3070/a deploy,
+            // armed by an agent whose held live acceptance bars run elsewhere. Advisory only.
+            ...(acceptancePlaneAdvisory ? { acceptancePlaneAdvisory } : {}),
             note,
           }),
         },
