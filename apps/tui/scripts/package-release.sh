@@ -102,7 +102,22 @@ VERSION="$(git -C "$ROOT" show "$SHA:apps/tui/Cargo.toml" | sed -n 's/^version =
 [[ -n "$VERSION" ]] || die "could not read the pui version from $SHA:apps/tui/Cargo.toml"
 NAME="pui-$VERSION-$TARGET"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/pui-package.XXXXXX")"
+# The build tree lives at a FIXED path inside the package target dir. The
+# source path is part of RUSTFLAGS (it is remapped), and RUSTFLAGS is part of
+# every crate's cargo fingerprint, so a fresh temp path per run would rebuild
+# every dependency cold. One packager per target dir at a time (flock).
+if [[ -z "${PUI_PACKAGE_TARGET_DIR:-}" ]]; then
+  base_target="$(cd "$ROOT/apps/tui" && cargo metadata --format-version 1 --no-deps --offline 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' || true)"
+  PUI_PACKAGE_TARGET_DIR="${base_target:-$ROOT/apps/tui/target}/pui-package"
+fi
+mkdir -p "$PUI_PACKAGE_TARGET_DIR"
+export CARGO_TARGET_DIR="$(cd "$PUI_PACKAGE_TARGET_DIR" && pwd)"
+if command -v flock >/dev/null; then
+  exec 7>"$CARGO_TARGET_DIR/.package-release.lock"
+  flock 7 || die "could not lock $CARGO_TARGET_DIR"
+fi
+WORK="$CARGO_TARGET_DIR/work"
 cleanup() {
   if ((KEEP_WORK)); then
     echo "package-release: kept work tree $WORK" >&2
@@ -111,6 +126,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+rm -rf "$WORK"
 SRC="$WORK/src"
 mkdir -p "$SRC"
 git -C "$ROOT" archive --format=tar "$SHA" apps/tui apps/pui-zellij-plugin apps/pui-companion-proto \
@@ -122,21 +138,10 @@ done
 echo "→ packaging $NAME from ${SHA:0:12} (commit time $EPOCH)"
 
 # ── build ───────────────────────────────────────────────────────────────────
-if [[ -z "${PUI_PACKAGE_TARGET_DIR:-}" ]]; then
-  base_target="$(cd "$SRC/apps/tui" && cargo metadata --format-version 1 --no-deps --offline 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' || true)"
-  # A fresh export has no target dir of its own unless cargo is configured with
-  # a shared one; fall back to a cache that survives between runs.
-  if [[ -z "$base_target" || "$base_target" == "$SRC"/* ]]; then
-    base_target="$ROOT/apps/tui/target"
-  fi
-  PUI_PACKAGE_TARGET_DIR="$base_target/pui-package"
-fi
-export CARGO_TARGET_DIR="$PUI_PACKAGE_TARGET_DIR"
 export SOURCE_DATE_EPOCH="$EPOCH"
 export PUI_BUILD_SHA="$SHA" PUI_BUILD_DIRTY=0 PUI_BUILD_EPOCH="$EPOCH"
-# Later prefixes win in rustc, so the most specific ($SRC) goes last.
-REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$SRC=/pui-src"
+# Later prefixes win in rustc: most specific ($SRC, inside the target dir) last.
+REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$CARGO_TARGET_DIR=/target --remap-path-prefix=$SRC=/pui-src"
 
 ZIG_DIR="${PAPERCUSP_ZIG_DIR:-$HOME/.papercusp/zig}"
 ZIG_VERSION=""

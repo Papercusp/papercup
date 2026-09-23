@@ -59,9 +59,10 @@ const git = (...args: string[]) => execFileSync('git', ['-C', REPO_ROOT, ...args
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
 const output = (run: SpawnSyncReturns<string>) => `status=${run.status}\n--- stdout\n${run.stdout}\n--- stderr\n${run.stderr}`;
 
-function packageAt(sha: string, out: string): PackageResult {
+function packageAt(sha: string, out: string, targetDir?: string): PackageResult {
   const run = spawnSync(PACKAGER, ['--target', TARGET, '--sha', sha, '--out', out], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024,
+    env: targetDir ? { ...process.env, PUI_PACKAGE_TARGET_DIR: targetDir } : process.env,
   });
   const line = run.stdout?.split('\n').find((candidate) => candidate.startsWith('PUI_PACKAGE_RESULT '));
   if (run.status !== 0 || !line) {
@@ -200,7 +201,10 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
   });
 
   test('AUTO-BAR-R-11-P-011: archives are reproducible, name their committed generation, and refuse tampering', { timeout: 2 * BUILD_TIMEOUT_MS }, () => {
-    const again = packageAt(HEAD, path.join(WORK, 'dist-b-again'));
+    // A second build of the same commit in an EMPTY target dir: nothing is
+    // reused from the first, so byte-identical output is compile determinism,
+    // not a cache hit.
+    const again = packageAt(HEAD, path.join(WORK, 'dist-b-again'), path.join(WORK, 'cold-target'));
     expect(again.sha256).toBe(B.sha256);
     expect(sha256(B.archive)).toBe(B.sha256);
     const sums = readFileSync(path.join(path.dirname(B.archive), 'SHA256SUMS'), 'utf8');
