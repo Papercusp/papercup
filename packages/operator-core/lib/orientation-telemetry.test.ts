@@ -182,7 +182,6 @@ describe('FALSIFIABILITY CONTROL for the fabricated-disposition guard', () => {
       ownerDirectives: [
         {
           id: 1,
-          captureStatus: 'pending',
           verbatimText: 'x',
           recordedBy: 'su-c03852cb',
           capturedByHook: true,
@@ -203,7 +202,6 @@ describe('selectObligationTelemetry — row identity', () => {
         ownerDirectives: [
           {
             id: 85,
-            captureStatus: 'pending',
             verbatimText: 'cut a 0.0.22 release',
             recordedBy: 'su-c03852cb',
             capturedByHook: true,
@@ -219,7 +217,6 @@ describe('selectObligationTelemetry — row identity', () => {
         ownerDirectives: [
           {
             id: 85,
-            captureStatus: 'open',
             verbatimText: 'COMPLETELY different words',
             recordedBy: 'su-c03852cb',
             capturedByHook: true,
@@ -282,7 +279,6 @@ describe('the registry/selector covenant', () => {
       ownerDirectives: [
         {
           id: 1,
-          captureStatus: 'pending',
           verbatimText: 'x',
           recordedBy: 'su-c03852cb',
           capturedByHook: true,
