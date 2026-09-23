@@ -100,6 +100,9 @@ export function bindWorkspaceHostPlanRevision(
     steps: plan.steps.map((step) => ({
       ...step,
       idempotencyKey: `${step.idempotencyKey}${suffix}`,
+      ...(step.rollback
+        ? { rollback: { ...step.rollback, idempotencyKey: `${step.rollback.idempotencyKey}${suffix}` } }
+        : {}),
     })),
   };
 }
