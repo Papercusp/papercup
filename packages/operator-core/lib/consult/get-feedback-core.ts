@@ -51,38 +51,13 @@ export const DEFAULT_ARCHIVE_FLOOR = Math.max(DEFAULT_SIM_FLOOR, 0.8);
  * sweep and may recalibrate). */
 export const PROCEED_EXPIRY_MS = 4 * 3_600_000; // 4h
 export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
-/** Definitively dead session states used by retrieval/revival paths. */
+/** Definitively dead session states.
+ *
+ * ⚠ NOT a selection gate any more (D-002): dispatch forks or converts an
+ * expert's TRANSCRIPT, so deadness stopped being a reason to pass anyone over
+ * (R-2). What still reads this set is retrieval/reporting — the post-routing
+ * no-pickup detector, and the "who is still reachable" annotations. */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
-/** Liveness readings that cannot safely be selected for a wake. `unknown`
- * means the oracle had no presence signal, not that the owner is dead; keep
- * it separate from DEAD_RESPONDER_STATES so the revival path never tries to
- * respawn an unresolvable identity. */
-export const UNSELECTABLE_RESPONDER_STATES: ReadonlySet<string> = new Set([
-  ...DEAD_RESPONDER_STATES,
-  'unknown',
-]);
-/** WI-39852 revival cap [owner 2026-08-18]: at most ONE carry-respawn per
- * consult — revival is a cost lever, not a fleet-resurrection loop. Enforced
- * by revivalBudgetSpent (EI-20864690354207496): the budget is READ from the
- * persisted `revived` stamps on selection.selected, never from a call-local
- * flag, so every revival site (creation dead-preempt / wake-failed, and the
- * cascade refill-exhaustion leg) debits the same per-CONSULT ledger. */
-export const MAX_REVIVALS_PER_CONSULT = 1;
-
-/** The per-consult revival budget, read from the PERSISTED selection
- * provenance (EI-20864690354207496 F2). A `revived: true` stamp is written
- * exactly when a revival SPAWNED (dead-preempt / wake-failed here; the
- * refill-exhaustion leg in cascade-core), so counting stamps counts spawned
- * revivals — a FAILED spawn leaves no stamp and does not spend the budget.
- * Never enforce the cap with a local boolean: that turns the per-consult cap
- * into a per-invocation accident the moment a second revival site exists. */
-export function revivalBudgetSpent(
-  selected: ReadonlyArray<{ revived?: boolean; revivalPending?: boolean } | null | undefined> | undefined,
-): boolean {
-  return (
-    selected ?? []
-  ).filter((e) => e?.revived === true || e?.revivalPending === true).length >= MAX_REVIVALS_PER_CONSULT;
-}
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
 /** consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: EVERY consult
@@ -172,13 +147,6 @@ export type GetFeedbackError =
   | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
   | { error: 'consult_cycle'; lineage: string[]; hint: string };
-
-/** The fresh read taken after a durable wake was queued but before pickup was
- * confirmed. `null` is the oracle's explicit unknown; only `ended` and
- * `suspect` are strong enough to advance the selected cascade. */
-export interface PostQueueLiveness {
-  sessionState: SessionState | null;
-}
 
 export interface GetFeedbackDeps {
   getSql: () => Sql;
@@ -583,12 +551,11 @@ function consultBody(req: GetFeedbackRequest): string {
   return parts.join('\n\n');
 }
 
-/** Structural minimum the revival brief needs from a candidate.
- * RoutingCandidate satisfies it, and so does a candidate parsed back from the
- * persisted D-008 routing snapshot (score/signals/evidence are stored
- * verbatim) — which is what cascade-core's refill-exhaustion revival leg
- * passes (EI-20864690354207496). */
-export interface RevivalBriefCandidate {
+/** Structural minimum the why-you-were-chosen evidence line needs from a
+ * candidate. RoutingCandidate satisfies it, and so does a candidate parsed back
+ * from the persisted D-008 routing snapshot (score/signals/evidence are stored
+ * verbatim). */
+export interface BriefCandidate {
   /** Stage-2 comparison score (relevance × freshness). */
   score: number;
   /** Stage-1 qualification score — the number the relevance floor judged, and
@@ -600,7 +567,7 @@ export interface RevivalBriefCandidate {
 
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
-function evidenceLine(c: Pick<RevivalBriefCandidate, 'evidence'>): string {
+function evidenceLine(c: Pick<BriefCandidate, 'evidence'>): string {
   return c.evidence
     .map((e) =>
       e.lexicalRank !== undefined
@@ -608,35 +575,6 @@ function evidenceLine(c: Pick<RevivalBriefCandidate, 'evidence'>): string {
         : `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`,
     )
     .join('; ');
-}
-
-/** WI-39852: the revived session's FIRST TURN — the consult delivered as the
- * carry-respawn kickoff (psu injects it once the resumed CLI reaches its
- * prompt). Says plainly WHY they were revived and carries the full reply
- * protocol: a revived session missed the conversation ping, so this brief is
- * its only guaranteed delivery. Exported for the binding + tests. */
-export function revivalBrief(opts: {
-  routing?: unknown;
-  requesterId: string;
-  question: string;
-  conversationId: string;
-  candidate: RevivalBriefCandidate;
-}): string {
-  const audit = sourceAuditCascadeMetaFromRouting(opts.routing);
-  if (audit) return sourceAuditWakeCopy(audit, opts.conversationId).body;
-  const c = opts.candidate;
-  return (
-    `🧭 You were REVIVED (carry-respawn of your own session) to answer a consult — your archived transcript is the most relevant context in the workspace for this question, and no live peer matched better (WI-39852 revival leg).\n` +
-    `From ${opts.requesterId} (relevance ${c.relevance.toFixed(2)}, sim ${c.signals.similarity.toFixed(2)}).\n` +
-    `Why you: ${evidenceLine(c)} — sessions:read resolves the refs (they are YOUR turns).\n` +
-    `QUESTION: ${opts.question}\n` +
-    `Answer FROM your transcript, citing evidence.\n` +
-    consultResponderVerbMenu({
-      conversationId: opts.conversationId,
-      declineNote: 'if your context genuinely does not cover it',
-    }) +
-    `\nWhen done, you may end your turn — you were revived for this consult, not for a standing mission.`
-  );
 }
 
 /**
