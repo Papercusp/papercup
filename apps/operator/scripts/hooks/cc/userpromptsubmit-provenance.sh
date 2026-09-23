@@ -500,6 +500,15 @@ CAPTURE_FAILED_NOTICE = (
     "yourself now with orders:record."
 )
 
+# directive-ownership-clarity-2026-09-23 D-002: the id is the ONLY way an agent
+# identifies its own directive. Identical text can be open in several sessions at
+# once (the owner pastes one report into many), so a text match is never safe.
+YOUR_DIRECTIVE_NOTICE = (
+    "📌 This message is YOUR owner directive #{id}. Refer to it by that number, never by "
+    "matching its text (the same text can be open in other sessions): when finished, "
+    "orders:disposition {{ id: {id}, status: 'done'|'declined', note }}."
+)
+
 # D-004 of owner-directive-delivery-redesign-2026-09-22: a directive over the
 # 500-char cap is shown to OTHER agents only through a summary its addressee writes.
 SUMMARY_NEEDED_NOTICE = (
@@ -518,9 +527,10 @@ CAPTURE_VERBS = ('orders:capture', 'orders:capture-pending')
 def capture_owner_prompt(prompt, native_session):
     """Best-effort capture of an owner turn as an OPEN directive.
 
-    Returns None when the row landed (or when there was nothing to capture), a
-    summary instruction when the directive is over the cap, and a SHORT failure
-    notice when it did not land. Capture is fail-OPEN — it must never wedge
+    Returns None when there was nothing to capture (or the server returned no id),
+    the "this is YOUR directive #N" notice when the row landed (plus the summary
+    instruction when the directive is over the cap), and a SHORT failure notice
+    when it did not land. Capture is fail-OPEN — it must never wedge
     UserPromptSubmit — but fail-open is not the same as fail-SILENT: a capture that
     vanishes without a word is indistinguishable from one that worked, and the owner's
     words must not be quietly dropped. The caller folds the returned notice into
@@ -548,9 +558,17 @@ def capture_owner_prompt(prompt, native_session):
             break
     if res is None:
         return CAPTURE_FAILED_NOTICE
-    if isinstance(res, dict) and res.get('needsSummary') and isinstance(res.get('id'), int):
-        return SUMMARY_NEEDED_NOTICE.format(id=res['id'])
-    return None
+    if not isinstance(res, dict) or not isinstance(res.get('id'), int):
+        return None
+    # directive-ownership-clarity-2026-09-23 P-001 / D-002: ALWAYS tell the session
+    # the id of the directive this turn became. Before this, the id was only emitted
+    # when a summary was owed, so an agent closing "its" directive had to find it by
+    # matching text — and on 2026-09-23 a text match closed five OTHER sessions'
+    # rows because the owner had pasted the same report into all of them.
+    notice = YOUR_DIRECTIVE_NOTICE.format(id=res['id'])
+    if res.get('needsSummary'):
+        notice += "\n" + SUMMARY_NEEDED_NOTICE.format(id=res['id'])
+    return notice
 
 
 # Classify the UNWRAPPED text; the owner branch still records/captures `prompt`

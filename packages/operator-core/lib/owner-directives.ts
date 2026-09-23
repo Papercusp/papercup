@@ -100,6 +100,12 @@ export interface OwnerDirectiveRow {
    * calling orders:record.
    */
   capturedByHook?: boolean;
+  /** Last orders:reopen (directive-ownership-clarity-2026-09-23 P-007); null = never reopened. */
+  reopenedAtMs?: number | null;
+  reopenedBy?: string | null;
+  reopenReason?: string | null;
+  /** The disposition the reopen cleared, kept so an undone wrong close stays auditable. */
+  reopenedFrom?: string | null;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -144,6 +150,11 @@ interface RawRow {
   summary_by: string | null;
   summary_at: string | Date | null;
   captured_by_hook: boolean | null;
+  // Optional: absent until migration 1201 applies (and in fixtures that predate it).
+  reopened_at?: string | Date | null;
+  reopened_by?: string | null;
+  reopen_reason?: string | null;
+  reopened_from?: string | null;
 }
 
 function rowOf(r: RawRow): OwnerDirectiveRow {
@@ -165,6 +176,10 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
     summaryBy: r.summary_by ?? null,
     summaryAtMs: toMs(r.summary_at),
     capturedByHook: r.captured_by_hook === true,
+    reopenedAtMs: toMs(r.reopened_at),
+    reopenedBy: r.reopened_by ?? null,
+    reopenReason: r.reopen_reason ?? null,
+    reopenedFrom: r.reopened_from ?? null,
   };
 }
 
@@ -220,6 +235,40 @@ export async function recordOwnerDirective(
   `;
   if (existing[0]) return rowOf(existing[0]);
   throw new Error('owner_directive_insert_conflict');
+}
+
+/** Shortest hand-recorded quote that may match inside a captured turn (shorter = too generic). */
+export const OWNER_DIRECTIVE_TWIN_MIN_QUOTE = 12;
+/** How far back a hand-record looks for the hook's automatic capture of the same turn. */
+export const OWNER_DIRECTIVE_TWIN_WINDOW_MIN = 30;
+
+/**
+ * directive-ownership-clarity-2026-09-23 P-004: the hook-captured row that a
+ * hand orders:record would duplicate. The hook already records every owner turn
+ * verbatim under the session's id; an agent that ALSO records the same message
+ * (the whole turn, or a quote from it) produced a second row under a different
+ * owner label and turn ref — #269/#271 and #270/#272 on 2026-09-23 — and only
+ * one twin ever got closed. Same session, captured by the hook, recent, and the
+ * recorded text equal to (or quoted from) the captured text.
+ */
+export async function findCapturedTwin(
+  input: { workspaceId: string; recordedBy: string; verbatimText: string },
+  sql?: Sql,
+): Promise<OwnerDirectiveRow | null> {
+  const quote = input.verbatimText.trim();
+  if (quote.length < OWNER_DIRECTIVE_TWIN_MIN_QUOTE) return null;
+  const ws = resolveConcreteWorkspaceId(input.workspaceId);
+  const rows = await db(sql)<RawRow[]>`
+    SELECT * FROM harness_shared.owner_directives
+     WHERE workspace_id = ${ws}
+       AND recorded_by = ${input.recordedBy}
+       AND captured_by_hook = true
+       AND created_at > now() - make_interval(mins => ${OWNER_DIRECTIVE_TWIN_WINDOW_MIN})
+       AND strpos(verbatim_text, ${quote}) > 0
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+  return rows[0] ? rowOf(rows[0]) : null;
 }
 
 export async function getOwnerDirective(id: number, sql?: Sql): Promise<OwnerDirectiveRow | null> {
@@ -346,6 +395,47 @@ export async function dispositionOwnerDirective(
   const existing = await getOwnerDirective(input.id, sql);
   if (!existing) return { ok: false, error: 'not_found' };
   return { ok: false, error: 'already_dispositioned', row: existing };
+}
+
+export type ReopenOwnerDirectiveResult =
+  | { ok: true; row: OwnerDirectiveRow }
+  | { ok: false; error: 'not_found' | 'not_dispositioned'; row?: OwnerDirectiveRow };
+
+/**
+ * Undo a disposition (directive-ownership-clarity-2026-09-23 P-007). Clears the
+ * four disposition columns so the directive is OPEN again, and records who
+ * reopened it, why, and what close it undid — the audit trail a raw SQL
+ * `UPDATE … SET disposition_status = NULL` (the only undo before this) never left.
+ *
+ * Authorization is the caller's job (orders:reopen); this is the store write.
+ * A directive that is already open is reported, never silently "reopened".
+ */
+export async function reopenOwnerDirective(
+  input: { id: number; workspaceId: string; reason: string; reopenedBy: string },
+  sql?: Sql,
+): Promise<ReopenOwnerDirectiveResult> {
+  const s = db(sql);
+  const rows = await s<RawRow[]>`
+    UPDATE harness_shared.owner_directives
+       SET reopened_from = disposition_status || ' by ' || coalesce(dispositioned_by, '?')
+                           || ' at ' || to_char(dispositioned_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                           || ': ' || coalesce(disposition_note, ''),
+           reopened_at = now(),
+           reopened_by = ${input.reopenedBy},
+           reopen_reason = ${input.reason},
+           dispositioned_at = NULL,
+           disposition_status = NULL,
+           disposition_note = NULL,
+           dispositioned_by = NULL
+     WHERE id = ${input.id}
+       AND workspace_id = ${input.workspaceId}
+       AND dispositioned_at IS NOT NULL
+     RETURNING *
+  `;
+  if (rows[0]) return { ok: true, row: rowOf(rows[0]) };
+  const existing = await getOwnerDirective(input.id, sql);
+  if (!existing || existing.workspaceId !== input.workspaceId) return { ok: false, error: 'not_found' };
+  return { ok: false, error: 'not_dispositioned', row: existing };
 }
 
 export type SummarizeOwnerDirectiveResult =

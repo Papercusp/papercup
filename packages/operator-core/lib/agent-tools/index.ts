@@ -407,6 +407,7 @@ import './orders/capture';
 import './orders/clear';
 import './orders/summarize';
 import './orders/disposition';
+import './orders/reopen';
 import './orders/list';
 import './orders/get';
 import './operator/dedup_check';
