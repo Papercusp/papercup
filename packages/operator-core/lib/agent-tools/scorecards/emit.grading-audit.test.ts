@@ -502,7 +502,10 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       },
       { lineageRelated },
     );
-    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('self_audit_refused') });
+    expect(res).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("auditor 'su-grader-descendant' is in the graded card author's identity lineage ('su-grader-author')"),
+    });
     expect(lineageRelated).toHaveBeenCalledWith('su-grader-author', 'su-grader-descendant', {
       workspaceId: 'ws-test',
     });

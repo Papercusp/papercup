@@ -2892,6 +2892,24 @@ describe('template_data persistence boundary — the set-template-data door', ()
       reason: 'Require observed live behavior.',
       criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: 'live' as const },
     };
+    const noOpScreen = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: 'tree' as const },
+      approvedBy: 'outside-reviewer',
+    });
+    expect(noOpScreen!.changedBars).toEqual([]);
+    expect(noOpScreen!.approvalRequired).toBe(false);
+    expect(noOpScreen!.approverEligibility).toEqual({
+      approvedBy: 'outside-reviewer',
+      eligible: true,
+      relatedImplementer: null,
+      eligibleWithUnrelatedApplier: true,
+      approvalRequired: false,
+      reason: 'no bar meaning changed',
+    });
+    expect(noOpScreen!.implementers).toBeUndefined();
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
+
     const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
     expect(preview!.changedBars).toEqual(['R-1']);
     expect(preview!.projectionCount).toBe(2);

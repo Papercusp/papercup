@@ -10,6 +10,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const progressWiring = vi.hoisted(() => ({
+  read: vi.fn(), record: vi.fn(async () => 0),
+}));
+vi.mock('./agent-obligation-reader', async (original) => ({
+  ...(await original<typeof import('./agent-obligation-reader')>()),
+  readAgentObligationAgenda: progressWiring.read,
+}));
+vi.mock('./goal-placement-progress-store', () => ({ recordVerifiedGoalPlacementEffects: progressWiring.record }));
+vi.mock('./agent-obligation-reminders', () => ({ reconcileAgentObligationReminders: vi.fn(async () => {}) }));
+
 // The per-turn telemetry write is fire-and-forget and reaches PG; stub it so a
 // unit test never opens a pool.
 vi.mock('./orientation-telemetry', () => ({
@@ -28,9 +38,9 @@ import {
   InMemoryReadCursorStore,
   resetReadCursorStore,
 } from './agent-tools/coordination/read-cursors';
-import { buildTurnStartOrientationBlock, type OrientationDeps } from './turn-start-orientation';
+import { buildTurnStartOrientationBlock, defaultOrientationDeps, type OrientationDeps } from './turn-start-orientation';
 import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
-import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
+import { PLAN_CONTEXT_MAX, projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { GOAL_PLACEMENT_DELIVERY_KEY, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
 import type { TranscriptTailTurn } from './turn-journal';
 import { drainDetached } from './detached-imports';
@@ -83,8 +93,28 @@ const turn = (confirmedDeliveryToken?: string | null) =>
 
 let store: RecordingStore;
 beforeEach(() => {
+  progressWiring.read.mockReset();
+  progressWiring.record.mockClear();
   store = new RecordingStore();
   configureReadCursorStore(store);
+});
+
+describe('default orientation effect producer', () => {
+  it('records the canonical snapshot even when a working portfolio has no primary action', async () => {
+    const portfolio = { worklist: Array.from({ length: PLAN_CONTEXT_MAX + 2 }, (_, id) => ({ id })),
+      assembledAt: '2026-09-23T15:00:00.000Z' };
+    progressWiring.read.mockResolvedValue({ agenda: { primary: [] }, portfolio, goalId: 'goal', observedAt: portfolio.assembledAt });
+    expect(await defaultOrientationDeps().obligations('su-proof', 'ws-proof')).toBeNull();
+    await drainDetached();
+    expect(progressWiring.record).toHaveBeenCalledExactlyOnceWith({ ownerId: 'su-proof', workspaceId: 'ws-proof', goalId: 'goal',
+      portfolio: { ...portfolio, worklist: portfolio.worklist.slice(0, PLAN_CONTEXT_MAX) } });
+  });
+  it('does not create an effect clock without a canonical goal portfolio', async () => {
+    progressWiring.read.mockResolvedValue({ agenda: { primary: [] }, portfolio: null, goalId: null,
+      observedAt: '2026-09-23T15:00:00.000Z' });
+    await defaultOrientationDeps().obligations('su-proof', 'ws-proof'); await drainDetached();
+    expect(progressWiring.record).not.toHaveBeenCalled();
+  });
 });
 afterEach(async () => {
   await drainDetached();
@@ -213,7 +243,7 @@ describe('goal placement receipts through the real orientation ACK path', () => 
 
   it('keeps the action deliverable when native baseline IO times out, without fabricating a receipt', async () => {
     const f = fixture();
-    f.receiptDeps.current = vi.fn(() => new Promise(() => {}));
+    f.receiptDeps.current = vi.fn(() => new Promise<never>(() => {}));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const first = await f.turn(null);
     expect(first.block).toContain(formatAgentObligationLine(f.row, 'action'));

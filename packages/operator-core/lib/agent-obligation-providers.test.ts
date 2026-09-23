@@ -19,6 +19,7 @@ import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPo
 import { compileGoalPlanPlacement } from './goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
+import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -306,6 +307,28 @@ function knownPlacement(value: {
 }): PlanPlacementProviderInput['read'] {
   return { status: 'known', value: { alert: null, ...value } };
 }
+
+describe('persisted placement effect clock', () => {
+  it('uses the first verified effect without resetting it on a later read or retry', () => {
+    const plan = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
+    const scope = { workspaceId: base.workspaceId, ownerId: base.ownerId, goalId: 'goal-1', planRef: plan.ref };
+    const effectAt = '2026-09-05T19:55:00.000Z';
+    const state = advanceGoalPlacementProgress({ scopeKey: goalPlacementProgressScopeKey(scope), previous: null,
+      now: effectAt, effect: { kind: 'member-claim', ref: 'canonical-member-effect', at: effectAt } }).state;
+    const input: PlanPlacementProviderInput = { ...base, goalId: 'goal-1', read: { status: 'known', value: {
+      portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'fixture', progress: { [plan.ref]: state },
+    } } };
+    expect(planPlacementObligation(input).ageMs).toBe(5 * 60_000);
+    expect(planPlacementObligation({ ...input, observedAt: '2026-09-05T20:02:00.000Z' }).ageMs).toBe(7 * 60_000);
+    expect(state.lastEffect?.at).toBe(effectAt);
+    // Missing, foreign-scope and corrupt clock data is unknown, never age zero.
+    for (const stored of [null, { ...state, scopeKey: 'other-goal' }, { ...state, opportunities: -1 }]) {
+      expect(planPlacementObligation({ ...input, read: { status: 'known', value: {
+        portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'fixture', progress: { [plan.ref]: stored },
+      } } }).ageMs).toBeUndefined();
+    }
+  });
+});
 
 describe('frozen provider matrix: plan placement (6 opportunities)', () => {
   const unplaced = worklistPlan(placement('unplaced', 'launch-plan-fleet'));

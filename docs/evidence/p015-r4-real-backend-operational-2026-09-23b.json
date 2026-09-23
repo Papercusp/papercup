@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-4 real-backend identity UI journey (2026-09-23b re-observation): pointer-driven select, review, switch and rollback in the rendered Tauri webview, each reaching an applied host activation",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "observer": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "recordedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-23T14:57:51Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "VERIFY_TAURI_ISOLATED_DB=1 P015_R4_REAL_BACKEND=1 node scripts/verify-identities-r4.mjs"
+  ],
+  "commandBasis": "Copied from the launching shell, not reconstructed: TAURI_SURFACE_VERIFY_P015_R4_OUT=/tmp/p015-r4-identities-20260923-1452 VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 node scripts/verify-identities-r4.mjs'. The shell printed R4_DRILL_EXIT=0 (capability:bash task 0mue80eflmn2yyh1rg1, log .papercusp/scratch/bash-4adcd37e-7a9.log).",
+  "exitCode": 0,
+  "startedAt": "2026-09-23T14:51:02Z",
+  "finishedAt": "2026-09-23T14:57:51Z",
+  "summary": "Re-observation of the R-4 journey after the WI-10002717 fix changed control-anchor.ts (now 49a6b9c45c), which made docs/evidence/p015-r4-real-backend-operational-2026-09-23.json source-stale. The maintained driver (scripts/verify-identities-r4.mjs, real-backend branch) ran inside verify-tauri-headless.sh against an isolated Tauri webview and an isolated, freshly migrated Postgres (workspace verify-tauri-isolated-90). The launching shell recorded HEAD 2633f4772ec2 with every R-4 source path's working-tree blob equal to its HEAD blob at start and unchanged at end. The driver drove the rendered /settings/identities page with pointer clicks: it selected the owned roster agent, reviewed the backend diff, switched identity through the real identity-management backend and saw change-requested then applied after the host acknowledged, then rolled back through the same path and saw change-requested then applied again. All 36 steps passed (0 failed checks), with realBackend=true, syntheticMutationResponses=false and hostActivationProven=true. The raw driver artifact is docs/evidence/p015-r4-real-backend-2026-09-23b.json (sha256 below); this file is its operational-test-evidence envelope.",
+  "timeBasis": "startedAt and finishedAt are the launching shell's own `date -u` stamps around the whole headless run (boot, drill, teardown).",
+  "subject": {
+    "workspaceId": "verify-tauri-isolated-90",
+    "ownerId": "p015-r4-owned-2625851-1790175403589",
+    "bridgePid": 2420060,
+    "treeHead": "2633f4772ec26e99e25d4a657d322849f92fa95b",
+    "launchHead": "2633f4772ec26e99e25d4a657d322849f92fa95b",
+    "frozenSpaIndexSha256": "c9868f411851c74611e1b59cea54ed66244442e97310909181b8b0ea65fb9c61",
+    "sourceBlobs": {
+      "apps/operator/app/settings/identities/page.tsx": "36c86fc6bf319a81d243b6fe18539efe12cfe6ec",
+      "packages/operator-core/lib/identity-management.ts": "492f1fe36b9046f00b71287ff363ef11cdbf0ac3",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts": "7d06a9b96a5135cf0c6f2f8d7573a92e64a1dd2d",
+      "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts": "49a6b9c45cec48a0de4a651c313ddea73d0861c2",
+      "scripts/verify-identities-r4.mjs": "c8f586dd46f94cf5bbb7c268393391cab8ee2616"
+    },
+    "note": "A disposable owner seeded in the verifier's isolated database. The UI, the identity-management route and the host activation acknowledgement are the production code paths, not mocks."
+  },
+  "rawArtifact": {
+    "path": "docs/evidence/p015-r4-real-backend-2026-09-23b.json",
+    "sha256": "964a266683284d7da084a21f70f226809c9e5d97e0e4a12341dbdc14699ab1ef",
+    "redaction": "The driver's serializeEvidence (redactIdentityLeaks) scrubbed home-directory paths at write time; the builder refuses an artifact containing the home prefix. Copied byte-for-byte; no post-hoc edit."
+  },
+  "replication": [
+    {
+      "tool": "scripts/verify-tauri-headless.sh",
+      "command": "VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 node scripts/verify-identities-r4.mjs'",
+      "expect": "exit 0 and evidence.json with status=pass, realBackend=true, hostActivationProven=true, observed covering real-switch-applied and real-rollback-applied"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "pointer-reachable-selection",
+      "scope": "nuqs selection + pointer reachability",
+      "passed": true,
+      "evidence": "Steps owned-agent-visible, identity-library-visible, owned-agent-selected and real-select-identity are present and their checks passed. Every transition used a real pointer click on an element scrolled into the viewport (the driver refuses a target outside the viewport)."
+    },
+    {
+      "id": "review-diff-from-backend",
+      "scope": "authoritative explain/diff",
+      "passed": true,
+      "evidence": "Steps real-review-switch, real-review-response and real-review-diff-visible. real-review-response is action 'preview', HTTP 200, body ok:true with 103 diff row(s) (first field configuration.roles[0].stack[0]); the diff came from the identity-management backend, not client-side state."
+    },
+    {
+      "id": "switch-honest-states",
+      "scope": "desired/prepared/applied honesty",
+      "passed": true,
+      "evidence": "Steps real-switch-change-requested, then real-switch-host-ack, then real-switch-applied. The applied step records controlGeneration 1 = controlDeliveredGeneration 1, activation status 'applied', failure null, applied specificationRevision 29c66fa4079b (equal to the switch response's revision)."
+    },
+    {
+      "id": "rollback-applied",
+      "scope": "rollback",
+      "passed": true,
+      "evidence": "Steps real-rollback-change-requested, real-rollback-host-ack and real-rollback-applied. The applied step records controlGeneration 2 = controlDeliveredGeneration 2, activation status 'applied', failure null, applied specificationRevision 34d820c36264 (a different revision from the switch)."
+    },
+    {
+      "id": "no-synthetic-transport",
+      "scope": "live-path, not mocked transport",
+      "passed": true,
+      "evidence": "realBackend=true, syntheticMutationResponses=false. The fetch observer was installed (eval:observe-real-fetch returned p015-r4-real-fetch-observer) and captured both mutations: real-review-response is action 'preview' HTTP 200; real-switch-response is action 'switch' HTTP 200, stack [\"domain:research-steward\"], delivery relaunch-with-carry."
+    }
+  ],
+  "notProven": [
+    "Failure-banner rendering on the REAL backend. The failure/retry path is proven by the controlled-response run (docs/evidence/p015-r4-controlled-ui-2026-09-20.json), not this one.",
+    "Provider-binding selection (a missing provider silently selected). Not exercised by this journey.",
+    "Full P-015 or plan acceptance. This is scoped R-4 evidence."
+  ],
+  "supersedes": "docs/evidence/p015-r4-real-backend-operational-2026-09-23.json",
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "scripts/verify-identities-r4.mjs"
+  ],
+  "testRunIds": []
+}

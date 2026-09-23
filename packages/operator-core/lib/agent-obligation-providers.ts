@@ -20,6 +20,7 @@ import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goa
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 
 export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v4';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
@@ -172,6 +173,8 @@ export interface PlanPlacementProviderInput extends ProviderBase {
     evidenceRef: string;
     /** Time since the last verified placement effect, when the caller can measure it. */
     ageMs?: number;
+    /** Durable first-verification clocks, keyed by exact canonical plan ref. */
+    progress?: Record<string, import('./goal-placement-progress').GoalPlacementProgressState | null>;
   }>;
 }
 
@@ -357,7 +360,8 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       measurementFailure: input.read.failure,
     });
   }
-  const { portfolio, launch, alert, ageMs } = input.read.value;
+  const { portfolio, launch, alert } = input.read.value;
+  let { ageMs } = input.read.value;
   if (!portfolio) {
     return defineAgentObligation({
       ...common,
@@ -420,6 +424,15 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   const selected =
     actionablePlans.find((plan) => plan.placement.state === 'unplaced' || plan.placement.state === 'admitting') ??
     actionablePlans[0];
+  const progressPlan = selected ?? applicablePlans[0];
+  if (progressPlan && input.read.value.progress) {
+    const state = input.read.value.progress[progressPlan.ref];
+    const view = advanceGoalPlacementProgress({
+      scopeKey: goalPlacementProgressScopeKey({ workspaceId: input.workspaceId, ownerId: input.ownerId,
+        goalId: input.goalId, planRef: progressPlan.ref }), previous: state ?? null, now: input.observedAt,
+    });
+    ageMs = view.status === 'known' ? view.ageMs ?? undefined : undefined;
+  }
   const portfolioReadFailure = portfolio.degradedReasons.find((reason) => /portfolio read failed/i.test(reason));
   if (portfolioReadFailure) {
     return defineAgentObligation({

@@ -27,6 +27,7 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
+import { listFleetAssignments } from './fleet/assignments';
 import type { FleetAssignmentRow } from './fleet/assignments';
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -109,6 +110,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
   h2.rows = [];
+  vi.mocked(listFleetAssignments).mockClear();
   h3.states.clear();
 });
 
@@ -306,11 +308,17 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
       },
     ];
 
-    const cov = await getAllPlanItemCoverage();
+    const cov = await getAllPlanItemCoverage({ planItemRefs: [planItemRef('p1', 'P-008')] });
     const c = cov.get(planItemRef('p1', 'P-008'))!;
     expect(c.level).toBe('full');
     expect(c.workers).toEqual(['su-worker']);
     expect(c.links[0]).toMatchObject({ activity: 'progressing', holder: 'su-worker' });
+    expect(listFleetAssignments).toHaveBeenCalledWith({
+      workspaceId: null,
+      activeOnly: true,
+      planItemRefs: [planItemRef('p1', 'P-008')],
+      workItemIds: ['WI-live'],
+    });
   });
 
   it('keeps a live holder with stale progress out of held-not-live (EI-20125544311539993)', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { goalPlanningPortfolioFingerprint } from './goal-planning-review';
+import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 
 import {
   PLAN_CONTEXT_MAX,
@@ -78,6 +79,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     goalSubject: vi.fn(async () => 'goal-1'),
     planSlugs: vi.fn(async () => ['plan-a']),
     goalPortfolio: vi.fn(async () => portfolio()),
+    goalPlacementProgress: vi.fn(async () => ({})),
     goalPlanning: vi.fn(async () => ({ review: {
       schemaVersion: 1 as const, goalId: 'goal-1', disposition: 'existing-plans-sufficient' as const,
       rationale: 'No uncovered outcome in this generic reader fixture.', evidenceRefs: ['goal:goal-1'], planRefs: [],
@@ -491,6 +493,20 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
       deps: deps({ goalPortfolio: vi.fn(async () => brief), ...overrides }),
     });
   }
+
+  it('threads the scoped durable clock through the real agenda reader without replacing it with read time', async () => {
+    const plan = worklistPlan('clocked-plan', closure('open'));
+    const at = '2026-09-05T19:55:00.000Z';
+    const previous = advanceGoalPlacementProgress({
+      scopeKey: goalPlacementProgressScopeKey({ workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1', planRef: plan.ref }),
+      previous: null, now: at, effect: { kind: 'member-claim', ref: 'member-effect', at },
+    }).state;
+    const goalPlacementProgress = vi.fn(async () => ({ [plan.ref]: previous }));
+    const result = await read(withWorklist([plan]), { goalPlacementProgress });
+    expect(goalPlacementProgress).toHaveBeenCalledWith('ws', 'su-holder', 'goal-1', [plan.ref]);
+    expect(result.agenda.evaluations.find((row) => row.family === 'plan-placement')?.ageMs).toBe(300_000);
+    expect(previous.lastEffect?.at).toBe(at);
+  });
 
   it('raises an acceptance obligation for a plan the holder delegated and never declared on', async () => {
     const result = await read(withWorklist([worklistPlan('delegated-plan', closure('open'))]));

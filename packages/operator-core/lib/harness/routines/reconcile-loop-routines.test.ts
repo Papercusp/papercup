@@ -1194,6 +1194,55 @@ describe('reconcileLoopRoutines — lifecycle-death reclassification (EI-13818)'
     );
   });
 
+  it("a Claude API 400 without a colon feeds 'error' instead of resetting the loop streak", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-api-error',
+          target_owner_id: 'su-broken',
+          interval_sec: 45 * 60,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-broken',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: pgString(T0 + 5_000),
+          presence_last_active_at: null,
+          last_assistant_text_after_fire:
+            "API Error 400 Tool reference 'advisor' not found in available tools",
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-broken',
+      'loop-lifecycle-death:model_error',
+      'error',
+    );
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-api-error',
+        targetOwnerId: 'su-broken',
+        verdict: expect.objectContaining({ reason: 'model_error' }),
+      }),
+    );
+  });
+
   it('a lifecycle completion with ORDINARY text is unaffected — still feeds `ok` at the bare interval', async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
 import type { AgentObligationBrief } from './agent-obligation-reader';
-import type { TranscriptTailTurn } from './turn-journal';
+import { readVerbatimTail, type TranscriptTailTurn } from './turn-journal';
 import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
@@ -16,6 +19,63 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
   sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
   clearsWhen: { id: 'claimed', summary: 'A verified member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
   action: { kind: 'delegate', summary: 'Staff the eligible plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
+});
+
+describe('native transcript parser to goal delivery receipt', () => {
+  // These are native-format transcripts, not preclassified delivered turns.
+  // Only session discovery and the final activity sink are substituted here.
+  function lines(kind: 'claude' | 'codex' | 'omp', id: string, minute: number, final: boolean) {
+    const timestamp = at(minute).toISOString();
+    if (kind === 'claude') return [
+      { type: 'user', uuid: id, parentUuid: null, timestamp,
+        message: { role: 'user', content: 'Work on the plan' } },
+      { type: 'assistant', uuid: `${id}-answer`, parentUuid: id, timestamp,
+        message: { role: 'assistant', stop_reason: final ? 'end_turn' : 'tool_use',
+          content: [{ type: 'text', text: 'Native response' }] } },
+    ];
+    if (kind === 'omp') return [
+      { type: 'message', id, parentId: null, timestamp,
+        message: { role: 'user', content: [{ type: 'text', text: 'Work on the plan' }] } },
+      { type: 'message', id: `${id}-answer`, parentId: id, timestamp,
+        message: { role: 'assistant', stopReason: final ? 'stop' : 'toolUse',
+          content: [{ type: 'text', text: 'Native response' }] } },
+    ];
+    return [
+      { type: 'response_item', timestamp, payload: { type: 'message', role: 'user',
+        internal_chat_message_metadata_passthrough: { turn_id: id }, content: [{ type: 'input_text', text: 'Work on the plan' }] } },
+      { type: 'response_item', timestamp, payload: { type: 'message', role: 'assistant', phase: 'commentary',
+        internal_chat_message_metadata_passthrough: { turn_id: id }, content: [{ type: 'output_text', text: 'Native response' }] } },
+      ...(final ? [{ type: 'event_msg', timestamp,
+        payload: { type: 'task_complete', turn_id: id, error: null, last_agent_message: 'Native response' } }] : []),
+    ];
+  }
+
+  it.each(['claude', 'codex', 'omp'] as const)('%s progress cannot count; its native terminal boundary can', async (kind) => {
+    const directory = await mkdtemp(join(tmpdir(), 'goal-receipt-native-'));
+    try {
+      const native = { sessionId: 'native-parser', sourceKind: kind, filePath: join(directory, 'session.jsonl') };
+      const prior = lines(kind, 'prior', 1, true);
+      const write = async (rows: unknown[]) => writeFile(native.filePath, rows.map((line) => JSON.stringify(line)).join('\n') + '\n');
+      await write(prior);
+      const f = fixture();
+      f.deps.current = async () => native;
+      f.deps.lookup = async () => native;
+      f.deps.tail = (source) => readVerbatimTail(source.filePath, source.sourceKind, 50);
+      const candidate = await prepareGoalPlacementDelivery(input, f.deps);
+      expect(candidate?.baselineTurnRef).toBe(`${kind}:native-parser:prior`);
+      f.setNow(4);
+      await write([...prior, ...lines(kind, 'next', 3, false)]);
+      expect((await confirmGoalPlacementDelivery({ ...input, candidate, confirmedToken: 'delivery-1' }, f.deps)).recorded).toBe(0);
+      expect(f.deps.append).not.toHaveBeenCalled();
+      await write([...prior, ...lines(kind, 'next', 3, true)]);
+      expect((await confirmGoalPlacementDelivery({ ...input, candidate, confirmedToken: 'delivery-1' }, f.deps)).recorded).toBe(1);
+      expect(f.deps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+        goalPlacementTurn: expect.objectContaining({ completedTurnRef: `${kind}:native-parser:next`, completedAt: at(3).toISOString() }),
+      } }));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 const block = formatAgentObligationLine(row, 'action');
 const brief = { evaluations: [row], projection: { entries: [row] } } as AgentObligationBrief;

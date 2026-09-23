@@ -23,7 +23,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection, ProvenanceContext } from '../projection';
+import type { TableProjection, ProvenanceContext, StoredFedOrder } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
@@ -947,6 +947,52 @@ async function deleteFromPg(
   `;
 }
 
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): the stored federation
+ * order for the physical rows these keys address, in ONE query.
+ *
+ * Only QUALIFIED keys (`<storage_harness_slug>/<issue_id>`) are resolved: the put
+ * refuses a row whose storage slug disagrees with its scope, and the delete parses
+ * the same key, so a qualified key names exactly the `(harness_slug, feature_id)`
+ * primary key both guards compare against. A bare legacy key's physical row
+ * depends on the op VALUE (its scope), so it is omitted and simply applied.
+ *
+ * `fed_hlc`/`fed_ts` are exactly what `fed_apply_wins` (put) and the delete's
+ * `fed_order_key >=` guard read, and both reject an op whose order key is
+ * strictly lower, so a caller may skip such an op without changing PG state.
+ */
+async function storedOrderForKeys(
+  opts: EngineerIssuesProjectionOpts,
+  keys: readonly string[],
+): Promise<Map<string, StoredFedOrder>> {
+  const out = new Map<string, StoredFedOrder>();
+  const slugs: string[] = [];
+  const ids: string[] = [];
+  const keyByPk = new Map<string, string>();
+  for (const key of keys) {
+    const parsed = parseEngineerIssueKey(key);
+    if (!parsed) continue;
+    const pk = `${parsed.storageHarnessSlug}\u0000${parsed.issueId}`;
+    if (keyByPk.has(pk)) continue;
+    keyByPk.set(pk, key);
+    slugs.push(parsed.storageHarnessSlug);
+    ids.push(parsed.issueId);
+  }
+  if (ids.length === 0) return out;
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<{ harness_slug: string; feature_id: string; fed_hlc: string | null; fed_ts: string | number | null }[]>`
+    SELECT w.harness_slug, w.feature_id, w.fed_hlc, w.fed_ts
+      FROM unnest(${slugs}::text[], ${ids}::text[]) AS k(harness_slug, feature_id)
+      JOIN harness_shared.work_items w
+        ON w.harness_slug = k.harness_slug AND w.feature_id = k.feature_id`;
+  for (const r of rows) {
+    const key = keyByPk.get(`${r.harness_slug}\u0000${r.feature_id}`);
+    if (!key) continue;
+    out.set(key, { hlc: r.fed_hlc ?? null, ts: r.fed_ts == null ? null : Number(r.fed_ts) });
+  }
+  return out;
+}
+
 export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts): TableProjection<EngineerIssueRow> {
   return {
     tableTag: 'engineer-issues',
@@ -956,6 +1002,7 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
+    storedOrderForKeys: (keys) => storedOrderForKeys(opts, keys),
   };
 }
 

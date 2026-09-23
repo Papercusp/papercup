@@ -38,6 +38,8 @@
 import type { Sql } from 'postgres';
 import { consultParkKey } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
+import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
+import { RUBRIC_VETTING_POLICY } from './selection-policies';
 
 /** Rows processed per tick — bounds one sweep's write + wake fan-out. A backlog
  * deeper than this simply drains over successive ticks. */
@@ -58,6 +60,57 @@ export interface DueConsultRow {
   routing: unknown;
   cascade_cursor: number;
   cascade_digest: unknown;
+  /** Responder turns taken on this consult (834). 0 = nobody has engaged. */
+  exchanges_used?: number;
+  /** True when the row has passed half of its TTL (created_at → expires_at)
+   * with zero exchanges — the P-014 conversion trigger, computed in SQL. */
+  is_half_silent?: boolean;
+}
+
+/**
+ * The review families whose SILENT consults convert to pullable work instead of
+ * cascading (review-system-rework-reduction-2026-09-23 P-014, spec RSR-P-014-A).
+ *
+ * Measured 2026-09-23: 304 of 309 expired consults had exchanges_used=0 — the
+ * responder never took a turn — and each cascade hop cost a full TTL while
+ * producing nothing. Review work (a rubric critique, an acceptance grade, a
+ * grading-integrity audit) is therefore turned into a claimable work item at half
+ * its TTL, so it is PULLED by agents already polling the claimable backlog.
+ */
+export type ReviewConsultKind = 'rubric-vetting' | 'acceptance-grading' | 'grading-integrity';
+
+/** Classify a persisted routing snapshot. Null = not a review consult (ordinary
+ * consults keep the existing cascade/expiry behaviour). */
+export function reviewConsultKind(routing: unknown): ReviewConsultKind | null {
+  let snap = routing;
+  if (typeof snap === 'string') {
+    try {
+      snap = JSON.parse(snap);
+    } catch {
+      return null;
+    }
+  }
+  if (!snap || typeof snap !== 'object') return null;
+  const s = snap as { policy?: unknown; cascade?: { flavor?: unknown } | null };
+  const flavor = s.cascade?.flavor;
+  if (flavor === GRADING_CASCADE_FLAVOR) return 'acceptance-grading';
+  if (flavor === 'grading-integrity') return 'grading-integrity';
+  if (s.policy === RUBRIC_VETTING_POLICY) return 'rubric-vetting';
+  return null;
+}
+
+/** Everything the filer needs to write one pullable review work item. */
+export interface ReviewWorkItemRequest {
+  workspaceId: string;
+  conversationId: string;
+  kind: ReviewConsultKind;
+  question: string;
+  requesterId: string;
+  /** The selectee that stayed silent (never a critic of record). */
+  silentResponderId: string | null;
+  /** The persisted routing snapshot, so the filer can reuse a grading
+   * reservation (routing.cascade.reservation) instead of minting a sibling. */
+  routing: unknown;
 }
 
 /** Row-local evidence for a responder that woke after routing, re-parked, and
@@ -112,6 +165,11 @@ export interface ExpirySweepDeps {
   findSilentResponders?: (
     rows: readonly SilentResponderCandidate[],
   ) => Promise<ReadonlySet<string>>;
+  /** P-014: file (or adopt) the pullable review work item for a silent review
+   * consult. MUST be idempotent per conversation — the sweep may call it again on
+   * a later tick when a subsequent step failed. Absent ⇒ no conversion leg (review
+   * consults keep the cascade behaviour); prod binds it. */
+  fileReviewWorkItem?: (req: ReviewWorkItemRequest) => Promise<{ id: string }>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;
@@ -131,6 +189,11 @@ export interface ExpirySweepResult {
   requesterAlerts: string[];
   /** Rows deliberately left retryable because the durable alert write failed. */
   requesterAlertFailures: string[];
+  /** P-014: silent review consults converted to a pullable work item this tick
+   * (conversation id + the work item that now carries the review). */
+  converted: Array<{ conversationId: string; workItemId: string; kind: ReviewConsultKind }>;
+  /** Review consults whose conversion failed this tick; retried next tick. */
+  conversionFailures: string[];
   /** True when the tick hit the bound — more due rows likely remain. */
   saturated: boolean;
 }
@@ -146,12 +209,21 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const due = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id,
            state, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
-           updated_at, latency_contract, question, routing, cascade_cursor, cascade_digest
+           updated_at, latency_contract, question, routing, cascade_cursor, cascade_digest,
+           exchanges_used,
+           COALESCE(
+             exchanges_used = 0
+               AND expires_at IS NOT NULL
+               AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2,
+             false
+           ) AS is_half_silent
       FROM harness_shared.consult_state
      WHERE closed_at IS NULL
        AND (
          expires_at < ${nowIso}::timestamptz
          OR (state = 'awaiting_responder' AND responder_id IS NOT NULL)
+         OR (state = 'awaiting_responder' AND exchanges_used = 0 AND expires_at IS NOT NULL
+             AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
        )
      ORDER BY expires_at
      LIMIT ${limit}
@@ -182,8 +254,33 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const woke: string[] = [];
   const requesterAlerts: string[] = [];
   const requesterAlertFailures: string[] = [];
+  const converted: ExpirySweepResult['converted'] = [];
+  const conversionFailures: string[] = [];
   for (const row of due) {
     const isDue = row.is_due === true;
+
+    // P-014 / RSR-P-014-A: a silent REVIEW consult at half its TTL is converted to
+    // a pullable work item INSTEAD of cascading to the next (likely equally silent)
+    // responder. Runs before the cascade branch so a converted row never advances.
+    const reviewKind = deps.fileReviewWorkItem ? reviewConsultKind(row.routing) : null;
+    if (
+      reviewKind &&
+      row.state === 'awaiting_responder' &&
+      Number(row.exchanges_used ?? 0) === 0 &&
+      row.is_half_silent === true
+    ) {
+      const outcome = await convertReviewConsult(deps, sql, row, reviewKind, nowIso);
+      if (outcome.status === 'converted') {
+        converted.push({ conversationId: row.conversation_id, workItemId: outcome.workItemId, kind: reviewKind });
+        requesterAlerts.push(row.conversation_id);
+        continue;
+      }
+      if (outcome.status === 'raced') continue;
+      conversionFailures.push(row.conversation_id);
+      // A failing filer must not strand the consult forever: a not-yet-due row is
+      // retried next tick, a due row falls through to the ordinary expiry path.
+      if (!isDue) continue;
+    }
     const isSilentEarlyRow =
       !isDue && row.state === 'awaiting_responder' && row.responder_id != null && silentResponderIds.has(row.conversation_id);
     if (!isDue && !isSilentEarlyRow) continue;
@@ -348,7 +445,157 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     woke,
     requesterAlerts,
     requesterAlertFailures,
+    converted,
+    conversionFailures,
     saturated: due.length >= limit && due[limit - 1]?.is_due === true,
+  };
+}
+
+type ReviewConversionOutcome =
+  | { status: 'converted'; workItemId: string }
+  | { status: 'raced' }
+  | { status: 'failed' };
+
+/**
+ * File the pullable review item, tell the requester where the review went, then
+ * close the consult with an outcome that names the item.
+ *
+ * Order is file → alert → close, and each step is safe to repeat: the filer is
+ * idempotent per conversation (condition-keyed), the alert carries a deterministic
+ * replay key, and the close is guarded on the row still being open, silent and on
+ * the same cascade position. A failure at any step leaves the consult open so the
+ * next tick retries the same item. A reply that lands between filing and closing
+ * wins the race: the consult stays open with its reply, and the filed item remains
+ * a valid (if now redundant) review request.
+ *
+ * The consult flips to state='expired' — the state CHECK has no dedicated value —
+ * and its outcome records disposition 'converted_to_review_work_item', following the
+ * 'cascade_exhausted_with_answers' precedent of disambiguating through `outcome`.
+ */
+async function convertReviewConsult(
+  deps: ExpirySweepDeps,
+  sql: Sql,
+  row: DueConsultRow,
+  kind: ReviewConsultKind,
+  nowIso: string,
+): Promise<ReviewConversionOutcome> {
+  let workItemId: string;
+  try {
+    const filed = await deps.fileReviewWorkItem!({
+      workspaceId: row.workspace_id,
+      conversationId: row.conversation_id,
+      kind,
+      question: row.question,
+      requesterId: row.requester_id,
+      silentResponderId: row.responder_id,
+      routing: row.routing,
+    });
+    if (!filed?.id) return { status: 'failed' };
+    workItemId = filed.id;
+  } catch {
+    return { status: 'failed' };
+  }
+
+  try {
+    await deps.notifyRequester(reviewConversionAlertForRow({ row, kind, workItemId, nowIso }));
+  } catch {
+    return { status: 'failed' };
+  }
+
+  let flipped: Array<{ conversation_id: string }>;
+  try {
+    flipped = (await sql.begin(async (tx) => {
+      const terminal = (await tx`
+        UPDATE harness_shared.consult_state
+           SET state = 'expired',
+               outcome = ${tx.json({
+                 disposition: 'converted_to_review_work_item',
+                 work_item_id: workItemId,
+                 review_kind: kind,
+                 silent_responder: row.responder_id,
+               } as never)}::jsonb,
+               closed_at = ${nowIso}::timestamptz,
+               updated_at = ${nowIso}::timestamptz
+         WHERE workspace_id = ${row.workspace_id}
+           AND conversation_id = ${row.conversation_id}
+           AND closed_at IS NULL
+           AND state = 'awaiting_responder'
+           AND exchanges_used = 0
+           AND cascade_cursor = ${row.cascade_cursor}
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (terminal.length === 0) return terminal;
+      await tx`
+        UPDATE harness_shared.coord_conversations c
+           SET state = 'expired',
+               updated_at = GREATEST(c.updated_at, ${nowIso}::timestamptz)
+         WHERE c.workspace_id = ${row.workspace_id}
+           AND c.id = ${row.conversation_id}
+           AND c.kind = 'consult'
+           AND c.state = 'open'
+      `;
+      return terminal;
+    })) as unknown as Array<{ conversation_id: string }>;
+  } catch {
+    return { status: 'failed' };
+  }
+  if (flipped.length === 0) return { status: 'raced' };
+
+  if (row.latency_contract === 'hard-blocked') {
+    try {
+      await deps.emitReplyEvent({
+        key: consultParkKey(row.conversation_id),
+        summary:
+          `consult ${row.conversation_id}: no reviewer engaged by half its window — converted to pullable ` +
+          `review work item ${workItemId}; follow that item instead of waiting on this consult`,
+        payload: {
+          conversation_id: row.conversation_id,
+          responder: row.responder_id,
+          kind: 'converted',
+          work_item_id: workItemId,
+          review_kind: kind,
+        },
+        to: [row.requester_id],
+        workspaceId: row.workspace_id,
+      });
+    } catch {
+      // Best-effort, like the terminal-expiry emit: the durable alert above
+      // already named the work item.
+    }
+  }
+  return { status: 'converted', workItemId };
+}
+
+/** The durable requester alert for a P-014 conversion. The replay key is per
+ * conversation (not per cascade position): a conversion happens at most once. */
+export function reviewConversionAlertForRow(input: {
+  row: DueConsultRow;
+  kind: ReviewConsultKind;
+  workItemId: string;
+  nowIso: string;
+}): Parameters<ExpirySweepDeps['notifyRequester']>[0] {
+  const { row, kind, workItemId } = input;
+  const msgId = ['consult-review-conversion', row.workspace_id, row.conversation_id]
+    .map(encodeURIComponent)
+    .join(':');
+  const next =
+    kind === 'rubric-vetting'
+      ? `Once a reviewer other than you and the rubric author posts a critique as a comment on ${workItemId}, ` +
+        `record vetting with scorecards:emit { ..., vettingWorkItem: '${workItemId}' }.`
+      : `A reviewer claims ${workItemId} from the claimable backlog and emits the scorecard; ` +
+        `independence rules are unchanged.`;
+  return {
+    requesterId: row.requester_id,
+    workspaceId: row.workspace_id,
+    conversationId: row.conversation_id,
+    msgId,
+    summary: `Consult ${row.conversation_id}: no reviewer engaged — review is now pullable work item ${workItemId}`,
+    body:
+      `At ${input.nowIso}, ${kind} consult ${row.conversation_id} had no reviewer exchange at half its window ` +
+      `(silent selectee ${row.responder_id ?? '(unassigned)'}). Instead of cascading to another responder, the ` +
+      `review was converted to work item ${workItemId}, which any eligible agent can claim ` +
+      `(review-system-rework-reduction-2026-09-23 P-014). The consult is closed with outcome ` +
+      `'converted_to_review_work_item'. ${next} This is not approval: nothing has been reviewed yet.`,
   };
 }
 

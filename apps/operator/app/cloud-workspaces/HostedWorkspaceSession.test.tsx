@@ -77,7 +77,10 @@ vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: M.FakeWebLinksAddon,
 }));
 
-import { HostedWorkspaceSession } from "./HostedWorkspaceSession";
+import {
+  DESKTOP_START_TIMEOUT_MS,
+  HostedWorkspaceSession,
+} from "./HostedWorkspaceSession";
 import { HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES } from "./hosted-workspace-session-protocol";
 
 const TICKET = `ht_${"a".repeat(43)}`;
@@ -641,6 +644,52 @@ describe("HostedWorkspaceSession", () => {
         "desktop_start_failed",
       ),
     );
+  });
+
+  it("reports a start the host never answers instead of waiting forever (runtime older than D-405)", async () => {
+    const onDesktopBridgeChange = vi.fn();
+    const onDesktopQueryStateChange = vi.fn();
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+        onDesktopBridgeChange={onDesktopBridgeChange}
+        onDesktopQueryStateChange={onDesktopQueryStateChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    M.sockets[0].emit("message", {
+      data: JSON.stringify({ type: "pty.ready", role: "controller", resumed: false }),
+    });
+    await waitFor(() => expect(onDesktopBridgeChange).toHaveBeenCalled());
+    const bridge = onDesktopBridgeChange.mock.calls.at(-1)?.[0] as {
+      requestStart: () => boolean;
+    };
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      // The role reaches the bridge through an effect, so the first accepted call is the one.
+      await waitFor(() => expect(bridge.requestStart()).toBe(true));
+      const deadline = setTimeoutSpy.mock.calls.find(
+        (call) => call[1] === DESKTOP_START_TIMEOUT_MS,
+      );
+      expect(deadline).toBeTruthy();
+      expect(onDesktopQueryStateChange).not.toHaveBeenCalledWith(
+        "error",
+        "start",
+        "desktop_start_timeout",
+      );
+      (deadline![0] as () => void)();
+      expect(onDesktopQueryStateChange).toHaveBeenCalledWith(
+        "error",
+        "start",
+        "desktop_start_timeout",
+      );
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   it("uses the authenticated PTY channel for desktop roster and thumbnail discovery", async () => {

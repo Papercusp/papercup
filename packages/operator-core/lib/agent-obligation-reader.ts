@@ -31,6 +31,7 @@ import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-set
 import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
+import type { GoalPlacementProgressState } from './goal-placement-progress';
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 
@@ -46,6 +47,8 @@ export interface AgentObligationReaderDeps {
   goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
   planSlugs: (workspaceId: string, ownerId: string) => Promise<string[]>;
   goalPortfolio: (workspaceId: string, goalId: string) => Promise<GoalPortfolioBrief | null>;
+  goalPlacementProgress: (workspaceId: string, ownerId: string, goalId: string, planRefs: string[]) =>
+    Promise<Record<string, GoalPlacementProgressState | null>>;
   goalPlanning: (workspaceId: string, ownerId: string, goalId: string) => Promise<{
     review: GoalPlanningReview | null;
     authorities: Record<string, GoalPotPlacementAuthority>;
@@ -443,6 +446,10 @@ export async function readAgentObligationAgenda(input: {
     });
     const placementFailure =
       scopeReadFailure || portfolio.degraded || launch.degraded || fleet.degraded || fleet.value.status === 'unknown';
+    const progress = placementFailure ? null : await boundedRead('goal-placement-progress',
+      deps.goalPlacementProgress(input.workspaceId, input.ownerId, goalId,
+        (portfolio.value?.worklist ?? []).map((plan) => plan.ref)), {}, sourceTimeoutMs);
+    if (progress?.degraded) degradedSources.push(readFailure('goal placement progress', progress));
     planPlacement = {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
@@ -467,6 +474,7 @@ export async function readAgentObligationAgenda(input: {
               launch: launch.value,
               alert: fleet.value.alert,
               evidenceRef: `goal-plan-fleet-cohort:${goalId}:${placementGeneration}`,
+              progress: progress?.degraded ? undefined : progress?.value,
             },
           },
     };
@@ -752,6 +760,8 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
       return readGoalPortfolioBrief({ workspaceId, goalId });
     },
+    goalPlacementProgress: async (workspaceId, ownerId, goalId, planRefs) =>
+      (await import('./goal-placement-progress-store')).readGoalPlacementProgress({ workspaceId, ownerId, goalId, planRefs }),
     goalPlanning: async (workspaceId, ownerId, goalId) => {
       const [{ readScoutTicks }, { resolveGoalPotPlacementAuthority }] = await Promise.all([
         import('./scout/tick-ledger'), import('./goal-launch-settings'),

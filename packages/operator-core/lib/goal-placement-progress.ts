@@ -3,6 +3,17 @@
  * Receipts must come from delivery/native-turn and canonical effect writers,
  * never from an agent's assertion, a heartbeat or a launch request.
  */
+export interface GoalPlacementProgressScope {
+  workspaceId: string;
+  ownerId: string;
+  goalId: string;
+  planRef: string;
+}
+
+export function goalPlacementProgressScopeKey(scope: GoalPlacementProgressScope): string {
+  return JSON.stringify([scope.workspaceId, scope.ownerId, scope.goalId, scope.planRef]);
+}
+
 export interface GoalPlacementEffect {
   kind: 'member-claim' | 'verified-completion' | 'verified-repair';
   ref: string;

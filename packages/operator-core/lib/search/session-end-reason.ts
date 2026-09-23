@@ -90,7 +90,7 @@ interface Pattern {
  */
 const MODEL_CAPACITY_ANCHORED_SRC = `^[\\s\\W]{0,8}${MODEL_CAPACITY_RE.source}`;
 const MODEL_ERROR_MACHINE_RE = new RegExp(
-  `^\\s*API Error:|does not support effort level|invalid_request_error|model .* not found|${MODEL_CAPACITY_ANCHORED_SRC}`,
+  `^\\s*API Error(?::|\\s+[4-5]\\d{2}\\b)|does not support effort level|invalid_request_error|model .* not found|${MODEL_CAPACITY_ANCHORED_SRC}`,
   'i',
 );
 /**

@@ -1984,9 +1984,14 @@ export async function emitScorecard(
           : false;
       // Unattributable identity on EITHER side refuses — strict toward auditing again.
       if (!gradedAuthor || !input.createdBy || gradedAuthor === input.createdBy || authorLineageRelated) {
+        const refusalReason = !gradedAuthor || !input.createdBy
+          ? 'the graded card author or auditor identity is missing'
+          : gradedAuthor === input.createdBy
+            ? `the auditor is the exact graded card author '${gradedAuthor}'`
+            : `auditor '${input.createdBy}' is in the graded card author's identity lineage ('${gradedAuthor}')`;
         return {
           ok: false as const,
-          error: `self_audit_refused: a grading audit must come from a NON-AUTHOR (graded card author: ${gradedAuthor ?? 'unknown'}, auditor: ${input.createdBy ?? 'unknown'}) — mirror of the acceptance grader ≠ author rule`,
+          error: `self_audit_refused: ${refusalReason}; a grading audit must come from an independent party outside the author's identity lineage — mirror of the acceptance grader ≠ author rule`,
         };
       }
       // EI-22643332515600282: a grading audit must be independent from the

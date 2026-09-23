@@ -1051,13 +1051,15 @@ describe("cc fleet statusline — render + fail-open", () => {
 describe("cc activity-report hooks — minimum interval (P-012)", () => {
   const PRE = join(__dirname, "..", "pretooluse-activity-report.sh");
   const POST = join(__dirname, "..", "posttooluse-activity-report.sh");
-  const event = (name: string) =>
+  // `filePath` varies the reported STATE; `toolUseId` varies only the per-call id, which is
+  // not state (D-014), so two events differing only in it are the same state.
+  const event = (name: string, filePath = "/x", toolUseId = "t1") =>
     JSON.stringify({
       hook_event_name: name,
       tool_name: "Read",
-      tool_input: { file_path: "/x" },
+      tool_input: { file_path: filePath },
       tool_response: "ok",
-      tool_use_id: "t1",
+      tool_use_id: toolUseId,
       session_id: "s1",
       cwd: "/x",
     });
@@ -1090,7 +1092,14 @@ describe("cc activity-report hooks — minimum interval (P-012)", () => {
     }
   }
 
-  async function fire(hook: string, url: string, locks: string, extra: Record<string, string> = {}) {
+  async function fire(
+    hook: string,
+    url: string,
+    locks: string,
+    extra: Record<string, string> = {},
+    filePath = "/x",
+    toolUseId = "t1",
+  ) {
     const child = spawn("bash", [hook], {
       env: {
         ...process.env,
@@ -1104,7 +1113,7 @@ describe("cc activity-report hooks — minimum interval (P-012)", () => {
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    child.stdin.end(event(hook === PRE ? "PreToolUse" : "PostToolUse"));
+    child.stdin.end(event(hook === PRE ? "PreToolUse" : "PostToolUse", filePath, toolUseId));
     const code = await Promise.race([
       new Promise<number | null>((resolve) => child.once("close", resolve)),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("hook timed out")), 8_000)),
@@ -1120,7 +1129,7 @@ describe("cc activity-report hooks — minimum interval (P-012)", () => {
       expect(sent()).toBe(1);
       await fire(PRE, url, locks);
       expect(sent()).toBe(1);
-      await fire(PRE, url, locks, { PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC: "0" });
+      await fire(PRE, url, locks, { PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC: "0" }, "/y");
       expect(sent()).toBe(2);
     });
   });
@@ -1142,7 +1151,7 @@ describe("cc activity-report hooks — minimum interval (P-012)", () => {
       expect(sent()).toBe(1);
       await fire(POST, url, locks);
       expect(sent()).toBe(1);
-      await fire(POST, url, locks, { PAPERCUSP_ACTIVITY_POST_MIN_INTERVAL_SEC: "0" });
+      await fire(POST, url, locks, { PAPERCUSP_ACTIVITY_POST_MIN_INTERVAL_SEC: "0" }, "/y");
       expect(sent()).toBe(2);
     });
   });
@@ -1155,4 +1164,44 @@ describe("cc activity-report hooks — minimum interval (P-012)", () => {
       expect(sent()).toBe(2);
     });
   });
+
+  // RSR-P-012-A: emit only on a change of state. Interval gates are switched OFF here so the
+  // state gate is the only thing under test; D-014's due-flags (lease renewal for pre,
+  // coordination fold for post) are the one sanctioned re-send of an identical state.
+  const noInterval = {
+    PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC: "0",
+    PAPERCUSP_ACTIVITY_POST_MIN_INTERVAL_SEC: "0",
+  };
+  for (const [label, hook, dueKey] of [
+    ["pre", PRE, "PAPERCUSP_ACTIVITY_KEEPALIVE_SEC"],
+    ["post", POST, "PAPERCUSP_ACTIVITY_POST_FOLD_DUE_SEC"],
+  ] as const) {
+    it(`${label} state: two identical consecutive states emit ONE report (a new tool_use_id is not a new state)`, async () => {
+      await withOperator(async (url, sent) => {
+        const locks = locksDir();
+        await fire(hook, url, locks, noInterval, "/x", "t1");
+        await fire(hook, url, locks, noInterval, "/x", "t2");
+        expect(sent()).toBe(1);
+      });
+    });
+
+    it(`${label} state: a changed state emits (control for the identical-state case)`, async () => {
+      await withOperator(async (url, sent) => {
+        const locks = locksDir();
+        await fire(hook, url, locks, noInterval, "/x");
+        await fire(hook, url, locks, noInterval, "/y");
+        await fire(hook, url, locks, noInterval, "/x");
+        expect(sent()).toBe(3);
+      });
+    });
+
+    it(`${label} state: an identical state is re-sent once its due window has passed (D-014)`, async () => {
+      await withOperator(async (url, sent) => {
+        const locks = locksDir();
+        await fire(hook, url, locks, noInterval);
+        await fire(hook, url, locks, { ...noInterval, [dueKey]: "0" });
+        expect(sent()).toBe(2);
+      });
+    });
+  }
 });
