@@ -29,6 +29,7 @@ import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
+import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 
 const driftMarkers = z
   .string()
@@ -440,6 +441,9 @@ export default defineTool({
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     const methodLint =
       rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+    // acceptance-runtime-plane P-004: a live/deployed BAR with no evidenceRuntime is a
+    // vetting finding (non-blocking) — undeclared, graders default to :3070 and wait on main.
+    const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
     // EI-21909559308315843 / EI-21909563388028590: an acceptance rubric always activates
     // on propose — the ONE case it doesn't is the deliberate EI-21296891484659125 guard
     // (rubrics.ts) refusing to resurrect an already-retired acceptance rubric via
@@ -483,7 +487,15 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, methodLint, statusOverride }),
+          text: JSON.stringify({
+            ok: true,
+            rubric,
+            completeness,
+            replicationSqlCheck,
+            methodLint,
+            ...(runtimeFindings.length ? { runtimeFindings } : {}),
+            statusOverride,
+          }),
         },
       ],
     };
