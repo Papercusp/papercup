@@ -25,7 +25,7 @@
 
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
-import { applyHyperbeeOpToPg, lwwPick } from './projection';
+import { applyHyperbeeOpToPg, lwwPick, type StoredOrderPrefetch } from './projection';
 import { encodeHlc } from '@papercusp/locks-core';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -383,7 +383,42 @@ interface WinnerMeta {
   hlc?: string;
   type: 'put' | 'del';
   src: string; // sourceLogKeyHex ('' when absent) — lwwPick's total-order tiebreak
+  /**
+   * p2p-join-catchup-speed-2026-09-23 P-002: this entry was SEEDED from the PG row's
+   * stored order (`fed_hlc`/`fed_ts`), not recorded from an applied op. It carries no
+   * real type/source, so it only ever skips an op whose order key is STRICTLY lower
+   * (see `isStaleAgainst`); every tie still goes to the projection's own PG guard.
+   */
+  seeded?: true;
 }
+
+/**
+ * The ONE place the incremental fold decides an op can be skipped without an apply.
+ *
+ * For a winner recorded from an applied op this is the long-standing
+ * `!beatsStored` rule. For a SEEDED winner (the stored PG order, P-002) it is
+ * deliberately narrower: skip only when the op's order key is strictly lower than
+ * the stored one, which is exactly when `fed_apply_wins` (put) and the delete's
+ * `fed_order_key >=` guard both reject it. Two exceptions always apply:
+ *  - equal keys go to PG (the SQL tie-break uses writer and content digest, which a
+ *    seed does not carry);
+ *  - a delete carrying neither `hlc` nor `ts` is UNGUARDED in SQL (it deletes
+ *    regardless of order), so it is never skipped against a seed.
+ * The order key mirrors `fed_order_key`: the hlc when present (an empty string
+ * included), else the 15-digit ts with a zero counter.
+ */
+function isStaleAgainst(env: OpEnvelope, prev: WinnerMeta): boolean {
+  if (!prev.seeded) return !beatsStored(env, prev);
+  if (env.type === 'del' && env.hlc == null && env.ts == null) return false;
+  const ke = env.hlc ?? encodeHlc({ ms: env.ts ?? 0, count: 0 });
+  const kp = prev.hlc ?? encodeHlc({ ms: prev.ts, count: 0 });
+  return ke < kp;
+}
+
+/** Default size of the look-ahead window read for the stored-order prefetch (P-002). */
+export const STORED_ORDER_PREFETCH_WINDOW = 512;
+/** Per-window budget for the look-ahead reads; an op not read in time is read normally. */
+export const STORED_ORDER_PEEK_TIMEOUT_MS = 250;
 
 /** F4: processing an entry is distinct from materializing it. Boolean sinks
  * retain their existing handled/changed contract; typed sinks can defer or reject. */
@@ -1289,6 +1324,18 @@ export interface IncrementalMergeOpts {
    * near-miss invites correlating a number with the wrong harness entirely.
    */
   cursorLabel?: string;
+  /**
+   * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): resolve the STORED PG
+   * order for a window of upcoming ops in one query per opted-in table, and seed the
+   * winners with it so an op strictly older than its stored row is skipped without
+   * an apply round trip (see `isStaleAgainst`). Absent ⇒ today's behavior exactly.
+   * Best-effort: a failed look-ahead read or lookup just seeds nothing.
+   */
+  prefetchStoredOrder?: StoredOrderPrefetch;
+  /** Look-ahead window for {@link prefetchStoredOrder}. Default `STORED_ORDER_PREFETCH_WINDOW`. */
+  storedOrderPrefetchWindow?: number;
+  /** Budget for one window's look-ahead reads. Default `STORED_ORDER_PEEK_TIMEOUT_MS`. */
+  storedOrderPeekTimeoutMs?: number;
 }
 
 export interface IncrementalMergeResult {
@@ -1307,6 +1354,11 @@ export interface IncrementalMergeResult {
    * normal pass.
    */
   truncated: boolean;
+  /**
+   * P-002: ops skipped because the stored PG row was strictly newer (seeded by
+   * `prefetchStoredOrder`). Present only when that option is set.
+   */
+  storedOrderSkips?: number;
 }
 
 /**
@@ -1353,6 +1405,102 @@ export interface IncrementalMergeResult {
  * skipped. A read that resolves `null` (the version gate dropping an
  * unknown-newer op, D-024) advances past it deliberately.
  */
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): read `[start, end)` ahead
+ * of the sequential fold, look up the STORED PG order of every key those ops touch
+ * (one query per opted-in table), and seed `cursor.winners` with it.
+ *
+ * Why: a peer replaying history onto a database that already holds newer rows pays a
+ * full apply (~3 PG round trips on work_items) per op only for the projection's LWW
+ * guard to reject it. Measured on the P-203 VM fold: 6065 index scans for 46 row
+ * updates in 60s. A seeded winner lets `isStaleAgainst` skip those ops in memory.
+ *
+ * Safety: best-effort and read-only. Every read that resolves inside
+ * `peekTimeoutMs` is kept in `peeked` and consumed by the main loop INSTEAD of a
+ * second read, so the op the fold applies is the one the lookup saw; anything not
+ * read in time is simply read by the main loop as before. A seed only replaces a
+ * winner whose order key is lower, and only strictly-older ops are ever skipped.
+ */
+async function peekAndSeedStoredOrder(args: {
+  cursor: MergeCursor;
+  log: AdmittedLog;
+  start: number;
+  end: number;
+  peeked: Map<number, PeerLogOp | null>;
+  prefetch: StoredOrderPrefetch;
+  peekTimeoutMs: number;
+  maxWinnersEntries: number;
+  onWinnersEvicted?: (evictedCount: number, size: number) => void;
+}): Promise<void> {
+  const { cursor, log, start, end, peeked, prefetch, peekTimeoutMs } = args;
+  if (end <= start) return;
+  const TIMEOUT = Symbol('peek-timeout');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), Math.max(0, peekTimeoutMs));
+    if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
+  });
+  try {
+    const reads: Promise<void>[] = [];
+    for (let i = start; i < end; i++) {
+      const read = Promise.resolve()
+        .then(() => log.get(i))
+        .then(
+          (op) => ({ ok: true as const, op }),
+          () => ({ ok: false as const }),
+        );
+      reads.push(
+        Promise.race([read, deadline]).then((r) => {
+          if (r !== TIMEOUT && r.ok) peeked.set(i, r.op);
+        }),
+      );
+    }
+    await Promise.all(reads);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  const entries: { table: string; key: string }[] = [];
+  const seen = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const op = peeked.get(i);
+    if (!op || isSnapshotOp(op)) continue;
+    const env = toEnvelope(op, log.keyHex);
+    if (!env.table || !env.hbKey) continue;
+    const groupKey = `${env.table}::${env.hbKey}`;
+    if (seen.has(groupKey)) continue;
+    seen.add(groupKey);
+    entries.push({ table: env.table, key: env.hbKey });
+  }
+  if (entries.length === 0) return;
+
+  let stored: Map<string, { hlc: string | null; ts: number | null }>;
+  try {
+    stored = await prefetch(entries);
+  } catch {
+    return; // best-effort: an unseeded window folds exactly as before
+  }
+  for (const [groupKey, order] of stored) {
+    // A row with neither an hlc nor a ts has the lowest possible order key; seeding it
+    // could only produce equal-key comparisons, which always go to PG anyway.
+    if (order.hlc == null && order.ts == null) continue;
+    const seed: WinnerMeta = {
+      ts: order.ts ?? 0,
+      ...(order.hlc != null ? { hlc: order.hlc } : {}),
+      type: 'put',
+      src: '',
+      seeded: true,
+    };
+    const prev = cursor.winners.get(groupKey);
+    if (prev) {
+      const kPrev = prev.hlc ?? encodeHlc({ ms: prev.ts, count: 0 });
+      const kSeed = seed.hlc ?? encodeHlc({ ms: seed.ts, count: 0 });
+      if (kSeed <= kPrev) continue; // the recorded winner is at least as new: keep it
+    }
+    recordWinner(cursor, groupKey, seed, args.maxWinnersEntries, args.onWinnersEvicted);
+  }
+}
+
 export async function mergeAdmittedLogsIncremental(
   logs: AdmittedLog[],
   cursor: MergeCursor,
@@ -1368,6 +1516,11 @@ export async function mergeAdmittedLogsIncremental(
   // WI-2141796: prefix for the read-stall / quarantine lines. Without it those
   // lines name a LOG, which many harnesses fold independently — see cursorLabel.
   const cursorTag = opts?.cursorLabel ? `[${opts.cursorLabel}] ` : '';
+  // p2p-join-catchup-speed-2026-09-23 P-002: optional stored-order look-ahead.
+  const prefetchStoredOrder = opts?.prefetchStoredOrder;
+  const prefetchWindow = Math.max(1, opts?.storedOrderPrefetchWindow ?? STORED_ORDER_PREFETCH_WINDOW);
+  const peekTimeoutMs = opts?.storedOrderPeekTimeoutMs ?? STORED_ORDER_PEEK_TIMEOUT_MS;
+  let storedOrderSkips = 0;
 
   let applied = 0;
   let decoded = 0;
@@ -1418,6 +1571,10 @@ export async function mergeAdmittedLogsIncremental(
     // winners, so re-reading them next pass is cheap — `beatsStored` dedupes each
     // one — and the deferred op finally lands by itself once its referent arrives.
     let pos = from;
+    // P-002 look-ahead: ops already read for the stored-order prefetch, consumed below
+    // in place of a second read of the same position.
+    const peeked = new Map<number, PeerLogOp | null>();
+    let peekedUpTo = from;
     let firstDeferredPos = -1;
     const previousFailure = cursor.applyFailures?.get(log.keyHex);
     const holdCursorHere = (outcome: Exclude<MergeApplyOutcome, { kind: 'applied' }>, groupKey: string): void => {
@@ -1485,14 +1642,32 @@ export async function mergeAdmittedLogsIncremental(
       // bounded retry, then dead-letter past it so a single unreadable position
       // can't wedge every subsequent op in this peer's strictly-sequential log
       // forever (the pre-fix behavior — "silent REV fed_event outage class").
+      if (prefetchStoredOrder && pos >= peekedUpTo) {
+        peekedUpTo = Math.min(upper, pos + prefetchWindow);
+        await peekAndSeedStoredOrder({
+          cursor,
+          log,
+          start: pos,
+          end: peekedUpTo,
+          peeked,
+          prefetch: prefetchStoredOrder,
+          peekTimeoutMs,
+          maxWinnersEntries,
+          onWinnersEvicted,
+        });
+      }
       let op: PeerLogOp | null;
       try {
         const readIdent = `${log.keyHex}:${pos}`;
         const lateQueue = cursor.lateReadResults?.get(readIdent);
         const cached = lateQueue?.shift();
         if (lateQueue && lateQueue.length === 0) cursor.lateReadResults?.delete(readIdent);
+        const peekedOp =
+          cached || !peeked.has(pos) ? undefined : { kind: 'op' as const, op: peeked.get(pos) ?? null };
+        peeked.delete(pos);
         const got =
           cached ??
+          peekedOp ??
           (await readOpBoundedDetailed(log, pos, getTimeoutMs, (result) => {
             // A late result is useful only while this cursor is still held at
             // the same position. If another attempt already advanced it, drop
@@ -1598,7 +1773,11 @@ export async function mergeAdmittedLogsIncremental(
           const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
-          if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
+          // stale row, never applied (P-002: a seeded winner skips only a strictly-older op)
+          if (prev && isStaleAgainst(env, prev)) {
+            if (prev.seeded) storedOrderSkips++;
+            continue;
+          }
           const outcome = await applyRecordingWinner(
             cursor,
             groupKey,
@@ -1625,7 +1804,11 @@ export async function mergeAdmittedLogsIncremental(
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
-      if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
+      // ts-guard: stale op, never applied (P-002: a seeded winner skips only a strictly-older op)
+      if (prev && isStaleAgainst(env, prev)) {
+        if (prev.seeded) storedOrderSkips++;
+        continue;
+      }
       const outcome = await applyRecordingWinner(
         cursor,
         groupKey,
@@ -1670,7 +1853,9 @@ export async function mergeAdmittedLogsIncremental(
     }
   }
 
-  return { applied, decoded, caughtUp, truncated: false };
+  return prefetchStoredOrder
+    ? { applied, decoded, caughtUp, truncated: false, storedOrderSkips }
+    : { applied, decoded, caughtUp, truncated: false };
 }
 
 /**
