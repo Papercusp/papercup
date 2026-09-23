@@ -244,7 +244,7 @@ const itemSpec = z.object({
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()
-    .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
+    .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
   conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
   directiveRef: directiveRefArg,
@@ -359,7 +359,7 @@ export default defineTool({
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
-        .describe('Plan item this work-item IMPLEMENTS (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked. ONLY for work that implements the item: completing that plan item can auto-resolve its linked work-items as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
+        .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
       links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
       conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
       directiveRef: directiveRefArg,

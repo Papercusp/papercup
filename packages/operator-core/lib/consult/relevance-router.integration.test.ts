@@ -28,7 +28,7 @@ import {
   routeConsult,
   extractPathTokens,
   DEFAULT_SIM_FLOOR,
-  DEFAULT_FLOOR,
+  DEFAULT_RELEVANCE_FLOOR,
   type ConsultRouteDeps,
 } from './relevance-router';
 
@@ -176,15 +176,19 @@ describe('routeConsult — routing + blend', () => {
     expect(r.qualified[0]?.ownerId).toBe('agent-alpha');
     const alpha = r.qualified[0]!;
     expect(alpha.signals.similarity).toBeGreaterThan(0.95); // cos(0.15) ≈ 0.989
-    expect(alpha.signals.recency).toBeGreaterThan(0.9); // 1d @ 14d half-life
     expect(alpha.signals.verification).toBeCloseTo(5 / 9, 2); // 5 committed / (5+4)
     expect(alpha.signals.authorship).toBe(0); // question names no path
+    // alpha holds the freshest qualified transcript, so it IS the stage-2
+    // reference point: zero relative age, full freshness (D-001 §2).
+    expect(alpha.relativeAgeDays).toBe(0);
+    expect(alpha.signals.freshness).toBe(1);
+    expect(alpha.score).toBeCloseTo(alpha.relevance, 10);
     expect(alpha.evidence.length).toBeGreaterThan(0);
     expect(alpha.evidence[0]).toMatchObject({ session_id: 'sess-agent-alpha' });
     expect(alpha.evidence[0]!.sim).toBeGreaterThan(0.95);
     // Snapshot invariants (persisted verbatim into consult_state.routing).
     expect(r.snapshot.query).toBe(baseParams.question);
-    expect(r.snapshot.floor).toBe(DEFAULT_FLOOR);
+    expect(r.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
     expect(r.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
     expect(r.snapshot.candidates.map((c) => c.ownerId)).toContain('agent-beta');
     expect(r.snapshot.degraded).toBeUndefined();
@@ -208,14 +212,35 @@ describe('routeConsult — routing + blend', () => {
     expect(ids).not.toContain('agent-looponly');
   });
 
-  it('stale + unverified similarity alone does not qualify (beta below the blended floor)', async () => {
+  it('R-13/D-001: 40 days of idleness does NOT disqualify — beta still clears the floor, it just ranks last', async () => {
+    // The pre-D-001 router scored beta 0.55×0.660 + 0.15×recency(40d) ≈ 0.38
+    // against a 0.5 blended floor and dropped it. That was the vacation defect:
+    // beta's TRANSCRIPT never got less relevant, only older. Its relevance is
+    // unchanged at ≈0.427, which is above the 0.412 floor, so it qualifies —
+    // and the cost of being stale is paid in the ORDERING instead.
     const r = await routeConsult(baseParams, deps(0));
     const beta = r.snapshot.candidates.find((c) => c.ownerId === 'agent-beta');
     expect(beta).toBeDefined();
     expect(beta!.signals.similarity).toBeGreaterThan(0.6);
     expect(beta!.signals.verification).toBe(0); // its only close is 'proposed'
-    expect(beta!.score).toBeLessThan(DEFAULT_FLOOR);
-    expect(r.qualified.map((c) => c.ownerId)).not.toContain('agent-beta');
+    expect(beta!.relevance).toBeGreaterThanOrEqual(DEFAULT_RELEVANCE_FLOOR);
+    expect(r.qualified.map((c) => c.ownerId)).toContain('agent-beta');
+    // …and the freshness multiplier is what demotes it: 39 days behind the
+    // reference, so it lands below alpha rather than beside it.
+    expect(beta!.relativeAgeDays).toBeCloseTo(39, 0);
+    expect(beta!.signals.freshness).toBeLessThan(0.3);
+    expect(beta!.score).toBeLessThan(r.qualified[0]!.score);
+    expect(r.qualified[0]!.ownerId).toBe('agent-alpha');
+  });
+
+  it('the freshness multiplier can never zero a qualified expert out of the ranking', async () => {
+    // freshness bottoms out at FRESHNESS_BASE, not 0. Without that floor a
+    // long-idle expert's score would decay toward zero and the ordering would
+    // re-create the disqualification D-001 removed from the floor.
+    const r = await routeConsult(baseParams, deps(0));
+    const beta = r.snapshot.candidates.find((c) => c.ownerId === 'agent-beta')!;
+    expect(beta.signals.freshness).toBeGreaterThanOrEqual(0.2);
+    expect(beta.score).toBeGreaterThan(0);
   });
 
   it('annotates liveness from the injected oracle, defaulting to unknown', async () => {
@@ -277,16 +302,16 @@ describe('routeConsult — D-003 honesty invariants', () => {
     for (const c of r.snapshot.candidates) expect(c.signals.similarity).toBeLessThan(DEFAULT_SIM_FLOOR);
   });
 
-  it('the HARD sim sub-floor blocks a high-track-record owner even when its blended score clears the floor', async () => {
-    // Weights tilted toward track record so agent-subfloor's blended score
-    // clears the floor: sim .362×.3 + rec ~1×.3 + ver ~.93×.3 ≈ 0.69 ≥ 0.5.
+  it('the HARD sim sub-floor blocks a high-track-record owner even when its relevance clears the floor', async () => {
+    // Weights tilted toward track record so agent-subfloor's RELEVANCE clears
+    // the floor: (sim .362×.3 + ver ~.93×.3) / .7 ≈ 0.55 ≥ 0.41.
     const r = await routeConsult(
-      { ...baseParams, weights: { similarity: 0.3, recency: 0.3, verification: 0.3, authorship: 0.1 } },
+      { ...baseParams, weights: { similarity: 0.3, verification: 0.3, authorship: 0.1 } },
       deps(0),
     );
     const sub = r.snapshot.candidates.find((c) => c.ownerId === 'agent-subfloor');
     expect(sub).toBeDefined();
-    expect(sub!.score).toBeGreaterThanOrEqual(DEFAULT_FLOOR); // blended alone WOULD pass…
+    expect(sub!.relevance).toBeGreaterThanOrEqual(DEFAULT_RELEVANCE_FLOOR); // relevance alone WOULD pass…
     expect(sub!.signals.similarity).toBeLessThan(DEFAULT_SIM_FLOOR); // …but similarity is sub-floor…
     expect(r.qualified.map((c) => c.ownerId)).not.toContain('agent-subfloor'); // …so it must not qualify.
   });
@@ -357,21 +382,22 @@ describe('routeConsult — P-007 falsifiability controls', () => {
     // Identical far embedder to the honesty test (sim ≈ 0.12 for the best owner);
     // only the floors change. If this routes, the far-query no_qualified_responder
     // verdict above is attributable to the floors, not to a dead pipeline.
-    const r = await routeConsult({ ...baseParams, floor: 0, simFloor: 0 }, deps(-1.3));
+    const r = await routeConsult({ ...baseParams, relevanceFloor: 0, simFloor: 0 }, deps(-1.3));
     expect(r.verdict).toBe('routed');
     expect(r.qualified.length).toBeGreaterThan(0);
     // The audit snapshot must echo the floors ACTUALLY applied (D-008: the
     // persisted routing record is the calibration feed — a snapshot that echoes
     // defaults while overrides governed would poison every later re-grade).
-    expect(r.snapshot.floor).toBe(0);
+    expect(r.snapshot.relevanceFloor).toBe(0);
     expect(r.snapshot.simFloor).toBe(0);
   });
 
   it('CONTROL: the routed verdict is floor-governed too — an unreachable floor no-routes the happy path', async () => {
-    // The blend is a convex combination in [0,1], so floor 1.01 is unreachable.
-    // If this still routed, the floor filter would be decorative and every
-    // no_qualified_responder assertion above would be testing nothing.
-    const r = await routeConsult({ ...baseParams, floor: 1.01 }, deps(0));
+    // Relevance renormalizes a convex combination of [0,1] signals, so it can
+    // never exceed 1 and a 1.01 floor is unreachable. If this still routed, the
+    // floor filter would be decorative and every no_qualified_responder
+    // assertion above would be testing nothing.
+    const r = await routeConsult({ ...baseParams, relevanceFloor: 1.01 }, deps(0));
     expect(r.verdict).toBe('no_qualified_responder');
     expect(r.qualified).toEqual([]);
     // Candidates are still recorded — the floor blocks QUALIFICATION, not audit.
@@ -386,7 +412,7 @@ describe('routeConsult — P-007 falsifiability controls', () => {
       {
         ...baseParams,
         simFloor: 0,
-        weights: { similarity: 0.3, recency: 0.3, verification: 0.3, authorship: 0.1 },
+        weights: { similarity: 0.3, verification: 0.3, authorship: 0.1 },
       },
       deps(0),
     );

@@ -3773,7 +3773,28 @@ export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
 //
 // `npm run test:file -- libs/flags/src/production-defaults.test.ts` passed after the
 // split (see the test file for the new/updated assertions this review added).
-export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-09-17";
+// ─── REVIEW 2026-09-22 (WI-10002555, su-a28f31f2, frozen-candidate f22392a985 repair) —
+// the parking date elapsed and red-pinned the gate. Re-walked the PARKING LANE at current
+// HEAD before advancing it. SCOPE re-derived, not inherited: parked 8 · incomplete 5 = 13,
+// the same membership as the 09-03 review and still AT DARK_FLAGS_HIGH_WATERMARK.
+//   parked(8) — every one is an explicit OWNER product decision (CLOUDFLARE_PUBLISH/
+//     HARNESS_PHASES/DESIGN/TESTING "cut for V1"; THE_HIVE and CONVERSATIONS_RAIL_TAB await
+//     the owner's release sentence; TEMPLATES_/RUBRICS_MARKETPLACE await the v2 Cupboard
+//     merge). Graduating one would reverse an owner scope cut on the public release, not
+//     finish a feature, so none was flipped.
+//   incomplete(5) — EXTERNAL_BENCH stays permanently dark (blueprint retired);
+//     ONBOARDING_PREVIEW_FEATURES: no backing-feature flag or ship evidence for telemetry
+//     consent / mobile pairing / auto-update channel found in the tree; SUBSTRATE_LOG_
+//     SNAPSHOT and SUBSTRATE_SIDECAR: no commit touching either since 09-03 (git log -S),
+//     so neither proof has run. CAPABILITY_EXEC_SANDBOX: NEW EVIDENCE — its stated blocker
+//     ("this dev box's userns is restricted") no longer holds; unprivileged bwrap runs on
+//     the tower. The end-to-end validation itself has NOT been run, and flipping a
+//     confinement default for every capability:bash job is not a gate-repair drive-by, so
+//     it is filed as WI-10002560 (validate, then graduate or re-scope) — the one real
+//     candidate for the next reviewer.
+// VERDICT: zero graduations; membership and watermark unchanged. `npm run audit:dark-flags`
+// was NOT re-run (host load1 ≈170 at review time). Next parking review 2026-10-06.
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-06";
 export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //

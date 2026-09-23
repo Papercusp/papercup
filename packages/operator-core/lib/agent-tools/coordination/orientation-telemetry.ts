@@ -45,7 +45,8 @@ import {
 import type { SqlTag } from '../../memory/bump-last-surfaced';
 
 function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+  // { data } shape: the framework owns wire encoding (tool-data-shape ratchet, WI-10002555).
+  return { data: obj };
 }
 
 export default defineTool({

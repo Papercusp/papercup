@@ -16,7 +16,9 @@ import {
 const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCandidate => ({
   ownerId,
   score: 0.7,
-  signals: { similarity: 0.72, recency: 0.5, verification: 0.3, authorship: 0 },
+  relevance: 0.7,
+  relativeAgeDays: 0,
+  signals: { similarity: 0.72, verification: 0.3, authorship: 0, freshness: 1 },
   evidence: [],
   liveness: 'live',
   ...over,
@@ -128,18 +130,30 @@ describe('selectResponders — selectability gate (liveness, D-008 §5)', () => 
 
 describe('selectionSnapshot — persisted provenance (D-002)', () => {
   it('records min/max and each selection with via + score + similarity + liveness', () => {
-    const a = cand('a', { score: 0.9, signals: { similarity: 0.8, recency: 0.5, verification: 0.3, authorship: 0 } });
-    const b = cand('b', { score: 0.4, signals: { similarity: 0.3, recency: 0.5, verification: 0.3, authorship: 0 }, liveness: 'parked' });
+    const a = cand('a', {
+      score: 0.9,
+      relevance: 0.95,
+      signals: { similarity: 0.8, verification: 0.3, authorship: 0, freshness: 0.95 },
+    });
+    const b = cand('b', {
+      score: 0.4,
+      relevance: 0.44,
+      signals: { similarity: 0.3, verification: 0.3, authorship: 0, freshness: 0.91 },
+      liveness: 'parked',
+    });
     const snap = selectionSnapshot(2, 3, [
       { candidate: a, via: 'floor' },
       { candidate: b, via: 'minimum' },
     ]);
+    // `relevance` rides along with `score` deliberately: `via` is derived from
+    // the stage-1 number, so a provenance record holding only the stage-2 score
+    // cannot be checked against the floors it claims to describe.
     expect(snap).toEqual({
       min: 2,
       max: 3,
       selected: [
-        { ownerId: 'a', via: 'floor', score: 0.9, similarity: 0.8, liveness: 'live' },
-        { ownerId: 'b', via: 'minimum', score: 0.4, similarity: 0.3, liveness: 'parked' },
+        { ownerId: 'a', via: 'floor', score: 0.9, relevance: 0.95, similarity: 0.8, liveness: 'live' },
+        { ownerId: 'b', via: 'minimum', score: 0.4, relevance: 0.44, similarity: 0.3, liveness: 'parked' },
       ],
     });
   });

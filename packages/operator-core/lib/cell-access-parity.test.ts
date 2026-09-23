@@ -655,7 +655,11 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // work-scope policy is a WORKSPACE fact by construction (it names which harnesses the
     // whole workspace may work), so narrowing it to one harness would hide it from exactly
     // the callers it exists to answer.
-    ).toEqual({ workspace: 14, harness: 12 });
+    // workspace 14 → 15: `owner.directive.status` (directive-visibility-and-ownership-2026-09-22
+    // P-007, registered 2026-09-22) — directives are owner speech recorded per workspace and every
+    // coord reader in the workspace already sees them through orders:list (that plan's D-004:
+    // LABEL, never filter), so a harness-narrow cell would hide a status the list already shows.
+    ).toEqual({ workspace: 15, harness: 12 });
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than

@@ -35,8 +35,13 @@ const readM = vi.mocked(readOrientationTelemetry);
 
 const tool = (await import('./orientation-telemetry')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
+// Accept EITHER result shape: the tool now returns { data } (WI-10002555); the legacy
+// content[0].text JSON shape is still parsed so this reader does not pin the wire form.
+type Out = { data?: unknown; content?: { text: string }[] };
+const body = (o: unknown) => {
+  const r = o as Out;
+  return 'data' in r ? r.data : JSON.parse(r.content![0]!.text);
+};
 const CTX = { role: 'su', workspaceId: 'ws-from-ctx' } as never;
 
 const BASE = {
