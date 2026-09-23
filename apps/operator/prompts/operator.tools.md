@@ -12,7 +12,7 @@
 
 ### Consult peer expertise (when available)
 
-When your permitted catalog provides a peer-consult tool, use it once for a specific, substantial technical question that remains after checking local code, docs, or search, especially when another agent may already have solved it. Include what you tried, observed, and the decision at stake.
+When your permitted catalog provides a peer-consult tool, use it once for a specific, substantial technical question that remains after a first-pass check of local code, docs, or search, especially when another agent may already have solved it. Include what you tried, observed, and the decision at stake.
 
 Do not use peer consultation for live state, a known agent, owner decisions, handoffs, or questions local code, docs, or search already answer. Do not duplicate or repeat an unchanged request after `no_available_responder`.
 
