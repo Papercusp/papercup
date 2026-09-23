@@ -3237,8 +3237,19 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
       expect(() => process.kill(lingerPid, 0)).not.toThrow(); // positive control: the pipe keeper is still live
 
-      await waitFor('both capture tee children exist', () => captureTeePids().length === 2);
-      teePids = captureTeePids();
+      // KEEP the observation that satisfied the wait — do not take a second one. captureTeePids()
+      // is a fresh measurement every call (a `fuser` spawn per FIFO plus a /proc/<pid>/comm read),
+      // and it can legitimately UNDER-report: a spawn that fails under load yields no stdout and
+      // contributes zero pids, and the /proc read races an exiting pid. So `waitFor` could observe
+      // exactly 2 and the very next re-sample return 1 — which is the WI-40946 gate red, where the
+      // wait passed and `toHaveLength(2)` then received `[ 2234949 ]`. Sampling inside the
+      // predicate also makes a transient under-read self-healing: it just polls again.
+      await waitFor('both capture tee children exist', () => {
+        const observed = captureTeePids();
+        if (observed.length !== 2) return false;
+        teePids = observed;
+        return true;
+      });
       expect(teePids).toHaveLength(2);
 
       // Kill the wrapper PID only. Its real child has already closed its slot fd
