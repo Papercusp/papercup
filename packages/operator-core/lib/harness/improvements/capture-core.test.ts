@@ -334,6 +334,33 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
   });
 });
 
+describe('captureImprovement — born admission for captured work', () => {
+  it('starts ordinary bugs pending so the promoter sees duplicate and freshness evidence before self-pull', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'novel admission regression', kind: 'bug' }, d);
+    expect(d.created[0]).toMatchObject({ admission: 'pending' });
+    expect(d.created[0].admittedBy).toBeUndefined();
+  });
+
+  it.each([
+    [{ severity: 'critical' as const }, 'bypass:severity-critical'],
+    [{ subTopic: 'security' }, 'bypass:topic-security'],
+    [{ assignee: 'su-fixer', createdBy: 'su-filer' }, 'bypass:explicit-assignment'],
+  ])('records an attributable bypass for %j', async (override, reason) => {
+    const d = deps();
+    await captureImprovement({ title: `urgent capture ${reason}`, kind: 'bug', ...override }, d);
+    expect(d.created[0]).toMatchObject({ admission: 'auto', admittedBy: reason });
+  });
+
+  it('keeps observations outside admission and non-reviewed change captures pending', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'sensor observation', kind: 'change', lane: 'observation' }, d);
+    await captureImprovement({ title: 'ordinary change', kind: 'change' }, d);
+    expect(d.created[0].admission).toBeUndefined();
+    expect(d.created[1].admission).toBe('pending');
+  });
+});
+
 describe('captureImprovement — filer-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
   it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
     const d = deps();
@@ -1357,6 +1384,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0].id).toBe('EI-7');
     expect(d.created).toHaveLength(1);
+    expect(d.created[0].admission).toBe('pending');
     // The created row IS the record: the file-time verdict + candidates ride its
     // payload for the central resolver; the 'duplicate' occurrence append onto the
     // canonical is retired with the decline.
@@ -1671,6 +1699,7 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
     expect(res.created).toBe(true);
     expect(d.created).toHaveLength(1);
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'stale-evidence' });
+    expect(d.created[0].admission).toBe('pending');
   });
 
   it("dedupScope:'open' + evidence NEWER than the resolution → re-files (real regression)", async () => {
@@ -1688,6 +1717,7 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
     // A real regression re-file carries NO stale verdict — the annotation is scoped
     // to the case the old decline covered.
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
+    expect(d.created[0].admission).toBe('pending');
   });
 
   it('no evidenceAt (live-state signal) keeps the old regression semantics — re-file', async () => {

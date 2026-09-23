@@ -45,6 +45,7 @@ import {
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
+import type { AdmissionBypassReason } from '../../work-items-admission';
 import { FLAGS } from '@papercusp/flags';
 import {
   normalizeSuspectedToolFailure,
@@ -2913,8 +2914,8 @@ export async function captureImprovement(
     // P-002 (D-001): the verdict the retired search-first decline would have
     // returned — 'likely-duplicate' (an open twin existed at file time) or
     // 'stale-evidence' (a resolved twin exists and the newest evidence pre-dates
-    // its resolution). Annotation only, never a gate; candidate state is NOT
-    // duplicated here — the resolver joins by id via dedupCandidates above.
+    // its resolution). The verdict does not discard the filing: the admission
+    // promoter judges it with the candidate state joined by id.
     if (dedupVerdict) payload.dedupVerdict = dedupVerdict;
   }
   // P-010 source-tag: track who filed this for per-Hive analytics
@@ -2953,6 +2954,21 @@ export async function captureImprovement(
     if (evidenceIntegrity) payload.evidenceIntegrity = evidenceIntegrity;
   }
 
+  // Match work_items:create's filing-time bypasses. Every non-observation capture
+  // is born behind admission unless critical, security-related, or explicitly
+  // assigned. Review-required proposals keep their stronger review fence. This
+  // makes dedup/freshness evidence visible to the promoter before self-pull,
+  // without making a search outage or fuzzy match drop a filing.
+  const admissionBypass: AdmissionBypassReason | null =
+    isObservation || reviewRequired
+      ? null
+      : input.severity === 'critical'
+        ? 'bypass:severity-critical'
+        : topics.some((topic) => topic.trim().toLowerCase() === 'security')
+          ? 'bypass:topic-security'
+          : input.assignee?.trim()
+            ? 'bypass:explicit-assignment'
+            : null;
   const createInput: CreateIssueInput = {
     ...(input.artifactId ? { id: input.artifactId } : {}),
     title: input.title,
@@ -2969,10 +2985,14 @@ export async function captureImprovement(
     source: input.source,
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
-    // A review-required row is hidden from every claim/place door from the INSERT
-    // itself. The later blocked-state write is the reviewer-lane marker; this
-    // orthogonal admission fence closes the born-to-park race before it can run.
-    ...(reviewRequired ? { admission: 'pending' as const } : {}),
+    // Admission is an INSERT-time fence: no born-to-promoter claim race. Legacy
+    // NULL remains readable for old rows, but new work never depends on it.
+    ...(!isObservation
+      ? {
+          admission: admissionBypass ? ('auto' as const) : ('pending' as const),
+          ...(admissionBypass ? { admittedBy: admissionBypass } : {}),
+        }
+      : {}),
     // D-002/D-005 (observation-lane-scorecard-classification-2026-08-16): a
     // scorecards:emit verdict files already-terminal; everything else stays 'open'.
     ...(input.initialState ? { state: input.initialState } : {}),
