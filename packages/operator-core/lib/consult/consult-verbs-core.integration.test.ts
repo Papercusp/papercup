@@ -498,7 +498,7 @@ describe('consultDeclineCore', () => {
     ],
   };
 
-  it('declines: state+outcome+closed_at, decline meta, park-key emit, cascade menu (decliner + route-time-dead excluded)', async () => {
+  it('declines: state+outcome+closed_at, decline meta, park-key emit, cascade menu (ONLY the decliner excluded)', async () => {
     const id = await seedConsult({ routing: SNAPSHOT });
     const { deps, emits, settlements } = makeDeps({ withSettlement: true });
     const r = await consultDeclineCore(
