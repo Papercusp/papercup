@@ -477,6 +477,30 @@ async function fetchCarryBrief(intent) {
   }
 }
 
+// P-005 (owner-directive-delivery-redesign-2026-09-22): every context wipe is a
+// new delivery epoch, so the turn-start orientation — and the open owner
+// directives in it — re-delivers in full instead of staying suppressed as
+// "already told" for a context that never saw it. \`compact\` bumps it through
+// the recovery brief; startup/resume/clear bump it here. Fail-soft, and bounded
+// well under the hook's own budget.
+async function bumpContextEpoch(intent, source) {
+  const owner = process.env.PAPERCUSP_SID || intent.sid;
+  if (!owner) return;
+  const base = (process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070').replace(/\\/+$/, '');
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 1500);
+  try {
+    await fetch(
+      base + '/api/agent-mcp/context-epoch-bump?owner=' + encodeURIComponent(owner) + '&source=' + encodeURIComponent(source),
+      { method: 'POST', signal: ctl.signal },
+    );
+  } catch {
+    /* fail-soft — a missed bump degrades to the prior suppression, never a failed start */
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // P-007: identity durability across relaunch. When the LIVE PAPERCUSP_SID
 // differs from the sid recorded at launch, every ownerId-keyed surface (armed
 // loop, loop carry-note + walls, claims, claim-spec, standing awaits, fleet
@@ -677,11 +701,14 @@ try {
       }
     }
   } catch {}
-  if ((input.source || '') === 'compact') {
+  const source = input.source || '';
+  if (source === 'compact') {
     try {
       const a = await compactAnchor(intent);
       if (a) parts.push(a);
     } catch {}
+  } else if (source === 'startup' || source === 'resume' || source === 'clear') {
+    try { await bumpContextEpoch(intent, source); } catch {}
   }
   if (parts.length) {
     process.stdout.write(JSON.stringify({

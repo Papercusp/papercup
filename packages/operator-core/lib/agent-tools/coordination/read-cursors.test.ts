@@ -5,8 +5,8 @@
  * Exercised on InMemoryReadCursorStore (the same store tests inject via
  * configureReadCursorStore — mirrors watermarks.ts's injection contract). The
  * Pg store's single-statement CTE implements the identical promote-then-advance
- * semantics; its live behavior is verified against the real table in the P-004
- * close-out (psql round-trip), not here.
+ * semantics; read-cursors.integration.test.ts runs it against a real migrated
+ * Postgres.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
@@ -136,5 +136,56 @@ describe('read-cursors — split-phase ackAndRead + stage (D-006)', () => {
     expect((await ackAndRead('su-2', 'inbox')).baseline).toBe(true);
     expect((await ackAndRead('su-1', 'plan-events')).baseline).toBe(true);
     expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T1' });
+  });
+});
+
+/**
+ * ACK-ON-PROOF (owner-directive-delivery-redesign-2026-09-22 P-005, D-005).
+ * Arrival proves the caller came back, not that the last block reached the agent.
+ * With a confirmation, only the token the caller proves it emitted promotes.
+ * The same contract runs against real Postgres in read-cursors.integration.test.ts.
+ */
+describe('read-cursors — ack-on-proof (P-005)', () => {
+  beforeEach(() => configureReadCursorStore(new InMemoryReadCursorStore()));
+  afterEach(() => resetReadCursorStore());
+
+  it('a MATCHING confirmation promotes, and the token never reaches committed', async () => {
+    await ackAndRead('su-1', 'orient', { confirmedToken: null });
+    await stage('su-1', 'orient', { gen: 1 }, { deliveryToken: 'tok-1' });
+    expect(await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-1' })).toEqual({
+      committed: { gen: 1 },
+      baseline: false,
+    });
+  });
+
+  it('the hook-killed case: a MISMATCHED confirmation keeps the old floor, so the block is re-diffed and re-sent', async () => {
+    await ackAndRead('su-1', 'orient', { confirmedToken: null });
+    await stage('su-1', 'orient', { gen: 1 }, { deliveryToken: 'tok-1' });
+    await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-1' });
+    // Turn N staged gen 2, but its hook died before printing, so the ledger still
+    // holds tok-1. Arrival alone would promote gen 2 here.
+    await stage('su-1', 'orient', { gen: 2 }, { deliveryToken: 'tok-2' });
+    expect((await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-1' })).committed).toEqual({ gen: 1 });
+    // The discarded pending does not come back on a later matching token either:
+    // only what was staged AFTER the floor can be confirmed.
+    expect((await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-2' })).committed).toEqual({ gen: 1 });
+  });
+
+  it('a NULL confirmation (nothing provable yet) discards pending like a mismatch', async () => {
+    await stage('su-1', 'orient', { gen: 1 }, { deliveryToken: 'tok-1' });
+    expect(await ackAndRead('su-1', 'orient', { confirmedToken: null })).toEqual({
+      committed: null,
+      baseline: true,
+    });
+  });
+
+  it('a pending staged WITHOUT a token cannot be confirmed — it is re-delivered once', async () => {
+    await stage('su-1', 'orient', { gen: 1 });
+    expect((await ackAndRead('su-1', 'orient', { confirmedToken: 'anything' })).committed).toBeNull();
+  });
+
+  it('no confirmation keeps ack-on-arrival, even for a tokened pending', async () => {
+    await stage('su-1', 'orient', { gen: 1 }, { deliveryToken: 'tok-1' });
+    expect(await ackAndRead('su-1', 'orient')).toEqual({ committed: { gen: 1 }, baseline: false });
   });
 });

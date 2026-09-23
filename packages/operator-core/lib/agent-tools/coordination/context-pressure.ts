@@ -287,6 +287,23 @@ export async function fetchContextPressureReadings(
 }
 
 /**
+ * IO seam: ONE owner's cached context size in tokens, or null when no estimate
+ * is recorded. The turn-start owner-directive reminder (P-006 of
+ * owner-directive-delivery-redesign-2026-09-22) paces itself on its growth.
+ * Throws on a read failure; callers own their fail-soft.
+ */
+export async function readContextTokens(ownerId: string): Promise<number | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ context_tokens: number | null }[]>`
+    SELECT context_tokens
+      FROM harness_shared.coord_presence
+     WHERE owner_id = ${ownerId}
+     LIMIT 1
+  `;
+  return rows[0]?.context_tokens ?? null;
+}
+
+/**
  * IO seam (EI-23744538757758407): the three facts `raisingLimitWouldClear` needs for ONE owner —
  * its cached estimate, the soft limit that estimate was bucketed against, and the ceiling
  * `config:set-compaction-limit` would actually ACCEPT for it.

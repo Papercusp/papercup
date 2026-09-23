@@ -1,19 +1,19 @@
 /**
- * owner-directives (EI-11484) — budgeted-renderer unit tests: verbatim-short
- * rows render whole; long rows excerpt via substr + an orders:get pointer
- * (never summarization); the block cap collapses overflow into a "+N more"
- * line; guard assembly soft-blocks only while open rows exist.
+ * owner-directives (EI-11484) — budgeted-renderer unit tests: rows up to the
+ * D-004 cap render whole; longer rows render the labelled agent summary (or a
+ * summary-pending note) plus an orders:get pointer, never a cut fragment; the
+ * block cap collapses overflow into a "+N more" line; guard assembly
+ * soft-blocks only while open rows exist.
  */
 import { describe, expect, it } from 'vitest';
 import {
-  OWNER_DIRECTIVE_EXCERPT_CHARS,
-  OWNER_DIRECTIVE_WHOLE_MAX,
   OWNER_DIRECTIVES_BLOCK_CHAR_CAP,
   OWNER_DIRECTIVES_BLOCK_HEADER,
   renderOwnerDirectiveRow,
   renderOwnerDirectivesBlock,
   type OwnerDirectiveRow,
 } from './owner-directives';
+import { OWNER_DIRECTIVE_VERBATIM_CAP } from './owner-directive-display';
 import { buildOpenDirectivesGuard } from './agent-tools/orders/open-directives-guard';
 import { renderLoopWakeText } from './harness/routines/loop-fire';
 
@@ -47,16 +47,28 @@ describe('renderOwnerDirectiveRow', () => {
     expect(out).not.toContain('orders:get'); // short rows carry no pointer
   });
 
-  it('excerpts a long row with substr(0, EXCERPT) + the orders:get pointer — never a paraphrase', () => {
+  it('D-004: a long row with no summary yet shows NO fragment of the owner text — a note + the orders:get pointer', () => {
     const long = 'do the thing '.repeat(60); // ~780 chars
-    expect(long.length).toBeGreaterThan(OWNER_DIRECTIVE_WHOLE_MAX);
+    expect(long.trim().length).toBeGreaterThan(OWNER_DIRECTIVE_VERBATIM_CAP);
     const out = renderOwnerDirectiveRow(row({ id: 41, verbatimText: long }), NOW);
-    expect(out).toContain(`"${long.slice(0, OWNER_DIRECTIVE_EXCERPT_CHARS)}…"`);
+    expect(out).not.toContain('do the thing');
+    expect(out).toContain('summary not written yet');
+    expect(out).toContain('[full text: orders:get #41]');
+  });
+
+  it('D-004: a long row with a summary shows the summary, labelled with its author', () => {
+    const long = 'do the thing '.repeat(60);
+    const out = renderOwnerDirectiveRow(
+      row({ id: 41, verbatimText: long, summaryText: 'Do the thing, sixty times.', summaryBy: 'su-summarizer-01' }),
+      NOW,
+    );
+    expect(out).toContain('summary by su-summarize');
+    expect(out).toContain('"Do the thing, sixty times."');
     expect(out).toContain('[full text: orders:get #41]');
   });
 
   it('renders exactly at the whole-row boundary without a pointer', () => {
-    const exact = 'x'.repeat(OWNER_DIRECTIVE_WHOLE_MAX);
+    const exact = 'x'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP);
     const out = renderOwnerDirectiveRow(row({ verbatimText: exact }), NOW);
     expect(out).toContain(`"${exact}"`);
     expect(out).not.toContain('orders:get');
@@ -76,8 +88,8 @@ describe('renderOwnerDirectivesBlock', () => {
   });
 
   it('caps the block and collapses overflow into "+N more — orders:list"', () => {
-    // Each long row renders ~260 chars; enough rows to blow the cap.
-    const long = 'L'.repeat(1000);
+    // Each row renders the full verbatim (~560 chars); enough rows to blow the cap.
+    const long = 'L'.repeat(OWNER_DIRECTIVE_VERBATIM_CAP);
     const rows = Array.from({ length: 40 }, (_, i) => row({ id: i + 1, verbatimText: long }));
     const out = renderOwnerDirectivesBlock(rows, { nowMs: NOW })!;
     expect(out.length).toBeLessThanOrEqual(OWNER_DIRECTIVES_BLOCK_CHAR_CAP + 200); // header + "+N more" slack

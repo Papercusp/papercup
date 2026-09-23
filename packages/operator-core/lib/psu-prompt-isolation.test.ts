@@ -85,9 +85,9 @@ describe('blueprint su prompt — launch-tool routing survives the live render p
       baseSource: blueprintSuBase,
       projectGuideSource: '',
     });
-    expect(r.text).toContain('UserPromptSubmit hook records the owner turn verbatim as a PENDING row');
-    expect(r.text).toContain('orders:resolve-pending');
+    expect(r.text).toContain('records the turn verbatim as an OPEN row, and there is no triage step');
     expect(r.text).toContain('orders:disposition');
+    expect(r.text).not.toContain('orders:resolve-pending');
   });
 });
 

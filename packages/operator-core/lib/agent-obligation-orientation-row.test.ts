@@ -7,7 +7,7 @@
  * change the turn-start row rendered `- [DUE] <title> — <action>` and carried
  * NEITHER the verbatim (it lives in `reason`, which the narrow `action` detail
  * drops) NOR the pointer (it lived in `action.targetRef`, which nothing
- * rendered). Three pending directives therefore rendered as three copies of
+ * rendered). Three captured directives therefore rendered as three copies of
  * one 133-char sentence differing only in `#id`.
  *
  * The measured consequence was worse than "less useful": 86% of each row was
@@ -21,6 +21,13 @@
  * below MEASURE rendered length against the real projector rather than
  * eyeballing the format, and why a permanent control proves the measurement
  * can fail.
+ *
+ * Since P-004 of `owner-directive-delivery-redesign-2026-09-22` the row carries
+ * NO owner text at all: D-004 forbids cutting it, a directive may run to 500
+ * chars before it is summarized, and the full text already renders in the
+ * ownerDirectives orientation class of the same block. So the row is a
+ * reminder — { id, disposition verb, recovery pointer } — and its length no
+ * longer depends on what the owner typed.
  */
 import { describe, expect, it } from 'vitest';
 import { evaluateAgentObligations, formatAgentObligationLine } from './agent-obligations';
@@ -30,7 +37,6 @@ import {
   type OwnerDirectivesProviderInput,
 } from './agent-obligation-providers';
 import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
-import { ORIENTATION_ROW_EXCERPT_CHARS, orientationRowExcerpt } from './owner-directives';
 
 const OBSERVED_AT = '2026-09-21T20:30:00.000Z';
 
@@ -38,11 +44,11 @@ const OBSERVED_AT = '2026-09-21T20:30:00.000Z';
 const SINK_MAX_CHARS = 400;
 const SINK_MAX_ENTRIES = 3;
 
-function row(id: number, excerpt: string): OwnerDirectiveObligationRow {
+function row(id: number, verbatim: string): OwnerDirectiveObligationRow {
   return {
     id,
-    state: 'pending',
-    excerpt,
+    state: 'open',
+    displayText: JSON.stringify(verbatim),
     recordedAt: '2026-09-21T20:00:00.000Z',
     recordedBy: 'su-c03852cb',
     capturedByHook: true,
@@ -74,37 +80,29 @@ const MEDIAN =
   'I want a hybrid: capture every owner turn verbatim at the hook, then have the agent promote the real ones';
 
 describe('the uniform turn-start owner-directive row', () => {
-  it('carries all four P-002 elements: id, verbatim, disposition verb, recovery pointer', () => {
+  it('carries id, disposition verb and recovery pointer', () => {
     const [obligation] = obligationsFor([row(27, MEDIAN)]);
     const line = formatAgentObligationLine(obligation!, 'action');
 
     expect(line).toContain('#27');
-    expect(line).toContain(MEDIAN.slice(0, 40));
-    expect(line).toContain('orders:resolve-pending');
+    expect(line).toContain('orders:disposition');
     expect(line).toContain('orders:get #27');
   });
 
-  it('spends the recovery pointer ONLY when text was actually budgeted away', () => {
-    const whole = formatAgentObligationLine(obligationsFor([row(27, SHORT)])[0]!, 'action');
-    const cut = formatAgentObligationLine(obligationsFor([row(27, MEDIAN)])[0]!, 'action');
-
-    // Nothing to recover: the owner's whole sentence is already on the line.
-    expect(whole).toContain(SHORT);
-    expect(whole).not.toContain('orders:get');
-    // Text WAS cut, so the pointer is load-bearing and must be present.
-    expect(cut).toContain('…');
-    expect(cut).toContain('orders:get #27');
+  it('P-004 / D-004: the line carries NO fragment of the owner text, so there is nothing to cut', () => {
+    const atCap = 'x'.repeat(500);
+    for (const text of [SHORT, MEDIAN, atCap]) {
+      const line = formatAgentObligationLine(obligationsFor([row(27, text)])[0]!, 'action');
+      expect(line).not.toContain(text.slice(0, 20));
+      expect(line).not.toContain('…');
+      // With no text on the line the pointer is always load-bearing.
+      expect(line).toContain('orders:get #27');
+    }
   });
 
-  it('renders the verbatim as a substring, never a paraphrase, and never a doubled ellipsis', () => {
-    // An excerpt ALREADY truncated upstream by ownerDirectiveExcerpt must not
-    // acquire a second ellipsis when this row re-cuts it.
-    const preTruncated = `${'x'.repeat(ORIENTATION_ROW_EXCERPT_CHARS + 40)}…`;
-    const line = formatAgentObligationLine(obligationsFor([row(27, preTruncated)])[0]!, 'action');
-
-    expect(line).not.toContain('……');
-    expect(line).toContain('orders:get #27');
-    expect(orientationRowExcerpt(preTruncated).startsWith('x'.repeat(40))).toBe(true);
+  it('keeps the owner text, uncut, in the full-detail reason', () => {
+    const [obligation] = obligationsFor([row(27, MEDIAN)]);
+    expect(obligation!.reason).toContain(JSON.stringify(MEDIAN));
   });
 
   it('DELIVERS ALL THREE short directives — the regression that motivated P-002', () => {
@@ -126,13 +124,21 @@ describe('the uniform turn-start owner-directive row', () => {
     expect(line.length).toBeLessThanOrEqual(perRowBudget);
   });
 
-  it('reports an omission rather than dropping a directive silently', () => {
-    // Three median-length directives genuinely cannot fit 400 chars. The
-    // contract is that the projection SAYS SO, so the agent can recover the
-    // rest via detailRef instead of believing it saw the whole queue.
-    const brief = turnStartBody([row(27, MEDIAN), row(28, MEDIAN), row(29, MEDIAN)]);
+  it('DELIVERS ALL THREE even at the 500-char cap — row length no longer depends on the text', () => {
+    const atCap = 'y'.repeat(500);
+    const brief = turnStartBody([row(27, atCap), row(28, atCap), row(29, atCap)]);
 
-    expect(brief.projection.receipt.entriesDelivered).toBeLessThan(3);
+    expect(brief.projection.receipt.entriesDelivered).toBe(3);
+    expect(brief.projection.text.length).toBeLessThanOrEqual(SINK_MAX_CHARS);
+  });
+
+  it('reports an omission rather than dropping a directive silently', () => {
+    // A fourth directive exceeds the sink's entry cap. The contract is that the
+    // projection SAYS SO, so the agent can recover the rest via detailRef
+    // instead of believing it saw the whole queue.
+    const brief = turnStartBody([row(27, MEDIAN), row(28, MEDIAN), row(29, MEDIAN), row(30, MEDIAN)]);
+
+    expect(brief.projection.receipt.entriesDelivered).toBe(SINK_MAX_ENTRIES);
     expect(brief.projection.receipt.entriesOmitted).toBeGreaterThan(0);
     expect(brief.detailRef).toBeTruthy();
   });

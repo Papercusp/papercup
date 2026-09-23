@@ -468,7 +468,15 @@ describe('WI-3280: SessionStart playbook recovery', () => {
       input: '{"session_id":"random-new-id","source":"startup"}',
       // PAPERCUSP_SID cleared: the test process's own psu identity would
       // otherwise mismatch the seeded intent sid and fire the P-007 rebind leg.
-      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain), PAPERCUSP_SID: '', ...env },
+      // The operator URL is a refused port: a `startup` SessionStart bumps the
+      // context epoch (P-005), and that must never reach the live operator.
+      env: {
+        ...process.env,
+        PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain),
+        PAPERCUSP_SID: '',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+        ...env,
+      },
     });
   }
 
@@ -751,6 +759,43 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
     }
   });
 
+  it('P-005: startup/resume/clear each bump the context epoch ONCE and inject nothing extra', async () => {
+    const configDir = seedWithPlaybook('su-epoch1');
+    const hits: Array<{ method: string; url: string }> = [];
+    const server: Server = createServer((req, res) => {
+      hits.push({ method: req.method ?? '', url: req.url ?? '' });
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true, epoch: hits.length }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      for (const source of ['startup', 'resume', 'clear']) {
+        const out = await runHookAsync(configDir, INTACT_CHAIN, JSON.stringify({ session_id: 'x', source }), {
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+        });
+        // argv intact and no compaction: the bump is silent.
+        expect(out).toBe('');
+      }
+      expect(hits.map((h) => h.method)).toEqual(['POST', 'POST', 'POST']);
+      expect(hits.map((h) => h.url)).toEqual([
+        '/api/agent-mcp/context-epoch-bump?owner=su-epoch1&source=startup',
+        '/api/agent-mcp/context-epoch-bump?owner=su-epoch1&source=resume',
+        '/api/agent-mcp/context-epoch-bump?owner=su-epoch1&source=clear',
+      ]);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('P-005: a startup bump with the operator DOWN still exits 0 and emits nothing', async () => {
+    const configDir = seedWithPlaybook('su-epoch2');
+    const out = await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', {
+      PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+    });
+    expect(out).toBe('');
+  });
+
   it('compact source with the operator DOWN: static anchor alone, exit 0 (fail-soft)', async () => {
     const configDir = seedWithPlaybook('su-cmp2');
     const out = JSON.parse(
@@ -922,16 +967,19 @@ describe('P-007: SessionStart identity rebind (recorded sid ≠ live PAPERCUSP_S
       expect(ctx).toContain('carry-note:2');
       expect(ctx).toContain('presence:1'); // dropped counts as handled
       expect(ctx).not.toContain('awaits:'); // zero-count surfaces stay out of the banner
-      expect(posts).toHaveLength(1);
-      expect(posts[0].url).toBe('/api/agent-mcp/rebind-identity');
-      expect(JSON.parse(posts[0].body)).toEqual({ from: 'su-old-p7a', to: 'su-new-p7a' });
+      // The P-005 context-epoch bump shares this stub; count only the rebind.
+      const rebinds = () => posts.filter((p) => p.url === '/api/agent-mcp/rebind-identity');
+      expect(rebinds()).toHaveLength(1);
+      expect(JSON.parse(rebinds()[0]!.body)).toEqual({ from: 'su-old-p7a', to: 'su-new-p7a' });
+      // The bump runs AFTER the rebind, so it lands on the LIVE sid.
+      expect(posts.map((p) => p.url)).toContain('/api/agent-mcp/context-epoch-bump?owner=su-new-p7a&source=startup');
       // The old sid is retired: the intent file now records the live id …
       const intent = JSON.parse(readFileSync(join(configDir, RECOVER_INTENT), 'utf8'));
       expect(intent.sid).toBe('su-new-p7a');
       expect(intent.nativeSessionId).toBe('22fa0398-0e51-48b1-93cb-e7c8426064d1');
-      // … so the NEXT start is silent (no re-fire, no second POST).
+      // … so the NEXT start is silent (no re-fire, no second rebind POST).
       expect(await runHookAsync(configDir, INTACT_CHAIN, '{"session_id":"x","source":"startup"}', env)).toBe('');
-      expect(posts).toHaveLength(1);
+      expect(rebinds()).toHaveLength(1);
     } finally {
       await new Promise((r) => server.close(r));
     }

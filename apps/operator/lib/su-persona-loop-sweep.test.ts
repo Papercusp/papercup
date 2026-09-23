@@ -72,8 +72,8 @@ describe('su/interactive personas steer recurrence onto the engine loop (B-LOOP-
   });
 });
 
-describe('canonical SU persona — hybrid owner-directive capture (WI-10002186)', () => {
-  it('keeps the capture and next-turn resolution contract on the live blueprint path', () => {
+describe('canonical SU persona — owner-directive capture (WI-10002186)', () => {
+  it('keeps the every-turn-is-open capture and resolution contract on the live blueprint path', () => {
     const persona = readFileSync(BLUEPRINT_SU, 'utf8');
     const sectionStart = persona.indexOf('## Owner directives — durable capture and resolution');
     const autoMode = persona.indexOf('<!-- PAPERCUSP-SU:AUTO-MODE -->');
@@ -82,9 +82,11 @@ describe('canonical SU persona — hybrid owner-directive capture (WI-10002186)'
     expect(autoMode, 'the generated AUTO seam must remain present').toBeGreaterThan(sectionStart);
 
     const section = persona.slice(sectionStart, autoMode);
-    expect(section).toContain('UserPromptSubmit hook records the owner turn verbatim as a PENDING row');
-    expect(section).toContain('orders:resolve-pending { id, action: \'promote\' }');
-    expect(section).toContain("orders:resolve-pending { id, action: 'dismiss', reason }");
+    // D-001 of owner-directive-delivery-redesign-2026-09-22: every turn lands
+    // open and ends only by disposition; the promote/dismiss triage is gone.
+    expect(section).toContain('records the turn verbatim as an OPEN row, and there is no triage step');
     expect(section).toContain("orders:disposition { id, status: 'done'|'declined', note }");
+    expect(section).toContain('orders:summarize { id, summary }');
+    expect(section).not.toContain('orders:resolve-pending');
   });
 });

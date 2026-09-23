@@ -39,7 +39,14 @@ import { createOrgTestDb } from '../../../test/_org-test-db';
 import { getOrgPg } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache getOrgPg() memoizes (not re-exported from the index) — same pattern as hive-git-mode-gc-arming.integration.test.ts
 import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
-import { ackAndAdvance, clearReadCursor, resetReadCursorStore } from './read-cursors';
+import {
+  ackAndAdvance,
+  ackAndRead,
+  clearReadCursor,
+  DELIVERY_TOKEN_KEY,
+  resetReadCursorStore,
+  stage,
+} from './read-cursors';
 
 describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real getOrgPg client', () => {
   let db: OrgTestDb;
@@ -106,6 +113,60 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
       SELECT committed, pending FROM harness_shared.coord_read_cursors
        WHERE owner_id = ${owner} AND surface = ${surface}`;
     expect(rows[0]).toEqual({ committed: { state: 'N' }, pending: { state: 'N+1' } });
+  });
+
+  // ACK-ON-PROOF (owner-directive-delivery-redesign-2026-09-22 P-005). The
+  // conditional promotion is one CASE expression inside the ON CONFLICT update, so
+  // only a real Postgres can say whether its parameter casts and jsonb operators
+  // behave; the in-memory store mirrors the contract but shares none of the SQL.
+  describe('ackAndRead with a delivery confirmation', () => {
+    const readRow = async (owner: string, surface: string) => {
+      const { sql } = getOrgPg();
+      const rows = await sql<Array<{ committed: unknown; pending: unknown }>>`
+        SELECT committed, pending FROM harness_shared.coord_read_cursors
+         WHERE owner_id = ${owner} AND surface = ${surface}`;
+      return rows[0];
+    };
+
+    it('stages the token inside pending, and a MATCHING confirmation promotes it with the token stripped', async () => {
+      const owner = `su-${randomUUID().slice(0, 8)}`;
+      const surface = 'turn-start-orientation';
+      await ackAndRead(owner, surface, { confirmedToken: null });
+      await stage(owner, surface, { gen: 1 }, { deliveryToken: 'tok-1' });
+      expect((await readRow(owner, surface))?.pending).toEqual({ gen: 1, [DELIVERY_TOKEN_KEY]: 'tok-1' });
+
+      const r = await ackAndRead(owner, surface, { confirmedToken: 'tok-1' });
+      expect(r).toEqual({ committed: { gen: 1 }, baseline: false });
+      expect(await readRow(owner, surface)).toEqual({ committed: { gen: 1 }, pending: null });
+    });
+
+    it('a MISMATCHED or NULL confirmation discards pending and keeps the proven floor', async () => {
+      const owner = `su-${randomUUID().slice(0, 8)}`;
+      const surface = 'turn-start-orientation';
+      await ackAndRead(owner, surface, { confirmedToken: null });
+      await stage(owner, surface, { gen: 1 }, { deliveryToken: 'tok-1' });
+      await ackAndRead(owner, surface, { confirmedToken: 'tok-1' });
+
+      await stage(owner, surface, { gen: 2 }, { deliveryToken: 'tok-2' });
+      expect(await ackAndRead(owner, surface, { confirmedToken: 'tok-1' })).toEqual({
+        committed: { gen: 1 },
+        baseline: false,
+      });
+      expect(await readRow(owner, surface)).toEqual({ committed: { gen: 1 }, pending: null });
+
+      await stage(owner, surface, { gen: 3 }, { deliveryToken: 'tok-3' });
+      expect(await ackAndRead(owner, surface, { confirmedToken: null })).toEqual({
+        committed: { gen: 1 },
+        baseline: false,
+      });
+    });
+
+    it('a caller that sends NO confirmation keeps ack-on-arrival, and the token never reaches committed', async () => {
+      const owner = `su-${randomUUID().slice(0, 8)}`;
+      const surface = 'turn-start-orientation';
+      await stage(owner, surface, { gen: 1 }, { deliveryToken: 'tok-1' });
+      expect(await ackAndRead(owner, surface)).toEqual({ committed: { gen: 1 }, baseline: false });
+    });
   });
 
   it('clearReadCursor deletes the row via the real DB', async () => {

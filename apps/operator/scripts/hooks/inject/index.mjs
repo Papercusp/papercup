@@ -39,6 +39,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { runInjection } from './core.mjs';
+import { openDeliveryLedger } from './delivery-ledger.mjs';
 
 /**
  * @typedef {import('./ports.mjs').InjectionPort} InjectionPort
@@ -123,6 +124,8 @@ function readStdin(stream) {
  * @param {NodeJS.ReadableStream} [opts.stdin]
  * @param {NodeJS.ProcessEnv} [opts.env]
  * @param {typeof fetch} [opts.fetchImpl]
+ * @param {Parameters<typeof runInjection>[0]['openDeliveryLedger']} [opts.openDeliveryLedger]
+ *   see runInjection; the CLI entry below is the only caller that can commit it
  * @returns {Promise<string | null>} the stdout payload, or null to emit nothing
  */
 export async function dispatch(opts = {}) {
@@ -130,6 +133,7 @@ export async function dispatch(opts = {}) {
     argv = process.argv.slice(2),
     stdin = process.stdin,
     env = process.env,
+    openDeliveryLedger,
     fetchImpl,
   } = opts;
   // TEST-ONLY SEAM (EI-19989482108652654): dispatch()'s own try/catch below
@@ -164,7 +168,7 @@ export async function dispatch(opts = {}) {
       return null;
     }
 
-    return await runInjection({ adapter, nativeEvent, event, env, fetchImpl });
+    return await runInjection({ adapter, nativeEvent, event, env, fetchImpl, openDeliveryLedger });
   } catch {
     return null;
   }
@@ -193,10 +197,21 @@ const invokedDirectly = (() => {
 })();
 
 if (invokedDirectly) {
-  dispatch()
+  // ACK-ON-PROOF (delivery-ledger.mjs): the offered token is committed from the
+  // stdout write's own callback, so it is recorded only once the payload has
+  // actually left this process. Killed before that, nothing is recorded and the
+  // operator re-delivers the block next turn.
+  /** @type {import('./delivery-ledger.mjs').DeliveryLedger | null} */
+  let ledger = null;
+  dispatch({
+    openDeliveryLedger: (owner, env) => (ledger = openDeliveryLedger(owner, env)),
+  })
     .then((payload) => {
-      if (payload) process.stdout.write(payload + '\n');
-      process.exit(0);
+      if (!payload) process.exit(0);
+      process.stdout.write(payload + '\n', (err) => {
+        if (!err) ledger?.commit();
+        process.exit(0);
+      });
     })
     .catch(() => process.exit(0));
 }

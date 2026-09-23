@@ -37,6 +37,7 @@ import { PORTS, killSwitchState, specFor } from './ports.mjs';
  * @property {Array<{ tool: string, toolInput: string, toolResponse: string }>} [toolCalls]
  * @property {boolean} [memoryEnabled]
  * @property {string} [detectorSessionKey] private failure-loop detector key
+ * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
  */
 
 /** Loopback operator. */
@@ -135,7 +136,9 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} [opts]
- * @returns {Promise<string | null>} the text to inject, or null to inject nothing
+ * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
+ *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
+ *   or null to inject nothing
  */
 export async function postInjection(port, body, opts = {}) {
   const { env = process.env, fetchImpl = globalThis.fetch } = opts;
@@ -159,8 +162,10 @@ export async function postInjection(port, body, opts = {}) {
     });
     if (!res || !res.ok) return null;
     const payload = await res.json();
-    const text = payload && typeof payload === 'object' ? payload.text : null;
-    return typeof text === 'string' && text.trim() ? text : null;
+    if (!payload || typeof payload !== 'object') return null;
+    const { text, deliveryToken } = payload;
+    if (typeof text !== 'string' || !text.trim()) return null;
+    return { text, deliveryToken: typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null };
   } catch {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
@@ -243,9 +248,14 @@ export function clampPrompt(prompt) {
  * @param {unknown} args.event
  * @param {NodeJS.ProcessEnv} [args.env]
  * @param {typeof fetch} [args.fetchImpl]
+ * @param {(owner: string, env: NodeJS.ProcessEnv) => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
+ *   turn-start only. Opts the request into ACK-ON-PROOF: the last confirmed token
+ *   rides as `confirmedDelivery`, and the returned token is OFFERED to the ledger
+ *   once a payload exists. Committing it is the caller's job, after it has actually
+ *   written the payload — only the process that prints knows the print succeeded.
  * @returns {Promise<string | null>}
  */
-export async function runInjection({ adapter, nativeEvent, event, env = process.env, fetchImpl }) {
+export async function runInjection({ adapter, nativeEvent, event, env = process.env, fetchImpl, openDeliveryLedger }) {
   try {
     const owner = sessionId(env);
     if (!owner) return null;
@@ -266,6 +276,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         ? env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         : owner;
+    const ledger = port === 'turn-start' && openDeliveryLedger ? openDeliveryLedger(owner, env) : null;
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
       ...partial,
@@ -276,14 +287,17 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       // used to sign MCP `?detector=` into this env carrier; the owner fallback
       // preserves older hook launches that predate the carrier.
       ...(port === 'mid-turn' ? { detectorSessionKey } : {}),
+      ...(ledger ? { confirmedDelivery: ledger.confirmed() } : {}),
     };
 
-    const text = await postInjection(port, request, { env, fetchImpl });
-    const safeText = fenceControlTransition(text, owner);
+    const response = await postInjection(port, request, { env, fetchImpl });
+    const safeText = fenceControlTransition(response?.text ?? null, owner);
     if (!safeText) return null;
 
     const payload = adapter.render(port, safeText, event);
-    return typeof payload === 'string' && payload.length > 0 ? payload : null;
+    if (typeof payload !== 'string' || payload.length === 0) return null;
+    if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken);
+    return payload;
   } catch {
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.
     return null;

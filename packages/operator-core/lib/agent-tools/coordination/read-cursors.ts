@@ -19,6 +19,17 @@
  * coord_watermarks' deliberately non-monotonic ts cursors (watermarks.ts),
  * generalized from timestamps to arbitrary compact state fingerprints.
  *
+ * ACK-ON-PROOF (owner-directive-delivery-redesign-2026-09-22 P-005, D-005).
+ * Arrival proves only that the caller came BACK, not that call N's content
+ * reached the agent. A hook killed after the server staged (its own wall, the
+ * client's hook timeout, a crash between receiving and printing) still arrives
+ * on the next turn, so arrival would ack a block nobody saw. A caller that can
+ * prove emission passes an {@link AckConfirmation}: `stage` records a delivery
+ * token inside pending, the caller echoes that token back only after it
+ * actually emitted, and `ackAndRead` promotes pending ONLY on a match —
+ * otherwise it discards pending and the next diff re-delivers. A caller that
+ * passes no confirmation keeps ack-on-arrival unchanged.
+ *
  * Store shape mirrors watermarks.ts: a module-level default Pg store with
  * configure/reset seams so tests inject the in-memory variant and never touch
  * the live row.
@@ -40,13 +51,28 @@ export interface AckResult {
   baseline: boolean;
 }
 
+/**
+ * The reserved key a staged pending carries its delivery token under. A surface's
+ * own state must never use it; promotion strips it, so no diff ever sees it.
+ */
+export const DELIVERY_TOKEN_KEY = '__deliveryToken';
+
+/**
+ * ACK-ON-PROOF — see the module header. `confirmedToken` is the token the caller
+ * proves it emitted; null means it can prove nothing (a first turn, or the last
+ * emission failed), which discards pending exactly like a mismatch does.
+ */
+export interface AckConfirmation {
+  confirmedToken: string | null;
+}
+
 export interface ReadCursorStore {
   /** Phase 1+2 in one round-trip: promote pending→committed (the ack for the
    *  previous delivery), persist `next` as the new pending, and return the
    *  post-promotion committed to diff against. */
   ackAndAdvance(ownerId: string, surface: string, next: CursorState): Promise<AckResult>;
   /** Phase 1 ALONE — see the module-level {@link ackAndRead}. */
-  ackAndRead(ownerId: string, surface: string): Promise<AckResult>;
+  ackAndRead(ownerId: string, surface: string, confirmation?: AckConfirmation): Promise<AckResult>;
   /** Phase 2 ALONE — see the module-level {@link stage}. */
   stage(ownerId: string, surface: string, next: CursorState): Promise<void>;
   /** Drop a surface's cursor (e.g. a schema change invalidates fingerprints). */
@@ -93,19 +119,31 @@ class PgReadCursorStore implements ReadCursorStore {
     return { committed, baseline: committed === null };
   }
 
-  async ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
+  async ackAndRead(ownerId: string, surface: string, confirmation?: AckConfirmation): Promise<AckResult> {
     const { sql } = getOrgPg();
     const ws = coordScopeWorkspace();
     // Phase 1 only: promote pending→committed and CLEAR pending. Same single
     // statement / single-writer invariant as ackAndAdvance; the only difference is
     // that no new pending is installed, because the caller cannot know it yet.
+    // Under ack-on-proof the promotion is conditional on the token match; a
+    // non-match keeps committed. Pending is cleared either way, so a failed
+    // delivery is re-diffed from the old floor rather than retried verbatim.
+    const proof = confirmation !== undefined;
+    const token = confirmation?.confirmedToken ?? null;
     const rows = await sql<Array<{ committed: CursorState | null }>>`
       INSERT INTO harness_shared.coord_read_cursors
              (workspace_id, owner_id, surface, committed, pending, pending_at, updated_at)
       VALUES (${ws}, ${ownerId}, ${surface}, NULL, NULL, now(), now())
       ON CONFLICT (workspace_id, owner_id, surface) DO UPDATE
-         SET committed  = COALESCE(harness_shared.coord_read_cursors.pending,
-                                   harness_shared.coord_read_cursors.committed),
+         SET committed  = CASE
+                            WHEN NOT ${proof}::boolean
+                              THEN COALESCE(harness_shared.coord_read_cursors.pending,
+                                            harness_shared.coord_read_cursors.committed)
+                            WHEN harness_shared.coord_read_cursors.pending ->> ${DELIVERY_TOKEN_KEY}::text
+                                 = ${token}::text
+                              THEN harness_shared.coord_read_cursors.pending
+                            ELSE harness_shared.coord_read_cursors.committed
+                          END - ${DELIVERY_TOKEN_KEY}::text,
              pending    = NULL,
              updated_at = now()
       RETURNING committed
@@ -149,10 +187,18 @@ export class InMemoryReadCursorStore implements ReadCursorStore {
     this.rows.set(key, { committed, pending: next });
     return { committed, baseline: committed === null };
   }
-  async ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
+  async ackAndRead(ownerId: string, surface: string, confirmation?: AckConfirmation): Promise<AckResult> {
     const key = `${ownerId}\0${surface}`;
     const row = this.rows.get(key) ?? { committed: null, pending: null };
-    const committed = row.pending ?? row.committed;
+    const promoted =
+      confirmation === undefined
+        ? (row.pending ?? row.committed)
+        : row.pending !== null &&
+            confirmation.confirmedToken !== null &&
+            row.pending[DELIVERY_TOKEN_KEY] === confirmation.confirmedToken
+          ? row.pending
+          : row.committed;
+    const committed = promoted === null ? null : withoutDeliveryToken(promoted);
     this.rows.set(key, { committed, pending: null });
     return { committed, baseline: committed === null };
   }
@@ -164,6 +210,12 @@ export class InMemoryReadCursorStore implements ReadCursorStore {
   async clear(ownerId: string, surface: string): Promise<void> {
     this.rows.delete(`${ownerId}\0${surface}`);
   }
+}
+
+function withoutDeliveryToken(state: CursorState): CursorState {
+  if (!(DELIVERY_TOKEN_KEY in state)) return state;
+  const { [DELIVERY_TOKEN_KEY]: _token, ...rest } = state;
+  return rest;
 }
 
 let store: ReadCursorStore = new PgReadCursorStore();
@@ -207,9 +259,16 @@ export async function ackAndAdvance(
  * and re-delivers from that same floor — the content of the dead call is
  * re-sent, never skipped. Identical recovery contract to `ackAndAdvance`; only
  * the window in which a crash costs a re-delivery differs.
+ *
+ * Pass `confirmation` for ACK-ON-PROOF (module header): the previous pending is
+ * promoted only when its staged delivery token equals `confirmedToken`.
  */
-export async function ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
-  return store.ackAndRead(ownerId, surface);
+export async function ackAndRead(
+  ownerId: string,
+  surface: string,
+  confirmation?: AckConfirmation,
+): Promise<AckResult> {
+  return store.ackAndRead(ownerId, surface, confirmation);
 }
 
 /**
@@ -217,9 +276,21 @@ export async function ackAndRead(ownerId: string, surface: string): Promise<AckR
  * describes has been assembled for the caller. Its promotion to committed is
  * deferred to the NEXT `ackAndRead`/`ackAndAdvance`, which is what makes the
  * delivery at-least-once rather than at-most-once. See {@link ackAndRead}.
+ *
+ * `deliveryToken` stages the pending under ACK-ON-PROOF: the next `ackAndRead`
+ * promotes it only when the caller confirms that exact token.
  */
-export async function stage(ownerId: string, surface: string, next: CursorState): Promise<void> {
-  return store.stage(ownerId, surface, next);
+export async function stage(
+  ownerId: string,
+  surface: string,
+  next: CursorState,
+  opts: { deliveryToken?: string } = {},
+): Promise<void> {
+  return store.stage(
+    ownerId,
+    surface,
+    opts.deliveryToken ? { ...next, [DELIVERY_TOKEN_KEY]: opts.deliveryToken } : next,
+  );
 }
 
 /** Drop a surface's cursor for an owner. */

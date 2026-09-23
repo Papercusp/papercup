@@ -9,9 +9,15 @@ description: "Exact preconditions, commands, pass/fail predicates, evidence and 
 type: Insight
 discovered: 2026-09-23
 status: active
+documents:
+  - "packages/operator-core/lib/sync/pot-git/post-go-canary-observations.ts"
+  - "packages/operator-core/lib/sync/pot-git/post-go-release-canary.ts"
+  - "packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts"
+plans:
+  - "p2p-public-release-endgame-2026-09-01"
 ---
 
-Command-level execution runbook for `p2p-public-release-endgame-2026-09-01` P-501 (72h canary soak, = git-activation P-402) and P-502 (Leg G owner-freeze/recovery drill, = git-activation P-308 as re-scoped by endgame D-022). The policy (ordering, what may not be claimed, no failover) lives in [hive-git P2P ops runbook § Public-release post-GO canary](/internal/docs/agent-insights/hive-git-p2p-ops-runbook-2026-07-09); this page adds the exact preconditions, commands, pass/fail predicates, evidence and abort rules. Written 2026-09-23 under WI-10002542. Every command and query below was run read-only on the tower that day, except the live Phase G run and the observation producer that does not exist yet (WI-10002545).
+Command-level execution runbook for `p2p-public-release-endgame-2026-09-01` P-501 (72h canary soak, = git-activation P-402) and P-502 (Leg G owner-freeze/recovery drill, = git-activation P-308 as re-scoped by endgame D-022). The policy (ordering, what may not be claimed, no failover) lives in [hive-git P2P ops runbook § Public-release post-GO canary](/internal/docs/agent-insights/hive-git-p2p-ops-runbook-2026-07-09); this page adds the exact preconditions, commands, pass/fail predicates, evidence and abort rules. Written 2026-09-23 under WI-10002542. Every command and query below was run read-only on the tower that day, except the live Phase G run and the hourly `post-go-canary-observe` sample, which only runs at execution time. That producer, and the C1–C6 checks in the verifier, landed under WI-10002545.
 
 ## Governing decisions
 
@@ -25,7 +31,7 @@ Command-level execution runbook for `p2p-public-release-endgame-2026-09-01` P-50
 
 1. **Independent GO exists for the exact candidate** (P-401 signed). Record `candidateSha`, `approvedAt`, `reviewerOwnerId` (must differ from `implementationOwnerId`) and `attestationRef`.
 2. **The candidate is what is running.** `/api/health` on every host in the canary hive reports `candidateSha`. `for p in 3070 3170; do curl -s 127.0.0.1:$p/api/health; done` on the tower, plus the VM equivalent.
-3. **The canary hive is pinned.** git-activation P-401 named `shared-hive-test` as the default candidate. On 2026-09-23 that hive's git-sync routine had NO `github_bridge` metadata (not bridged), while `hive-canary` was bridged with divergence `clear`. The release leader records which slug is the canary before starting. It must satisfy the bridged check below.
+3. **The canary hive is `hello-world-3-pot` (endgame D-044).** git-activation P-401 named `shared-hive-test`, which has no `github_bridge` metadata at all. `hive-canary` (pinned briefly by D-041) is bridged in config only. Measured 2026-09-23, its bridge reports `ran:false`, `skipped:'no_github_remote'`, `egress_target:'skipped'` and a null `egress_head`. Its `divergence:'clear'` is the idle default, so C5 can never pass there. `hello-world-3-pot` reports `ran:true`, `egress_target:'fork'`, a real `egress_head` and divergence `clear`. This precondition is enforced mechanically. The first `post-go-canary-observe` call is the soak START, and it REFUSES unless the bridge ran with a real egress target and head, divergence is clear, and no escalation is open.
 4. **Baseline is clean at T0.** Run the observation query below: divergence `clear`, `needs_owner` false, `errors` empty, no open escalations, `watchdog_alerted`/`eligibility_alerted` false.
 
 ### Observation query (run at T0, then at least hourly, and at T0+72h)
@@ -49,6 +55,15 @@ SELECT now() AS at, r.active, r.last_fired_at,
 ```
 
 Run it with `dev:pg_query`. Store each result row verbatim as a sample receipt on the P-501 work-item.
+
+**Machine-sampled form (use this one; WI-10002545).** The producer captures the same row as one typed sample. The sample adds the open-escalation count and a `git ls-remote` of the fork's `refs/heads/staging`, and it is appended atomically (tmp file + rename) to a samples file:
+
+```sh
+npx tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts \
+  post-go-canary-observe hello-world-3-pot /path/to/p501-samples.json
+```
+
+Run it at T0, when the first call starts the soak and enforces precondition 3. Then run it every hour, and once more at or after T0+72h. Consecutive samples must be at most 1 hour apart; a missed hour fails coverage. The sampler still appends a bad hour, because the verifier, not the sampler, judges the window. Whoever executes P-501 owns the hourly cadence. Keep each run's stdout on the P-501 work-item as the sample receipt.
 
 ### Pass predicates (every one must hold for the whole window)
 
@@ -77,18 +92,34 @@ SELECT created_at, title, importance, desktop_succeeded, mobile_succeeded
 
 - The candidate identity changes on any canary host: STOP. The epoch is void; restart only after a fresh GO for the new candidate. Never extend or relabel a failed epoch.
 - C1, C2 or C4 fails in two consecutive samples: STOP and diagnose. A `needs_owner=true` divergence goes to the owner (divergence triage in the ops runbook). Never auto-clear an open escalation.
-- A sample gap longer than 2h: the window is incomplete. Continue observing, but the 72h clock re-anchors to the first sample after the gap.
+- A sample gap longer than 1h makes the window incomplete, and the verifier rejects it (`gap over 1 hour`). Keep observing, but re-anchor the 72h clock at the first sample after the gap. Set `canary.startedAt` there and drop the earlier samples, because a sample before `startedAt` fails as outside the window.
 
 ### Evidence and verification
 
-Build `post-go-canary-input.json` (schema `hive-git-post-go-release-canary/v1`) with `independentGo` from the preconditions and `canary.{candidateSha,startedAt,finishedAt}` from the first and last samples. `ownerFreezeChaos` is filled after P-502. Then run:
+Build `post-go-canary-input.json` (schema `hive-git-post-go-release-canary/v1`) as follows:
+
+- `independentGo` comes from the preconditions.
+- `canary` = `{ candidateSha, startedAt, finishedAt, hive: 'hello-world-3-pot', routineIntervalSec, observations, alarms, alarmRail }`.
+- `observations` is the samples file, verbatim.
+- `alarms` is the alarm-history query result as `{ createdAt, title, adjudication, ref }`. Use an empty list when the window was quiet. Every page must be adjudicated `false-alarm` or `true-positive`.
+- `alarmRail` records C6 as `{ divergenceNotifiesUrgent, stallWatchdogNotifiesUrgent, deliveredPageAt, deliveredPageRef }`.
+- `ownerFreezeChaos` is filled after P-502.
+
+Then run:
 
 ```sh
 npx tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts \
   post-go-canary-verify /path/to/post-go-canary-input.json
 ```
 
-⚠ This verifier checks ONLY GO ordering, candidate identity, the actual 72h duration and the P-502 block. It does NOT check C1–C6 (WI-10002545). Until that lands, the sample receipts and a written C1–C6 verdict on the P-501 item are the acceptance evidence. A verifier `ok:true` alone is not.
+Since WI-10002545 the verifier checks C1–C6 over the samples, on top of GO ordering, candidate identity, the actual 72h duration and the P-502 block. It also fails closed when `observations` is missing.
+
+- **Coverage:** a sample at least hourly. The first comes within 1h of `startedAt` and the last within 1h of `finishedAt`, all on the one pinned hive.
+- **C4:** fails on a last fire older than 3x the routine interval, and on an `error`/`quarantined` status in two consecutive samples.
+- **C5:** tolerates one sample where the fork lags the egress head, but not two in a row and not at the final sample.
+- **Pages:** any page in the window fails, under C4 if it is a true positive and under C3 otherwise.
+
+A verifier `ok:true` counts as acceptance evidence only together with the sample receipts it was computed from.
 
 ## P-502 — Leg G owner-freeze/recovery drill
 
@@ -138,4 +169,4 @@ npx tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts \
 | observation query | runs; `hive-canary` divergence `clear`, errors `[]`, 0 open escalations |
 | alarm-history query | runs (positive control: 4,866 rows in 14d); watchdog pages have NULL `harness_slug` |
 | owner paging | `notifyAttention(urgent)` present in `github-divergence.ts` and `git-sync-stall-watchdog.ts` |
-| gaps | WI-10002545 (C1–C6 not machine-checked; no observe producer); canary-hive identity must be pinned (precondition 3) |
+| gaps (closed 2026-09-23) | C1–C6 machine-checked and `post-go-canary-observe` added (WI-10002545); canary hive pinned to `hello-world-3-pot` (D-044) |

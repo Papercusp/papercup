@@ -42,7 +42,7 @@
  * a tool exempted there but not here would red the gate this guard exists to keep
  * green.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -191,16 +191,26 @@ export function findGuidanceReturnsWithoutResult(files, exemptTools = []) {
   return violations;
 }
 
+/**
+ * The WORKING TREE's tool sources, not the index's. On this shared tree git-sync
+ * commits on a schedule and skips locked paths, so the index routinely lags:
+ * `--cached` alone listed a tool file an agent had just deleted (and the read
+ * below then threw ENOENT, failing the lint for everyone), and never listed a
+ * tool file an agent had just added (so it went unchecked until committed).
+ * `--others --exclude-standard` adds the untracked new files; the existence
+ * filter drops the deleted ones.
+ */
 export function listToolSourceFiles(root = ROOT, roots = TOOL_ROOTS) {
-  const out = execFileSync('git', ['ls-files', '-z', ...roots.map((dir) => `${dir}/**/*.ts`)], {
-    cwd: root,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const out = execFileSync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', ...roots.map((dir) => `${dir}/**/*.ts`)],
+    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
   return out
     .split('\0')
     .filter(Boolean)
-    .filter((path) => !path.endsWith('.d.ts') && !/\.test\.tsx?$/.test(path));
+    .filter((path) => !path.endsWith('.d.ts') && !/\.test\.tsx?$/.test(path))
+    .filter((path) => existsSync(resolve(root, path)));
 }
 
 export function checkGuidanceReturnsSchema(root = ROOT) {

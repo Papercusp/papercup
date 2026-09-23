@@ -16,7 +16,9 @@
  */
 
 import { execFile } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -35,8 +37,11 @@ const claude = await import(path.join(HERE, '..', 'adapters', 'claude.mjs'));
 const codex = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
 const ports = await import(path.join(HERE, '..', 'ports.mjs'));
 
-/** A fake operator. Records what it received; answers with injectable text. */
-function fakeOperator(opts: { text?: string | null; delayMs?: number } = {}) {
+/**
+ * A fake operator. Records what it received; answers with injectable text.
+ * `opts` is read per request, so a test may mutate it between turns.
+ */
+function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string } = {}) {
   const received: Array<{ url: string; body: Record<string, unknown> }> = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
@@ -45,7 +50,12 @@ function fakeOperator(opts: { text?: string | null; delayMs?: number } = {}) {
       received.push({ url: req.url ?? '', body: JSON.parse(raw || '{}') });
       const send = () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ text: opts.text ?? 'INJECTED' }));
+        res.end(
+          JSON.stringify({
+            text: opts.text ?? 'INJECTED',
+            ...(opts.deliveryToken ? { deliveryToken: opts.deliveryToken } : {}),
+          }),
+        );
       };
       if (opts.delayMs) setTimeout(send, opts.delayMs);
       else send();
@@ -384,6 +394,80 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
     );
     expect(res.code).toBe(0);
     expect(res.stdout).toBe('');
+  });
+});
+
+/**
+ * ACK-ON-PROOF (owner-directive-delivery-redesign-2026-09-22 P-005, D-005).
+ * The operator acks a turn-start orientation block only when the next request
+ * echoes the token it was delivered under, and the CLI records that token only
+ * after its stdout write succeeded. Driven through the real subprocess because
+ * "printed, then recorded" is a property of the process, not of dispatch().
+ */
+describe('turn-start delivery ledger (P-005)', () => {
+  const turnStart = (env: Record<string, string>) =>
+    runCli(['--client=claude', '--event=UserPromptSubmit'], JSON.stringify({ prompt: 'hi' }), env);
+  const isolatedHome = () => mkdtempSync(path.join(tmpdir(), 'inject-ledger-'));
+
+  it('echoes the token it printed on the NEXT turn, and nothing it did not print', async () => {
+    const opts: { deliveryToken?: string; delayMs?: number } = { deliveryToken: 'tok-1' };
+    const op = fakeOperator(opts);
+    const base = await op.start();
+    running = op;
+    const env = { PAPERCUSP_SID: 'sid-ledger', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: isolatedHome() };
+
+    const first = await turnStart(env);
+    expect(first.stdout).toContain('INJECTED');
+    // Nothing provable yet: the key is present (opted in) and null.
+    expect(op.received[0].body).toHaveProperty('confirmedDelivery', null);
+
+    // This turn's answer lands after the 2.5s wall, so the hook prints nothing —
+    // the exact case where the server staged tok-2 and arrival would have acked it.
+    opts.deliveryToken = 'tok-2';
+    opts.delayMs = 3_000;
+    const killed = await turnStart(env);
+    expect(killed.stdout).toBe('');
+    expect(op.received[1].body.confirmedDelivery).toBe('tok-1');
+
+    opts.delayMs = 0;
+    await turnStart(env);
+    expect(op.received[2].body.confirmedDelivery).toBe('tok-1');
+  }, 20_000);
+
+  it('records nothing when the response has nothing to print', async () => {
+    const opts: { text?: string; deliveryToken?: string } = { text: '   ', deliveryToken: 'tok-silent' };
+    const op = fakeOperator(opts);
+    const base = await op.start();
+    running = op;
+    const env = { PAPERCUSP_SID: 'sid-silent', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: isolatedHome() };
+
+    await turnStart(env);
+    await turnStart(env);
+    expect(op.received[1].body.confirmedDelivery).toBeNull();
+  });
+
+  it('mid-turn never carries a confirmation — the ledger is turn-start only', async () => {
+    const op = fakeOperator({ deliveryToken: 'tok-mid' });
+    const base = await op.start();
+    running = op;
+    await runCli(
+      ['--client=claude', '--event=PostToolBatch'],
+      JSON.stringify({ tool_calls: [{ tool_name: 'B', tool_input: 'x', tool_response: 'y' }] }),
+      { PAPERCUSP_SID: 'sid-mid', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: isolatedHome() },
+    );
+    expect(op.received[0].body).not.toHaveProperty('confirmedDelivery');
+  });
+
+  it('an unwritable ledger keeps ack-on-arrival instead of proving nothing forever', async () => {
+    const op = fakeOperator({ deliveryToken: 'tok-1' });
+    const base = await op.start();
+    running = op;
+    // A regular FILE where the home directory should be: mkdir under it fails.
+    const home = path.join(isolatedHome(), 'not-a-dir');
+    writeFileSync(home, '');
+    const res = await turnStart({ PAPERCUSP_SID: 'sid-ro', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: home });
+    expect(res.stdout).toContain('INJECTED');
+    expect(op.received[0].body).not.toHaveProperty('confirmedDelivery');
   });
 });
 
