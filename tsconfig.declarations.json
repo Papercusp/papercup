@@ -293,6 +293,9 @@
     // Enrolled rather than `@ts-ignore`-d because the detector surface is the thing
     // the test asserts on, so a generated declaration is worth more than a suppression.
     "apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
+    // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
+    // (owner-directive-delivery-redesign-2026-09-22 P-007).
+    "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.

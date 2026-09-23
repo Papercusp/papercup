@@ -30,6 +30,12 @@ import {
 } from './typed-properties';
 import { getDatatype } from './datatype-registry-store';
 import { checkAgainstJsonSchema } from './json-schema-validation';
+import {
+  CANONICAL_WORKLIST_PROPERTY,
+  PLAN_REF_LIST_DATATYPE,
+  ensurePlanRefListDatatype,
+  withCanonicalWorklistDeclaration,
+} from './goals/package-property-datatypes';
 
 /** The narrowest handle both callers' SQL tags satisfy (pool sql or tx). */
 type SqlLike = postgres.Sql;
@@ -173,11 +179,31 @@ export async function applyGoalPropertyWrite(
      WHERE id = ${args.goalId} AND workspace_id = ${args.workspaceId}
      FOR UPDATE`;
   if (!rows[0]) return { ok: false, code: 'not_found' };
-  const result = await runPreparedMutation(sql, args, rows[0]);
+  // Goals created before the canonical worklist seed still have no declaration.
+  // Repair at the existing write boundary, under the same row lock as CAS, so
+  // they can enter the placement worklist without a privileged data patch.
+  // A custom declaration remains authoritative, including owner-only editing.
+  const schema = asDoc(rows[0].property_schema);
+  const worklistWrite = args.property === CANONICAL_WORKLIST_PROPERTY;
+  const seedWorklist =
+    worklistWrite && !Object.prototype.hasOwnProperty.call(schema, CANONICAL_WORKLIST_PROPERTY);
+  const propertySchema = seedWorklist ? withCanonicalWorklistDeclaration(schema) : schema;
+  if (worklistWrite) {
+    const parsed = TypedPropertySchemaDocumentSchema.safeParse(propertySchema);
+    if (
+      parsed.success &&
+      parsed.data[CANONICAL_WORKLIST_PROPERTY]?.datatype === PLAN_REF_LIST_DATATYPE
+    ) {
+      await ensurePlanRefListDatatype(sql, args.workspaceId);
+    }
+  }
+  const result = await runPreparedMutation(sql, args, { ...rows[0], property_schema: propertySchema });
   if (!result.ok) return result;
   await sql`
     UPDATE harness_shared.goals
        SET properties = ${JSON.stringify(result.properties)}::text::jsonb,
+           property_schema = CASE WHEN ${seedWorklist}
+             THEN ${JSON.stringify(propertySchema)}::text::jsonb ELSE property_schema END,
            updated_at = now()
      WHERE id = ${args.goalId} AND workspace_id = ${args.workspaceId}`;
   return result;

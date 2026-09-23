@@ -236,8 +236,11 @@ export interface MigrationDrift {
    *
    *  EI-19408574209859155: every entry now carries a `classification` splitting
    *  a real half-landed migration from a provably-benign comment-only edit.
-   *  Alert on `contentDriftExecutable`, not on this raw list. */
-  contentDrift: ClassifiedMigrationContentDrift[];
+   *  Alert on `contentDriftExecutable`, not on this raw list.
+   *
+   *  WI-10002541: `null` = NOT MEASURED (the caller passed neither
+   *  `checkContent` nor `classifyContent`). Never read null as "no drift". */
+  contentDrift: ClassifiedMigrationContentDrift[] | null;
   /** EI-19408574209859155: the subset of `contentDrift` that is NOT proven
    *  benign — `executable` (real half-landed DDL) plus `unclassified` (the
    *  applied bytes could not be recovered, or the SQL could not be lexed).
@@ -247,8 +250,8 @@ export interface MigrationDrift {
    *  deliberate asymmetry: `unclassified` counts as hazardous, because failing
    *  toward reporting drift is the only safe direction — misclassifying a real
    *  half-landed migration as benign silences exactly the signal the detector
-   *  exists to carry. */
-  contentDriftExecutable: ClassifiedMigrationContentDrift[];
+   *  exists to carry. `null` exactly when `contentDrift` is (not measured). */
+  contentDriftExecutable: ClassifiedMigrationContentDrift[] | null;
   /** The tree whose bytes `contentDrift` compared against — the canonical
    *  staging tree when resolvable (agents edit THERE, so drift shows up there
    *  first), else whichever tree served this call. Null when neither resolves,
@@ -509,9 +512,21 @@ export interface CheckMigrationDriftOptions {
    * skipping the work can never make drift look benign.
    *
    * `db:check_drift` — the diagnostic surface where an agent is actually asking
-   * the question — passes true.
+   * the question — passes true. Implies {@link checkContent}.
    */
   classifyContent?: boolean;
+  /**
+   * Compute raw content drift at all: read and sha256 every APPLIED migration
+   * on disk and compare against the hash recorded when it ran. DEFAULT FALSE
+   * (WI-10002541), for the same reason as `classifyContent`, one level down:
+   * the hashing itself is a synchronous read + sha256 of ~1,000 files (4.8MB)
+   * on the calling thread, ~37ms per call on the tower and ~150ms in a rig-VM
+   * CPU profile, paid on every boot/system-health tick by callers that never
+   * read `contentDrift`. When false, `contentDrift` and
+   * `contentDriftExecutable` are `null` (NOT MEASURED), never an empty list,
+   * so an unmeasured result cannot read as "no drift".
+   */
+  checkContent?: boolean;
 }
 
 export async function checkMigrationDrift(
@@ -578,13 +593,19 @@ export async function checkMigrationDrift(
   // is where agents edit, so an edit-after-apply is observable there first (and
   // often ONLY there, until the next deploy carries it into the release tree).
   const contentDriftSqlDir = canonicalStagingSqlDir ?? sqlDir;
-  const rawContentDrift = computeContentDrift(
-    appliedRows,
-    hashMigrationsOnDisk(
-      contentDriftSqlDir,
-      appliedRows.map((r) => r.filename).filter(isRunnerMigration),
-    ),
-  );
+  // WI-10002541: opt-in. Only `db:check_drift` reads content drift; boot reads
+  // `schemaAhead` and system-health reads `missing`, and they were paying a
+  // synchronous full re-hash of every applied migration on each call.
+  const checkContent = opts.checkContent === true || opts.classifyContent === true;
+  const rawContentDrift = checkContent
+    ? computeContentDrift(
+        appliedRows,
+        hashMigrationsOnDisk(
+          contentDriftSqlDir,
+          appliedRows.map((r) => r.filename).filter(isRunnerMigration),
+        ),
+      )
+    : null;
 
   // EI-19408574209859155: a byte difference is not yet a verdict. Recover the
   // bytes that ACTUALLY ran (from git — the DB stores only their hash) and
@@ -594,7 +615,9 @@ export async function checkMigrationDrift(
   // Opt-in: see CheckMigrationDriftOptions.classifyContent for why the default
   // is off (measured 8.5–10s on this tree, in a function boot/system-health/the
   // watchdog all call without ever reading this field).
-  const contentDrift = opts.classifyContent
+  const contentDrift = rawContentDrift === null
+    ? null
+    : opts.classifyContent
     ? classifyContentDrift(
         rawContentDrift,
         (d) =>
@@ -617,7 +640,8 @@ export async function checkMigrationDrift(
           'not classified — this caller did not request classification (pass classifyContent:true, ' +
           'or use db:check_drift, to separate a half-landed migration from a comment-only edit)',
       }));
-  const contentDriftExecutable = contentDrift.filter((d) => d.classification !== 'comments-only');
+  const contentDriftExecutable =
+    contentDrift === null ? null : contentDrift.filter((d) => d.classification !== 'comments-only');
 
   return {
     sqlDir,

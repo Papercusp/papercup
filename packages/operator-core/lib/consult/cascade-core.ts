@@ -26,7 +26,7 @@ import {
   revivalBrief,
   revivalBudgetSpent,
 } from './get-feedback-core';
-import { snapshotCandidateQualifies } from './relevance-router';
+import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
@@ -138,8 +138,8 @@ export function cascadeWakeBody(input: CascadeWakeContext): string {
   const { next } = input;
   const why =
     next.via === 'minimum'
-      ? `Selected as BEST-AVAILABLE reviewer (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`
-      : `Routed to you by transcript relevance (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)}). Validate relevance first; answer FROM your transcript, citing evidence.`;
+      ? `Selected as BEST-AVAILABLE reviewer (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`
+      : `Routed to you by transcript relevance (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)}). Validate relevance first; answer FROM your transcript, citing evidence.`;
   const digestLines =
     input.digest.length === 0
       ? '(none yet — every earlier selectee declined or expired unanswered)'
@@ -464,7 +464,7 @@ export async function advanceCascade(
               conversationId: params.conversationId,
               candidate: {
                 score: typeof revivable.score === 'number' ? revivable.score : 0,
-                relevance: typeof revivable.relevance === 'number' ? revivable.relevance : 0,
+                relevance: qualifyingScoreOf(revivable),
                 signals: {
                   similarity:
                     typeof revivable.signals?.similarity === 'number' ? revivable.signals.similarity : 0,

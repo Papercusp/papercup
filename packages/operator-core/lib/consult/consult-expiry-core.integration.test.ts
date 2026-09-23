@@ -605,6 +605,10 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
   const liveCand = (ownerId: string, score: number, similarity: number, liveness = 'live') => ({
     ownerId,
     score,
+    // Two-stage snapshot shape: the floor reads `relevance`, so these fixtures
+    // keep it equal to `score` and every above/below-floor relationship the
+    // assertions below rely on is preserved exactly.
+    relevance: score,
     signals: { similarity },
     liveness,
   });
@@ -612,6 +616,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     ownerId,
     via,
     score: 0.8,
+    relevance: 0.8,
     similarity: 0.7,
     liveness: 'live',
   });
@@ -634,7 +639,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
 
   it('terminal expiry WITH collected answers: answered-flavored outcome + NOT-unanswered emit; answers ≥ min suppresses refill', async () => {
     const routing = {
-      floor: 0.5,
+      relevanceFloor: 0.5,
       simFloor: 0.4,
       // 'c' is live, untried, above-floor — refillable if the guard were wrong.
       candidates: [liveCand('ans-a', 0.9, 0.8), liveCand('exp-b', 0.8, 0.7), liveCand('c', 0.7, 0.6)],
@@ -678,7 +683,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
 
   it('exhaustion below min with an untried live pool: ONE refill round — menu extended (honest via), refill selectee woken', async () => {
     const routing = {
-      floor: 0.5,
+      relevanceFloor: 0.5,
       simFloor: 0.4,
       candidates: [
         liveCand('r-a', 0.9, 0.8), // the original (expiring) selectee
@@ -711,7 +716,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
 
   it('the refill stamp is the ONE-round guard: a second exhaustion is terminal even with pool remaining', async () => {
     const routing = {
-      floor: 0.5,
+      relevanceFloor: 0.5,
       simFloor: 0.4,
       candidates: [liveCand('s-a', 0.9, 0.8), liveCand('s-b', 0.6, 0.5), liveCand('s-c', 0.55, 0.5)],
       selection: {

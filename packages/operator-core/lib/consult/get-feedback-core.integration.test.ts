@@ -163,14 +163,22 @@ afterAll(async () => {
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────
-const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCandidate => ({
-  ownerId,
-  score: 0.7,
-  signals: { similarity: 0.72, recency: 0.5, verification: 0.3, authorship: 0 },
-  evidence: [{ session_id: `sess-${ownerId}`, turn_idx: 3, ts: NOW.toISOString(), sim: 0.72 }],
-  liveness: 'live',
-  ...over,
-});
+const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCandidate => {
+  // These fixtures reason in terms of `score` (the ranking). Relevance tracks
+  // it by default so `via` labeling and the wake copy stay coherent; a test
+  // that needs the two stages to disagree overrides `relevance` explicitly.
+  const score = over.score ?? 0.7;
+  return {
+    ownerId,
+    score,
+    relevance: score,
+    relativeAgeDays: 0,
+    signals: { similarity: 0.72, verification: 0.3, authorship: 0, freshness: 1 },
+    evidence: [{ session_id: `sess-${ownerId}`, turn_idx: 3, ts: NOW.toISOString(), sim: 0.72 }],
+    liveness: 'live',
+    ...over,
+  };
+};
 
 const snapshotOf = (
   candidates: RoutingCandidate[],
@@ -178,9 +186,10 @@ const snapshotOf = (
   fallback?: 'lexical',
 ): RoutingSnapshot => ({
   query: 'q',
-  floor: 0.5,
+  relevanceFloor: 0.41,
   simFloor: 0.4,
-  weights: { similarity: 0.55, recency: 0.15, verification: 0.15, authorship: 0.15 },
+  weights: { similarity: 0.55, verification: 0.15, authorship: 0.15 },
+  recencyHalfLifeDays: 7,
   candidates,
   computedAt: NOW.toISOString(),
   ...(degraded ? { degraded } : {}),
@@ -639,7 +648,9 @@ describe('getFeedbackCore — routed', () => {
     expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
     expect(r.responder?.ownerId).toBe('agent-a');
-    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-b', score: 0.6, liveness: 'live', via: 'floor' }]);
+    expect(r.remaining_candidates).toEqual([
+      { ownerId: 'agent-b', score: 0.6, relevance: 0.6, liveness: 'live', via: 'floor' },
+    ]);
     expect(r.park_key).toBeNull(); // proceed contract
     expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
     expect(r.hint).toContain('turn pickup is not confirmed');
@@ -694,7 +705,7 @@ describe('getFeedbackCore — routed', () => {
     const liveFallback = cand('agent-live-owner-pause-fallback', {
       score: 0.2,
       liveness: 'live',
-      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+      signals: { similarity: 0.2, verification: 0, authorship: 0, freshness: 1 },
     });
     const { deps, opened } = makeDeps(
       routeOf([pausedTop], { all: [pausedTop, liveFallback] }),
@@ -715,7 +726,7 @@ describe('getFeedbackCore — routed', () => {
     const liveFallback = cand('agent-live-fallback', {
       score: 0.2,
       liveness: 'live',
-      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+      signals: { similarity: 0.2, verification: 0, authorship: 0, freshness: 1 },
     });
     const { deps, opened } = makeDeps(routeOf([warmIdle], { all: [warmIdle, liveFallback] }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
@@ -734,7 +745,7 @@ describe('getFeedbackCore — routed', () => {
     const liveFallback = cand('agent-live-fallback-2', {
       score: 0.2,
       liveness: 'live',
-      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+      signals: { similarity: 0.2, verification: 0, authorship: 0, freshness: 1 },
     });
     const { deps } = makeDeps(routeOf([freshParked], { all: [freshParked, liveFallback] }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
@@ -747,7 +758,7 @@ describe('getFeedbackCore — routed', () => {
     const liveFallback = cand('agent-live-fallback-3', {
       score: 0.2,
       liveness: 'live',
-      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+      signals: { similarity: 0.2, verification: 0, authorship: 0, freshness: 1 },
     });
     const { deps, opened, reached } = makeDeps(
       routeOf([unknownTop], { all: [unknownTop, liveFallback] }),
@@ -829,7 +840,8 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
   it('embed_unavailable lexical candidates route one bounded manual-review pick', async () => {
     const lexical = cand('agent-lexical', {
       score: 0.31,
-      signals: { similarity: 0, recency: 0.8, verification: 0, authorship: 0 },
+      relevance: 0,
+      signals: { similarity: 0, verification: 0, authorship: 0, freshness: 1 },
       evidence: [{
         session_id: 'sess-agent-lexical',
         turn_idx: 4,
@@ -841,7 +853,8 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     });
     const second = cand('agent-lexical-2', {
       score: 0.2,
-      signals: { similarity: 0, recency: 0.4, verification: 0, authorship: 0 },
+      relevance: 0,
+      signals: { similarity: 0, verification: 0, authorship: 0, freshness: 0.6 },
       fallback: 'lexical',
     });
     const { deps, opened, reached } = makeDeps(
@@ -1116,7 +1129,7 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
   it('below-floor minimum-fill: routes best-available LIVE, labeled everywhere + honest wake body', async () => {
     const below = cand('agent-min', {
       score: 0.31,
-      signals: { similarity: 0.22, recency: 0.5, verification: 0.3, authorship: 0 },
+      signals: { similarity: 0.22, verification: 0.3, authorship: 0, freshness: 1 },
     });
     const { deps, reached } = makeDeps(routeOf([], { all: [below] }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
@@ -1141,7 +1154,9 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
     const r = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 2 }, deps));
     expect(r.responder?.ownerId).toBe('agent-1');
     expect(r.responder_via).toBe('floor');
-    expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-2', score: 0.8, liveness: 'live', via: 'floor' }]);
+    expect(r.remaining_candidates).toEqual([
+      { ownerId: 'agent-2', score: 0.8, relevance: 0.8, liveness: 'live', via: 'floor' },
+    ]);
     expect(reached).toHaveLength(1); // cascade, never a parallel-wake set
     const sel = selectionOf((await stateRow(r.conversation_id)).routing);
     expect(sel?.max).toBe(2);
@@ -1883,7 +1898,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
   const deadExpert = cand('dead-x', { liveness: 'ended', score: 0.9 });
   const liveLow = cand('live-low', {
     score: 0.3,
-    signals: { similarity: 0.2, recency: 0.5, verification: 0.3, authorship: 0 },
+    signals: { similarity: 0.2, verification: 0.3, authorship: 0, freshness: 1 },
   });
 
   it('dead-preempt: a dead ABOVE-FLOOR expert beats a live below-floor minimum-fill — revived, menu head, labeled', async () => {
@@ -1919,7 +1934,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     const parkedMinimum = cand('parked-minimum', {
       score: 0.3,
       liveness: 'parked',
-      signals: { similarity: 0.2, recency: 0.5, verification: 0.3, authorship: 0 },
+      signals: { similarity: 0.2, verification: 0.3, authorship: 0, freshness: 1 },
     });
     const { deps, reached, revived } = makeReviveDeps(
       routeOf([deadExpert], { all: [deadExpert, parkedMinimum] }),

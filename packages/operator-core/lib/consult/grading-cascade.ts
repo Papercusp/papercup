@@ -34,6 +34,7 @@
  * — lives with the gate in `acceptance-grader.ts`.
  */
 import type { CascadeWakeContext, CascadeWakeCopy, CascadeWakeCopyWriter } from './cascade-core';
+import { qualifyingScoreOf } from './relevance-router';
 import type { ObservationRatings } from '../harness/improvements/observation-types';
 import type { AcceptanceReviewReservationRef } from '../coord/condition-upsert';
 
@@ -267,8 +268,8 @@ export function gradingCardDigestExcerpt(ratings: ObservationRatings): string {
 /** Why THIS grader, for a cascade wake — one line, honest about `via`. */
 function whyThisGrader(next: CascadeWakeContext['next']): string {
   return next.via === 'minimum'
-    ? `You are the BEST-AVAILABLE independent grader (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). Your transcript is not claimed to cover this plan: grade it FIRST-PRINCIPLES from the plan, the rubric and the code, and do not decline solely for lack of prior context.`
-    : `You matched the plan + rubric above the relevance floor (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)}) and are outside the implementer/consult-participant exclusion set.`;
+    ? `You are the BEST-AVAILABLE independent grader (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). Your transcript is not claimed to cover this plan: grade it FIRST-PRINCIPLES from the plan, the rubric and the code, and do not decline solely for lack of prior context.`
+    : `You matched the plan + rubric above the relevance floor (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)}) and are outside the implementer/consult-participant exclusion set.`;
 }
 
 /**

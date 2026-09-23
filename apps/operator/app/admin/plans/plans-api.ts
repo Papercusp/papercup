@@ -298,7 +298,8 @@ export type AttentionKind =
   | "dark-flag-ratification"
   | "blocked-session"
   | "work-item-blocked"
-  | "decision-owed";
+  | "decision-owed"
+  | "unhandled-directive";
 
 export type AttentionActionId =
   | "chat"

@@ -50,7 +50,9 @@ function candidate(ownerId: string, score: number, liveness = 'live'): RoutingCa
   return {
     ownerId,
     score,
-    signals: { similarity: 0.6, recency: 0.5, verification: 0.2, authorship: 0 },
+    relevance: score,
+    relativeAgeDays: 0,
+    signals: { similarity: 0.6, verification: 0.2, authorship: 0, freshness: 1 },
     evidence: [{ session_id: `s-${ownerId}`, turn_idx: 1, ts: null, sim: 0.6 }],
     liveness,
   };
@@ -62,9 +64,10 @@ function routed(cands: RoutingCandidate[]): RouteResult {
     qualified: cands,
     snapshot: {
       query: 'q',
-      floor: 0.5,
+      relevanceFloor: 0.41,
       simFloor: 0.4,
-      weights: { similarity: 0.55, recency: 0.15, verification: 0.15, authorship: 0.15 },
+      weights: { similarity: 0.55, verification: 0.15, authorship: 0.15 },
+      recencyHalfLifeDays: 7,
       candidates: cands,
       computedAt: '2026-08-16T00:00:00.000Z',
     },

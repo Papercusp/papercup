@@ -40,6 +40,7 @@ import {
 } from '../../enforcement-gate';
 import { runFlushGate } from '../../enforcement-gate-io';
 import { markRespawnExpected } from '../../carry-respawn-marker';
+import { detectRespawnStorm, escalateRespawnStorm, RESPAWN_STORM_ERROR } from '../../carry-respawn-storm';
 import { releaseOwnerHookFileLocks } from '../locks/release-hook-locks';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
@@ -625,6 +626,41 @@ export default defineTool({
     // EI-8987 stale-checkpoint warning below (was two separate buildCarryBrief
     // calls before this pass).
     const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
+    // WI-10002530: break managed carry-respawn STORMS. A successor that asks for
+    // another cut before taking a single real turn — repeatedly — is alive but
+    // doing no work, and every queued cut used to return 'queued' silently for
+    // hours (WI-10002522: 14 cuts in 11 min on a gate-lane holder). Refuse the
+    // cut (the process stays intact) and raise ONE coalescing owner-facing alert
+    // naming the held items. Bounded + fail-OPEN; cleared by the next real call.
+    const storm = await detectRespawnStorm(identity.ownerId);
+    if (storm.storm) {
+      await escalateRespawnStorm({
+        ownerId: identity.ownerId,
+        workspaceId: identity.workspaceId,
+        verdict: storm,
+        heldItems: brief?.heldItems ?? [],
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              requested: false,
+              error: RESPAWN_STORM_ERROR,
+              storm,
+              note:
+                `Carry-respawn refused: ${storm.cutsSinceRealTurn} cut(s) were queued for this session since its ` +
+                'last real tool call, so each successor is asking for another cut before doing any work. This ' +
+                'process stays intact and an owner-facing escalation was raised. If you are reading this, take a ' +
+                'real turn instead — any other tool call clears the breaker — and raise set_compaction_limit if ' +
+                'your fresh-context baseline sits at your limit.',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
     const focusCarryRefusal = frozenCompactionCarryRefusal(focus);
     if (focusCarryRefusal) return focusCarryRefusal;

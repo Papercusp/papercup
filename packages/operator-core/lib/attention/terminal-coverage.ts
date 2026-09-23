@@ -173,6 +173,11 @@ export const ATTENTION_TERMINAL_POLICY: Record<AttentionKind, AttentionTerminalP
     authority: 'never-auto',
     why: 'A live blocked work_items row — Drop closes it with the caller rationale as completion evidence rather than leaving a permanently blocked row in the alert feed.',
   },
+  'unhandled-directive': {
+    class: 'acknowledgement',
+    authority: 'never-auto',
+    why: 'Derived live from the directive store: an open owner directive whose session ended with no live fleet leader or holder. Closing it is orders:disposition by the session that adopts it (any session may, once it is unhandled), reached through Discuss; acknowledging records that the owner saw it and chose to leave it open.',
+  },
   'decision-owed': {
     class: 'acknowledgement',
     authority: 'never-auto',

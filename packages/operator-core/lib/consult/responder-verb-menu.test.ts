@@ -100,7 +100,7 @@ describe('every real responder wake body carries the void exit', () => {
       conversationId: 'conv-cascade-void',
       position: 2,
       menuSize: 3,
-      next: { ownerId: 'su-peer', score: 0.41, similarity: 0.33, via: 'minimum', liveness: 'live' },
+      next: { ownerId: 'su-peer', score: 0.41, relevance: 0.38, similarity: 0.33, via: 'minimum', liveness: 'live' },
       digest: [],
     });
     expect(body).toContain("consult:close { outcome: 'cant_help', reason }");
@@ -114,6 +114,7 @@ describe('every real responder wake body carries the void exit', () => {
       conversationId: 'conv-revival-void',
       candidate: {
         score: 0.72,
+        relevance: 0.74,
         signals: { similarity: 0.66 },
         evidence: [{ session_id: 'sess-1', turn_idx: 4, sim: 0.66 }],
       },
@@ -154,7 +155,7 @@ describe('every real responder wake body carries the read door', () => {
       conversationId: 'conv-cascade',
       position: 2,
       menuSize: 3,
-      next: { ownerId: 'su-peer', score: 0.41, similarity: 0.33, via: 'minimum', liveness: 'live' },
+      next: { ownerId: 'su-peer', score: 0.41, relevance: 0.38, similarity: 0.33, via: 'minimum', liveness: 'live' },
       digest: [],
     });
     expect(body).toContain("conversations:get { id: 'conv-cascade' }");
@@ -168,6 +169,7 @@ describe('every real responder wake body carries the read door', () => {
       conversationId: 'conv-revival',
       candidate: {
         score: 0.72,
+        relevance: 0.74,
         signals: { similarity: 0.66 },
         evidence: [{ session_id: 'sess-1', turn_idx: 4, sim: 0.66 }],
       },

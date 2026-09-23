@@ -213,6 +213,19 @@ vi.mock('../../carry-respawn-outcome', async () => {
   );
   return { ...actual, readPriorRespawnOutcome: (...a: unknown[]) => readPriorRespawnOutcome(...a) };
 });
+// WI-10002530: the respawn-storm breaker. Its ledger read is covered by
+// carry-respawn-storm.test.ts; here only the handler wiring is under test.
+const detectRespawnStorm = vi.hoisted(() => vi.fn());
+const escalateRespawnStorm = vi.hoisted(() => vi.fn());
+vi.mock('../../carry-respawn-storm', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-respawn-storm')>('../../carry-respawn-storm');
+  return {
+    ...actual,
+    detectRespawnStorm: (...a: unknown[]) => detectRespawnStorm(...a),
+    escalateRespawnStorm: (...a: unknown[]) => escalateRespawnStorm(...a),
+  };
+});
+const NO_STORM = { storm: false, reason: null, cutsSinceRealTurn: 0, cutTimes: [], lastRealTurnAt: null };
 
 type Envelope = { mode: string; data: string; systemPromptAddendum?: string; sourceTranscriptPath?: string };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -250,6 +263,8 @@ beforeEach(async () => {
   injectIntoHost.mockResolvedValue(true);
   resolveSelfSession.mockResolvedValue(null);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
+  detectRespawnStorm.mockResolvedValue(NO_STORM);
+  escalateRespawnStorm.mockResolvedValue(undefined);
   buildCarryBrief.mockResolvedValue(emptyBrief);
   getWorkItem.mockResolvedValue({ state: 'wip' });
   readFrozenRepairMarker.mockReturnValue(null);
@@ -507,6 +522,43 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(body(out)).toMatchObject({ ok: false, error: 'host_predates_carry_respawn' });
     expect(injectIntoHost).not.toHaveBeenCalled();
     expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('WI-10002530: a respawn STORM → refused respawn-storm, process intact, ONE escalation naming the held items, nothing injected', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-777', title: 'gate lane', body: null, harness: 'papercusp', checkpoint: null }],
+    });
+    const verdict = {
+      storm: true,
+      reason: 'dense-cuts',
+      cutsSinceRealTurn: 2,
+      cutTimes: ['2026-09-23T00:15:19.000Z', '2026-09-23T00:14:38.000Z'],
+      lastRealTurnAt: '2026-09-23T00:14:36.000Z',
+    };
+    detectRespawnStorm.mockResolvedValue(verdict);
+    const out = await call({ focus: 'x' });
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'respawn-storm', storm: verdict });
+    expect(detectRespawnStorm).toHaveBeenCalledWith('su-caller');
+    expect(escalateRespawnStorm).toHaveBeenCalledTimes(1);
+    expect(escalateRespawnStorm.mock.calls[0]![0]).toMatchObject({
+      ownerId: 'su-caller',
+      verdict,
+      heldItems: [{ id: 'WI-777', title: 'gate lane' }],
+    });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('WI-10002530: no storm → the breaker is consulted, raises nothing, and the cut still queues', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const out = await call({ focus: 'x' });
+    expect(body(out)).toMatchObject({ requested: true, respawn: 'queued' });
+    expect(detectRespawnStorm).toHaveBeenCalledWith('su-caller');
+    expect(escalateRespawnStorm).not.toHaveBeenCalled();
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
   it('spec assembly failure (null) → carry_build_failed, session left intact, nothing injected', async () => {

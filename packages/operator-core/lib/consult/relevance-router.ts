@@ -5,17 +5,36 @@
  * D-002: experts are DISCOVERED, not authored. The responder is selected by
  * embedding the question over real cross-agent turn history
  * (harness_shared.session_turns — the episodic verbatim transcript index),
- * BLENDED with recency, verification/completion evidence, and authorship of
- * the code in question. Similarity alone ≠ authority.
+ * BLENDED with verification/completion evidence and authorship of the code in
+ * question, then COMPARED on freshness. Similarity alone ≠ authority.
+ *
+ * ── The two stages (consult-expert-routing-2026-09-22 D-001 / D-007) ───────
+ * Recency is a COMPARISON signal only; it may never decide QUALIFICATION.
+ *   Stage 1 QUALIFY — `relevance`, the similarity/verification/authorship blend
+ *     renormalized to [0,1]. It carries no time term of any kind, so an expert
+ *     who qualifies today still qualifies after weeks idle (an owner's vacation
+ *     does not revoke expertise). The two floors apply HERE and only here.
+ *   Stage 2 COMPARE — `score` = relevance × freshness, where freshness is
+ *     measured RELATIVE to the freshest QUALIFIED candidate in this consult,
+ *     never against wall-clock now. A uniform time shift across all candidates
+ *     therefore cancels and leaves the ordering untouched.
+ * Both properties are STRUCTURAL rather than calibrated: `BlendWeights` has no
+ * recency member (a recency weight is unspellable), and the freshness baseline
+ * is a per-consult relative quantity (an absolute decay is unreachable). A test
+ * can pin them; the types are what stop them being reintroduced.
+ * D-007 closes the two remaining time leaks: qualification reads the FULL
+ * candidate list rather than the score-ordered snapshot slice, and the
+ * verification signal counts committed completions over ALL time (a completion
+ * is evidence that does not expire) instead of a trailing 90-day window.
  *
  * D-003: the router must be able to fail HONESTLY. Below the floor the answer
  * is a first-class `no_qualified_responder`, not an error — and that verdict
  * must stay COMMON in practice. Two floors enforce it:
- *   - simFloor: a HARD similarity sub-floor. Track record (recency /
- *     verification / authorship) can never promote an owner whose transcript
- *     similarity is below it — otherwise a prolific-but-irrelevant agent
- *     outranks honesty, which is exactly the retired costumed-expert failure.
- *   - floor: the blended-score floor a candidate must clear to qualify.
+ *   - simFloor: a HARD similarity sub-floor. Track record (verification /
+ *     authorship) can never promote an owner whose transcript similarity is
+ *     below it — otherwise a prolific-but-irrelevant agent outranks honesty,
+ *     which is exactly the retired costumed-expert failure.
+ *   - relevanceFloor: the floor the stage-1 relevance must clear to qualify.
  *   Calibration of both is an OPEN plan item (D-003); the defaults here are
  *   deliberately precision-biased, every route persists the floors + weights
  *   in its snapshot (D-008) so calibration has an audit trail to work from.
@@ -51,25 +70,54 @@ import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
  * module's import graph free of the search engine (only the TYPE is shared). */
 export type ConsultEmbedder = (text: string) => Promise<number[]>;
 
+/**
+ * Stage-1 (QUALIFY) weights. There is deliberately NO recency member: D-001
+ * forbids a time term in qualification, and a weight you cannot spell is a
+ * weight nobody can reintroduce by accident. Recency lives in stage 2 as a
+ * multiplier, governed by `recencyHalfLifeDays`.
+ *
+ * The weights need not sum to 1 — relevance renormalizes by their total — so a
+ * caller may drop one signal's influence without having to rebalance the rest.
+ */
 export interface BlendWeights {
   similarity: number;
-  recency: number;
   verification: number;
   authorship: number;
 }
 
 /** Deliberately precision-biased defaults (D-003) — see module header. */
 export const DEFAULT_SIM_FLOOR = 0.4;
-export const DEFAULT_FLOOR = 0.5;
 export const DEFAULT_WEIGHTS: BlendWeights = {
   similarity: 0.55,
-  recency: 0.15,
   verification: 0.15,
   authorship: 0.15,
 };
-/** Recency half-life in days: signal = 2^(-age/HALF_LIFE). */
-export const RECENCY_HALF_LIFE_DAYS = 14;
-/** Verification saturation: c committed completions (90d) → c / (c + K). */
+/**
+ * The stage-1 RELEVANCE floor (D-001 §1). Derived, not chosen: it is the
+ * pre-D-001 blended floor of 0.5 with the fully-fresh recency contribution
+ * (0.15) removed and the surviving weight re-based. So it is EXACTLY the bar a
+ * fully-fresh expert had to clear before D-001 — now applied regardless of age,
+ * which is the entire point. Written as the arithmetic rather than 0.41 so the
+ * derivation stays visible if the weights are ever retuned.
+ */
+export const DEFAULT_RELEVANCE_FLOOR =
+  (0.5 - 0.15) / (DEFAULT_WEIGHTS.similarity + DEFAULT_WEIGHTS.verification + DEFAULT_WEIGHTS.authorship);
+/**
+ * Stage-2 comparison half-life in days (D-001 §2; default from D-006.2). P-005
+ * persists this as an owner-editable setting and the consult layer passes it
+ * down per route; this constant is only the fallback for a caller with no
+ * setting to read.
+ */
+export const DEFAULT_RECENCY_HALF_LIFE_DAYS = 7;
+/**
+ * freshness = FRESHNESS_BASE + FRESHNESS_SPAN × 2^(−relativeAgeDays / H).
+ * The non-zero base matters: freshness MULTIPLIES relevance, so a zero floor
+ * would let age annihilate a qualified expert's score — re-creating through the
+ * ordering the disqualification D-001 removed from the floor.
+ */
+export const FRESHNESS_BASE = 0.2;
+export const FRESHNESS_SPAN = 0.8;
+/** Verification saturation: c committed completions (all time) → c / (c + K). */
 export const VERIFICATION_SATURATION_K = 4;
 
 export interface TurnEvidence {
@@ -100,13 +148,35 @@ export type ConsultLivenessReading = string | null | ConsultLiveness;
 
 export interface RoutingCandidate {
   ownerId: string;
-  /** Blended score in [0,1]. */
+  /**
+   * Stage-1 QUALIFICATION score in [0,1] (D-001 §1) — the similarity /
+   * verification / authorship blend renormalized by the weight total. Carries
+   * NO time term, and is the only number `relevanceFloor` ever sees. On the
+   * lexical fallback path it is 0: nothing semantic was measured there, so no
+   * relevance exists to claim (read `fallback:'lexical'`, not this zero).
+   */
+  relevance: number;
+  /**
+   * Stage-2 COMPARISON score in [0,1] (D-001 §2) = relevance × freshness. This
+   * is the ORDERING key and never a qualification input — comparing it against
+   * a floor would put recency straight back into eligibility.
+   */
   score: number;
+  /**
+   * Days between the reference candidate's newest matching turn and this one's
+   * (0 = the freshest). Relative, so a uniform shift leaves it unchanged; null
+   * when this candidate has no dated turn, or when no candidate has one.
+   */
+  relativeAgeDays: number | null;
   signals: {
     similarity: number;
-    recency: number;
     verification: number;
     authorship: number;
+    /**
+     * The stage-2 multiplier actually applied. Comparison-only — persisted so
+     * the snapshot can explain an ordering, never so a floor can read it.
+     */
+    freshness: number;
   };
   /** The matched turns that ground this candidacy — the why-you-were-chosen
    * evidence delivered on the responder wake (D-008 §5). */
@@ -126,9 +196,19 @@ export interface RoutingCandidate {
 
 export interface RoutingSnapshot {
   query: string;
-  floor: number;
+  /**
+   * The stage-1 floor actually applied, against `candidate.relevance` (D-001).
+   * Deliberately NOT named `floor`: the retired field of that name gated the
+   * recency-bearing blended score, so a reader that finds `relevanceFloor` is
+   * looking at a two-stage snapshot and one that finds `floor` is looking at a
+   * pre-D-001 record. `snapshotCandidateQualifies` is where that split is read.
+   */
+  relevanceFloor: number;
   simFloor: number;
   weights: BlendWeights;
+  /** The stage-2 half-life this route compared with — without it the recorded
+   * ordering cannot be re-derived from the recorded signals (D-008). */
+  recencyHalfLifeDays: number;
   candidates: RoutingCandidate[];
   computedAt: string;
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
@@ -168,7 +248,11 @@ export interface SnapshotSelection {
   selected: Array<{
     ownerId: string;
     via: SelectionVia;
+    /** Stage-2 comparison score (relevance × freshness) — the ordering number. */
     score: number;
+    /** Stage-1 qualification score. `via` is DERIVED from this, so recording
+     * only the comparison score would leave the label unauditable. */
+    relevance: number;
     similarity: number;
     liveness: string;
     fallback?: 'lexical';
@@ -242,6 +326,7 @@ export function selectionSnapshot(min: number, max: number, selected: SelectedRe
       ownerId: s.candidate.ownerId,
       via: s.via,
       score: s.candidate.score,
+      relevance: s.candidate.relevance,
       similarity: s.candidate.signals.similarity,
       liveness: s.candidate.liveness,
       ...(s.candidate.fallback ? { fallback: s.candidate.fallback } : {}),
@@ -284,10 +369,19 @@ export interface ConsultRouteParams {
   /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
    * decliner is excluded on the requester's re-call, never auto-cascaded. */
   excludeOwners?: string[];
-  floor?: number;
+  /** Stage-1 floor on `relevance` (default DEFAULT_RELEVANCE_FLOOR). */
+  relevanceFloor?: number;
   simFloor?: number;
   weights?: Partial<BlendWeights>;
-  /** Max candidates recorded in the snapshot (default 8). */
+  /** Stage-2 half-life in days (D-001 §2). P-005's persisted setting arrives
+   * here; omitted falls back to DEFAULT_RECENCY_HALF_LIFE_DAYS. */
+  recencyHalfLifeDays?: number;
+  /**
+   * Max candidates recorded in the SNAPSHOT (default 8). D-007(a): this bounds
+   * the persisted audit record only — never who is eligible to qualify. It used
+   * to cut the score-ordered list BEFORE the floor ran, which silently dropped
+   * aged-but-relevant experts before they were ever measured against it.
+   */
   maxCandidates?: number;
   /** Max qualified responders returned (default 3; v1 delivery uses the top one). */
   maxQualified?: number;
@@ -328,6 +422,156 @@ export function extractPathTokens(question: string, cap = 4): string[] {
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Stage 1 (D-001 §1): the recency-free qualification score, renormalized by the
+ * weight total so the floor keeps its calibrated meaning whatever the weights
+ * are. Pure and exported because the cascade re-derives it from a PERSISTED
+ * snapshot — one implementation, or the two drift and a refill gets labeled
+ * `floor` when the route itself would have said `minimum`.
+ */
+export function relevanceOf(
+  signals: { similarity: number; verification: number; authorship: number },
+  weights: BlendWeights,
+): number {
+  const total = weights.similarity + weights.verification + weights.authorship;
+  if (!(total > 0)) return 0;
+  return clamp01(
+    (weights.similarity * signals.similarity +
+      weights.verification * signals.verification +
+      weights.authorship * signals.authorship) /
+      total,
+  );
+}
+
+/**
+ * Stage 2 (D-001 §2): freshness measured against `referenceMs` — the newest
+ * matching turn of the freshest QUALIFIED candidate in this consult — never
+ * against wall-clock now. That is what makes a uniform time shift cancel.
+ */
+export function freshnessOf(
+  newestMs: number | null,
+  referenceMs: number | null,
+  halfLifeDays: number,
+): { freshness: number; relativeAgeDays: number | null } {
+  // Nobody in this consult has a dated turn: there is no age information, so
+  // differentiating on it would be inventing a signal. Everyone is equally fresh.
+  if (referenceMs === null) return { freshness: 1, relativeAgeDays: null };
+  // This candidate alone is undated. It cannot be shown to be fresh, so it gets
+  // the base rather than a free pass — but the base, not 0 (see FRESHNESS_BASE).
+  if (newestMs === null) return { freshness: FRESHNESS_BASE, relativeAgeDays: null };
+  // Clamped at 0: an UNQUALIFIED candidate may be fresher than the qualified
+  // reference, and "fresher than fully fresh" is not a thing.
+  const relativeAgeDays = Math.max(0, (referenceMs - newestMs) / MS_PER_DAY);
+  // The H→0 limit, written out rather than left to produce Infinity/NaN: decay
+  // becomes a step from fully-fresh to the base.
+  if (!(halfLifeDays > 0)) {
+    return { freshness: relativeAgeDays > 0 ? FRESHNESS_BASE : 1, relativeAgeDays };
+  }
+  return {
+    freshness: clamp01(FRESHNESS_BASE + FRESHNESS_SPAN * Math.pow(2, -relativeAgeDays / halfLifeDays)),
+    relativeAgeDays,
+  };
+}
+
+/** Newest of a timestamp set, or null when none is dated. Spelled out rather
+ * than `Math.max(...)` because that returns -Infinity on an empty list, which
+ * would read as a real (impossibly old) reference point. */
+function maxTimestamp(values: Array<number | null>): number | null {
+  let best: number | null = null;
+  for (const v of values) if (v !== null && (best === null || v > best)) best = v;
+  return best;
+}
+
+export interface RoutingFloors {
+  /** Applied to stage-1 `relevance` — never to the comparison `score`. */
+  relevanceFloor: number;
+  simFloor: number;
+}
+
+/**
+ * THE qualification predicate. Both floors read stage-1 numbers only, so no
+ * caller can qualify on the recency-bearing comparison score by mistake.
+ */
+export function meetsRoutingFloors(
+  candidate: { relevance: number; signals: { similarity: number } },
+  floors: RoutingFloors,
+): boolean {
+  return candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
+}
+
+/**
+ * The same verdict, re-derived from a PERSISTED routing snapshot whose shape is
+ * only known at runtime (the cascade's refill labeling reads consult_state.routing
+ * back as loose JSON).
+ *
+ * Two snapshot generations exist in that column and they are not interchangeable:
+ * a two-stage record carries `relevanceFloor` + per-candidate `relevance`, while
+ * a pre-D-001 record carries `floor` + a blended `score` that INCLUDED recency.
+ * Applying either rule to the other's record mislabels a responder's provenance,
+ * so the generation is read from the snapshot rather than assumed. This is
+ * reading a historical record on its own terms, not a compatibility shim on new
+ * code: nothing writes the legacy shape any more, and the branch dies with the
+ * last unexpired pre-D-001 consult.
+ */
+export function snapshotCandidateQualifies(
+  snapshot: { relevanceFloor?: unknown; floor?: unknown; simFloor?: unknown } | null | undefined,
+  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null } | null | undefined,
+): boolean {
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const simFloor = num(snapshot?.simFloor);
+  const similarity = num(candidate?.signals?.similarity) ?? 0;
+  // An unreadable floor must never admit anyone: a missing floor is an unknown
+  // bar, and guessing one relabels a minimum fill as a qualified expert.
+  if (simFloor === null || similarity < simFloor) return false;
+  const relevanceFloor = num(snapshot?.relevanceFloor);
+  if (relevanceFloor !== null) return (num(candidate?.relevance) ?? 0) >= relevanceFloor;
+  const legacyFloor = num(snapshot?.floor);
+  if (legacyFloor !== null) return (num(candidate?.score) ?? 0) >= legacyFloor;
+  return false;
+}
+
+/**
+ * The number a persisted record's floor ACTUALLY compared against, for display:
+ * `relevance` on a two-stage record, the blended `score` on a pre-D-001 one.
+ *
+ * Needed because the cascade's wake copy renders entries read straight out of
+ * consult_state.routing, where the TypeScript type is a claim about what we
+ * WRITE, not a guarantee about what is already stored — every row written
+ * before D-001 has no `relevance` at all, and `entry.relevance.toFixed(2)` on
+ * one of those throws mid-wake. Unlike `snapshotCandidateQualifies`, which must
+ * know the record's generation to pick the right FLOOR, this only needs the
+ * comparable number, so it can fall through by presence.
+ */
+export function qualifyingScoreOf(entry: { relevance?: unknown; score?: unknown } | null | undefined): number {
+  const r = entry?.relevance;
+  if (typeof r === 'number' && Number.isFinite(r)) return r;
+  const s = entry?.score;
+  return typeof s === 'number' && Number.isFinite(s) ? s : 0;
+}
+
+/**
+ * The persisted snapshot is bounded by `maxCandidates`, but it is also the
+ * record that has to EXPLAIN the route's own verdict (D-008) and the pool the
+ * cascade refills from. So every responder actually returned as qualified is
+ * kept even when the score-ordered cut would have dropped it — D-007(a) let
+ * qualification see the full list, and a snapshot that omitted the result would
+ * put back exactly the invisibility that change removed. Ranked order is
+ * preserved.
+ */
+function boundedSnapshot(
+  ranked: RoutingCandidate[],
+  mustKeep: RoutingCandidate[],
+  maxCandidates: number,
+): RoutingCandidate[] {
+  const head = ranked.slice(0, maxCandidates);
+  const missing = new Set(mustKeep.map((c) => c.ownerId));
+  for (const c of head) missing.delete(c.ownerId);
+  if (missing.size === 0) return head;
+  return ranked.filter((c, i) => i < maxCandidates || missing.has(c.ownerId));
+}
+
 function annotateLiveness(
   reading: ConsultLivenessReading | undefined,
 ): Pick<RoutingCandidate, 'liveness' | 'warmIdle' | 'ownerPaused'> {
@@ -350,10 +594,16 @@ export async function routeConsult(
   params: ConsultRouteParams,
   deps: ConsultRouteDeps,
 ): Promise<RouteResult> {
+  // `now` stamps the snapshot. It is deliberately NOT read by any scoring path
+  // any more: stage 1 has no time term and stage 2 compares candidates against
+  // each other, so wall-clock cannot reach the ranking (D-001).
   const now = deps.now ? deps.now() : new Date();
-  const floor = params.floor ?? DEFAULT_FLOOR;
-  const simFloor = params.simFloor ?? DEFAULT_SIM_FLOOR;
+  const floors: RoutingFloors = {
+    relevanceFloor: params.relevanceFloor ?? DEFAULT_RELEVANCE_FLOOR,
+    simFloor: params.simFloor ?? DEFAULT_SIM_FLOOR,
+  };
   const weights: BlendWeights = { ...DEFAULT_WEIGHTS, ...params.weights };
+  const recencyHalfLifeDays = params.recencyHalfLifeDays ?? DEFAULT_RECENCY_HALF_LIFE_DAYS;
   const maxCandidates = params.maxCandidates ?? 8;
   const maxQualified = params.maxQualified ?? 3;
   const turnLimit = params.turnLimit ?? 200;
@@ -361,9 +611,10 @@ export async function routeConsult(
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
-    floor,
-    simFloor,
+    relevanceFloor: floors.relevanceFloor,
+    simFloor: floors.simFloor,
     weights,
+    recencyHalfLifeDays,
     computedAt: now.toISOString(),
   };
 
@@ -443,18 +694,32 @@ export async function routeConsult(
     if (deps.getLiveness && owners.length > 0) {
       livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
     }
+    // No candidate can qualify on this path (similarity was never measured), so
+    // the stage-2 reference is the freshest candidate overall — freshness stays
+    // relative here too, purely as an audit signal.
+    const lexicalReferenceMs = maxTimestamp([...byOwner.values()].map((o) => o.newestTs));
     const candidates: RoutingCandidate[] = owners.map((ownerId) => {
       const owner = byOwner.get(ownerId)!;
       const lexicalRank = clamp01(Math.max(...owner.ranks));
-      const ageDays = owner.newestTs === null ? Infinity : (now.getTime() - owner.newestTs) / 86_400_000;
-      const recency = owner.newestTs === null ? 0 : clamp01(Math.pow(2, -ageDays / RECENCY_HALF_LIFE_DAYS));
+      const { freshness, relativeAgeDays } = freshnessOf(
+        owner.newestTs,
+        lexicalReferenceMs,
+        recencyHalfLifeDays,
+      );
       return {
         ownerId,
+        // Relevance is 0 because none was MEASURED: the embedder is down, so
+        // there is no similarity term and therefore no stage-1 score to claim.
+        // Read `fallback:'lexical'` for what these candidates are; this zero is
+        // the honest "never floor-qualified", not a low relevance.
+        relevance: 0,
         // Score is the lexical rank on this path. It is intentionally not
-        // blended with semantic weights: the caller must be able to see that
-        // this is a token-match minimum-fill candidate, not a qualified expert.
+        // blended with semantic weights NOR multiplied by freshness: the caller
+        // must be able to see that this is a token-match minimum-fill
+        // candidate, not a qualified expert being ranked by the D-001 stages.
         score: lexicalRank,
-        signals: { similarity: 0, recency, verification: 0, authorship: 0 },
+        relativeAgeDays,
+        signals: { similarity: 0, verification: 0, authorship: 0, freshness },
         evidence: owner.evidence,
         ...annotateLiveness(livenessByOwner[ownerId]),
         fallback: 'lexical' as const,
@@ -547,10 +812,20 @@ export async function routeConsult(
   }
   const owners = [...byOwner.keys()];
 
-  // 3) Verification: committed completions in the last 90 days per owner.
+  // 3) Verification: committed completions per owner, over ALL time.
   //    authority='committed' is the evidence-backed close — a bare "done"
   //    assertion lands 'proposed' and does not count (D-002: earned, not
   //    asserted).
+  //
+  //    ⚠ The 90-day window this query used to carry is GONE, deliberately
+  //    (consult-expert-routing-2026-09-22 D-007b). It was a second, quieter
+  //    copy of the defect D-001 removed from the blend weights: a trailing
+  //    window decays with inactivity, so an idle expert's verification signal
+  //    shrank and could drop them below the floor — the vacation case, one
+  //    signal over and on a slower clock. A completion is evidence that does
+  //    not expire. Do not reintroduce a time predicate here; if the signal
+  //    needs bounding, bound it by COUNT saturation (VERIFICATION_SATURATION_K
+  //    already does) rather than by age.
   //
   //    ⚠ The column is `authority`, NOT `completion_authority`, and the date
   //    column is `closed_ts` (bigint epoch-ms), NOT `closed_at` (EI-20816404371786180).
@@ -569,7 +844,6 @@ export async function routeConsult(
       FROM harness_shared.work_items
      WHERE terminal_owner = ANY(${owners}::text[])
        AND authority = 'committed'
-       AND closed_ts >= ${now.getTime() - 90 * 24 * 3600 * 1000}
   GROUP BY terminal_owner
   `) as unknown as Array<{ owner: string; c: number }>;
   const verByOwner = new Map(verRows.map((r) => [r.owner, r.c]));
@@ -598,35 +872,61 @@ export async function routeConsult(
     livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
   }
 
-  // 6) Blend.
-  const candidates: RoutingCandidate[] = owners.map((ownerId) => {
+  // 6) STAGE 1 — QUALIFY, with no time term anywhere (D-001 §1).
+  const scored = owners.map((ownerId) => {
     const o = byOwner.get(ownerId)!;
     const similarity = clamp01(Math.max(...o.sims));
-    const ageDays = o.newestTs === null ? Infinity : (now.getTime() - o.newestTs) / 86_400_000;
-    const recency = o.newestTs === null ? 0 : clamp01(Math.pow(2, -ageDays / RECENCY_HALF_LIFE_DAYS));
     const c = verByOwner.get(ownerId) ?? 0;
     const verification = clamp01(c / (c + VERIFICATION_SATURATION_K));
     const authorship = clamp01((authByOwner.get(ownerId) ?? 0) / 2);
-    const score = clamp01(
-      weights.similarity * similarity +
-        weights.recency * recency +
-        weights.verification * verification +
-        weights.authorship * authorship,
-    );
+    const signals = { similarity, verification, authorship };
     return {
       ownerId,
-      score,
-      signals: { similarity, recency, verification, authorship },
+      signals,
+      relevance: relevanceOf(signals, weights),
+      newestTs: o.newestTs,
       evidence: o.evidence,
-      ...annotateLiveness(livenessByOwner[ownerId]),
     };
   });
-  candidates.sort((a, b) => b.score - a.score);
-  const snapshotCandidates = candidates.slice(0, maxCandidates);
 
-  const qualified = snapshotCandidates
-    .filter((cand) => cand.signals.similarity >= simFloor && cand.score >= floor)
-    .slice(0, maxQualified);
+  // D-007(a): the floor sees EVERY candidate, not the top-`maxCandidates` slice.
+  // The slice used to happen first, and because it was ordered by the
+  // recency-bearing score it could evict an aged-but-highly-relevant expert
+  // before the floor ever measured them — a recency disqualification hiding in
+  // the pagination rather than in the weights.
+  const qualifiedIds = new Set(
+    scored.filter((s) => meetsRoutingFloors(s, floors)).map((s) => s.ownerId),
+  );
+
+  // 7) STAGE 2 — COMPARE (D-001 §2). The reference point is the freshest
+  //    QUALIFIED candidate in THIS consult; with nobody qualified there is no
+  //    qualified frame to measure against, so the freshest candidate overall
+  //    orders the minimum-fill pool. Either way it is a property OF THE SET, so
+  //    shifting every candidate's history by the same amount shifts the
+  //    reference identically and the ordering is untouched.
+  const referenceMs =
+    maxTimestamp(scored.filter((s) => qualifiedIds.has(s.ownerId)).map((s) => s.newestTs)) ??
+    maxTimestamp(scored.map((s) => s.newestTs));
+
+  const candidates: RoutingCandidate[] = scored.map((s) => {
+    const { freshness, relativeAgeDays } = freshnessOf(s.newestTs, referenceMs, recencyHalfLifeDays);
+    return {
+      ownerId: s.ownerId,
+      relevance: s.relevance,
+      score: clamp01(s.relevance * freshness),
+      relativeAgeDays,
+      signals: { ...s.signals, freshness },
+      evidence: s.evidence,
+      ...annotateLiveness(livenessByOwner[s.ownerId]),
+    };
+  });
+  // Tie-break by ownerId so an equal-score pair has ONE stable order — without
+  // it the winner depends on Map insertion order, i.e. on row order from the
+  // vector scan, and the same question can route to different peers.
+  candidates.sort((a, b) => b.score - a.score || a.ownerId.localeCompare(b.ownerId));
+
+  const qualified = candidates.filter((c) => qualifiedIds.has(c.ownerId)).slice(0, maxQualified);
+  const snapshotCandidates = boundedSnapshot(candidates, qualified, maxCandidates);
 
   return {
     verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',

@@ -55,7 +55,11 @@ export type AttentionKind =
   // afterward — a heuristic, mechanically-detected nudge that a decision may
   // have leaked, never a hard verdict (false positives expected: not every
   // answered question is plan-worthy).
-  | 'decision-owed';
+  | 'decision-owed'
+  // owner-directive-delivery-redesign-2026-09-22 P-008 (R-7): an open owner
+  // directive whose session ENDED with no live fleet leader or holder to take
+  // it — the owner's "nobody is handling these" list (owner-directive-routing.ts).
+  | 'unhandled-directive';
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
@@ -102,6 +106,9 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   // gate (D-009 unmapped -> never-auto). Confirming/recording the actual
   // decision is separate, deliberate `plans:add-decision` work.
   'decision-owed': null,
+  // Never auto-disposed: closing it is a claim about the OWNER'S order, made by
+  // whichever session adopts it (orders:disposition), never by the Queen.
+  'unhandled-directive': null,
 };
 
 /** The autonomy category for an attention kind — `null` for an ungoverned
@@ -396,7 +403,9 @@ export type AttentionRef =
   // curated-signal-cards P-001:
   | { kind: 'work-item-blocked'; workItemId: string; itemKind: string }
   // EI-147:
-  | { kind: 'decision-owed'; sessionId: string; refId: string };
+  | { kind: 'decision-owed'; sessionId: string; refId: string }
+  // owner-directive-delivery-redesign P-008:
+  | { kind: 'unhandled-directive'; directiveId: number };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */

@@ -18,7 +18,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { upsertDatatype } from './datatype-registry-store';
+import { getDatatype, upsertDatatype } from './datatype-registry-store';
+import { canonicalWorklistDeclaration } from './goals/package-property-datatypes';
 import {
   applyGoalPropertyWrite,
   applyPlanPropertyWrite,
@@ -96,6 +97,87 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       y: { datatype: 'freeform', editable_by: 'agent' },
     });
     expect(good).toEqual({ ok: true, declared: ['x', 'y'] });
+  });
+
+  it('repairs a legacy goal worklist through the normal writer and preserves its other properties', async () => {
+    const budget = {
+      value: 50000,
+      version: 1,
+      edited_at: '2026-09-19T23:59:35.692Z',
+      edited_by: 'owner',
+      provenance: 'owner-edit',
+    };
+    const declaration = { budget: { datatype: 'freeform', editable_by: 'owner' } };
+    await db.adminSql`
+      INSERT INTO harness_shared.goals
+        (id, install_slug, workspace_id, title, status, property_schema, properties)
+      VALUES ('g-tp-legacy', ${HARNESS}, ${WS}, 'legacy goal', 'active',
+              ${JSON.stringify(declaration)}::text::jsonb,
+              ${JSON.stringify({ budget })}::text::jsonb)`;
+    expect(await getDatatype(db.adminSql, WS, 'plan-ref-list')).toBeNull();
+
+    const write = await applyGoalPropertyWrite(db.adminSql, {
+      workspaceId: WS,
+      goalId: 'g-tp-legacy',
+      property: 'worklist',
+      value: ['plan:tp-harness/tp-plan-2026-08-23'],
+      expectedVersion: 0,
+      provenance: 'agent-edit',
+      actorId: 'goal-holder',
+    });
+    expect(write).toMatchObject({ ok: true, entry: { version: 1 } });
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-legacy' AND workspace_id = ${WS}`;
+    const surface = derivePropertySurface(row!);
+    expect(surface.propertySchema).toEqual({ ...declaration, worklist: canonicalWorklistDeclaration() });
+    expect(surface.properties.budget).toEqual(budget);
+    expect(surface.effective.worklist).toEqual(['plan:tp-harness/tp-plan-2026-08-23']);
+    expect(await getDatatype(db.adminSql, WS, 'plan-ref-list')).toMatchObject({ id: 'plan-ref-list' });
+  });
+
+  it('does not persist a legacy declaration for an invalid or stale worklist write', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status)
+      VALUES ('g-tp-legacy-refused', ${HARNESS}, ${WS}, 'legacy refused goal', 'active')`;
+    const args = {
+      workspaceId: WS,
+      goalId: 'g-tp-legacy-refused',
+      property: 'worklist',
+      expectedVersion: 0,
+      provenance: 'agent-edit' as const,
+      actorId: 'goal-holder',
+    };
+    expect(await applyGoalPropertyWrite(db.adminSql, { ...args, value: ['bare-plan-slug'] }))
+      .toMatchObject({ ok: false, code: 'invalid_value', datatype: 'plan-ref-list' });
+    expect(await applyGoalPropertyWrite(db.adminSql, {
+      ...args, value: ['plan:valid'], expectedVersion: 4,
+    })).toMatchObject({ ok: false, code: 'stale', actualVersion: 0 });
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-legacy-refused' AND workspace_id = ${WS}`;
+    expect(derivePropertySurface(row!)).toEqual({ propertySchema: {}, properties: {}, effective: {} });
+  });
+
+  it('never replaces a custom owner-only worklist declaration with the canonical one', async () => {
+    const declaration = { worklist: { datatype: 'string-list', default: ['custom'], editable_by: 'owner' } };
+    await db.adminSql`
+      INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status, property_schema)
+      VALUES ('g-tp-custom-owner', ${HARNESS}, ${WS}, 'custom owner worklist', 'active',
+              ${JSON.stringify(declaration)}::text::jsonb)`;
+    expect(await applyGoalPropertyWrite(db.adminSql, {
+      workspaceId: WS,
+      goalId: 'g-tp-custom-owner',
+      property: 'worklist',
+      value: ['plan:valid'],
+      expectedVersion: 0,
+      provenance: 'agent-edit',
+      actorId: 'goal-holder',
+    })).toMatchObject({ ok: false, code: 'forbidden', editableBy: 'owner' });
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-custom-owner' AND workspace_id = ${WS}`;
+    expect(derivePropertySurface(row!).propertySchema).toEqual(declaration);
   });
 
   it('goal write cycle: ok persists the envelope; the follow-up CAS write sees it', async () => {

@@ -1177,3 +1177,55 @@ export function decisionOwedToAttention(d: DecisionOwedInput): AttentionItem {
     ref: { kind: 'decision-owed', sessionId: d.sessionId, refId: d.refId },
   };
 }
+
+export interface UnhandledDirectiveInput {
+  directiveId: number;
+  /** The D-004 display text (directiveDisplayText): full verbatim ≤ cap, else the labelled summary. */
+  displayText: string;
+  /** The ended session the owner typed it into. */
+  recordedBy: string;
+  why: 'no-fleet' | 'no-leader' | 'leader-ended';
+  fleetSlug: string | null;
+  createdAt: string;
+}
+
+const UNHANDLED_WHY: Record<UnhandledDirectiveInput['why'], string> = {
+  'no-fleet': 'it was not in a fleet',
+  'no-leader': 'its fleet has no other leader',
+  'leader-ended': 'its fleet leader has ended too',
+};
+
+/**
+ * An open owner directive nobody is handling (owner-directive-delivery-redesign
+ * P-008 / R-7): the session it was typed into ENDED, and there is no live fleet
+ * leader or work-item holder to take it (owner-directive-routing.ts). Decision
+ * tier: only the owner can say whether it still matters. Any session may adopt
+ * and close it, so Discuss is the way to hand it over.
+ */
+export function unhandledDirectiveToAttention(d: UnhandledDirectiveInput): AttentionItem {
+  const tier: AttentionTier = 'decision';
+  const fleet = d.fleetSlug ? ` (fleet ${d.fleetSlug})` : '';
+  return {
+    id: `unhandled-directive:${d.directiveId}`,
+    kind: 'unhandled-directive',
+    category: ATTENTION_KIND_CATEGORY['unhandled-directive'],
+    source: 'coord',
+    harnessSlug: null,
+    planSlug: null,
+    itemRef: null,
+    title: `Nobody is handling owner directive #${d.directiveId}`,
+    body:
+      `${d.displayText}\n\n` +
+      `Session ${d.recordedBy}${fleet} ended with this still open, and ${UNHANDLED_WHY[d.why]}. ` +
+      `Any session may now adopt it: Discuss to hand it over, or acknowledge to leave it open.`,
+    status: 'unhandled',
+    importance: 'high',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [{ id: 'ack', label: 'Leave it open' }, DISCUSS],
+    ref: { kind: 'unhandled-directive', directiveId: d.directiveId },
+  };
+}

@@ -9,6 +9,10 @@ import { describe, expect, it } from 'vitest';
 import {
   selectResponders,
   selectionSnapshot,
+  snapshotCandidateQualifies,
+  relevanceOf,
+  freshnessOf,
+  FRESHNESS_BASE,
   type RoutingCandidate,
   type SelectedResponder,
 } from './relevance-router';
@@ -125,6 +129,95 @@ describe('selectResponders — selectability gate (liveness, D-008 §5)', () => 
   it('max 0 selects nobody regardless of min', () => {
     const all = [cand('a')];
     expect(selectResponders({ qualified: all, allCandidates: all, min: 1, max: 0 })).toEqual([]);
+  });
+});
+
+describe('relevanceOf — stage 1 has no time term (D-001 §1)', () => {
+  const signals = { similarity: 0.8, verification: 0.5, authorship: 0 };
+
+  it('renormalizes by the weight total, so the floor keeps its meaning under any weights', () => {
+    // The floor is calibrated against a [0,1] quantity. Without the
+    // renormalization, dropping a signal's weight would silently lower every
+    // candidate's score and quietly raise the effective bar.
+    expect(relevanceOf(signals, { similarity: 0.55, verification: 0.15, authorship: 0.15 })).toBeCloseTo(
+      (0.55 * 0.8 + 0.15 * 0.5) / 0.85,
+      10,
+    );
+    // Same weights at double scale ⇒ identical relevance.
+    expect(relevanceOf(signals, { similarity: 1.1, verification: 0.3, authorship: 0.3 })).toBeCloseTo(
+      relevanceOf(signals, { similarity: 0.55, verification: 0.15, authorship: 0.15 }),
+      10,
+    );
+  });
+
+  it('all-zero weights yield 0 rather than NaN', () => {
+    expect(relevanceOf(signals, { similarity: 0, verification: 0, authorship: 0 })).toBe(0);
+  });
+});
+
+describe('freshnessOf — stage 2 is RELATIVE (D-001 §2)', () => {
+  const DAY = 86_400_000;
+  const H = 7;
+
+  it('is shift-invariant: moving the whole set in time changes nothing', () => {
+    const a = freshnessOf(1_000 * DAY, 1_010 * DAY, H);
+    const b = freshnessOf(2_000 * DAY, 2_010 * DAY, H); // same gap, 1000 days later
+    expect(b).toEqual(a);
+    expect(a.relativeAgeDays).toBe(10);
+  });
+
+  it('the reference candidate is fully fresh, and a fresher-than-reference one cannot exceed it', () => {
+    expect(freshnessOf(500 * DAY, 500 * DAY, H)).toEqual({ freshness: 1, relativeAgeDays: 0 });
+    // An unqualified candidate may be newer than the freshest QUALIFIED one.
+    expect(freshnessOf(505 * DAY, 500 * DAY, H)).toEqual({ freshness: 1, relativeAgeDays: 0 });
+  });
+
+  it('decays toward the base, never to zero', () => {
+    const ancient = freshnessOf(0, 10_000 * DAY, H);
+    expect(ancient.freshness).toBeGreaterThanOrEqual(FRESHNESS_BASE);
+    expect(ancient.freshness).toBeCloseTo(FRESHNESS_BASE, 6);
+  });
+
+  it('undated inputs are honest rather than scored: no reference ⇒ no differentiation', () => {
+    expect(freshnessOf(500 * DAY, null, H)).toEqual({ freshness: 1, relativeAgeDays: null });
+    expect(freshnessOf(null, 500 * DAY, H)).toEqual({ freshness: FRESHNESS_BASE, relativeAgeDays: null });
+  });
+
+  it('a non-positive half-life degrades to a step, not to NaN/Infinity', () => {
+    expect(freshnessOf(500 * DAY, 500 * DAY, 0)).toEqual({ freshness: 1, relativeAgeDays: 0 });
+    expect(freshnessOf(499 * DAY, 500 * DAY, 0)).toEqual({ freshness: FRESHNESS_BASE, relativeAgeDays: 1 });
+  });
+});
+
+describe('snapshotCandidateQualifies — reads a persisted snapshot on its OWN terms', () => {
+  it('two-stage snapshot: the floor reads `relevance`, never the comparison score', () => {
+    const snap = { relevanceFloor: 0.41, simFloor: 0.4 };
+    // Stale but relevant: a low comparison score with an above-floor relevance
+    // is EXACTLY the case D-001 exists for — it must label `floor`.
+    expect(snapshotCandidateQualifies(snap, { relevance: 0.6, score: 0.15, signals: { similarity: 0.7 } })).toBe(true);
+    // …and the reverse must not be admitted by a generous score.
+    expect(snapshotCandidateQualifies(snap, { relevance: 0.2, score: 0.99, signals: { similarity: 0.7 } })).toBe(false);
+    // The hard sim sub-floor still gates independently.
+    expect(snapshotCandidateQualifies(snap, { relevance: 0.9, score: 0.9, signals: { similarity: 0.1 } })).toBe(false);
+  });
+
+  it('pre-D-001 snapshot: `floor` + the blended `score` are applied as that record meant them', () => {
+    // These rows are still in consult_state.routing until the last one expires.
+    // Judging them by the new rule would relabel a responder's provenance.
+    const legacy = { floor: 0.5, simFloor: 0.4 };
+    expect(snapshotCandidateQualifies(legacy, { score: 0.62, signals: { similarity: 0.7 } })).toBe(true);
+    expect(snapshotCandidateQualifies(legacy, { score: 0.31, signals: { similarity: 0.7 } })).toBe(false);
+  });
+
+  it('an unreadable floor admits NOBODY — a missing bar is unknown, not zero', () => {
+    // Guessing here would promote a best-available fill to "qualified expert",
+    // which is the one mislabel the whole D-002 provenance rule exists to stop.
+    expect(snapshotCandidateQualifies({ simFloor: 0.4 }, { relevance: 0.9, signals: { similarity: 0.9 } })).toBe(false);
+    expect(snapshotCandidateQualifies({ relevanceFloor: 0.41 }, { relevance: 0.9, signals: { similarity: 0.9 } })).toBe(
+      false,
+    );
+    expect(snapshotCandidateQualifies(null, { relevance: 0.9, signals: { similarity: 0.9 } })).toBe(false);
+    expect(snapshotCandidateQualifies({ relevanceFloor: 0.41, simFloor: 0.4 }, null)).toBe(false);
   });
 });
 

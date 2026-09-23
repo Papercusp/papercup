@@ -517,15 +517,19 @@ export async function synchronizeAcceptanceBarRevision(
     if (!effectiveBarKey || !criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     }
-    // METHOD and test-layer changes do not replace an author's atomic behavior.
-    // Verify the old canonical BAR matches this clause, then compare with only
-    // the layer field restored. All other meaning fields remain hash-checked.
-    // Comparing whole hashes alone erased reviewed scenarios and causal pairs
-    // whenever an approved amendment changed proof depth (EI-22755746610403259).
+    // METHOD, structured-check and test-layer changes do not replace an author's
+    // atomic behavior: all three say HOW the promise is verified, not WHAT it is.
+    // Verify the old canonical BAR matches this clause, then compare with the
+    // verification-contract fields (layers + check) restored. All other meaning
+    // fields remain hash-checked. Comparing whole hashes alone erased reviewed
+    // scenarios and causal pairs whenever an approved amendment changed proof depth
+    // (EI-22755746610403259), and restoring only the layers still erased them when
+    // the same amendment added the `check` the ship gate requires (WI-10002563).
     const unchangedBar = clause.source_bar_hash === criterion.barHash;
     const prior = previousByKey.get(effectiveBarKey);
     const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
-      computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers }) === clause.source_bar_hash;
+      computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check })
+        === clause.source_bar_hash;
     const preserveRefinements = unchangedBar || layersOnly;
     // Replace the parent's layer requirements while retaining any extra layers
     // authored on this atomic clause. This also respects an approved removal.

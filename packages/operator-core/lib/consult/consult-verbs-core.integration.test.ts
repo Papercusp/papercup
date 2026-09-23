@@ -1039,11 +1039,11 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
 
   it('a decline that exhausts BELOW min triggers the refill round (trigger-independence with the expiry path)', async () => {
     const routing = {
-      floor: 0.5,
+      relevanceFloor: 0.5,
       simFloor: 0.4,
       candidates: [
-        { ownerId: RESPONDER, score: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
-        { ownerId: 'w-b', score: 0.6, signals: { similarity: 0.5 }, liveness: 'live' },
+        { ownerId: RESPONDER, score: 0.9, relevance: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
+        { ownerId: 'w-b', score: 0.6, relevance: 0.6, signals: { similarity: 0.5 }, liveness: 'live' },
       ],
       selection: {
         min: 1,
@@ -1097,13 +1097,13 @@ describe('advanceCascade — refill-exhaustion revival (EI-20864690354207496)', 
    * candidate clears both floors unless lowScore drops it below them. */
   function deadPoolRouting(opts: { revivedAlready?: boolean; lowScore?: boolean } = {}) {
     return {
-      floor: 0.5,
+      relevanceFloor: 0.5,
       simFloor: 0.4,
       candidates: [
-        { ownerId: RESPONDER, score: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
+        { ownerId: RESPONDER, score: 0.9, relevance: 0.9, signals: { similarity: 0.8 }, liveness: 'live' },
         opts.lowScore
-          ? { ownerId: 'dead-low', score: 0.2, signals: { similarity: 0.1 }, liveness: 'ended' }
-          : { ownerId: 'dead-x', score: 0.7, signals: { similarity: 0.6 }, liveness: 'ended' },
+          ? { ownerId: 'dead-low', score: 0.2, relevance: 0.2, signals: { similarity: 0.1 }, liveness: 'ended' }
+          : { ownerId: 'dead-x', score: 0.7, relevance: 0.7, signals: { similarity: 0.6 }, liveness: 'ended' },
       ],
       selection: {
         min: 1,

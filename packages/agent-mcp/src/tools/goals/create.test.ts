@@ -542,7 +542,9 @@ describe('goals:create — the GOAL-mode kickoff consult (P-010)', () => {
   const peer = (ownerId: string, liveness: string, score = 0.7) => ({
     ownerId,
     score,
-    signals: { similarity: 0.6, recency: 0.5, verification: 0.2, authorship: 0 },
+    relevance: score,
+    relativeAgeDays: 0,
+    signals: { similarity: 0.6, verification: 0.2, authorship: 0, freshness: 1 },
     evidence: [{ session_id: `s-${ownerId}`, turn_idx: 1, ts: null, sim: 0.6 }],
     liveness,
   });

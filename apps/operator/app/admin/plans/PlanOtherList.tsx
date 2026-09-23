@@ -69,6 +69,7 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   'blocked-session': 'session',
   'work-item-blocked': 'blocked work',
   'decision-owed': 'decision owed',
+  'unhandled-directive': 'unhandled directive',
 };
 
 const INLINE_DETAIL_TOKEN = /(`[^`]+`|\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_.-]*\b)/gi;

@@ -44,6 +44,7 @@ const NEXT: CascadeSelectionEntry = {
   ownerId: 'su-grader',
   via: 'floor',
   score: 0.71,
+  relevance: 0.74,
   similarity: 0.64,
   liveness: 'live',
 };

@@ -80,8 +80,18 @@ describe('checkMigrationDrift', () => {
    * someone flips it, this fails — structurally, because a classified entry can
    * only be produced by actually doing the git walk.
    */
-  it('does NOT classify content drift by default — boot/system-health/watchdog must not pay for git', async () => {
-    const d = await checkMigrationDrift();
+  it('does NOT hash or classify content drift by default — boot/system-health must not pay for either', async () => {
+    // WI-10002541: the default call does not even hash (null = NOT MEASURED,
+    // never an empty "no drift" list).
+    const off = await checkMigrationDrift();
+    expect(off.contentDrift).toBeNull();
+    expect(off.contentDriftExecutable).toBeNull();
+
+    // checkContent measures raw drift but still skips the git walk.
+    const d = await checkMigrationDrift({ checkContent: true });
+    if (d.contentDrift === null || d.contentDriftExecutable === null) {
+      throw new Error('checkContent:true must measure content drift');
+    }
     for (const entry of d.contentDrift) {
       expect(entry.classification).toBe('unclassified');
       expect(entry.classificationDetail).toMatch(/did not request classification/);
@@ -98,6 +108,9 @@ describe('checkMigrationDrift', () => {
    */
   it('classifyContent:true partitions drift into benign vs actionable', async () => {
     const d = await checkMigrationDrift({ classifyContent: true });
+    if (d.contentDrift === null || d.contentDriftExecutable === null) {
+      throw new Error('classifyContent:true must measure content drift');
+    }
     if (d.contentDrift.length === 0) return; // nothing drifted here — nothing to assert
     for (const entry of d.contentDrift) {
       expect(['executable', 'comments-only', 'unclassified']).toContain(entry.classification);
