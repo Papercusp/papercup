@@ -33,10 +33,16 @@
  * THIS organization's own Papercusp service account, and credentials resolve only through it,
  * so naming another customer's service account can never verify. `isEnabledFor` still gates
  * the route per organization until that is verified live; do not replace it with `() => true`.
+ *
+ * TWO WAYS TO HOST IT (D-399). `papercusp`: the host runs in Papercusp's own cloud and the
+ * request carries no cloud configuration at all — the delegation reserves the derived host for
+ * the organization, and the browser's configuration, if any, is ignored. `byoc`: the customer's
+ * own GCP project, granted as above.
  */
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import {
   bindDelegationToOrganization,
+  bindPapercuspHostedDelegation,
   buildHostedProviderDelegationOnboarding,
   type HostedDelegationOrganization,
   type HostedProviderDelegationConfiguration,
@@ -45,6 +51,7 @@ import {
   type HostedProviderDelegationRecord,
   type HostedProviderDelegationTemplate,
 } from '../../workspace-host/hosted-provider-delegation';
+import { PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
 import { admissionIdentity, HostedWorkspaceAdmissionError } from './workspace-admission';
 import type { HostedWorkspaceAdmissionDependencies } from './workspace-admission';
 import type { HostedOnboardingWorkspacePort } from './onboarding';
@@ -52,6 +59,9 @@ import type { HostedOnboardingWorkspacePort } from './onboarding';
 /** A browser-generated attempt key: opaque, bounded, and safe inside derived identifiers. */
 export const HOSTED_FIRST_WORKSPACE_ATTEMPT_KEY = /^[A-Za-z0-9._:-]{16,128}$/;
 const MAX_TEXT = 160;
+
+/** D-399: Papercusp's own cloud, or the customer's. */
+export type HostedFirstWorkspaceHosting = 'papercusp' | 'byoc';
 
 export interface HostedFirstWorkspaceRequest {
   readonly organizationId: string;
@@ -61,7 +71,9 @@ export interface HostedFirstWorkspaceRequest {
   readonly attemptKey: string;
   readonly displayName: string;
   readonly label: string;
-  readonly configuration: HostedProviderDelegationConfiguration;
+  readonly hosting: HostedFirstWorkspaceHosting;
+  /** Bring-your-own-cloud only; Papercusp hosting derives every cloud field on the server. */
+  readonly configuration?: HostedProviderDelegationConfiguration;
 }
 
 export type ResolveFirstWorkspaceSpec = HostedWorkspaceAdmissionDependencies['resolveDesiredSpec'];
@@ -102,6 +114,8 @@ export type HostedFirstWorkspaceFailureCode =
   | 'delegation_conflict'
   | 'delegation_revoked'
   | 'delegation_pending'
+  /** Papercusp is still preparing the reserved host's permissions; retry shortly. */
+  | 'papercusp_cloud_preparing'
   | 'workspace_admission_failed'
   | 'session_selection_failed';
 
@@ -164,8 +178,9 @@ export const GCP_FIRST_WORKSPACE_DEFAULTS = {
 } as const;
 
 /**
- * BYOC default spec for a first GCP workspace (D-384: the first run is connect-your-own-cloud
- * until Avi decides otherwise). Everything tenant-specific comes from the VERIFIED delegation.
+ * Default spec for a first GCP workspace. Everything tenant-specific comes from the VERIFIED
+ * delegation. A Papercusp-hosted host (D-399) runs where its grant's name conditions point and
+ * holds NO service account: nothing on the machine can act in Papercusp's project.
  */
 export function gcpFirstWorkspaceDesiredSpec(input: {
   hostId: string;
@@ -175,19 +190,24 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
     throw new HostedWorkspaceAdmissionError('first-workspace spec supports GCP only', 'invalid_input');
   }
   const source = input.record.configuration.source;
+  const papercuspHosted = source.method === 'papercusp-hosted';
+  if (papercuspHosted && source.hostId !== input.hostId) {
+    throw new HostedWorkspaceAdmissionError('Papercusp-hosted delegation reserves a different host', 'invalid_input');
+  }
+  const location = papercuspHosted ? PAPERCUSP_HOSTED_GCP_LOCATION : GCP_FIRST_WORKSPACE_DEFAULTS;
   return {
     hostId: input.hostId,
     target: 'gcp',
     scope: { kind: 'project', id: source.projectId },
-    region: GCP_FIRST_WORKSPACE_DEFAULTS.region,
-    zone: GCP_FIRST_WORKSPACE_DEFAULTS.zone,
+    region: location.region,
+    zone: location.zone,
     size: GCP_FIRST_WORKSPACE_DEFAULTS.size,
     image: { ...GCP_FIRST_WORKSPACE_DEFAULTS.image },
     data: { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       projectId: source.projectId,
-      serviceAccountEmail: source.serviceAccountEmail,
+      ...(papercuspHosted ? {} : { serviceAccountEmail: source.serviceAccountEmail }),
       network: { mode: 'managed' },
     },
   } as WorkspaceHostDesiredSpec;
@@ -215,21 +235,26 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       const userId = boundedText(request.userId);
       const displayName = boundedText(request.displayName);
       const label = boundedText(request.label);
+      const hosting = request.hosting;
+      const configuration = request.configuration;
       if (
         !organizationId || !userId || !displayName || !label ||
         !boundedText(request.sessionId) ||
         !Number.isSafeInteger(request.sessionVersion) ||
         typeof request.attemptKey !== 'string' ||
         !HOSTED_FIRST_WORKSPACE_ATTEMPT_KEY.test(request.attemptKey) ||
-        !request.configuration || typeof request.configuration !== 'object'
+        (hosting !== 'papercusp' && hosting !== 'byoc') ||
+        (hosting === 'byoc' && (!configuration || typeof configuration !== 'object'))
       ) {
         return failure('invalid_request', 400, false);
       }
       if (!deps.isEnabledFor(organizationId)) return failure('first_workspace_not_enabled', 403, false);
-      if (request.configuration.provider !== 'gcp') return failure('provider_not_supported', 422, false);
-      // Only impersonation chains through the organization's own account (D-397).
-      const method = (request.configuration.source as { method?: unknown } | undefined)?.method;
-      if (method !== 'service-account-impersonation') return failure('provider_not_supported', 422, false);
+      if (hosting === 'byoc') {
+        if (configuration!.provider !== 'gcp') return failure('provider_not_supported', 422, false);
+        // Only impersonation chains through the organization's own account (D-397).
+        const method = (configuration!.source as { method?: unknown } | undefined)?.method;
+        if (method !== 'service-account-impersonation') return failure('provider_not_supported', 422, false);
+      }
       const identity = firstWorkspaceIdentity(organizationId, request.attemptKey);
       // "First" is per organization. The workspace THIS attempt derives is not a conflict:
       // a replay after a failed session selection must be able to finish selecting it.
@@ -240,17 +265,23 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       if (!deps.provisioningAvailable()) return failure('provisioning_unavailable', 503, true);
 
       // The grant names THIS organization's own Papercusp account (D-397), created here so the
-      // customer can bind it; a browser-supplied principal is discarded.
+      // customer can bind it; a browser-supplied principal is discarded. Papercusp hosting
+      // reserves exactly the host this attempt derives, never one the browser names.
+      const organization = deps.delegationOrganization(organizationId);
+      const delegationBase = {
+        workspaceId: identity.workspaceId,
+        connectionId: identity.connectionId,
+        label,
+        credentialRef: identity.credentialRef,
+      };
       let onboardingInput: HostedProviderDelegationOnboardingInput;
       try {
-        onboardingInput = await bindDelegationToOrganization({
-          organizationId,
-          workspaceId: identity.workspaceId,
-          connectionId: identity.connectionId,
-          label,
-          credentialRef: identity.credentialRef,
-          configuration: request.configuration,
-        }, deps.delegationOrganization(organizationId));
+        onboardingInput = hosting === 'papercusp'
+          ? await bindPapercuspHostedDelegation(delegationBase, organization, identity.hostId)
+          : await bindDelegationToOrganization(
+            { ...delegationBase, organizationId, configuration: configuration! },
+            organization,
+          );
       } catch {
         return failure('delegation_source_unavailable', 503, true);
       }
@@ -278,7 +309,11 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       try {
         verified = await deps.verifyDelegation(organizationId, identity.workspaceId, identity.connectionId);
       } catch {
-        // Not an error from the customer's point of view: the grant is simply not applied yet.
+        // Not an error from the customer's point of view: the grant is simply not in force yet.
+        // Papercusp's own grant takes a minute or two to propagate and needs nothing from them.
+        if (hosting === 'papercusp') {
+          return failure('papercusp_cloud_preparing', 409, true, { connectionId: identity.connectionId });
+        }
         return failure('delegation_pending', 409, true, {
           template: planned.template,
           connectionId: identity.connectionId,
@@ -305,6 +340,16 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
           return failure('organization_already_has_workspace', 409, false);
         }
         return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
+      }
+      if (hosting === 'papercusp') {
+        // An organization holds ONE reservation, so a concurrent attempt under another key can
+        // have moved it to a host that will never exist. This attempt won the organization's
+        // one workspace: re-assert its host. Idempotent, so a failure is safe to retry.
+        try {
+          await organization.gcpPapercuspHosting(identity.hostId);
+        } catch {
+          return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
+        }
       }
 
       const selected = await deps.selectWorkspace({

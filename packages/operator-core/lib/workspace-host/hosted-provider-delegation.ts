@@ -43,6 +43,18 @@ export type GcpHostedCredentialSource =
       projectId: string;
       serviceAccountEmail: string;
       trustedPrincipal: string;
+    }
+  | {
+      /**
+       * "Use Papercusp's cloud" (D-399): the host runs in Papercusp's own hosting project and
+       * the customer grants nothing. `serviceAccountEmail` is the organization's OWN Papercusp
+       * account, which is also the identity that acts; GCP confines it to the resources of
+       * `hostId` alone (see hosted-gcp-hosting.ts). Every field is server-derived.
+       */
+      method: 'papercusp-hosted';
+      projectId: string;
+      serviceAccountEmail: string;
+      hostId: string;
     };
 
 export type HostedProviderDelegationConfiguration =
@@ -124,12 +136,20 @@ export interface HostedDelegationOrganization {
   readonly organizationId: string;
   /** IAM member form; implementations create the account on first use. */
   gcpTrustedPrincipal(): Promise<string>;
+  /**
+   * "Use Papercusp's cloud" (D-399): reserve `hostId` for this organization in Papercusp's
+   * hosting project — the organization's account is created if needed and confined by GCP to
+   * that host's resources — and return where it lives and who acts on it.
+   */
+  gcpPapercuspHosting(hostId: string): Promise<{ projectId: string; serviceAccountEmail: string }>;
 }
 
 /**
  * Stamp an onboarding input with its organization and, for GCP, the organization's own
  * trusted principal — whatever the caller supplied for either is discarded. GCP workload
  * identity is refused: every organization would federate as the same Papercusp subject.
+ * Papercusp hosting is refused too: its host must be server-derived, so it binds only through
+ * {@link bindPapercuspHostedDelegation}.
  */
 export async function bindDelegationToOrganization<
   T extends Pick<HostedProviderDelegationOnboardingInput, 'configuration'>,
@@ -146,6 +166,29 @@ export async function bindDelegationToOrganization<
     ...input,
     organizationId,
     configuration: { ...configuration, source: { ...configuration.source, trustedPrincipal } },
+  };
+}
+
+/**
+ * The delegation for "Use Papercusp's cloud" (D-399): reserve `hostId` for the organization
+ * and describe it. `hostId` must be the host the organization's OWN new workspace provisions,
+ * derived by the server; a host named in a request would hand the caller GCP rights over
+ * whichever machine it named, which is why no configuration can select this method.
+ */
+export async function bindPapercuspHostedDelegation<
+  T extends Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'configuration'>,
+>(
+  input: T,
+  organization: HostedDelegationOrganization,
+  hostId: string,
+): Promise<T & { organizationId: string; configuration: HostedProviderDelegationConfiguration }> {
+  const organizationId = requirePattern(organization.organizationId, SAFE_ID, 'organizationId');
+  const reserved = requirePattern(hostId, SAFE_ID, 'hostId');
+  const hosting = await organization.gcpPapercuspHosting(reserved);
+  return {
+    ...input,
+    organizationId,
+    configuration: { provider: 'gcp', source: { method: 'papercusp-hosted', ...hosting, hostId: reserved } },
   };
 }
 
@@ -293,6 +336,9 @@ function validateGcp(source: GcpHostedCredentialSource): GcpHostedCredentialSour
       trustedPrincipal: requireString(source.trustedPrincipal, 'trustedPrincipal'),
     };
   }
+  if (source.method === 'papercusp-hosted') {
+    return { method: source.method, projectId, serviceAccountEmail, hostId: requirePattern(source.hostId, SAFE_ID, 'hostId') };
+  }
   return {
     method: source.method,
     projectId,
@@ -329,6 +375,19 @@ function normalizeConfiguration(
 }
 
 function gcpTemplate(source: GcpHostedCredentialSource): HostedProviderDelegationTemplate {
+  if (source.method === 'papercusp-hosted') {
+    // Nothing for the customer to apply: Papercusp grants its own project. The document
+    // records WHAT that grant is scoped to, so the digest changes if the reservation does.
+    return {
+      format: 'gcp-iam-json',
+      document: {
+        managedBy: 'papercusp',
+        projectId: source.projectId,
+        serviceAccountEmail: source.serviceAccountEmail,
+        hostId: source.hostId,
+      },
+    };
+  }
   const customRole = {
     roleId: 'papercuspWorkspaceHostOperator',
     title: 'Papercusp Workspace Host Operator',

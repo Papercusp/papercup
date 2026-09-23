@@ -293,15 +293,6 @@ function organizationDelegate(record: GcpDelegationRecord, identityProject: stri
 }
 
 /**
- * Resolve a verified delegation to a one-hour IAM Credentials token, minted through the owning
- * organization's account. The persisted record contains metadata and an opaque reference
- * only; the source token and returned access token exist in memory for this call and are
- * never written to the connection store.
- *
- * Workload identity is refused: every organization would federate as the same Papercusp
- * subject, which is exactly the shared identity D-397 removes.
- */
-/**
  * A Papercusp-hosted delegation (D-399) acts AS the organization's own account, in the ONE
  * configured hosting project; a record naming any other account or project is refused, so a
  * tampered record can neither borrow another organization's reservation nor leave the project.
@@ -322,6 +313,15 @@ function papercuspHostedTarget(
   return source;
 }
 
+/**
+ * Resolve a verified delegation to a one-hour IAM Credentials token, minted through the owning
+ * organization's account (or, Papercusp-hosted, AS it). The persisted record contains metadata
+ * and an opaque reference only; the source token and returned access token exist in memory for
+ * this call and are never written to the connection store.
+ *
+ * Workload identity is refused: every organization would federate as the same Papercusp
+ * subject, which is exactly the shared identity D-397 removes.
+ */
 export async function resolveHostedGcpAuth(
   input: HostedGcpAuthResolverInput,
   dependencies: HostedGcpAuthResolverDependencies = {},
