@@ -229,13 +229,12 @@ export async function readRoutineLivenessRows(sql: Sql, workspaceId: string): Pr
 }
 
 /**
- * The same host-level liveness signal used by bghost-watchdog.mjs: a real
- * `last_fired_at` write from ANY active tenant routine. The routines engine is
- * global to the host, so this query must remain unscoped. A workspace-scoped
- * overdue snapshot can diagnose that tenant's rows; it cannot overrule a recent
- * host-global fire and declare the shared engine dead.
+ * Diagnostic only: an unscoped `last_fired_at` timestamp shows a routine was
+ * claimed for dispatch, not that its DBOS workflow executed or completed.
+ * claimDueRoutine writes it before enqueue, so it must never suppress an
+ * engine-death capture.
  */
-export async function hasRecentGlobalRoutineFire(sql: Sql, windowMs: number): Promise<boolean> {
+export async function hasRecentGlobalRoutineClaim(sql: Sql, windowMs: number): Promise<boolean> {
   const rows = await sql<{ fresh: boolean }[]>`
     SELECT COALESCE(
       MAX(last_fired_at) >= now() - (${windowMs}::bigint * interval '1 millisecond'),
@@ -251,13 +250,8 @@ export async function hasRecentGlobalRoutineFire(sql: Sql, windowMs: number): Pr
 export interface EngineDeathSentinelDeps {
   isArmed: () => Promise<boolean>;
   readRows: () => Promise<RoutineLivenessRow[]>;
-  /**
-   * Host-global liveness proof, deliberately NOT scoped to the mutable desktop
-   * workspace. DBOS dispatches routines across every tenant from one engine, so
-   * one recent real fire proves that engine alive even when the currently-selected
-   * workspace happens to contain only stale test routines.
-   */
-  hasRecentGlobalRoutineFire?: (windowMs: number) => Promise<boolean>;
+  /** A recent pre-enqueue claim timestamp is diagnostic, never liveness proof. */
+  hasRecentGlobalRoutineClaim?: (windowMs: number) => Promise<boolean>;
   readRoutineEngineLiveness?: () => Promise<RoutineEngineLiveness>;
   capture: typeof captureImprovement;
   log: (msg: string) => void;
@@ -304,7 +298,6 @@ export async function runEngineDeathSentinelPass(
   verdict?: EngineDeathVerdict;
   captured?: boolean;
   shedExplained?: boolean;
-  globalLivenessProven?: boolean;
   schedulerLivenessProven?: boolean;
 }> {
   try {
@@ -312,22 +305,21 @@ export async function runEngineDeathSentinelPass(
     const rows = await deps.readRows();
     const verdict = detectRoutineEngineDeath(rows, nowMs ?? Date.now(), opts);
     if (!verdict.dead) return { checked: true, verdict };
-    if (deps.hasRecentGlobalRoutineFire) {
+    if (deps.hasRecentGlobalRoutineClaim) {
       const graceMinutes = opts.graceMinutes ?? ENGINE_DEATH_DEFAULTS.graceMinutes;
       const windowMs = graceMinutes * 60_000;
       try {
-        if (await deps.hasRecentGlobalRoutineFire(windowMs)) {
+        if (await deps.hasRecentGlobalRoutineClaim(windowMs)) {
           deps.log(
-            `workspace-scoped engine-death signature detected (${verdict.reason}), but a host-global ` +
-              `routine fired within the last ${graceMinutes}min — shared DBOS engine is alive; not filing.`,
+            `workspace-scoped engine-death signature detected (${verdict.reason}) with a recent ` +
+              `host-global routine claim timestamp; claim time is not completion evidence, so checking routinesTick liveness.`,
           );
-          return { checked: true, verdict, globalLivenessProven: true };
         }
       } catch (e) {
-        // UNKNOWN never suppresses a critical detector. Keep evaluating the existing
-        // pool-shed explanation and capture path, but leave a durable diagnostic.
+        // UNKNOWN never suppresses a critical detector. Keep evaluating the
+        // completion-backed liveness, pool-shed explanation, and capture path.
         deps.log(
-          `host-global routine-fire liveness check failed (UNKNOWN does not suppress): ` +
+          `host-global routine-claim diagnostic failed (UNKNOWN does not suppress): ` +
             `${e instanceof Error ? e.message : e}`,
         );
       }
@@ -411,8 +403,8 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
       return getFlag(FLAGS.RED_QUEEN, 'red-queen-sentinel');
     },
     readRows: async () => readRoutineLivenessRows((await import('@papercusp/db-org')).getOrgPg().sql, activeWorkspaceId()),
-    hasRecentGlobalRoutineFire: async (windowMs) =>
-      hasRecentGlobalRoutineFire((await import('@papercusp/db-org')).getOrgPg().sql, windowMs),
+    hasRecentGlobalRoutineClaim: async (windowMs) =>
+      hasRecentGlobalRoutineClaim((await import('@papercusp/db-org')).getOrgPg().sql, windowMs),
     readRoutineEngineLiveness: async () =>
       readTickLiveness((await import('@papercusp/db-org')).getOrgPg().sql),
     capture: captureImprovement,

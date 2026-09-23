@@ -254,16 +254,23 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect('origin' in input).toBe(false);
   });
 
-  it('workspace rows all overdue + a recent host-global routine fire ⇒ engine alive, no false capture', async () => {
-    const hasRecentGlobalRoutineFire = vi.fn(async () => true);
-    const { d, capture } = deps({ hasRecentGlobalRoutineFire });
+  it('a recent global routine claim timestamp does not suppress a stale completed-tick signal', async () => {
+    const hasRecentGlobalRoutineClaim = vi.fn(async () => true);
+    const readRoutineEngineLiveness = vi.fn(async () => ({
+      stale: true,
+      unknown: false,
+      lastTickMs: NOW - 7 * 60_000,
+      staleMs: 7 * 60_000,
+    }));
+    const { d, capture } = deps({ hasRecentGlobalRoutineClaim, readRoutineEngineLiveness });
     const res = await runEngineDeathSentinelPass(d, {}, NOW);
 
     expect(res.verdict?.dead).toBe(true);
-    expect(res.globalLivenessProven).toBe(true);
-    expect(res.captured).toBeUndefined();
-    expect(hasRecentGlobalRoutineFire).toHaveBeenCalledWith(10 * 60_000);
-    expect(capture).not.toHaveBeenCalled();
+    expect(res.schedulerLivenessProven).toBeUndefined();
+    expect(res.captured).toBe(true);
+    expect(hasRecentGlobalRoutineClaim).toHaveBeenCalledWith(10 * 60_000);
+    expect(readRoutineEngineLiveness).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledTimes(1);
   });
 
   it('a recently completed routinesTick suppresses engine-death when admission held routine dispatches', async () => {
@@ -303,7 +310,7 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
   it('a failed host-global liveness read is UNKNOWN and never suppresses a real capture', async () => {
     const logs: string[] = [];
     const { d, capture } = deps({
-      hasRecentGlobalRoutineFire: async () => { throw new Error('heartbeat read failed'); },
+      hasRecentGlobalRoutineClaim: async () => { throw new Error('claim timestamp read failed'); },
       log: (m) => logs.push(m),
     });
     const res = await runEngineDeathSentinelPass(d, {}, NOW);
