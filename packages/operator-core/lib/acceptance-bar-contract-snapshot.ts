@@ -278,7 +278,7 @@ export interface AcceptanceBarTrace {
   proof: {
     state: 'current' | 'stale' | 'missing' | 'truncated';
     history?: Array<Pick<AcceptanceBarEvidenceSource,
-      'id' | 'workItemId' | 'specId' | 'specRevision' | 'specFingerprint' | 'evidenceKind' |
+      'id' | 'workItemId' | 'specId' | 'specRevision' | 'currentRevision' | 'specFingerprint' | 'evidenceKind' |
       'evidenceRef' | 'testRunId' | 'observedAt' | 'createdBy' | 'details' | 'currentness'> & {
         matchesCurrentSpec: boolean;
         activeAttempt?: boolean;
@@ -1344,6 +1344,7 @@ export function projectAcceptanceBarContractSnapshot(
         history: evidence.slice().sort((a, b) =>
           `${a.observedAt}\0${a.id}`.localeCompare(`${b.observedAt}\0${b.id}`)).map((row) => ({
           id: row.id, workItemId: row.workItemId, specId: row.specId, specRevision: row.specRevision,
+          currentRevision: row.currentRevision,
           specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
           testRunId: row.testRunId, observedAt: row.observedAt, createdBy: row.createdBy,
           details: row.details, currentness: row.currentness,

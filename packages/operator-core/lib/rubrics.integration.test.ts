@@ -2925,6 +2925,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(noOpScreen!.implementers).toBeUndefined();
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
 
+    const noOpSelfScreen = await rubrics.previewAcceptanceBarAmendment({
+      ...amendment,
+      criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: 'tree' as const },
+      approvedBy: 'amendment-actor',
+    });
+    expect(noOpSelfScreen!.approverEligibility).toEqual({
+      approvedBy: 'amendment-actor',
+      eligible: null,
+      selfScreen: true,
+      note: 'Self-screening cannot establish eligibility; have a different requester screen this candidate.',
+      approvalRequired: false,
+      reason: 'no bar meaning changed',
+    });
+
     const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
     expect(preview!.changedBars).toEqual(['R-1']);
     expect(preview!.projectionCount).toBe(2);
@@ -2947,20 +2961,13 @@ describe('template_data persistence boundary — the set-template-data door', ()
       approvedBy: 'amendment-actor',
     });
     expect(ineligibleScreen!.implementers).toContain('amendment-actor');
-    // WI-10002357: `amendment-actor` is in this population ONLY because it is the CALLER —
-    // `actorId` is injected unconditionally — so `eligible:false` on a SELF-screen is an
-    // artifact of who asked rather than implementer history, and is structurally guaranteed
-    // (`areAcceptanceLineageRelated(x, x)` is trivially true). It must STAY false, because it
-    // correctly predicts this caller's own apply (asserted below); what the two new fields add
-    // is that the condition is CURABLE by letting a different agent perform the apply.
-    // Measured on WI-10001779: before this was distinguishable, a provably eligible approver
-    // recused itself and the item bounced across six sessions.
+    // A self-screen cannot distinguish caller lineage from durable implementer lineage, so it
+    // must return an explicit non-verdict instead of a confident false.
     expect(ineligibleScreen!.approverEligibility).toEqual({
       approvedBy: 'amendment-actor',
-      eligible: false,
-      relatedImplementer: 'amendment-actor',
-      relatedVia: 'caller',
-      eligibleWithUnrelatedApplier: true,
+      eligible: null,
+      selfScreen: true,
+      note: 'Self-screening cannot establish eligibility; have a different requester screen this candidate.',
     });
     // The other half of that pair, and it is load-bearing: a DURABLE relation must not be
     // reported as curable, or `eligibleWithUnrelatedApplier` would be vacuously true for
@@ -2976,7 +2983,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       relatedImplementer: durableImplementer!,
       eligibleWithUnrelatedApplier: false,
     });
-    expect(durableScreen!.approverEligibility!.relatedVia).not.toBe('caller');
+    expect(durableScreen!.approverEligibility).not.toHaveProperty('selfScreen');
+    if (durableScreen!.approverEligibility && 'relatedVia' in durableScreen!.approverEligibility) {
+      expect(durableScreen!.approverEligibility.relatedVia).not.toBe('caller');
+    }
     const eligibleScreen = await rubrics.previewAcceptanceBarAmendment({
       ...amendment,
       approvedBy: 'outside-reviewer',
