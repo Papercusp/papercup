@@ -115,6 +115,7 @@ import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../a
 import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../../acceptance-seat-succession';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
+import { runtimeCitationRefusal } from '../../acceptance-runtime-citation';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -1075,6 +1076,13 @@ export async function emitScorecard(
   // Historical cards remain readable through scorecards:list.
   if (rubric.kind === 'acceptance' && rubric.status === 'retired') {
     return { ok: false as const, ...retiredAcceptanceRubricRefusal(rubric) };
+  }
+  // acceptance-runtime-plane P-004: an unknown/mismatch/not-deployed rating on a live or
+  // deployed BAR must name the runtime AND build sha it measured — refused before any
+  // ledger work, so the grader re-measures on the right runtime instead of "wait for main".
+  if (rubric.kind === 'acceptance') {
+    const citationRefusal = runtimeCitationRefusal(rubric.criteria, args.ratings);
+    if (citationRefusal) return { ok: false as const, ...citationRefusal };
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
