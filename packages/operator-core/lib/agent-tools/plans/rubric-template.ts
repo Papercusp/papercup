@@ -639,6 +639,34 @@ export function stripUnknownCriterionKeys(templateData: unknown): { data: unknow
 }
 
 /**
+ * The whole-document form of {@link stripUnknownCriterionKeys} (WI-10002803): also removes
+ * unknown TOP-LEVEL keys. The criterion-only retry could not save a rubric whose newer build
+ * added a top-level field — goal-mode-e2e revision 46 carries `gradingAuthority`, so a
+ * release build that predates that field projected nothing, and the rubric vanished from
+ * `rubrics:get`, grading, and the Learning tab's definition view.
+ *
+ * The same rules hold: read-side only, known fields untouched (a malformed known field still
+ * fails the retry), and writes stay strict. Top-level keys are reported bare and criterion
+ * keys as `criteria[].<key>`, so a caller can tell the reader exactly which fields it cannot
+ * see. A reader that stripped anything must not rebuild and write the document back — that
+ * would delete the fields it could not see (see `Rubric.readCompat`).
+ */
+export function stripUnknownRubricKeys(templateData: unknown): { data: unknown; stripped: string[] } {
+  if (!templateData || typeof templateData !== 'object' || Array.isArray(templateData)) {
+    return { data: templateData, stripped: [] };
+  }
+  const known = new Set(Object.keys(rubricTemplateDataSchema.shape));
+  const entries = Object.entries(templateData as Record<string, unknown>);
+  const topLevel = entries.filter(([key]) => !known.has(key)).map(([key]) => key);
+  const withoutTopLevel = topLevel.length
+    ? Object.fromEntries(entries.filter(([key]) => known.has(key)))
+    : templateData;
+  const criteria = stripUnknownCriterionKeys(withoutTopLevel);
+  const stripped = [...topLevel.sort(), ...criteria.stripped.map((key) => `criteria[].${key}`)];
+  return stripped.length ? { data: criteria.data, stripped } : { data: templateData, stripped: [] };
+}
+
+/**
  * The acceptance-kind criterion: the SAME field vocabulary as a standard criterion (so
  * the grading path — ratings keyed by `key` against the rating scale — is identical,
  * D-010) but with the heavyweight prose fields OPTIONAL (plan D-007's light profile:
