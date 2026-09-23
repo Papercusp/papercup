@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
   DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS,
   forwardWorkspaceHostRequest,
   type WorkspaceHostControllerForwardingOptions,
 } from './controller-forwarding';
 import { WORKSPACE_HOST_ADMISSION_WINDOW_MS } from './admission-window';
+import { DEFAULT_SIBLING_FANOUT_BUDGET_MS, DEFAULT_SIBLING_PROBE_TIMEOUT_MS } from '../schedule-federation';
 
 type ControllerRow = Awaited<
   ReturnType<NonNullable<WorkspaceHostControllerForwardingOptions['collectControllers']>>
@@ -105,6 +107,61 @@ describe('workspace-host controller forwarding', () => {
       });
       expect(JSON.stringify(body)).not.toContain('private-token-canary');
     }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live controller discoverable when its probe exceeds the generic timeout', async () => {
+    const responseTimeMs = DEFAULT_SIBLING_PROBE_TIMEOUT_MS + 25;
+    const collectControllers = vi.fn(async ({ timeoutMs, budgetMs }: { timeoutMs: number; budgetMs: number }) => {
+      if (responseTimeMs >= timeoutMs) {
+        return [row({
+          label: 'operator:3271',
+          process: null,
+          ok: false,
+          elapsedMs: timeoutMs,
+          probeFailure: 'timeout',
+        })];
+      }
+      await new Promise((resolve) => setTimeout(resolve, responseTimeMs));
+      return [row({ elapsedMs: responseTimeMs })];
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ status: 'accepted' }, { status: 202 }));
+
+    const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'snapshot', workspaceId: 'host-1' }, {
+      isRequestOnly: () => true,
+      collectControllers,
+      fetchImpl,
+    });
+
+    expect(DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS).toBeGreaterThan(responseTimeMs);
+    expect(DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS).toBeLessThan(DEFAULT_SIBLING_FANOUT_BUDGET_MS);
+    expect(collectControllers).toHaveBeenCalledWith({
+      timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
+      budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
+    });
+    expect(response?.status).toBe(202);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('reports a timed-out controller probe instead of claiming no controller exists', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'snapshot', workspaceId: 'host-1' }, {
+      isRequestOnly: () => true,
+      collectControllers: async () => [row({
+        label: 'operator:3271',
+        process: null,
+        ok: false,
+        elapsedMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
+        probeFailure: 'timeout',
+      })],
+      fetchImpl,
+    });
+
+    expect(response?.status).toBe(503);
+    await expect(response?.json()).resolves.toMatchObject({
+      outcome: 'not-dispatched',
+      controllerDiscovery: { reason: 'controller-probe-timeout' },
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
