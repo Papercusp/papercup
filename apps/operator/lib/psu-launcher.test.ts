@@ -302,6 +302,14 @@ import {
 // P-042: the registry half of the launch-mode seam asserted at the bottom of
 // this file — psu's parser is a hand-maintained literal that cannot see it.
 import { LAUNCHABLE_MODE_IDS } from "@papercusp/operator-core/lib/modes/registry";
+// R-12: the argv COMPOSER, so the cross-backend resume suite can round-trip the
+// shared core's real output through psu's real parser instead of a hand-written
+// argv. ⚠ Import ONLY the composer from here: agent-launch-core also exports a
+// `resolveResumeTarget`, an unrelated adv_sessions lookup that collides by name
+// with psu's backend resolver imported bare above — and per the note at the top
+// of these imports, esbuild's TS loader resolves such a collision silently by
+// letting the last one win.
+import { buildAgentLaunchCommand } from "@papercusp/operator-core/lib/agent-launch-core";
 import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from "@papercusp/operator-core/lib/inference-gateway/spawn-env";
 import { fleetSlugFromName as storeFleetSlugFromName } from "@papercusp/operator-core/lib/agent-fleets-store";
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
@@ -7011,6 +7019,74 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       targetAgent: "claude",
       provider: "anthropic",
       modelSpec: "opus[1m]:high",
+    });
+  });
+
+  // R-12 / R-14 (consult-expert-routing-2026-09-22, D-005). THE REGRESSION TEST ON
+  // THE CONVERSION PATH, and the only one that can exist: the defect lived in the
+  // SEAM. operator-core composes the argv and apps/operator parses it, so each side
+  // was internally consistent and neither side's suite could see the loss — psu's
+  // own resolver tests above pass `{ agent: "codex" }` as a plain object and never
+  // ask where that field comes from on a scripted launch.
+  //
+  // MEASURED before the fix, by round-tripping the composed argv through parseArgs:
+  // buildAgentLaunchCommand omitted --agent on every resume, so psu back-filled the
+  // backend from cloudModelBackendHint(model) alone. That hint is null for an OMP
+  // target (open-set vocabulary, by design), for any unrecognized model id, and for
+  // a conversion naming no model — and resolveResumeTarget then falls through to
+  // sourceAgent. Three of these four cases resolved to operation:"native" on claude,
+  // silently, while the caller believed it had asked for a conversion. Only the
+  // named-codex-model case worked, and only by accident of the model name.
+  it.each([
+    { label: "omp, no model", core: { targetAgent: "omp" }, targetAgent: "omp" },
+    {
+      label: "omp, open-set model the hint can never classify",
+      core: { targetAgent: "omp", model: "papercusp-gateway/llama-3" },
+      targetAgent: "omp",
+    },
+    {
+      label: "codex via the deliberately-selected configured default",
+      core: { targetAgent: "codex", modelSource: "configured-default" as const },
+      targetAgent: "codex",
+    },
+    {
+      label: "codex, explicitly named model",
+      core: { targetAgent: "codex", model: "gpt-5.6-sol:xhigh" },
+      targetAgent: "codex",
+    },
+  ])(
+    "round-trips a cross-backend resume through the composed argv: $label",
+    ({ core, targetAgent }) => {
+      const command = buildAgentLaunchCommand({
+        mode: "resume",
+        resumeId: String(source.id),
+        agent: source.agent,
+        headless: true,
+        ...core,
+      });
+      // psu's OWN parser over the shared core's OWN output — no hand-written argv,
+      // because a hand-written one is exactly what hid this for as long as it did.
+      const parsed = parseArgs(command.split(" ").slice(1));
+      expect(parsed.agent).toBe(targetAgent);
+      expect(resolveResumeTarget(source, parsed)).toMatchObject({
+        operation: "port",
+        sourceAgent: "claude",
+        targetAgent,
+      });
+    },
+  );
+
+  it("CONTROL: a resume that names no target still composes a same-backend native resume", () => {
+    const command = buildAgentLaunchCommand({
+      mode: "resume",
+      resumeId: String(source.id),
+      agent: source.agent,
+      model: "opus[1m]:high",
+    });
+    expect(command).not.toContain("--agent");
+    expect(resolveResumeTarget(source, parseArgs(command.split(" ").slice(1)))).toMatchObject({
+      operation: "native",
+      targetAgent: "claude",
     });
   });
 
