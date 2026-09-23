@@ -1209,15 +1209,24 @@ async function prodOpenGradingCascade(
   params: OpenGradingCascadeParams,
   ctx: LaunchCtx,
 ): Promise<OpenGradingCascadeResult> {
-  const [{ getOrgPg }, { notifyAgents }, { resolveAgentIdentity }, conversations, { PROCEED_EXPIRY_MS }, briefs] =
-    await Promise.all([
-      import('@papercusp/db-org'),
-      import('./agent-tools/coordination/notify-agents'),
-      import('./agent-tools/coordination/identity'),
-      import('./agent-tools/coordination/conversations'),
-      import('./consult/get-feedback-core'),
-      import('./consult/grading-cascade'),
-    ]);
+  // `notifyAgents` is deliberately NOT imported here any more (R-11): the only
+  // delivery this function performs is the fork/convert dispatch below, so a
+  // wake cannot creep back in through an unused-but-available binding.
+  const [
+    { getOrgPg },
+    { makeConsultReachDispatcher },
+    { resolveAgentIdentity },
+    conversations,
+    { PROCEED_EXPIRY_MS, stampAnsweringOwner },
+    briefs,
+  ] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('./consult/consult-dispatch'),
+    import('./agent-tools/coordination/identity'),
+    import('./agent-tools/coordination/conversations'),
+    import('./consult/get-feedback-core'),
+    import('./consult/grading-cascade'),
+  ]);
   const identity = resolveAgentIdentity(ctx as never);
   const sql = getOrgPg().sql;
 
@@ -1268,7 +1277,12 @@ async function prodOpenGradingCascade(
     title: `Acceptance grading — ${params.planSlug} (${params.rubricId})`,
     body: brief,
     ...(params.harnessSlug ? { harness_slug: params.harnessSlug } : {}),
-    direct_to: [head.ownerId],
+    // ⚠ EMPTY on purpose (R-11, matching get-feedback-core): openConversation
+    // fans a notification out to its addressees, so naming the grader here
+    // would wake a live agent through the back door the dispatch below just
+    // stopped using. appendPost auto-joins a contributor, so the answering
+    // session can post without being enrolled first.
+    direct_to: [],
     producer: 'acceptance-gate:grading-cascade',
   });
   const conversationId = opened.conversation.id;
@@ -1297,16 +1311,39 @@ async function prodOpenGradingCascade(
        ${sql.json(routing as never)}, ${expiresAt}::timestamptz, 1, 0)
   `;
 
-  const res = await notifyAgents(identity, {
-    addressees: [head.ownerId],
-    objectRef: { kind: 'conversation', ref: conversationId },
+  // R-11 / D-013: a grading cascade is a consult row (its routing carries
+  // GRADING_CASCADE_FLAVOR), so it is bound by "no consult ever messages a live
+  // agent". The grader is DISPATCHED — their transcript is forked (same
+  // backend) or converted (cross backend) into a session launched to grade this
+  // one rubric — never woken in place.
+  //
+  // ⚠ launchedBy is the SYSTEM actor, not the caller. The caller here can be the
+  // rubric's own author asking the plan gate to recruit, and a session they
+  // launch stays inside their lineage — which is exactly what the emit-side
+  // guard refuses as a non-independent grade. Waking never created a lineage,
+  // so this concern arrives WITH the dispatch; ACCEPTANCE_GRADING_SWEEP_ACTOR
+  // already exists for precisely this (see its docstring).
+  const dispatch = makeConsultReachDispatcher({
+    workspaceId: params.workspaceId,
+    harnessSlug: params.harnessSlug ?? null,
+    launchedBy: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+  });
+  const res = await dispatch({
+    responder: head.ownerId,
+    conversationId,
     summary: `⚖️ acceptance grading (grader 1/${params.graders.length}): plan ${params.planSlug}`,
     body: brief,
-    planSlug: params.planSlug,
-    ...(params.harnessSlug ? { harnessSlug: params.harnessSlug } : {}),
-    wake: true,
+    // Stamp the answering identity as soon as that session starts, not when the
+    // dispatcher returns: it can file its card during the verification wait, and
+    // the participant gate refuses an author the row does not name yet.
+    onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params.workspaceId, conversationId, 0, owner),
   });
-  return { conversationId, woke: res.woke };
+  // Backstop for a dispatcher that never called the hook; no-ops on absent.
+  await stampAnsweringOwner(sql, params.workspaceId, conversationId, 0, res.answeringOwnerId);
+  // `queued`, not `woke`: a launched-but-still-booting fork already owns the
+  // keyboard while reporting woke:0, and the caller reads this as "a grader is
+  // engaged". Reporting 0 there would re-recruit over a live grader.
+  return { conversationId, woke: res.queued };
 }
 
 /**
@@ -1340,10 +1377,10 @@ export async function advanceGradingCascadeOnCard(input: {
   cardSummary: string;
 }): Promise<{ advanced: boolean; next?: string; reason?: string }> {
   try {
-    const [{ getOrgPg }, { advanceCascade, makeDigestEntry }, { notifyAgents }] = await Promise.all([
+    const [{ getOrgPg }, { advanceCascade, makeDigestEntry }, { makeConsultReachDispatcher }] = await Promise.all([
       import('@papercusp/db-org'),
       import('./consult/cascade-core'),
-      import('./agent-tools/coordination/notify-agents'),
+      import('./consult/consult-dispatch'),
     ]);
     const sql = getOrgPg().sql;
     const rows = (await sql`
@@ -1366,6 +1403,13 @@ export async function advanceGradingCascadeOnCard(input: {
       cascade_cursor: number;
       cascade_digest: unknown;
     }>;
+    const dispatchGrader = makeConsultReachDispatcher({
+      workspaceId: input.workspaceId,
+      harnessSlug: null,
+      // Same reason as the opening dispatch: the system actor owns the launch so
+      // grader k+1 cannot inherit the card author's lineage.
+      launchedBy: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+    });
     const row = rows[0];
     if (!row) return { advanced: false, reason: 'no_open_grading_cascade' };
     if (row.responder_id !== input.graderOwnerId) {
@@ -1389,14 +1433,15 @@ export async function advanceGradingCascadeOnCard(input: {
       },
       sql,
       async (opts) => {
-        const res = await notifyAgents({ ownerId: row.requester_id } as never, {
-          addressees: [opts.responder],
-          objectRef: { kind: 'conversation', ref: opts.conversationId },
-          summary: opts.summary,
-          body: opts.body,
-          wake: true,
-        });
-        return { woke: res.woke };
+        // R-11 / D-013, same as the opening dispatch: grader k+1 is FORKED or
+        // CONVERTED from their transcript holding grader k's card, never woken.
+        const res = await dispatchGrader(opts);
+        return {
+          // queued, not woke — cascade-core treats 0 as "this rank produced
+          // nobody" and advances past them, and a booting fork reports woke:0.
+          woke: res.queued,
+          answeringOwnerId: res.answeringOwnerId ?? null,
+        };
       },
     );
     return {
