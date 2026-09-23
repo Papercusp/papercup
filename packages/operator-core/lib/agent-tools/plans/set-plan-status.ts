@@ -777,15 +777,16 @@ export default defineTool({
           );
         }
 
-        // Lifecycle tidy-up (acceptance-rubrics-on-every-plan-2026-08-11 P-005): the
-        // acceptance rubric archives WITH its shipped subject plan. Best-effort — the
-        // helper never throws and a busy lock is simply skipped (the rubric stays
-        // resolvable by id either way).
+        // Lifecycle tidy-up (acceptance-rubrics-on-every-plan-2026-08-11 P-005): an
+        // acceptance rubric archives WITH its terminal subject plan, shipped or superseded.
+        // Repeat on superseded no-ops too, repairing older terminal rows with live rubrics.
+        // Best-effort: a busy lock is skipped and the rubric remains resolvable by id.
         let acceptanceRubricRetired: string | null = null;
-        if (status === 'shipped' && result.value.changed) {
+        if (status === 'superseded' || (status === 'shipped' && result.value.changed)) {
           const id = resolveAgentIdentity(ctx);
           acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId, {
             harnessSlug: result.scope.harnessSlug,
+            terminalStatus: status,
           });
         }
 
