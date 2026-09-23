@@ -658,16 +658,17 @@ describe('getFeedbackCore — routed', () => {
     ]);
     expect(r.park_key).toBeNull(); // proceed contract
     expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
-    expect(r.hint).toContain('turn pickup is not confirmed');
+    expect(r.hint).toContain('answering session launched');
 
-    // Conversation: kind consult, addressed to the chosen responder, body carries the sections.
+    // Conversation: kind consult, addressed to NOBODY — D-002 delivery is a
+    // launch, and a direct_to here would notify the very agent we must not wake.
     expect(opened).toHaveLength(1);
     expect(opened[0].kind).toBe('consult');
-    expect(opened[0].direct_to).toEqual(['agent-a']);
+    expect(opened[0].direct_to).toEqual([]);
     expect(opened[0].body).toContain('## Tried');
     expect(opened[0].body).toContain('## Observed');
 
-    // Wake carries the why-you-were-chosen evidence refs (D-008 §5).
+    // The dispatch brief carries the why-you-were-chosen evidence refs (D-008 §5).
     expect(reached).toHaveLength(1);
     expect(reached[0].responder).toBe('agent-a');
     expect(reached[0].body).toContain('sess-agent-a#3');
@@ -677,7 +678,13 @@ describe('getFeedbackCore — routed', () => {
     expect(row.state).toBe('awaiting_responder');
     expect(row.responder_id).toBe('agent-a');
     expect(row.wakes_used).toBe(1);
-    expect(row.routing).toEqual(JSON.parse(JSON.stringify(route.snapshot)));
+    // Verbatim EXCEPT the dispatch stamp (D-002): the answering identity is
+    // written onto the cursor entry after the route, and is the ONLY thing this
+    // path may add. Named explicitly rather than loosened to a partial match,
+    // so a second unannounced mutation of the snapshot still fails here.
+    const expectedSnapshot = JSON.parse(JSON.stringify(route.snapshot));
+    expectedSnapshot.selection.selected[0].answeringOwnerId = 'agent-a-fork';
+    expect(row.routing).toEqual(expectedSnapshot);
     expect(new Date(row.expires_at as string).getTime()).toBe(NOW.getTime() + PROCEED_EXPIRY_MS);
   });
 
@@ -691,18 +698,20 @@ describe('getFeedbackCore — routed', () => {
     expect(new Date(row.expires_at as string).getTime()).toBe(NOW.getTime() + HARD_BLOCKED_EXPIRY_MS);
   });
 
-  it('liveness gate: a dead top candidate is skipped for the next live one', async () => {
+  it('R-2: a DEAD top candidate is selected, not skipped — deadness changes neither rank nor eligibility', async () => {
     const deadTop = cand('agent-dead', { score: 0.9, liveness: 'ended' });
     const liveSecond = cand('agent-live', { score: 0.6, liveness: 'parked' });
-    const { deps, opened } = makeDeps(routeOf([deadTop, liveSecond]));
+    const { deps, opened, reached } = makeDeps(routeOf([deadTop, liveSecond]));
     const r = asOk(await getFeedbackCore(baseReq, deps));
-    expect(r.responder?.ownerId).toBe('agent-live');
+    expect(r.responder?.ownerId).toBe('agent-dead');
     expect(r.responder_via).toBe('floor');
-    expect(opened[0].direct_to).toEqual(['agent-live']);
-    // min/max selection: the menu is the SELECTED set only — a dead candidate
-    // is never selected, so it no longer pads remaining_candidates (its refs
-    // survive in the persisted routing snapshot).
-    expect(r.remaining_candidates).toEqual([]);
+    expect(opened[0].direct_to).toEqual([]);
+    // Dispatched from the dead expert's transcript — the whole point of D-002.
+    expect(reached.map((d) => d.responder)).toEqual(['agent-dead']);
+    // …and the LIVE second stays on the menu BEHIND the dead head rather than
+    // being promoted past it. That ordering IS R-2: liveness moved neither
+    // candidate, so a decline or expiry cascades to the live one next.
+    expect(r.remaining_candidates.map((c) => c.ownerId)).toEqual(['agent-live']);
   });
 
   it('liveness gate: a verified owner-paused candidate is skipped for a live fallback', async () => {
@@ -716,9 +725,11 @@ describe('getFeedbackCore — routed', () => {
       routeOf([pausedTop], { all: [pausedTop, liveFallback] }),
     );
     const r = asOk(await getFeedbackCore(baseReq, deps));
+    // The ONE gate D-002 keeps: an owner pause is an authoritative stand-down,
+    // and a fork still spends that identity's transcript and fleet budget.
     expect(r.responder?.ownerId).toBe('agent-live-owner-pause-fallback');
     expect(r.responder_via).toBe('minimum');
-    expect(opened[0].direct_to).toEqual(['agent-live-owner-pause-fallback']);
+    expect(opened[0].direct_to).toEqual([]);
 
     const row = await stateRow(r.conversation_id);
     expect((row.routing as RoutingSnapshot).candidates).toContainEqual(
@@ -726,7 +737,7 @@ describe('getFeedbackCore — routed', () => {
     );
   });
 
-  it('liveness gate: warm-idle parked minimum is skipped for a live fallback', async () => {
+  it('R-2: a warm-idle parked top candidate keeps its rank — warm-idle is not a gate either', async () => {
     const warmIdle = cand('agent-warm-idle', { score: 0.9, liveness: 'parked', warmIdle: true });
     const liveFallback = cand('agent-live-fallback', {
       score: 0.2,
@@ -735,9 +746,9 @@ describe('getFeedbackCore — routed', () => {
     });
     const { deps, opened } = makeDeps(routeOf([warmIdle], { all: [warmIdle, liveFallback] }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
-    expect(r.responder?.ownerId).toBe('agent-live-fallback');
-    expect(r.responder_via).toBe('minimum');
-    expect(opened[0].direct_to).toEqual(['agent-live-fallback']);
+    expect(r.responder?.ownerId).toBe('agent-warm-idle');
+    expect(r.responder_via).toBe('floor');
+    expect(opened[0].direct_to).toEqual([]);
     expect(r.remaining_candidates).toEqual([]);
 
     const row = await stateRow(r.conversation_id);
@@ -758,7 +769,7 @@ describe('getFeedbackCore — routed', () => {
     expect(r.responder_via).toBe('floor');
   });
 
-  it('liveness gate: an unknown/no-presence candidate is never persisted or woken', async () => {
+  it('R-2: an unknown/no-presence candidate is selectable — a missing presence signal is not a verdict about the transcript', async () => {
     const unknownTop = cand('agent-no-presence', { score: 0.9, liveness: 'unknown' });
     const liveFallback = cand('agent-live-fallback-3', {
       score: 0.2,
@@ -771,21 +782,20 @@ describe('getFeedbackCore — routed', () => {
 
     const r = asOk(await getFeedbackCore(baseReq, deps));
 
-    expect(r.responder?.ownerId).toBe('agent-live-fallback-3');
-    expect(r.responder_via).toBe('minimum');
-    expect(opened[0].direct_to).toEqual(['agent-live-fallback-3']);
+    expect(r.responder?.ownerId).toBe('agent-no-presence');
+    expect(r.responder_via).toBe('floor');
+    expect(opened[0].direct_to).toEqual([]);
     expect(reached).toHaveLength(1);
-    expect(reached[0].responder).toBe('agent-live-fallback-3');
+    expect(reached[0].responder).toBe('agent-no-presence');
 
     const row = await stateRow(r.conversation_id);
-    expect(row.responder_id).toBe('agent-live-fallback-3');
+    expect(row.responder_id).toBe('agent-no-presence');
     const selection = (row.routing as RoutingSnapshot).selection;
     expect(selection?.selected[0]).toMatchObject({
-      ownerId: 'agent-live-fallback-3',
-      via: 'minimum',
-      liveness: 'live',
+      ownerId: 'agent-no-presence',
+      via: 'floor',
+      liveness: 'unknown',
     });
-    expect(selection?.selected.map((entry) => entry.ownerId)).not.toContain('agent-no-presence');
   });
 });
 
@@ -807,18 +817,17 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(row.expires_at).toBeNull();
   });
 
-  it('no_live_responder: qualified experts exist but every one is dead — retrieval fallback', async () => {
+  it('an all-dead qualified pool ROUTES (the no_live_responder verdict is retired with the wake)', async () => {
     const { deps, reached } = makeDeps(
       routeOf([cand('agent-d1', { liveness: 'ended' }), cand('agent-d2', { liveness: 'recorded' })]),
     );
     const r = asOk(await getFeedbackCore(baseReq, deps));
-    expect(r.verdict).toBe('no_qualified_responder');
-    expect(r.reason).toBe('no_live_responder');
-    expect(r.hint).toContain('sessions:read');
-    expect(r.remaining_candidates.map((c) => c.ownerId)).toEqual(['agent-d1', 'agent-d2']);
-    expect(reached).toHaveLength(0);
+    expect(r.verdict).toBe('routed');
+    expect(r.reason).toBeUndefined();
+    expect(r.responder?.ownerId).toBe('agent-d1');
+    expect(reached.map((d) => d.responder)).toEqual(['agent-d1']);
     const row = await stateRow(r.conversation_id);
-    expect(row.state).toBe('no_qualified_responder');
+    expect(row.state).toBe('awaiting_responder');
   });
 
   it('embed_unavailable: cannot-measure ≠ measured-nothing, and the VERDICT says so', async () => {
@@ -874,7 +883,7 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     // The default minimum is one, so the lexical fallback does not broadcast
     // to the second candidate; it remains only in the router snapshot.
     expect(r.remaining_candidates).toEqual([]);
-    expect(opened[0].direct_to).toEqual(['agent-lexical']);
+    expect(opened[0].direct_to).toEqual([]);
     expect(reached).toHaveLength(1);
     expect(reached[0].body).toContain('MANUAL-REVIEW');
     expect(reached[0].body).toContain('lexical rank 0.420');
@@ -1117,11 +1126,12 @@ describe('getFeedbackCore — exclusion boundary', () => {
     );
 
     expect(routeCalls[0]?.excludeOwners).toEqual([excludedOwner]);
-    expect(result.reason).toBe('no_live_responder');
-    expect(result.responder).toBeNull();
-    expect(result.remaining_candidates.map((candidate) => candidate.ownerId)).toEqual([remainingDeadOwner]);
+    // Deadness no longer refuses the route, so what this pins is the EXCLUSION:
+    // the excluded owner appears in neither the responder nor the fallback refs.
+    expect(result.responder?.ownerId).toBe(remainingDeadOwner);
     expect(result.remaining_candidates.map((candidate) => candidate.ownerId)).not.toContain(excludedOwner);
-    expect(reached).toHaveLength(0);
+    expect(reached.map((d) => d.responder)).toEqual([remainingDeadOwner]);
+    expect(reached.map((d) => d.responder)).not.toContain(excludedOwner);
   });
 });
 
@@ -1177,13 +1187,14 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
     expect(reached).toHaveLength(0);
   });
 
-  it('a minimum only fillable by the dead stays unfilled: no_live_responder', async () => {
+  it('a minimum fillable only by the dead IS filled — the minimum-fill no longer needs a live body', async () => {
     const dead = cand('agent-dead', { liveness: 'ended' });
     const { deps, reached } = makeDeps(routeOf([], { all: [dead] }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
-    expect(r.verdict).toBe('no_qualified_responder');
-    expect(r.reason).toBe('no_live_responder');
-    expect(reached).toHaveLength(0);
+    expect(r.verdict).toBe('routed');
+    expect(r.responder?.ownerId).toBe('agent-dead');
+    expect(r.responder_via).toBe('minimum');
+    expect(reached.map((d) => d.responder)).toEqual(['agent-dead']);
   });
 });
 
@@ -1910,7 +1921,12 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     // Delivered by dispatch, to the EXPERT as the transcript source.
     expect(reached).toHaveLength(1);
     expect(reached[0].responder).toBe('dead-x');
-    expect(reached[0].body).toContain(baseReq.question);
+    // The brief the launched session boots on: the question in the summary line,
+    // and the thread door in the body. The FULL question (plus tried/observed)
+    // lives in the conversation's opening post, which is why the body's job is
+    // to send it there rather than to restate it.
+    expect(reached[0].summary).toContain(baseReq.question);
+    expect(reached[0].body).toContain(`conversations:get { id: '${res.conversation_id}' }`);
     const row = await stateRow(res.conversation_id);
     expect(row.responder_id).toBe('dead-x');
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
@@ -1992,32 +2008,38 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
   });
 
   it('an expert whose whole allowlist is exhausted fails over to the next selectee, digesting dispatch_failed', async () => {
+    // Two QUALIFIED experts, so the menu has a second seat to fail over into.
     // Call 1 (the head) launches nobody; call 2 (the failover) launches.
-    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), [0, 1]);
-    const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'live-low']);
+    const second = cand('expert-b', { score: 0.65 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second]), [0, 1]);
+    const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 2 }, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b']);
     expect(res.verdict).toBe('routed');
-    expect(res.responder?.ownerId).toBe('live-low');
-    expect(res.responder_via).toBe('minimum');
+    expect(res.responder?.ownerId).toBe('expert-b');
     const row = await stateRow(res.conversation_id);
-    expect(row.responder_id).toBe('live-low');
+    expect(row.responder_id).toBe('expert-b');
     expect(row.cascade_cursor).toBe(1);
     const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
     // The reason is named on the row, not inferred from an empty advance.
     expect(digest).toEqual([expect.objectContaining({ ownerId: 'dead-x', kind: 'dispatch_failed' })]);
     const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
-    expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low', answeringOwnerId: 'live-low-fork' });
+    expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'expert-b', answeringOwnerId: 'expert-b-fork' });
     // The head that launched nobody carries NO answering identity.
     expect(sel?.selected?.[0]?.answeringOwnerId).toBeUndefined();
   });
 
   it('every selectee exhausted — the honest terminal is no_available_responder, settled NOW rather than left to expiry', async () => {
-    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert], { all: [deadExpert, liveLow] }), [0, 0]);
-    const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'live-low']);
+    const second = cand('expert-b', { score: 0.65 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second]), [0, 0]);
+    const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 2 }, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b']);
+    // No session was launched, so no responder is named and nothing is coming.
     expect(res.verdict).toBe('no_qualified_responder');
     expect(res.reason).toBe('no_available_responder');
+    expect(res.responder).toBeNull();
     expect(res.expires_at).toBeNull();
+    expect(res.park_key).toBeNull();
+    expect(res.hint).toContain('Nothing is coming, so do not park');
     const row = await stateRow(res.conversation_id);
     expect(row.state).toBe('no_qualified_responder');
     expect(row.expires_at).toBeNull();
@@ -2042,6 +2064,7 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     expect(reached.map((d) => d.responder)).toEqual(['sole-expert']);
     expect(res.verdict).toBe('no_qualified_responder');
     expect(res.reason).toBe('no_available_responder');
+    expect(res.responder).toBeNull();
     expect(res.wake).toEqual({ attempted: true, queued: 0, woke: 0, pickupConfirmed: false });
     const row = await stateRow(res.conversation_id);
     expect(row.state).toBe('no_qualified_responder');

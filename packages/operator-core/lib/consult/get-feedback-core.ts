@@ -1364,6 +1364,11 @@ export async function getFeedbackCore(
       reason = 'no_available_responder';
       state = 'no_qualified_responder';
       expiresAt = null;
+      // …and DROP the responder. Nothing was launched, so naming one would
+      // promise an answer that is not coming — the park key, the verdict and
+      // the hint all derive from this, and each is only honest once it is null.
+      finalChosen = null;
+      finalChosenVia = null;
       await sql`
         UPDATE harness_shared.consult_state
            SET state = 'no_qualified_responder',
