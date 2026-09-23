@@ -157,7 +157,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Non-destructive TERMINAL flip: when flipping an item to `done` or `dropped`, SKIP it (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Stops ONE work-item closing or dropping from de-queueing a plan item other live work still covers (EI-19972048649686949; WI-38908 — a 1:N lane auto-closed on its first sibling). No effect on a non-terminal status. For AUTOMATED reflections; a human closing/abandoning the item deliberately just omits it.',
+        'On `done`/`dropped`, skip if another non-terminal work-item covers this plan item via implements, relates, or payload.plan_item. Prevents one sibling from clearing live shared work. No effect on other statuses; automated reflections use this, while deliberate human closure omits it.',
       ),
     onlyIfNoOtherInFlightCoverage: z
       .boolean()
