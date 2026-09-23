@@ -52,7 +52,15 @@ import {
   type WorkspaceHostAgentCredentialAdmissionInput,
 } from './agent-credential-admission';
 import type { WorkspaceHostCredentialMaterialSource } from './credential-material-source';
+import {
+  openWorkspaceHostInitializationRelease,
+  workspaceHostFixedAgentInitializationOutcome,
+  workspaceHostRootBootstrapEvidenceRefs,
+  WORKSPACE_HOST_ROOT_BOOTSTRAP_STAGE,
+  type WorkspaceHostInitializationReleaseRecorder,
+} from './initialization-release-receipt';
 import { createWorkspaceHostInitializationReplayStore } from './initialization-replay-store';
+import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
 import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
@@ -87,6 +95,12 @@ export interface WorkspaceHostInitializationRunInput {
   publicMetadata?: Readonly<Record<string, unknown>>;
   /** The concrete capability-declaring host adapter (e.g. GcpIapWorkspaceHostInitializationOperations). */
   operations: WorkspaceHostInitializationHostOperations;
+  /**
+   * The release this host runs, when the run is acceptance evidence for it: the run then records
+   * `workspace.root-bootstrap` and `workspace.fixed-agent-initialization` on that release's journal
+   * (initialization-release-receipt.ts). Explicit, never discovered from the host's digest.
+   */
+  releaseTaskId?: string;
   /** Stable controller identity for lease re-entrancy; defaults to this operation. */
   leaseOwner?: string;
   leaseTtlMs?: number;
@@ -117,10 +131,12 @@ export interface WorkspaceHostInitializationRunnerDependencies {
   verifyAgentCredentialAdmission: (
     input: WorkspaceHostAgentCredentialAdmissionInput,
   ) => Promise<WorkspaceHostAgentCredentialAdmissionEvidence>;
+  openRelease: typeof openWorkspaceHostInitializationRelease;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostInitializationRunnerDependencies = {
   verifyAgentCredentialAdmission: verifyWorkspaceHostAgentCredentialAdmission,
+  openRelease: openWorkspaceHostInitializationRelease,
 };
 
 /**
@@ -191,6 +207,25 @@ export async function runWorkspaceHostInitialization(
       throw new Error('workspace-host initialization received duplicate credential admission evidence');
     }
     admissionBindings.add(key);
+  }
+  // A release receipt that could never be written refuses the request here, read-only, before any
+  // row exists — the same boundary as a malformed request (see `onPlanned`).
+  let release: WorkspaceHostInitializationReleaseRecorder | undefined;
+  if (input.releaseTaskId !== undefined) {
+    if (!input.operations.awaitBootstrapReady) {
+      throw new WorkspaceHostReleaseBindingError(
+        'stage-unobservable',
+        WORKSPACE_HOST_ROOT_BOOTSTRAP_STAGE,
+        'this host adapter cannot observe bootstrap readiness',
+      );
+    }
+    release = await dependencies.openRelease({
+      releaseTaskId: input.releaseTaskId,
+      workspaceId: input.workspaceId,
+      hostId: input.hostId,
+      operationId,
+      plan,
+    });
   }
   input.onPlanned?.(plan);
 
@@ -304,6 +339,7 @@ export async function runWorkspaceHostInitialization(
      * would convert a capability they never declared into a refusal.
      */
     if (input.operations.awaitBootstrapReady) {
+      await release?.begin('root-bootstrap');
       const readiness = await input.operations.awaitBootstrapReady({
         onWaiting: async ({ elapsedMs, timeoutMs }) => {
           await updateWorkspaceHostOperation({
@@ -333,9 +369,26 @@ export async function runWorkspaceHostInitialization(
           details: { waitedMs: readiness.waitedMs, probes: readiness.probes },
         });
       }
+      await release?.settle(
+        'root-bootstrap',
+        'committed',
+        workspaceHostRootBootstrapEvidenceRefs(input, readiness),
+      );
     }
 
+    await release?.begin('fixed-agents');
     const receipts = await executeWorkspaceHostInitialization(plan, reportingExecutor);
+    if (release) {
+      // Judged from the verify step's own agent evidence. An unconfirmed agent refuses the RECEIPT;
+      // the initialization itself did succeed, so it is not reported as a failed operation.
+      const fixedAgents = workspaceHostFixedAgentInitializationOutcome({
+        subject: input,
+        stage: release.stage('fixed-agents'),
+        receipts,
+        credentialAdmissions,
+      });
+      await release.settle('fixed-agents', fixedAgents.outcome, fixedAgents.evidenceRefs);
+    }
 
     await updateWorkspaceHostOperation({
       workspaceId: input.workspaceId,
@@ -364,6 +417,11 @@ export async function runWorkspaceHostInitialization(
       ...(credentialAdmissions.length > 0 ? { credentialAdmissions } : {}),
     };
   } catch (error) {
+    // Only the error's class name reaches the release journal: its message may quote host output.
+    await release?.refuseOpen([
+      `initialize-failure:${error instanceof Error ? error.name : 'unknown'}`,
+      `initialize-completed-steps:${completedSteps}/${totalSteps}`,
+    ]);
     // The thrown message may quote host output, so it is passed ONLY through `error`, which the
     // observability store redacts — never interpolated into the human-facing message field.
     await updateWorkspaceHostOperation({

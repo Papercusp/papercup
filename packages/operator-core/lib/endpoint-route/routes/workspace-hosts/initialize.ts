@@ -15,9 +15,11 @@ import {
   WorkspaceHostInitializationControllerProfileError,
 } from '../../../workspace-host/initialization-operations-resolver';
 import { prepareWorkspaceHostInitialization, WorkspaceHostInitializationRequestError } from '../../../workspace-host/initialization-admission';
+import { WorkspaceHostReleaseBindingError } from '../../../workspace-host/release-stage-receipt';
 import { defaultWorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
 const HOST_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
+const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 interface InitializeBody {
   source?: unknown;
@@ -26,6 +28,8 @@ interface InitializeBody {
   publicMetadata?: unknown;
   operationId?: unknown;
   requestedAgents?: unknown;
+  /** Record root-bootstrap + fixed-agent-initialization on this release's journal (WI-10002510). */
+  releaseTaskId?: unknown;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -67,6 +71,9 @@ export default defineTool({
     if (body.publicMetadata !== undefined && !isRecord(body.publicMetadata)) {
       return Response.json({ ok: false, error: 'publicMetadata must be an object' }, { status: 400 });
     }
+    if (body.releaseTaskId !== undefined && (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId))) {
+      return Response.json({ ok: false, error: 'releaseTaskId has an invalid value' }, { status: 400 });
+    }
 
     let requestedAgents;
     try {
@@ -95,11 +102,21 @@ export default defineTool({
         credentialDelivery: body.credentialDelivery as never,
         ...(requestedAgents !== undefined ? { requestedAgents } : {}),
         ...(body.publicMetadata ? { publicMetadata: body.publicMetadata as Record<string, unknown> } : {}),
+        ...(typeof body.releaseTaskId === 'string' ? { releaseTaskId: body.releaseTaskId } : {}),
       });
       const result = await startWorkspaceHostInitializationWorkflow(request);
       const auditUrl = `/api/workspace-hosts/${hostId}/audit`;
-      return Response.json({ ok: true, ...result, auditUrl }, { status: 202, headers: { location: auditUrl } });
+      return Response.json(
+        { ok: true, ...result, releaseTaskId: request.releaseTaskId ?? null, auditUrl },
+        { status: 202, headers: { location: auditUrl } },
+      );
     } catch (error) {
+      if (error instanceof WorkspaceHostReleaseBindingError) {
+        return Response.json(
+          { ok: false, error: error.message, reason: error.reason },
+          { status: error.reason === 'task-not-found' ? 404 : 409 },
+        );
+      }
       if (error instanceof WorkspaceHostInitializationControllerProfileError) {
         return Response.json(
           { ok: false, error: 'workspace-host initialization is not configured', problems: error.problems },

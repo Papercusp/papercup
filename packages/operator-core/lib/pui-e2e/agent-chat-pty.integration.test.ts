@@ -2131,8 +2131,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
         binary: bin, binarySha256, stored, indexed, frame: pane.screen(),
       }));
     } finally {
-      warn.mockRestore();
+      // Stop the PUI BEFORE restoring: its last search can still be in flight
+      // in this process's operator and would warn outside the spy (run 30580f8b).
       await pane.stop().catch(() => {});
+      warn.mockRestore();
     }
   }, 300_000);
 });

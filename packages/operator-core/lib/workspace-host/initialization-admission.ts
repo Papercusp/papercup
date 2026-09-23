@@ -13,11 +13,19 @@ import {
   resolveWorkspaceHostInitializationOperationsForHost,
   WorkspaceHostDesiredSpecUnavailableError,
 } from './initialization-operations-resolver';
+import { openWorkspaceHostInitializationRelease } from './initialization-release-receipt';
 import { runWorkspaceHostInitialization } from './initialization-runner';
 import { appendWorkspaceHostEvent, beginWorkspaceHostOperation, readWorkspaceHostDesiredSpec, updateWorkspaceHostOperation } from './observability-store';
 import { createWorkspaceHostInitializationReplayStore } from './initialization-replay-store';
 
-export type WorkspaceHostInitializationAdmission = Omit<WorkspaceHostInitializationRequest, 'deliveryCapabilities'>;
+/**
+ * The durable request: the contract request plus, when the run is acceptance evidence for a
+ * release, that release's task (initialization-release-receipt.ts). The task id is admission
+ * context, not part of the host contract, so it never reaches the planner or the host.
+ */
+export type AdmittedWorkspaceHostInitialization = WorkspaceHostInitializationRequest & { releaseTaskId?: string };
+
+export type WorkspaceHostInitializationAdmission = Omit<AdmittedWorkspaceHostInitialization, 'deliveryCapabilities'>;
 
 export interface WorkspaceHostDesktopPackRequest {
   workspaceId: string;
@@ -87,25 +95,38 @@ export class WorkspaceHostInitializationRequestError extends Error {
 
 export async function prepareWorkspaceHostInitialization(
   input: WorkspaceHostInitializationAdmission,
-): Promise<WorkspaceHostInitializationRequest> {
+): Promise<AdmittedWorkspaceHostInitialization> {
   // Configuration and local intent checks retain the API's 404/409/501/503 distinctions.
   resolveWorkspaceHostInitializationControllerProfile();
   const lookup = await readWorkspaceHostDesiredSpec(input.workspaceId, input.hostId);
   if (!lookup.desired) {
     throw new WorkspaceHostDesiredSpecUnavailableError(input.hostId, lookup.miss ?? 'no-recorded-spec');
   }
-  const request = { ...input, deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(lookup.desired) };
+  const { releaseTaskId, ...contract } = input;
+  const request = { ...contract, deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(lookup.desired) };
+  let plan;
   try {
-    planWorkspaceHostInitialization(request);
+    plan = planWorkspaceHostInitialization(request);
     // DBOS persists its input as well as the operation plan. Assert BOTH boundaries.
     assertWorkspaceHostSecretIsolation(request, 'workspaceHost.initialization.admission');
   } catch {
     throw new WorkspaceHostInitializationRequestError();
   }
-  return request;
+  if (releaseTaskId === undefined) return request;
+  // Refuse a release receipt that could never be written now, not after minutes of host work. The
+  // durable run re-checks: the journal can move between this read and the run.
+  await openWorkspaceHostInitializationRelease({
+    releaseTaskId,
+    workspaceId: request.workspaceId,
+    hostId: request.hostId,
+    operationId: request.operationId,
+    plan,
+  });
+  return { ...request, releaseTaskId };
 }
 
-export async function executeAdmittedWorkspaceHostInitialization(request: WorkspaceHostInitializationRequest) {
+export async function executeAdmittedWorkspaceHostInitialization(admitted: AdmittedWorkspaceHostInitialization) {
+  const { releaseTaskId, ...request } = admitted;
   const plan = planWorkspaceHostInitialization(request);
   await beginWorkspaceHostOperation({
     workspaceId: request.workspaceId,
@@ -126,6 +147,7 @@ export async function executeAdmittedWorkspaceHostInitialization(request: Worksp
   });
   const result = await runWorkspaceHostInitialization({
     ...request,
+    ...(releaseTaskId !== undefined ? { releaseTaskId } : {}),
     operations,
     deliveryCapabilities,
     credentialMaterialSource,

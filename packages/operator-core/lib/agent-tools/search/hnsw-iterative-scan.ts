@@ -100,10 +100,14 @@ function probeIterativeScan(sql: PgHandle): Promise<boolean> {
       return true;
     } catch (error) {
       const permanentUnsupported = isMissingIterativeScanParameter(error);
+      // Name the error: a "transient" verdict that recurs on every call is
+      // indistinguishable from a deterministic one without it (WI-10002536).
+      const candidate = error as { code?: unknown; message?: unknown } | null;
+      const detail = `${String(candidate?.code ?? 'no-code')}: ${String(candidate?.message ?? error)}`;
       console.warn(
         permanentUnsupported
           ? '[hnsw-iterative-scan] server does not support hnsw.iterative_scan; using the legacy capped scan'
-          : '[hnsw-iterative-scan] capability probe failed transiently; using the legacy capped scan for this call and will retry',
+          : `[hnsw-iterative-scan] capability probe failed transiently (${detail}); using the legacy capped scan for this call and will retry`,
       );
       // An undefined GUC is a stable server capability result and remains
       // cached. Any other failure may be a pool hiccup or restart; remove only
