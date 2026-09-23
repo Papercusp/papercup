@@ -128,6 +128,62 @@ describe('hosted GCP auth resolver', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  describe("Papercusp-hosted (D-399)", () => {
+    const HOSTING_PROJECT = 'papercusp-hosted-workspaces';
+    function hosted(override: Record<string, string> = {}): HostedProviderDelegationRecord {
+      const base = record();
+      return {
+        ...base,
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: HOSTING_PROJECT,
+            serviceAccountEmail: organizationDelegationEmail(ORG, IDENTITY_PROJECT),
+            hostId: 'host-1',
+            ...override,
+          },
+        },
+      } as HostedProviderDelegationRecord;
+    }
+
+    it("mints the organization's OWN account directly, with no delegation chain", async () => {
+      const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ accessToken: MINTED_TOKEN }));
+      const delegation = hosted();
+      await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } }, {
+        fetch: fetchImpl,
+        identityProject: IDENTITY_PROJECT,
+        hostingProject: HOSTING_PROJECT,
+        source: { principal: async () => `serviceAccount:${CONTROLLER_EMAIL}`, accessToken: async () => 'src' },
+      })).resolves.toEqual({
+        accessToken: MINTED_TOKEN,
+        identity: organizationDelegationEmail(ORG, IDENTITY_PROJECT),
+        projectId: HOSTING_PROJECT,
+      });
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(String(url)).toContain(encodeURIComponent(organizationDelegationEmail(ORG, IDENTITY_PROJECT)));
+      expect(JSON.parse(String(init?.body))).toMatchObject({ delegates: [] });
+    });
+
+    it.each([
+      ["another organization's account", { serviceAccountEmail: organizationDelegationEmail('org-b', IDENTITY_PROJECT) }, 'account_not_organization_account'],
+      ['a customer account', { serviceAccountEmail: 'host@customer-project-1.iam.gserviceaccount.com' }, 'account_not_organization_account'],
+      ['a project other than the hosting project', { projectId: 'attacker-project' }, 'project_mismatch'],
+    ])('refuses a record naming %s, before any token is minted', async (_label, override, code) => {
+      const accessToken = vi.fn(async () => 'src');
+      const fetchImpl = vi.fn<typeof fetch>();
+      const delegation = hosted(override);
+      await expect(resolveHostedGcpAuth({ credentialRef: delegation.credentialRef, provider: { hostedDelegation: delegation } }, {
+        fetch: fetchImpl,
+        identityProject: IDENTITY_PROJECT,
+        hostingProject: HOSTING_PROJECT,
+        source: { principal: async () => `serviceAccount:${CONTROLLER_EMAIL}`, accessToken },
+      })).rejects.toThrow(code);
+      expect(accessToken).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
   it('refuses a record with no owning organization (written before D-397)', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const { organizationId: _dropped, ...delegation } = record();
