@@ -1337,7 +1337,13 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       openCascade: openCascade as never,
     });
 
-    expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-grading-open' });
+    // EI-24032136322947460: the holder rides out with the dedupe, so a refusal can
+    // name who must grade — here nobody, which is exactly what the shipper must see.
+    expect(result).toMatchObject({
+      state: 'deduped',
+      existingWorkItemId: 'WI-grading-open',
+      existingWorkItemAssignee: null,
+    });
     expect(listWork).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'task', notTerminal: true, q: 'ship-the-thing' }),
     );
@@ -1509,7 +1515,11 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
         discover: discover as never,
       });
 
-      expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-live-grading' });
+      expect(result).toMatchObject({
+        state: 'deduped',
+        existingWorkItemId: 'WI-live-grading',
+        existingWorkItemAssignee: 'su-independent',
+      });
       expect(discover).not.toHaveBeenCalled();
     });
 

@@ -202,6 +202,13 @@ export type AcceptanceGraderLifecycle = {
   state: 'launched' | 'deduped' | 'failed' | 'assigned' | 'settled';
   /** Existing task/request that made a fresh acceptance dispatch unnecessary. */
   existingWorkItemId?: string;
+  /**
+   * Holder of {@link existingWorkItemId} when this lifecycle deduped onto an
+   * in-flight grading REQUEST (null = unassigned, still inside its grace window).
+   * Surfaced so a refusal can name who must grade while automatic recovery is
+   * unavailable (EI-24032136322947460); absent for launch-receipt dedupes.
+   */
+  existingWorkItemAssignee?: string | null;
   idempotencyKey: string;
   label: string;
   launch?: unknown;
@@ -1571,6 +1578,7 @@ export async function resolveAcceptanceGrader(
           idempotencyKey: '',
           label: '',
           existingWorkItemId: existingGradingRequest.id,
+          existingWorkItemAssignee: existingGradingRequest.assignee ?? null,
         };
       }
 
