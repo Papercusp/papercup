@@ -862,32 +862,39 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       }));
     },
     waitingOn: async (_workspaceId, ownerId) => {
-      const [{ listActiveAwaits }, { readQueue }, { getOrgPg }] = await Promise.all([
+      const [{ listActiveAwaits }, { ensureBootstrap, getTxPool, readQueue }] = await Promise.all([
         import('./events/await/store'),
         import('./agent-tools/locks/su-lock-store'),
-        import('@papercusp/db-org'),
       ]);
       // Both halves are EXISTING shared primitives, never a new query:
       // `listActiveAwaits` is what events:status reads, and `readQueue` is what
       // locks:queue reads — which is also why the recovery verb on each row can
       // be handed to the agent verbatim and will show it the same rows.
+      // The lock tables live in the locks package's own `papercusp_su`
+      // database, so the read goes through that package's pool like every other
+      // readQueue caller. The org pool has no agent_file_locks: reading it there
+      // rejected this whole read, and the waiting-on section always came back empty.
+      await ensureBootstrap();
+      const sql = getTxPool();
       const [awaits, queue] = await Promise.all([
         listActiveAwaits(ownerId),
-        // `owner` filters the WAITING side in SQL. The active-lock rows come back
-        // unfiltered by design: they are how a queued ticket names the HOLDER it
-        // is queued behind, which is the whole point of the lock half here
-        // (D-055 A4 — "know WHAT you are queued behind, not merely THAT you are").
         // `coordinationDomain: null` reads ACROSS domains on purpose. Domain
         // scoping exists for the ENFORCEMENT path (two checkouts are two files
         // and must not serialize against each other); this is a "what is THIS
         // owner waiting on" read, where `owner` is already globally unique, so
         // scoping it to one domain would silently drop a real wait.
-        readQueue(getOrgPg().sql, { owner: ownerId, coordinationDomain: null }),
+        readQueue(sql, { owner: ownerId, coordinationDomain: null }),
       ]);
-      // ActiveLockRow is one row PER PATH (`path`, singular) — a held lock set
-      // spanning N paths is N rows sharing one `lock_id`.
-      const holderOf = (path: string) =>
-        queue.active_locks.find((lock) => lock.path === path && lock.owner !== ownerId) ?? null;
+      // `owner` filters BOTH halves of readQueue, so the owner's own read never
+      // contains the lock it is queued behind. Naming that HOLDER is the whole
+      // point of the lock half here (D-055 A4 — "know WHAT you are queued
+      // behind, not merely THAT you are"), so each queued path gets its own read,
+      // scoped to the ticket's domain and matched with the store's path-overlap
+      // semantics, so a directory lock names its holder too.
+      const holderOf = async (domain: string, path: string) => {
+        const { active_locks } = await readQueue(sql, { coordinationDomain: domain, paths: [path] });
+        return active_locks.find((lock) => lock.owner !== ownerId) ?? null;
+      };
       const awaitRows: WaitingOnObligationRow[] = awaits.map((row) => ({
         kind: 'event-await' as const,
         key: row.eventKey,
@@ -897,11 +904,11 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
         // mislabelling an `expire` row as `wake` promises a wake that never comes.
         onTimeout: row.timeoutBehavior === 'wake' ? ('wake' as const) : ('expire' as const),
       }));
-      const lockRows: WaitingOnObligationRow[] = queue.waiting
+      const lockRows: WaitingOnObligationRow[] = await Promise.all(queue.waiting
         .filter((ticket) => ticket.status === 'waiting' && ticket.owner === ownerId)
         .flatMap((ticket) =>
-          ticket.paths.map((path) => {
-            const holder = holderOf(path);
+          ticket.paths.map(async (path) => {
+            const holder = await holderOf(ticket.coordination_domain, path);
             return {
               kind: 'lock-queue' as const,
               path,
@@ -917,7 +924,7 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
                   : null,
             };
           }),
-        );
+        ));
       return [...awaitRows, ...lockRows];
     },
   };
