@@ -29,7 +29,7 @@ const CANDIDATE_LIMIT = 500;
 
 export function defaultPlanScopeCascadeDeps(ctx: unknown, actor: string): PlanScopeCascadeDeps {
   return {
-    async listCandidates({ workspaceId, subjectSlug }) {
+    async listCandidates({ workspaceId, harnessSlug, subjectSlug }) {
       const { sql } = getOrgPg();
       // A cheap substring pre-filter; the exact carrier test (whole-slug token + a verb
       // before it) is `isMootCarrierTitle`, applied by the cascade itself.
@@ -50,6 +50,7 @@ export function defaultPlanScopeCascadeDeps(ctx: unknown, actor: string): PlanSc
                title, status, taken_by, payload
           FROM harness_shared.work_items
          WHERE workspace_id = ${workspaceId}
+           ${harnessSlug ? sql`AND harness_slug = ${harnessSlug}` : sql``}
            AND source_plan_slug IS NOT NULL
            AND source_plan_slug <> ${subjectSlug}
            AND lane IS DISTINCT FROM 'observation'

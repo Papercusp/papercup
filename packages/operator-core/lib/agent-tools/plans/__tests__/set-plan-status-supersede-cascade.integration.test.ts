@@ -23,6 +23,10 @@ const CARRIER_PLAN = 'zzz-cascade-carrier-2026-09-23';
 const WS = DEFAULT_WORKSPACE_ID;
 const CARRIER_ID = `WI-zzz-cascade-carrier-${Date.now()}`;
 const UNRELATED_ID = `WI-zzz-cascade-unrelated-${Date.now()}`;
+// A second harness holding a carrier with the SAME title and plan slugs: a different plan,
+// so superseding SUBJECT in HARNESS must not touch it (the leak a killed run exposed 2026-09-23).
+const OTHER_HARNESS = `${HARNESS}-other`;
+const OTHER_CARRIER_ID = `WI-zzz-cascade-other-carrier-${Date.now()}`;
 
 function planBody(slug: string, status: 'draft' | 'ready'): string {
   return `---
@@ -62,25 +66,26 @@ function makeCtx() {
   } as never;
 }
 
-async function insertItem(id: string, title: string, planItem: string): Promise<void> {
+async function insertItem(id: string, title: string, planItem: string, harness: string = HARNESS): Promise<void> {
   await admin`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts,
        payload, source_plan_slug, source_plan_item_ids)
-    VALUES (${HARNESS}, ${id}, 'feature', ${title}, 'open', NULL, ${WS}, 0, 0,
+    VALUES (${harness}, ${id}, 'feature', ${title}, 'open', NULL, ${WS}, 0, 0,
        '{}'::jsonb, ${CARRIER_PLAN}, ${[planItem]}::text[])`;
 }
 
 async function cleanupItems(): Promise<void> {
-  await admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+  await admin`DELETE FROM harness_shared.work_items
+     WHERE workspace_id = ${WS} AND harness_slug IN (${HARNESS}, ${OTHER_HARNESS})`;
 }
 
 /** The self-select floor claim_next / scheduler:get_next apply (claimHoldExclusionSql). */
-async function selfSelectable(id: string): Promise<boolean> {
+async function selfSelectable(id: string, harness: string = HARNESS): Promise<boolean> {
   const rows = await admin<{ ok: boolean }[]>`
     SELECT (COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true') AS ok
       FROM harness_shared.work_items
-     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${id}`;
+     WHERE workspace_id = ${WS} AND harness_slug = ${harness} AND feature_id = ${id}`;
   return rows[0]?.ok ?? false;
 }
 
@@ -109,6 +114,7 @@ beforeEach(async () => {
   await seedPlan(admin, WS, HARNESS, CARRIER_PLAN, planBody(CARRIER_PLAN, 'ready'));
   await insertItem(CARRIER_ID, `Ship ${SUBJECT}: rebuild its acceptance chain`, 'P-001');
   await insertItem(UNRELATED_ID, 'Land the repair queue admission fix', 'P-002');
+  await insertItem(OTHER_CARRIER_ID, `Ship ${SUBJECT}: rebuild its acceptance chain`, 'P-001', OTHER_HARNESS);
 });
 
 describe('plans:set-plan-status → superseded runs the P-030 scope cascade', () => {
@@ -116,6 +122,7 @@ describe('plans:set-plan-status → superseded runs the P-030 scope cascade', ()
     // Calibration: before the supersede, both items are self-selectable.
     expect(await selfSelectable(CARRIER_ID)).toBe(true);
     expect(await selfSelectable(UNRELATED_ID)).toBe(true);
+    expect(await selfSelectable(OTHER_CARRIER_ID, OTHER_HARNESS)).toBe(true);
 
     const res = (await setPlanStatusTool.handler(
       { harness: HARNESS, slug: SUBJECT, status: 'superseded' } as never,
@@ -135,6 +142,8 @@ describe('plans:set-plan-status → superseded runs the P-030 scope cascade', ()
     expect(out.scopeCascade?.carriers).toEqual([expect.objectContaining({ id: CARRIER_ID, parked: true })]);
     expect(await selfSelectable(CARRIER_ID)).toBe(false);
     expect(await selfSelectable(UNRELATED_ID)).toBe(true);
+    // The same-slug carrier in another harness belongs to a different plan: untouched.
+    expect(await selfSelectable(OTHER_CARRIER_ID, OTHER_HARNESS)).toBe(true);
 
     // Readiness was measured in the same call and surfaced in the carrier plan's Now.
     const planRow = out.scopeCascade?.carrierPlans[0];

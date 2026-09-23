@@ -140,7 +140,12 @@ export interface PlanScopeCascadeInput {
 }
 
 export interface PlanScopeCascadeDeps {
-  listCandidates(input: { workspaceId: string; subjectSlug: string }): Promise<CarrierCandidate[]>;
+  /**
+   * Open items whose title mentions `subjectSlug`. When `harnessSlug` is set, only that
+   * harness's items: plan slugs are unique per (workspace, harness), so an item in another
+   * harness that names the same slug refers to a different plan and is not made moot.
+   */
+  listCandidates(input: { workspaceId: string; harnessSlug: string | null; subjectSlug: string }): Promise<CarrierCandidate[]>;
   isParked(payload: unknown): boolean;
   park(
     carrier: CarrierCandidate,
@@ -210,12 +215,19 @@ export async function propagatePlanScopeWrite(
 
   let candidates: CarrierCandidate[];
   try {
-    candidates = await deps.listCandidates({ workspaceId: input.workspaceId, subjectSlug: input.subjectSlug });
+    candidates = await deps.listCandidates({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      subjectSlug: input.subjectSlug,
+    });
   } catch (err) {
     return { ...result, error: `carrier detection failed: ${errText(err)}` };
   }
+  // Re-checked here, not only in the store query: a same-slug plan in another harness is a
+  // different plan, and superseding this one must never park that plan's carriers.
+  const sameHarness = (c: CarrierCandidate) => input.harnessSlug == null || c.harnessSlug === input.harnessSlug;
   const carriers = candidates.filter(
-    (c) => c.sourcePlanSlug !== input.subjectSlug && isMootCarrierTitle(c.title, input.subjectSlug),
+    (c) => sameHarness(c) && c.sourcePlanSlug !== input.subjectSlug && isMootCarrierTitle(c.title, input.subjectSlug),
   );
 
   const byPlan = new Map<string, { harnessSlug: string | null; workspaceId: string; refs: string[] }>();

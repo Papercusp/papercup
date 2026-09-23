@@ -228,6 +228,18 @@ describe('propagatePlanScopeWrite (P-030 / RSR-P-030-A)', () => {
     expect(result.carriers).toEqual([]);
   });
 
+  it('never parks a same-slug carrier in ANOTHER harness (a different plan)', async () => {
+    const mine = row('WI-6', `Ship ${SUBJECT}: rebuild its acceptance chain`);
+    const theirs = row('WI-7', `Ship ${SUBJECT}: rebuild its acceptance chain`, { harnessSlug: 'other-harness' });
+    const w = fakeWorld([mine, theirs]);
+
+    const result = await propagatePlanScopeWrite(INPUT, w.deps);
+
+    expect(result.carriers.map((c) => c.id)).toEqual(['WI-6']);
+    expect(w.claimable('WI-6')).toBe(false);
+    expect(w.claimable('WI-7')).toBe(true);
+  });
+
   it('never parks an item of the superseded plan itself', async () => {
     const own = row('WI-5', `Ship ${SUBJECT}`, { sourcePlanSlug: SUBJECT });
     const w = fakeWorld([own]);

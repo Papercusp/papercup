@@ -1522,6 +1522,10 @@ async function finalizeDestroyEvidence(
       hostId: input.hostId,
       workspaceId: input.canary.workspaceId,
       expected: [],
+      // Without this host's registry the census cannot tell a sibling host's labelled resources from
+      // its own, so every other canary alive in the workspace read as a label mismatch and no canary
+      // destroy could finish while another one existed (the r40 destroy vs the r39 soak).
+      registeredHostResources: target.resources.map((entry) => entry.resource),
       observed: inventory.observed,
       inventoryEvidence: inventory.inventoryEvidence,
       evaluatedAt: new Date().toISOString(),
