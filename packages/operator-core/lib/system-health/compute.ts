@@ -1697,6 +1697,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
     let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
     let gitSyncMaxMissedIntervals: number | null = null;
     let gitSyncMissedIntervalsInstallSlug: string | null = null;
+    let gitSyncMissedIntervalsUnreadable = false;
     try {
       const { sql } = getOrgPg();
       const { deriveGitSyncFreshness } = await import('../agent-tools/routines/list');
@@ -1753,7 +1754,10 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
           gitSyncMissedIntervalsInstallSlug = r.install_slug;
         }
       }
-    } catch { /* routine metadata unreadable — leave git-sync delivery fields at defaults */ }
+    } catch {
+      /* routine metadata unreadable — leave git-sync delivery fields at defaults */
+      gitSyncMissedIntervalsUnreadable = true;
+    }
     // WI-1258129: every ref above is a GIT position; none can see a long-lived
     // process still executing pre-deploy code. bg-host's systemd ActiveEnterTimestamp
     // is the ground truth for when it last (re)started — reused from the scout
@@ -1788,6 +1792,7 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncFailingLeg,
       gitSyncMaxMissedIntervals,
       gitSyncMissedIntervalsInstallSlug,
+      gitSyncMissedIntervalsUnreadable,
       bgHostStartedAtMs,
       bgHostCodeStale,
     };
