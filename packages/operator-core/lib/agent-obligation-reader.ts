@@ -337,13 +337,21 @@ export async function readAgentObligationAgenda(input: {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
     observedAt,
-    // Row facts only. `recordedAt` is the row's own created_at and `excerpt` is
-    // its verbatim text, so an unchanged queue keeps an unchanged generation
+    // Row facts only. `recordedAt` is the row's own created_at and `displayText`
+    // its D-004 display text, so an unchanged queue keeps an unchanged generation
     // across warm turns; an observation clock here would churn every read.
+    // `inheritedFromEnded` changes the row's title, so it is part of the row.
     sourceGeneration: agentObligationSourceGeneration({
       directives: directives.degraded
         ? 'unknown'
-        : directives.value.map((row) => [row.id, row.state, row.recordedAt, row.excerpt, row.capturedByHook]),
+        : directives.value.map((row) => [
+            row.id,
+            row.state,
+            row.recordedAt,
+            row.displayText,
+            row.capturedByHook,
+            row.inheritedFromEnded === true,
+          ]),
     }),
     read: directives.degraded
       ? {
@@ -351,7 +359,7 @@ export async function readAgentObligationAgenda(input: {
           failure: {
             code: 'canonical-owner-directive-read-failed',
             detail: readFailure('owner directives', directives),
-            retry: 'retry listOwnerDirectives for the pending and open states',
+            retry: 'retry listOwnerDirectives for the open state',
           },
         }
       : { status: 'known', value: directives.value },
@@ -740,30 +748,57 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       return evaluatePlanAcceptanceGate(planSlug);
     },
     ownerDirectives: async (workspaceId, ownerId) => {
-      const {
-        listOwnerDirectives,
-        ownerDirectiveExcerpt,
-        OWNER_DIRECTIVES_RENDER_MAX_ROWS,
-      } = await import('./owner-directives');
-      // The `state` filter is applied in SQL, BEFORE the limit (P-005). A
-      // client-side filter over a limited page silently drops matching rows the
-      // limit already truncated away, which reads as an empty directive queue.
-      // viewerOwnerId for the same reason, and in the same SQL position: a row
-      // THIS session cleared off its own agenda (P-008 / D-008) must stop being
-      // an obligation for it, while staying one for its addressee.
-      const rows = await listOwnerDirectives({
-        workspaceId,
-        state: ['pending', 'open'],
-        viewerOwnerId: ownerId,
-        limit: OWNER_DIRECTIVES_RENDER_MAX_ROWS,
-      });
+      const [
+        { listOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS },
+        { directiveDisplayText },
+        { listWorkItemsByDirective, TERMINAL_WORK_ITEM_STATES },
+      ] = await Promise.all([import('./owner-directives'), import('./owner-directive-display'), import('./work-items')]);
+      // The `state` filter is applied in SQL, BEFORE the limit (P-005).
+      // viewerOwnerId in the same SQL position: a row THIS session cleared off
+      // its own agenda (P-008 / D-008) must stop being an obligation for it.
+      // The fetch is the WHOLE open queue (bounded by how fast a human types,
+      // D-003) because the ownership filter below runs in TS: a page limit
+      // applied first would let foreign rows ahead of ours starve our own.
+      const open = await listOwnerDirectives({ workspaceId, state: ['open'], viewerOwnerId: ownerId, limit: 200 });
+      // P-004 / D-003: an obligation belongs only to the session the owner
+      // addressed, or the one holding a live work-item on the directive. A
+      // failed work-item read degrades to "addressed only" — it must never hide
+      // a directive the owner addressed to this session.
+      let heldByMe = new Set<number>();
+      try {
+        const linked = await listWorkItemsByDirective(
+          workspaceId,
+          open.map((row) => row.id),
+        );
+        heldByMe = new Set(
+          linked
+            .filter((item) => item.assignee === ownerId && !TERMINAL_WORK_ITEM_STATES.includes(item.state))
+            .map((item) => item.directiveRef),
+        );
+      } catch {
+        heldByMe = new Set();
+      }
+      // P-008 / R-7: a directive whose addressee ENDED passes to the addressee's
+      // fleet leader. Fail-soft like the work-item read: a routing failure must
+      // never hide the directives this session already owns.
+      let inherited = new Set<number>();
+      try {
+        const { directivesInheritedBy } = await import('./owner-directive-routing');
+        inherited = await directivesInheritedBy({ workspaceId, ownerId, open });
+      } catch {
+        inherited = new Set();
+      }
+      const rows = open
+        .filter((row) => row.recordedBy === ownerId || heldByMe.has(row.id) || inherited.has(row.id))
+        .slice(0, OWNER_DIRECTIVES_RENDER_MAX_ROWS);
       return rows.map((row) => ({
         id: row.id,
-        state: row.captureStatus === 'pending' ? ('pending' as const) : ('open' as const),
-        excerpt: ownerDirectiveExcerpt(row.verbatimText),
+        state: 'open' as const,
+        displayText: directiveDisplayText(row),
         recordedAt: new Date(row.createdAtMs).toISOString(),
         recordedBy: row.recordedBy,
         capturedByHook: row.capturedByHook === true,
+        ...(inherited.has(row.id) && !heldByMe.has(row.id) ? { inheritedFromEnded: true } : {}),
       }));
     },
     waitingOn: async (_workspaceId, ownerId) => {

@@ -15,7 +15,6 @@ import {
   type AgentObligationEvidence,
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
-import { orientationRowExcerpt } from './owner-directives';
 import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
@@ -860,21 +859,29 @@ export function independentVerificationObligation(input: IndependentVerification
  *
  * Deliberately NOT `OwnerDirectiveRow`: the obligation contract must not take a
  * dependency on the directive store's full column set, and a caller (or a test)
- * must be able to feed this provider without a database. `excerpt` is the
- * caller's already-budgeted VERBATIM text — `ownerDirectiveExcerpt` produces it,
- * and this provider never re-truncates or paraphrases it.
+ * must be able to feed this provider without a database.
+ *
+ * Only directives this session OWNS arrive here — addressed to it, or held by it
+ * through a linked work-item (P-004 / D-003 of
+ * owner-directive-delivery-redesign-2026-09-22). Every other open directive
+ * reaches the session as an AWARENESS line in the ownerDirectives orientation
+ * class, never as a due obligation.
  */
 export interface OwnerDirectiveObligationRow {
   id: number;
   /**
-   * `pending` — hook-captured, awaiting promote/dismiss.
-   * `open` — a promoted/recorded standing directive awaiting disposition.
-   * Terminal states (`dismissed`/`done`/`declined`) are not obligations and
-   * must be filtered out by the reader, never represented here.
+   * Always `open`: every owner turn is a directive awaiting disposition
+   * (owner-directive-delivery-redesign-2026-09-22, D-001). Terminal states
+   * (`done`/`declined`) are not obligations and must be filtered out by the
+   * reader, never represented here.
    */
-  state: 'pending' | 'open';
-  /** VERBATIM owner text, budgeted by the caller. Never a paraphrase. */
-  excerpt: string;
+  state: 'open';
+  /**
+   * The D-004 display text (`directiveDisplayText`): the whole verbatim up to
+   * the 500-char cap, else the labelled agent summary or a summary-pending note.
+   * Never a cut fragment. It goes in `reason`, not the title — see below.
+   */
+  displayText: string;
   /** The row's own created_at — a stable row fact, never an observation clock. */
   recordedAt: string;
   recordedBy: string;
@@ -886,6 +893,12 @@ export interface OwnerDirectiveObligationRow {
    * Conflating the two is exactly how a note-to-self becomes an owner directive.
    */
   capturedByHook: boolean;
+  /**
+   * True when this session holds the directive only because its addressee
+   * (`recordedBy`) ENDED and this session leads that addressee's fleet (P-008 /
+   * R-7 of owner-directive-delivery-redesign-2026-09-22). Absent = addressed or held.
+   */
+  inheritedFromEnded?: boolean;
 }
 
 export interface OwnerDirectivesProviderInput extends ProviderBase {
@@ -897,16 +910,8 @@ const OWNER_DIRECTIVE_DISPOSITION: Record<
   OwnerDirectiveObligationRow['state'],
   { title: string; summary: string; tool: string; clearsWhen: string }
 > = {
-  pending: {
-    title: 'Pending owner turn awaits promote-or-dismiss',
-    // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
-    // disposition VERB and nothing else; the prose that used to live here was
-    // identical on every row and cost a whole third row (measured: 133-char rows,
-    // 2 of 3 delivered, the third dropped on the character cap).
-    summary: 'promote or dismiss: orders:resolve-pending',
-    tool: 'orders:resolve-pending',
-    clearsWhen: 'the row leaves `pending` via promotion or a reasoned dismissal',
-  },
+  // `summary` is spent once PER ROW in a 3-row/400-char sink, so it carries the
+  // disposition VERB and nothing else.
   open: {
     title: 'Open owner directive awaits disposition',
     summary: 'carry out, then close: orders:disposition',
@@ -935,8 +940,8 @@ function ownerDirectiveCommon(input: OwnerDirectivesProviderInput) {
  * `turn-start-memory-two-class-2026-09-21`).
  *
  * ONE OBLIGATION PER DIRECTIVE, because each carries its own id, its own
- * verbatim excerpt, its own disposition verb and its own recovery pointer — the
- * uniform class-B row shape. A single aggregate obligation would collapse them
+ * disposition verb and its own recovery pointer — the uniform class-B row
+ * shape. A single aggregate obligation would collapse them
  * into a count, which is the shape an agent can acknowledge without acting on
  * any individual directive.
  *
@@ -957,10 +962,10 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         reason: input.read.failure.detail,
         applicableDemand: 0,
         evidence: [],
-        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { state: "pending" }' },
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'orders:list { open: true }' },
         clearsWhen: {
           id: 'owner-directive-queue-readable',
-          summary: 'the pending/open directive queue is readable again',
+          summary: 'the open directive queue is readable again',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },
@@ -978,19 +983,19 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         status: 'not-applicable',
         priority: 'normal',
         authority: policyAuthority('owner-directives:listOwnerDirectives', OWNER_DIRECTIVE_OBLIGATION_REVISION),
-        reason: 'the canonical directive queue holds no pending or open row for this workspace',
+        reason: 'the canonical directive queue holds no open row for this workspace',
         applicableDemand: 0,
         evidence: [
           evidence(
             `owner-directives:${input.workspaceId}`,
             input.observedAt,
             input.sourceGeneration,
-            'empty pending/open queue',
+            'empty open queue',
           ),
         ],
         clearsWhen: {
           id: 'owner-directive-queue-empty',
-          summary: 'no pending or open directive exists',
+          summary: 'no open directive exists',
           evidenceKind: 'state',
           sourceRef: 'harness_shared.owner_directives',
         },
@@ -1000,26 +1005,23 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
   const observedMs = Date.parse(input.observedAt);
   return rows.map((row) => {
     const disposition = OWNER_DIRECTIVE_DISPOSITION[row.state];
-    const excerpt = orientationRowExcerpt(row.excerpt);
-    // The pointer is load-bearing ONLY when text was actually budgeted away: a
-    // directive rendered WHOLE has nothing to recover, so spending 22 of a
-    // 400-char sink's chars on it would cost a whole other directive its row.
-    // Same rule renderOwnerDirectiveRow already applies in the block renderer.
-    // `endsWith('…')` catches an excerpt ALREADY truncated upstream by
-    // ownerDirectiveExcerpt, where the row's own cut was a no-op.
-    const truncated = excerpt !== row.excerpt.trim() || excerpt.endsWith('…');
     const fullTextRef = `orders:get #${row.id}`;
     const recordedMs = Date.parse(row.recordedAt);
     const ageMs =
       Number.isFinite(observedMs) && Number.isFinite(recordedMs) ? Math.max(0, observedMs - recordedMs) : undefined;
     return defineAgentObligation({
       ...common,
-      // The UNIFORM ROW (P-002): { id, short verbatim, disposition verb,
-      // recovery pointer }. id + verbatim go in the TITLE because the title is
-      // the only field that renders at BOTH detail levels — `reason` is dropped
-      // at the narrow `action` detail, which is precisely the turn-start sink
-      // where telling two pending directives apart matters most.
-      title: `Owner directive #${row.id}: "${excerpt}"`,
+      // A REMINDER, not a copy: { id, disposition verb, recovery pointer }. The
+      // owner's text is deliberately NOT in the title. The turn-start sink is
+      // 400 chars over 3 rows while a directive may run to 500 before D-004
+      // hands it to a summary, so a text-carrying title must either be cut —
+      // which D-004 forbids — or starve the sink. The full text already renders
+      // in the ownerDirectives orientation class of the same block, and this
+      // row re-emits on every turn it stays open, so repeating the text here is
+      // the per-turn cost the owner asked to remove (directive #200).
+      title: row.inheritedFromEnded
+        ? `Owner directive #${row.id} passed to you: its session ${row.recordedBy} ended`
+        : `Owner directive #${row.id} is yours and still open`,
       // The row id alone is the episode: the SAME undispositioned directive must
       // produce the SAME obligation id on every turn, or a warm-turn dedup would
       // read a re-render as a brand-new obligation and the row would churn.
@@ -1029,7 +1031,7 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
       authority: row.capturedByHook
         ? { kind: 'owner', sourceRef: `owner-directive:${row.id}`, turnOrigin: 'owner-typed' }
         : { kind: 'owner-candidate', sourceRef: `owner-directive:${row.id}`, turnOrigin: 'unknown' },
-      reason: `owner directive #${row.id}: "${row.excerpt}"`,
+      reason: `owner directive #${row.id}: ${row.displayText}`,
       applicableDemand: 1,
       evidence: [
         evidence(
@@ -1044,14 +1046,13 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
         summary: disposition.summary,
         tool: disposition.tool,
         args: { id: row.id },
-        // The RECOVERY POINTER: the excerpt above is budgeted, so the full
-        // verbatim owner turn must stay one addressable call away. Both fields
-        // come from ONE expression so they cannot drift — `targetRef` is the
-        // unconditional structured pointer for programmatic consumers, while
-        // `recoveryRef` is RENDERED and so is spent only when text was
-        // actually cut.
+        // The RECOVERY POINTER: the rendered line carries no owner text, so
+        // the verbatim turn must always be one addressable call away. Both
+        // fields come from ONE expression so they cannot drift — `targetRef` is
+        // the structured pointer for programmatic consumers, `recoveryRef` the
+        // rendered one.
         targetRef: fullTextRef,
-        ...(truncated ? { recoveryRef: fullTextRef } : {}),
+        recoveryRef: fullTextRef,
       },
       clearsWhen: {
         id: `owner-directive-dispositioned:${row.id}`,

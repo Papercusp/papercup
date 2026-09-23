@@ -52,7 +52,7 @@
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
 import type { Sql } from 'postgres';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
@@ -61,13 +61,16 @@ import {
   FEATURE_TERMINAL_STATES,
   ISSUE_TERMINAL_STATES,
 } from './work-item-dispatch-states';
-import type { AgentObligationBrief } from './agent-obligation-reader';
+import { projectAgentTurnStartObligationBrief, type AgentObligationBrief } from './agent-obligation-reader';
+import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
 import type { OwnerDirectiveRow } from './owner-directives';
 import {
   deriveDirectiveStatus,
   directiveNeedsAction,
+  directiveStatusLabel,
   type DirectiveStatus,
 } from './owner-directive-status';
+import { directiveDisplayText, directiveNeedsSummary, shortOwner } from './owner-directive-display';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -108,8 +111,15 @@ export interface OrientationHeldItem {
  */
 export interface OrientationOwnerDirective {
   id: number;
-  captureStatus: 'pending' | 'open';
   verbatimText: string;
+  /**
+   * The agent-written summary of an over-cap directive and its author (D-004 of
+   * owner-directive-delivery-redesign-2026-09-22). Rendered in place of the
+   * verbatim text when the directive is too long to show whole — never a cut
+   * fragment of the owner's words.
+   */
+  summaryText?: string | null;
+  summaryBy?: string | null;
   /**
    * The session the owner was ADDRESSING (`orders.recordedBy`). Accurate at
    * capture and never mutated afterwards — directive rows are immutable owner
@@ -131,10 +141,15 @@ export interface OrientationOwnerDirective {
    */
   addressedToMe?: boolean;
   /**
-   * The derived status of the directive (P-006), already reconciled across
-   * capture AND disposition. Optional so a sink that cannot afford the
-   * work-item join still renders a correctly LABELLED line; absent means
-   * "not derived", never "unclaimed".
+   * TRUE when a directive addressed to ANOTHER session touches this session's
+   * work: the addressee has declared the same current plan (R-3 of
+   * owner-directive-delivery-redesign-2026-09-22). Decided in the reader.
+   */
+  relatedToMe?: boolean;
+  /**
+   * The derived status of the directive (P-006). Optional so a sink that cannot
+   * afford the work-item join still renders a correctly LABELLED line; absent
+   * means "not derived", never "unclaimed".
    */
   status?: DirectiveStatus;
 }
@@ -901,6 +916,188 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
   };
 }
 
+/**
+ * P-006 of owner-directive-delivery-redesign-2026-09-22 (D-005): the addressed
+ * agent's reminder cadence for its own open owner directives.
+ *
+ * Every other class-B row re-emits every turn it stays undischarged (P-002 above).
+ * An owner directive does not: its obligation row is delivered ONCE per context
+ * epoch, and after that the agent gets ONE line naming the directives still open
+ * each time its context has grown by {@link OWNER_DIRECTIVE_REMINDER_TOKENS}.
+ * The owner's words for "why": a standing row every turn is the per-turn cost
+ * directive #200 asked to remove, and the verbatim text already rides once per
+ * epoch in the ownerDirectives class.
+ *
+ * The cursor carries the bookkeeping as `directiveReminder`: which directive rows
+ * this epoch has already delivered, the context size at the last delivery, and
+ * how many reminders have gone unanswered. It is carried state only — deliberately
+ * NOT compared by {@link orientationUnchanged}, so a reminder never re-emits the
+ * rest of the block.
+ */
+export const OWNER_DIRECTIVE_REMINDER_TOKENS = 50_000;
+/** Without a context-size reading, fall back to a wall-clock cadence. */
+export const OWNER_DIRECTIVE_REMINDER_FALLBACK_MS = 30 * 60_000;
+/** Reminders ignored this many times escalate their wording. */
+export const OWNER_DIRECTIVE_REMINDER_ESCALATE_AFTER = 3;
+
+interface DirectiveReminderMark {
+  epoch: number;
+  /** Obligation ids whose full row this epoch has already delivered. */
+  ids: string[];
+  /** Context size at the last delivery (full row or reminder); null when unknown. */
+  tokens: number | null;
+  /** Wall-clock of the last delivery, for the unknown-size fallback. */
+  at: string;
+  /** Reminders delivered since the open set last shrank. */
+  reminders: number;
+}
+
+function openDirectiveObligations(state: OrientationState): AgentObligation[] {
+  return (state.obligations?.primary ?? []).filter(
+    (entry) => entry.family === 'owner-directive' && entry.status === 'due',
+  );
+}
+
+function directiveNumber(entry: AgentObligation): string {
+  const match = /owner-directive:(\d+)/.exec(entry.authority.sourceRef ?? '');
+  return match ? `#${match[1]}` : entry.id;
+}
+
+function readDirectiveMark(committed: CursorState | null, epoch: number): DirectiveReminderMark | null {
+  const raw = committed?.directiveReminder;
+  if (!raw || typeof raw !== 'object') return null;
+  const mark = raw as Partial<DirectiveReminderMark>;
+  // A new context epoch forgets everything it delivered: the agent's context no
+  // longer holds those rows, so they are due again in full.
+  if (mark.epoch !== epoch || !Array.isArray(mark.ids)) return null;
+  return {
+    epoch,
+    ids: mark.ids.filter((id): id is string => typeof id === 'string'),
+    tokens: typeof mark.tokens === 'number' ? mark.tokens : null,
+    at: typeof mark.at === 'string' ? mark.at : '',
+    reminders: typeof mark.reminders === 'number' ? mark.reminders : 0,
+  };
+}
+
+export interface OwnerDirectiveReminderPlan {
+  /** Open directive rows already delivered this epoch — left out of the render. */
+  withheld: Set<string>;
+  /** The one reminder line to add this turn, or null. */
+  reminder: string | null;
+}
+
+/**
+ * Decide, for one composition, which directive rows to withhold and whether the
+ * reminder line is due. Pure over (state, committed, epoch, contextTokens), so the
+ * composer and the delivered-fingerprint reach the SAME answer without passing it
+ * along. `contextTokens` is the agent's context size (null = unknown), an input to
+ * the cadence like `epoch` is to the dedup — which is why neither is on
+ * OrientationState, whose every field is a rendered class.
+ */
+export function planOwnerDirectiveReminder(
+  state: OrientationState,
+  committed: CursorState | null,
+  epoch: number,
+  contextTokens: number | null = null,
+): OwnerDirectiveReminderPlan {
+  const open = openDirectiveObligations(state);
+  const mark = readDirectiveMark(committed, epoch);
+  if (open.length === 0 || !mark) return { withheld: new Set(), reminder: null };
+  const delivered = new Set(mark.ids);
+  const withheld = open.filter((entry) => delivered.has(entry.id));
+  if (withheld.length === 0) return { withheld: new Set(), reminder: null };
+  const now = state.obligations?.evaluatedAt ?? '';
+  const grown =
+    contextTokens != null && mark.tokens != null
+      ? contextTokens - mark.tokens >= OWNER_DIRECTIVE_REMINDER_TOKENS
+      : Date.parse(now) - Date.parse(mark.at) >= OWNER_DIRECTIVE_REMINDER_FALLBACK_MS;
+  return {
+    withheld: new Set(withheld.map((entry) => entry.id)),
+    reminder: grown ? renderDirectiveReminder(withheld, mark.reminders + 1) : null,
+  };
+}
+
+function renderDirectiveReminder(entries: AgentObligation[], nth: number): string {
+  // Ascending by number: the agenda's own order tie-breaks on hashed obligation
+  // ids, which would shuffle the same set between otherwise identical sessions.
+  const ids = entries
+    .map(directiveNumber)
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))
+    .join(', ');
+  const noun = entries.length === 1 ? 'owner directive' : 'owner directives';
+  if (nth > OWNER_DIRECTIVE_REMINDER_ESCALATE_AFTER) {
+    return (
+      `- ⚠ reminder ${nth}, still unanswered: ${noun} ${ids} addressed to you — do it now, ` +
+      `or close it with orders:disposition (declined + reason if you will not)`
+    );
+  }
+  return `- 📌 reminder: ${noun} ${ids} still open and yours — carry out, then orders:disposition`;
+}
+
+/**
+ * The state the composer RENDERS once the withheld directive rows are removed:
+ * the obligation brief is re-projected through the same turn-start sink contract,
+ * so the remaining rows get the budget the withheld ones no longer take.
+ */
+export function withoutWithheldDirectiveRows(state: OrientationState, withheld: Set<string>): OrientationState {
+  const brief = state.obligations;
+  if (!brief || withheld.size === 0) return state;
+  const primary = brief.primary.filter((entry) => !withheld.has(entry.id));
+  if (primary.length === brief.primary.length) return state;
+  if (primary.length === 0) return { ...state, obligations: null };
+  return {
+    ...state,
+    obligations: projectAgentTurnStartObligationBrief({
+      schemaVersion: brief.schemaVersion,
+      evaluatedAt: brief.evaluatedAt,
+      sourceGeneration: brief.sourceGeneration,
+      evaluations: brief.evaluations,
+      primary,
+      conflicts: [],
+    }),
+  };
+}
+
+/**
+ * The mark to carry forward after a delivery. A directive row counts as delivered
+ * only if its line is in the block, and the reminder only if its line is: budget
+ * truncation must never mark something seen that the agent was not shown.
+ */
+function nextDirectiveMark(
+  state: OrientationState,
+  committed: CursorState | null,
+  epoch: number,
+  block: string,
+  contextTokens: number | null,
+): DirectiveReminderMark | undefined {
+  // An unreadable agenda says nothing about directives: keep the last mark.
+  if (state.obligations === undefined) {
+    const kept = readDirectiveMark(committed, epoch);
+    return kept ?? undefined;
+  }
+  const open = openDirectiveObligations(state);
+  if (open.length === 0) return undefined;
+  const mark = readDirectiveMark(committed, epoch);
+  const plan = planOwnerDirectiveReminder(state, committed, epoch, contextTokens);
+  const openIds = new Set(open.map((entry) => entry.id));
+  const kept = (mark?.ids ?? []).filter((id) => openIds.has(id));
+  const fresh = open
+    .filter((entry) => !plan.withheld.has(entry.id))
+    .filter((entry) => block.includes(formatAgentObligationLine(entry, 'action')))
+    .map((entry) => entry.id);
+  const reminded = plan.reminder !== null && block.includes(plan.reminder);
+  const now = state.obligations?.evaluatedAt ?? mark?.at ?? '';
+  const touched = reminded || fresh.length > 0 || !mark;
+  const shrank = (mark?.ids.length ?? 0) > kept.length;
+  return {
+    epoch,
+    ids: [...kept, ...fresh].sort(),
+    tokens: touched ? (contextTokens ?? mark?.tokens ?? null) : (mark?.tokens ?? null),
+    at: touched ? now : (mark?.at ?? now),
+    reminders: shrank ? 0 : (mark?.reminders ?? 0) + (reminded ? 1 : 0),
+  };
+}
+
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
   return (
@@ -1075,8 +1272,10 @@ export function fingerprintOrientation(
       )
       .sort()
       .join(','),
+    // Directive rows are immutable owner speech, so a token changes only when a
+    // directive appears, closes, gains its summary, or changes hands.
     ownerDirectives: (state.ownerDirectives ?? [])
-      .map((d) => `${d.id}:${d.captureStatus}:${d.verbatimText}`)
+      .map((d) => `${d.id}:${d.status ? directiveStatusLabel(d.status) : ''}:${d.summaryText ?? ''}`)
       .join('|'),
     historyUpdates:
       state.historyUpdates === undefined
@@ -2030,8 +2229,12 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOwnerDirective[]>({
     id: 'ownerDirectives',
-    // 2 verbatim directives + the class's own "+N more" line.
-    rowCeiling: { maxRows: 3, recoveryVerb: 'orders:list { open: true }' },
+    // Up to 5 directives + the class's own "+N more" line. Every session's open
+    // directives are visible to every agent (D-003 of
+    // owner-directive-delivery-redesign-2026-09-22) — naturally capped by the
+    // speed of one human typing — and the epoch-keyed cursor delivers each set
+    // once per context rather than every turn.
+    rowCeiling: { maxRows: 6, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['ownerDirectives'],
     applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.ownerDirectives ?? [],
@@ -2046,8 +2249,13 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
           // to decide whether it is still ASKING for something.
           const live = directives.filter((d) => !d.status || directiveNeedsAction(d.status));
           if (live.length === 0) return [];
+          // Your own directives first: they are the only ones that carry an obligation.
+          const ordered = [
+            ...live.filter((d) => d.addressedToMe === true),
+            ...live.filter((d) => d.addressedToMe !== true),
+          ];
           const lines: string[] = [];
-          for (const directive of live.slice(0, 2)) {
+          for (const directive of ordered.slice(0, 5)) {
             // DEFENSIVE, and load-bearing rather than belt-and-braces: this render
             // runs on the turn-start hot path inside projectOrientationRows, which
             // has NO per-segment error isolation — `for (const text of render(...))`
@@ -2061,17 +2269,23 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // required fields left recordedBy absent, and `.length` threw. So each
             // field read here degrades to a labelled value instead of throwing.
             const rawText = typeof directive.verbatimText === 'string' ? directive.verbatimText : '';
-            const text = rawText.replace(/\s+/g, ' ').trim();
-            const excerpt = text.length > 110 ? `${text.slice(0, 109)}…` : text || '(no text recorded)';
-            // Same 12-char truncation as renderOwnerDirectiveRow (owner-directives.ts)
-            // — reused rather than re-invented so one handle convention exists.
+            // D-004: full verbatim under the cap, the labelled agent summary over it,
+            // never a cut fragment of the owner's words.
+            const shown = rawText.trim()
+              ? directiveDisplayText({
+                  id: directive.id,
+                  verbatimText: rawText,
+                  summaryText: directive.summaryText ?? null,
+                  summaryBy: directive.summaryBy ?? null,
+                })
+              : '(no text recorded)';
             // `unknown` is deliberately NOT a session id: it can never equal an
             // ownerId, so an unattributable row can only ever render as NOT-mine.
             const recordedBy =
               typeof directive.recordedBy === 'string' && directive.recordedBy.length > 0
                 ? directive.recordedBy
                 : null;
-            const by = recordedBy === null ? 'unknown' : recordedBy.length > 12 ? recordedBy.slice(0, 12) : recordedBy;
+            const by = recordedBy === null ? 'unknown' : shortOwner(recordedBy);
             // NOTE: a segment `render` receives only (state, committed) — no ownerId
             // — so addressing is resolved in the READER, which does have it, and
             // arrives here as a decided boolean. Undecided (`undefined`) must fall to
@@ -2081,34 +2295,35 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             const claimedBy = directive.status?.kind === 'claimed' ? directive.status.claimedBy : undefined;
             // `capturedByHook: false` means an AGENT asserted this, not the owner.
             // Labelled, never silently promoted to owner speech.
-            const origin = directive.capturedByHook ? '' : ' owner-candidate';
+            const origin = directive.capturedByHook ? '' : ' [owner-candidate]';
 
-            // THREE BUCKETS, THREE DIFFERENT IMPERATIVES (D-004). Before this split
-            // every line ended in "orders:resolve-pending first." regardless of whom
-            // the owner was addressing — and because `owner_directives` rows are
-            // WORKSPACE-GLOBAL, an agent obeying that on someone else's directive did
-            // not merely mishandle its own agenda, it DESTROYED the addressee's row
+            if (mine) {
+              // OBLIGATION framing — only ever for the session the owner addressed
+              // (R-3). An over-cap directive without a summary asks for one: the
+              // summary is what every OTHER agent will see (D-004).
+              const summaryAsk =
+                rawText.trim() && directiveNeedsSummary({ verbatimText: rawText }) && !directive.summaryText
+                  ? ` It is long: write what other agents will see first — orders:summarize { id: ${directive.id}, summary }.`
+                  : '';
+              lines.push(
+                `- 📌 YOURS · owner directive #${directive.id}${origin}: ${shown} — carry out, then orders:disposition { id: ${directive.id}, status, note }.${summaryAsk}`,
+              );
+              continue;
+            }
+            // AWARENESS framing for every other session's directive (D-003): the
+            // owner wants the whole team to know what everyone is working on, but
+            // a line here is never an obligation — acting on another session's
+            // directive without taking it is how rows got destroyed
             // (WI-10002426 / WI-10002437).
-            const imperative = mine
-              ? // (1) addressed to me — carry it out.
-                directive.captureStatus === 'pending'
-                ? 'YOURS — orders:resolve-pending, then carry out.'
-                : 'YOURS — carry out, then orders:disposition.'
-              : claimedBy
-                ? // (3) another session's, and someone is already on it: awareness
-                  //     only. NO imperative — this line exists so you do not
-                  //     duplicate the work, not so you act.
-                  `addressed to ${by} · claimed by ${claimedBy.slice(0, 12)} — FYI only, do not act or resolve.`
-                : // (2) another session's and unclaimed: visible (the owner asked for
-                  //     that) but you must take a work-item carrying directiveRef
-                  //     BEFORE touching it, which is what the write-side rail enforces.
-                  `addressed to ${by} — NOT yours to resolve; to take it, work_items:create { directiveRef: ${directive.id} } first.`;
-
-            lines.push(
-              `- 📌 owner directive #${directive.id} [${directive.captureStatus}${origin}] ${JSON.stringify(excerpt)} — ${imperative}`,
-            );
+            const related = directive.relatedToMe === true ? ' [related to your work]' : '';
+            // A directive a peer already holds carries no route at all: offering
+            // work_items:create there is how in-flight work gets duplicated.
+            const tail = claimedBy
+              ? `, claimed by ${shortOwner(claimedBy)}${related}${origin}: ${shown} — awareness only, already taken; do not act on or resolve it.`
+              : `${related}${origin}: ${shown} — awareness only, NOT yours to resolve; take it only via work_items:create { directiveRef: ${directive.id} }.`;
+            lines.push(`- 📌 team · owner directive #${directive.id} addressed to ${by}${tail}`);
           }
-          if (live.length > 2) lines.push(`- 📌 +${live.length - 2} more owner directives — orders:list { open: true }.`);
+          if (ordered.length > 5) lines.push(`- 📌 +${ordered.length - 5} more open owner directives — orders:list { open: true }.`);
           return lines;
         },
       },
@@ -2856,6 +3071,9 @@ export interface ComposeOrientationBlockInput {
    * ledger), which degrades to the pre-P-023 behaviour rather than to noise.
    */
   epoch: number;
+  /** The agent's context size in tokens, for the owner-directive reminder
+   *  cadence (see planOwnerDirectiveReminder). Omitted/null = unknown. */
+  contextTokens?: number | null;
   budgetChars?: number;
 }
 
@@ -2908,16 +3126,27 @@ export function composeOrientationBlockWithRows(input: ComposeOrientationBlockIn
   // block: repeating held items, gates and facts that have not moved would
   // manufacture the exact signal decay D-003 withdrew the improvement-triage
   // line for.
+  //
+  // P-006 (owner-directive-delivery-redesign-2026-09-22) narrows that for OWNER
+  // DIRECTIVES: a directive row this epoch already delivered is withheld, and a
+  // one-line reminder stands in for it on the cadence planOwnerDirectiveReminder
+  // decides. Every other undischarged family keeps the P-002 per-turn re-emit.
   const unchanged = orientationUnchanged(committed, fingerprintOrientation(state, epoch, committed));
-  const undischarged = hasUndischargedObligations(state);
-  if (unchanged && !undischarged) return { block: '', rows: [] };
-  const renderState = unchanged ? undischargedObligationsOnly(state) : state;
+  const directives = planOwnerDirectiveReminder(state, committed, epoch, input.contextTokens ?? null);
+  const shown = withoutWithheldDirectiveRows(state, directives.withheld);
+  const undischarged = hasUndischargedObligations(shown);
+  if (unchanged && !undischarged && !directives.reminder) return { block: '', rows: [] };
+  const renderState = unchanged ? undischargedObligationsOnly(shown) : shown;
 
   const header = `## ${HEADING}`;
   // Rows, not bare lines: identical text, but each carries the class that
   // emitted it, which is what lets the budget loop below report WHICH classes
   // survived. `renderOrientationLines` is this same call with `.map(r => r.text)`.
-  const projected = projectOrientationRows(renderState, 'turn-start', committed);
+  // The reminder leads: an owner directive outranks everything else here.
+  const projected: OrientationRow[] = [
+    ...(directives.reminder ? [{ classId: 'obligations' as const, order: 0, text: directives.reminder }] : []),
+    ...projectOrientationRows(renderState, 'turn-start', committed),
+  ];
   const out: string[] = [header];
   const kept: OrientationRow[] = [];
   let used = header.length;
@@ -2942,6 +3171,7 @@ export function fingerprintDeliveredOrientation(
   epoch: number,
   committed: CursorState | null,
   block: string,
+  contextTokens: number | null = null,
 ): CursorState {
   let deliveredState = state;
   if (state.historyUpdates?.length) {
@@ -2960,16 +3190,26 @@ export function fingerprintDeliveredOrientation(
     const delivered = block.includes('🔎');
     if (!delivered) deliveredState = { ...deliveredState, openChecks: undefined };
   }
-  const obligations = state.obligations;
-  if (!obligations) return fingerprintOrientation(deliveredState, epoch, committed);
-  const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
+  const directiveMark = nextDirectiveMark(state, committed, epoch, block, contextTokens);
+  const withMark = (fingerprint: CursorState): CursorState =>
+    directiveMark ? { ...fingerprint, directiveReminder: directiveMark } : fingerprint;
+  if (!state.obligations) return withMark(fingerprintOrientation(deliveredState, epoch, committed));
+  // Judge delivery against what the composer RENDERED: withheld directive rows
+  // (P-006) were never meant to be in the block, so their absence is not a miss.
+  const obligations = withoutWithheldDirectiveRows(
+    state,
+    planOwnerDirectiveReminder(state, committed, epoch, contextTokens).withheld,
+  ).obligations;
+  const projectedLines = obligations ? obligations.projection.text.split('\n').filter(Boolean) : [];
   const actionsDelivered = projectedLines.every((line) => block.includes(line));
   const recoveryDelivered =
-    obligations.projection.receipt.entriesOmitted === 0 || block.includes(obligations.detailRef);
-  return fingerprintOrientation(
-    actionsDelivered && recoveryDelivered ? deliveredState : { ...deliveredState, obligations: undefined },
-    epoch,
-    committed,
+    !obligations || obligations.projection.receipt.entriesOmitted === 0 || block.includes(obligations.detailRef);
+  return withMark(
+    fingerprintOrientation(
+      actionsDelivered && recoveryDelivered ? deliveredState : { ...deliveredState, obligations: undefined },
+      epoch,
+      committed,
+    ),
   );
 }
 
@@ -3097,6 +3337,14 @@ export interface OrientationDeps {
    * context boundary is.
    */
   contextEpoch: (ownerId: string) => Promise<number>;
+  /**
+   * The agent's context size in tokens (P-006 reminder cadence). Like
+   * `contextEpoch`, an input to the dedup rather than rendered state, so it is
+   * not on OrientationState. Optional so an injected deps object without it
+   * falls back to the default reader; a failed reading is null, which switches
+   * the cadence to wall-clock.
+   */
+  contextTokens?: (ownerId: string) => Promise<number | null>;
 }
 
 /**
@@ -3473,11 +3721,33 @@ export function defaultOrientationDeps(): OrientationDeps {
       // directive itself is untouched for its addressee and every peer, which
       // is what makes clearing a foreign directive a safe, expected action
       // rather than the erase-a-peer's-order defect D-009 measured.
-      const rows: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12, undefined, ownerId);
-      const live = rows.filter(
-        (row) => row.captureStatus === 'pending' || row.captureStatus === 'open',
-      );
+      const live: OwnerDirectiveRow[] = await listOpenOwnerDirectives(workspaceId, 12, undefined, ownerId);
       if (live.length === 0) return [];
+
+      // "Related to your work" (R-3): another session's directive is flagged when
+      // its addressee has declared the same current plan as this session. One
+      // batched presence read; failure only loses the flag, never the line.
+      let relatedAddressees = new Set<string>();
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const addressees = [...new Set(live.map((r) => r.recordedBy).filter((id) => id && id !== ownerId))];
+        if (addressees.length > 0) {
+          const plans = (await getOrgPg().sql`
+            SELECT DISTINCT ON (owner_id) owner_id, current_plan_slug
+              FROM harness_shared.coord_presence
+             WHERE owner_id = ANY(${[ownerId, ...addressees]})
+             ORDER BY owner_id, last_active_at DESC NULLS LAST
+          `) as { owner_id: string; current_plan_slug: string | null }[];
+          const myPlan = plans.find((p) => p.owner_id === ownerId)?.current_plan_slug ?? null;
+          if (myPlan) {
+            relatedAddressees = new Set(
+              plans.filter((p) => p.owner_id !== ownerId && p.current_plan_slug === myPlan).map((p) => p.owner_id),
+            );
+          }
+        }
+      } catch {
+        relatedAddressees = new Set();
+      }
 
       // ONE batched join for the whole banner, never one query per row: this runs on
       // the turn-start hot path under a hard 2.5s wall shared with every other source.
@@ -3500,8 +3770,10 @@ export function defaultOrientationDeps(): OrientationDeps {
 
       return live.map((row) => ({
         id: row.id,
-        captureStatus: (row.captureStatus === 'pending' ? 'pending' : 'open') as 'pending' | 'open',
         verbatimText: row.verbatimText,
+        summaryText: row.summaryText ?? null,
+        summaryBy: row.summaryBy ?? null,
+        relatedToMe: relatedAddressees.has(row.recordedBy),
         // The two fields whose absence WAS the bug (D-006). The parallel obligation
         // rail has always mapped both; this is the same mapping, not a new source.
         recordedBy: row.recordedBy,
@@ -4110,49 +4382,83 @@ export function defaultOrientationDeps(): OrientationDeps {
       const { sql } = getOrgPg();
       return await currentSessionEpoch(sql, ownerId);
     },
+    contextTokens: async (ownerId) => {
+      const { readContextTokens } = await import('./agent-tools/coordination/context-pressure');
+      return await readContextTokens(ownerId);
+    },
   };
 }
 
+/** What one turn-start orientation call delivered. */
+export interface TurnStartOrientationDelivery {
+  /** The rendered block; '' on every failure and every silence case. */
+  block: string;
+  /**
+   * Set only when the caller asked for ACK-ON-PROOF and `block` was staged: the
+   * caller echoes it back as `confirmedDeliveryToken` once it has emitted `block`.
+   */
+  deliveryToken: string | null;
+}
+
+const NO_ORIENTATION: TurnStartOrientationDelivery = { block: '', deliveryToken: null };
+
 /**
  * The endpoint entry point: resolve, diff against the server-side cursor, render.
- * Returns '' on every failure and every silence case, so the caller can splice it
- * unconditionally into its section list.
+ * Returns an empty block on every failure and every silence case, so the caller can
+ * splice it unconditionally into its section list.
  *
  * The cursor is advanced with the SPLIT-PHASE pair rather than the fused
  * `ackAndAdvance` for the same reason `coord:inbox` needs it — but note the phases
  * are cheap here, so the ordering is what matters: `stage` runs only AFTER a
  * non-empty block has actually been composed, so a turn that emits nothing does not
  * move the floor, and a turn that dies before injection re-emits next time.
+ *
+ * `confirmedDeliveryToken` opts into ACK-ON-PROOF (read-cursors.ts; P-005 of
+ * owner-directive-delivery-redesign-2026-09-22). Omitted, the call's arrival acks
+ * the previous block. Passed (a string, or null when the caller can prove nothing),
+ * the previous block is acked only if the caller confirms the token it was staged
+ * under, so a hook killed between the server staging and the client printing gets
+ * the block again instead of losing it.
  */
 export async function buildTurnStartOrientationBlock(input: {
   ownerId: string;
   workspaceId: string;
   budgetChars?: number;
+  confirmedDeliveryToken?: string | null;
   deps?: Partial<OrientationDeps>;
-}): Promise<string> {
+}): Promise<TurnStartOrientationDelivery> {
   try {
     const { ownerId, workspaceId } = input;
-    if (!ownerId) return '';
+    if (!ownerId) return NO_ORIENTATION;
+    const proof = input.confirmedDeliveryToken !== undefined;
     // The epoch read joins the SAME Promise.all as the state read — it is one
     // indexed single-row lookup, but the 2.5s wall makes "one more await" a real
     // cost, and serializing it behind the state resolve would spend that wall for
     // nothing. Independently `.catch()`ed to 0 for the same reason every other
     // source is: a broken generation read must degrade the dedup to its old
     // behaviour, never fail the block or the turn.
-    const epochDep = { ...defaultOrientationDeps(), ...(input.deps ?? {}) }.contextEpoch;
-    const [{ ackAndRead, stage }, state, epoch] = await Promise.all([
+    const { contextEpoch: epochDep, contextTokens: tokensDep } = { ...defaultOrientationDeps(), ...(input.deps ?? {}) };
+    const [{ ackAndRead, stage }, state, epoch, contextTokens] = await Promise.all([
       import('./agent-tools/coordination/read-cursors'),
       resolveOrientationState(ownerId, workspaceId, input.deps ?? {}),
       epochDep(ownerId).catch(() => 0),
+      // P-006 reminder cadence; same fail-soft as the epoch: unknown ⇒ null,
+      // which falls back to a wall-clock cadence rather than failing the block.
+      tokensDep ? tokensDep(ownerId).catch(() => null) : Promise.resolve(null),
     ]);
-    if (isEmptyOrientation(state)) return '';
-    const ack = await ackAndRead(ownerId, ORIENTATION_CURSOR_SURFACE).catch(() => null);
+    if (isEmptyOrientation(state)) return NO_ORIENTATION;
+    const ack = await ackAndRead(
+      ownerId,
+      ORIENTATION_CURSOR_SURFACE,
+      proof ? { confirmedToken: input.confirmedDeliveryToken ?? null } : undefined,
+    ).catch(() => null);
     const composed = composeOrientationBlockWithRows({
       state,
       // A failed cursor read ⇒ treat as baseline and DELIVER. Fail-open: a delta
       // must never make orientation worse than no delta.
       committed: ack?.committed ?? null,
       epoch,
+      contextTokens,
       ...(input.budgetChars === undefined ? {} : { budgetChars: input.budgetChars }),
     });
     const block = composed.block;
@@ -4180,20 +4486,26 @@ export async function buildTurnStartOrientationBlock(input: {
         evaluatedClasses,
       });
     })().catch(() => {});
-    if (block) {
-      // Staged with the SAME epoch the block was composed against — never a
-      // re-read. A second read here could land after a boundary and commit a
-      // generation the agent was never actually told about, which would
-      // reproduce the exact stale suppression this change removes.
-      await stage(
-        ownerId,
-        ORIENTATION_CURSOR_SURFACE,
-        fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block),
-      ).catch(() => {});
-    }
-    return block;
+    if (!block) return NO_ORIENTATION;
+    // Staged with the SAME epoch the block was composed against — never a
+    // re-read. A second read here could land after a boundary and commit a
+    // generation the agent was never actually told about, which would
+    // reproduce the exact stale suppression this change removes.
+    const deliveryToken = proof ? randomUUID() : undefined;
+    const staged = await stage(
+      ownerId,
+      ORIENTATION_CURSOR_SURFACE,
+      fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens),
+      deliveryToken ? { deliveryToken } : {},
+    ).then(
+      () => true,
+      () => false,
+    );
+    // A token whose stage failed names no pending, so confirming it could never
+    // promote anything; reporting none keeps the caller's ledger honest.
+    return { block, deliveryToken: staged && deliveryToken ? deliveryToken : null };
   } catch {
     // Fail-soft by contract — the endpoint must never surface an error into a turn.
-    return '';
+    return NO_ORIENTATION;
   }
 }

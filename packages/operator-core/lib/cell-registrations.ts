@@ -2711,11 +2711,12 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
 
   /**
    * D-038: the assessment must say what the measurement MEANS, so its path is
-   * DELIBERATELY NOT the headline. These five codes are exactly the distinctions
+   * DELIBERATELY NOT the headline. These four codes are exactly the distinctions
    * the bare `kind` cannot make, and each one changes what the reader does next.
-   * Two of them are the measured D-007 shapes this plan exists to stop rendering
-   * as imperatives — a settled directive that still nags, and worked-but-never-
-   * dispositioned work that reads as "nobody started this".
+   * 'worked-awaiting-disposition' is the measured D-007 shape that must not render
+   * as an imperative: worked-but-never-dispositioned work reads as "nobody started
+   * this". (A fifth code, 'settled-capture-lagging', was retired with the capture
+   * triage by owner-directive-delivery-redesign-2026-09-22.)
    */
   assessment: {
     path: 'assessments.directiveStatus',
@@ -2739,14 +2740,8 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
           'Awareness only — do NOT start parallel work. If you are not in `holders`, coordinate through the named work-item instead of re-deriving the task.',
       },
       settled: {
-        meaning: 'Terminal and consistent: a disposition (or a dismissed capture) was recorded, and the capture lifecycle agrees.',
+        meaning: 'Terminal: a disposition (done or declined) was recorded.',
         safeAction: 'Nothing is owed. Render it in NO imperative bucket.',
-      },
-      'settled-capture-lagging': {
-        meaning:
-          'Terminal BY DISPOSITION while `captureStatus` still reads `pending` — the measured D-007 shape. The two inputs are tracked independently and the row would otherwise keep rendering "[DUE] … promote or dismiss" forever.',
-        safeAction:
-          'Nothing is owed. The `pending` capture is NOT a reason to prompt for resolution — that prompt is the defect this derivation removes.',
       },
     },
     evidence: ['directiveUnknown'],
@@ -2781,7 +2776,7 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
   changeSignal: { kind: 'poll', tool: 'orders:get', path: 'directive.status.kind' },
 
   shape:
-    '{ kind: unclaimed|claimed|done|declined, claimedBy?, holders[], activeWorkItemIds[], terminalSource?: disposition|capture-dismissed, captureLagging, workedButUndispositioned }',
+    '{ kind: unclaimed|claimed|done|declined, claimedBy?, holders[], activeWorkItemIds[], workedButUndispositioned }',
 };
 
 export const BUILTIN_CELLS: CellSpec[] = [
