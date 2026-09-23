@@ -1265,3 +1265,41 @@ describe('engineer-issues projection — WI-10002480 legacy-twin guard is index-
     expect(other[0]?.retired).toBe(false);
   });
 });
+
+// p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): the merge seeds its winners
+// with the stored order this lookup returns and skips any op strictly older. That is
+// sound only if (a) the lookup returns exactly the fed_hlc/fed_ts the put guard reads,
+// for the physical row a QUALIFIED key names, and (b) the guard really rejects an op
+// strictly older than that. Both are pinned here against real PG.
+describe('storedOrderForKeys (P-002 stored-order prefetch)', () => {
+  it('returns the stored fed order for qualified keys only, and the put guard rejects a strictly-older op', async () => {
+    const p = proj();
+    await p.writeToPg(issueRow({ issue_id: 'EI-sof-1', title: 'stored', storage_harness_slug: SLUG }), {
+      ts: 300,
+      fedHlc: '000000000000300:00000:tower',
+      origin: 'remote',
+      authorPubkey: 'tower',
+    });
+
+    const found = await p.storedOrderForKeys!([
+      `${SLUG}/EI-sof-1`,
+      'EI-sof-1', // bare legacy key: its physical row depends on the op value, so it is omitted
+      `${SLUG}/EI-sof-missing`,
+      `other-slug/EI-sof-1`,
+    ]);
+    expect([...found.entries()]).toEqual([[`${SLUG}/EI-sof-1`, { hlc: '000000000000300:00000:tower', ts: 300 }]]);
+
+    // The contract the merge relies on: a strictly-older op is a PG no-op.
+    await p.writeToPg(issueRow({ issue_id: 'EI-sof-1', title: 'older', storage_harness_slug: SLUG }), {
+      ts: 200,
+      fedHlc: '000000000000200:00000:tower',
+      origin: 'remote',
+      authorPubkey: 'tower',
+    });
+    expect((await getIssue('EI-sof-1'))?.title).toBe('stored');
+  });
+
+  it('returns an empty map without querying when no key is qualified', async () => {
+    expect((await proj().storedOrderForKeys!(['EI-sof-bare'])).size).toBe(0);
+  });
+});

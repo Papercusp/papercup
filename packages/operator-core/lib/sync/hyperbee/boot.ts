@@ -91,6 +91,7 @@ import { loadRevokedPubkeys } from './load-revoked-pubkeys';
 import {
   registerAllHarnessProjections,
   buildHarnessProjectionApply,
+  type HarnessProjectionApply,
 } from './projections/register-all';
 import { createPlanPartsRecomposeBatch } from './projections/harness-plan-parts';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
@@ -3914,6 +3915,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // log is folded by many harnesses at many positions, so a line naming only
         // the log is ambiguous across all of them (39 cursors on cb54460d98d8).
         cursorLabel: `${opts.workspaceId}/${opts.harnessSlug}`,
+        // p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): look up the stored PG order
+        // for each window of upcoming ops so a replayed op strictly older than its row is
+        // skipped in memory instead of paying an apply the LWW guard would reject. Reads
+        // through the CURRENT scopedApply (rebuilt on rekey). A rig's applyOverride has no
+        // projection set, so it keeps today's behavior.
+        ...(opts.applyOverride
+          ? {}
+          : {
+              prefetchStoredOrder: (entries: readonly { table: string; key: string }[]) =>
+                (scopedApply as HarnessProjectionApply).prefetchStoredOrder(entries),
+            }),
         // Surface standing backlog in boot-history (best-effort observability).
         onBacklog: (keyHex: string, position: number, length: number) => {
           try {
