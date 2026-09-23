@@ -66,6 +66,14 @@ describe('machine-surface catalogue — predicates', () => {
     expect(isUnenrolledMachineSurface('[Request interrupted by user]')).toBe(true);
   });
 
+  it('HIDES the exact Claude usage-limit reset continuation, but keeps it when quoted by an owner', () => {
+    const reset =
+      'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.';
+    expect(isUnenrolledMachineSurface(reset)).toBe(true);
+    expect(isUnenrolledMachineSurface(`Claude showed: "${reset}"`)).toBe(false);
+    expect(isUnenrolledMachineSurface(`${reset} Please explain what it means.`)).toBe(false);
+  });
+
   it('HIDES a synthetic slash-command wrapper', () => {
     expect(isUnenrolledMachineSurface('<command-name>compact</command-name>')).toBe(true);
     expect(hasSyntheticMarker('<local-command-stdout>ok</local-command-stdout>')).toBe(true);

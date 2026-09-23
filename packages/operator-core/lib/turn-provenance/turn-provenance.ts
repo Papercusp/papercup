@@ -484,15 +484,15 @@ export function tagTurnForInjection(args: {
  * proves the turn is NOT the human owner, even though we can't ledger-VERIFY
  * an agent origin; classified `machine-surface` rather than owner.
  *
- * Deliberately specific — each pattern self-declares/self-identifies as a
- * machine surface (the banner literally says "NOT USER INPUT"; the
- * task-notification tag is a fixed XML shape no owner would hand-type), so a
- * false positive on genuine owner input is near-impossible; and biasing a
+ * Deliberately specific — each pattern self-identifies as a machine surface
+ * (the banner literally says "NOT USER INPUT"; the task-notification tag is a
+ * fixed XML shape; the usage-reset continuation is one exact client message),
+ * so a false positive on genuine owner input is near-impossible; and biasing a
  * match toward not-owner is the SAFE direction (a false OWNER is the failure
  * mode, per D-002). Keep in lockstep with
  * apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh AND with
  * turn-ref.ts's (deliberately broader, post-hoc) MACHINE_SURFACE_PATTERNS —
- * these two entries are the subset that pattern list treats as canonical.
+ * these three entries are the subset that pattern list treats as canonical.
  *
  * EI-18112745557098348: a native Claude Code background-task completion can
  * also arrive as a BARE `<task-notification>` block with NO
@@ -502,10 +502,16 @@ export function tagTurnForInjection(args: {
  */
 const MACHINE_SURFACE_RE = /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i;
 const TASK_NOTIFICATION_TAG_RE = /^\s*<task-notification\b/i;
+const CLAUDE_USAGE_RESET_RE =
+  /^\s*Your claude\.ai usage limit has reset\.\s+Continue the task you were working on when the limit was reached; do not repeat work that is already complete\.\s*$/i;
 
 export function detectMachineSurface(promptText: string): boolean {
   const text = promptText ?? '';
-  return MACHINE_SURFACE_RE.test(text) || TASK_NOTIFICATION_TAG_RE.test(text);
+  return (
+    MACHINE_SURFACE_RE.test(text) ||
+    TASK_NOTIFICATION_TAG_RE.test(text) ||
+    CLAUDE_USAGE_RESET_RE.test(text)
+  );
 }
 
 // ─── Classifier ─────────────────────────────────────────────────────────────

@@ -656,13 +656,21 @@ export async function setDesktopViewer(
  *
  * Remote-owned rows (host_ref NOT NULL) are never touched here — their owner
  * reconciles them.
+ *
+ * `soleOwner` widens population 2 to EVERY pid on this boot. Pass it only where
+ * the caller is, by construction, the one process that registers local desktops
+ * for this workspace — a Papercusp workspace host: one operator unit, and its
+ * D-363 desktops die with the socket that operator holds. There, a row it cannot
+ * vouch for was left by a previous incarnation of itself, and leaving it `ready`
+ * blocks the next desktop on both live-row unique indexes (WI-10002797).
  */
 export async function reconcileLocalDesktopSessions(
-  args: { workspaceId: string; liveIds: readonly string[]; bootId?: string; pid?: number },
+  args: { workspaceId: string; liveIds: readonly string[]; bootId?: string; pid?: number; soleOwner?: boolean },
   sql?: Sql,
 ): Promise<{ reaped: number; reapedIds: string[] }> {
   const bootId = args.bootId ?? currentBootId();
   const pid = args.pid ?? process.pid;
+  const soleOwner = args.soleOwner === true;
   // An EMPTY array is the correct value here, not a sentinel: `NOT (id = ANY('{}'))`
   // is true for every row, which is exactly "this process vouches for nothing".
   // A `['']` placeholder instead raises `invalid input syntax for type uuid: ""`,
@@ -677,7 +685,7 @@ export async function reconcileLocalDesktopSessions(
        AND state NOT IN ('released', 'dead')
        AND (
              owner_boot_id IS DISTINCT FROM ${bootId}
-             OR (owner_pid = ${pid} AND NOT (id = ANY(${live as string[]}::uuid[])))
+             OR ((${soleOwner}::boolean OR owner_pid = ${pid}) AND NOT (id = ANY(${live as string[]}::uuid[])))
            )
     RETURNING id`;
   return { reaped: rows.length, reapedIds: rows.map((r) => r.id as string) };

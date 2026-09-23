@@ -88,6 +88,9 @@
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   // Claude's background-task completion banner (self-labels "NOT USER INPUT").
   /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
+  // Claude's app-level usage-limit reset continuation (no Papercusp injector
+  // envelope or ledger row accompanies this standalone client message).
+  /^\s*Your claude\.ai usage limit has reset\.\s+Continue the task you were working on when the limit was reached; do not repeat work that is already complete\.\s*$/i,
   // Native auto-compaction continuation summary (unenrollable — no injector).
   //
   // MATCHES THE FULL MACHINE SENTENCE, NOT ITS PREFIX (WI-38157). This pattern
@@ -238,7 +241,10 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // uncertainty at ingest. Bump the shared stamp version so existing rows are
 // re-derived through the same ingest path rather than retaining the old false
 // owner assertion forever.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 5;
+// 5 → 6 (EI-24061185425252841): Claude's fixed usage-limit reset continuation
+// was otherwise captured as an owner directive when it arrived without the
+// original machine envelope. Make existing rows findable for reclassification.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 6;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

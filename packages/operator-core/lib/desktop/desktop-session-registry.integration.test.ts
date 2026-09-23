@@ -291,6 +291,47 @@ describe('reconciliation (D-004: a row without a live handle is DEAD)', () => {
     expect(out.reapedIds).not.toContain(s.id);
   });
 
+  // WI-10002797: on a workspace host the only other pid that ever registered a
+  // desktop is a previous incarnation of the operator, whose desktop died with its
+  // socket. Left `ready`, that row blocks the next lease on both unique indexes.
+  it('as SOLE OWNER reaps a previous incarnation’s row on the same boot, so the scope and display can be leased again', async () => {
+    const ws = 'ws-recon-sole';
+    const stale = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-sole', display: ':610', ownerBootId: BOOT, ownerPid: 4321 }),
+      sql,
+    );
+    await expect(
+      registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-sole', display: ':610', ownerBootId: BOOT, ownerPid: 1234 }), sql),
+    ).rejects.toThrow();
+
+    const out = await reconcileLocalDesktopSessions(
+      { workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234, soleOwner: true },
+      sql,
+    );
+    expect(out.reapedIds).toEqual([stale.id]);
+    await expect(
+      registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-sole', display: ':610', ownerBootId: BOOT, ownerPid: 1234 }), sql),
+    ).resolves.toBeDefined();
+  });
+
+  it('as SOLE OWNER still keeps a row it holds a live handle for, and never touches a remote row', async () => {
+    const ws = 'ws-recon-sole-keep';
+    const held = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-sole-held', ownerBootId: BOOT, ownerPid: 1234 }),
+      sql,
+    );
+    const remote = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-sole-remote', kind: 'frame-slot', hostRef: 'frame-9', ownerBootId: BOOT, ownerPid: 4321 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions(
+      { workspaceId: ws, liveIds: [held.id], bootId: BOOT, pid: 1234, soleOwner: true },
+      sql,
+    );
+    expect(out.reapedIds).not.toContain(held.id);
+    expect(out.reapedIds).not.toContain(remote.id);
+  });
+
   it('reaped rows are terminal and carry a released_at', async () => {
     const ws = 'ws-recon-stamp';
     await registerDesktopSession(

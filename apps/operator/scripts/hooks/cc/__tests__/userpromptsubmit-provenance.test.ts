@@ -272,6 +272,22 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).not.toContain('OWNER (interactive)');
   });
 
+  it('Claude usage-limit reset continuation is MACHINE-GENERATED SURFACE, never OWNER or a directive', () => {
+    const ctx = contextOf(runHook({
+      prompt: 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.',
+    }));
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('keeps an owner quoting the usage-limit reset message as an owner turn', () => {
+    const ctx = contextOf(runHook({
+      prompt: 'Claude showed: "Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete." Why was that recorded as my directive?',
+    }));
+    expect(ctx).toContain('OWNER (interactive)');
+  });
+
   it('bare <task-notification> tag, NO banner (no envelope, no match) → MACHINE-GENERATED SURFACE, never OWNER (EI-18112745557098348)', () => {
     writeRow();
     const ctx = contextOf(

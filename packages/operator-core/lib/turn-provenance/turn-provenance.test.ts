@@ -336,6 +336,8 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
   // worst-case false-owner misclassification.
   const TASK_NOTIFICATION =
     '[SYSTEM NOTIFICATION - NOT USER INPUT]\nBackground task b1mtb01il completed: 42 tests passed.';
+  const CLAUDE_USAGE_RESET =
+    'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.';
 
   it('no envelope + machine-notification banner + no ledger match → machine-surface, NOT owner', () => {
     const res = classify(TASK_NOTIFICATION, [row()], { nowMs: NOW + 1000, ttlMs: TTL });
@@ -347,6 +349,14 @@ describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notificati
 
   it('machine banner classifies against an EMPTY ledger too (no row to hash-match)', () => {
     expect(classify(TASK_NOTIFICATION, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('machine-surface');
+  });
+
+  it('Claude usage-limit reset continuation with no envelope/ledger row is machine-surface, NOT owner', () => {
+    const res = classify(CLAUDE_USAGE_RESET, [], { nowMs: NOW, ttlMs: TTL });
+    expect(res.verdict).toBe('machine-surface');
+    expect(res.reason).toMatch(/MACHINE-GENERATED SURFACE/);
+    expect(detectMachineSurface(CLAUDE_USAGE_RESET)).toBe(true);
+    expect(detectMachineSurface(`Claude showed: "${CLAUDE_USAGE_RESET}"`)).toBe(false);
   });
 
   it('a genuine LEDGER-verified injected turn wins over the banner guard (guard is last-resort)', () => {

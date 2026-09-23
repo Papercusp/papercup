@@ -191,4 +191,24 @@ describe('plans:edit handler — rejected edits write nothing', () => {
     expect(await liveVersion()).toBe(before);
     expect(await revisionCount()).toBe(0);
   });
+
+  it('refuses lifecycle status changes before writing content or a revision', async () => {
+    const before = await liveVersion();
+
+    const { data, isError } = await runEdit({
+      old_string: 'status: active',
+      new_string: 'status: shipped',
+    });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe('plan_status_change_requires_lifecycle_writer');
+    expect(await liveVersion()).toBe(before);
+    expect(await revisionCount()).toBe(0);
+    const [{ content }] = await admin<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(content).toContain('status: active');
+    expect(content).not.toContain('status: shipped');
+  });
 });

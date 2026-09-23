@@ -67,7 +67,13 @@ const inflight = new Map<string, Promise<SandboxDesktop>>();
 /** Provision (or return the existing) sandbox desktop for a hive. Idempotent + race-safe. */
 export async function ensureHiveDesktop(potSlug: string, opts?: ProvisionOptions): Promise<SandboxDesktop> {
   const existing = leases.get(potSlug);
-  if (existing && existing.isAlive?.() !== false) return existing;
+  if (existing && existing.isAlive?.() !== false) {
+    // A lease whose row write failed stays nameless for the life of this process
+    // unless the next ensure retries it (WI-10002797): the hosted relay cannot
+    // offer a desktop the registry does not name.
+    if (!sessionIds.has(potSlug)) await recordLeaseInRegistry(potSlug, existing);
+    return existing;
+  }
   if (existing) await releaseHiveDesktop(potSlug);
   const pending = inflight.get(potSlug);
   if (pending) return pending;
