@@ -1242,7 +1242,13 @@ export async function runWorkspaceHostLifecycle(
         // WI-10002494: every provider step applied, so the instance was recreated from input.image.
         // Without this the host row and desired spec kept the pre-upgrade image, and the next
         // recreate built from that spec would silently undo the upgrade.
-        await store.recordImage({ workspaceId, hostId: resultHostId, image: input.image! });
+        // WI-10002798: and onto the runtime release its re-rendered bootstrap installed.
+        await store.recordImage({
+          workspaceId,
+          hostId: resultHostId,
+          image: input.image!,
+          ...(runtimeRelease ? { runtimeRelease } : {}),
+        });
       }
       /*
        * This branch is generic across every lifecycle action, so on its own it can only ever
