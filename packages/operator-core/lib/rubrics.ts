@@ -79,6 +79,8 @@ import {
   synchronizeAcceptanceBarRevision,
   carryUnchangedBarEvidenceBindings,
   shouldCarryBarEvidence,
+  partitionAmendmentProof,
+  invalidatedAdequacyCardSubjects,
   resolveAcceptanceBarApproval,
   type AcceptanceBarApproval,
   type AcceptanceBarAmendmentSql,
@@ -3356,8 +3358,20 @@ export interface AcceptanceBarAmendmentPreview {
   sourceSnapshotHash: string;
   changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
   revisionMovement: { rubric: { from: number; to: number }; subject: { from: number; to: number } };
+  /** Proof bound to a CHANGED bar (added/removed/meaning): re-run it after the amendment. */
   invalidatedProofRefs: string[];
+  /**
+   * P-002/P-027: proof bound only to UNCHANGED bars. Their clauses keep their revision
+   * (P-001), so this proof survives the amendment with nothing to re-bind.
+   */
+  carriedProofRefs: string[];
+  /** Acceptance grading/vetting cards pinned to the old rubric revision: all re-emitted. */
   invalidatedScorecardIds: string[];
+  /**
+   * P-002 spec B: spec-test-adequacy card subjects (`<plan>#<spec>@<revision>`) of the
+   * clauses a meaning-changed bar re-revisions. Unchanged bars keep theirs (P-001).
+   */
+  invalidatedAdequacyCardSubjects: string[];
   authorVerdictBecomesStale: boolean;
   reboundWorkItemIds: string[];
   cohortDisposition: { cohort: string | null; adoptionEpoch: number | null; action: 'preserve' };
@@ -3500,6 +3514,66 @@ function amendmentRequestHash(input: AmendRubricInput): string {
       input.approvalRef ?? null,
     ]),
   );
+}
+
+/**
+ * RSR-P-008-C: the idempotency key `rubrics:amend` mints when the caller supplied
+ * none, so the caller holds a pollable receipt BEFORE the work starts instead of
+ * learning the server-derived key only from a response a slow amend never returns.
+ *
+ * Deterministic on purpose: the key covers the rubric, the prior rubric revision,
+ * the actor and the full request hash, so re-issuing the SAME request at the SAME
+ * prior revision re-derives the SAME key and replays rather than re-applies — the
+ * dedupe the in-lock derived key (acceptanceBarAmendmentKey) already gave a keyless
+ * retry. A random key here would silently lose that.
+ */
+export function mintAmendmentIdempotencyKey(
+  input: AmendRubricInput,
+  priorRubricRevision: number | string | null | undefined,
+): string {
+  return `amend-${hashPlanContent(
+    JSON.stringify([input.rubricId, priorRubricRevision ?? null, amendmentRequestHash(input)]),
+  ).slice(0, 24)}`;
+}
+
+/**
+ * RSR-P-008-C: the DURABLE half of an amend receipt. A BAR-changing acceptance
+ * amendment commits its subject-plan Decision (carrying `Amendment-Id: <key>`)
+ * atomically with the rubric revision, so that Decision is proof the amendment
+ * landed — it survives an operator restart that loses the in-process receipt.
+ * Returns null when the rubric is not an acceptance rubric with a subject plan, or
+ * when no Decision carries the key (not committed, or a non-BAR amendment, which
+ * records no Amendment-Id).
+ */
+export async function findAmendmentDecisionByKey(
+  rubricId: string,
+  idempotencyKey: string,
+): Promise<{ decisionId: string; subjectPlan: string; subjectHarnessSlug: string } | null> {
+  const key = idempotencyKey.trim();
+  if (!key) return null;
+  const rubric = await getRubric(rubricId);
+  if (!rubric || rubric.kind !== 'acceptance' || !rubric.subjectPlan) return null;
+  const rubricScope = await resolveRubricWriteScope(rubricId);
+  const subjectScope = await resolveAcceptanceSubjectScope(
+    rubricScope.workspaceId,
+    rubric.subjectPlan,
+    rubric.subjectHarnessSlug,
+  );
+  const { sql } = getOrgPg();
+  const [row] = await sql<Array<{ content: string }>>`
+    SELECT content
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${subjectScope.workspaceId}
+       AND harness_slug = ${subjectScope.harnessSlug}
+       AND plan_slug = ${rubric.subjectPlan}
+     LIMIT 1`;
+  if (!row) return null;
+  const decision = parsePlan(row.content).decisions.find((candidate) =>
+    candidate.body.split('\n').includes(`Amendment-Id: ${key}`),
+  );
+  return decision
+    ? { decisionId: decision.id, subjectPlan: rubric.subjectPlan, subjectHarnessSlug: subjectScope.harnessSlug }
+    : null;
 }
 
 function amendmentDate(): string {
@@ -4124,6 +4198,7 @@ async function amendAcceptanceBarRubric(
             };
           }
         }
+        const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
         return {
           rubric: stored,
           decisionId: '',
@@ -4149,8 +4224,11 @@ async function amendAcceptanceBarRubric(
               rubric: { from: oldRubricRevision, to: nextRubricRevision },
               subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision },
             },
-            invalidatedProofRefs: [...new Set(snapshot.bars.flatMap((bar) => bar.proof.evidenceRefs))].sort(),
+            ...proofPartition,
             invalidatedScorecardIds: [...snapshot.sourceRevisions.scorecardIds].sort(),
+            invalidatedAdequacyCardSubjects: invalidatedAdequacyCardSubjects(
+              subjectPlanHint ?? '', snapshot.bars, changedBars, new Set(candidate.bars.map((bar) => bar.barKey)),
+            ),
             authorVerdictBecomesStale: ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
             reboundWorkItemIds: open.map((row) => row.work_item_id),
             cohortDisposition: {
@@ -4167,8 +4245,16 @@ async function amendAcceptanceBarRubric(
                 }
               : {
                   code: 'bar_snapshot_proof_stale',
-                  action:
-                    'Bind proof to the new spec revisions, then refresh vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.',
+                  // P-002/P-027: name ONLY the proof this amendment invalidates. Unchanged
+                  // bars keep their clause revision and proof (carriedProofRefs).
+                  action: proofPartition.invalidatedProofRefs.length > 0
+                    ? `Re-bind the ${proofPartition.invalidatedProofRefs.length} proof ref(s) in invalidatedProofRefs ` +
+                      `for the changed bar(s) ${changedBars.join(', ') || '(none)'}; the ` +
+                      `${proofPartition.carriedProofRefs.length} in carriedProofRefs survive unchanged. Then refresh ` +
+                      'vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.'
+                    : `No bound proof is invalidated (${proofPartition.carriedProofRefs.length} carried unchanged). ` +
+                      'Refresh vetting and independent grading for the new rubric revision; historical ship verdicts ' +
+                      'remain recorded but cannot authorize this revision.',
                 },
           },
         };
