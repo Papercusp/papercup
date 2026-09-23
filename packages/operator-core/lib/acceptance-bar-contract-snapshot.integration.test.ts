@@ -307,8 +307,10 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
 
     const current = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
     expect(current.bars).toHaveLength(1);
-    expect(current.bars[0]!.proof.history[0]!.currentness).toEqual(classifiedAfterGrading.currentness);
-    expect(current.bars[0]!.proof.history[0]).toMatchObject({
+    const currentHistory = current.bars[0]!.proof.history ?? [];
+    expect(currentHistory).toHaveLength(1);
+    expect(currentHistory[0]!.currentness).toEqual(classifiedAfterGrading.currentness);
+    expect(currentHistory[0]).toMatchObject({
       specId: SPEC,
       specRevision: promotedRevision,
       currentRevision: promotedRevision,
