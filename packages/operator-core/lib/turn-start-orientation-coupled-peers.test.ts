@@ -34,13 +34,14 @@ const presenceRows = vi.hoisted(
 const presenceQueries = vi.hoisted(() => [] as string[][]);
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({
-    sql: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+  getOrgPg: () => {
+    const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
       const ids = values[0] as string[];
       presenceQueries.push([...ids]);
       return ids.flatMap((id) => (presenceRows.has(id) ? [presenceRows.get(id)!] : []));
-    },
-  }),
+    };
+    return { sql: Object.assign(sql, { begin: vi.fn() }) };
+  },
 }));
 vi.mock('./workspace-registry', () => ({ resolveConcreteWorkspaceId: (ws: string) => ws }));
 
