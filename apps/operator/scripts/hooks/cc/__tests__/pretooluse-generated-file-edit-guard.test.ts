@@ -402,3 +402,40 @@ describe("the canonical internal-docs build mirror", () => {
     expect(runHook(edit(unmarkedMirrorArtifact, "Bash")).denied).toBe(false);
   });
 });
+
+describe("the installed Claude/Codex cc hook runtime mirror", () => {
+  let runtimeHome: string;
+  let runtimeDir: string;
+  let installedHook: string;
+
+  beforeAll(() => {
+    runtimeHome = join(dir, "runtime-home");
+    runtimeDir = join(runtimeHome, ".papercusp", "hooks", "cc");
+    installedHook = join(runtimeDir, "ask-gate-mirror.sh");
+    mkdirSync(runtimeDir, { recursive: true });
+    writeFileSync(installedHook, HAND_AUTHORED_HEAD, "utf8");
+  });
+
+  it.each(["Edit", "mcp__papercusp-su__capability_edit"])(
+    "DENIES %s to an installed hook copy and names its canonical source",
+    (tool) => {
+      const { denied, reason } = runHook(edit(installedHook, tool), {
+        HOME: runtimeHome,
+      });
+      expect(denied).toBe(true);
+      expect(reason).toContain("installed runtime copy");
+      expect(reason).toContain(
+        "apps/operator/scripts/hooks/cc/ask-gate-mirror.sh",
+      );
+    },
+  );
+
+  it("ALLOWS a lookalike hook path outside the current home mirror", () => {
+    const lookalike = join(dir, "lookalike", ".papercusp", "hooks", "cc");
+    const file = join(lookalike, "ask-gate-mirror.sh");
+    mkdirSync(lookalike, { recursive: true });
+    writeFileSync(file, HAND_AUTHORED_HEAD, "utf8");
+
+    expect(runHook(edit(file), { HOME: runtimeHome }).denied).toBe(false);
+  });
+});

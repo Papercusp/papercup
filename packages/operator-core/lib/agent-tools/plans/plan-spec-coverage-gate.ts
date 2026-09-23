@@ -36,15 +36,18 @@
  * so refusing on one would manufacture a false stale verdict.
  */
 import { listScorecards, settledGradingAuditIsCurrent, type ScorecardRow } from '../../scorecards';
-import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
+import {
+  isEnforceableSpecLifecycle,
+  listSpecClauses,
+  type SpecBehaviorClass,
+  type SpecClauseRevision,
+} from './spec-clauses-store';
 import { listSpecEvidence, type SpecEvidenceKind } from './spec-evidence-store';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF } from './spec-test-adequacy';
 import { enforcementEligibility } from './spec-enforcement-eligibility';
 import { listPlanStatuses, type PlanStatusReader } from './plan-status-read';
 
 /** Lifecycle states carrying an enforceable promise (D-012), mirrored from the resolver. */
-const ENFORCEABLE_LIFECYCLE = new Set(['accepted', 'active']);
-
 /**
  * The evidence census cap, pinned independently of any caller-supplied limit.
  *
@@ -322,10 +325,6 @@ function adequacySubjectRef(planSlug: string, specId: string, revision: number):
   return exact.length <= 200 ? exact : `${planSlug.slice(0, 120)}#${specId.slice(0, 60)}@${revision}`;
 }
 
-function isEnforceable(clause: SpecClauseRevision): boolean {
-  return ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus);
-}
-
 /**
  * Census the plan's current clauses against the evidence bound to them.
  *
@@ -342,7 +341,7 @@ export async function computePlanSpecCoverage(
   const listCards = deps.listCards ?? listScorecards;
 
   const clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
-  const enforceable = clauses.filter(isEnforceable);
+  const enforceable = clauses.filter((clause) => isEnforceableSpecLifecycle(clause.lifecycleStatus));
 
   // Genuinely single-plan: this is a census of ONE plan's own coverage, unlike the
   // work-item completion gate, whose contract spans namespaces.

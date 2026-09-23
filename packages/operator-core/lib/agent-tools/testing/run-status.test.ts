@@ -85,7 +85,7 @@ describe('detachedRecoveryHint durability gate', () => {
     expect(hint).toContain(`poll it with testing:run-status { runId: '${runId}' }`);
   });
 
-  it('withdraws the poll promise when the durable snapshot did not land', () => {
+  it('warns when the initial snapshot is not confirmed before the response deadline', () => {
     const hint = detachedRecoveryHint({ runId, durable: false });
 
     // The id is still surfaced — it stays readable from this process's map.
@@ -95,6 +95,8 @@ describe('detachedRecoveryHint durability gate', () => {
     expect(hint).not.toContain(`poll it with testing:run-status { runId: '${runId}' }`);
     expect(hint).toContain('unknown_run');
     expect(hint).toContain('NOT evidence the tests passed');
+    expect(hint).toContain('initial durable snapshot was NOT confirmed before the response deadline');
+    expect(hint).not.toContain('could NOT be written');
   });
 
   it('emits nothing when no detached recovery was started', () => {

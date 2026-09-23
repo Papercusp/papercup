@@ -19,7 +19,12 @@ import {
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
-import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
+import {
+  isEnforceableSpecLifecycle,
+  listSpecClauses,
+  type SpecBehaviorClass,
+  type SpecClauseRevision,
+} from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
@@ -887,7 +892,8 @@ export function projectAcceptanceBarContractSnapshot(
     const clauses = input.clauses.rows
       .filter((clause) => clause.sourceBar?.barKey === barKey)
       .sort((a, b) => a.specId.localeCompare(b.specId));
-    const clauseBehaviorClasses = [...new Set(clauses.map((clause) => clause.behaviorClass))];
+    const enforceableClauses = clauses.filter((clause) => isEnforceableSpecLifecycle(clause.lifecycleStatus));
+    const clauseBehaviorClasses = [...new Set(enforceableClauses.map((clause) => clause.behaviorClass))];
     const behaviorClass: SpecBehaviorClass | null = clauseBehaviorClasses.length === 1
       ? clauseBehaviorClasses[0]!
       : null;
@@ -908,9 +914,9 @@ export function projectAcceptanceBarContractSnapshot(
     const explicitlyManual =
       effectiveCriterionInstrumentKey(criterion) === 'none' &&
       (criterion.requiredTestLayers?.length ?? 0) === 0 &&
-      clauses.length > 0 &&
-      clauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
-    const automatedProofRequired = !explicitlyManual && (clauses.length === 0 || clauses.some((clause) =>
+      enforceableClauses.length > 0 &&
+      enforceableClauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
+    const automatedProofRequired = !explicitlyManual && (enforceableClauses.length === 0 || enforceableClauses.some((clause) =>
       clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
     ));
     const mappings = clauses.map((clause) => ({
@@ -943,7 +949,7 @@ export function projectAcceptanceBarContractSnapshot(
     );
     const activeEvidence = activeSpecEvidence(evidence);
     const currentEvidence = activeEvidence.filter((row) =>
-      clauses.some(
+      enforceableClauses.some(
         (clause) =>
           clause.specId === row.specId &&
           row.specRevision === clause.revision &&
@@ -962,7 +968,7 @@ export function projectAcceptanceBarContractSnapshot(
     // on the BAR's declared plane.
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
-    const adequacyChecks = requiredTestLayers.length === 0 ? [] : clauses.map((clause) => {
+    const adequacyChecks = requiredTestLayers.length === 0 ? [] : enforceableClauses.map((clause) => {
       // A clause may add proof obligations above its BAR's minimum. Keep those
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
@@ -1121,7 +1127,7 @@ export function projectAcceptanceBarContractSnapshot(
     if (mappingState === 'missing') addCode('bar_snapshot_mapping_missing');
     if (mappingState === 'dropped-only') addCode('bar_snapshot_mapping_dropped_only');
     if (
-      clauses.some(
+      enforceableClauses.some(
         (clause) =>
           clause.sourceBar?.barHash !== criterion.barHash ||
           clause.sourceBar?.barSetHash !== plan?.barSetHash ||
@@ -1168,7 +1174,7 @@ export function projectAcceptanceBarContractSnapshot(
       evidencePlane: criterion.evidencePlane ?? null,
       evidenceRuntime: resolveBarEvidenceRuntime(criterion),
       behaviorClass,
-      mutationRequired: clauses.some((clause) => clause.mutationRequired),
+      mutationRequired: enforceableClauses.some((clause) => clause.mutationRequired),
       automatedProofRequired,
       requiredTestLayers,
       passRatings: normalized(criterion.passRatings),

@@ -109,6 +109,12 @@ export interface HostedBrowserRouteDependencies {
     tx?: Sql,
   ) => Promise<StoredWorkspaceHostDestroyTarget | null>;
   readonly provisioningAvailable?: () => boolean;
+  /** The host the selected customer workspace is bound to, read under tenant RLS. */
+  readonly readBoundHostId?: (
+    controlPlaneWorkspaceId: string,
+    customerWorkspaceId: string,
+    tx?: Sql,
+  ) => Promise<string | null>;
   readonly startProvisioning?: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -330,6 +336,22 @@ function localConnectionRoute(
   });
 }
 
+async function readCustomerWorkspaceHostId(
+  controlPlaneWorkspaceId: string,
+  customerWorkspaceId: string,
+  tx?: Sql,
+): Promise<string | null> {
+  if (!tx) throw new Error('readCustomerWorkspaceHostId requires the tenant transaction');
+  const rows = await tx<Array<{ workspace_host_id: string }>>`
+    SELECT workspace_host_id
+      FROM harness_shared.customer_workspaces
+     WHERE workspace_id = ${controlPlaneWorkspaceId}
+       AND id = ${customerWorkspaceId}
+       AND state <> 'deleted'
+  `;
+  return rows[0]?.workspace_host_id ?? null;
+}
+
 function localProvisionRoute(
   config: HostedBrowserRouteConfiguration,
   principal: HostedPrincipal,
@@ -337,12 +359,22 @@ function localProvisionRoute(
   runTenant: HostedTenantContextRunner,
 ) {
   const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
+  const readBoundHostId = deps.readBoundHostId ?? readCustomerWorkspaceHostId;
   return createWorkspaceHostProvisionRoute({
     // Provisioning writes the same control-plane-keyed host graph.  The
     // selected tenant is enforced by the transaction/RLS context, not by
     // trusting a browser-supplied workspace id.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
     provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
+    // One workspace, one host (D-397): a customer may (re)provision only the host its
+    // selected workspace is bound to — never mint another, never name someone else's.
+    authorizeHost: async (hostId) => {
+      const customerWorkspaceId = principal.selectedWorkspaceId;
+      if (!customerWorkspaceId) return false;
+      const bound = await wrapTenantRead(principal, runTenant, (tx) =>
+        readBoundHostId(config.controlPlaneWorkspaceId, customerWorkspaceId, tx));
+      return bound === hostId;
+    },
     readConnection: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
     startProvisioning: (input) =>

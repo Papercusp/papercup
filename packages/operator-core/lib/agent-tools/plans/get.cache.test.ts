@@ -235,7 +235,7 @@ beforeEach(async () => {
   M.previewPlanStartConsult.mockClear();
   M.previewPlanStartConsult.mockResolvedValue({
     outcome: 'proceed',
-    verdict: 'no_live_responder',
+    verdict: 'all_responders_paused',
   });
   M.history.mockClear();
   M.historyRefs.mockClear();
@@ -438,7 +438,7 @@ describe('plans:get — cache wiring', () => {
 
     expect(first.results[0]).toMatchObject({
       activationReadiness: {
-        consult: { outcome: 'proceed', verdict: 'no_live_responder' },
+        consult: { outcome: 'proceed', verdict: 'all_responders_paused' },
       },
     });
     expect(M.previewPlanStartConsult).toHaveBeenCalledWith({

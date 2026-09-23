@@ -1547,7 +1547,7 @@ describe('ptool JSON input', () => {
     }
 
     expect(parseError).toBeInstanceOf(SyntaxError);
-    expect(formatJsonInputError('stdin', parseError)).toContain('double each one');
+    expect(formatJsonInputError('stdin', parseError)).toContain('doubling each one');
     expect(formatJsonInputError('stdin', parseError)).toContain('JSON.stringify');
     expect(parseJsonInput('{"command":"find \\\\( -name \\\\)"}'))
       .toEqual({ command: 'find \\( -name \\)' });

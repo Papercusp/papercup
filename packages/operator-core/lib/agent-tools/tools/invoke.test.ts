@@ -125,6 +125,26 @@ describe('tools:invoke handler', () => {
     expect(metadata).toHaveBeenCalledWith({ effectiveStatus: 'ok', childFailureCount: 0 });
   });
 
+  it('requests full target payloads for in-script re-dispatches', async () => {
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+    await def.handler(
+      { name: 'plans:get', args: { slug: 'example' } },
+      { codeMode: true, dispatchTool },
+    );
+
+    expect(dispatchTool).toHaveBeenCalledWith('plans:get', { slug: 'example', payloadTier: 'full' });
+  });
+
+  it('preserves an explicit target payloadTier in in-script re-dispatches', async () => {
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+    await def.handler(
+      { name: 'plans:get', args: { slug: 'example', payloadTier: 'trimmed' } },
+      { codeMode: true, dispatchTool },
+    );
+
+    expect(dispatchTool).toHaveBeenCalledWith('plans:get', { slug: 'example', payloadTier: 'trimmed' });
+  });
+
   it('defaults args to {} when omitted', async () => {
     const seen: unknown[] = [];
     const ctx = { dispatchTool: async (_n: string, a: unknown) => { seen.push(a); return { content: [] }; } };

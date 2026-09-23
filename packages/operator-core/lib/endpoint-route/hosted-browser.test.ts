@@ -267,6 +267,57 @@ describe('hosted browser route boundary', () => {
     ]);
   });
 
+  it('provisions only the host the selected workspace is bound to (D-397)', async () => {
+    const tenantCalls: Array<{ selectedWorkspaceId?: string }> = [];
+    const readBoundHostId = vi.fn(async (
+      controlPlaneWorkspaceId: string,
+      customerWorkspaceId: string,
+      tx?: Sql,
+    ): Promise<string | null> => {
+      expect(controlPlaneWorkspaceId).toBe(CONTROL_PLANE_WORKSPACE);
+      expect(customerWorkspaceId).toBe(SELECTED_WORKSPACE);
+      expect(tx).toBe(fakeSql);
+      return 'host-bound';
+    });
+    const startProvisioning = vi.fn();
+    const readConnection = vi.fn(async () => null);
+    const provision = (provisioningAvailable: boolean, hostId: string) => routeHandler(createHostedBrowserRoutes({
+      publicOrigin: ORIGIN,
+      controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: {
+        runTenant: tenantRunner(tenantCalls),
+        readBoundHostId,
+        readConnection,
+        provisioningAvailable: () => provisioningAvailable,
+        startProvisioning: startProvisioning as never,
+      },
+    }).routes, '/hosted/browser/workspace-hosts/provision')(
+      new Request(`${ORIGIN}/api/hosted/browser/workspace-hosts/provision`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ connectionId: 'gcp:connection', desired: { hostId, target: 'gcp' } }),
+      }),
+      context(),
+    );
+
+    // Another host — a fresh id or another tenant's — is refused BEFORE the controller forward
+    // that an unavailable local provisioner would otherwise take with the body as-is.
+    const minted = await provision(false, 'host-minted-by-caller');
+    expect(minted.status).toBe(403);
+    await expect(minted.json()).resolves.toMatchObject({ error: 'workspace_host_not_bound' });
+
+    // The bound host passes authorization and reaches the connection check.
+    const bound = await provision(true, 'host-bound');
+    expect(bound.status).toBe(404);
+    expect(readConnection).toHaveBeenCalledTimes(1);
+    expect(startProvisioning).not.toHaveBeenCalled();
+    expect(tenantCalls.every((call) => call.selectedWorkspaceId === SELECTED_WORKSPACE)).toBe(true);
+
+    // No live binding at all (deleted workspace) authorizes nothing.
+    readBoundHostId.mockResolvedValueOnce(null);
+    expect((await provision(true, 'host-bound')).status).toBe(403);
+  });
+
   it('forwards only tenant-safe invalidations over SSE and strips row payloads', async () => {
     let emit: ((event: SyncEvent) => void) | undefined;
     const close = vi.fn();

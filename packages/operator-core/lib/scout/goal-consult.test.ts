@@ -112,7 +112,7 @@ describe('buildGoalFeedbackConsultPort', () => {
         state: 'no_qualified_responder',
         responder: null,
         responder_via: null,
-        reason: 'no_live_responder',
+        reason: 'below_floor',
         wake: { attempted: false, queued: 0, woke: 0, pickupConfirmed: false },
       }),
     )({ proposal: proposal() });

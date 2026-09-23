@@ -1938,9 +1938,11 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
       answeringOwnerId: 'dead-x-fork',
     });
     expect(sel?.selected?.[0]?.revived).toBeUndefined();
-    // The below-floor fill stays on the menu behind the above-floor head.
-    expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low' });
-    expect(res.remaining_candidates[0]?.ownerId).toBe('live-low');
+    // …and the LIVE below-floor candidate is not on the menu at all: the dead
+    // above-floor expert already filled min:1, so no minimum fill fired. Being
+    // alive bought it nothing — which is the R-2 claim stated as an absence.
+    expect(sel?.selected).toHaveLength(1);
+    expect(res.remaining_candidates).toEqual([]);
   });
 
   it('a parked expert is dispatched exactly like a live one — parked is not a selection signal either', async () => {

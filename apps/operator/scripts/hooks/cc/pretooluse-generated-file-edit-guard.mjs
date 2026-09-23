@@ -2,10 +2,10 @@
 // apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs
 //
 // PreToolUse file-writer BLOCKING guard: refuse a hand-edit to a file
-// that DECLARES ITSELF GENERATED in its own header, or to the canonical tracked
-// internal-docs build mirror whose older artifacts lack that declaration. Plan
-// claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule that
-// already governs prompts — "edit the source, never the rendered output".
+// that DECLARES ITSELF GENERATED in its own header, to the canonical tracked
+// internal-docs build mirror, or to an installed Claude/Codex hook runtime copy.
+// Plan claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule
+// that already governs prompts — "edit the source, never the rendered output".
 //
 // WHY
 //   Once CLAUDE.md / AGENTS.md are projected from Postgres
@@ -28,12 +28,12 @@
 //   There is no flag day and no ordering hazard, and a NEW generated file is
 //   protected for free the moment it carries a banner. Files opt IN.
 //
-//   There is one deliberately narrower exception: every existing file beneath
-//   `apps/operator/public/internal/docs` is a git-tracked BUILD MIRROR, but most
-//   predate the marker convention. The canonical source lives under
-//   `apps/operator-docs/src/content/docs` or in the docs datastore (`docs:author`).
-//   That tree is protected by realpath containment, not a lexical substring, so
-//   an unrelated temp path containing the same words is never denied.
+//   There are deliberately narrower path-scoped exceptions. Every existing file
+//   beneath `apps/operator/public/internal/docs` is a git-tracked BUILD MIRROR,
+//   and `~/.papercusp/hooks/cc` contains installed runtime copies that are
+//   refreshed from `apps/operator/scripts/hooks/cc`. Neither necessarily carries
+//   a generated-file marker. These trees are protected by realpath containment,
+//   not lexical substrings, so lookalike paths are never denied.
 //
 // WHAT COUNTS AS THE MARKER (measured, not assumed)
 //   A line within the first 10 lines / 4096 bytes that contains BOTH a
@@ -115,7 +115,15 @@
 //     on failure; mirrors pretooluse-secrets-guard.mjs's own flag.
 //
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
@@ -176,6 +184,8 @@ async function main() {
     if (!isFileWritingTool(tool)) return done();
     if (bypassed()) return done();
     for (const filePath of targetPathsForTool(tool, hook.tool_input)) {
+      if (isPapercuspCcHookRuntimeMirror(filePath))
+        return denyPapercuspCcHookRuntimeMirror(filePath, tool);
       if (isInternalDocsMirror(filePath))
         return denyInternalDocsMirror(filePath, tool);
       const marker = findGeneratedMarker(readHead(filePath));
@@ -321,6 +331,36 @@ export function isInternalDocsMirror(filePath) {
   }
 }
 
+export function isPapercuspCcHookRuntimeMirror(filePath) {
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) return false;
+    const runtimeDir = realpathSync(join(home, ".papercusp", "hooks", "cc"));
+    const expandedPath =
+      filePath === "~"
+        ? home
+        : filePath.startsWith("~/") || filePath.startsWith("~\\")
+          ? join(home, filePath.slice(2))
+          : filePath;
+    const absolutePath = resolve(expandedPath);
+    let target;
+    try {
+      target = realpathSync(absolutePath);
+    } catch {
+      target = resolve(realpathSync(dirname(absolutePath)), basename(absolutePath));
+    }
+    const rel = relative(runtimeDir, target);
+    return Boolean(
+      rel &&
+        !isAbsolute(rel) &&
+        rel !== ".." &&
+        !rel.startsWith(`..${sep}`),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function denyGenerated(filePath, marker, tool) {
   const base = filePath.split(/[/\\]/).pop();
   const reason =
@@ -347,6 +387,17 @@ function denyInternalDocsMirror(filePath, tool) {
     `internal docs site. Never hand-edit the mirror.\n\n` +
     `${SCRATCH_REMEDY} Or relaunch with ${BYPASS_ENV}=1 to downgrade this guard to a warning ` +
     `for the session.`;
+  deny(reason);
+}
+
+function denyPapercuspCcHookRuntimeMirror(filePath, tool) {
+  const base = filePath.split(/[/\\]/).pop();
+  const reason =
+    `🛑 generated-file-edit-guard (EI-19917150867390319): ${base} is an installed ` +
+    `runtime copy under \`~/.papercusp/hooks/cc\`. This ${tool} would edit the ` +
+    `deployed mirror, which Papercusp refreshes from the repository and can silently erase.\n\n` +
+    `Edit the canonical source \`apps/operator/scripts/hooks/cc/${base}\` in the ` +
+    `papercusp staging checkout instead; the hook installer propagates that source.`;
   deny(reason);
 }
 

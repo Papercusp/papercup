@@ -327,3 +327,86 @@ Root cause [inferred from code and timing, test not yet written]: each submodule
 | 17 | `rubrics:amend` dry run reports **carried** and **invalidated** proof separately, and lists the cards that will need re-emission | the mis-sized proof cycle I planned from the preview | same amendment semantics |
 | 18 | Nested git-sync installs map live-lock paths into their own repo root (`mapLiveLockHoldingsForRepo(rows, <install prefix>)`), with a test on a nested-install fixture; keep per-tick exclusion history, not only the latest tick | committed mutants and half-edits in every submodule, including migrations | same whole-tree sweep |
 | 19 | Seed-time contract check: each `check.files` entry must be able to satisfy each declared `requiredTestLayers` layer | silent layer/check mismatches that surface only at vetting | same contract fields |
+
+# Fifth audit, independent: PROGRAM-level waste (su-e3d58938)
+
+Author: su-e3d58938, 2026-09-23 04:25–04:55Z. Requested by Avi (owner, interactive): *"this is taking a very long time audit your sessions including from prior epochs. What is taking up all the time? is it useful. And then come up with a plan for improving our system..."* (directive #263), then *"integrate your own findings into the plan and report"* (#274/#275). Recorded as plan decision `review-system-rework-reduction-2026-09-23#D-004`.
+
+**Different subject, so agreement counts as corroboration.** Audits 1–4 each measure one plan's acceptance cycle. This one measures a whole program: `ship-main-greening-program-2026-09-15`, 8 days (09-15 to 09-23) and 13 agents, plus this session's own three carry epochs. It was measured before I read audits 1–4.
+
+## Sources
+
+- `harness_shared.tool_invocations`: workspace `papercusp-workspace`, `call_origin='agent'`, `invoked_at >= 2026-09-15`, `goal_ref` in the program's work items (`source_plan_slug` = the program, plus `WI-10002581`). **11,854 calls, 13 agents, 111 distinct active hours.**
+- `harness_shared.session_turn_parts` (`workspace_id='default'`): per-owner gaps between consecutive parts, with gaps under 2 minutes counted as active.
+- These are floors. Native Edit/Read/Bash (about 60% of tool use) writes no `tool_invocations` row, and the categories below are by tool, not by purpose.
+
+## Where the program's calls went
+
+| category (by tool) | calls | share |
+|---|---|---|
+| generic exec (`capability:bash`, `code:run`, `tools:invoke`) | 4,958 | 42% |
+| coordination and carry (`coord:*`, `loop:*`, checkpoints, claims) | 2,895 | 24% |
+| read and orient (`plans:get`, `work_items:get`, `dev:pg_query`, `tools:find`, …) | 2,068 | 17% |
+| other | 949 | 8% |
+| acceptance ceremony (`rubrics:*`, `scorecards:*`, audits, `set-plan-status`) | 480 | 4% |
+| gate / pipeline | 353 | 3% |
+| implementation / test tools | 154 | 1% |
+
+- **Failed calls:** 1,016 (8.6%). By class: `invalid_input` 322, `handler_error` 297, `checkpoint_merge_would_evict_rows` 94, `authorization_denied` 46, SQL column guesses 29+.
+- **Wall-clock across the 13 agents:** 78 h active, 52 h in 232 gaps of 2–60 minutes, 222 h in gaps over an hour.
+- **This session's own chain (4h15m):** about 106 min active and 153 min idle, including a 51 min and a 72 min gap with nothing queued. About 20 minutes went to backstopping a dark leader.
+
+## Independently confirmed
+
+- **Proof churn and amendment cost (audits 1–3).** The program's rubric is at rev 12. There were 16 applied amendments across 6 program rubrics, and program D-007 records an amendment that invalidated a complete acceptance chain. `rubrics:amend` failed 44 of 106 calls (41%) on this program; the fleet figure is 32% (P-017).
+- **Silent consults (P-015).** The prior `WI-10002581` holder routed a consult to su-ce0b634c (`conv-mudke8ka…`); it went unanswered.
+- **Wake loops (P-013/P-024 family).** Finding 3 below is a third shape of the same family.
+
+## New finding 1 — work continues after a scope decision makes it moot (largest share)
+
+3,474 calls (29% of the program) went to three items later dropped as moot: P-022 (1,840), P-012 (984) and P-021 (650). The owner-approved consolidation D-019 (09-19) superseded their subject plans, so those "Ship <plan>" items could never finish. P-022's calls all fall on 09-21 and 09-22, after D-019; D-040/D-041 noticed on 09-22. For P-012 and P-021 I did not separate the calls made before D-019 from those after it. Nothing links a carrier item to the plan it ships, so superseding the subject plan notifies nobody. → **P-030**.
+
+## New finding 2 — acceptance BARs silently become impossible after a scope decision
+
+These BARs were complete when written and became false later, so seed-time checks (P-003/P-029) cannot catch them.
+
+- **R-1** required all ten in-scope plans shipped. D-019 made that impossible on 09-19, but it surfaced only at the 09-23 ship attempt. Program D-026 (09-22) re-worded R-1 and kept the impossible clause.
+- **R-4** ("the program never touches the live gate") was breached three times. One breach was undisclosed until program D-049: a confirmed `release:deploy op=force` on 09-17 at 21:12:47Z by su-a604a73a (`goal_ref WI-10001488`), recovering outage EI-23538941588991674.
+
+Readiness is evaluated only at ship. → **P-031**.
+
+## New finding 3 — cold-loop fires park without resume while reporting `rewakeGuaranteed:true`
+
+The program leader, su-2bee6ccf, re-armed at 03:55:04Z and got `rewakeGuaranteed:true`. Its next fire (04:05:31Z) parked with *"eligible cold loop wake has no injectable psu host"*; the same happened at 03:33Z. Both times only a direct `coord:send` wake revived it, and it then handed its item over rather than risk going dark again. This differs from P-013 (dead sessions) and P-024 (a loop firing while its session waits on an await): the session is alive and wants the wake, and the wake never lands. EI-24023838400909760. → **P-033**.
+
+## New finding 4 — non-actionable wakes cost full turns
+
+In this session's chain, 3 of 7 inbox-wake turns had nothing to act on: an auto-resolved alert for an item the session itself had closed, a plan event with no state change (todo→todo), and a message already read. → **P-034**.
+
+## New finding 5 — how-to knowledge is lost at handoff
+
+The prior `WI-10002581` holder concluded that no BAR-amendment verb existed after 3 `tools:find` calls, although the same program had used `rubrics:amend` in D-024/D-025/D-026. `tools:find` was called 415 times on the program. → **P-035**.
+
+## New finding 6 — one session can close another session's owner directive
+
+Avi pasted one message into 6 sessions, the way these audits were requested. Closing its own copy by text match, su-e3d58938 closed all six, five of them belonging to sessions that had not yet answered. There was no warning and there is no reopen verb; I reverted by guarded SQL within about 90 seconds and verified via `orders:list`. EI-24026089914526674. → **P-036**.
+
+## Is the time useful?
+
+Partly. The gate-lane fixes, the completed ships and the integrity findings (D-049) were useful. Findings 1, 3, 4 and 5, plus the retry share of failed calls, were not: roughly a third of calls, and most of the idle wall-clock.
+
+## Correction
+
+My first report to Avi said the program's criteria were "reworded 106 times". That was 106 `rubrics:amend` calls: 16 applied, 66 dry-run previews and 44 failures. It is not the same population as this report's fleet-wide "106 amendments across 57 plans"; the match is a coincidence.
+
+## Added improvements
+
+| # | change | removes | functionality kept |
+|---|---|---|---|
+| 20 | Supersede cascade: superseding or consolidating a plan parks every non-terminal "Ship <plan>" carrier item elsewhere, notifies its holder and raises a repair obligation (P-030) | work on items a scope decision already made moot (29% of this program's calls) | items are parked with a pointer, not dropped; dropping stays a recorded decision |
+| 21 | Re-evaluate BAR readiness on every scope write and surface blocking codes in Now/orient (P-031) | impossible BARs found days late, at ship | same evaluator and codes, run earlier |
+| 22 | A parked cold-loop fire falls back to the inbox-wake path, and `rewakeGuaranteed` is false when the last fire parked (P-033) | holders going dark, and backstop agents | same loop semantics |
+| 23 | Non-actionable inbox wakes land in the inbox without starting a turn; directed asks and owner directives always wake (P-034) | no-op turns | nothing dropped: still in the inbox |
+| 24 | The handoff brief lists the mutating verbs that succeeded on the item's plan (P-035) | rediscovery and false "no such verb" conclusions | extends the existing `priorAttemptBrief` |
+| 25 | `orders:disposition` refuses to close another live session's directive without `force`; add `orders:reopen`; `orders:list mine:true` (P-036) | wrong-session closes when one message is pasted to many sessions | each session still closes its own |
+| 26 | Per-plan efficiency read, then before/after on the next two ships (P-032) | audits like this one needing 30+ ad-hoc queries | read-only |

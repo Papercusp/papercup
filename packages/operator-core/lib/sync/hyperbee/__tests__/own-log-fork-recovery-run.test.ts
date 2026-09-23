@@ -62,7 +62,9 @@ function deps(over: Partial<RunOwnLogForkRecoveryDeps> = {}) {
 }
 
 const STORE = harnessStorePath({ workspaceRoot: ROOT, harnessSlug: HS });
-const RETIRE_TO = `${STORE}.forked-f417b935852a-2026-09-23T04-10-00-000Z`;
+// WI-10002600: the FULL forked key, because boot reads it back from this name
+// to announce the old log as superseded.
+const RETIRE_TO = `${STORE}.forked-f417b935852af51e7bdf676effa8a29f59e7db23413690521c5d39810e8c087a-2026-09-23T04-10-00-000Z`;
 
 describe('runOwnLogForkRecovery — dry run is the default', () => {
   it('without confirm it reports the plan and touches nothing, even when every precondition holds', async () => {

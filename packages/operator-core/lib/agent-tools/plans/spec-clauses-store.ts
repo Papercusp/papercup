@@ -21,6 +21,10 @@ export type SpecBehaviorClass = (typeof SPEC_BEHAVIOR_CLASSES)[number];
 export const SPEC_LIFECYCLE_STATUSES = ['draft', 'accepted', 'active', 'superseded', 'exempt', 'retired'] as const;
 export type SpecLifecycleStatus = (typeof SPEC_LIFECYCLE_STATUSES)[number];
 
+export function isEnforceableSpecLifecycle(status: SpecLifecycleStatus): boolean {
+  return status === 'accepted' || status === 'active';
+}
+
 /** Stable ids shared by canonical spec obligations and immutable evidence bindings. */
 export const SPEC_PROOF_OBLIGATION_ID_RE = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
 export const SPEC_CAUSAL_PAIRING_MODES = ['one-to-one'] as const;

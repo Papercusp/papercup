@@ -2340,7 +2340,7 @@ describe('failure reporting', () => {
     );
   });
 
-  it('reports a failed spawn as an error rather than a silent success', async () => {
+  it('returns machine-readable per-member failure details when a spawn fails', async () => {
     spawnConsoleMock.mockResolvedValue({
       status: 'error',
       code: 501,
@@ -2349,5 +2349,16 @@ describe('failure reporting', () => {
     const res = await launchAgent.handler({ brief: 'x' }, ctx);
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('launch failed (501): no desktop session');
+    expect(dataOf(res)?.launch).toMatchObject({
+      opened: 0,
+      failed: 1,
+      failures: [
+        {
+          memberIndex: 0,
+          code: 501,
+          reason: 'no desktop session',
+        },
+      ],
+    });
   });
 });

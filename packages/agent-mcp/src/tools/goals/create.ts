@@ -70,7 +70,7 @@ export default defineTool({
     returns:
       'On success: { id, title, status, kill_criterion, budget_cents, tripwires, workspace_id, mode_subject_stamped, mode_subject_advisory?, kickoff_consult? }. ' +
       'For a caller with an ACTIVE GOAL-mode row, the goal-kickoff CHECKPOINT consult (min:1) runs first: the goal outline (outcome + kill criterion) is routed through the relevance router, and any selectable live peer refuses ONCE with data { error: "consult_available", candidates, selection, hint } — the goal is NOT created; re-call with consulted: true/false + consult_reason (a nudge, never a gate; any infra fault proceeds). ' +
-      'Non-GOAL-mode callers (owner UI confirm cards, scripts) are never consulted. `kickoff_consult` records the disposition (override reason, no_live_responder, or routed_dead_context + transcript excerpts).',
+      'Non-GOAL-mode callers (owner UI confirm cards, scripts) are never consulted. `kickoff_consult` records the disposition (override reason, all_responders_paused, or routed_paused_context + transcript excerpts).',
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],

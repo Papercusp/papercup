@@ -1741,6 +1741,18 @@ export default defineTool({
 
     const opened = results.filter((r) => r.status === 'ok');
     const failed = results.filter((r) => r.status !== 'ok');
+    const failures = results.flatMap((result, memberIndex) =>
+      result.status === 'error'
+        ? [
+            {
+              memberIndex,
+              label: memberLabels[memberIndex],
+              code: result.code,
+              reason: result.error,
+            },
+          ]
+        : [],
+    );
     const openedOwnerIds = results.flatMap((result, i) =>
       result.status === 'ok' && memberOwnerIds[i] ? [memberOwnerIds[i]] : [],
     );
@@ -2091,6 +2103,7 @@ export default defineTool({
       deduped: false,
       opened: opened.length,
       failed: failed.length,
+      failures,
       partial: partialLaunch,
       command,
       fleet: fleetSlug,

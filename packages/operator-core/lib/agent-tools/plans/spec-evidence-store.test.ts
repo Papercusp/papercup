@@ -6,6 +6,7 @@ import { join } from 'node:path';
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   scorecardRows: [] as Array<Record<string, unknown>>,
+  queries: [] as Array<{ sql: string; values: unknown[] }>,
   measurementRoot: '',
 }));
 
@@ -14,8 +15,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return {
     ...actual,
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
-      const tx = ((strings: TemplateStringsArray | string[]) => {
+      const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
+        h.queries.push({ sql, values });
         return Promise.resolve(sql.includes('provisional') ? h.scorecardRows : h.rows);
       }) as unknown;
       return fn(tx);
@@ -258,6 +260,7 @@ describe('listSpecEvidence timestamp normalization', () => {
   beforeEach(() => {
     h.rows = [];
     h.scorecardRows = [];
+    h.queries = [];
   });
 
   it('accepts PostgreSQL timestamp strings instead of assuming Date instances', async () => {
@@ -626,6 +629,51 @@ describe('listSpecEvidence timestamp normalization', () => {
         unknownReasons: [],
       },
     });
+  });
+
+  it('pins a multi-clause replay by each row’s full clause identity', async () => {
+    const current = [
+      {
+        planSlug: 'plan-one',
+        specId: 'SPEC-001-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'vitest:one',
+        sourceFingerprint: 'git:one',
+        testFingerprint: 'sha256:test-one',
+      },
+      {
+        planSlug: 'plan-two',
+        specId: 'SPEC-002-01',
+        specRevision: 4,
+        specFingerprint: 'sha256:spec-v4',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'vitest:two',
+        sourceFingerprint: 'git:two',
+        testFingerprint: 'sha256:test-two',
+      },
+    ];
+
+    await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one', 'plan-two'],
+      specIds: ['SPEC-001-01', 'SPEC-002-01'],
+      replaySnapshot: true,
+      current,
+    });
+
+    const pinQuery = h.queries.find(({ sql }) => sql.includes('unnest('));
+    expect(pinQuery?.sql).toContain('requested.plan_slug = b.plan_slug');
+    expect(pinQuery?.sql).toContain('requested.spec_id = b.spec_id');
+    expect(pinQuery?.sql).toContain('requested.spec_revision = b.spec_revision');
+    expect(pinQuery?.sql).toContain('requested.spec_fingerprint = b.spec_fingerprint');
+    expect(pinQuery?.values).toEqual([
+      ['plan-one', 'plan-two'],
+      ['SPEC-001-01', 'SPEC-002-01'],
+      [1, 4],
+      ['sha256:spec-v1', 'sha256:spec-v4'],
+    ]);
   });
 
   it('surfaces provisional scorecard proof bases on the returned binding row', async () => {

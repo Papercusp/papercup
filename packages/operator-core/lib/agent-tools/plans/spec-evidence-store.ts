@@ -1168,16 +1168,64 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const includeRetracted = options.includeRetracted === true;
   const specRevision = options.specRevision;
   const specFingerprint = options.specFingerprint;
+  const replayCurrent = options.current ?? [];
+  // Completion gates can span several clauses, while each scorecard rerun recipe pins one.
+  // For a multi-clause replay, current[] already carries the exact tuple per evidence row;
+  // preserve those tuples instead of applying one scalar fingerprint to every clause.
+  const replayCurrentHasFullClauseIdentity = replayCurrent.length > 0 && replayCurrent.every(
+    (current) =>
+      typeof current.planSlug === 'string' && current.planSlug.trim() !== '' &&
+      typeof current.specId === 'string' && current.specId.trim() !== '' &&
+      current.specRevision !== undefined &&
+      typeof current.specFingerprint === 'string' && current.specFingerprint.trim() !== '',
+  );
+  const replayClausePins = replayCurrentHasFullClauseIdentity
+    ? [...new Map(replayCurrent.map((current) => {
+        const pin = {
+          planSlug: current.planSlug!,
+          specId: current.specId!,
+          specRevision: current.specRevision!,
+          specFingerprint: current.specFingerprint!,
+        };
+        return [JSON.stringify(pin), pin] as const;
+      })).values()]
+    : [];
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => {
-      const specIsCurrent =
-        options.replaySnapshot && specRevision !== undefined
-          ? tx`(
-              b.spec_revision = ${specRevision}
-              AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
-            )`
-          : tx`(b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash)`;
+      const replayClausePinMatch = replayClausePins.length > 0
+        ? tx`EXISTS (
+            SELECT 1
+              FROM unnest(
+                ${replayClausePins.map((pin) => pin.planSlug)}::text[],
+                ${replayClausePins.map((pin) => pin.specId)}::text[],
+                ${replayClausePins.map((pin) => pin.specRevision)}::int[],
+                ${replayClausePins.map((pin) => pin.specFingerprint)}::text[]
+              ) AS requested(plan_slug, spec_id, spec_revision, spec_fingerprint)
+             WHERE requested.plan_slug = b.plan_slug
+               AND requested.spec_id = b.spec_id
+               AND requested.spec_revision = b.spec_revision
+               AND requested.spec_fingerprint = b.spec_fingerprint
+          )`
+        : undefined;
+      const replaySinglePinMatch = specRevision !== undefined
+        ? tx`(
+            b.spec_revision = ${specRevision}
+            AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
+          )`
+        : undefined;
+      const replaySnapshotMatch = options.replaySnapshot
+        ? replaySinglePinMatch ?? replayClausePinMatch ?? tx`FALSE`
+        : tx`TRUE`;
+      const evidenceClauseFilter = options.replaySnapshot
+        ? replaySnapshotMatch
+        : tx`(
+            (${specRevision ?? null}::int IS NULL OR b.spec_revision = ${specRevision ?? null})
+            AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
+          )`;
+      const specIsCurrent = options.replaySnapshot
+        ? replaySnapshotMatch
+        : tx`(b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash)`;
       const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
@@ -1209,8 +1257,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
      WHERE b.workspace_id = ${scope.workspaceId}
        AND b.harness_slug = ${scope.harnessSlug}
        AND b.plan_slug = ANY(${planSlugs}::text[])
-       AND (${specRevision ?? null}::int IS NULL OR b.spec_revision = ${specRevision ?? null})
-       AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
+       AND ${evidenceClauseFilter}
        AND (${workItemIds.length} = 0 OR b.work_item_id = ANY(${workItemIds}::text[]))
        AND (${specIds.length} = 0 OR b.spec_id = ANY(${specIds}::text[]))
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))

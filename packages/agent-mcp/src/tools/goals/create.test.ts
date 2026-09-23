@@ -643,13 +643,16 @@ describe('goals:create — the GOAL-mode kickoff consult (P-010)', () => {
     expect(goalKickoffConsultMock).not.toHaveBeenCalled();
   });
 
-  it('routed_dead_context annotates the create with excerpts instead of refusing', async () => {
+  it('routed_paused_context annotates the create with excerpts instead of refusing', async () => {
     callerInGoalMode = true;
+    // The owner-pause gate is what emptied the selection — note the candidate is
+    // LIVE. Since D-002 a dead session is dispatchable (fork/convert), so
+    // deadness could not produce this branch; only a paused owner can.
     goalKickoffConsultMock.mockResolvedValue({
       outcome: 'proceed_with_excerpts',
-      candidates: [peer('su-dead', 'ended')],
+      candidates: [peer('su-paused', 'live')],
       excerpts: [
-        { ownerId: 'su-dead', session_id: 's-su-dead', turn_idx: 1, ts: null, sim: 0.6, excerpt: 'I tried this…' },
+        { ownerId: 'su-paused', session_id: 's-su-paused', turn_idx: 1, ts: null, sim: 0.6, excerpt: 'I tried this…' },
       ],
     });
     const res = await call(ARGS(), CTX());
@@ -658,20 +661,20 @@ describe('goals:create — the GOAL-mode kickoff consult (P-010)', () => {
       kickoff_consult?: { verdict: string; excerpts: unknown[]; candidates: Array<{ ownerId: string }> };
     };
     expect(data.id).toBeTruthy();
-    expect(data.kickoff_consult?.verdict).toBe('routed_dead_context');
+    expect(data.kickoff_consult?.verdict).toBe('routed_paused_context');
     expect(data.kickoff_consult?.excerpts).toHaveLength(1);
     expect(data.kickoff_consult?.candidates).toEqual([
-      expect.objectContaining({ ownerId: 'su-dead', liveness: 'ended' }),
+      expect.objectContaining({ ownerId: 'su-paused', liveness: 'live' }),
     ]);
   });
 
-  it('no_live_responder is recorded honestly on the created goal', async () => {
+  it('all_responders_paused is recorded honestly on the created goal', async () => {
     callerInGoalMode = true;
-    goalKickoffConsultMock.mockResolvedValue({ outcome: 'proceed', verdict: 'no_live_responder' });
+    goalKickoffConsultMock.mockResolvedValue({ outcome: 'proceed', verdict: 'all_responders_paused' });
     const res = await call(ARGS(), CTX());
     const data = res.data as { id: string; kickoff_consult?: { verdict: string } };
     expect(data.id).toBeTruthy();
-    expect(data.kickoff_consult?.verdict).toBe('no_live_responder');
+    expect(data.kickoff_consult?.verdict).toBe('all_responders_paused');
   });
 
   it('the silent verdict (no_qualified_responder) stays silent — no kickoff_consult clutter', async () => {

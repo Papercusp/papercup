@@ -60,6 +60,7 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   peer_capped: true,
   peer_revoked: true,
   peer_unrevoked: true,
+  peer_log_superseded: true,
   replication_stalled: true,
   replication_frozen: true,
   announce_admitted: true,

@@ -285,10 +285,11 @@ export interface ResponderSelectionParams {
   min: number;
   /** Hard cap on the selected set (the cascade menu). */
   max: number;
-  /** Caller-owned selectability gate (the consult layer passes its liveness
-   * gate). A candidate failing it is skipped for BOTH floor picks and fills —
-   * a minimum that can only be filled by the unreachable stays unfilled
-   * (honest no_live_responder beats a dead pick). */
+  /** Caller-owned selectability gate (the consult layer passes its OWNER-PAUSE
+   * gate — never a liveness one: D-002 dispatch forks or converts a transcript,
+   * so a dead session is selectable). A candidate failing it is skipped for
+   * BOTH floor picks and fills — a minimum that can only be filled by the
+   * genuinely unusable stays unfilled, and the caller says so honestly. */
   isSelectable?: (c: RoutingCandidate) => boolean;
 }
 

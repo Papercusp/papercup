@@ -182,15 +182,14 @@ function detachedRunStatusHint(runId: string): string {
 }
 
 /**
- * A detached run whose durable snapshot did not land is readable ONLY from this
- * process's in-memory map, and only until it restarts — which is routine here.
- * Say so plainly rather than promising a poll that can answer `unknown_run`,
- * because the caller must never read that as "the tests passed".
+ * A detached run whose initial snapshot was not confirmed within the response
+ * budget may be visible only on its owner worker until a later snapshot write
+ * succeeds. Avoid promising that status will be available immediately.
  */
 function detachedRunUndurableHint(runId: string): string {
   return (
-    `started detached recovery run ${runId}, but its durable snapshot could NOT be written, so ` +
-    `testing:run-status { runId: '${runId}' } may answer unknown_run — which is NOT evidence the tests passed. ` +
+    `started detached recovery run ${runId}, but its initial durable snapshot was NOT confirmed before the response deadline. ` +
+    `testing:run-status { runId: '${runId}' } may answer unknown_run if no shared snapshot is available — which is NOT evidence the tests passed. ` +
     'Prefer the detached fallback below. '
   );
 }

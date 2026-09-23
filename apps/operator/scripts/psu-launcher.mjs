@@ -13476,9 +13476,9 @@ export async function tryRematerializeFromArchive(
     operatorUrl = OPERATOR_URL,
     token = null,
     timeoutMs = 10_000,
-    statusTimeoutMs = 2_000,
-    statusAttempts = 3,
-    statusDelayMs = 150,
+    statusTimeoutMs = 1_000,
+    statusAttempts = 10,
+    statusDelayMs = 250,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = {},
 ) {
@@ -13564,7 +13564,7 @@ async function pollArchiveRematerializeStatus(
   if (sourceKind) query.set("sourceKind", sourceKind);
   const url = `${operatorUrl}/api/adv/sessions/rematerialize/status?${query.toString()}`;
   let last = null;
-  const count = Math.max(1, Math.min(5, Number(attempts) || 1));
+  const count = Math.max(1, Math.min(10, Number(attempts) || 1));
   for (let attempt = 0; attempt < count; attempt++) {
     try {
       const tok = token ?? readToken();

@@ -12624,6 +12624,65 @@ describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wa
 // whose transcript the archive-at-death lifecycle deletes ~15s after every
 // session end (WI-3859 F4) — NOT just a stale/swept one.
 describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)", () => {
+  it("waits for an in-flight archive restore after the POST times out", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const timeout = new Error("request timed out");
+    timeout.name = "TimeoutError";
+    let statusReads = 0;
+    const fetchImpl = async (_url, opts) => {
+      if (opts.method === "POST") throw timeout;
+      statusReads += 1;
+      return {
+        json: async () => statusReads < 3
+          ? { ok: true, state: "pending", pending: true, ready: false }
+          : { ok: true, state: "ready", pending: false, ready: true, sourceKind: "claude", written: 1, root: "/tmp/restored" },
+      };
+    };
+    const sleep = vi.fn(async () => {});
+
+    try {
+      await expect(
+        tryRematerializeFromArchive("sid-pending", "claude", {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "tok",
+          statusDelayMs: 1,
+          sleep,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        sourceKind: "claude",
+        written: 1,
+        root: "/tmp/restored",
+        restoredAfterTimeout: true,
+      });
+      expect(statusReads).toBe(3);
+      expect(sleep).toHaveBeenCalledTimes(2);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("keeps the resume pending when the bounded status checks never observe completion", async () => {
+    const timeout = new Error("request timed out");
+    timeout.name = "TimeoutError";
+    const fetchImpl = async (_url, opts) => {
+      if (opts.method === "POST") throw timeout;
+      return { json: async () => ({ ok: true, state: "pending", pending: true, ready: false }) };
+    };
+
+    await expect(
+      tryRematerializeFromArchive("sid-still-pending", "claude", {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "tok",
+        statusAttempts: 2,
+        statusDelayMs: 1,
+        sleep: async () => {},
+      }),
+    ).resolves.toMatchObject({ ok: false, pending: true, timedOut: true, reason: "in_flight" });
+  });
+
   it("POSTs sessionId (+ sourceKind when given) and returns the parsed result on ok:true", async () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const calls = [];

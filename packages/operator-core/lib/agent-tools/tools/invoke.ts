@@ -358,7 +358,12 @@ export default defineTool({
         }],
       };
     }
-    const result = await ctx.dispatchTool(name, args.args ?? {});
+    const targetArgs = args.args ?? {};
+    const dispatchArgs =
+      ctx.codeMode && !('payloadTier' in targetArgs)
+        ? { ...targetArgs, payloadTier: 'full' }
+        : targetArgs;
+    const result = await ctx.dispatchTool(name, dispatchArgs);
     const outcome = summarizeNestedToolOutcome(result);
     // P-012 (census double-count): the inner dispatch above wrote its OWN telemetry
     // row, so this row is the wrapper overhead — mark it so tool_name censuses

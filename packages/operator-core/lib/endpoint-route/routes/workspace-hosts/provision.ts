@@ -49,6 +49,13 @@ export interface WorkspaceHostProvisionRouteDependencies {
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
   forwardRequest?: WorkspaceHostRequestForwarder;
+  /**
+   * Whether the caller may provision `hostId` at all. Absent = any host (the operator's own
+   * loopback surface). A tenant surface must supply it: provisioning writes the host row with
+   * control-plane privilege, so a caller-chosen id would mint unbounded hosts and could
+   * re-point ANOTHER tenant's host row at the caller's connection (D-397).
+   */
+  authorizeHost?: (hostId: string) => Promise<boolean>;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostProvisionRouteDependencies = {
@@ -128,6 +135,11 @@ export function createWorkspaceHostProvisionRoute(
           },
           { status: 422 },
         );
+      }
+      // Before the controller forward as well: the forwarded body reaches a loopback route that
+      // trusts it completely.
+      if (dependencies.authorizeHost && !(await dependencies.authorizeHost(requestedDesired.hostId))) {
+        return Response.json({ ok: false, error: 'workspace_host_not_bound' }, { status: 403 });
       }
       if (!dependencies.provisioningAvailable()) {
         try {

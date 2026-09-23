@@ -17,7 +17,9 @@
  *      pull the store out from under the process that holds its lock);
  *   4. the owner-authority kill-switch flag `papercusp-own-log-fork-auto-recovery`
  *      must be on;
- *   5. the store is MOVED ASIDE (`<store>.forked-<key12>-<ts>`), never deleted.
+ *   5. the store is MOVED ASIDE (`<store>.forked-<full key>-<ts>`), never deleted.
+ *      The next boot reads the key back from that name and announces it as
+ *      superseded, so peers drop the dead log (WI-10002600).
  */
 import { rename } from 'node:fs/promises';
 import { z } from 'zod';

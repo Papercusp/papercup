@@ -611,6 +611,51 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
+  it.each(['exempt', 'superseded'] as const)(
+    'keeps %s clauses in history without grading them as current BAR proof',
+    (lifecycleStatus) => {
+      const input = provedFixture(1);
+      const activeClause = input.clauses.rows[0]!;
+      const baselineCurrentEvidence = projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.currentEvidence;
+      const historicalClause: SpecClauseRevision = {
+        ...activeClause,
+        specId: `${activeClause.specId}-${lifecycleStatus}`,
+        lifecycleStatus,
+        contentHash: `${activeClause.contentHash}-${lifecycleStatus}`,
+        supersedes: null,
+        exemption: lifecycleStatus === 'exempt' ? { reason: 'non-behavioral historical clause' } : null,
+      };
+      if (lifecycleStatus === 'superseded') {
+        activeClause.supersedes = { specId: historicalClause.specId, revision: historicalClause.revision };
+      }
+      input.clauses.rows.push(historicalClause);
+      const activeEvidence = input.evidence.rows[0]!;
+      input.evidence.rows.push({
+        ...activeEvidence,
+        id: 99,
+        workItemId: 'WI-HISTORICAL',
+        specId: historicalClause.specId,
+        specFingerprint: historicalClause.contentHash,
+        evidenceRef: `historical:${lifecycleStatus}`,
+        bindingFingerprint: `binding-historical-${lifecycleStatus}`,
+        details: {
+          ...activeEvidence.details,
+          adequacy: { ...(activeEvidence.details.adequacy as object), outcome: 'failed' },
+        },
+      });
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      const bar = snapshot.bars[0]!;
+
+      expect(bar.proof.adequacy).toMatchObject({ state: 'pass', checks: [{ specId: activeClause.specId }] });
+      expect(bar.proof.adequacy?.checks.map((check) => check.specId)).toEqual([activeClause.specId]);
+      expect(bar.proof.currentEvidence).toBe(baselineCurrentEvidence);
+      expect(bar.mappings.map((mapping) => mapping.specId)).toContain(historicalClause.specId);
+      expect(bar.proof.history?.map((row) => row.evidenceRef)).toContain(`historical:${lifecycleStatus}`);
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(true);
+    },
+  );
+
   it('does not invent an automated proof floor for a non-automated delivery-plane clause', () => {
     const input = fixture(1);
     input.clauses.rows[0]!.behaviorClass = 'non-automated';
