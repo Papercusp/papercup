@@ -263,7 +263,10 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
         `Use staging/current-build for implementation and non-final acceptance, or declare a narrow exception on ` +
         `${item.id} (or a decision linked to it): name the deployed-only property, explain concretely why ` +
         `staging/current-build cannot exercise it, and retain deployed-main verification only for that property. ` +
-        narrowExceptionDiagnosis(relatedExceptionText(item, plan.decisions)),
+        narrowExceptionDiagnosis(
+          relatedExceptionText(item, plan.decisions),
+          `${item.id}'s own text and any decision linked to it`,
+        ),
     });
   }
 

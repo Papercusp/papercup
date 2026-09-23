@@ -67,15 +67,43 @@ function identityEdges(sql: Sql, workspaceId: string) {
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${workspaceId}
            AND NULLIF(session_owner, '') IS NOT NULL
+        UNION
+        -- P-004: the CONSULT-DISPATCH edge — a routed expert to the identity
+        -- that answers FROM their transcript.
+        --
+        -- Without it the launch edge above resolves a consult fork to whoever
+        -- launched it (for grading, the system sweep actor), so the fork reads
+        -- as unrelated to everyone and the exclusion that matters — the SOURCE
+        -- transcript's lineage — is not evaluated at all. Exclusion must follow
+        -- the KNOWLEDGE, not the process that started the session.
+        --
+        -- Derived, never a second hand-maintained field: this is the same
+        -- answeringOwnerId the consult participant gate is already keyed on, so
+        -- an identity that can post on a consult is exactly one this covers.
+        SELECT sel->>'ownerId',
+               sel->>'answeringOwnerId'
+          FROM harness_shared.consult_state cs
+          CROSS JOIN LATERAL jsonb_array_elements(
+                 CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
+                   WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
+                   ELSE '[]'::jsonb
+                 END
+               ) AS sel
+         WHERE cs.workspace_id = ${workspaceId}
+           AND NULLIF(sel->>'ownerId', '') IS NOT NULL
+           AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
+           AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
   `;
 }
 
 /**
  * Whether two identities are in a direct ancestor/descendant chain.
  *
- * Rebind edges and both agent-launch parent edges are directed. We walk from each
- * candidate in turn, so an ancestor grader is excluded just like a descendant
- * grader, while siblings remain eligible (sharing a parent is not lineage).
+ * Rebind edges, both agent-launch parent edges, and the consult-dispatch edge
+ * (routed expert → the identity answering from their transcript) are directed.
+ * We walk from each candidate in turn, so an ancestor grader is excluded just
+ * like a descendant grader, while siblings remain eligible (sharing a parent is
+ * not lineage).
  * Spawn ids and session owners are aliases in the spawned-agent table; both
  * representations are bridged. The recursive walk is bounded and cycle-safe.
  */

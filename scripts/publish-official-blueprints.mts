@@ -42,6 +42,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { stampMirrorIdentityAttestations } from '@papercusp/operator-core/lib/cupboard/identity-attestation';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BLUEPRINTS = join(REPO, 'libs/papercusp/packages/harness/blueprints');
@@ -138,6 +139,11 @@ async function sync(): Promise<void> {
   for (const id of ids) {
     cpSync(join(BLUEPRINTS, id), join(SCRATCH, id), { recursive: true });
   }
+  // P-003 / identities-v1 D-124: an installed identity must carry an in-document
+  // attestation, or every identity surface refuses it (attestation-missing). Stamp
+  // the MIRROR copy only — the listing signature then covers these exact bytes.
+  const attested = stampMirrorIdentityAttestations(SCRATCH, ids);
+  console.log(`attested ${attested.length} identity document(s): ${attested.map((a) => a.id).join(', ')}`);
   const promptFiles = projectOperatorPromptsIntoBase(SCRATCH);
 
   const rows = ids

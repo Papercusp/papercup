@@ -172,6 +172,12 @@ export default defineTool({
         generation: z.string().max(256).nullable().optional(),
         since_ts: z.string().max(128).nullable().optional(),
         force_resync: z.boolean().optional(),
+        // EI-24022555028936462: the Claude hook sends this when its cached glance is
+        // missing/stale (asks for the GLANCE leg only; see hook-bundle.ts). It was
+        // declared on ActivityHookBundleRequest but never here, so every such call
+        // was refused invalid_args. report-args-contract.test.ts now reads the keys
+        // the hooks actually send and fails if this schema stops accepting one.
+        glance_stale: z.boolean().optional(),
       })
       .optional(),
   }),

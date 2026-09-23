@@ -308,6 +308,21 @@ describe('plans:audit D-008 writer contract', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('limits classRef to activation audits at the live input schema', () => {
+    const completion = {
+      slug: 'plan-a',
+      items: [{ itemId: 'P-001', verdict: 'not-code', citations: [], note: 'No code deliverable.' }],
+    };
+
+    expect(tool.args.safeParse(completion).success).toBe(true);
+    expect(tool.args.safeParse({ ...completion, classRef: 'plan-class-bugfix' }).success).toBe(false);
+    expect(tool.args.safeParse({
+      slug: 'plan-a',
+      phase: 'activation',
+      classRef: 'plan-class-bugfix',
+    }).success).toBe(true);
+  });
+
   it('projects path as required for code/test citation branches', () => {
     const projected = lookupByMcpName('plans:audit');
     const schema = projected?.inputSchema as {
