@@ -1405,6 +1405,13 @@ export async function clearVanishedUnaccounted(
  * Retention. Terminal rows are the "what ran overnight and what did it cost"
  * record, so they are kept for a while — but not forever, and never at the cost of
  * the hot live-read index.
+ *
+ * A row carrying `detail.release` is exempt. Its release journal is not process
+ * telemetry: it is the ONLY store of that release's receipts, and a release keeps
+ * receiving them long after its process exited — a workspace-host release is
+ * published, then soaked for 24h, torn down, and its billing closure lands whenever
+ * the provider's billing export settles. Deleting the row a week after the PUBLISH
+ * process ended erased every one of those receipts, with nothing to rebuild them from.
  */
 export async function gcTerminalTasks(
   olderThanHours = 168,
@@ -1418,6 +1425,7 @@ export async function gcTerminalTasks(
      WHERE workspace_id = ${ws}
        AND ended_at IS NOT NULL
        AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
+       AND NOT (detail ? 'release')
     RETURNING task_id
   `;
   return rows.length;

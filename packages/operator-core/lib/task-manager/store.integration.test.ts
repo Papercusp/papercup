@@ -620,6 +620,31 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
   });
 });
 
+describe('gcTerminalTasks retention', () => {
+  async function insertTerminal(taskId: string, endedHoursAgo: number, detail: Record<string, unknown>) {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, ended_at, detail
+      ) VALUES (
+        ${taskId}, ${WS}, ${taskId}, 'deploy', ${taskId}, '[]'::jsonb, 'test', false, 'exited',
+        now() - make_interval(hours => ${endedHoursAgo}::int), ${db.sql.json(detail as postgres.JSONValue)}
+      )
+    `;
+  }
+
+  it('never deletes a release journal, however long ago its process exited', async () => {
+    // The plain old row is the positive control: without it, a GC that deletes nothing would pass.
+    await insertTerminal('old-plain', 200, {});
+    await insertTerminal('young-plain', 1, {});
+    await insertTerminal('old-release', 200, { release: { operationId: 'op-1', receipts: [] } });
+
+    await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
+    const rows = await db.sql`SELECT task_id FROM harness_shared.task_ledger ORDER BY task_id`;
+    expect(rows.map((row) => row.task_id)).toEqual(['old-release', 'young-plain']);
+  });
+});
+
 describe('upsertUnaccounted scope identity', () => {
   it('persists managed scope_unit canonically and backfills it on conflict without erasing it', async () => {
     const group = {
