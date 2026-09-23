@@ -14,6 +14,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org/connection';
 import { serializeDeleteCookie, serializeSetCookie } from '../endpoint-route/cookies';
 
@@ -24,7 +25,12 @@ export const HOSTED_SESSION_COOKIE_VERSION = 'v1';
 const HOSTED_SESSION_ID_RE = /^hs_[A-Za-z0-9_-]{43}$/;
 const MIN_COOKIE_SECRET_BYTES = 32;
 
-type SqlClient = ReturnType<typeof getOrgPg>['sql'];
+/**
+ * A root pool OR a caller's open transaction. The hosted service context
+ * (`withHostedServiceContext`) hands the store a TransactionSql, which has no
+ * `.begin()` — see `rotate`.
+ */
+type SqlClient = ReturnType<typeof getOrgPg>['sql'] | TransactionSql;
 
 export type HostedSessionErrorCode =
   | 'hosted_session_invalid_input'
@@ -390,7 +396,7 @@ export class HostedSessionStore {
       : undefined;
     const nextId = newSessionId();
 
-    return (await this.sql.begin(async (tx) => {
+    const rotateInTransaction = async (tx: TransactionSql): Promise<HostedSession | null> => {
       const currentRows = (await tx<HostedSessionRow[]>`
         SELECT ${tx.unsafe(SELECT_COLUMNS)}
           FROM papercusp_auth.hosted_sessions
@@ -419,7 +425,12 @@ export class HostedSessionStore {
          RETURNING ${tx.unsafe(SELECT_COLUMNS)}
       `) as HostedSessionRow[];
       return rows.length === 0 ? null : fromRow(rows[0]);
-    })) as HostedSession | null;
+    };
+    // Selecting a workspace runs inside the hosted service context, which already holds a
+    // transaction and exposes no nested `.begin()`: calling it threw `this.sql.begin is not a
+    // function`, so every workspace selection 500'd (measured live 2026-09-23 on the owner's
+    // organization). Reuse that transaction; the FOR UPDATE lock holds within it.
+    return 'begin' in this.sql ? this.sql.begin(rotateInTransaction) : rotateInTransaction(this.sql);
   }
 
   async revoke(id: string, reason = 'logout', at = this.clock()): Promise<boolean> {

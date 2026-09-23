@@ -165,6 +165,26 @@ describe('HostedSessionStore', () => {
     expect(count[0].count).toBe(1);
   });
 
+  // Workspace selection builds the store on the hosted service context's OPEN transaction,
+  // which has no `.begin()`. rotate threw `this.sql.begin is not a function` there, so every
+  // selection 500'd live (2026-09-23) while the pool-backed test above stayed green.
+  itPg('rotates on a store built from a caller\'s open transaction', async () => {
+    const original = await new mod!.HostedSessionStore(h.sql, () => NOW).create(input('rotate-in-tx'));
+    const rotated = await h.sql.begin((tx: any) => {
+      expect('begin' in tx).toBe(false);
+      return new mod!.HostedSessionStore(tx, () => NOW).rotate(original.id, {
+        expectedPermissionVersion: 4,
+        workspaceId: 'workspace-selected',
+      });
+    });
+
+    expect(rotated).toMatchObject({ workspaceId: 'workspace-selected', permissionVersion: 4 });
+    expect(rotated!.id).not.toBe(original.id);
+    const store = new mod!.HostedSessionStore(h.sql, () => NOW);
+    expect(await store.resolve(original.id, { at: NOW })).toBeNull();
+    expect(await store.resolve(rotated!.id, { at: NOW })).toMatchObject({ workspaceId: 'workspace-selected' });
+  });
+
   itPg('signing in again on a reused provider session supersedes only the same user\'s earlier session', async () => {
     const store = new mod!.HostedSessionStore(h.sql, () => NOW);
     const first = await store.create(input('reauth'));
