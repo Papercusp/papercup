@@ -606,9 +606,10 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('invalid_request', 400);
       const fields = body as Record<string, unknown>;
-      // Only display text, the attempt key and the delegation configuration are read from
-      // the body. Tenant and identifier fields (organization, workspace, connection,
-      // credential reference) come from the verified session or are server-derived.
+      // Only display text, the attempt key, the hosting choice and (bring-your-own-cloud only)
+      // the delegation configuration are read from the body. Tenant and identifier fields
+      // (organization, workspace, host, connection, credential reference) come from the
+      // verified session or are server-derived.
       const result = await deps.firstWorkspace.run({
         organizationId: principal.activeOrganizationId,
         userId: principal.userId,
@@ -617,6 +618,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
         attemptKey: fields.attemptKey as string,
         displayName: fields.displayName as string,
         label: fields.label as string,
+        hosting: fields.hosting as never,
         configuration: fields.configuration as never,
       });
       if (!result.ok) {

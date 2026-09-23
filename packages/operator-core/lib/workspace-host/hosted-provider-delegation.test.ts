@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   HostedProviderDelegationManager,
+  bindPapercuspHostedDelegation,
   buildHostedProviderDelegationOnboarding,
+  type HostedDelegationOrganization,
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
   type HostedProviderDelegationStore,
@@ -12,7 +14,22 @@ const TENANT = '11111111-1111-4111-8111-111111111111';
 const CLIENT = '22222222-2222-4222-8222-222222222222';
 
 const ORG_PRINCIPAL = 'serviceAccount:pco-org-a@papercusp-identity.iam.gserviceaccount.com';
-const ORGANIZATION = { organizationId: 'org-a', gcpTrustedPrincipal: async () => ORG_PRINCIPAL };
+const HOSTING_PROJECT = 'papercusp-hosted-workspaces';
+function organization(organizationId: string, principal: string): HostedDelegationOrganization & {
+  reserved: string[];
+} {
+  const reserved: string[] = [];
+  return {
+    organizationId,
+    reserved,
+    gcpTrustedPrincipal: async () => principal,
+    gcpPapercuspHosting: async (hostId) => {
+      reserved.push(hostId);
+      return { projectId: HOSTING_PROJECT, serviceAccountEmail: principal.slice('serviceAccount:'.length) };
+    },
+  };
+}
+const ORGANIZATION = organization('org-a', ORG_PRINCIPAL);
 
 const common = {
   organizationId: 'org-a',
@@ -245,10 +262,11 @@ describe('organization-bound delegations (D-397)', () => {
   it("treats another organization's delegation as not found for every lifecycle verb", async () => {
     const { store } = memoryStore();
     await new HostedProviderDelegationManager(store, adapters, ORGANIZATION).onboard({ ...common, configuration: impersonation });
-    const other = new HostedProviderDelegationManager(store, adapters, {
-      organizationId: 'org-b',
-      gcpTrustedPrincipal: async () => 'serviceAccount:pco-org-b@papercusp-identity.iam.gserviceaccount.com',
-    });
+    const other = new HostedProviderDelegationManager(
+      store,
+      adapters,
+      organization('org-b', 'serviceAccount:pco-org-b@papercusp-identity.iam.gserviceaccount.com'),
+    );
     await expect(other.verify('workspace-1', 'connection-1')).rejects.toThrow('not_found');
     await expect(other.revoke('workspace-1', 'connection-1')).rejects.toThrow('not_found');
     await expect(other.rotate('workspace-1', 'connection-1', {
@@ -270,5 +288,65 @@ describe('organization-bound delegations (D-397)', () => {
       },
     })).rejects.toThrow('method_not_organization_bound');
     expect(records.size).toBe(0);
+  });
+});
+
+describe("Papercusp-hosted delegations (D-399)", () => {
+  const papercuspHosted = {
+    provider: 'gcp' as const,
+    source: {
+      method: 'papercusp-hosted' as const,
+      projectId: HOSTING_PROJECT,
+      serviceAccountEmail: 'pco-org-a@papercusp-identity.iam.gserviceaccount.com',
+      hostId: 'host-of-another-organization',
+    },
+  };
+
+  it('cannot be selected by a caller-supplied configuration, so no request can reserve a host it names', async () => {
+    const records = new Map<string, HostedProviderDelegationRecord>();
+    const store: HostedProviderDelegationStore = {
+      read: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
+      save: async (next) => void records.set(`${next.workspaceId}/${next.connectionId}`, next),
+    };
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const adapter: HostedProviderDelegationAdapter = {
+      verify: async () => ({ identity: 'x', evidenceRef: 'audit://x', checkedAt: NOW }),
+      revoke: async () => ({ evidenceRef: 'audit://x', revokedAt: NOW }),
+    };
+    const manager = new HostedProviderDelegationManager(store, { gcp: adapter, aws: adapter, azure: adapter }, org);
+    await expect(manager.onboard({ ...common, configuration: papercuspHosted })).rejects.toThrow(
+      'method_not_organization_bound',
+    );
+    expect(org.reserved).toEqual([]);
+    expect(records.size).toBe(0);
+  });
+
+  it('reserves exactly the server-given host and records it with nothing for the customer to apply', async () => {
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const { organizationId: _ignored, ...base } = common;
+    const input = await bindPapercuspHostedDelegation(base, org, 'host-derived-1');
+    expect(org.reserved).toEqual(['host-derived-1']);
+    expect(input.organizationId).toBe('org-a');
+    const { record, template } = buildHostedProviderDelegationOnboarding(input);
+    expect(record.configuration).toEqual({
+      provider: 'gcp',
+      source: {
+        method: 'papercusp-hosted',
+        projectId: HOSTING_PROJECT,
+        serviceAccountEmail: 'pco-org-a@papercusp-identity.iam.gserviceaccount.com',
+        hostId: 'host-derived-1',
+      },
+    });
+    expect(template.document).toMatchObject({ managedBy: 'papercusp', hostId: 'host-derived-1' });
+    // A different reservation is a different grant.
+    const other = buildHostedProviderDelegationOnboarding(await bindPapercuspHostedDelegation(base, org, 'host-derived-2'));
+    expect(other.record.templateDigest).not.toBe(record.templateDigest);
+  });
+
+  it('refuses an unsafe host id before reserving anything', async () => {
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const { organizationId: _ignored, ...base } = common;
+    await expect(bindPapercuspHostedDelegation(base, org, "x' || true || '")).rejects.toThrow();
+    expect(org.reserved).toEqual([]);
   });
 });
