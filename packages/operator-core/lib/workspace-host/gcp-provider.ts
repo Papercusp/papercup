@@ -1358,6 +1358,30 @@ function refreshedInstanceMetadata(
   };
 }
 
+/** Compute reports a boot disk's image as a full API URL; plans carry the `projects/…` path. */
+function gcpImagePath(image: string): string {
+  const index = image.indexOf('projects/');
+  return index >= 0 ? image.slice(index) : image;
+}
+
+/**
+ * WI-10002490: an instance with the requested NAME is not necessarily the one an insert step
+ * creates. An upgrade's rollback re-inserts under the forward insert's name, so if the failed
+ * forward attempt left a VM behind, adopting it on reconcile would report a rollback that never
+ * happened. Status 412 classifies this as terminal: re-reading the same VM cannot change the answer.
+ * An observation that does not report its image stays adoptable, exactly as before.
+ */
+function assertInstanceBootsRequestedImage(name: string, observed: string | undefined, requested: string): void {
+  if (!observed || gcpImagePath(observed) === gcpImagePath(requested)) return;
+  throw Object.assign(
+    new Error(
+      `GCP instance '${name}' exists but boots '${gcpImagePath(observed)}', not the requested ` +
+        `'${gcpImagePath(requested)}'; it is not the instance this step creates`,
+    ),
+    { status: 412 },
+  );
+}
+
 function sameMetadata(observed: GcpInstanceObservation, expected: GcpInstanceMetadataInput): boolean {
   const actual = observed.recreateInput?.metadata.items ?? [];
   const normalize = (items: readonly { key: string; value: string }[]) =>
@@ -1539,22 +1563,59 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         throw new Error('GCP upgrade requires a controller-authored host bootstrap');
       }
       const imageId = assertGcpImmutableImageId(request.image.id, 'gcp.upgrade.image.id');
+      // WI-10002490: the rollback image gets the same checks, here, for the same reason — a
+      // rollback that is only discovered to be unusable after the delete is no rollback at all.
+      const rollbackImageId = request.rollbackImage
+        ? assertGcpImmutableImageId(request.rollbackImage.id, 'gcp.upgrade.rollbackImage.id')
+        : undefined;
       // Validate and normalize before emitting a destructive delete step. The final Compute
       // client retains its own clamp, but waiting until insert-instance would leave an upgrade
       // with a deleted runtime VM when the new image is larger than the retained boot disk.
       const imageDiskSizeGb = await this.client.getImageDiskSizeGb(imageId);
+      const rollbackImageDiskSizeGb = rollbackImageId
+        ? await this.client.getImageDiskSizeGb(rollbackImageId)
+        : undefined;
       const observed = await this.client.getInstance(projectId, zone, instance.providerId);
       if (!observed?.recreateInput) {
         throw new Error('GCP upgrade requires a fresh instance read with recreateInput');
       }
+      const recreateInput = observed.recreateInput;
       const disk = requireKnownResource(request.host.resources, [DISK_KIND], request.action);
-      const [bootDisk, dataDisk] = observed.recreateInput.disks;
-      const bootDiskSizeGb = Math.max(bootDisk.initializeParams.diskSizeGb, imageDiskSizeGb);
+      const [bootDisk, dataDisk] = recreateInput.disks;
       if (refName(dataDisk.source) !== refName(disk.providerId) || dataDisk.autoDelete) {
         throw new Error('GCP upgrade refused because the retained data disk identity is ambiguous');
       }
+      const metadata = { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript).items };
+      // The same recreate, parameterized only by boot image, so the rollback is exactly the
+      // forward insert pointed at the prior image — never a second, drifting description.
+      const recreateFrom = (sourceImage: string, sourceImageDiskSizeGb: number): GcpInstanceInsertInput => ({
+        ...recreateInput,
+        metadata,
+        disks: [
+          {
+            ...bootDisk,
+            initializeParams: {
+              ...bootDisk.initializeParams,
+              sourceImage,
+              diskSizeGb: Math.max(bootDisk.initializeParams.diskSizeGb, sourceImageDiskSizeGb),
+            },
+          },
+          { ...dataDisk, autoDelete: false, source: dataDisk.source },
+        ],
+      });
+      const insertTarget = {
+        op: 'insert-instance' as const,
+        projectId,
+        zone,
+        hostId: request.host.hostId,
+        requiresFirewall: request.host.resources.some((item) =>
+          [FIREWALL_KIND, EXISTING_FIREWALL_KIND].includes(item.kind),
+        ),
+        requiresNat: request.host.resources.some((item) => item.kind === NAT_KIND),
+      };
       const deleteKey = `${request.idempotencyKey}:delete-boot-runtime:${instance.providerId}`;
       const createKey = `${request.idempotencyKey}:create-boot-runtime:${instance.providerId}`;
+      const rollbackKey = `${createKey}:rollback`;
       return [
         {
           id: 'delete-boot-runtime',
@@ -1580,31 +1641,22 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           idempotencyKey: createKey,
           destructive: false,
           input: {
-            op: 'insert-instance',
-            projectId,
-            zone,
+            ...insertTarget,
             requestId: gcpWorkspaceHostRequestUuid(createKey),
-            hostId: request.host.hostId,
-            requiresFirewall: request.host.resources.some((item) =>
-              [FIREWALL_KIND, EXISTING_FIREWALL_KIND].includes(item.kind),
-            ),
-            requiresNat: request.host.resources.some((item) => item.kind === NAT_KIND),
-            request: {
-              ...observed.recreateInput,
-              metadata: { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript).items },
-              disks: [
-                {
-                  ...bootDisk,
-                  initializeParams: {
-                    ...bootDisk.initializeParams,
-                    sourceImage: imageId,
-                    diskSizeGb: bootDiskSizeGb,
-                  },
-                },
-                { ...dataDisk, autoDelete: false, source: dataDisk.source },
-              ],
-            },
+            request: recreateFrom(imageId, imageDiskSizeGb),
           } satisfies GcpStepInput,
+          ...(rollbackImageId && rollbackImageDiskSizeGb !== undefined
+            ? {
+                rollback: {
+                  idempotencyKey: rollbackKey,
+                  input: {
+                    ...insertTarget,
+                    requestId: gcpWorkspaceHostRequestUuid(rollbackKey),
+                    request: recreateFrom(rollbackImageId, rollbackImageDiskSizeGb),
+                  } satisfies GcpStepInput,
+                },
+              }
+            : {}),
         },
       ];
     }
@@ -2648,6 +2700,13 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const input = stepInput(request.step);
     const existing = await this.describeCreatedTarget(input);
     if (existing) {
+      if (input.op === 'insert-instance') {
+        assertInstanceBootsRequestedImage(
+          existing.name,
+          'sourceImage' in existing ? existing.sourceImage : undefined,
+          input.request.disks[0].initializeParams.sourceImage,
+        );
+      }
       if (input.op === 'create-snapshot' && 'status' in existing && existing.status === 'READY') {
         return {
           operationId: request.operationId,

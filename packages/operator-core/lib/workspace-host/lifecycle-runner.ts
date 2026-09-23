@@ -7,6 +7,7 @@ import {
   nextWorkspaceHostControllerAction,
   workspaceHostActionInvalidatesInitialization,
   workspaceHostProviderRetryClass,
+  workspaceHostRecoveryAction,
   type WorkspaceHostApplyResult,
   type WorkspaceHostControllerAuthority,
   type WorkspaceHostDomainState,
@@ -17,6 +18,7 @@ import {
   type WorkspaceHostObservation,
   type WorkspaceHostPlan,
   type WorkspaceHostPlanRequest,
+  type WorkspaceHostPlanStep,
   type WorkspaceHostProvider,
   type WorkspaceHostProviderConnection,
   type WorkspaceHostProviderContext,
@@ -54,6 +56,7 @@ import {
 
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
+const MAX_APPLY_ATTEMPTS = 3;
 
 export type WorkspaceHostExistingLifecycleAction =
   | 'start'
@@ -177,6 +180,13 @@ export type RunWorkspaceHostProductLifecycleInput = Omit<
 export interface WorkspaceHostLifecycleResult extends WorkspaceHostProvisioningResult {
   lifecycleStage?: WorkspaceHostLifecycleStage;
   productStageReceipts?: readonly WorkspaceHostProductStageReceipt[];
+  /** WI-10002490: present once a failed step's precomputed rollback has reached a verdict. */
+  rollback?: {
+    stepId: string;
+    status: 'succeeded' | 'failed';
+    image?: WorkspaceHostImageRef;
+    error?: string;
+  };
 }
 
 const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
@@ -457,6 +467,43 @@ function resultCheckpoint(
   };
 }
 
+/**
+ * WI-10002490: an upgrade's way back defaults to the image the host is recorded as running, so
+ * every upgrade carries a rollback the provider validates BEFORE its destructive step — not only
+ * those whose caller thought to ask for one.
+ */
+function effectiveRollbackImage(
+  input: RunWorkspaceHostLifecycleInput,
+  target: StoredWorkspaceHostDestroyTarget,
+): WorkspaceHostImageRef | undefined {
+  return input.action === 'upgrade' ? (input.rollbackImage ?? target.desired.image) : undefined;
+}
+
+/** The checkpoint row of a step's rollback leg; never a plan step's own key (= its step id). */
+function rollbackLogicalKey(step: WorkspaceHostPlanStep): string {
+  return `${step.id}:rollback`;
+}
+
+/**
+ * The step whose failure strands the host: it carries a precomputed rollback, it has not completed,
+ * and the destructive step it depends on HAS applied. A failure before that point removed nothing,
+ * so there is nothing to roll back and the operation simply fails.
+ */
+function strandedByFailure(
+  plan: WorkspaceHostPlan,
+  checkpoints: readonly WorkspaceHostResourceCheckpoint[],
+): WorkspaceHostPlanStep | undefined {
+  const settled = (stepId: string) =>
+    ['applied', 'unchanged', 'absent'].includes(checkpoints.find((entry) => entry.logicalKey === stepId)?.state ?? '');
+  return plan.steps.find(
+    (step) =>
+      step.rollback !== undefined &&
+      !settled(step.id) &&
+      step.dependsOn.every(settled) &&
+      step.dependsOn.some((stepId) => plan.steps.find((candidate) => candidate.id === stepId)?.destructive),
+  );
+}
+
 function planRequest(
   input: RunWorkspaceHostLifecycleInput,
   target: StoredWorkspaceHostDestroyTarget,
@@ -476,11 +523,12 @@ function planRequest(
     return { ...base, action: input.action, ...(input.name ? { name: input.name } : {}) };
   if (input.action === 'upgrade') {
     if (!input.image) throw new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
+    const rollbackImage = effectiveRollbackImage(input, target);
     return {
       ...base,
       action: input.action,
       image: input.image,
-      ...(input.rollbackImage ? { rollbackImage: input.rollbackImage } : {}),
+      ...(rollbackImage ? { rollbackImage } : {}),
     };
   }
   if (input.action === 'restore') {
@@ -551,6 +599,235 @@ async function observe(
     });
     return undefined;
   }
+}
+
+interface RollbackLeg {
+  input: RunWorkspaceHostLifecycleInput;
+  store: WorkspaceHostLifecycleStore;
+  context: WorkspaceHostProviderContext;
+  target: StoredWorkspaceHostDestroyTarget;
+  ownPopulation: StoredWorkspaceHostDestroyTarget | undefined;
+  plan: WorkspaceHostPlan;
+  /** The stranded step whose precomputed rollback this leg applies. */
+  step: WorkspaceHostPlanStep;
+  workspaceId: string;
+  hostId: string;
+  operationId: string;
+  checkpoints: readonly WorkspaceHostResourceCheckpoint[];
+  /** The leg's own checkpoint when resuming; absent on the turn the leg starts. */
+  prior: WorkspaceHostResourceCheckpoint | undefined;
+  rollbackImage: WorkspaceHostImageRef | undefined;
+}
+
+/**
+ * WI-10002490: apply a stranded step's precomputed rollback in its place — the same apply /
+ * reconcile / bounded-retry discipline as a plan step, under its own `<step>:rollback` checkpoint,
+ * so a rollback interrupted mid-flight resumes (and is never issued twice) on the next turn.
+ *
+ * The operation ends `failed` either way: the action did not happen. What the leg decides is whether
+ * the host was put back — and it says so in the ledger, because "upgrade failed, host restored" and
+ * "upgrade failed, host has no VM" call for entirely different operator responses.
+ */
+async function runRollbackLeg(leg: RollbackLeg): Promise<WorkspaceHostLifecycleResult> {
+  const { input, store, context, plan, step, workspaceId, hostId, operationId } = leg;
+  const rollback = step.rollback!;
+  const logicalKey = rollbackLogicalKey(step);
+  const cause =
+    leg.checkpoints.find((entry) => entry.logicalKey === step.id)?.error ?? `step '${step.id}' did not complete`;
+  const towards = leg.rollbackImage ? ` to '${leg.rollbackImage.id}'` : '';
+  const rollbackStep: WorkspaceHostPlanStep = {
+    id: logicalKey,
+    action: step.action,
+    resourceKind: step.resourceKind,
+    dependsOn: step.dependsOn,
+    idempotencyKey: rollback.idempotencyKey,
+    destructive: false,
+    input: rollback.input,
+  };
+  let current = leg.prior;
+  const withCurrent = () => replaceCheckpoint(leg.checkpoints, current!);
+
+  if (!current) {
+    current = { logicalKey, state: 'planned', attempts: 0 };
+    await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: current });
+    await store.appendEvent({
+      workspaceId,
+      hostId,
+      operationId,
+      phase: 'rollback',
+      status: 'running',
+      level: 'warn',
+      message: `Step '${step.id}' failed after [${step.dependsOn.join(', ')}] applied; rolling back${towards}`,
+      details: { error: cause },
+    });
+  }
+
+  for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
+    const recovery = workspaceHostRecoveryAction(current, MAX_APPLY_ATTEMPTS);
+    if (recovery === 'none') {
+      await observe(input, leg.target, store, context, leg.checkpoints);
+      // The instance now boots the rollback image; without this the host row would keep naming the
+      // image the failed upgrade never delivered (WI-10002494's defect, reached from the other side).
+      if (leg.rollbackImage) await store.recordImage({ workspaceId, hostId, image: leg.rollbackImage });
+      const text =
+        `Workspace-host ${input.action} failed at '${step.id}' and was rolled back${towards}; ` +
+        'the host was recreated and must be initialized again before use';
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'failed',
+        percent: progress(leg.checkpoints, plan.steps.length),
+        message: text,
+        error: {
+          reason: cause,
+          rolledBack: true,
+          ...(leg.rollbackImage ? { rollbackImage: leg.rollbackImage.id } : {}),
+        },
+      });
+      await store.appendEvent({
+        workspaceId,
+        hostId,
+        operationId,
+        phase: 'rollback',
+        status: 'failed',
+        level: 'warn',
+        message: text,
+        details: { error: cause },
+      });
+      return {
+        status: 'failed',
+        operationId,
+        hostId,
+        plan,
+        checkpoints: withCurrent(),
+        requiresInitialization: true,
+        rollback: {
+          stepId: step.id,
+          status: 'succeeded',
+          ...(leg.rollbackImage ? { image: leg.rollbackImage } : {}),
+        },
+      };
+    }
+    if (recovery === 'halt' || recovery === 'compensate') {
+      const rollbackError = current.error ?? `rollback checkpoint halted in state '${current.state}'`;
+      const text =
+        `Workspace-host ${input.action} failed at '${step.id}', and its rollback${towards} failed too; ` +
+        `the host is NOT restored and needs operator attention`;
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'failed',
+        percent: progress(leg.checkpoints, plan.steps.length),
+        message: text,
+        error: { reason: cause, rolledBack: false, rollbackError },
+      });
+      await store.appendEvent({
+        workspaceId,
+        hostId,
+        operationId,
+        phase: 'rollback',
+        status: 'failed',
+        level: 'error',
+        message: text,
+        details: { error: cause, rollbackError },
+      });
+      return {
+        status: 'failed',
+        operationId,
+        hostId,
+        plan,
+        checkpoints: withCurrent(),
+        rollback: {
+          stepId: step.id,
+          status: 'failed',
+          ...(leg.rollbackImage ? { image: leg.rollbackImage } : {}),
+          error: rollbackError,
+        },
+      };
+    }
+
+    const reconciling = recovery === 'reconcile';
+    const attempts = current.attempts + 1;
+    const beforeCall: WorkspaceHostResourceCheckpoint = {
+      logicalKey,
+      state: reconciling ? 'reconciling' : 'applying',
+      attempts,
+      ...(current.providerResource ? { providerResource: current.providerResource } : {}),
+      ...(current.providerRequestId ? { providerRequestId: current.providerRequestId } : {}),
+    };
+    await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: beforeCall });
+    const prior = current;
+    current = beforeCall;
+    const applyRequest = {
+      planId: plan.planId,
+      operationId,
+      step: rollbackStep,
+      knownResources: knownResources(leg.ownPopulation, leg.checkpoints),
+    };
+    let providerResult: WorkspaceHostApplyResult;
+    try {
+      providerResult = reconciling
+        ? await input.provider.reconcile(
+            {
+              ...applyRequest,
+              reason: 'resume',
+              ...(prior.providerRequestId ? { previousProviderRequestId: prior.providerRequestId } : {}),
+            },
+            context,
+          )
+        : await input.provider.apply(applyRequest, context);
+    } catch (error) {
+      const retryClass = workspaceHostProviderRetryClass(error);
+      current = {
+        logicalKey,
+        state: 'failed',
+        attempts,
+        retryClass,
+        ...(retryClass === 'terminal' ? {} : { retryAfterMs: DEFAULT_RETRY_AFTER_MS }),
+        ...(prior.providerResource ? { providerResource: prior.providerResource } : {}),
+        ...(prior.providerRequestId ? { providerRequestId: prior.providerRequestId } : {}),
+        error: message(error),
+      };
+      await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: current });
+      if (workspaceHostRecoveryAction(current, MAX_APPLY_ATTEMPTS) === 'halt') continue;
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'running',
+        percent: progress(leg.checkpoints, plan.steps.length),
+        message: `Rollback of '${step.id}' will be retried: ${message(error)}`,
+      });
+      return {
+        status: 'in-progress',
+        operationId,
+        hostId,
+        plan,
+        checkpoints: withCurrent(),
+        retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+      };
+    }
+    current = resultCheckpoint(prior, attempts, providerResult);
+    await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: current });
+    if (providerResult.state === 'in-progress') {
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'running',
+        percent: progress(leg.checkpoints, plan.steps.length),
+        message: `Rollback of '${step.id}'${towards} is still in progress`,
+      });
+      return {
+        status: 'in-progress',
+        operationId,
+        hostId,
+        plan,
+        checkpoints: withCurrent(),
+        retryAfterMs: providerResult.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS,
+      };
+    }
+  }
+
+  throw new Error(`Workspace-host ${input.action} rollback exceeded its bounded controller transition budget`);
 }
 
 export async function runWorkspaceHostLifecycle(
@@ -710,14 +987,35 @@ export async function runWorkspaceHostLifecycle(
       deleteOnDestroy: input.action === 'snapshot' || input.action === 'restore',
       retainOnCancel: true,
     })),
-    maxApplyAttempts: 3,
+    maxApplyAttempts: MAX_APPLY_ATTEMPTS,
   } as const;
   // The provider population this operation acts ON. A restore acts on a host it is building, so the
   // source's resources are never its own: seeding them into the replacement's checkpoints stamped
   // the source VM/disk identities onto the new host, and offering them as known resources let the
   // "disk persisted before insert-instance" gate pass on a disk this operation never made.
   const ownPopulation = input.action === 'restore' ? undefined : target;
-  let checkpoints = await store.readCheckpoints(workspaceId, resultHostId, operationId);
+  // A rollback leg's row is not a plan step, so the controller oracle (which refuses any
+  // checkpoint outside the plan) only ever sees the plan's own rows.
+  const rollbackKeys = new Set(plan.steps.filter((step) => step.rollback).map(rollbackLogicalKey));
+  const storedCheckpoints = await store.readCheckpoints(workspaceId, resultHostId, operationId);
+  let checkpoints = storedCheckpoints.filter((entry) => !rollbackKeys.has(entry.logicalKey));
+  const rollbackImage = effectiveRollbackImage(input, target);
+  const rollbackLeg = (step: WorkspaceHostPlanStep) =>
+    runRollbackLeg({
+      input,
+      store,
+      context,
+      target,
+      ownPopulation,
+      plan,
+      step,
+      workspaceId,
+      hostId: resultHostId,
+      operationId,
+      checkpoints,
+      prior: storedCheckpoints.find((entry) => entry.logicalKey === rollbackLogicalKey(step)),
+      rollbackImage,
+    });
   await store.beginOperation({
     workspaceId,
     operationId,
@@ -735,6 +1033,12 @@ export async function runWorkspaceHostLifecycle(
     },
     desiredRevision,
   });
+
+  // Once a rollback has begun the forward plan is abandoned: resume the leg, never the step it replaced.
+  const rollingBack = plan.steps.find(
+    (step) => step.rollback && storedCheckpoints.some((entry) => entry.logicalKey === rollbackLogicalKey(step)),
+  );
+  if (rollingBack) return rollbackLeg(rollingBack);
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
     const action = nextWorkspaceHostControllerAction(workflow, checkpoints);
@@ -814,6 +1118,8 @@ export async function runWorkspaceHostLifecycle(
         await store.upsertCheckpoint({ workspaceId, hostId: resultHostId, operationId, checkpoint: failed });
         checkpoints = replaceCheckpoint(checkpoints, failed);
         if (retryClass === 'terminal') {
+          const stranded = strandedByFailure(plan, checkpoints);
+          if (stranded) return rollbackLeg(stranded);
           await store.updateOperation({
             workspaceId,
             operationId,
@@ -979,6 +1285,10 @@ export async function runWorkspaceHostLifecycle(
       };
     }
 
+    // Also the crash-safe entry: a step that halted (attempts spent, or a terminal refusal recorded
+    // just before the controller died) still reaches its rollback on the next turn.
+    const stranded = strandedByFailure(plan, checkpoints);
+    if (stranded) return rollbackLeg(stranded);
     const reason = action.kind === 'blocked' ? action.reason : action.kind === 'complete' ? action.status : action.kind;
     await store.updateOperation({
       workspaceId,
