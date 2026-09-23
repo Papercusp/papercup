@@ -42,6 +42,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { contextGaugeBand, contextUsagePct } from './tools/inbox-context-usage';
+import { fetchPresenceFleet } from './presence-fleet';
 
 export type ContextPressureBucket = 'ok' | 'high' | 'critical';
 
@@ -313,13 +314,8 @@ export async function readContextTokens(ownerId: string): Promise<number | null>
  * by contract (no PG, no clock) and importing this module, so naming its type here would close an
  * import cycle. TypeScript's structural typing checks the compatibility at each call site.
  *
- * ⚠ NO `{ fleetMember }` ON THE CEILING — THIS IS LOAD-BEARING, NOT AN OVERSIGHT.
- * The SELF-set path (`agent-tools/config/set-compaction-limit.ts`) computes its cap as
- * `selfSetCeilingForWindow(window)` with NO role option, so a fleet member's real self-set ceiling
- * is the un-capped one; only the CROSS-SESSION path passes `{ fleetMember }` (a 250k cap). If we
- * passed it here we would hand a wedged member a `suggestedLimit` that the very tool our remedy
- * names would then refuse with `limit_exceeds_cap` — advice that fails on contact, which is
- * precisely the defect class this fix exists to remove. Mirror the SELF path, never the other one.
+ * Resolve fleet role from the same presence-fleet source as the self-set tool. Fleet members have
+ * a lower self-set ceiling, so omitting that role can suggest a limit the named config tool refuses.
  *
  * Fails SOFT: any unreadable leg yields nulls, and the predicate treats unknown as "do not
  * assert", so the remedy falls back to the legacy recovery-path wording rather than guessing.
@@ -341,6 +337,10 @@ export async function resolveContextPressureHeadroom(ownerId: string): Promise<{
     const row = rows[0];
     if (row == null) return unknown;
 
+    const fleetMembership = await fetchPresenceFleet([ownerId]);
+    const fleetRole = fleetMembership.get(ownerId)?.fleetRole ?? null;
+    const fleetMember = fleetRole != null && fleetRole !== 'leader';
+
     const { estimateContextWindowForOwner, resolveModelSpecForOwner } = await import(
       '../../compaction-usage'
     );
@@ -353,7 +353,9 @@ export async function resolveContextPressureHeadroom(ownerId: string): Promise<{
     const measuredWindow = await estimateContextWindowForOwner(ownerId).catch(() => null);
     const spec = measuredWindow == null ? await resolveModelSpecForOwner(ownerId).catch(() => null) : null;
     const selfSetCeiling =
-      measuredWindow != null ? selfSetCeilingForWindow(measuredWindow) : selfSetCeilingForSpec(spec);
+      measuredWindow != null
+        ? selfSetCeilingForWindow(measuredWindow, { fleetMember })
+        : selfSetCeilingForSpec(spec, { fleetMember });
 
     return {
       contextTokens: row.context_tokens,

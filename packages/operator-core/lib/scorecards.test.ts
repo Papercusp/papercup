@@ -7,11 +7,51 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
 describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', () => {
+  it('settles only the exact pending stamp and excludes a retraction in the atomic write', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const expected = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-20T04:02:01.584Z',
+      rubricRevision: 7,
+      criteriaHash: 'hash-v7',
+    };
+    const settled = {
+      ...expected,
+      state: 'passed' as const,
+      auditIssueId: 'EI-AUDIT',
+      auditor: 'su-auditor',
+      auditedAt: '2026-09-20T04:05:00.000Z',
+    };
+
+    await expect(
+      settlePendingGradingAuditAtomically('EI-TARGET', expected, settled, {
+        resolveWorkspace: async () => 'ws-test',
+        transact,
+      }),
+    ).resolves.toBe(true);
+
+    const write = statements[0]!;
+    expect(write.text).toContain("payload->'observation'->'retracted' IS NULL");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'stampedAt' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ?");
+    expect(write.values).toContain('ws-test');
+    expect(write.values).toContain('EI-TARGET');
+    expect(write.values).toContain(JSON.stringify(settled));
+  });
+
   it('replaces a settled failed stamp when a validated correction uses a new audit card', async () => {
     const getIssue = vi.fn(async () => ({
       payload: {
@@ -29,7 +69,6 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
         },
       },
     }));
-    const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-TARGET' }));
     const replaceSettledGradingAudit = vi.fn(async () => true);
 
     const result = await recordGradingAudit(
@@ -46,7 +85,6 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       },
       {
         getIssue: getIssue as never,
-        mergeIssuePayload: mergeIssuePayload as never,
         replaceSettledGradingAudit,
       },
     );
@@ -75,11 +113,9 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       stampedAt: '2026-09-07T00:00:00.000Z',
       auditedAt: '2026-09-07T00:02:00.000Z',
     });
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
   });
 
   it('refuses a settled replacement that does not name the audit currently stamped on the target', async () => {
-    const mergeIssuePayload = vi.fn();
     const replaceSettledGradingAudit = vi.fn();
     const result = await recordGradingAudit(
       'EI-TARGET',
@@ -104,14 +140,12 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
             },
           },
         })) as never,
-        mergeIssuePayload: mergeIssuePayload as never,
         replaceSettledGradingAudit,
       },
     );
 
     expect(result).toMatchObject({ ok: false, issueId: 'EI-TARGET' });
     expect(result.error).toContain('explicitly supersede that audit card');
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
     expect(replaceSettledGradingAudit).not.toHaveBeenCalled();
   });
 
@@ -163,18 +197,37 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       stampedAt: '2026-09-07T00:00:00.000Z',
       auditedAt: '2026-09-07T00:01:00.000Z',
     };
-    const mergeIssuePayload = vi.fn();
     const result = await recordGradingAudit(
       'EI-TARGET',
       { auditIssueId: 'EI-AUDIT-1', auditor: 'su-auditor-2', verdict: 'failed' },
       {
         getIssue: vi.fn(async () => ({ payload: { observation: { rubricRef: 'r', ratings: {}, gradingAudit: existing } } })) as never,
-        mergeIssuePayload: mergeIssuePayload as never,
       },
     );
 
     expect(result).toEqual({ ok: true, issueId: 'EI-TARGET', gradingAudit: existing });
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses to settle a grading audit after the target was retracted', async () => {
+    const result = await recordGradingAudit(
+      'EI-WITHDRAWN',
+      { auditIssueId: 'EI-AUDIT-LATE', auditor: 'su-auditor', verdict: 'passed' },
+      {
+        getIssue: vi.fn(async () => ({
+          payload: {
+            observation: {
+              rubricRef: 'r',
+              ratings: {},
+              retracted: { at: '2026-09-20T04:02:52.814Z', by: 'su-author', reason: 'withdrawn' },
+              gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-09-20T04:02:01.584Z' },
+            },
+          },
+        })) as never,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: false, issueId: 'EI-WITHDRAWN' });
+    expect(result.error).toContain('retracted and cannot receive a grading-audit settlement');
   });
 });
 

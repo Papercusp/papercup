@@ -372,6 +372,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     const rowsMode = json.properties?.rowsMode?.description ?? '';
     expect(rowsMode).toContain('controls CHECK ROWS only');
+    expect(rowsMode).toContain("append:true` + `rowsMode:'replace'");
+    expect(rowsMode).toContain('`retireIds` are required');
     for (const token of ['append:false', "rowsMode:'replace'", 'confirmShrink:true', 'confirmRetire:true']) {
       expect(rowsMode).toContain(token);
       expect(checkpoint.description).toContain(token.replaceAll("'", '"'));
@@ -565,7 +567,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(23455);
+    expect(JSON.stringify(json)).toHaveLength(23932);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -2932,6 +2934,32 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         });
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+      });
+
+      it('requires exact retireIds when appending a body while replacing checks, even with confirmRetire:true', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        getWorkItemCheckpoint.mockClear();
+
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'append narrative while replacing checks',
+          append: true,
+          checks: [{ claim: 'replacement check' }],
+          rowsMode: 'replace',
+          confirmRetire: true,
+        });
+
+        expect(r).toMatchObject({
+          ok: false,
+          errorCode: 'checkpoint_replace_would_drop_rows',
+          retryable: true,
+          retireIdsRequired: true,
+          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+        expect(r.message).toContain('confirmRetire:true is not sufficient');
+        expect(r.message).toContain('retireIds');
+        expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1);
       });
 
       it('refuses an unconfirmed explicit [] clear', async () => {

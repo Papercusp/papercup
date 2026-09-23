@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from './types';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -57,7 +58,7 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
     workspaceId,
     idempotencyKey,
     retryOfPortId,
-    protocolVersion: 2,
+    protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     sourceAdvSessionId,
     sourceBackend: 'claude' as const,
     targetBackend: 'codex' as const,
@@ -67,7 +68,12 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
     renderedHash: 'c'.repeat(64),
     tokenHash: 'd'.repeat(64),
     artifactPath: `/tmp/${id}.seed.md`,
-    metadata: { summary: { protocolVersion: 2, versions: { transform: 3 } } },
+    metadata: {
+      summary: {
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        versions: { transform: SESSION_PORT_TRANSFORM_VERSION },
+      },
+    },
     expiresAt,
   });
 
@@ -80,7 +86,7 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
     coordOwnerId: 'su-port-source',
     nativeSessionId: null,
     launchArgv: ['psu', '--resume', String(sourceAdvSessionId)],
-    portMetadata: { protocolVersion: 2 },
+    portMetadata: { protocolVersion: SESSION_PORT_PROTOCOL_VERSION },
   };
 
   it('serializes two bootstraps to one target, replays the receipt, and links a terminal retry', async () => {

@@ -6,7 +6,7 @@ import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-gr
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
 const io = vi.hoisted(() => ({
-  state: vi.fn(), binding: vi.fn(), load: vi.fn(), source: vi.fn(), flag: vi.fn(), tools: vi.fn(),
+  state: vi.fn(), binding: vi.fn(), load: vi.fn(), source: vi.fn(), flag: vi.fn(), tools: vi.fn(), replay: vi.fn(),
 }));
 vi.mock('../operator-state-pg', async (original) => ({
   ...(await original<typeof import('../operator-state-pg')>()), readOperatorState: io.state,
@@ -14,10 +14,18 @@ vi.mock('../operator-state-pg', async (original) => ({
 vi.mock('../capability-class-registry-store', async (original) => ({
   ...(await original<typeof import('../capability-class-registry-store')>()), getPotCapabilityProviderBinding: io.binding,
 }));
-vi.mock('@papercusp/orchestrator/blueprint', async (original) => ({
-  ...(await original<typeof import('@papercusp/orchestrator/blueprint')>()),
-  loadBlueprintFromFile: io.load, layerSourceDocument: io.source,
-}));
+vi.mock('@papercusp/orchestrator/blueprint', async (original) => {
+  const actual = await original<typeof import('@papercusp/orchestrator/blueprint')>();
+  return {
+    ...actual,
+    loadBlueprintFromFile: io.load,
+    layerSourceDocument: io.source,
+    replayAgentSpecification: (value: unknown) => {
+      io.replay(value);
+      return actual.replayAgentSpecification(value);
+    },
+  };
+});
 vi.mock('@papercusp/agent-mcp', async (original) => ({
   ...(await original<typeof import('@papercusp/agent-mcp')>()), listAllProjectedTools: io.tools,
 }));
@@ -90,6 +98,48 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       .toMatchObject({ decision: 'deny', policyRevision: 'policy-b',
         obligations: { capabilityUnsatisfied: { cause: 'provider-unbound' } } });
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a validated launch row while applying a changed administrator policy on the next call', async () => {
+    const f = fixture();
+    const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'cache-policy-test', rowVersion: '41' } };
+    const read = vi.fn().mockResolvedValueOnce(f.policy)
+      .mockResolvedValueOnce({ ...f.policy, policyRevision: 'policy-b', bindings: [] });
+
+    expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+      .toMatchObject({ decision: 'allow', policyRevision: 'policy-a' });
+    const replayCount = io.replay.mock.calls.length;
+    expect(replayCount).toBeGreaterThan(0);
+
+    expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+      .toMatchObject({ decision: 'deny', policyRevision: 'policy-b',
+        obligations: { capabilityUnsatisfied: { cause: 'provider-unbound' } } });
+    expect(io.replay).toHaveBeenCalledTimes(replayCount);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('revalidates on a launch-row or applied-revision change and denies a tampered artifact', async () => {
+    const f = fixture();
+    const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'cache-invalidation-test', rowVersion: '51' } };
+    const read = vi.fn(async () => f.policy);
+
+    expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
+      .toMatchObject({ decision: 'allow' });
+    const firstReplayCount = io.replay.mock.calls.length;
+
+    const changedApplied = { ...f.applied, stateRevision: 'state-b' };
+    expect(await checkIdentityGrantKernel(f.request, {
+      ...state, activation: { applied: changedApplied },
+    }, f.record, read)).toMatchObject({ decision: 'allow' });
+    expect(io.replay.mock.calls.length).toBeGreaterThan(firstReplayCount);
+    const secondReplayCount = io.replay.mock.calls.length;
+
+    const tampered = { ...f.record, specificationArtifact: { ...f.artifact, configuration: {} } };
+    expect(await checkIdentityGrantKernel(f.request, {
+      ...state, identityLaunchRecordVersion: { sessionId: 'cache-invalidation-test', rowVersion: '52' },
+    }, tampered, read)).toMatchObject({ decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    expect(io.replay.mock.calls.length).toBeGreaterThan(secondReplayCount);
   });
 
   it('selects the exact applied history receipt, not the current desired artifact', () => {

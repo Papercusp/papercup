@@ -502,6 +502,9 @@ export interface GitPipelineSnapshot {
       loadState: string | null;
       known: boolean | null;
       invocationId: string | null;
+      /** False when active-run liveness came from the shared run-lock; the manual
+       *  systemd unit probe does not describe that scheduled/external process. */
+      appliesToActiveRun?: boolean;
     };
     /** Whether the checkpoint CLI emitted its own valid terminal result line. */
     terminalMarker?: boolean;
@@ -1133,6 +1136,7 @@ export function mapActiveRun(r: {
             loadState: r.systemd.load_state,
             known: r.systemd.known,
             invocationId: r.systemd.invocation_id,
+            appliesToActiveRun: r.active && !r.held_externally,
           },
         }
       : {}),
@@ -1154,7 +1158,16 @@ export function mapActiveRun(r: {
     // Emitted ONLY on an actual refire, so the common reply shape is unchanged.
     ...(r.refire_observed ? { initialCandidate: r.initial_candidate ?? null, refireObserved: true } : {}),
     startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
-    progressAtMs: Number.isFinite(progressAtMs) ? progressAtMs : Number.isFinite(startedAtMs) ? startedAtMs : null,
+    // An externally-held (normally scheduled) run has no manual-unit heartbeat. If no
+    // phase heartbeat was recorded, its start time is not evidence of progress; preserve
+    // the unknown reading as null rather than making a long healthy run look stalled.
+    progressAtMs: Number.isFinite(progressAtMs)
+      ? progressAtMs
+      : r.held_externally
+        ? null
+        : Number.isFinite(startedAtMs)
+          ? startedAtMs
+          : null,
     ...(r.current_phase === undefined ? {} : { currentPhase: r.current_phase ?? null }),
     elapsedSec: r.elapsed_sec ?? null,
   };

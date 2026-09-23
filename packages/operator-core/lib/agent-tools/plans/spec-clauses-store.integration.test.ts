@@ -4,7 +4,7 @@ import type postgres from 'postgres';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import type { SpecClauseRevision, SpecClauseWrite } from './spec-clauses-store';
+import type { SpecClauseBarPin, SpecClauseRevision, SpecClauseWrite } from './spec-clauses-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -79,6 +79,28 @@ function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite {
     actorId: 'su-spec-integration',
     ...over,
   };
+}
+
+const BAR_PIN: SpecClauseBarPin = {
+  barKey: 'R-1',
+  barHash: 'a'.repeat(64),
+  barSetHash: 'b'.repeat(64),
+  rubricSlug: 'acceptance-reconnect-plan',
+  rubricRevision: 4,
+  evidencePlane: 'tree',
+};
+const BAR_ACCEPTANCE_REF = 'acceptance-reconnect-plan@4:R-1';
+
+async function barKeyAt(specId: string, revision: number): Promise<string | null> {
+  const [row] = await db.sql<{ source_bar_key: string | null }[]>`
+    SELECT source_bar_key FROM harness_shared.plan_spec_clause_revisions
+     WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+       AND plan_slug = 'reconnect-plan' AND spec_id = ${specId} AND revision = ${revision}`;
+  // An ABSENT row and a CLEARED pin both read as null, and this helper exists to tell
+  // a carried-forward pin from a destroyed one — so refuse the ambiguity rather than
+  // let a missing revision pass for an unlinked one.
+  if (!row) throw new Error(`no ${specId} revision ${revision}`);
+  return row.source_bar_key;
 }
 
 beforeAll(async () => {
@@ -261,6 +283,79 @@ describe('first-class plan spec clauses', () => {
       acceptanceRef,
       sourceBar,
     });
+  });
+
+  it('carries a prior BAR pin forward when a later revision omits sourceBar', async () => {
+    expect(
+      await store.setSpecClause(
+        clause({ lifecycleStatus: 'draft', acceptanceRef: BAR_ACCEPTANCE_REF, sourceBar: BAR_PIN }),
+      ),
+    ).toMatchObject({ status: 'created', revision: 1 });
+
+    // The regression: `sourceBar` is immutable provenance, so OMITTING it must ride the
+    // prior pin forward. Landing NULL here is silent lineage loss — `acceptanceRef`
+    // survives (the caller passes it), so the clause still READS as bar-linked while
+    // `source_bar_key`, the column acceptance-bar amendment joins on, is gone.
+    expect(
+      await store.setSpecClause(
+        clause({ expectedRevision: 1, lifecycleStatus: 'active', acceptanceRef: BAR_ACCEPTANCE_REF }),
+      ),
+    ).toMatchObject({ status: 'revised', revision: 2 });
+
+    const [current] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-01'],
+    });
+    expect(current).toMatchObject({ revision: 2, lifecycleStatus: 'active', sourceBar: BAR_PIN });
+    expect(await barKeyAt('SPEC-003-01', 2)).toBe('R-1');
+  });
+
+  it('refuses to unlink an AUTO-BAR projection with an explicit null pin', async () => {
+    const specId = 'AUTO-BAR-R-1-P-003';
+    expect(
+      await store.setSpecClause(
+        clause({ specId, lifecycleStatus: 'draft', acceptanceRef: BAR_ACCEPTANCE_REF, sourceBar: BAR_PIN }),
+      ),
+    ).toMatchObject({ status: 'created', revision: 1 });
+
+    expect(
+      await store.setSpecClause(
+        clause({
+          specId,
+          expectedRevision: 1,
+          lifecycleStatus: 'active',
+          acceptanceRef: BAR_ACCEPTANCE_REF,
+          sourceBar: null,
+        }),
+      ),
+    ).toMatchObject({ status: 'bar_pin_invalid', reason: 'bar_pin_unlink_forbidden' });
+
+    // The refusal must leave revision 1 intact rather than half-applying the unlink.
+    expect(await barKeyAt(specId, 1)).toBe('R-1');
+  });
+
+  it('allows an explicit null pin when the AUTO-BAR projection is superseded', async () => {
+    const specId = 'AUTO-BAR-R-1-P-003';
+    expect(
+      await store.setSpecClause(
+        clause({ specId, lifecycleStatus: 'draft', acceptanceRef: BAR_ACCEPTANCE_REF, sourceBar: BAR_PIN }),
+      ),
+    ).toMatchObject({ status: 'created', revision: 1 });
+
+    expect(
+      await store.setSpecClause(
+        clause({
+          specId,
+          expectedRevision: 1,
+          lifecycleStatus: 'superseded',
+          acceptanceRef: BAR_ACCEPTANCE_REF,
+          sourceBar: null,
+        }),
+      ),
+    ).toMatchObject({ status: 'revised', revision: 2 });
+
+    expect(await barKeyAt(specId, 2)).toBeNull();
   });
 
   it('normalizes production-shaped Postgres text timestamps at the spec-store boundary', async () => {

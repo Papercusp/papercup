@@ -285,9 +285,9 @@ export const GATE_VERDICT_CELL: CellSpec = {
     codes: {
       inconclusive: {
         meaning:
-          'The newest run ended with NO verdict (cancelled, timed out, or crashed before tests ran), so the red/green counters beside it describe an OLDER run.',
+          'The recorded tick ended with NO verdict (cancelled, timed out, or crashed before tests ran), so the red/green counters describe an OLDER run; the latched detail is not a live runner-status signal.',
         safeAction:
-          'Follow the status-specific lever in `gate.inconclusive`. Do NOT act on the frozen red counters as though they judged the current tree.',
+          'Read `gate.inconclusive.observedAtMs` and live `gate.checkpointRunInFlight` before acting. The detail describes that abort only; do NOT stop a currently active suite or treat its historical `no suite was run` text as current.',
       },
       'red-stale': {
         meaning:

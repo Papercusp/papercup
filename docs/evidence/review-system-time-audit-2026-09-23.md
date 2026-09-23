@@ -2,6 +2,41 @@
 
 Author: su-1bb6850b, 2026-09-23 ~03:50Z. Requested by Avi (owner, interactive): "what specifically is taking up all the time? How can we improve our system to tackle these bottlenecks without hurting the functionality?"
 
+## Read this first: improvement → plan item
+
+Five independent audits are appended below, so the 26 numbered improvements are spread across five tables. Plan `review-system-rework-reduction-2026-09-23` merged overlapping items under D-005 (36 → 20). This index gives each improvement's **surviving** item. A dropped item id cited further down still resolves: its plan entry reads "merged into P-xxx per D-005".
+
+| # | improvement (short) | plan item |
+|---|---|---|
+| 1 | clause identity keyed to the clause's own meaning; carry-forward in amend | P-001, P-002 |
+| 2 | shift-left contract completeness; vet before proof | P-003, P-004 |
+| 3 | emit-ready evaluator as one certify verb | P-005 (absorbed P-006) |
+| 4 | quarantine notice; git-sync dispatch slot | P-009 (absorbed P-010) |
+| 5 | parallel copy-out probes; re-measure on fingerprint move | P-018 (absorbed P-011) |
+| 6 | `glance_stale` key; gate `coord:glance` hooks | P-012 |
+| 7 | compact-by-default review reads | P-007 |
+| 8 | schema-friction pass on review tools | P-008 |
+| 9 | stop the wake storm to dead sessions | P-013 |
+| 10 | review is pull, not push | P-014 |
+| 11 | silent consult → work item at 50% TTL | P-014 (absorbed P-015) |
+| 12 | sweep the existing awaiting-acceptance backlog | P-016 |
+| 13 | drive 8 by measured failure rate, `rubrics:propose` first | P-008 (absorbed P-017) |
+| 14 | pin proof to its commit; re-measure only touched paths | P-018 |
+| 15 | supersede-on-bind; name the dragging binding | P-019 |
+| 16 | `coord:send` chunks; `rubrics:amend` commit observable | P-008 (absorbed P-020) |
+| 17 | amend dry run: carried vs invalidated proof | P-002 (absorbed P-027) |
+| 18 | nested git-sync installs honour live locks | P-009 (absorbed P-028) |
+| 19 | seed-time check.files ⇄ requiredTestLayers | P-003 (absorbed P-029) |
+| 20 | supersede cascade for carrier items | P-030 |
+| 21 | re-evaluate BAR readiness on every scope write | P-030 (absorbed P-031) |
+| 22 | parked cold-loop fire falls back to inbox wake | P-013 (absorbed P-033) |
+| 23 | non-actionable wakes cost no turn | P-024 (absorbed P-034) |
+| 24 | handoff brief lists verbs that succeeded | P-035 |
+| 25 | cross-session directive close needs `force`; `orders:reopen` | P-036 |
+| 26 | per-plan efficiency read, before/after | P-032 |
+
+Items with no numbered improvement come from audit prose: P-021, P-023 (→ P-012), P-022 (→ P-008), P-025, and P-026 (→ P-024).
+
 ## Sources (all measured, re-runnable)
 
 - `harness_shared.tool_invocations` for su-cfa16b20 (implementer) and su-1bb6850b (acceptance), 2026-09-22 21:00Z onward: `.papercusp/scratch/codex-review-audit.sql`.
@@ -409,4 +444,4 @@ My first report to Avi said the program's criteria were "reworded 106 times". Th
 | 23 | Non-actionable inbox wakes land in the inbox without starting a turn; directed asks and owner directives always wake (P-034) | no-op turns | nothing dropped: still in the inbox |
 | 24 | The handoff brief lists the mutating verbs that succeeded on the item's plan (P-035) | rediscovery and false "no such verb" conclusions | extends the existing `priorAttemptBrief` |
 | 25 | `orders:disposition` refuses to close another live session's directive without `force`; add `orders:reopen`; `orders:list mine:true` (P-036) | wrong-session closes when one message is pasted to many sessions | each session still closes its own |
-| 26 | Per-plan efficiency read, then before/after on the next two ships (P-032) | audits like this one needing 30+ ad-hoc queries | read-only |
+| 26 | Per-plan efficiency read, then before/after on the next five ships (P-032; changed from two by D-005 to match Acceptance) | audits like this one needing 30+ ad-hoc queries | read-only |

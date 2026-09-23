@@ -38,7 +38,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
-import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
+import { consultParkKey as parkKey } from './get-feedback-core';
 import {
   advanceCascade,
   digestFromRow,
@@ -333,16 +333,23 @@ async function readState(
   return rows[0] ?? null;
 }
 
-/** The routing snapshot's qualified-but-not-chosen menu after a decline —
- * decliner excluded, route-time-dead candidates filtered (D-007(7)). The
- * driver may hand jsonb back unparsed; normalize before reading. */
+/** The routing snapshot's qualified-but-not-chosen menu after a decline — the
+ * decliner excluded, and nothing else.
+ *
+ * D-007(7) also filtered out route-time-DEAD candidates here, because the menu
+ * fed a wake and a dead session could not be woken. D-002 removed that premise:
+ * the menu now feeds the fork/convert dispatcher, which answers FROM the
+ * transcript, so an `ended` candidate is exactly as dispatchable as a live one.
+ * Keeping the filter would silently shrink every post-decline cascade to the
+ * candidates that happen to still be running — the selection bias R-2 forbids.
+ *
+ * The driver may hand jsonb back unparsed; normalize before reading. */
 function remainingFromSnapshot(routing: unknown, excludeOwnerId: string): Array<{ ownerId: string; score: number; liveness: string }> {
   const snap = typeof routing === 'string' ? (JSON.parse(routing) as unknown) : routing;
   const candidates = (snap as { candidates?: SnapshotCandidate[] } | null)?.candidates;
   if (!Array.isArray(candidates)) return [];
   return candidates
     .filter((c) => c && typeof c.ownerId === 'string' && c.ownerId !== excludeOwnerId)
-    .filter((c) => !DEAD_RESPONDER_STATES.has(c.liveness ?? ''))
     .map((c) => ({ ownerId: c.ownerId, score: c.score, liveness: c.liveness ?? 'unknown' }));
 }
 
@@ -378,6 +385,23 @@ function gateCommon(
  * responder, the requester, and every responder in the consumed selection
  * prefix may settle the consult.
  */
+/** Is `authorId` the CURRENT responder — the cursor entry, not the whole
+ * participant prefix?
+ *
+ * D-002 split this from a `=== row.responder_id` comparison, and the split is
+ * load-bearing: `responder_id` names the EXPERT WHOSE TRANSCRIPT was routed,
+ * while a FORK posts under a fresh coord identity. So on every fork the two
+ * differ BY CONSTRUCTION, and the equality test silently classified the
+ * dispatched session's own answer as an ordinary follow-up — which debits the
+ * exchange cap and, worse, skips the cascade advance entirely, so the answer
+ * never reaches `cascade_digest` and the next expert is never dispatched.
+ * `answeringOwnerId` is stamped on the cursor entry for exactly this reason. */
+function isCurrentResponder(row: ConsultStateRow, authorId: string): boolean {
+  if (authorId === row.responder_id) return true;
+  const cursorEntry = selectionFromRouting(row.routing)[row.cascade_cursor];
+  return cursorEntry?.answeringOwnerId === authorId;
+}
+
 function isConsultParticipant(row: ConsultStateRow, authorId: string): boolean {
   if (authorId === row.requester_id || authorId === row.responder_id) return true;
   return selectionFromRouting(row.routing)
@@ -534,7 +558,10 @@ export async function consultReplyCore(
   // the default cap of 4 must not refuse the 5th). Later posts by the same
   // selectee are ordinary exchanges: the advance moves responder_id, so a
   // selectee can trigger at most one advance.
-  const isPerspective = role === 'responder' && req.authorId === row.responder_id;
+  // ⚠ "the current responder" is NOT `=== row.responder_id` since D-002 — on a
+  // fork the answering identity differs from the routed expert. See
+  // isCurrentResponder for what that equality test silently cost.
+  const isPerspective = role === 'responder' && isCurrentResponder(row, req.authorId);
 
   // The exchange cap (D-001): a reply past the cap is refused; close/decline stay open.
   if (!isPerspective && row.exchanges_used + 1 > row.max_exchanges) {
@@ -739,7 +766,12 @@ export async function consultDeclineCore(
   if ('error' in gated) return gated;
   const row = gated.row;
 
-  if (req.authorId !== row.responder_id) return { error: 'not_the_responder' };
+  // Not `!== row.responder_id`: on a fork the DISPATCHED session is the one
+  // reading the question, so it is the one that discovers the transcript does
+  // not cover it — and a decline is the only thing that advances the cascade
+  // to the next expert. Refusing it here would strand every forked consult on
+  // an expert who cannot answer until the expiry sweep settles it hours later.
+  if (!isCurrentResponder(row, req.authorId)) return { error: 'not_the_responder' };
   const reason = req.reason.trim();
   if (!reason) return { error: 'reason_required' };
 
@@ -1029,7 +1061,9 @@ export async function consultCloseCore(
 
   // A responder close is the terminal reply — wake the parked requester. A
   // requester closing their own consult has nobody parked on the key.
-  if (req.authorId === row.responder_id) {
+  // (isCurrentResponder, not an id equality: a fork closes under its own
+  // identity, and the parked requester must still be released.)
+  if (isCurrentResponder(row, req.authorId)) {
     await deps.emitReplyEvent({
       key: parkKey(req.conversationId),
       summary: `consult ${req.conversationId}: ${state} by ${req.authorId} — ${oneLine(body)}`,

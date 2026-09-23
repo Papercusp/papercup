@@ -445,6 +445,15 @@ describe('P-007: the four verdict cells', () => {
     expect(GATE_VERDICT_CELL.assessment!.evidence).toContain('verdictProvenance.mainBehindStaging');
   });
 
+  it('the inconclusive verdict directs readers to abort vintage and current run liveness', () => {
+    const assessment = GATE_VERDICT_CELL.assessment?.codes.inconclusive;
+
+    expect(assessment?.meaning).toContain('not a live runner-status signal');
+    expect(assessment?.safeAction).toContain('gate.inconclusive.observedAtMs');
+    expect(assessment?.safeAction).toContain('gate.checkpointRunInFlight');
+    expect(assessment?.safeAction).toContain('do NOT stop a currently active suite');
+  });
+
   it('held-live stops only LIVE_GATE_OPS and does not reserve generic gate-system development', () => {
     const safeAction = GATE_OWNERSHIP_CELL.assessment?.codes['held-live']?.safeAction;
 

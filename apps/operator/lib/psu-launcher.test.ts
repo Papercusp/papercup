@@ -7418,8 +7418,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       );
     const result = await reportSessionPortDelivery(
       {
-        protocolVersion: 1,
-        transformVersion: 1,
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
         portId: "22222222-2222-4222-8222-222222222222",
         targetAdvSessionId: 99,
         workspace: "papercusp-workspace",
@@ -7434,8 +7434,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(result.port.status).toBe("delivered");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      protocolVersion: 1,
-      transformVersion: 1,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     });
   });
 
@@ -7468,8 +7468,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       );
     const result = await reportSessionPortLaunchFailure(
       {
-        protocolVersion: 1,
-        transformVersion: 3,
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
         workspace: "papercusp-workspace",
         portId: "22222222-2222-4222-8222-222222222222",
         token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
@@ -7484,8 +7484,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
     const disposition = JSON.parse(fetchImpl.mock.calls[1][1].body);
     expect(disposition).toMatchObject({
-      protocolVersion: 1,
-      transformVersion: 3,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
       status: "failed",
       portId: "22222222-2222-4222-8222-222222222222",
       preparationToken: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,

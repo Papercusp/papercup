@@ -644,6 +644,21 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       payload: {
         observation: {
           ...GRADED_CARD.payload.observation,
+          retracted: { at: '2026-08-17T12:00:00.000Z', by: 'su-author', reason: 'withdrawn' },
+          gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
+        },
+      },
+    });
+    const withdrawn = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
+    expect(withdrawn.ok).toBe(false);
+    expect((withdrawn as { error?: string }).error).toContain('is retracted and cannot be audited');
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+
+    getIssue.mockResolvedValue({
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
           gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
         },
       },

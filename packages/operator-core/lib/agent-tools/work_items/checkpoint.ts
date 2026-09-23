@@ -558,7 +558,7 @@ function looseBoolean() {
  * would retire carried check rows. Throwing from the transform aborts the
  * transaction before the new carry-note can be stored. */
 class ReplaceWouldDropError extends Error {
-  constructor(readonly droppedChecks: string[]) {
+  constructor(readonly droppedChecks: string[], readonly retireIdsRequired = false) {
     super('checkpoint_replace_would_drop_rows');
   }
 }
@@ -739,7 +739,8 @@ function rowsModeSpec() {
         'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
         '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
         "and `retireIds` is rejected unless `rowsMode:'replace'` is explicit — it is never silently ignored on a merge. " +
-        "never the checkpoint body: a full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
+        "never the checkpoint body. With `append:true` + `rowsMode:'replace'`, row retirement requires exact `retireIds`, " +
+        "even with `confirmRetire:true`. A full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
         'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
         'checks become additive; without confirmRetire, omitted carried checks are refused before write. Prefer ' +
         '`retireIds` over a blind `confirmRetire:true` when your view of the carried set may be an excerpt.',
@@ -1219,6 +1220,7 @@ export default defineTool({
         'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
           'instead of replacing it, and UNION supplied `checks` onto the carried set instead of replacing them ' +
           '(EI-19944669306930709). With `checks` and no `checkpoint`, this is an additive checks-only patch. ' +
+          "With explicit `rowsMode:'replace'`, any appended-body write that retires checks requires exact `retireIds`, even with `confirmRetire:true`. " +
           'Also the default applied to any `items[]` entry that omits its own `append`.',
       ),
       confirmShrink: looseBoolean().describe(
@@ -1226,11 +1228,12 @@ export default defineTool({
       ),
       rowsMode: rowsModeSpec().describe(
         'single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. ' +
-          '`merge` unions supplied checks without appending the body. A complete body+rows replacement is ' +
+          "`merge` unions supplied checks without appending the body. With `append:true` + `rowsMode:'replace'`, " +
+          '`retireIds` are required for any retired row; `confirmRetire:true` alone is not sufficient. A complete body+rows replacement is ' +
           "append:false, rowsMode:'replace', confirmShrink:true, confirmRetire:true.",
       ),
       confirmRetire: looseBoolean().describe(
-        "single shorthand default for `confirmRetire`; also the items[] default. Required only when rowsMode:'replace' would retire carried checks.",
+        "single shorthand default for `confirmRetire`; also the items[] default. For non-append rowsMode:'replace', it authorizes retiring carried checks. With append:true + rowsMode:'replace', exact retireIds are required instead.",
       ),
       retireIds: retireIdsSpec().describe(
         "single shorthand default for `retireIds`; also the items[] default. A STRONGER, opt-in alternative to " +
@@ -2084,6 +2087,8 @@ export default defineTool({
                   if (!setsMatch) {
                     throw new RetireIdsMismatchError([...requestedKeys], [...droppedKeys]);
                   }
+                } else if (rowsMode === 'replace' && wantsAppend && droppedCheckClaims.length > 0) {
+                  throw new ReplaceWouldDropError(droppedCheckClaims, true);
                 } else if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
                   throw new ReplaceWouldDropError(droppedCheckClaims);
                 }
@@ -2339,11 +2344,16 @@ export default defineTool({
           errorCode: 'checkpoint_replace_would_drop_rows',
           retryable: true,
           checksDropped: error.droppedChecks,
+          ...(error.retireIdsRequired ? { retireIdsRequired: true } : {}),
           message:
-            "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
-            'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or name ' +
-            'exactly the rows above in `retireIds` for a mismatch-checked retirement, or omit ' +
-            'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+            error.retireIdsRequired
+              ? "append:true with rowsMode:'replace' would RETIRE the carried checks named above. confirmRetire:true " +
+                'is not sufficient for this combination — NOTHING was written. Retry with `retireIds` naming exactly ' +
+                'the rows above, or omit rowsMode to preserve the carried checks.'
+              : "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
+                'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or name ' +
+                'exactly the rows above in `retireIds` for a mismatch-checked retirement, or omit ' +
+                'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
         });
         // EI-21923095696933477: the retireIds sibling of replaceWouldDropResponse —
         // reports what was requested vs what would actually drop so the caller can

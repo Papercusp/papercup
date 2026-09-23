@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GATE_ABORT_DETAIL_LIVENESS_MARKER,
   GATE_ABORT_VINTAGE_STALE_MS,
   RECORDED_INCONCLUSIVE_STATUSES,
   classifyGateAbort,
   gateAbortLever,
   gateAbortRefireClause,
+  gateAbortDetailAtRead,
   gateAbortVintage,
   isRecordedInconclusiveStatus,
   type RecordedInconclusiveStatus,
@@ -211,5 +213,35 @@ describe('gateAbortVintage: a latched abort carries its own age', () => {
     const v = gateAbortVintage({ status: 'cancelled', observedAtMs: NOW + 60_000, nowMs: NOW });
     expect(v.ageMs).toBe(0);
     expect(v.stale).toBe(false);
+  });
+});
+
+describe('gateAbortDetailAtRead: cached details carry their vintage and live-run boundary', () => {
+  const now = Date.parse('2026-09-20T00:50:00.000Z');
+
+  it('stamps a 27-minute-old detail even below the stale-warning threshold', () => {
+    const detail = gateAbortDetailAtRead({
+      status: 'repair-in-progress',
+      detail: 'candidate remains serialized and no suite was run',
+      observedAtMs: now - 27 * 60_000,
+      nowMs: now,
+    });
+
+    expect(detail).toContain('no suite was run');
+    expect(detail).toContain('Abort observed 27m ago');
+    expect(detail).toContain(GATE_ABORT_DETAIL_LIVENESS_MARKER);
+  });
+
+  it('retains stale and unknown-vintage warnings beside the live-run boundary', () => {
+    for (const observedAtMs of [now - 3 * 60 * 60_000, null]) {
+      const detail = gateAbortDetailAtRead({
+        status: 'repair-in-progress',
+        detail: 'no suite was run',
+        observedAtMs,
+        nowMs: now,
+      });
+      expect(detail).toContain(GATE_ABORT_DETAIL_LIVENESS_MARKER);
+      expect(detail).toMatch(observedAtMs === null ? /NO observation timestamp/ : /LATCHED/);
+    }
   });
 });

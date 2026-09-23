@@ -222,7 +222,7 @@ describe('selectAcceptanceGrader (D-009)', () => {
     expect(out.routing).toBeUndefined();
   });
 
-  it('skips a dead top candidate toward the next reachable one', async () => {
+  it('a DEAD top candidate KEEPS the top slot — grading dispatches, so deadness is not unreachability (R-2)', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
       getPartyKeys: noParties,
@@ -230,20 +230,36 @@ describe('selectAcceptanceGrader (D-009)', () => {
       route: async () => routed([candidate('su-dead', 'ended', 0.9), candidate('su-live', 'live', 0.6)]),
     });
     expect(out.verdict).toBe('assigned');
-    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-live']);
+    // This used to be ['su-live'] — the gate skipped the better-matched judge
+    // because a dead session could not be WOKEN. Acceptance grading now forks
+    // or converts the transcript (D-013), so the 0.9 match leads and the live
+    // 0.6 follows it on the cascade menu instead of displacing it.
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-dead', 'su-live']);
   });
 
-  it('ALL eligible dead → fresh; the liveness gate blocks the minimum-fill too', async () => {
+  it('ALL eligible dead → a FULL menu, not a fresh mint: nothing is unselectable any more', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
       getPartyKeys: noParties,
       getCandidateRoles: roleLookup({ 'su-dead': 'reviewer', 'su-rec': 'reviewer' }),
       route: async () => routed([candidate('su-dead', 'ended'), candidate('su-rec', 'recorded')]),
     });
-    // A populated-but-unreachable pool is NOT the same as an empty one, and it
-    // must not be rescued by the fill: an unwakeable grader stalls the gate
-    // exactly like no grader.
-    expect(out).toMatchObject({ verdict: 'fresh', graders: [], freshReason: 'all_eligible_unselectable' });
+    // The falsifier for D-013's coupling: if a liveness gate is ever put back
+    // while acceptance-grader.ts still dispatches, this flips to a fresh mint
+    // and fails here — rather than silently paying for a brand-new judge boot
+    // whenever the best-matched graders happen to have ended.
+    expect(out.verdict).toBe('assigned');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-dead', 'su-rec']);
+  });
+
+  it('an EMPTY eligible pool is the only fresh mint left — and it says no_eligible_non_excluded', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getPartyKeys: noParties,
+      getCandidateRoles: roleLookup({}),
+      route: async () => routed([]),
+    });
+    expect(out).toMatchObject({ verdict: 'fresh', graders: [], freshReason: 'no_eligible_non_excluded' });
   });
 
   it('degraded embedder → fresh with degraded (cannot measure ≠ measured nothing)', async () => {

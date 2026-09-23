@@ -507,8 +507,12 @@ describe('consultDeclineCore', () => {
     );
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('declined');
+    // The DEAD candidate is on the menu, in rank order, exactly like the rest:
+    // the cascade feeds the fork/convert dispatcher now, so route-time deadness
+    // stopped being a reason to drop anyone (D-002 retiring D-007(7)).
     expect(r.remaining_candidates).toEqual([
       { ownerId: 'agent-next', score: 0.7, liveness: 'parked' },
+      { ownerId: 'agent-dead', score: 0.65, liveness: 'ended' },
       { ownerId: 'agent-third', score: 0.6, liveness: 'live' },
     ]);
     expect(r.hint).toContain('cascade menu is exhausted'); // no selection block in the seed ⇒ terminal decline (D-005)
@@ -1236,6 +1240,45 @@ describe('advanceCascade — liveness-blind refill + honest under-filled (D-002/
     expect(row.cascade_digest).toMatchObject([
       { ownerId: RESPONDER, kind: 'decline' },
       { ownerId: 'dead-x-fork', kind: 'answer' },
+    ]);
+  });
+
+  it('the FORK may decline under its own identity — responder_id names the transcript, not the author', async () => {
+    // The dispatched session is the one that reads the question and discovers
+    // its inherited transcript does not cover it. Gating decline on
+    // `authorId === responder_id` refuses exactly that session (a fork posts
+    // under a fresh coord id BY CONSTRUCTION), which strands the consult on an
+    // expert who cannot answer until the expiry sweep settles it hours later.
+    const id = await seedConsult({ state: 'active', routing: deadPoolRouting() });
+    const { deps } = makeDeps();
+    // Dispatch stamps the answering identity onto the cursor entry; the gate
+    // reads it from there.
+    deps.dispatch = async (o) => {
+      await o.onAnsweringOwner?.(`${o.responder}-fork`);
+      return { woke: 1, answeringOwnerId: `${o.responder}-fork` };
+    };
+    const first = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in first) throw new Error(first.error);
+    expect(first.cascade).toMatchObject({ advanced_to: 'dead-x' });
+
+    const forked = await consultDeclineCore(
+      {
+        workspaceId: WS,
+        authorId: 'dead-x-fork',
+        conversationId: id,
+        reason: 'the inherited transcript covers the router, not this subsystem',
+      },
+      deps,
+    );
+    expect(forked).not.toMatchObject({ error: 'not_the_responder' });
+    if ('error' in forked) throw new Error(forked.error);
+    const row = await stateRow(id);
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'decline' },
+      { ownerId: 'dead-x-fork', kind: 'decline' },
     ]);
   });
 

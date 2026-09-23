@@ -297,6 +297,9 @@ export interface GateAbortVintage {
   warning: string | null;
 }
 
+export const GATE_ABORT_DETAIL_LIVENESS_MARKER =
+  'This detail describes the recorded abort only; check `gate.checkpointRunInFlight` before acting on current runner liveness.';
+
 /**
  * Pure: pair a recorded abort with its own age, so the claim and its vintage travel together.
  *
@@ -344,4 +347,16 @@ export function gateAbortVintage(args: {
         `names may already have cleared. Confirm it first-hand before acting on it.`
       : null,
   };
+}
+
+export function gateAbortDetailAtRead(args: {
+  status: string;
+  detail: string | null;
+  observedAtMs: number | null | undefined;
+  nowMs: number;
+}): string {
+  const vintage = gateAbortVintage(args);
+  const vintageNote = vintage.warning ?? `Abort observed ${vintage.age} ago.`;
+  const detail = args.detail ?? 'See the green-checkpoint log for the blocking condition.';
+  return `${detail} ${vintageNote} ${GATE_ABORT_DETAIL_LIVENESS_MARKER}`;
 }

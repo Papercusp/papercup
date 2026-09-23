@@ -12,8 +12,18 @@ export interface StagingFirstBlockerInput {
   itemId: string;
   /** Work-item title + summary, used to classify final shipment/gate work. */
   itemText: string;
-  /** The typed blocker ref plus its human evidence/next action. */
+  /** The typed blocker ref plus its next action: the dependency semantics that get classified. */
   blockerText: string;
+  /**
+   * The caller's blocker `summary` + `evidence`. Read ONLY by the narrow deployed-only
+   * exception, never by classification: evidence routinely names :3070/:3170 as
+   * provenance, so classifying it would turn an unrelated blocker into a false
+   * deployed-main wait. But the refusal's own remediation tells the caller to NAME the
+   * deployed-only property and explain the staging limitation, and callers put that
+   * prose in `summary`/`evidence`; ignoring those fields made the exception
+   * unsatisfiable from exactly where it is written (EI-24018845641231261).
+   */
+  exceptionText?: string;
   kind: string;
 }
 
@@ -53,6 +63,22 @@ const GENERIC_DEPLOY_BLOCKER_RE = /(?:\brelease\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const EXPLICIT_STAGING_ENV_RE = /(?:\bstaging\b|\bcurrent[- ]build\b)/i;
 const LIVE_GATE_OPERATION_RE =
   /(?:green[- ]checkpoint|greenCheckpoint|gate[- ]red|re-?green|tested[/ -]deployed\s+parity|restore(?:d)?\s+(?:the\s+)?(?:tested[/ -]deployed|release)\s+parity)/i;
+
+// A plan slug is an IDENTIFIER, not dependency semantics. A ref such as
+// `p2p-public-release-endgame-2026-09-01#D-047` names a plan decision; the word
+// `release` inside the slug says nothing about waiting on main/:3070/deployment, yet
+// GENERIC_DEPLOY_BLOCKER_RE matched it (hyphens are word boundaries) and a kind:'gate'
+// blocker on ANY decision of that plan was refused as a deployed-main wait
+// (EI-24018845641231261). Blank the slug of plan-anchored refs (`<slug>#D-NNN`,
+// `<slug>#P-NNN`) and of `plan:`/`plan-lane:` refs before any semantic matching; a
+// genuine release wait still carries its own words (main, :3070, deploy, ...) outside
+// the identifier.
+const PLAN_PREFIXED_SLUG_RE = /\b(plan(?:-lane)?:)[a-z0-9]+(?:-[a-z0-9]+)*/gi;
+const PLAN_ANCHORED_SLUG_RE = /\b[a-z0-9]+(?:-[a-z0-9]+)*(?=#[DP]-\d{3,}\b)/gi;
+
+export function neutralizePlanIdentifiers(text: string): string {
+  return text.replace(PLAN_PREFIXED_SLUG_RE, '$1<plan>').replace(PLAN_ANCHORED_SLUG_RE, '<plan>');
+}
 
 function itemRefPattern(itemId: string): RegExp {
   return new RegExp(`\\b${itemId.replace('-', '\\-')}\\b`);
@@ -116,7 +142,7 @@ function hasNarrowDeployedMainException(text: string): boolean {
  * runtime-writer-vintage blocker was refused twice verbatim). Name each predicate's
  * status and the exact token contract, so one refusal is enough to self-repair.
  */
-function narrowExceptionDiagnosis(text: string): string {
+function narrowExceptionDiagnosis(text: string, scope: string): string {
   const checks = [
     EXPLICIT_DEPLOYED_ONLY_RE.test(text)
       ? `'deployed-only' token: present`
@@ -128,7 +154,7 @@ function narrowExceptionDiagnosis(text: string): string {
       ? `concrete reason: present`
       : `concrete reason: MISSING — give it with "because"/"due to"/"since", or name rollback / migration ordering / release packaging / production-only / deployed-host`,
   ];
-  return `Narrow-exception check over the item + blocker text (all three must hold): ${checks.join('; ')}.`;
+  return `Narrow-exception check over ${scope} (all three must hold): ${checks.join('; ')}.`;
 }
 
 function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string {
@@ -139,7 +165,7 @@ function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string
 }
 
 function hasStrongDeployedGate(text: string): boolean {
-  return text
+  return neutralizePlanIdentifiers(text)
     .split(/\n+|(?<=[.!?])\s+/)
     .some(
       (clause) =>
@@ -174,7 +200,7 @@ function isFinalLifecycleItem(item: PlanItem): boolean {
  * allow the actual gate-repair item itself to use a release blocker.
  */
 export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): StagingFirstBlockerProblem | null {
-  const blockerText = input.blockerText.trim();
+  const blockerText = neutralizePlanIdentifiers(input.blockerText.trim());
   if (!blockerText) return null;
   const stagingOnly = EXPLICIT_STAGING_ENV_RE.test(blockerText) && !MAIN_RELEASE_BLOCKER_RE.test(blockerText);
   if (stagingOnly) return null;
@@ -190,9 +216,13 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
   if (LIVE_GATE_OPERATION_RE.test(itemText)) return null;
   if (isFinalLifecycleText(itemText)) return null;
   // The narrow exception describes THIS blocker, so require all three predicates
-  // in the submitted blocker fields. Do not let an issue's title/summary (which
-  // may quote the contract or describe this very defect) launder a generic wait.
-  if (hasNarrowDeployedMainException(blockerText)) return null;
+  // in the submitted blocker fields (ref, nextVerb, summary, evidence). Do not let
+  // the work item's title/summary (which may quote the contract or describe this
+  // very defect) launder a generic wait.
+  const exceptionText = [blockerText, neutralizePlanIdentifiers(input.exceptionText?.trim() ?? '')]
+    .filter(Boolean)
+    .join('\n');
+  if (hasNarrowDeployedMainException(exceptionText)) return null;
 
   return {
     itemId: input.itemId,
@@ -202,7 +232,7 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
       `Continue implementation and non-final verification on staging/current-build. ` +
       `Only use this blocker for a narrow deployed-only property: name that property, explain concretely ` +
       `why staging/current-build cannot exercise it, and retain the deployed wait only for that property. ` +
-      narrowExceptionDiagnosis(blockerText),
+      narrowExceptionDiagnosis(exceptionText, 'the submitted blocker fields (ref, nextVerb, summary, evidence)'),
   };
 }
 

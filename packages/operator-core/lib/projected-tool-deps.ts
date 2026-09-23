@@ -214,6 +214,8 @@ function operatorKernelDenial(
  */
 interface OperatorKernelState extends KernelContextState {
   identityLaunchRecord?: unknown;
+  /** Selected adv_sessions row identity/version for immutable artifact replay. */
+  identityLaunchRecordVersion?: { sessionId: string; rowVersion: string };
   /** The control anchor exists, but its owning adv_sessions row does not. */
   identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
@@ -243,6 +245,7 @@ export async function readControlAnchorKernelState(
         control_generation: number | string | null;
         workspace_id: string | null;
         adv_session_id: number | string | null;
+        adv_session_xmin: string | null;
         launch_spec?: unknown;
       }
     | undefined;
@@ -253,10 +256,11 @@ export async function readControlAnchorKernelState(
       control_generation: number | string | null;
       workspace_id: string | null;
       adv_session_id: number | string | null;
+      adv_session_xmin: string | null;
       launch_spec?: unknown;
     }>>`
       SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
-             a.id AS adv_session_id, a.launch_spec
+             a.id AS adv_session_id, a.launch_spec, a.launch_spec_xmin AS adv_session_xmin
         FROM (
           SELECT control_state, control_generation, workspace_id
             FROM harness_shared.session_briefs
@@ -264,7 +268,7 @@ export async function readControlAnchorKernelState(
            LIMIT 1
         ) b
         FULL JOIN (
-          SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec, s.workspace_id
+          SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec, s.xmin::text AS launch_spec_xmin, s.workspace_id
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
            ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
@@ -340,6 +344,10 @@ export async function readControlAnchorKernelState(
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec')
       ? { identityLaunchRecord: stateRow.launch_spec } : {}),
+    ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null
+      ? { identityLaunchRecordVersion: {
+          sessionId: String(stateRow.adv_session_id), rowVersion: String(stateRow.adv_session_xmin),
+        } } : {}),
     ...(activation ? { activation } : {}),
     ...(activation?.applied ? { appliedRevision: activation.applied } : {}),
     ...(generation ? { policyRevision: `control:${generation}` } : {}),

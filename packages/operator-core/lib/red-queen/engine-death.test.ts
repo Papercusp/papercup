@@ -266,6 +266,40 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
+  it('a recently completed routinesTick suppresses engine-death when admission held routine dispatches', async () => {
+    const logs: string[] = [];
+    const readRoutineEngineLiveness = vi.fn(async () => ({
+      stale: false,
+      unknown: false,
+      lastTickMs: NOW - 3_000,
+      staleMs: 3_000,
+    }));
+    const { d, capture } = deps({ readRoutineEngineLiveness, log: (message) => logs.push(message) });
+    const res = await runEngineDeathSentinelPass(d, {}, NOW);
+
+    expect(res.verdict?.dead).toBe(true);
+    expect(res.schedulerLivenessProven).toBe(true);
+    expect(res.captured).toBeUndefined();
+    expect(readRoutineEngineLiveness).toHaveBeenCalledTimes(1);
+    expect(capture).not.toHaveBeenCalled();
+    expect(logs.some((message) => message.includes('scheduler alive; not filing'))).toBe(true);
+  });
+
+  it('a stale routinesTick does not suppress a genuine engine-death capture', async () => {
+    const readRoutineEngineLiveness = vi.fn(async () => ({
+      stale: true,
+      unknown: false,
+      lastTickMs: NOW - 7 * 60_000,
+      staleMs: 7 * 60_000,
+    }));
+    const { d, capture } = deps({ readRoutineEngineLiveness });
+    const res = await runEngineDeathSentinelPass(d, {}, NOW);
+
+    expect(res.captured).toBe(true);
+    expect(res.schedulerLivenessProven).toBeUndefined();
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed host-global liveness read is UNKNOWN and never suppresses a real capture', async () => {
     const logs: string[] = [];
     const { d, capture } = deps({
@@ -277,6 +311,24 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect(res.captured).toBe(true);
     expect(capture).toHaveBeenCalledTimes(1);
     expect(logs.some((l) => l.includes('UNKNOWN does not suppress'))).toBe(true);
+  });
+
+  it('an UNKNOWN routinesTick read does not suppress a real capture', async () => {
+    const logs: string[] = [];
+    const { d, capture } = deps({
+      readRoutineEngineLiveness: async () => ({
+        stale: false,
+        unknown: true,
+        lastTickMs: null,
+        staleMs: null,
+      }),
+      log: (message) => logs.push(message),
+    });
+    const res = await runEngineDeathSentinelPass(d, {}, NOW);
+
+    expect(res.captured).toBe(true);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(logs.some((message) => message.includes('UNKNOWN does not suppress'))).toBe(true);
   });
 
   it('never throws — a read failure is a logged skip', async () => {

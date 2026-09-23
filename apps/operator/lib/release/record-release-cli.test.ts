@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import type { OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
 import {
   buildRunOpts,
   ANDROID_RELEASE_PROVENANCE_PATH,
@@ -13,6 +14,7 @@ import {
   computeMobileRegression,
   computeReleaseCompleteness,
   formatCompletenessAlert,
+  incompleteDesktopScopeRefusal,
   formatMobileRegressionAlert,
   isImplausiblyTiny,
   main,
@@ -169,7 +171,7 @@ describe('computeReleaseCompleteness — every desktop product×platform, not ju
   });
 });
 
-describe('formatCompletenessAlert — non-blocking, names every missing slot (WI-5515)', () => {
+describe('formatCompletenessAlert — names every missing slot and requires approval (WI-5515)', () => {
   it('is empty when nothing is missing (a complete release prints no alert)', () => {
     expect(formatCompletenessAlert('0.0.12', 'alpha', [])).toBe('');
   });
@@ -183,7 +185,55 @@ describe('formatCompletenessAlert — non-blocking, names every missing slot (WI
     expect(alert).toContain('SERVER');
     expect(alert).toContain('macOS (universal)');
     expect(alert).toContain('Windows (x64)');
-    expect(alert).toContain('NOT a rejection');
+    expect(alert).toContain('NOT an owner approval');
+    expect(alert).toContain('--owner-approved-partial-scope <owner-directive-id>');
+  });
+});
+
+describe('incompleteDesktopScopeRefusal — partial registry scopes require owner approval', () => {
+  const missing = [{ product: 'server' as const, platform: 'darwin-universal' }];
+  const approval: OwnerDirectiveRow = {
+    id: 123,
+    workspaceId: 'papercusp-workspace',
+    ownerId: 'owner',
+    sessionRef: 'owner-session',
+    sourceTurnRef: 'owner-turn',
+    verbatimText: 'I explicitly approve the partial desktop scope for 0.0.21 alpha; omit macOS and Windows.',
+    recordedBy: 'owner-session',
+    createdAtMs: 1,
+    dispositionedAtMs: null,
+    dispositionStatus: null,
+    dispositionNote: null,
+    dispositionedBy: null,
+    capturedByHook: true,
+  };
+
+  it('refuses an incomplete desktop scope without a captured owner directive', () => {
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, null, 'papercusp-workspace'),
+    ).toMatch(/REFUSING TO RECORD.*explicit owner approval/u);
+  });
+
+  it('accepts only a captured owner directive approving this exact version and partial scope', () => {
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, approval, 'papercusp-workspace'),
+    ).toBeNull();
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, { ...approval, capturedByHook: false }, 'papercusp-workspace'),
+    ).toMatch(/captured owner directive/u);
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, { ...approval, verbatimText: 'I approve this partial release' }, 'papercusp-workspace'),
+    ).toMatch(/does not explicitly approve/u);
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, { ...approval, workspaceId: 'other-workspace' }, 'papercusp-workspace'),
+    ).toMatch(/captured owner directive/u);
+    expect(
+      incompleteDesktopScopeRefusal('0.0.21', 'alpha', missing, { ...approval, verbatimText: 'I do not approve the partial desktop scope for 0.0.21 alpha; omit macOS and Windows.' }, 'papercusp-workspace'),
+    ).toMatch(/REFUSING TO RECORD/u);
+  });
+
+  it('does not require an approval reference for a complete scope', () => {
+    expect(incompleteDesktopScopeRefusal('0.0.21', 'alpha', [], null, 'papercusp-workspace')).toBeNull();
   });
 });
 
@@ -704,6 +754,21 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
       if (previous === undefined) delete process.env.PAPERCUSP_SKIP_ANDROID;
       else process.env.PAPERCUSP_SKIP_ANDROID = previous;
     }
+  });
+
+  it('carries a positive owner directive id as the partial-platform approval reference', () => {
+    expect(
+      buildRunOpts([
+        '--version',
+        '0.0.21',
+        '--owner-approved-partial-scope',
+        '123',
+      ]).ownerApprovedPartialScopeOrderId,
+    ).toBe(123);
+    expect(buildRunOpts(['--version', '0.0.21']).ownerApprovedPartialScopeOrderId).toBeNull();
+    expect(() =>
+      buildRunOpts(['--version', '0.0.21', '--owner-approved-partial-scope', 'not-an-id']),
+    ).toThrow(/positive owner directive id/u);
   });
 
   it('requires changelog text by default and carries the explicit no-changelog escape hatch', () => {

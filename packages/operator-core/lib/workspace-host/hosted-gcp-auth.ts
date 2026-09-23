@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { GoogleAuth, type JWTInput } from 'google-auth-library';
 import type { GcpResolvedAuth } from '../cloud-workspaces/gcp-preflight';
+import { ensurePapercuspHostingGrant, hostedGcpWorkspaceProject } from './hosted-gcp-hosting';
 import type { HostedDelegationOrganization, HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 const METADATA_ROOT = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default';
@@ -120,16 +121,33 @@ export function gcpDelegationOrganization(
     source?: HostedGcpDelegationSource;
   } = {},
 ): HostedDelegationOrganization {
+  const env = options.env ?? process.env;
+  const fetchImpl = options.fetch ?? fetch;
+  const ensureAccount = () => {
+    const source = options.source ?? hostedGcpDelegationSource(env, fetchImpl);
+    return ensureOrganizationDelegationAccount({
+      organizationId,
+      identityProject: hostedGcpOrganizationIdentityProject(env),
+      source,
+      fetch: fetchImpl,
+    }).then((member) => ({ member, source }));
+  };
   return {
     organizationId,
-    gcpTrustedPrincipal() {
-      const fetchImpl = options.fetch ?? fetch;
-      return ensureOrganizationDelegationAccount({
-        organizationId,
-        identityProject: hostedGcpOrganizationIdentityProject(options.env ?? process.env),
-        source: options.source ?? hostedGcpDelegationSource(options.env ?? process.env, fetchImpl),
+    async gcpTrustedPrincipal() {
+      return (await ensureAccount()).member;
+    },
+    async gcpPapercuspHosting(hostId) {
+      const projectId = hostedGcpWorkspaceProject(env);
+      const { member, source } = await ensureAccount();
+      await ensurePapercuspHostingGrant({
+        projectId,
+        member,
+        hostId,
+        accessToken: () => source.accessToken(),
         fetch: fetchImpl,
       });
+      return { projectId, serviceAccountEmail: organizationDelegationEmail(organizationId, hostedGcpOrganizationIdentityProject(env)) };
     },
   };
 }
@@ -151,6 +169,8 @@ export interface HostedGcpAuthResolverDependencies {
   source?: HostedGcpDelegationSource;
   /** Default: {@link HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV}. */
   identityProject?: string;
+  /** Default: the configured Papercusp hosting project (hosted-gcp-hosting.ts). */
+  hostingProject?: string;
 }
 
 type GcpDelegationRecord = HostedProviderDelegationRecord & {
@@ -281,6 +301,27 @@ function organizationDelegate(record: GcpDelegationRecord, identityProject: stri
  * Workload identity is refused: every organization would federate as the same Papercusp
  * subject, which is exactly the shared identity D-397 removes.
  */
+/**
+ * A Papercusp-hosted delegation (D-399) acts AS the organization's own account, in the ONE
+ * configured hosting project; a record naming any other account or project is refused, so a
+ * tampered record can neither borrow another organization's reservation nor leave the project.
+ */
+function papercuspHostedTarget(
+  record: GcpDelegationRecord,
+  identityProject: string,
+  hostingProject: string,
+): Extract<GcpDelegationRecord['configuration']['source'], { method: 'papercusp-hosted' }> {
+  const organizationId = record.organizationId?.trim();
+  if (!organizationId) throw new Error('gcp_workspace_host_delegation_organization_missing');
+  const source = record.configuration.source;
+  if (source.method !== 'papercusp-hosted') throw new Error('gcp_workspace_host_delegation_method_not_papercusp_hosted');
+  if (source.serviceAccountEmail !== organizationDelegationEmail(organizationId, identityProject)) {
+    throw new Error('gcp_workspace_host_papercusp_hosted_account_not_organization_account');
+  }
+  if (source.projectId !== hostingProject) throw new Error('gcp_workspace_host_papercusp_hosted_project_mismatch');
+  return source;
+}
+
 export async function resolveHostedGcpAuth(
   input: HostedGcpAuthResolverInput,
   dependencies: HostedGcpAuthResolverDependencies = {},
@@ -288,11 +329,15 @@ export async function resolveHostedGcpAuth(
   const record = delegation(input);
   const source = record.configuration.source;
   const fetchImpl = dependencies.fetch ?? fetch;
-  const delegate = organizationDelegate(
-    record,
-    dependencies.identityProject ?? hostedGcpOrganizationIdentityProject(),
-  );
-  const delegates = [`projects/-/serviceAccounts/${delegate}`];
+  const identityProject = dependencies.identityProject ?? hostedGcpOrganizationIdentityProject();
+  let delegates: string[];
+  if (source.method === 'papercusp-hosted') {
+    papercuspHostedTarget(record, identityProject, dependencies.hostingProject ?? hostedGcpWorkspaceProject());
+    // The organization's account IS the target: the source mints it directly.
+    delegates = [];
+  } else {
+    delegates = [`projects/-/serviceAccounts/${organizationDelegate(record, identityProject)}`];
+  }
   const sourceToken = await (dependencies.source ?? hostedGcpDelegationSource(process.env, fetchImpl)).accessToken();
   const serviceAccount = encodeURIComponent(source.serviceAccountEmail);
   const minted = await json<{ accessToken?: string }>(

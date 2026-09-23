@@ -13,6 +13,7 @@ import {
 } from './service';
 import type { StableSource } from './source';
 import { verifySessionPortSeed } from './render';
+import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from './types';
 
 const row: AdvSessionRow = {
   id: 41,
@@ -66,6 +67,23 @@ const target = {
   contextSize: 'trimmed' as const,
   launchContextHash: '0'.repeat(64),
 };
+
+describe('session-port current-version test fixtures', () => {
+  it('derives protocol and transform versions instead of copying the current numbers', () => {
+    const fixtureFiles = [
+      new URL('../endpoint-route/__tests__/adv-session-port-failure-route.test.ts', import.meta.url),
+      new URL('../endpoint-route/__tests__/bootstrap-su.test.ts', import.meta.url),
+      new URL('./store.integration.test.ts', import.meta.url),
+      new URL('./service.test.ts', import.meta.url),
+      new URL('../../../../apps/operator/lib/psu-launcher.test.ts', import.meta.url),
+    ];
+    const copiedWireVersion = /(?:\bprotocolVersion\b|\btransformVersion\b)\s*:\s*\d+\b|\bversions\s*:\s*\{[^}]*\btransform\s*:\s*\d+\b/s;
+
+    for (const file of fixtureFiles) {
+      expect(readFileSync(file, 'utf8'), file.pathname).not.toMatch(copiedWireVersion);
+    }
+  });
+});
 
 describe('tracked Claude source acquisition', () => {
   it('falls back to the canonical archive when cleanup deletes the inspected live JSONL', async () => {
@@ -180,7 +198,7 @@ describe('session-port preparation service', () => {
       id: '22222222-2222-4222-8222-222222222222',
       workspaceId: 'ws',
       idempotencyKey: deriveSessionPortIdempotencyKey(inspection),
-      protocolVersion: 2,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       sourceAdvSessionId: 41,
       targetAdvSessionId: null,
       sourceBackend: 'claude',
@@ -194,7 +212,7 @@ describe('session-port preparation service', () => {
       artifactPath: '/managed/path',
       metadata: {
         summary: {
-          protocolVersion: 2,
+          protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
           source: {
             backend: 'claude',
             workspaceId: 'ws',
@@ -213,7 +231,12 @@ describe('session-port preparation service', () => {
           },
           target,
           fidelity: 'full',
-          versions: { adapter: 1, transform: 3, renderer: 2, summaryPrompt: null },
+          versions: {
+            adapter: 1,
+            transform: SESSION_PORT_TRANSFORM_VERSION,
+            renderer: 2,
+            summaryPrompt: null,
+          },
           hashes: {
             source: inspection.source.sha256,
             normalized: inspection.internal.normalizedHash,
@@ -254,7 +277,7 @@ describe('session-port preparation service', () => {
       workspaceId: 'ws',
       idempotencyKey: deriveSessionPortIdempotencyKey(inspection),
       retryOfPortId: null,
-      protocolVersion: 2,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       sourceAdvSessionId: 41,
       targetAdvSessionId: 99,
       sourceBackend: 'claude',

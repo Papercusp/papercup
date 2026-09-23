@@ -114,6 +114,18 @@ describe('the gate prescribes raising the limit when that provably clears the br
 });
 
 describe('legacy behaviour is preserved wherever raising is not provably the fix', () => {
+  it('does not suggest a fleet-member limit above the setter ceiling', () => {
+    const d = refusal({
+      bucket: 'critical',
+      headroom: { contextTokens: 538_377, softLimit: 250_000, selfSetCeiling: 250_000 },
+      recovery: COLD_LOOP,
+    });
+
+    expect(d.diagnosis.suggestedLimit).toBeNull();
+    expect(d.error).not.toContain('config:set-compaction-limit');
+    expect(d.error).toMatch(/COLD loop/);
+  });
+
   it('omitted headroom keeps the compaction wording verbatim', () => {
     const d = refusal({ bucket: 'critical' });
     expect(d.diagnosis.suggestedLimit).toBeNull();

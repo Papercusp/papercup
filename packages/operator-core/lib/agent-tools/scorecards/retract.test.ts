@@ -1,10 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resetGradingAuditStampForRetraction, retractScorecard } from '../../scorecards';
+import { resetGradingAuditStampForRetraction, retractScorecard, retractScorecardAtomically } from '../../scorecards';
 
 const RATINGS = { criterion: { rating: 'healthy', evidence: 'verified' } };
 
+function atomicRetractionHarness(payload: unknown) {
+  const statements: Array<{ text: string; values: unknown[] }> = [];
+  let writtenObservation: Record<string, unknown> | null = null;
+  const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    statements.push({ text, values });
+    if (text.includes('SELECT feature_id, payload')) return [{ feature_id: 'EI-1', payload }];
+    if (text.includes('UPDATE harness_shared.work_items')) {
+      const observationJson = values.find(
+        (value): value is string => typeof value === 'string' && value.startsWith('{') && value.includes('"retracted"'),
+      );
+      if (observationJson) writtenObservation = JSON.parse(observationJson) as Record<string, unknown>;
+      return [{ feature_id: 'EI-1' }];
+    }
+    throw new Error(`unexpected query: ${text}`);
+  }) as never;
+  const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+  return { statements, transact, writtenObservation: () => writtenObservation };
+}
+
 describe('retractScorecard', () => {
-  it('preserves the complete nested observation while attaching withdrawal metadata', async () => {
+  it('routes a complete scorecard through the atomic retraction writer', async () => {
     const getIssue = vi.fn(async () => ({
       payload: {
         observation: {
@@ -17,12 +37,15 @@ describe('retractScorecard', () => {
         unrelated: { keep: true },
       },
     }));
-    const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-1' }));
+    const retractAtomically = vi.fn(async (_issueId: string, retraction: { at?: string; by: string; reason: string }) => ({
+      retraction: { at: retraction.at!, by: retraction.by, reason: retraction.reason },
+      updated: true,
+    }));
 
     const result = await retractScorecard(
       'EI-1',
       { by: 'su-1', reason: 'wrong repository', at: '2026-08-14T23:00:00.000Z' },
-      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+      { getIssue: getIssue as never, retractScorecardAtomically: retractAtomically as never },
     );
 
     expect(result).toEqual({
@@ -31,15 +54,10 @@ describe('retractScorecard', () => {
       retracted: true,
       retraction: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'wrong repository' },
     });
-    expect(mergeIssuePayload).toHaveBeenCalledWith('EI-1', {
-      observation: {
-        rubricRef: 'rubric-a',
-        ratings: RATINGS,
-        sourceHive: 'papercusp',
-        evidenceFingerprint: 'fp-1',
-        instrumentSnapshots: { probe: { verdict: 'pass' } },
-        retracted: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'wrong repository' },
-      },
+    expect(retractAtomically).toHaveBeenCalledWith('EI-1', {
+      at: '2026-08-14T23:00:00.000Z',
+      by: 'su-1',
+      reason: 'wrong repository',
     });
   });
 
@@ -47,12 +65,15 @@ describe('retractScorecard', () => {
     const getIssue = vi.fn(async () => ({
       payload: { observation: { rubricRef: 'rubric-a', ratings: {} } },
     }));
-    const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-1' }));
+    const retractAtomically = vi.fn(async (_issueId: string, retraction: { at?: string; by: string; reason: string }) => ({
+      retraction: { at: retraction.at!, by: retraction.by, reason: retraction.reason },
+      updated: true,
+    }));
 
     const result = await retractScorecard(
       'EI-1',
       { by: 'su-1', reason: 'incomplete legacy card', at: '2026-08-14T23:00:00.000Z' },
-      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+      { getIssue: getIssue as never, retractScorecardAtomically: retractAtomically as never },
     );
 
     expect(result).toEqual({
@@ -61,28 +82,102 @@ describe('retractScorecard', () => {
       retracted: true,
       retraction: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'incomplete legacy card' },
     });
-    expect(mergeIssuePayload).toHaveBeenCalledWith('EI-1', {
-      observation: {
-        rubricRef: 'rubric-a',
-        ratings: {},
-        retracted: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'incomplete legacy card' },
-      },
+    expect(retractAtomically).toHaveBeenCalledWith('EI-1', {
+      at: '2026-08-14T23:00:00.000Z',
+      by: 'su-1',
+      reason: 'incomplete legacy card',
     });
   });
 
-  it('is idempotent and does not rewrite an already retracted scorecard', async () => {
+  it('replays an existing retraction through the atomic writer so stale audit leases can be repaired', async () => {
     const prior = { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'withdrawn' };
     const getIssue = vi.fn(async () => ({
       payload: { observation: { rubricRef: 'rubric-a', ratings: RATINGS, retracted: prior } },
     }));
-    const mergeIssuePayload = vi.fn();
+    const retractAtomically = vi.fn(async () => ({ retraction: prior, updated: false }));
     const result = await retractScorecard(
       'EI-1',
       { by: 'su-2', reason: 'again' },
-      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+      { getIssue: getIssue as never, retractScorecardAtomically: retractAtomically as never },
     );
     expect(result).toEqual({ ok: true, issueId: 'EI-1', retracted: true, retraction: prior });
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
+    expect(retractAtomically).toHaveBeenCalledWith('EI-1', prior);
+  });
+
+  it('cancels a stale pending audit and clears its lease when replaying a retraction', async () => {
+    const priorRetraction = { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'withdrawn' };
+    const harness = atomicRetractionHarness({
+      observation: {
+        rubricRef: 'rubric-a',
+        ratings: RATINGS,
+        evidenceFingerprint: 'fp-1',
+        retracted: priorRetraction,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-14T22:00:00.000Z',
+          rubricRevision: 7,
+          criteriaHash: 'hash-v7',
+          dispatchReservation: { key: 'grading-audit:EI-1', reservedAt: '2026-08-14T22:01:00.000Z' },
+          dispatchBackoff: { until: '2026-08-14T23:30:00.000Z' },
+        },
+      },
+    });
+
+    const result = await retractScorecardAtomically(
+      'EI-1',
+      { at: '2026-08-14T23:30:00.000Z', by: 'su-2', reason: 'new replay' },
+      {
+        resolveWorkspace: async () => 'ws-test',
+        transact: harness.transact,
+      },
+    );
+
+    expect(result).toEqual({ retraction: priorRetraction, updated: true });
+    expect(harness.writtenObservation()).toMatchObject({
+      rubricRef: 'rubric-a',
+      ratings: RATINGS,
+      evidenceFingerprint: 'fp-1',
+      retracted: priorRetraction,
+      gradingAudit: {
+        state: 'cancelled',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-14T22:00:00.000Z',
+        rubricRevision: 7,
+        criteriaHash: 'hash-v7',
+      },
+    });
+    expect(harness.writtenObservation()?.gradingAudit).not.toHaveProperty('dispatchReservation');
+    expect(harness.writtenObservation()?.gradingAudit).not.toHaveProperty('dispatchBackoff');
+    expect(harness.statements[0]?.text).toContain('FOR UPDATE');
+  });
+
+  it('cancels a pending audit in the same transaction that first retracts the scorecard', async () => {
+    const requestedRetraction = { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'invalid source evidence' };
+    const harness = atomicRetractionHarness({
+      observation: {
+        rubricRef: 'rubric-a',
+        ratings: RATINGS,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-14T22:00:00.000Z',
+          dispatchReservation: { key: 'grading-audit:EI-1', reservedAt: '2026-08-14T22:01:00.000Z' },
+        },
+      },
+    });
+
+    const result = await retractScorecardAtomically('EI-1', requestedRetraction, {
+      resolveWorkspace: async () => 'ws-test',
+      transact: harness.transact,
+    });
+
+    expect(result).toEqual({ retraction: requestedRetraction, updated: true });
+    expect(harness.writtenObservation()).toMatchObject({
+      retracted: requestedRetraction,
+      gradingAudit: { state: 'cancelled', metaRubricRef: 'grading-integrity' },
+    });
+    expect(harness.writtenObservation()?.gradingAudit).not.toHaveProperty('dispatchReservation');
   });
 
   it('atomically retracts a grading-integrity audit and repairs its cited subject', async () => {
@@ -97,21 +192,17 @@ describe('retractScorecard', () => {
       },
     }));
     const retractGradingAudit = vi.fn(async () => ({ retraction, subjectReset: true }));
-    const mergeIssuePayload = vi.fn();
-
     const result = await retractScorecard(
       'EI-AUDIT',
       { by: 'su-1', reason: 'falsified finding', at: retraction.at },
       {
         getIssue: getIssue as never,
-        mergeIssuePayload: mergeIssuePayload as never,
         retractGradingAudit: retractGradingAudit as never,
       },
     );
 
     expect(result).toEqual({ ok: true, issueId: 'EI-AUDIT', retracted: true, retraction });
     expect(retractGradingAudit).toHaveBeenCalledWith('EI-AUDIT', 'EI-SUBJECT', retraction);
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
   });
 
   it('clears settlement metadata and preserves the retracted audit rubric identity on its subject', () => {
@@ -216,13 +307,11 @@ describe('retractScorecard', () => {
 
   it('refuses a non-scorecard issue without mutating it', async () => {
     const getIssue = vi.fn(async () => ({ payload: { observation: { kind: 'friction' } } }));
-    const mergeIssuePayload = vi.fn();
     const result = await retractScorecard(
       'EI-1',
       { by: 'su-1', reason: 'not a scorecard' },
-      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+      { getIssue: getIssue as never },
     );
     expect(result).toMatchObject({ ok: false, retracted: false, error: expect.stringContaining('not a complete scorecard') });
-    expect(mergeIssuePayload).not.toHaveBeenCalled();
   });
 });

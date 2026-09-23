@@ -32,6 +32,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import postgres from 'postgres';
+import {
+  getOwnerDirective,
+  type OwnerDirectiveRow,
+} from '@papercusp/operator-core/lib/owner-directives';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@papercusp/operator-core/lib/posthog-public-defaults';
@@ -70,6 +74,8 @@ export {
 import { generateChangelog } from './changelog-generate';
 import { OWNER_NAME_ENV, hasOwnerNameLiteral, identityLiterals } from './release-content-scrub';
 import { describeOwnerIdentityLoad, loadOwnerIdentityEnv } from './owner-identity-env';
+import { incompleteDesktopScopeRefusal } from './release-owner-approval';
+export { incompleteDesktopScopeRefusal } from './release-owner-approval';
 import {
   planPagePath,
   renderHistoryJson,
@@ -100,6 +106,7 @@ export interface RecordOpts {
   changelogMd: string | null;
   /** Permit a changelog-less cut only when the caller makes that choice explicit. */
   allowNoChangelog?: boolean;
+  ownerApprovedPartialScopeOrderId?: number | null;
   /** EVERY platform's bundle root — see `releaseBundleRoots`. Not just linux. */
   bundleDirs: string[];
   /** The papercup-rust-mobile repo root (Android/iOS artifacts); null to skip mobile. */
@@ -158,10 +165,8 @@ const PLATFORM_LABEL: Record<string, string> = {
 
 /**
  * A prominent, unmissable alert naming every expected-but-absent desktop artifact
- * for a version. NON-BLOCKING by design (owner directive: incremental uploads must
- * never be rejected) — its job is to make a partial release a CONSCIOUS, confirmed
- * choice, not to stop it. Returns the block as a string so the record path and the
- * regenerate path render it identically. Empty string when the release is complete.
+ * for a version. Returns the block as a string so the record path and the regenerate
+ * path render it identically. Empty string when the release is complete.
  */
 export function formatCompletenessAlert(
   version: string,
@@ -176,9 +181,9 @@ export function formatCompletenessAlert(
     lines.push(`    ✗ ${m.product.toUpperCase().padEnd(6)} · ${PLATFORM_LABEL[m.platform] ?? m.platform}`);
   }
   lines.push('');
-  lines.push('  This is NOT a rejection — incremental uploads are allowed. But CONFIRM');
-  lines.push('  the omission is intentional (e.g. WI-5028: mac/windows Server is infra-');
-  lines.push('  blocked) or upload the missing artifact(s) and re-record / regenerate.');
+  lines.push('  This incomplete scope is NOT an owner approval. Recording it requires');
+  lines.push('  an explicit owner directive via --owner-approved-partial-scope <owner-directive-id>.');
+  lines.push('  Otherwise upload the missing artifact(s) and re-record / regenerate.');
   lines.push(rule);
   lines.push('');
   return lines.join('\n');
@@ -1178,13 +1183,32 @@ export async function run(opts: RecordOpts): Promise<number> {
     // download, and nothing anywhere said so. The old check here covered ONLY the
     // gui product, so a version with a linux Server but no mac/windows Server passed
     // silently too. computeReleaseCompleteness covers BOTH products across all three
-    // desktop platforms. NON-FATAL: a deliberate partial cut is legal (e.g. WI-5028:
-    // mac/win Server is infra-blocked) — but it must be a CHOICE made in the open,
-    // confirmed each time, not a silent omission. (Mobile is reported separately
-    // below and is never part of the required desktop set.)
+    // desktop platforms. A partial cut is refused unless a captured owner directive
+    // approves this version, channel, and each omitted platform; the directive id is
+    // recorded with the row for the publication preflight to re-check. Mobile is
+    // reported separately below and is never part of the required desktop set.
     const completeness = computeReleaseCompleteness(artifacts);
+    let partialScopeApproval: OwnerDirectiveRow | null = null;
     if (!completeness.complete) {
+      partialScopeApproval =
+        opts.ownerApprovedPartialScopeOrderId == null
+          ? null
+          : await getOwnerDirective(opts.ownerApprovedPartialScopeOrderId, sql);
+      const refusal = incompleteDesktopScopeRefusal(
+        opts.version,
+        opts.channel,
+        completeness.missing,
+        partialScopeApproval,
+        opts.scope.workspaceId,
+      );
+      if (refusal) {
+        console.error(refusal);
+        console.error(formatCompletenessAlert(opts.version, opts.channel, completeness.missing));
+        console.error(`  Scanned roots:\n${opts.bundleDirs.map((d) => `    ${d}`).join('\n')}`);
+        return 1;
+      }
       console.warn(formatCompletenessAlert(opts.version, opts.channel, completeness.missing));
+      console.warn(`  owner approval directive: #${partialScopeApproval?.id}`);
       console.warn(`  Scanned roots:\n${opts.bundleDirs.map((d) => `    ${d}`).join('\n')}`);
     }
 
@@ -1223,7 +1247,9 @@ export async function run(opts: RecordOpts): Promise<number> {
       artifacts,
       gitSha: opts.gitSha,
       cutBy: opts.cutBy,
-      notes: null,
+      notes: partialScopeApproval
+        ? `owner-approved partial desktop scope by directive #${partialScopeApproval.id}`
+        : null,
     };
 
     console.log(`[record-release] ${opts.version} (${opts.channel})`);
@@ -1351,6 +1377,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--no-changelog] [--cut-at <iso>] [--since <iso>]');
     console.error('       [--bundle <dir>] [--out <dir>] [--dry-run]');
+    console.error('       [--owner-approved-partial-scope <owner-directive-id>]');
     console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
@@ -1423,6 +1450,14 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   const mobileProductName = assertPapercuspMobileProductName(
     arg(argv, '--mobile-product-name') ?? process.env.PAPERCUSP_MOBILE_PRODUCT_NAME ?? 'Papercusp',
   );
+  const ownerApprovalRaw = arg(argv, '--owner-approved-partial-scope');
+  if (
+    ownerApprovalRaw !== null &&
+    (!Number.isSafeInteger(Number(ownerApprovalRaw)) || Number(ownerApprovalRaw) < 1)
+  ) {
+    throw new Error('--owner-approved-partial-scope must be a positive owner directive id.');
+  }
+  const ownerApprovedPartialScopeOrderId = ownerApprovalRaw === null ? null : Number(ownerApprovalRaw);
   const skipAndroid =
     argv.includes('--skip-android') || process.env.PAPERCUSP_SKIP_ANDROID === '1';
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
@@ -1438,6 +1473,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
     since: sinceRaw ? new Date(sinceRaw) : null,
     changelogMd,
     allowNoChangelog: argv.includes('--no-changelog'),
+    ownerApprovedPartialScopeOrderId,
     bundleDirs,
     mobileRoot,
     mobileProductName,

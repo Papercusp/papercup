@@ -139,6 +139,16 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
   });
 
+  it('carries the database-owned launch row version into identity enforcement', async () => {
+    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 27, adv_session_xmin: '1549',
+    })]);
+    const state = await readControlAnchorKernelState(request());
+    expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '27', rowVersion: '1549' });
+    const [template] = db.sql.mock.calls[0] as unknown[];
+    expect((template as readonly string[]).join(' ')).toContain("s.xmin::text AS launch_spec_xmin");
+  });
+
   it('keeps a prepared revision visible but does not treat it as applied execution truth', async () => {
     db.rows.push([
       anchorRow({

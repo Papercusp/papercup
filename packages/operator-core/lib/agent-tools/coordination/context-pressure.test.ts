@@ -2,12 +2,25 @@
  * context-pressure.test.ts — the coarse per-member context-pressure bucket
  * (fleet-deltas-leader-primitives-2026-07-10 P-007).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+const { sqlMock, fleetMock, measuredWindowMock, modelSpecMock } = vi.hoisted(() => ({
+  sqlMock: vi.fn(),
+  fleetMock: vi.fn(),
+  measuredWindowMock: vi.fn(),
+  modelSpecMock: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('./presence-fleet', () => ({ fetchPresenceFleet: fleetMock }));
+vi.mock('../../compaction-usage', () => ({
+  estimateContextWindowForOwner: measuredWindowMock,
+  resolveModelSpecForOwner: modelSpecMock,
+}));
 import {
   deriveContextPressure,
   deriveContextPressureAgeSec,
   fetchContextPressure,
   fetchContextPressureReadings,
+  resolveContextPressureHeadroom,
   CONTEXT_ESTIMATE_STALE_MS,
   type ContextPressureBucket,
 } from './context-pressure';
@@ -116,6 +129,32 @@ describe('fetchContextPressure (IO seam)', () => {
     const out = await fetchContextPressure([]);
     expect(out).toEqual(new Map());
     expect(await fetchContextPressureReadings([])).toEqual(new Map());
+  });
+});
+
+describe('resolveContextPressureHeadroom (fleet-role aware)', () => {
+  it('uses the fleet-member self-set ceiling instead of suggesting a rejected limit', async () => {
+    sqlMock.mockResolvedValueOnce([{ context_tokens: 538_377, compaction_limit: 250_000 }]);
+    fleetMock.mockResolvedValueOnce(new Map([['owner', { fleetSlug: 'fleet-a', fleetRole: 'member' }]]));
+    measuredWindowMock.mockResolvedValueOnce(1_000_000);
+
+    await expect(resolveContextPressureHeadroom('owner')).resolves.toEqual({
+      contextTokens: 538_377,
+      softLimit: 250_000,
+      selfSetCeiling: 250_000,
+    });
+  });
+
+  it('keeps the un-capped self-set ceiling for a solo or leader session', async () => {
+    sqlMock.mockResolvedValueOnce([{ context_tokens: 362_523, compaction_limit: 250_000 }]);
+    fleetMock.mockResolvedValueOnce(new Map([['owner', { fleetSlug: 'fleet-a', fleetRole: 'leader' }]]));
+    measuredWindowMock.mockResolvedValueOnce(1_000_000);
+
+    await expect(resolveContextPressureHeadroom('owner')).resolves.toEqual({
+      contextTokens: 362_523,
+      softLimit: 250_000,
+      selfSetCeiling: 825_000,
+    });
   });
 });
 

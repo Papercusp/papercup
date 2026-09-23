@@ -40,6 +40,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import type { WatchdogCollector, WatchdogSignal } from '../harness/improvements/watchdog';
 import { captureImprovement } from '../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../workspace-registry';
+import { readRoutineEngineLiveness as readTickLiveness, type RoutineEngineLiveness } from '../release/routine-engine-liveness';
 import { SANDBOX_SCOPE, SANDBOX_WORKSPACE_ID } from './types';
 
 /** The slice of a routines row the detector needs. */
@@ -257,6 +258,7 @@ export interface EngineDeathSentinelDeps {
    * workspace happens to contain only stale test routines.
    */
   hasRecentGlobalRoutineFire?: (windowMs: number) => Promise<boolean>;
+  readRoutineEngineLiveness?: () => Promise<RoutineEngineLiveness>;
   capture: typeof captureImprovement;
   log: (msg: string) => void;
   /**
@@ -303,6 +305,7 @@ export async function runEngineDeathSentinelPass(
   captured?: boolean;
   shedExplained?: boolean;
   globalLivenessProven?: boolean;
+  schedulerLivenessProven?: boolean;
 }> {
   try {
     if (!(await deps.isArmed())) return { checked: false };
@@ -325,6 +328,25 @@ export async function runEngineDeathSentinelPass(
         // pool-shed explanation and capture path, but leave a durable diagnostic.
         deps.log(
           `host-global routine-fire liveness check failed (UNKNOWN does not suppress): ` +
+            `${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    if (deps.readRoutineEngineLiveness) {
+      try {
+        const liveness = await deps.readRoutineEngineLiveness();
+        if (liveness.unknown) {
+          deps.log('DBOS routinesTick liveness is UNKNOWN (UNKNOWN does not suppress the engine-death capture).');
+        } else if (!liveness.stale) {
+          deps.log(
+            `workspace overdue signature detected (${verdict.reason}), but DBOS routinesTick completed ` +
+              `within the last ${Math.round((liveness.staleMs ?? 0) / 1000)}s — scheduler alive; not filing.`,
+          );
+          return { checked: true, verdict, schedulerLivenessProven: true };
+        }
+      } catch (e) {
+        deps.log(
+          `DBOS routinesTick liveness check failed (UNKNOWN does not suppress): ` +
             `${e instanceof Error ? e.message : e}`,
         );
       }
@@ -391,6 +413,8 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
     readRows: async () => readRoutineLivenessRows((await import('@papercusp/db-org')).getOrgPg().sql, activeWorkspaceId()),
     hasRecentGlobalRoutineFire: async (windowMs) =>
       hasRecentGlobalRoutineFire((await import('@papercusp/db-org')).getOrgPg().sql, windowMs),
+    readRoutineEngineLiveness: async () =>
+      readTickLiveness((await import('@papercusp/db-org')).getOrgPg().sql),
     capture: captureImprovement,
     log: (m) => console.log(`[red-queen-sentinel] ${m}`),
     hasPoolShedInWindow: async (workspaceId, windowMs) => {

@@ -23,6 +23,7 @@ import {
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   getPotCapabilityProviderBinding,
   parseCapabilityClassRef,
@@ -63,6 +64,8 @@ type PolicyReader = (input: PolicyInput) => Promise<IdentityGrantPolicy>;
 interface IdentityGrantKernelState extends KernelContextState {
   /** Set only when the control anchor's adv_sessions join found no row. */
   identityLaunchRecordMissing?: boolean;
+  /** Database-owned row identity/version, never supplied by the tool caller. */
+  identityLaunchRecordVersion?: { sessionId: string; rowVersion: string };
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -175,6 +178,47 @@ export function resolveIdentityArtifact(
     return { kind: 'stale-artifact', reason: 'grants-asymmetric' };
   }
   return { kind: 'governed', artifact, current };
+}
+
+// Replay verifies every package byte and canonical-hashes the full saved
+// specification. The launch record is immutable between PostgreSQL row
+// versions, so repeating that synchronous work at every tool preflight and
+// dispatch stalls the operator event loop. PostgreSQL changes xmin on an
+// UPDATE; the applied pair is a separate control-state input and belongs in
+// the key as well. Policy is deliberately NOT cached here.
+const IDENTITY_RESOLUTION_CACHE_TTL_MS = 5 * 60_000;
+const IDENTITY_RESOLUTION_CACHE_MAX = 128;
+const identityResolutionCache = pinModuleState('@papercusp/operator-core.identity-resolution-cache', () =>
+  new Map<string, { validatedAt: number; resolution: IdentityArtifactResolution }>(),
+);
+
+function resolveIdentityArtifactForKernel(
+  record: Record<string, unknown>,
+  applied: KernelExecutionRevision | null | undefined,
+  version: IdentityGrantKernelState['identityLaunchRecordVersion'],
+): IdentityArtifactResolution {
+  // Callers without a database-owned version retain the original replay path.
+  if (!version?.sessionId || !version.rowVersion) return resolveIdentityArtifact(record, applied);
+  const key = JSON.stringify([
+    version.sessionId, version.rowVersion, record.workspaceId, record.harnessSlug,
+    applied?.specificationRevision ?? null, applied?.stateRevision ?? null,
+  ]);
+  const now = Date.now();
+  const cached = identityResolutionCache.get(key);
+  if (cached && now - cached.validatedAt < IDENTITY_RESOLUTION_CACHE_TTL_MS) {
+    identityResolutionCache.delete(key);
+    identityResolutionCache.set(key, cached);
+    return cached.resolution;
+  }
+  const resolution = resolveIdentityArtifact(record, applied);
+  identityResolutionCache.delete(key);
+  identityResolutionCache.set(key, { validatedAt: now, resolution });
+  while (identityResolutionCache.size > IDENTITY_RESOLUTION_CACHE_MAX) {
+    const oldest = identityResolutionCache.keys().next().value;
+    if (oldest === undefined) break;
+    identityResolutionCache.delete(oldest);
+  }
+  return resolution;
 }
 
 /**
@@ -499,7 +543,7 @@ export async function checkIdentityGrantKernel(
   // The decision itself lives in `resolveIdentityArtifact` (above) so the
   // WI-10002060 sweep can ask the same question instead of paraphrasing it.
   // This call site is behaviour-identical to the body it replaced.
-  const resolution = resolveIdentityArtifact(record, applied);
+  const resolution = resolveIdentityArtifactForKernel(record, applied, state.identityLaunchRecordVersion);
   if (resolution.kind === 'stale-artifact') return staleArtifact(request);
   if (resolution.kind === 'ungoverned') return null;
   const { artifact, current } = resolution;

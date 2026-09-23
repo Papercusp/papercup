@@ -36,7 +36,7 @@ function identity(ownerId = 'su-caller') {
  *  handle is the one the core calls. */
 function makeDeps(over: Partial<IdeatePassRecordDeps> = {}) {
   const recordTick = over.recordTick ?? vi.fn(async (_input: RecordScoutTickInput) => undefined);
-  return { deps: { recordTick } as IdeatePassRecordDeps, recordTick };
+  return { deps: { ...over, recordTick } as IdeatePassRecordDeps, recordTick };
 }
 
 beforeEach(() => {
@@ -117,6 +117,103 @@ describe('ideatePassRecordArgs (schema)', () => {
   it('accepts optional observationsMined + notes', () => {
     const parsed = ideatePassRecordArgs.safeParse({ ideasFiled: 2, observationsMined: 9, notes: 'x' });
     expect(parsed.success).toBe(true);
+  });
+});
+
+const goalReview = {
+  goalId: 'goal-1',
+  disposition: 'existing-plans-sufficient' as const,
+  rationale: 'The current plan covers the remaining goal outcome.',
+  evidenceRefs: ['plan:papercusp/existing-plan'],
+  planRefs: ['plan:papercusp/existing-plan'],
+};
+const reviewContext = {
+  goalId: 'goal-1',
+  portfolioFingerprint: 'server-measured-portfolio',
+  observedAt: '2026-09-23T06:00:00.000Z',
+};
+
+describe('goal-local planning review', () => {
+  it('accepts an evidence-backed sufficient-plan review with zero new ideas', () => {
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview }).success).toBe(true);
+  });
+
+  it('requires evidence and rationale instead of a no-work checkbox', () => {
+    for (const patch of [{ evidenceRefs: [] }, { rationale: ' ' }, { goalId: ' ' }]) {
+      expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: { ...goalReview, ...patch } }).success).toBe(false);
+    }
+    expect(ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, portfolioFingerprint: 'caller-forged' },
+    }).success).toBe(false);
+  });
+
+  it('requires the uncovered outcome for a new-plan disposition', () => {
+    const input = { ...goalReview, disposition: 'plan-needed' };
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: input }).success).toBe(false);
+    expect(ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...input, uncoveredOutcome: 'Existing plans do not cover failed-checkout recovery.' },
+    }).success).toBe(true);
+  });
+
+  it('requires an existing plan reference for adoption or revision', () => {
+    for (const disposition of ['adopt-plan', 'revise-plan']) {
+      expect(ideatePassRecordArgs.safeParse({
+        ideasFiled: 0, goalReview: { ...goalReview, disposition, planRefs: [] },
+      }).success).toBe(false);
+      expect(ideatePassRecordArgs.safeParse({
+        ideasFiled: 0, goalReview: { ...goalReview, disposition },
+      }).success).toBe(true);
+    }
+  });
+
+  it('writes the review on the existing tick with server-derived scope and fingerprint', async () => {
+    const readGoalReviewContext = vi.fn(async () => reviewContext);
+    const { deps, recordTick } = makeDeps({ readGoalReviewContext });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(readGoalReviewContext).toHaveBeenCalledWith('ws-1', 'su-caller');
+    const storedReview = {
+      ...goalReview,
+      schemaVersion: 1,
+      portfolioFingerprint: reviewContext.portfolioFingerprint,
+      reviewedAt: reviewContext.observedAt,
+    };
+    expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      origin: 'su-ideate',
+      ideasRouted: 0,
+      detail: { owner: 'su-caller', goalReview: storedReview },
+    }));
+    expect(out).toMatchObject({ ok: true, ideasFiled: 0, goalReview: storedReview });
+  });
+
+  it('refuses a review for a different goal without writing a tick', async () => {
+    const { deps, recordTick } = makeDeps({ readGoalReviewContext: vi.fn(async () => ({ ...reviewContext, goalId: 'other-goal' })) });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: false, reason: 'goal-review-scope-mismatch' });
+    expect(recordTick).not.toHaveBeenCalled();
+    expect(toToolResult(out).isError).toBe(true);
+  });
+
+  it.each(['absent', 'failed'])('keeps %s goal scope unmeasured instead of recording a review', async (failure) => {
+    const readGoalReviewContext = vi.fn(async () => {
+      if (failure === 'failed') throw new Error('read failed');
+      return null;
+    });
+    const { deps, recordTick } = makeDeps({ readGoalReviewContext });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: false, reason: 'goal-review-unavailable' });
+    expect(recordTick).not.toHaveBeenCalled();
+  });
+
+  it('leaves ordinary ideation records backward compatible without a goal read', async () => {
+    const readGoalReviewContext = vi.fn(async () => reviewContext);
+    const { deps } = makeDeps({ readGoalReviewContext });
+    const out = await runIdeatePassRecord({ ideasFiled: 1 }, { harnessSlug: 'papercusp' }, deps);
+    expect(out).toMatchObject({ ok: true, ideasFiled: 1 });
+    expect(out).not.toHaveProperty('goalReview');
+    expect(readGoalReviewContext).not.toHaveBeenCalled();
   });
 });
 

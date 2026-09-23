@@ -59,7 +59,13 @@ import {
   projectRetriageCell,
   type RetriageCellProjection,
 } from './release/in-flight-retriage';
-import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './release/gate-abort-status';
+import {
+  GATE_ABORT_DETAIL_LIVENESS_MARKER,
+  gateAbortDetailAtRead,
+  gateAbortLever,
+  gateAbortRefireClause,
+  gateAbortVintage,
+} from './release/gate-abort-status';
 import { formatIdleAge } from './format/relative-time';
 import {
   reconcileGateVerdictFreshnessWithCheckpointRun,
@@ -3981,18 +3987,20 @@ export function computeStages(
             // vintage on this payload describes the VERDICT instead. Stating the age
             // unconditionally is the vintage stamp; the WARNING is gated on it actually being
             // old, so a fresh abort is not decorated and the marker keeps its meaning.
-            (() => {
-              const v = gateAbortVintage({
-                status: g.inconclusive!.status,
-                observedAtMs: g.inconclusive!.observedAtMs,
-                nowMs,
-              });
-              // The warning already states the age, so the bare parenthetical is for the
-              // fresh case ONLY — otherwise a stale abort prints its age twice in one
-              // sentence, which reads as two separate observations rather than one.
-              if (v.warning) return ` ${v.warning}`;
-              return v.age === null ? '' : ` (Abort observed ${v.age} ago.)`;
-            })()
+            g.inconclusive.detail?.includes(GATE_ABORT_DETAIL_LIVENESS_MARKER)
+              ? ''
+              : (() => {
+                  const v = gateAbortVintage({
+                    status: g.inconclusive!.status,
+                    observedAtMs: g.inconclusive!.observedAtMs,
+                    nowMs,
+                  });
+                  // The warning already states the age, so the bare parenthetical is for the
+                  // fresh case ONLY — otherwise a stale abort prints its age twice in one
+                  // sentence, which reads as two separate observations rather than one.
+                  if (v.warning) return ` ${v.warning}`;
+                  return v.age === null ? '' : ` (Abort observed ${v.age} ago.)`;
+                })()
           }${
             g.consecutiveReds > 0
               ? ` ⚠ The gate counters still show ${g.consecutiveReds} consecutive red(s)${
@@ -5908,7 +5916,17 @@ export async function gitPipelinePosition(
     // EI-19405864032365760: same projection reasoning as the five above — git-pipeline-stats
     // already resolves the abort record, and dropping it here is what left `dev:pipeline_position`
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
-    inconclusive: snap.gate.inconclusive,
+    inconclusive: snap.gate.inconclusive
+      ? {
+          ...snap.gate.inconclusive,
+          detail: gateAbortDetailAtRead({
+            status: snap.gate.inconclusive.status,
+            detail: snap.gate.inconclusive.detail,
+            observedAtMs: snap.gate.inconclusive.observedAtMs,
+            nowMs: Date.now(),
+          }),
+        }
+      : null,
     repairQueue: snap.gate.repairQueue ?? null,
     repairQueueRead: snap.gate.repairQueueRead ?? { status: 'absent' },
     // WI-2141736 P-004. Also beside `repairQueue`, and for the opposite reason to

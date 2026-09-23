@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 import { readFileSync } from 'node:fs';
+import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
 
 /**
  * P-003: `gitPipelinePosition`'s serving probe really shells out to
@@ -495,6 +496,30 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
 });
 
 describe('gitPipelinePosition (P-002)', () => {
+  it('EI-23739745256751648: stamps the state-cell abort detail and disclaims current-run liveness', async () => {
+    const observedAtMs = Date.now() - 27 * 60_000;
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git: fakeGit({}),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap({
+            inconclusive: {
+              status: 'repair-in-progress',
+              candidate: '6234b578884e',
+              detail: 'candidate remains serialized and no suite was run',
+              observedAtMs,
+            },
+          }),
+      },
+    );
+
+    expect(res.gate.inconclusive?.detail).toContain('no suite was run');
+    expect(res.gate.inconclusive?.detail).toContain('Abort observed 27m ago');
+    expect(res.gate.inconclusive?.detail).toContain(GATE_ABORT_DETAIL_LIVENESS_MARKER);
+  });
+
   it('WI-2146319: always emits a stable candidateFailures object when no queue is present', async () => {
     const res = await gitPipelinePosition(
       { path: 'apps/operator/app/x.ts' },

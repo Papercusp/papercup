@@ -636,7 +636,6 @@ function recreateInput(
     !data.deviceName ||
     !network?.network ||
     !network.subnetwork ||
-    !account?.email ||
     !sourceImage ||
     !bootSize ||
     !bootDisk?.type
@@ -694,7 +693,8 @@ function recreateInput(
         mode: 'READ_WRITE',
       },
     ],
-    serviceAccounts: [{ email: account.email, scopes: account.scopes ?? [] }],
+    // An instance created without an identity is re-created without one.
+    ...(account?.email ? { serviceAccounts: [{ email: account.email, scopes: account.scopes ?? [] }] as const } : {}),
     metadata: { items: metadata },
   };
 }

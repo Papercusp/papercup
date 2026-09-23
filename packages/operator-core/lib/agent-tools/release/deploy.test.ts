@@ -176,6 +176,15 @@ describe('release:deploy — orchestration effect classification', () => {
     expect(classifier!({ op: 'trigger' })).toBe('write');
     expect(classifier!({ op: 'force' })).toBe('write');
   });
+
+  it('explains that an external checkpoint run-lock outranks a not-found manual-unit probe', () => {
+    const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(chaining).toContain('heldExternally:true');
+    expect(chaining).toContain('systemd.appliesToActiveRun:false');
+    expect(chaining).toContain('not evidence the run ended');
+    expect(chaining).toContain('progressAtMs:null');
+    expect(chaining).toContain('Do not fire another checkpoint based on those fields');
+  });
 });
 
 afterEach(() => {

@@ -9,6 +9,7 @@
  */
 
 import postgres, { type Sql } from 'postgres';
+import { getOwnerDirective, type OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import {
@@ -16,6 +17,11 @@ import {
   markReleasePublished,
   type ReleaseRow,
 } from './release-registry';
+import { computeReleaseCompleteness } from './release-completeness';
+import {
+  incompleteDesktopScopeRefusal,
+  partialScopeApprovalDirectiveId,
+} from './release-owner-approval';
 
 export interface HeadProbeResult {
   status: number;
@@ -35,6 +41,12 @@ export interface FinalizeReleaseOptions {
 export interface PublicationProof {
   manifestStatus: number;
   artifactCount: number;
+}
+
+export interface ReleaseScopePreflightOptions {
+  version: string;
+  channel: string;
+  workspaceId: string;
 }
 
 /** Resolve the release host without ever echoing its secret path. */
@@ -87,6 +99,52 @@ async function checkedHead(
     const message = error instanceof Error ? error.message : String(error);
     // Do not include `url`: the base path is the permanent release secret.
     throw new Error(`public release check could not reach ${label}: ${message}`);
+  }
+}
+
+export async function assertRecordedReleaseScopeApproved(
+  row: ReleaseRow,
+  workspaceId: string,
+  readDirective: (id: number) => Promise<OwnerDirectiveRow | null> = getOwnerDirective,
+): Promise<number | null> {
+  const completeness = computeReleaseCompleteness(row.artifacts);
+  if (completeness.complete) return null;
+  const directiveId = partialScopeApprovalDirectiveId(row.notes);
+  const directive = directiveId === null ? null : await readDirective(directiveId);
+  const refusal = incompleteDesktopScopeRefusal(
+    row.version,
+    row.channel,
+    completeness.missing,
+    directive,
+    workspaceId,
+  );
+  if (refusal) throw new Error(refusal);
+  return directiveId;
+}
+
+export async function preflightReleasePublication(
+  opts: ReleaseScopePreflightOptions,
+  deps: { sql?: Sql } = {},
+): Promise<{ artifactCount: number; completeDesktopScope: boolean; approvalDirectiveId: number | null }> {
+  const sql = deps.sql ?? postgres(getHarnessAdminUrl(), { max: 1 });
+  const ownsSql = !deps.sql;
+  try {
+    const row = (await listReleases(sql, opts.workspaceId, opts.channel)).find(
+      (candidate) => candidate.version === opts.version,
+    );
+    if (!row) {
+      throw new Error(
+        `cannot publish release: no registry row for ${opts.workspaceId}/${opts.channel}/${opts.version}`,
+      );
+    }
+    const approvalDirectiveId = await assertRecordedReleaseScopeApproved(row, opts.workspaceId);
+    return {
+      artifactCount: row.artifacts.length,
+      completeDesktopScope: computeReleaseCompleteness(row.artifacts).complete,
+      approvalDirectiveId,
+    };
+  } finally {
+    if (ownsSql) await sql.end({ timeout: 5 });
   }
 }
 
@@ -154,6 +212,7 @@ export async function finalizeReleasePublication(
       );
     }
 
+    await assertRecordedReleaseScopeApproved(row, opts.workspaceId);
     const proof = await verifyReleasePublication(row, opts.baseUrl, deps.head);
     const publishedAt = await markReleasePublished(
       sql,
@@ -184,6 +243,24 @@ export function buildFinalizeOptions(argv: string[]): FinalizeReleaseOptions {
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  if (argv.includes('--preflight')) {
+    const version = arg(argv, '--version');
+    if (!version) {
+      throw new Error(
+        'usage: finalize-release-publication.ts --preflight --version <version> [--channel <channel>] [--workspace <id>]',
+      );
+    }
+    const result = await preflightReleasePublication({
+      version,
+      channel: arg(argv, '--channel') ?? 'alpha',
+      workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
+    });
+    console.log(
+      `[finalize-release] preflight passed for ${version}: ${result.artifactCount} artifacts; ` +
+        `desktop scope ${result.completeDesktopScope ? 'complete' : `approved by directive #${result.approvalDirectiveId}`}`,
+    );
+    return 0;
+  }
   const opts = buildFinalizeOptions(argv);
   const result = await finalizeReleasePublication(opts);
   console.log(

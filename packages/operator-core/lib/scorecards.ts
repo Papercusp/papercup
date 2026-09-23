@@ -46,7 +46,6 @@ import {
   issuesScopeWorkspace,
   issuesOutLinksMany,
   issuesSupersededByRevision,
-  mergeIssuePayload,
   resolveIssueWorkspace,
   type IssueOutLink,
 } from './issues-engineer';
@@ -1111,6 +1110,97 @@ type RetractGradingAudit = (
   retraction: ScorecardRetraction,
 ) => Promise<AtomicGradingAuditRetraction | null>;
 
+interface AtomicScorecardRetraction {
+  retraction: ScorecardRetraction;
+  updated: boolean;
+}
+
+type RetractScorecardAtomically = (
+  issueId: string,
+  retraction: ScorecardRetraction,
+) => Promise<AtomicScorecardRetraction | null>;
+
+interface ScorecardAtomicWriteDeps {
+  resolveWorkspace?: typeof resolveIssueWorkspace;
+  transact?: typeof boundedOrgTxn;
+}
+
+/**
+ * Retract one scorecard while holding its row lock. A pending audit is cancelled
+ * in the same write so a dispatcher with an older candidate snapshot cannot
+ * reserve or launch against the withdrawn card. Replays repair legacy rows that
+ * already have `retracted` plus a stale pending stamp/reservation.
+ */
+export async function retractScorecardAtomically(
+  issueId: string,
+  requestedRetraction: ScorecardRetraction,
+  deps: ScorecardAtomicWriteDeps = {},
+): Promise<AtomicScorecardRetraction | null> {
+  const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
+  const transact = deps.transact ?? boundedOrgTxn;
+
+  return transact(async (tx: OrgSql) => {
+    const rows = await tx<{ feature_id: string; payload: unknown }[]>`
+      SELECT feature_id, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       FOR UPDATE`;
+    const row = rows[0];
+    if (!row) return null;
+
+    const payload =
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : {};
+    const rawObservation = payload.observation;
+    if (!rawObservation || typeof rawObservation !== 'object' || Array.isArray(rawObservation)) return null;
+    const raw = rawObservation as Record<string, unknown>;
+    const hasRubricRef = typeof raw.rubricRef === 'string' && raw.rubricRef.trim().length > 0;
+    const hasRatingsRecord = raw.ratings !== null && typeof raw.ratings === 'object' && !Array.isArray(raw.ratings);
+    if (!hasRubricRef || !hasRatingsRecord) return null;
+
+    const parsed = asStructuredObservation(rawObservation);
+    const priorRetraction = parsed?.retracted;
+    const gradingAudit = raw.gradingAudit;
+    const auditRecord =
+      gradingAudit && typeof gradingAudit === 'object' && !Array.isArray(gradingAudit)
+        ? (gradingAudit as Record<string, unknown>)
+        : null;
+    const cancelPendingAudit = auditRecord?.state === 'pending';
+    if (priorRetraction && !cancelPendingAudit) {
+      return { retraction: priorRetraction, updated: false };
+    }
+
+    const retraction = priorRetraction ?? requestedRetraction;
+    const nextObservation: Record<string, unknown> = { ...raw, retracted: retraction };
+    if (cancelPendingAudit && auditRecord) {
+      const cancelledAudit: Record<string, unknown> = { ...auditRecord, state: 'cancelled' };
+      delete cancelledAudit.dispatchReservation;
+      delete cancelledAudit.dispatchBackoff;
+      nextObservation.gradingAudit = cancelledAudit;
+    }
+
+    const updated = await tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb),
+               '{observation}',
+               ${JSON.stringify(nextObservation)}::jsonb,
+               true
+             ),
+             origin = 'local',
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+      RETURNING feature_id`;
+    if (!updated[0]) return null;
+    return { retraction, updated: true };
+  });
+}
+
 /** Return the subject observation with a withdrawn audit's settlement cleared. */
 export function resetGradingAuditStampForRetraction(
   rawSubjectObservation: unknown,
@@ -1283,18 +1373,17 @@ async function retractGradingAuditAtomically(
 
 /**
  * Retract one scorecard without deleting or flattening its evidence payload.
- * `mergeIssuePayload` only merges the payload root, so the nested scorecard
- * observation must be written back with the retraction marker attached. This
- * deliberately accepts incomplete historical cards: retraction is the cleanup
- * path for malformed scorecards that predate the emit completeness gate.
+ * The row-locked writer preserves the latest nested observation and cancels a
+ * pending audit lease. This deliberately accepts incomplete historical cards:
+ * retraction is the cleanup path for malformed cards predating the emit gate.
  */
 export async function retractScorecard(
   issueId: string,
   input: { by: string; reason: string; at?: string },
   deps: {
     getIssue?: typeof getIssue;
-    mergeIssuePayload?: typeof mergeIssuePayload;
     retractGradingAudit?: RetractGradingAudit;
+    retractScorecardAtomically?: RetractScorecardAtomically;
   } = {},
 ): Promise<ScorecardRetractionResult> {
   const issue = await (deps.getIssue ?? getIssue)(issueId);
@@ -1345,25 +1434,21 @@ export async function retractScorecard(
       .catch(() => {});
     return { ok: true, issueId, retracted: true, retraction: repaired.retraction };
   }
-  if (observation?.retracted) {
-    return { ok: true, issueId, retracted: true, retraction: observation.retracted };
-  }
-
-  const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
-    observation: { ...(rawObservation as Record<string, unknown>), retracted: retraction },
-  });
+  const updated = await (deps.retractScorecardAtomically ?? retractScorecardAtomically)(issueId, retraction);
   if (!updated) {
     return { ok: false, issueId, retracted: false, error: `failed to retract scorecard '${issueId}'` };
   }
 
-  void trackDetached(import('./sync-sse'))
-    .then((m) => {
-      m.notifySyncInvalidate('scorecards.list');
-      m.notifySyncInvalidate('rubrics.trend');
-      m.notifySyncInvalidate('learning.releaseReadiness');
-    })
-    .catch(() => {});
-  return { ok: true, issueId, retracted: true, retraction };
+  if (updated.updated) {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return { ok: true, issueId, retracted: true, retraction: updated.retraction };
 }
 
 /** P-013: the shared rating→verdict vocabulary, exported so the grading-audit
@@ -1421,6 +1506,7 @@ async function replaceSettledGradingAuditAtomically(
      WHERE workspace_id = ${workspaceId}
        AND feature_id = ${issueId}
        AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND payload->'observation'->'retracted' IS NULL
        AND target.ctid = (
          SELECT candidate.ctid
            FROM harness_shared.work_items AS candidate
@@ -1437,11 +1523,43 @@ async function replaceSettledGradingAuditAtomically(
   return rows.length > 0;
 }
 
+/** Settle only the exact pending stamp read by the caller, unless retraction has won. */
+export async function settlePendingGradingAuditAtomically(
+  issueId: string,
+  expected: ScorecardGradingAudit,
+  settled: ScorecardGradingAudit,
+  deps: ScorecardAtomicWriteDeps = {},
+): Promise<boolean> {
+  const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
+  const transact = deps.transact ?? boundedOrgTxn;
+  const rows = await transact((tx: OrgSql) => tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(
+             COALESCE(payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             ${JSON.stringify(settled)}::jsonb,
+             true
+           ),
+           origin = 'local',
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ${issueId}
+       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND payload->'observation'->'retracted' IS NULL
+       AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+       AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${expected.metaRubricRef}
+       AND payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
+       AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${expected.rubricRevision == null ? null : String(expected.rubricRevision)}
+       AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${expected.criteriaHash ?? null}
+     RETURNING feature_id`);
+  return rows.length > 0;
+}
+
 /**
  * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
- * Mirrors {@link retractScorecard}: mergeIssuePayload merges the payload ROOT only,
- * so the COMPLETE nested observation is written back with the settled stamp.
- * Idempotent-safe: replays of the same audit card return the existing stamp as-is.
+ * The pending path is a compare-and-set write against the exact stamp read above;
+ * it cannot restore a stale observation over a concurrent retraction. Idempotent
+ * replays of the same audit card return the existing stamp as-is.
  * A validated correction that supersedes a settled audit card carries a different
  * auditIssueId and must replace the target stamp too; the replacement is a database
  * compare-and-set on the superseded audit id so two corrections cannot overwrite one
@@ -1463,7 +1581,6 @@ export async function recordGradingAudit(
   },
   deps: {
     getIssue?: typeof getIssue;
-    mergeIssuePayload?: typeof mergeIssuePayload;
     replaceSettledGradingAudit?: ReplaceSettledGradingAudit;
   } = {},
 ): Promise<GradingAuditRecordResult> {
@@ -1477,6 +1594,9 @@ export async function recordGradingAudit(
   const observation = asStructuredObservation(rawObservation);
   if (!observation?.rubricRef || !observation.ratings) {
     return { ok: false, issueId, error: `'${issueId}' is not a scorecard` };
+  }
+  if (observation.retracted) {
+    return { ok: false, issueId, error: `'${issueId}' is retracted and cannot receive a grading-audit settlement` };
   }
   const existing = observation.gradingAudit;
   if (!existing) {
@@ -1547,11 +1667,7 @@ export async function recordGradingAudit(
         input.supersedesAuditIssueId!,
         settled,
       )
-    : Boolean(
-        await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
-          observation: { ...(rawObservation as Record<string, unknown>), gradingAudit: settled },
-        }),
-      );
+    : await settlePendingGradingAuditAtomically(issueId, existing, settled);
   if (!updated) {
     return { ok: false, issueId, error: `failed to record grading audit on '${issueId}'` };
   }

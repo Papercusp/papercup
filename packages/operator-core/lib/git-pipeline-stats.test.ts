@@ -628,7 +628,57 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
         loadState: 'loaded',
         known: true,
         invocationId: 'invocation-123',
+        appliesToActiveRun: true,
       },
+    });
+  });
+
+  it('does not present the manual systemd probe or start-time fallback as evidence about an externally-held run', () => {
+    const m = mapActiveRun({
+      active: true,
+      held_externally: true,
+      started_at: '2026-09-20T00:16:36.087Z',
+      elapsed_sec: 1693,
+      systemd: {
+        scope: 'user',
+        argv: ['--user', 'show', 'papercup-green-checkpoint-manual-1fxzuva.service', '--property=LoadState'],
+        load_state: 'not-found',
+        known: false,
+        invocation_id: null,
+      },
+    });
+
+    expect(m).toMatchObject({
+      active: true,
+      heldExternally: true,
+      progressAtMs: null,
+      systemd: { loadState: 'not-found', known: false, appliesToActiveRun: false },
+    });
+  });
+
+  it('preserves actual phase progress while marking the manual-unit probe inapplicable to an externally-held run', () => {
+    const m = mapActiveRun({
+      active: true,
+      held_externally: true,
+      started_at: '2026-09-20T00:16:36.087Z',
+      progress_at: '2026-09-20T00:44:49.000Z',
+      current_phase: 'affected-sweep',
+      elapsed_sec: 1693,
+      systemd: {
+        scope: 'user',
+        argv: ['--user', 'show', 'papercup-green-checkpoint-manual-1fxzuva.service', '--property=LoadState'],
+        load_state: 'not-found',
+        known: false,
+        invocation_id: null,
+      },
+    });
+
+    expect(m).toMatchObject({
+      active: true,
+      heldExternally: true,
+      currentPhase: 'affected-sweep',
+      progressAtMs: Date.parse('2026-09-20T00:44:49.000Z'),
+      systemd: { appliesToActiveRun: false },
     });
   });
 

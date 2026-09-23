@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import type { RouteContext } from '../define-route';
 import { renderSessionPortSeed } from '../../session-port/render';
+import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
 
 // Redirect the launch-context file writes to a throwaway temp dir so the
 // route's best-effort persistence doesn't touch the real ~/.papercusp.
@@ -36,7 +37,7 @@ const sessionPortRow = (overrides: Record<string, unknown> = {}) => ({
   workspaceId: 'default',
   idempotencyKey: 'logical-request-hash',
   retryOfPortId: null,
-  protocolVersion: 2,
+  protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
   status: 'prepared',
   sourceAdvSessionId: 9,
   targetAdvSessionId: null,
@@ -58,7 +59,7 @@ const sessionPortRow = (overrides: Record<string, unknown> = {}) => ({
     sourceCoordOwnerId: 'su-source-owner',
     estimatedTokens: 10,
     summary: {
-      protocolVersion: 2,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       source: {
         backend: 'claude',
         workspaceId: 'default',
@@ -86,7 +87,7 @@ const sessionPortRow = (overrides: Record<string, unknown> = {}) => ({
         launchContextHash: EMPTY_SHA256,
       },
       fidelity: 'full',
-      versions: { transform: 3, summaryPrompt: null },
+      versions: { transform: SESSION_PORT_TRANSFORM_VERSION, summaryPrompt: null },
       stats: { omittedAttachments: 0, unsupportedBlocks: 0, redactions: 0 },
       summary: null,
     },

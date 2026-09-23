@@ -34,12 +34,11 @@
  *
  * WHAT STILL MINTS FRESH: only an EMPTY menu. Nothing to select is not the same
  * epistemic state as selecting weakly — the embedder being unavailable
- * (relevance never measured), a measured-empty non-excluded actor pool, or a
- * pool in which nobody is reachable. A candidate whose context is DEAD
- * (ended/recorded — the shared DEAD_RESPONDER_STATES) cannot be woken to grade,
- * so deadness is the selectability gate passed into the generic selector: it
- * skips dead candidates for BOTH floor picks and minimum fills, which is why an
- * all-dead pool yields an empty menu rather than an unusable pick.
+ * (relevance never measured) or a measured-empty non-excluded actor pool.
+ * Deadness is NOT one of them (R-2 / D-013): grading dispatches rather than
+ * wakes, so a candidate whose session ended is forked or converted from their
+ * transcript exactly like a live one, and an all-dead pool yields a full menu.
+ * No selectability gate is passed into the generic selector at all.
  *
  * THE MENU IS PARTY-DISTINCT, NOT ID-DISTINCT (D-008). `selectRanked` dedupes on
  * `ownerId`, which is a claim about strings; one agent can hold several
@@ -63,7 +62,6 @@ import { selectRanked, selectionPolicy, type Selected } from '@papercusp/ranked-
 import { canonicalCoordRole } from '../agent-tools/coordination/roles';
 import type { ConsultRouteParams, RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { selectionSnapshot } from './relevance-router';
-import { DEAD_RESPONDER_STATES } from './get-feedback-core';
 import { ACCEPTANCE_GRADING_POLICY } from './selection-policies';
 
 export const GRADER_QUERY_MAX_CHARS = 4000;
@@ -160,10 +158,12 @@ export interface GraderSelection {
    * condition that no longer causes a fresh mint at all.
    *
    * 'no_eligible_non_excluded' — measured, and the non-excluded actor pool is
-   * empty (the `zero_eligible` escalation). 'all_eligible_unselectable' — the
-   * pool is populated but every member is dead (ended/recorded).
-   * 'degraded' — relevance was never measured, so there is no ranking to fill
-   * from; see the branch comment at the selection site.
+   * empty (the `zero_eligible` escalation). 'degraded' — relevance was never
+   * measured, so there is no ranking to fill from; see the branch comment at
+   * the selection site. 'all_eligible_unselectable' is LEGACY-ONLY: it meant
+   * "populated pool, every member dead", which stopped being a reason to mint
+   * fresh when grading moved from waking to dispatch (D-013). Nothing produces
+   * it now; rows written earlier still carry it, so readers must keep it.
    */
   freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded';
 }
@@ -442,16 +442,25 @@ export async function selectAcceptanceGrader(
 
   // D-001 [owner]: bounds from the shared registry, algorithm from the shared
   // library. `qualifiedCandidates` are the above-floor picks; `eligibleCandidates`
-  // is the full ranked non-excluded pool the minimum-fill reaches into. Deadness
-  // is the selectability gate, so an unreachable candidate is skipped for BOTH —
-  // an honest short menu beats a grader who can never answer.
+  // is the full ranked non-excluded pool the minimum-fill reaches into.
+  //
+  // There is NO liveness gate (R-2 / D-013). There used to be, and it was right
+  // while the grader was WOKEN: a dead session cannot be woken, so an honest
+  // short menu beat a grader who could never answer. Acceptance grading now
+  // DISPATCHES — the grader's transcript is forked or converted into a session
+  // launched to grade — so deadness stops being unreachability, and skipping a
+  // dead candidate would just hand the rubric to a worse-matched judge.
+  //
+  // ⚠ That equivalence is what makes removing the gate safe, and it is the
+  // whole of it: if acceptance-grader.ts ever goes back to notifyAgents, this
+  // gate has to come back in the SAME change or the cascade will queue wakes
+  // nobody picks up while reporting an engaged grader.
   const bounds = selectionPolicy(ACCEPTANCE_GRADING_POLICY);
   const graders = selectRanked<RoutingCandidate>({
     qualified: qualifiedCandidates,
     allCandidates: eligibleCandidates,
     bounds,
     identity: (candidate) => candidate.ownerId,
-    isSelectable: (candidate) => !DEAD_RESPONDER_STATES.has(candidate.liveness),
   });
 
   if (graders.length === 0) {
@@ -462,10 +471,12 @@ export async function selectAcceptanceGrader(
       ...partyCollapsed,
       eligibility,
       ...(escalation ? { escalation } : {}),
-      // Two genuinely different empty menus, kept apart because they imply
-      // different repairs: nobody to ask at all vs. a populated pool in which
-      // nobody is reachable (all ended/recorded).
-      freshReason: eligibleCandidates.length === 0 ? 'no_eligible_non_excluded' : 'all_eligible_unselectable',
+      // There is now exactly ONE empty menu: nobody eligible to ask. The policy
+      // min is 1 and nothing is unselectable any more, so a non-empty eligible
+      // pool always yields a grader — `all_eligible_unselectable` is no longer
+      // producible here. It stays in the union because rows written before the
+      // gate came out still carry it, and readers must keep handling it.
+      freshReason: 'no_eligible_non_excluded',
     };
   }
 
