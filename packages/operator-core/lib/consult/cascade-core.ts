@@ -26,6 +26,7 @@ import {
   revivalBrief,
   revivalBudgetSpent,
 } from './get-feedback-core';
+import { snapshotCandidateQualifies } from './relevance-router';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
@@ -52,7 +53,12 @@ export const CASCADE_DIGEST_MAX_ENTRIES = 16;
 export interface CascadeSelectionEntry {
   ownerId: string;
   via: 'floor' | 'minimum';
+  /** Stage-2 comparison score (relevance × freshness) — the ORDERING number. */
   score: number;
+  /** Stage-1 qualification score. Recorded beside `via` because `via` is
+   * DERIVED from it: a record carrying only the comparison score cannot be
+   * audited against the floors it claims to have cleared. */
+  relevance: number;
   similarity: number;
   liveness: string;
   /** WI-39852: selectee entered via a carry-respawn revival (provenance only). */
@@ -132,8 +138,8 @@ export function cascadeWakeBody(input: CascadeWakeContext): string {
   const { next } = input;
   const why =
     next.via === 'minimum'
-      ? `Selected as BEST-AVAILABLE reviewer (blended score ${next.score.toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`
-      : `Routed to you by transcript relevance (blended score ${next.score.toFixed(2)}, sim ${next.similarity.toFixed(2)}). Validate relevance first; answer FROM your transcript, citing evidence.`;
+      ? `Selected as BEST-AVAILABLE reviewer (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`
+      : `Routed to you by transcript relevance (relevance ${next.relevance.toFixed(2)}, sim ${next.similarity.toFixed(2)}). Validate relevance first; answer FROM your transcript, citing evidence.`;
   const digestLines =
     input.digest.length === 0
       ? '(none yet — every earlier selectee declined or expired unanswered)'
@@ -332,12 +338,11 @@ export async function advanceCascade(
     const min = typeof sel?.min === 'number' ? sel.min : 0;
     if (snap && sel && min > 0 && answers < min) {
       const tried = new Set<string>([...selected.map((e) => e.ownerId), ...digest.map((e) => e.ownerId)]);
-      const floor = typeof snap.floor === 'number' ? (snap.floor as number) : Number.POSITIVE_INFINITY;
-      const simFloor = typeof snap.simFloor === 'number' ? (snap.simFloor as number) : Number.POSITIVE_INFINITY;
       const needed = Math.max(0, min - answers);
       type SnapCand = {
         ownerId: string;
         score?: number;
+        relevance?: number;
         signals?: { similarity?: number };
         liveness?: string;
         evidence?: unknown;
@@ -350,14 +355,21 @@ export async function advanceCascade(
       );
       const entryOf = (c: SnapCand, extra: Partial<CascadeSelectionEntry>): CascadeSelectionEntry => {
         const score = typeof c.score === 'number' ? c.score : 0;
+        const relevance = typeof c.relevance === 'number' ? c.relevance : 0;
         const similarity = typeof c.signals?.similarity === 'number' ? c.signals.similarity : 0;
         return {
           ownerId: c.ownerId,
           // Honest floor-vs-minimum recomputed from the snapshot's own floors
           // (D-002: labeled, never silent) — a refill pick below them is a
-          // best-available fill, not a costumed expert.
-          via: similarity >= simFloor && score >= floor ? 'floor' : 'minimum',
+          // best-available fill, not a costumed expert. Delegated rather than
+          // re-implemented: this predicate has ONE home in relevance-router, so
+          // a refill cannot be labeled by a rule the route itself no longer
+          // uses. It also reads the snapshot's OWN generation, which matters
+          // here because this column holds pre-D-001 records whose `floor`
+          // gated a recency-bearing score.
+          via: snapshotCandidateQualifies(snap, c) ? 'floor' : 'minimum',
           score,
+          relevance,
           similarity,
           liveness: c.liveness ?? 'unknown',
           ...extra,
@@ -393,12 +405,7 @@ export async function advanceCascade(
       const cursorIdx = selected.length;
       if (liveAdds.length < needed) {
         const revivable = untried.find(
-          (c) =>
-            DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')) &&
-            typeof c.score === 'number' &&
-            c.score >= floor &&
-            typeof c.signals?.similarity === 'number' &&
-            c.signals.similarity >= simFloor,
+          (c) => DEAD_RESPONDER_STATES.has(String(c.liveness ?? '')) && snapshotCandidateQualifies(snap, c),
         );
         if (!revive) underFilledReason = 'no-revive-dep';
         else if (revivalBudgetSpent(selected)) underFilledReason = 'budget-spent';
@@ -457,6 +464,7 @@ export async function advanceCascade(
               conversationId: params.conversationId,
               candidate: {
                 score: typeof revivable.score === 'number' ? revivable.score : 0,
+                relevance: typeof revivable.relevance === 'number' ? revivable.relevance : 0,
                 signals: {
                   similarity:
                     typeof revivable.signals?.similarity === 'number' ? revivable.signals.similarity : 0,
