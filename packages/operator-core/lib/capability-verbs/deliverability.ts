@@ -58,8 +58,10 @@ const SMTP_PORT = 25;
 
 /**
  * How we identify ourselves in the probe. A receiving server may reject a HELO
- * that does not resolve, so this should be a real hostname under our control;
- * the MAIL FROM is deliberately an address that can receive a bounce.
+ * that does not resolve, so this should be a real hostname under our control.
+ * The probe never sends DATA, so its default MAIL FROM uses SMTP's null reverse
+ * path: there is no message to bounce, and we do not claim a sender domain the
+ * receiving server may reject before it evaluates RCPT TO.
  */
 export interface ProbeIdentity {
   helo: string;
@@ -68,7 +70,7 @@ export interface ProbeIdentity {
 
 const DEFAULT_IDENTITY: ProbeIdentity = {
   helo: 'papercusp.local',
-  mailFrom: 'postmaster@papercusp.local',
+  mailFrom: '',
 };
 
 export type MailboxVerdict =

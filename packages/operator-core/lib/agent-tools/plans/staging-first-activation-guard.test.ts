@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parsePlan } from './parser';
-import { stagingFirstActivationProblems, stagingFirstBlockerProblem } from './staging-first-activation-guard';
+import {
+  neutralizePlanIdentifiers,
+  stagingFirstActivationProblems,
+  stagingFirstBlockerProblem,
+} from './staging-first-activation-guard';
 
 const plan = (items: string[], decisions = '', context = '') =>
   parsePlan(`---
@@ -132,6 +136,88 @@ describe('staging-first activation guard', () => {
         itemText: 'Implement fact-plane fairness.',
         blockerText: 'Deployment to main is not a prerequisite for this item.',
         kind: 'event',
+      }),
+    ).toBeNull();
+  });
+
+  // EI-24018845641231261: the exact refused call. A kind:'gate' blocker on a plan
+  // DECISION was classified as a deployed-main wait only because the plan slug
+  // contains the word `release` (hyphens are word boundaries).
+  it('does not read a release word inside a plan slug as a deployed-main wait', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'EI-21150671414510762',
+        itemText: '[own-log-fork-guard] own_log_forked: harness=hello-world-3-pot log=f417b935',
+        blockerText:
+          'p2p-public-release-endgame-2026-09-01#D-047\n' +
+          'dev:own_log_fork_recover on the Mac VM operator (dry, then confirm+keyHex), then 15-min verification',
+        kind: 'gate',
+      }),
+    ).toBeNull();
+    for (const ref of [
+      'gate:plan-lane:p2p-public-release-endgame-2026-09-01#P-203',
+      'plan:deploy-pipeline-hardening-2026-09-01',
+      'main-bundle-split-2026-09-01#D-003',
+    ]) {
+      expect(stagingFirstBlockerProblem({ itemId: 'EI-x', itemText: 'Implement X.', blockerText: ref, kind: 'gate' })).toBeNull();
+    }
+  });
+
+  // Containment: the slug is blanked, not the blocker. A real release wait in the
+  // same blocker text is still refused.
+  it('still refuses a real release-plane wait that sits beside a plan-anchored ref', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'EI-y',
+        itemText: 'Implement fact-plane fairness.',
+        blockerText: 'p2p-public-release-endgame-2026-09-01#D-047\nwait for main to turn green before continuing implementation',
+        kind: 'gate',
+      }),
+    ).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+  });
+
+  it('neutralizes only the plan identifier and keeps the anchor', () => {
+    expect(neutralizePlanIdentifiers('gate:plan-lane:p2p-public-release-endgame-2026-09-01#P-203')).toBe(
+      'gate:plan-lane:<plan>#P-203',
+    );
+    expect(neutralizePlanIdentifiers('p2p-public-release-endgame-2026-09-01#D-047 then deploy to main')).toBe(
+      '<plan>#D-047 then deploy to main',
+    );
+    expect(neutralizePlanIdentifiers('gate.greenCheckpoint.ownership')).toBe('gate.greenCheckpoint.ownership');
+  });
+
+  // EI-24018845641231261: the refusal tells the caller to NAME the deployed-only
+  // property, and callers write that in the blocker summary/evidence. The exception
+  // must read those fields; classification must still ignore them.
+  it('honours the narrow exception when its three predicates are in the blocker summary/evidence', () => {
+    const base = {
+      itemId: 'WI-6',
+      itemText: 'Implement restart continuity.',
+      blockerText: 'gate.greenCheckpoint.ownership\nwait for main to turn green before the check',
+      kind: 'gate',
+    };
+    expect(
+      stagingFirstBlockerProblem({
+        ...base,
+        exceptionText:
+          'deployed-only property: the live forked Corestore on the Mac VM disk. staging and current-build ' +
+          'cannot exercise it because the fork is physical on-disk state of that one deployed host.',
+      }),
+    ).toBeNull();
+    const refused = stagingFirstBlockerProblem({ ...base, exceptionText: 'The peer grading pass is pending.' });
+    expect(refused).toEqual(expect.objectContaining({ code: 'non_final_deployed_main_blocker' }));
+    expect(refused!.detail).toContain('the submitted blocker fields (ref, nextVerb, summary, evidence)');
+    expect(refused!.detail).toContain(`'deployed-only' token: MISSING`);
+  });
+
+  it('never classifies a blocker as a deployed-main wait from its summary/evidence alone', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'WI-7',
+        itemText: 'Record a peer grading dependency.',
+        blockerText: 'work-item:done:WI-10001764\nevents:await',
+        exceptionText: 'Wait for main to turn green. Verified on :3170; deployed :3070 misreports this field.',
+        kind: 'gate',
       }),
     ).toBeNull();
   });

@@ -72,6 +72,10 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_capped: '✂',
   peer_revoked: '🚫',
   peer_unrevoked: '↩',
+  // WI-10002600: an own-log supersession re-keyed an admitted log. The device
+  // stays admitted (nothing is blocklisted), so this is deliberately NOT the
+  // peer_revoked '🚫' — it is a replacement, not an eviction.
+  peer_log_superseded: '♻',
   replication_stalled: '🧊',
   replication_frozen: '❄',
   announce_admitted: '➕',

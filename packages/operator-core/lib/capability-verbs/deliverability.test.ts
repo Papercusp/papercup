@@ -1,8 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { Socket } from 'node:net';
+
+const smtpMocks = vi.hoisted(() => ({
+  resolveMx: vi.fn(),
+  resolve4: vi.fn(),
+  resolve6: vi.fn(),
+  createConnection: vi.fn(),
+}));
+
+vi.mock('node:dns/promises', () => ({
+  resolveMx: smtpMocks.resolveMx,
+  resolve4: smtpMocks.resolve4,
+  resolve6: smtpMocks.resolve6,
+}));
+
+vi.mock('node:net', () => ({
+  default: { createConnection: smtpMocks.createConnection },
+  createConnection: smtpMocks.createConnection,
+}));
+
 import {
   allowAllMailboxProbe,
   assertDeliverableAddressees,
   classifyRcptReply,
+  probeMailbox,
   UndeliverableAddressee,
   verdictBlocks,
   type MailboxProbe,
@@ -31,6 +53,72 @@ import {
  */
 
 const probeReturning = (verdict: MailboxVerdict): MailboxProbe => vi.fn(async () => verdict);
+
+function fakeSmtpServer(replies: string[]) {
+  const server = new EventEmitter();
+  const writes: string[] = [];
+  const socket = Object.assign(server, {
+    setTimeout: vi.fn(),
+    destroy: vi.fn(),
+    write: (line: string) => {
+      writes.push(line.replace(/\r\n$/, ''));
+      const reply = replies.shift();
+      if (reply) setTimeout(() => server.emit('data', Buffer.from(`${reply}\r\n`)), 0);
+      return true;
+    },
+  }) as unknown as Socket;
+  smtpMocks.createConnection.mockImplementation(() => {
+    queueMicrotask(() => {
+      server.emit('connect');
+      setTimeout(() => server.emit('data', Buffer.from('220 mx.example.test ESMTP\r\n')), 0);
+    });
+    return socket;
+  });
+  return { writes, socket };
+}
+
+describe('probeMailbox SMTP envelope', () => {
+  it('uses a null sender and still blocks an explicit RCPT TO mailbox rejection', async () => {
+    const smtp = fakeSmtpServer([
+      '250 mx.example.test',
+      '250 sender accepted',
+      '550 5.1.1 user unknown',
+    ]);
+    smtpMocks.resolveMx.mockResolvedValue([{ priority: 10, exchange: 'mx.example.test' }]);
+
+    const verdict = await probeMailbox('jobs@greenerwave.com');
+
+    expect(smtp.writes).toEqual([
+      'EHLO papercusp.local',
+      'MAIL FROM:<>',
+      'RCPT TO:<jobs@greenerwave.com>',
+      'QUIT',
+    ]);
+    expect(verdict).toEqual({ status: 'undeliverable', reason: 'mailbox-rejected', detail: '550 5.1.1 user unknown' });
+    expect(verdictBlocks(verdict)).toBe(true);
+  });
+
+  it('treats a MAIL FROM sender-domain refusal as unknown, not a dead recipient', async () => {
+    const smtp = fakeSmtpServer([
+      '250 mx.example.test',
+      '550 5.1.8 <postmaster@papercusp.local>: Sender address rejected: Domain not found',
+    ]);
+    smtpMocks.resolveMx.mockResolvedValue([{ priority: 10, exchange: 'mx.example.test' }]);
+
+    const verdict = await probeMailbox('jobs@greenerwave.com', {
+      identity: { helo: 'papercusp.local', mailFrom: 'postmaster@papercusp.local' },
+    });
+
+    expect(smtp.writes).toEqual(['EHLO papercusp.local', 'MAIL FROM:<postmaster@papercusp.local>', 'QUIT']);
+    expect(verdict).toMatchObject({
+      status: 'unknown',
+      reason: 'probe-refused',
+      detail: 'MAIL FROM 550 5.1.8 <postmaster@papercusp.local>: Sender address rejected: Domain not found',
+    });
+    await expect(assertDeliverableAddressees(['jobs@greenerwave.com'], { probe: async () => verdict }))
+      .resolves.toMatchObject([{ verdict: { status: 'unknown' } }]);
+  });
+});
 
 describe('classifyRcptReply — the SMTP leg of the decision, in isolation', () => {
   it('treats a 2xx acceptance as deliverable', () => {

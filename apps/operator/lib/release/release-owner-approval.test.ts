@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
+import type { MissingArtifactSlot } from './release-completeness';
 import {
   incompleteDesktopScopeRefusal,
   partialScopeApprovalDirectiveId,
 } from './release-owner-approval';
 
-const missing = [{ product: 'server' as const, platform: 'darwin-universal' }];
+// Typed as the canonical slot rather than inferred: `platform` would otherwise
+// widen to `string` and stop satisfying RequiredDesktopPlatform at every call
+// site below. The annotation also pins the fixture to the real matrix, so a
+// future change to the platform union surfaces HERE by name.
+const missing: MissingArtifactSlot[] = [{ product: 'server', platform: 'darwin-universal' }];
 
 function approval(overrides: Partial<OwnerDirectiveRow> = {}): OwnerDirectiveRow {
   return {

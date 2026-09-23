@@ -267,6 +267,10 @@ export default defineTool({
             // that note into the release-plane matcher turns an unrelated gate
             // blocker into a false non-final deployment wait.
             blockerText: [input.ref, input.nextVerb].filter(Boolean).join('\n'),
+            // ...but the caller's summary/evidence IS where the refusal tells them to
+            // name the deployed-only property, so the narrow exception (and only it)
+            // reads them (EI-24018845641231261).
+            exceptionText: [input.summary, input.evidence].filter(Boolean).join('\n'),
             kind: input.kind ?? '',
           });
           if (stagingFirst) {

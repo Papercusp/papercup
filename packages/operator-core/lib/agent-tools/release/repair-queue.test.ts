@@ -293,6 +293,7 @@ describe('release:repair-queue', () => {
       repairQueue: {
         candidate: queue.candidate,
         repairHead: queue.repairHead,
+        updatedAtMs: queue.updatedAtMs,
         fixerAlive: false,
         retireAllowed: true,
       },

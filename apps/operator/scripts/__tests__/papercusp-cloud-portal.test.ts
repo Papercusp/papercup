@@ -141,6 +141,30 @@ function writeDigestCli(portalRoot: string, digest: string) {
 const RELEASE_DIGEST = "c0ffee".repeat(10) + "abcd";
 
 describe("hosted Portal boot launcher", () => {
+  it("runs when invoked with the installed launcher basename", () => {
+    const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-launcher-cli-"));
+    try {
+      const installedLauncher = join(dir, "papercusp-cloud-portal-launcher.ts");
+      writeFileSync(installedLauncher, readFileSync(LAUNCHER_SCRIPT, "utf8"));
+      const result = spawnSync(join(ROOT, "node_modules/.bin/tsx"), [installedLauncher], {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PAPERCUSP_PORTAL_ROOT: "",
+          PAPERCUSP_PORTAL_START_WEB: "",
+          PAPERCUSP_PORTAL_HOSTED_ENV_FILE: "",
+          PAPERCUSP_INTEGRATION_ROOT: "",
+        },
+      });
+
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("portal_hosted_launcher_configuration_missing");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rewrites encrypted integration references to ephemeral env references", async () => {
     const source = parseEnvFile("# comment\nWORKOS_API_KEY_REF=integration:WORKOS_API_KEY\nWORKOS_CLIENT_ID=client_test\n");
     const rewritten = await resolveIntegrationReferences(source, async (reference) => {

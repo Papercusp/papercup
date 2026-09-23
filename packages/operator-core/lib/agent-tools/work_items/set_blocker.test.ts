@@ -231,6 +231,89 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  // EI-24018845641231261: the three calls su-a28f31f2 made at 04:18Z, replayed from
+  // tool_invocations. All were refused non_final_deployed_main_blocker with every
+  // narrow-exception predicate reported MISSING: the plan slug's `release` word made
+  // the decision ref read as a release-plane gate, and the check never read the
+  // summary/evidence the refusal told the caller to fill.
+  it.each([
+    {
+      name: 'call 1 (no exception wording)',
+      summary:
+        'Execution (the VM store reset) is gated on the P-203 verdict (ETA 16:30-17:30Z): the fork is on the Mac VM operator, which hosts the P-203 fold under rig lock 8672858c. dev:own_log_fork_recover is built and verified.',
+      evidence: 'D-047 ruling (leader su-07b72cf6, 04:04Z); checkpoint 04:18Z on this EI',
+      nextVerb:
+        'dev:own_log_fork_recover on the Mac VM operator (dry, then confirm+keyHex), then 15-min verification',
+    },
+    {
+      name: 'call 3 (exception wording in summary + evidence)',
+      summary:
+        "deployed-only property: the live forked Corestore (own log f417b935) on the Mac VM operator's disk. staging and current-build cannot exercise it because the fork is physical on-disk state of that one deployed host. The reset waits for the P-203 verdict (ETA 16:30-17:30Z) because that VM operator hosts the P-203 fold under rig lock 8672858c (D-047). dev:own_log_fork_recover is built and verified.",
+      evidence:
+        'deployed-only: the forked store exists only on the Mac VM deployed-host; staging cannot reproduce it because the fork is on-disk state, not code. D-047 ruling from su-07b72cf6 at 04:04Z; VM substrate status at 03:59Z showed forked=true.',
+      nextVerb:
+        'After the P-203 verdict: dev:own_log_fork_recover on the Mac VM operator (dry, then confirm plus keyHex)',
+    },
+  ])('records a gate blocker on a release-named plan decision: $name', async ({ summary, evidence, nextVerb }) => {
+    const item = {
+      id: 'EI-21150671414510762',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercusp',
+      title: '[own-log-fork-guard] own_log_forked: harness=hello-world-3-pot log=f417b935852a',
+      summary: 'The rig VM operator own log forked; recover it with dev:own_log_fork_recover.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+
+    const out = await one({
+      id: item.id,
+      ref: 'p2p-public-release-endgame-2026-09-01#D-047',
+      kind: 'gate',
+      harness: 'papercusp',
+      summary,
+      evidence,
+      nextVerb,
+    });
+
+    expect(out).toMatchObject({ ok: true, id: item.id });
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({ ref: 'p2p-public-release-endgame-2026-09-01#D-047', kind: 'gate' }),
+    ]);
+  });
+
+  it('accepts a genuine deployed-main blocker whose deployed-only exception is written in the summary', async () => {
+    const item = {
+      id: 'WI-8',
+      family: 'issue',
+      kind: 'change',
+      state: 'open',
+      harness: 'papercusp',
+      title: 'Verify supervisor restart continuity',
+      summary: 'Implementation is done and verified on staging.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+
+    const out = await one({
+      id: item.id,
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'gate.greenCheckpoint.ownership',
+      summary:
+        'deployed-only property: supervisor restart continuity. staging cannot exercise it because only the deployed-host supervisor restarts the operator.',
+      nextVerb: 'wait for main to turn green, then restart the deployed operator',
+    });
+
+    expect(out).toMatchObject({ ok: true, id: item.id });
+  });
+
   it('does not let item metadata launder a generic deployed-main blocker', async () => {
     const item = {
       id: 'EI-23090624251629318',

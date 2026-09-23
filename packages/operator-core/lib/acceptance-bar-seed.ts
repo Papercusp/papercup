@@ -37,6 +37,7 @@ import {
 } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
+import { requirementSections } from './requirement-contract';
 
 export const ACCEPTANCE_BAR_CONTRACT_EPOCH = 1;
 export const MAX_REQUIREMENT_BARS = 200;
@@ -1054,8 +1055,9 @@ export async function seedAcceptanceBarsInTransaction(
       contentHash: hashPlanContent(stableJson(criteria)),
       plan: { cohort: input.cohort, adoptionEpoch: input.adoptionEpoch },
       bars: criteria.map((criterion) => ({
-        barKey: criterion.barKey ?? criterion.key, barHash: criterion.barHash ?? null,
+        barKey: criterion.barKey ?? criterion.key, criterionKey: criterion.key, barHash: criterion.barHash ?? null,
         model: criterion.model ?? '', method: criterion.method ?? '', falsifier: criterion.driftMarkers ?? '',
+        check: criterion.check ?? null, requirement: requirementSections(criterion),
         role: criterion.role ?? null, mandatory: criterion.mandatory ?? null,
         requiredScope: criterion.requiredScope ?? [], evidencePlane: criterion.evidencePlane ?? null,
         passRatings: criterion.passRatings ?? [], coversBarKeys: criterion.coversBarKeys ?? [],

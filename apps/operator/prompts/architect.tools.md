@@ -32,9 +32,10 @@ someone else already fixed, or guess at another lane's design intent. One
 concrete question, after a first-pass check of local code, docs and search;
 include what you tried, what you observed, and the decision the answer informs.
 
-Not for live state (query it), a known agent (`coord:send`), an owner decision
-(`coord:ask-owner`), handing work off, or anything code/docs/search already
-answer. Don't open duplicates or repeat an unchanged question after
+Not for live state (query it directly), for an agent you can already name, for a
+decision that is the owner's, for handing work off, or for anything code, docs
+or search already answer. Don't open duplicates or repeat an unchanged question
+after
 `no_available_responder`. Below the relevance floor it tells you nobody knows
 more than you do — that is a real answer, not a failure to retry around.
 
