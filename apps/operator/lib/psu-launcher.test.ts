@@ -9351,13 +9351,14 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(agents).not.toContain("first deterministic carry");
   });
 
-  it("forks the newest Codex predecessor when one is persisted, preserving native history without reusing its writer", () => {
+  it.each([{ inheritedArgs: [] }, { inheritedArgs: ["resume", UUID] }, { inheritedArgs: ["fork", UUID] }])("starts a compact managed Codex successor without inheriting history ($inheritedArgs)", ({ inheritedArgs }) => {
     const codexHome = join(home, "codex-home");
     const sessions = join(codexHome, "sessions", "2026", "09", "21");
     mkdirSync(sessions, { recursive: true });
     const predecessor = "0123abcd-1234-5678-9abc-def012345678";
     const rollout = join(sessions, `rollout-2026-09-21T12-00-00-${predecessor}.jsonl`);
-    writeFileSync(rollout, '{"type":"event_msg","payload":{"type":"task_complete"}}\n', { mode: 0o600 });
+    const predecessorText = '{"type":"event_msg","payload":{"type":"task_complete"}}\n';
+    writeFileSync(rollout, predecessorText, { mode: 0o600 });
     writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n", { mode: 0o600 });
 
     expect(latestCodexRollout(join(codexHome, "sessions"))).toMatchObject({
@@ -9365,7 +9366,7 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
       path: rollout,
     });
     const out = mintCarryRespawnArgs(
-      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna"],
+      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna", ...inheritedArgs],
       {
         systemPromptAddendum: "successor carry",
         ownerId: "su-codex-lineage",
@@ -9380,8 +9381,6 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
       "--dangerously-bypass-hook-trust",
       "-m",
       "gpt-5.6-luna",
-      "fork",
-      predecessor,
     ]);
     expect(out.predecessorSessionId).toBe(predecessor);
     expect(readFileSync(out.launchContextPath, "utf8")).toContain(
@@ -9392,9 +9391,15 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     );
     expect(JSON.parse(readFileSync(out.lineagePath, "utf8"))).toMatchObject({
       predecessorSessionId: predecessor,
-      successorMode: "fork",
+      successorMode: "fresh",
+      predecessorPath: rollout,
       carryPath: out.launchContextPath,
     });
+    // Recovery links remain available without feeding the entire predecessor
+    // back into the model. An explicit user fork is tested separately above.
+    expect(readFileSync(rollout, "utf8")).toBe(predecessorText);
+    expect(out.carryText).not.toContain("available above");
+    expect(out.carryText).toContain("sessions:read");
   });
 
   it("uses an unresolved lineage marker and a blank-thread fallback when no Codex rollout exists", () => {
