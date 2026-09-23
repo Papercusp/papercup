@@ -226,8 +226,50 @@ export interface GetFeedbackDeps {
     pickupConfirmed?: boolean;
     /** Who will post — the fork's new identity, or the source on a conversion. */
     answeringOwnerId?: string | null;
+    /** HOW it was reached, for the requester-facing provenance note. Optional so
+     *  a PG-free or legacy binding keeps the plain delivery-count contract. */
+    dispatch?: {
+      operation: 'fork' | 'convert' | null;
+      agent: string | null;
+      model: string | null;
+      verified: boolean | null;
+      detail: string;
+    };
   }>;
   now?: () => Date;
+}
+
+/**
+ * Record WHO will actually post, on the selection entry the cascade cursor is
+ * pointing at. A FORK answers under a new identity, so without this stamp the
+ * answering session's first `consult:reply` is refused `not_a_participant`:
+ * `responder_id` names the expert whose KNOWLEDGE was routed, which is the right
+ * thing for it to name and is not who holds the keyboard.
+ *
+ * A jsonb_set on a path that does not exist yet is a no-op, and `selection` is
+ * always written before dispatch, so the cursor entry is always there. Written
+ * as its own bounded statement rather than folded into a larger UPDATE because
+ * the answering session may ALREADY have replied by the time this lands — the
+ * guards keep this write additive so it cannot clobber that turn's work.
+ */
+async function stampAnsweringOwner(
+  sql: Sql,
+  workspaceId: string,
+  conversationId: string,
+  cursor: number,
+  answeringOwnerId: string | null,
+): Promise<void> {
+  if (!answeringOwnerId) return;
+  await sql`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(
+             routing,
+             ARRAY['selection', 'selected', ${String(cursor)}, 'answeringOwnerId'],
+             ${JSON.stringify(answeringOwnerId)}::jsonb
+           )
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       AND routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'ownerId'] IS NOT NULL
+  `;
 }
 
 export interface GetFeedbackResult {
@@ -1200,241 +1242,108 @@ export async function getFeedbackCore(
     `;
   }
 
-  // 5b) Attempt the dead-preempt revival. spawn:false ⇒ fall back to the
-  //     pre-revival selection outcome — the attempt is still reported in the
-  //     result (labeled, never silent — D-002 applied to liveness provenance).
-  //     Budget: revivalBudgetSpent over the snapshot's OWN selection entries
-  //     (EI-20864690354207496 F2) — the same persisted-stamp ledger every
-  //     revival site reads; a fresh selection carries no stamps, so this
-  //     guard is structural, not decorative.
-  if (revivalPending && revive) {
-    const r = await revive({
-      ownerId: revivalCandidate!.ownerId,
-      conversationId: opened.conversation_id,
-      brief: revivalBrief({
-        routing: route.snapshot,
-        requesterId: req.requesterId,
-        question: req.question,
-        conversationId: opened.conversation_id,
-        candidate: revivalCandidate!,
-      }),
-    });
-    revival = {
-      ownerId: revivalCandidate!.ownerId,
-      trigger: 'dead-preempt',
-      spawned: r.spawned,
-      verified: r.verified,
-      detail: r.detail,
-      ...(r.reason ? { reason: r.reason } : {}),
-    };
-    if (r.spawned) {
-      // The provisional row already has the revived responder as its head.
-      // Only stamp provenance here: a first-turn reply may have advanced or
-      // settled the row while the reviver was waiting for host registration,
-      // so rewriting responder/state/cascade fields would clobber that work.
-      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
-      const head = route.snapshot.selection.selected[0];
-      if (head) {
-        delete head.revivalPending;
-        head.revived = true;
-      }
-      await sql`
-        UPDATE harness_shared.consult_state
-           SET routing = jsonb_set(
-                 routing #- '{selection,selected,0,revivalPending}',
-                 '{selection,selected,0,revived}',
-                 'true'::jsonb
-               )
-         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
-      `;
-      const currentRows = (await sql`
-        SELECT responder_id, state
-          FROM harness_shared.consult_state
-         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
-      `) as unknown as Array<{ responder_id: string | null; state: string }>;
-      const current = currentRows[0];
-      // The resumed CLI may have completed its first consult:reply while the
-      // reviver was waiting for host registration. Do not send a duplicate
-      // reach wake (or report the old head) after that re-entrant write.
-      revivalFirstTurnObserved = Boolean(
-        current &&
-          (current.responder_id !== revivalCandidate!.ownerId || current.state !== 'awaiting_responder'),
-      );
-    } else if (r.reason === 'live-collision') {
-      // WI-3882 refuses an in-place resume when the stale route snapshot says
-      // DEAD but the target is already LIVE. That is not a failed revival:
-      // the candidate is now reachable and must become the normal responder,
-      // otherwise an all-dead route is falsely returned as no_live_responder.
-      const liveCollisionCandidate = { ...revivalCandidate!, liveness: 'live' as const };
-      finalSelected = [
-        { candidate: liveCollisionCandidate, via: 'floor' as SelectionVia },
-        ...selected.filter((s) => s.candidate.ownerId !== liveCollisionCandidate.ownerId),
-      ].slice(0, maxResponders);
-      finalChosen = liveCollisionCandidate;
-      finalChosenVia = 'floor';
-      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
-      const fallbackExpiresAt = new Date(
-        now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
-      ).toISOString();
-      await sql`
-        UPDATE harness_shared.consult_state
-           SET responder_id = ${finalChosen.ownerId},
-               state = 'awaiting_responder',
-               routing = ${sql.json(route.snapshot as never)},
-               expires_at = ${fallbackExpiresAt},
-               wakes_used = 1,
-               updated_at = ${now.toISOString()}::timestamptz
-         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
-           AND responder_id = ${revivalCandidate!.ownerId}
-           AND state = 'awaiting_responder'
-           AND cascade_cursor = 0
-           AND closed_at IS NULL
-      `;
-    } else {
-      // No first turn can be produced by a spawn that returned false. Restore
-      // the exact pre-revival route and participant gate before waking the
-      // selected fallback. The CAS guards preserve a concurrent expiry/reply
-      // if one somehow moved the provisional row while the reviver resolved.
-      finalSelected = selected;
-      finalChosen = chosen;
-      finalChosenVia = chosenVia;
-      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
-      const fallbackState: GetFeedbackResult['state'] = finalChosen
-        ? 'awaiting_responder'
-        : 'no_qualified_responder';
-      const fallbackExpiresAt = finalChosen
-        ? new Date(
-            now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
-          ).toISOString()
-        : null;
-      await sql`
-        UPDATE harness_shared.consult_state
-           SET responder_id = ${finalChosen?.ownerId ?? null},
-               state = ${fallbackState},
-               routing = ${sql.json(route.snapshot as never)},
-               expires_at = ${fallbackExpiresAt},
-               wakes_used = ${finalChosen ? 1 : 0},
-               updated_at = ${now.toISOString()}::timestamptz
-         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
-           AND responder_id = ${revivalCandidate!.ownerId}
-           AND state = 'awaiting_responder'
-           AND cascade_cursor = 0
-           AND closed_at IS NULL
-      `;
-    }
-  }
 
-  // With a minimum in play (D-003 default 1), an empty selection means the
-  // minimum was UNFILLABLE — the distinct causes stay distinguishable (D-003):
-  // instrument down with no fallback candidate ⇒ embed_unavailable; a pool
-  // that only LIVENESS kept out (qualified-but-dead, or a min>0 fill pool
-  // that was all dead) ⇒
-  // no_live_responder; nothing selectable in the first place (no match at
-  // all, or pure-floor min:0 with nothing above the floor) ⇒ below_floor —
-  // a live below-floor pool under min:0 is a FLOOR verdict, not a liveness one.
-  const reason: GetFeedbackResult['reason'] = finalChosen
+  // An empty selection is now a pure ROUTING verdict, and that is the D-002
+  // simplification: the distinct causes stay distinguishable (D-003), but
+  // `no_live_responder` is GONE from this point in the flow because liveness no
+  // longer keeps anyone out of the selection. Instrument down ⇒
+  // embed_unavailable; nothing above the floor and no minimum-fill ⇒
+  // below_floor. The third case — an expert was selected but no allowed model
+  // could be launched from their transcript — is only knowable AFTER the
+  // dispatch walk, and is recorded there as `no_available_responder`.
+  let reason: GetFeedbackResult['reason'] = finalChosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
       ? 'embed_unavailable'
-      : route.qualified.length > 0 || (minResponders > 0 && route.snapshot.candidates.length > 0)
-        ? 'no_live_responder'
-        : 'below_floor';
+      : 'below_floor';
 
-  // 4) Wake gating is selection/liveness ONLY — the per-task wake budget is
-  //    REMOVED (D-005: maxResponders is the only per-consult bound; residual
-  //    spam guards = per-consult max, the depth cap, archive-first dedupe).
+  // 4) Delivery gating is SELECTION only — the per-task wake budget is REMOVED
+  //    (D-005: maxResponders is the only per-consult bound; residual spam guards
+  //    = per-consult max, the depth cap, archive-first dedupe).
   const willWake = Boolean(finalChosen);
 
-  // 6) The consult_state row was persisted before revival above. Re-read the
-  // final route values for the return surface and the normal wake.
-  const state: GetFeedbackResult['state'] = finalChosen ? 'awaiting_responder' : 'no_qualified_responder';
-  const expiresAt = finalChosen
+  // 6) The consult_state row was persisted above. Re-read the final route values
+  // for the return surface and the dispatch.
+  let state: GetFeedbackResult['state'] = finalChosen ? 'awaiting_responder' : 'no_qualified_responder';
+  let expiresAt = finalChosen
     ? new Date(now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS)).toISOString()
     : null;
 
-  // 7) Wake the responder. A floor-qualified pick gets the why-you-were-chosen
-  //    evidence body (D-008 §5); a minimum-fill pick gets the HONEST
-  //    best-available body (D-002): first-principles review requested, no
-  //    pretence their transcript covers it, and no reflexive lack-of-context
-  //    decline (that protocol line would otherwise make every minimum consult
-  //    a designed decline — a burned wake).
+  // 7) DISPATCH the responder (D-002): fork or convert their session so an
+  //    allowed model answers from their transcript. Nobody is woken.
+  //
+  //    The copy below is unchanged and still earns its branches — it is the
+  //    answering session's BRIEF now rather than a wake body, and a brief needs
+  //    exactly the same thing a wake body did: why this transcript was chosen,
+  //    what standard of answer that implies, and the verb menu that settles the
+  //    consult. A floor-qualified pick gets the why-you-were-chosen evidence; a
+  //    minimum-fill pick gets the HONEST best-available framing so the reply is
+  //    not a designed decline.
   let queued = 0;
   let woke = 0;
   let pickupConfirmed = false;
-  if (willWake && finalChosen && !revivalFirstTurnObserved) {
+  const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
     const auditCopy = req.cascade ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
-    const r = await deps.reach({
-      responder: finalChosen.ownerId,
-      conversationId: opened.conversation_id,
-      summary: auditCopy?.summary ?? `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+    return {
+      summary:
+        auditCopy?.summary ??
+        `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
       // The branch-specific PREAMBLE varies (why you were picked, and what standard of answer
       // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
       // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
       body: auditCopy?.body ?? (
-        (finalChosen.fallback === 'lexical'
+        (candidate.fallback === 'lexical'
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
-            `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
-          : finalChosenVia === 'minimum'
-          ? `Selected as BEST-AVAILABLE reviewer (relevance ${finalChosen.relevance.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
-            `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
-          : `Routed to you by transcript relevance (relevance ${finalChosen.relevance.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)}).\n` +
-            `Why you: ${evidenceLine(finalChosen)} — sessions:read resolves the refs.\n` +
-            `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence.\n`) +
+            `Lexical evidence: ${evidenceLine(candidate)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
+          : via === 'minimum'
+          ? `Selected as BEST-AVAILABLE reviewer (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched peer exists, and this consult carries a minimum of ${minResponders}).\n` +
+            `This is a FIRST-PRINCIPLES review request, not a claim the transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
+          : `Routed by transcript relevance (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)}).\n` +
+            `Why this transcript: ${evidenceLine(candidate)} — sessions:read resolves the refs.\n` +
+            `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`) +
         consultResponderVerbMenu({
           conversationId: opened.conversation_id,
-          ...(finalChosenVia === 'minimum'
+          ...(via === 'minimum'
             ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
             : {}),
-          ...(finalChosen.fallback !== 'lexical' && finalChosenVia !== 'minimum'
+          ...(candidate.fallback !== 'lexical' && via !== 'minimum'
             ? { declineNote: "if it's not your area" }
             : {}),
         })),
+    };
+  };
+
+  if (willWake && finalChosen) {
+    const r = await deps.reach({
+      responder: finalChosen.ownerId,
+      conversationId: opened.conversation_id,
+      ...briefFor(finalChosen, finalChosenVia),
     });
     pickupConfirmed = r.pickupConfirmed ?? false;
     queued = r.queued ?? r.woke ?? 0;
-    // Reach bindings before the queued/pickup split exposed only `woke`, but
-    // that value was always the durable queue count. Keep accepting it as the
-    // delivery fallback while making this result's `woke` field execution-
-    // truthful: a queued wake is not a started turn.
     woke = pickupConfirmed ? queued : 0;
-
-    // A durable queue delivery is still pending until a turn pickup is
-    // confirmed. When the wake fan reports queued>0 without that handshake,
-    // take ONE fresh, fail-soft liveness read: the selected reviewer may have
-    // ended in the small window after routing and before pickup. Preserve the
-    // pending wake for parked/unknown/recorded/draining/live states; only the
-    // oracle's confirmed-death states advance the already-selected menu.
-    let postQueueState: PostQueueLiveness | null | undefined;
-    if (queued > 0 && !pickupConfirmed && deps.postQueueLiveness) {
-      try {
-        postQueueState = await deps.postQueueLiveness(finalChosen.ownerId);
-      } catch {
-        // Liveness enrichment is advisory to this already-durable delivery.
-        // An unavailable read must never turn a pending wake into a cascade.
-        postQueueState = undefined;
-      }
+    if (queued > 0) {
+      await stampAnsweringOwner(sql, req.workspaceId, opened.conversation_id, 0, r.answeringOwnerId ?? null);
+      dispatchProvenance = {
+        sourceOwnerId: finalChosen.ownerId,
+        answeringOwnerId: r.answeringOwnerId ?? null,
+        operation: r.dispatch?.operation ?? null,
+        agent: r.dispatch?.agent ?? null,
+        model: r.dispatch?.model ?? null,
+        verified: r.dispatch?.verified ?? null,
+        detail: r.dispatch?.detail ?? '',
+      };
     }
-    const postQueueDeath =
-      postQueueState?.sessionState === 'ended' || postQueueState?.sessionState === 'suspect';
 
-    // 7b) A required wake that queued nothing is a failed delivery, not a
-    //     successful route. If the persisted selection has another entry,
-    //     advance the same CAS-protected cascade used by reply/decline/expiry
-    //     and record the failed head in its digest before waking the next
-    //     selectee. This makes a parked/stale first candidate unable to stall
-    //     a blocking consult. The reach adapter preserves the durable queue
-    //     count + pickup confirmation for this result surface.
-    //
-    //     Same-owner revival remains the fallback only when there is no next
-    //     selected responder. That keeps the existing single-candidate
-    //     wake-failed recovery while preferring the already-selected menu over
-    //     spending a revival on a responder whose delivery just failed.
-    const hasNextCandidate = finalSelected.length > 1;
-    if ((queued === 0 || postQueueDeath) && hasNextCandidate) {
-      const advanceReason = queued === 0
-        ? 'Required wake queued no deliveries; advancing to the next selected responder.'
-        : `Required wake queued a delivery, but post-queue liveness confirmed sessionState=${postQueueState?.sessionState}; advancing to the next selected responder.`;
-      let failoverReach: { queued?: number; woke?: number; pickupConfirmed?: boolean } | undefined;
+    // 7b) An exhausted allowlist is a failed delivery for THIS expert, not a
+    //     failed consult. Advance the same CAS-protected cascade reply/decline/
+    //     expiry use, recording the exhausted head in the digest, and dispatch
+    //     the next selectee. This is R-6 in the general case: a walled backend
+    //     costs one expert, never the consult.
+    let cursor = 0;
+    while (queued === 0 && cursor + 1 < finalSelected.length) {
+      const failedOwner = finalSelected[cursor]!.candidate.ownerId;
+      let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
         {
           workspaceId: req.workspaceId,
@@ -1443,13 +1352,14 @@ export async function getFeedbackCore(
           latencyContract: latency,
           requesterId: req.requesterId,
           routing: route.snapshot,
-          cascadeCursor: 0,
+          cascadeCursor: cursor,
           digest: [],
           event: makeDigestEntry(
-            finalChosen.ownerId,
-            'wake_failed',
+            failedOwner,
+            'dispatch_failed',
             now.toISOString(),
-            advanceReason,
+            'Every allowed expert model was exhausted for this transcript (walled account, unforkable ' +
+              'source, or failed launch); advancing to the next selected expert.',
           ),
           stateOnAdvance: 'awaiting_responder',
           nowIso: now.toISOString(),
@@ -1460,62 +1370,53 @@ export async function getFeedbackCore(
           return { woke: failoverReach.queued ?? failoverReach.woke ?? 0 };
         },
       );
-      if (advanced.advanced && advanced.next) {
-        const nextSelected = finalSelected.find((selection) => selection.candidate.ownerId === advanced.next?.ownerId);
-        if (nextSelected) {
-          finalChosen = nextSelected.candidate;
-          finalChosenVia = nextSelected.via;
-          queued = failoverReach?.queued ?? failoverReach?.woke ?? advanced.woke;
-          pickupConfirmed = failoverReach?.pickupConfirmed ?? false;
-          woke = pickupConfirmed ? queued : 0;
-        }
+      if (!advanced.advanced || !advanced.next) break;
+      const nextSelected = finalSelected.find((s) => s.candidate.ownerId === advanced.next?.ownerId);
+      if (!nextSelected) break;
+      cursor += 1;
+      finalChosen = nextSelected.candidate;
+      finalChosenVia = nextSelected.via;
+      queued = failoverReach?.queued ?? failoverReach?.woke ?? advanced.woke;
+      pickupConfirmed = failoverReach?.pickupConfirmed ?? false;
+      woke = pickupConfirmed ? queued : 0;
+      if (queued > 0) {
+        await stampAnsweringOwner(
+          sql,
+          req.workspaceId,
+          opened.conversation_id,
+          cursor,
+          failoverReach?.answeringOwnerId ?? null,
+        );
+        dispatchProvenance = {
+          sourceOwnerId: finalChosen.ownerId,
+          answeringOwnerId: failoverReach?.answeringOwnerId ?? null,
+          operation: failoverReach?.dispatch?.operation ?? null,
+          agent: failoverReach?.dispatch?.agent ?? null,
+          model: failoverReach?.dispatch?.model ?? null,
+          verified: failoverReach?.dispatch?.verified ?? null,
+          detail: failoverReach?.dispatch?.detail ?? '',
+        };
       }
     }
 
-    // 7c) WI-39852 wake-failed fallback: a LIVE-read chosen responder whose
-    //     wake reached NOBODY is a false-parked zombie — revive the SAME owner
-    //     only when the selected menu had no next candidate. Shares the
-    //     one-revival budget with dead-preempt via the persisted `revived`
-    //     stamps (revivalBudgetSpent, EI-20864690354207496 F2): a SPAWNED
-    //     dead-preempt stamped selected[0].revived, so this guard finds the
-    //     budget spent and a revived-then-unreachable session can never loop.
-    //     (A dead-preempt that FAILED to spawn left no stamp — the budget is
-    //     honestly unspent and this leg may still make the consult's one
-    //     revival attempt.) The row is already persisted; on spawn, stamp the
-    //     revival marker onto the persisted selection provenance (selected[0]
-    //     IS the chosen).
-    if (queued === 0 && !hasNextCandidate && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
-      const rr = await deps.revive({
-        ownerId: finalChosen.ownerId,
-        conversationId: opened.conversation_id,
-        brief: revivalBrief({
-          routing: route.snapshot,
-          requesterId: req.requesterId,
-          question: req.question,
-          conversationId: opened.conversation_id,
-          candidate: finalChosen,
-        }),
-      });
-      revival = {
-        ownerId: finalChosen.ownerId,
-        trigger: 'wake-failed',
-        spawned: rr.spawned,
-        verified: rr.verified,
-        detail: rr.detail,
-        ...(rr.reason ? { reason: rr.reason } : {}),
-      };
-      if (rr.spawned) {
-        // Stamp BOTH copies of the selection: the persisted row (the durable
-        // budget ledger every later revival site reads) and the in-memory
-        // snapshot (so any same-invocation budget read stays coherent).
-        const wakeFailedHead = route.snapshot.selection?.selected?.[0];
-        if (wakeFailedHead) wakeFailedHead.revived = true;
-        await sql`
-          UPDATE harness_shared.consult_state
-             SET routing = jsonb_set(routing, '{selection,selected,0,revived}', 'true'::jsonb)
-           WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
-        `;
-      }
+    // 7c) The whole menu was exhausted. Say so NOW rather than leaving an
+    //     awaiting_responder row for the expiry sweep to settle hours later: no
+    //     session was launched, so nothing is coming, and the requester's only
+    //     useful next move is the retrieval fallback. This is the one honest
+    //     terminal the old code could not express — it had a revival to try.
+    if (queued === 0) {
+      reason = 'no_available_responder';
+      state = 'no_qualified_responder';
+      expiresAt = null;
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'no_qualified_responder',
+               expires_at = NULL,
+               updated_at = ${now.toISOString()}::timestamptz
+         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+           AND state = 'awaiting_responder'
+           AND closed_at IS NULL
+      `;
     }
   }
 
@@ -1528,16 +1429,21 @@ export async function getFeedbackCore(
     finalChosen?.fallback === 'lexical'
       ? ' ⚠ Semantic embedding was unavailable: this is a BOUNDED MANUAL-REVIEW pick from lexical text_tsv token matches, not a qualified semantic responder. Validate independently.'
       : '';
-  const revivalNote = revival
-    ? revival.spawned
-      ? ` 🧭 REVIVED ${revival.ownerId} (${revival.trigger}: carry-respawn ${revival.verified === true ? 'verified live' : revival.verified === null ? 'still booting — the cascade expiry guards the reply' : 'spawned'}); the consult brief is their first turn.`
-      : revival.reason === 'live-collision'
-        ? ` 🧭 ${revival.ownerId} was already LIVE when revival was attempted; the stale DEAD snapshot was corrected and the consult was routed directly.`
-      : ` ⚠ Revival of ${revival.ownerId} was attempted (${revival.trigger}) but FAILED to spawn — fell back to the pre-revival selection. Detail: ${revival.detail}`
+  // D-002 provenance, stated rather than implied: the requester needs to know
+  // that the reply will come from a NEW session reasoning over the expert's
+  // transcript, not from the expert — otherwise they will read the answer as
+  // that agent's considered position and, worse, expect that agent to remember
+  // the exchange.
+  const dispatchNote = dispatchProvenance
+    ? ` 🧭 No agent was woken: ${dispatchProvenance.operation === 'convert' ? 'CONVERTED' : 'FORKED'} ` +
+      `${dispatchProvenance.sourceOwnerId}'s session onto ${dispatchProvenance.agent ?? '?'}/${dispatchProvenance.model ?? '?'}` +
+      `${dispatchProvenance.answeringOwnerId && dispatchProvenance.answeringOwnerId !== dispatchProvenance.sourceOwnerId ? ` as ${dispatchProvenance.answeringOwnerId}` : ''}` +
+      `${dispatchProvenance.verified === true ? ' (live)' : ' (booting — the cascade expiry guards the reply)'}. ` +
+      `The answer reasons over their transcript; they were not asked and will not remember it.`
     : '';
   const wakeNote = pickupConfirmed
-    ? `wake pickup confirmed for ${finalChosen?.ownerId}`
-    : `wake queued for ${finalChosen?.ownerId}; turn pickup is not confirmed — verify a fresh activity/checkpoint before treating it as started`;
+    ? `answering session live for ${finalChosen?.ownerId}'s transcript`
+    : `answering session launched for ${finalChosen?.ownerId}'s transcript; it is still booting — the cascade expiry guards the reply`;
   // EI-22180634511432554: closed_cant_help / a fully-declined menu are
   // terminal-and-non-advancing BY DESIGN (see priorNonHelpfulResponders) — say
   // so on the re-route that benefited from it, so a caller who re-asked the
@@ -1549,13 +1455,13 @@ export async function getFeedbackCore(
     : '';
   const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}${autoExcludedNoteText}`
-      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}${autoExcludedNoteText}`
+      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
+      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
     : reason === 'embed_unavailable'
-      ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.${revivalNote}`
-      : reason === 'no_live_responder'
-        ? `Matching candidates exist but none is LIVE — no wake is possible and the minimum could not be filled with a reachable reviewer. remaining_candidates lists them; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.${revivalNote}`
-        : `No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).${revivalNote}`;
+      ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
+      : reason === 'no_available_responder'
+        ? `Matching experts were selected, but NO allowed model could be launched from any of their transcripts — every ranked model was walled, unreachable for that backend, or failed to launch. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed. Retrying once a walled account resets is reasonable.`
+        : `No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).`;
 
   return {
     ok: true,
@@ -1597,7 +1503,7 @@ export async function getFeedbackCore(
       pickupConfirmed,
     },
     park_key: parkKey,
-    ...(revival ? { revival } : {}),
+    ...(dispatchProvenance ? { dispatch: dispatchProvenance } : {}),
     ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),
     hint,
   };

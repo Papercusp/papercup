@@ -104,12 +104,12 @@ export default defineTool({
       .describe(
         'Similarity floor for the archive-first serve (default ~0.8, precision-biased). Pass 2 to bypass the archive entirely (force fresh routing — e.g. when an archived answer did not fit your context); lower it only when a stale-but-close answer beats waking anyone.',
       ),
-    allow_revival: z
+    allow_dispatch: z
       .boolean()
       .optional()
       .default(true)
       .describe(
-        'Allow carry-respawn revival of a dead transcript candidate (default true). Pass false to keep this consult retrieval/live-peer-only and prevent any agent launch.',
+        'Allow launching an answering session from the matched expert (fork same-backend, convert cross-backend; default true). Pass false to keep this consult retrieval-only — you get the ranked candidates and read their transcripts yourself.',
       ),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Area topics to tag the consult with (ambient discoverability).'),
     harness: z.string().optional().describe('Tag the conversation harness-scoped.'),
@@ -162,7 +162,7 @@ export default defineTool({
       harnessSlug: args.harness,
     }, identity, {
       harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
-      allowRevival: args.allow_revival,
+      allowDispatch: args.allow_dispatch,
     });
     let interestWatch;
     if (

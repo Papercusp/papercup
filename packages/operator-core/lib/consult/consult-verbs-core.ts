@@ -363,7 +363,12 @@ function isConsultParticipant(row: ConsultStateRow, authorId: string): boolean {
   if (authorId === row.requester_id || authorId === row.responder_id) return true;
   return selectionFromRouting(row.routing)
     .slice(0, row.cascade_cursor + 1)
-    .some((selection) => selection.ownerId === authorId);
+    // D-002: the session that ANSWERS is not the expert whose transcript was
+    // routed. A fork gets a fresh coord identity (so it cannot collide with a
+    // still-live original), so `ownerId` alone would refuse the very session
+    // this consult launched to answer it. `answeringOwnerId` is stamped by
+    // dispatch for exactly this gate.
+    .some((selection) => selection.ownerId === authorId || selection.answeringOwnerId === authorId);
 }
 
 /**

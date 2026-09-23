@@ -8,28 +8,36 @@ export async function getFeedbackProd(
   options: {
     harnessSlug?: string | null;
     filterRoute?: (route: Awaited<ReturnType<GetFeedbackDeps['route']>>) => Promise<Awaited<ReturnType<GetFeedbackDeps['route']>>>;
-    /** Keep the default revival behavior, but let a caller that only wants
-     * retrieval/live-peer routing prevent any carry-respawn side effect. */
-    allowRevival?: boolean;
+    /**
+     * D-002: let a caller that only wants RETRIEVAL prevent any launch side
+     * effect. Absent/true binds the fork/convert dispatcher; false leaves the
+     * delivery seam reporting zero, which the core reports honestly as
+     * `no_available_responder`.
+     *
+     * (Named `allowRevival` before the dispatcher replaced revive-in-place; the
+     * question it answers — "may this consult start a process?" — is unchanged.)
+     */
+    allowDispatch?: boolean;
   } = {},
 ) {
   const [
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
     { resolveProseProfileSelection },
-    { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { notifyAgents }, { makeConsultReviver },
+    { resolveSessionStates }, { listLoopStanddownOwners }, conversations, { makeConsultReachDispatcher },
   ] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'), import('./relevance-router'),
     import('../agent-tools/search/embedder'), import('../search/prose-vector-dims'),
     import('../agent-tools/coordination/liveness-oracle'),
     import('../harness/routines/release-pause-ttl'),
-    import('../agent-tools/coordination/conversations'), import('../agent-tools/coordination/notify-agents'),
-    import('./revive-responder'),
+    import('../agent-tools/coordination/conversations'),
+    import('./consult-dispatch'),
   ]);
   // This is an interactive MCP path, so a cold/local or rate-limited embedder
   // must degrade to the lexical fallback before the ~55s transport deadline.
   // The shared helper keeps this budget aligned with the other interactive
   // query surfaces (WI-3922); the losing acquisition continues warming the
   // process for a later consult.
+  const dispatchDisabled = options.allowDispatch === false;
   const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
   const embed = resolved?.embed ?? null;
   const embeddingProfile = resolved
@@ -66,37 +74,16 @@ export async function getFeedbackProd(
       });
       return { conversation_id: opened.conversation.id, thread_id: opened.thread_id, delivered: opened.delivered };
     },
-    reach: async (opts) => {
-      const r = await notifyAgents(identity, {
-        addressees: [opts.responder],
-        objectRef: { kind: 'conversation', ref: opts.conversationId },
-        summary: opts.summary, body: opts.body,
-        ...(request.harnessSlug ? { harnessSlug: request.harnessSlug } : {}),
-        wake: true,
-      });
-      return { queued: r.queued ?? r.woke, woke: r.woke, pickupConfirmed: r.pickupConfirmed ?? false };
-    },
-    postQueueLiveness: async (ownerId) => {
-      try {
-        const verdict = (await resolveSessionStates([{ ownerId }], {
-          hydratePerId: true,
-          psuHostPositiveAuthority: true,
-        })).get(ownerId);
-        return verdict ? { sessionState: verdict.sessionState } : null;
-      } catch {
-        // The wake is already durable; an enrichment failure must preserve the
-        // pending delivery rather than infer death and cascade.
-        return null;
-      }
-    },
-    ...(options.allowRevival === false
-      ? {}
-      : {
-          revive: makeConsultReviver({
-            workspaceId: request.workspaceId,
-            harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
-            launchedBy: identity.ownerId,
-          }),
+    // D-002/D-010: the DELIVERY seam is the fork/convert walk, not notifyAgents.
+    // A consult never pings or wakes a live agent — it launches a new session
+    // from the routed expert's transcript. `notifyAgents` is deliberately no
+    // longer imported here, so this binding cannot silently regain a wake.
+    reach: dispatchDisabled
+      ? async () => ({ queued: 0, woke: 0, pickupConfirmed: false, answeringOwnerId: null })
+      : makeConsultReachDispatcher({
+          workspaceId: request.workspaceId,
+          harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
+          launchedBy: identity.ownerId,
         }),
   });
 }

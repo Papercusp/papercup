@@ -31,8 +31,21 @@ import { consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
- * the two non-reply advance triggers. */
-export type CascadeEventKind = 'answer' | 'clarifying_question' | 'new_fact' | 'decline' | 'expired' | 'wake_failed';
+ * the non-reply advance triggers.
+ *
+ * `dispatch_failed` is D-002's replacement for `wake_failed` — the trigger is no
+ * longer "the wake reached nobody" but "every allowed model was exhausted for
+ * this expert's transcript". `wake_failed` is RETAINED because it is persisted in
+ * `consult_state.cascade_digest` on historical rows, and a reader that drops it
+ * would render those digests as having no reason at all. */
+export type CascadeEventKind =
+  | 'answer'
+  | 'clarifying_question'
+  | 'new_fact'
+  | 'decline'
+  | 'expired'
+  | 'dispatch_failed'
+  | 'wake_failed';
 
 export interface CascadeDigestEntry {
   ownerId: string;
@@ -61,10 +74,22 @@ export interface CascadeSelectionEntry {
   relevance: number;
   similarity: number;
   liveness: string;
-  /** WI-39852: selectee entered via a carry-respawn revival (provenance only). */
+  /**
+   * D-002: the identity that will actually POST for this selectee, stamped when
+   * dispatch launches the answering session. It differs from `ownerId` on a FORK
+   * — psu gives a fork a new coord id so it cannot collide with a still-live
+   * original — and equals it on a cross-backend conversion.
+   *
+   * This is the participant key for the answering session. `ownerId` keeps
+   * naming the expert whose KNOWLEDGE was routed, which is what the routing
+   * provenance, the cascade cursor and the requester's hint all mean by it; only
+   * the reply gate needs to know who holds the keyboard.
+   */
+  answeringOwnerId?: string;
+  /** RETIRED with the revival apparatus (D-002/D-010) — still READ from
+   * historical persisted snapshots, never written. */
   revived?: boolean;
-  /** EI-21809454835305750: revival spawn is in flight; counts against the
-   * one-revival budget until it resolves. */
+  /** RETIRED with the revival apparatus (D-002/D-010) — read-only, as above. */
   revivalPending?: boolean;
   /** WI-39861: selectee entered on the ONE post-exhaustion refill round. */
   refill?: boolean;
@@ -275,10 +300,45 @@ export interface AdvanceCascadeResult {
  * sweep); the guard makes the loser's advance a clean no-op (`raced`) instead
  * of a duplicate cursor bump + duplicate wake.
  */
+/**
+ * Stamp WHO will actually post for the selectee at `cursor` (D-002). A fork
+ * answers under a new coord identity, and `isConsultParticipant` reads this field
+ * to let that session's reply through — without it, the session this cascade step
+ * just launched is refused `not_a_participant`.
+ *
+ * Additive and guarded: the answering session may already have replied by the
+ * time this lands, so it touches ONLY this one path and never rewrites
+ * state/responder_id/cursor.
+ */
+async function stampAnsweringOwner(
+  sql: Sql,
+  params: Pick<AdvanceCascadeParams, 'workspaceId' | 'conversationId'>,
+  cursor: number,
+  answeringOwnerId: string | null | undefined,
+): Promise<void> {
+  if (!answeringOwnerId) return;
+  await sql`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(
+             routing,
+             ARRAY['selection', 'selected', ${String(cursor)}, 'answeringOwnerId'],
+             ${JSON.stringify(answeringOwnerId)}::jsonb
+           )
+     WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+       AND routing #>> ARRAY['selection', 'selected', ${String(cursor)}, 'ownerId'] IS NOT NULL
+  `;
+}
+
 export async function advanceCascade(
   params: AdvanceCascadeParams,
   sql: Sql,
-  reach?: (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{ woke: number }>,
+  /** D-002/D-010: prod binds the fork/convert DISPATCHER here, not a wake.
+   *  `woke` counts answering sessions launched; `answeringOwnerId` is who will
+   *  post, which differs from `responder` on a fork. */
+  reach?: (opts: { responder: string; conversationId: string; summary: string; body: string }) => Promise<{
+    woke: number;
+    answeringOwnerId?: string | null;
+  }>,
   revive?: CascadeRevive,
 ): Promise<AdvanceCascadeResult> {
   const sourceAudit = sourceAuditCascadeMetaFromRouting(params.routing);
@@ -567,6 +627,7 @@ export async function advanceCascade(
             body: copy.body,
           });
           woke = r.woke;
+          if (woke > 0) await stampAnsweringOwner(sql, params, cursorIdx, r.answeringOwnerId);
         }
         return {
           advanced: true,
@@ -677,6 +738,7 @@ export async function advanceCascade(
       body: copy.body,
     });
     woke = r.woke;
+    if (woke > 0) await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
   }
   return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };
 }
