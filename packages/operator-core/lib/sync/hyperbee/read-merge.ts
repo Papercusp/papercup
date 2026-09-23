@@ -516,7 +516,41 @@ export interface MergeCursor {
    * semantics on the next pass.
    */
   lateReadResults?: Map<string, ReadAttemptResult[]>;
+  /**
+   * p2p-join-catchup-speed P-004: per-log memo of the snapshot scan (keyHex →
+   * what `[?, scannedTo)` held). A far-behind cursor looks for a set ahead of it on
+   * every pass while it catches up. Without the memo each pass would re-read the
+   * whole remaining backlog. With it, a pass reads only the ops appended since the
+   * last scan. Lives on the cursor, so every reset (log removal, truncation,
+   * re-fold) drops it together with the positions it was measured against.
+   */
+  snapshotScans?: Map<string, SnapshotScanMemo>;
+  /**
+   * P-004: logs whose DURABLE apply-failure state is unknown. The PG cursor load
+   * failed and the log was pinned at 0 (the F4 rule: an unreadable durable cursor
+   * may hold an unapplied entry). Such a log is never snapshot-skipped, fresh or
+   * far-behind, for the life of this cursor.
+   */
+  snapshotSkipUnsafe?: Set<string>;
 }
+
+/** P-004: what a previous snapshot scan established for one log. */
+export interface SnapshotScanMemo {
+  /** `log.length` when the scan ran. Every index below it has been scanned. */
+  scannedTo: number;
+  /** The newest complete set found below `scannedTo`, or null for none. */
+  seed: SnapshotSeed | null;
+  /** Set when the last attempt hit an unreadable block. The scan is retried once
+   *  the log grows past this length or `SNAPSHOT_UNREADABLE_RETRY_MS` has passed,
+   *  so a stuck tail block cannot cost a read timeout on every merge pass. */
+  unreadableAtLength?: number;
+  unreadableAtMs?: number;
+}
+
+/** P-004: how long an unreadable snapshot scan is remembered before a retry on a
+ *  log that has not grown (an idle writer never grows, so length alone would never
+ *  retry it). */
+export const SNAPSHOT_UNREADABLE_RETRY_MS = 30_000;
 
 export function createMergeCursor(): MergeCursor {
   return {
@@ -530,14 +564,87 @@ export function createMergeCursor(): MergeCursor {
 }
 
 /**
- * Default backward-scan bound for `findLatestSnapshotIndex`. By the compaction
- * cadence (`SNAPSHOT_COMPACT_EVERY_OPS`) the latest snapshot is at most ~threshold
- * ops behind the tail, so scanning a few cadence-windows back finds it; if none is
- * found in the window we fall back to folding from 0 (today's behavior — safe, no
- * regression), which bounds a fresh joiner of a NON-compacted log from paying
- * O(total-history) just to discover there is no snapshot.
+ * Default backward-scan bound for `findLatestCompleteSnapshot` and its wrappers.
+ * `0` means NO floor: the scan walks back until it finds the newest complete set,
+ * however far behind the tail it is.
+ *
+ * p2p-join-catchup-speed-2026-09-23 P-004 (R-4). This used to be
+ * `SNAPSHOT_COMPACT_EVERY_OPS * 4` (4,000 ops). The bound assumed a snapshot at
+ * least every 1,000 ops. P-003 makes the cadence grow with live state, and a
+ * producer that was off for a while leaves its last set arbitrarily far back.
+ * Either way the 4,000-op window made a real snapshot invisible, so the joiner
+ * replayed full history and the sparse cutter shipped it.
+ *
+ * Dropping the bound does not add download. When a complete set exists, the
+ * scan reads only `[seedIndex, length)`, which is exactly what the seeded fold
+ * reads next. When none exists, the reader folds from 0 and reads every block
+ * anyway. The scan reads windows in parallel and prefetches them
+ * (`scanBackwardWindowed`), so its wall-clock cost tracks the fold's read side.
+ * It does not replace the fold's own cost. An explicit positive `maxLookback`
+ * still bounds the scan for callers that want a cheap tail probe.
  */
-export const SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
+export const SNAPSHOT_SCAN_LOOKBACK = 0;
+
+/** P-004: first and largest window of the parallel backward snapshot scan. The
+ *  window doubles from MIN to MAX, so a set near the tail (steady state) costs a
+ *  few reads beyond the answer, and a far one is read in large parallel batches.
+ *  MAX stays modest because the seed cutter scans a live, WAL-churning corestore. */
+export const SNAPSHOT_SCAN_WINDOW_MIN = 32;
+export const SNAPSHOT_SCAN_WINDOW_MAX = 256;
+
+/**
+ * P-004: a cursor this many ops (or more) behind its log's tail looks for a
+ * complete snapshot set ahead of it, and jumps there when that is safe
+ * (`seedCursorFromSnapshots`). Below this backlog the fold simply reads on.
+ */
+export const SNAPSHOT_JUMP_MIN_BACKLOG_OPS = SNAPSHOT_COMPACT_EVERY_OPS;
+
+type BoundedReadResult = Awaited<ReturnType<typeof readOpBoundedDetailed>>;
+
+/** Fire the log's ranged prefetch (EI-92) when it has one. Degrades to per-op reads. */
+function tryPrefetch(log: AdmittedLog, start: number, end: number): void {
+  const pf = (log as PrefetchableLog).prefetch;
+  if (typeof pf !== 'function' || end <= start) return;
+  try {
+    pf.call(log, start, end);
+  } catch {
+    /* degraded to per-op fetch, still correct */
+  }
+}
+
+/**
+ * P-004: a read-through window over `log` for a BACKWARD scan. `read(i)` returns
+ * the same tagged result `readOpBoundedDetailed` would. On a miss it reads the
+ * window ending at `i` (down to `floor`) in parallel, after a ranged prefetch,
+ * then yields a macrotask. Local corestore gets resolve on microtasks, so a long
+ * scan with no yield would hold the event loop (the EI-81 class).
+ *
+ * This is only a cache. The caller decides index by index, in descending order,
+ * exactly as the sequential scan did. So a window that reads past the answer
+ * changes no outcome. It costs at most one window of extra reads below it.
+ */
+function scanBackwardWindowed(
+  log: AdmittedLog,
+  floor: number,
+  getTimeoutMs: number,
+): (i: number) => Promise<BoundedReadResult> {
+  const cache = new Map<number, BoundedReadResult>();
+  let size = SNAPSHOT_SCAN_WINDOW_MIN;
+  return async (i: number) => {
+    const hit = cache.get(i);
+    if (hit) return hit;
+    cache.clear();
+    const start = Math.max(floor, i - size + 1);
+    tryPrefetch(log, start, i + 1);
+    const reads = await Promise.all(
+      Array.from({ length: i - start + 1 }, (_, k) => readOpBoundedDetailed(log, start + k, getTimeoutMs)),
+    );
+    for (let k = 0; k < reads.length; k++) cache.set(start + k, reads[k]!);
+    size = Math.min(size * 2, SNAPSHOT_SCAN_WINDOW_MAX);
+    await yieldToEventLoop();
+    return cache.get(i)!;
+  };
+}
 
 /**
  * WI-2313 — verify a snapshot SET fully occupies `[coversUpTo, coversUpTo + chunkCount)`:
@@ -559,6 +666,10 @@ async function verifySnapshotSet(
 ): Promise<VerifySetResult> {
   if (coversUpTo < 0 || chunkCount < 1) return { ok: false, reason: 'torn' };
   if (coversUpTo + chunkCount > log.length) return { ok: false, reason: 'torn' }; // extends past the tail → incomplete
+  // P-004: the backward scan enters a set at its LAST chunk, so most of the span sits
+  // below the scan window. Ask a remote log for the whole span at once instead of
+  // paying one round trip per chunk (a measured set had 44 chunks).
+  tryPrefetch(log, coversUpTo, coversUpTo + chunkCount);
   for (let j = 0; j < chunkCount; j++) {
     const idx = coversUpTo + j;
     const r = await readOpBoundedDetailed(log, idx, getTimeoutMs);
@@ -656,12 +767,20 @@ export async function findLatestCompleteSnapshotDetailed(
   log: AdmittedLog,
   maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
   getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
+  opts?: {
+    /** P-004: never scan below this index. A cursor already at `floor` gains
+     *  nothing from a set below it, so the far-behind jump passes its position.
+     *  Combined with `maxLookback` by taking the higher of the two floors. */
+    floor?: number;
+  },
 ): Promise<SnapshotScanOutcome> {
   const len = log.length;
-  const floor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
+  const lookbackFloor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
+  const floor = Math.max(lookbackFloor, Math.max(0, Math.floor(opts?.floor ?? 0)));
+  const read = scanBackwardWindowed(log, floor, getTimeoutMs);
   let i = len - 1;
   while (i >= floor) {
-    const r = await readOpBoundedDetailed(log, i, getTimeoutMs);
+    const r = await read(i);
     if (r.kind !== 'op') {
       // Unavailable/withholding tail. The READER wrapper turns this back into `null`
       // (fold from 0 — safe); the cutter gets the truth so it can retry.
@@ -723,17 +842,146 @@ export async function findLatestSnapshotIndex(
 export async function seedCursorFromSnapshots(
   logs: AdmittedLog[],
   cursor: MergeCursor,
-  opts?: { maxLookback?: number; getTimeoutMs?: number },
+  opts?: SeedCursorFromSnapshotsOpts,
 ): Promise<void> {
+  const maxLookback = opts?.maxLookback ?? SNAPSHOT_SCAN_LOOKBACK;
+  const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
+  const jump = opts?.jumpFarBehind ?? true;
+  const minBacklog = Math.max(1, opts?.jumpMinBacklogOps ?? SNAPSHOT_JUMP_MIN_BACKLOG_OPS);
   for (const log of logs) {
-    if (cursor.positions.has(log.keyHex)) continue; // already folding — don't rewind
-    const idx = await findLatestSnapshotIndex(
-      log,
-      opts?.maxLookback ?? SNAPSHOT_SCAN_LOOKBACK,
-      opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS,
-    );
-    if (idx !== null && idx > 0) cursor.positions.set(log.keyHex, idx);
+    const key = log.keyHex;
+    if (cursor.snapshotSkipUnsafe?.has(key)) continue; // F4: durable failure state unknown
+    const pos = cursor.positions.get(key);
+    if (pos === undefined) {
+      // Fresh log (P-007): seed at the newest complete set anywhere in the log.
+      const seed = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs);
+      if (seed && seed.seedIndex > 0) cursor.positions.set(key, seed.seedIndex);
+      continue;
+    }
+    // P-004 (R-4): a far-behind cursor jumps forward to a complete set AHEAD of it.
+    if (!jump || log.length - pos < minBacklog || !snapshotJumpIsSafe(cursor, key)) continue;
+    const seed = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs);
+    if (!seed || seed.seedIndex <= pos) continue; // never rewinds
+    jumpCursorToSnapshot(cursor, key, pos, seed.seedIndex);
   }
+}
+
+export interface SeedCursorFromSnapshotsOpts {
+  maxLookback?: number;
+  getTimeoutMs?: number;
+  /**
+   * P-004 (R-4): let an ALREADY-POSITIONED cursor that is far behind its log jump
+   * forward to a complete snapshot set ahead of it, instead of replaying every op
+   * that set summarizes. Default true. False restores the old contract, where
+   * only a fresh log (no position) is seeded.
+   */
+  jumpFarBehind?: boolean;
+  /** Backlog (ops) below which a positioned cursor does not look for a set ahead
+   *  of it. Default `SNAPSHOT_JUMP_MIN_BACKLOG_OPS`. */
+  jumpMinBacklogOps?: number;
+}
+
+/**
+ * P-004 — when may a positioned cursor skip `[pos, seedIndex)`?
+ *
+ * The skip itself is equivalent to replaying those ops. A complete set at
+ * `seedIndex` carries, for every key this log wrote below `coversUpTo`, the row and
+ * the clock of the log's winning op for that key. Deleted keys are carried as
+ * tombstones (EI-1688). Folding those rows through the same LWW gate gives the same
+ * winners and the same PG rows as folding the ops, whatever prefix the cursor had
+ * already folded. That is the argument that already makes fresh seeding correct
+ * (snapshot-fold.test.ts); a folded prefix only adds winners the gate respects.
+ *
+ * What the skip must NOT do is drop state that is held AT the cursor rather than
+ * in the ops. Two holds exist:
+ *  - `applyFailures`: an unresolved materialization pins this log's cursor at the
+ *    failed op, retryable applies and timed-out in-flight writes included (they
+ *    all go through `holdCursorHere`). It must resolve on the normal path first.
+ *  - `snapshotSkipUnsafe`: the durable failure state could not be loaded (F4).
+ * With neither present, everything below `pos` is applied and nothing at or above
+ * it is owed except the ops the set summarizes.
+ */
+function snapshotJumpIsSafe(cursor: MergeCursor, keyHex: string): boolean {
+  if (cursor.applyFailures?.has(keyHex)) return false;
+  if (cursor.snapshotSkipUnsafe?.has(keyHex)) return false;
+  return true;
+}
+
+/** Move `keyHex` from `from` to `to` and drop per-position read bookkeeping below
+ *  `to`. Those positions will never be read again, so their stall/throw counters
+ *  and any late read results are stale. */
+function jumpCursorToSnapshot(cursor: MergeCursor, keyHex: string, from: number, to: number): void {
+  cursor.positions.set(keyHex, to);
+  const prefix = `${keyHex}:`;
+  for (const m of [cursor.readThrows, cursor.readStalls, cursor.lateReadResults] as const) {
+    if (!m) continue;
+    for (const ident of [...m.keys()]) {
+      if (!ident.startsWith(prefix)) continue;
+      const at = Number(ident.slice(prefix.length));
+      if (Number.isFinite(at) && at < to) m.delete(ident);
+    }
+  }
+  console.warn(
+    `[read-merge] P-004 snapshot jump: log ${keyHex.slice(0, 12)} cursor ${from} → ${to} ` +
+      `(skipped ${to - from} op(s) summarized by the complete snapshot set at ${to}).`,
+  );
+}
+
+/**
+ * P-004 — `findLatestCompleteSnapshotDetailed`, memoized per log on the cursor.
+ *
+ * Only the unbounded scan is memoized. An explicit `maxLookback` window slides
+ * with the tail, so an older answer can fall outside it; those callers
+ * (tail probes, tests) get a plain scan every time.
+ *
+ * With the memo, a repeat scan reads only `[max(floor, scannedTo), length)` and
+ * keeps the remembered set when nothing newer is there. The remembered set
+ * was verified complete when it was found, and any complete set is a
+ * correct seed (R-5), so the memo can make a seed older than the newest. It
+ * cannot make one unsafe.
+ */
+async function latestCompleteSnapshotMemoized(
+  log: AdmittedLog,
+  cursor: MergeCursor,
+  floor: number,
+  maxLookback: number,
+  getTimeoutMs: number,
+): Promise<SnapshotSeed | null> {
+  if (maxLookback > 0) {
+    const r = await findLatestCompleteSnapshotDetailed(log, maxLookback, getTimeoutMs, { floor });
+    return r.kind === 'found' ? r.seed : null;
+  }
+  const memos = (cursor.snapshotScans ??= new Map<string, SnapshotScanMemo>());
+  const len = log.length;
+  let memo = memos.get(log.keyHex);
+  if (memo && len < memo.scannedTo) {
+    memos.delete(log.keyHex); // the log shrank under the memo: it describes other blocks
+    memo = undefined;
+  }
+  if (
+    memo &&
+    memo.unreadableAtLength !== undefined &&
+    len <= memo.unreadableAtLength &&
+    Date.now() - (memo.unreadableAtMs ?? 0) < SNAPSHOT_UNREADABLE_RETRY_MS
+  ) {
+    return memo.seed;
+  }
+  if (memo && memo.unreadableAtLength === undefined && len === memo.scannedTo) return memo.seed;
+  const scanFloor = Math.max(floor, memo?.scannedTo ?? 0);
+  const r = await findLatestCompleteSnapshotDetailed(log, 0, getTimeoutMs, { floor: scanFloor });
+  if (r.kind === 'unreadable') {
+    // Not evidence about any set. Keep what is known and retry once the log grows.
+    memos.set(log.keyHex, {
+      scannedTo: memo?.scannedTo ?? 0,
+      seed: memo?.seed ?? null,
+      unreadableAtLength: len,
+      unreadableAtMs: Date.now(),
+    });
+    return memo?.seed ?? null;
+  }
+  const seed = r.kind === 'found' ? r.seed : (memo?.seed ?? null);
+  memos.set(log.keyHex, { scannedTo: len, seed });
+  return seed;
 }
 
 /* ------------------------------------------------------------------ *
@@ -863,6 +1111,22 @@ export function seedCursorFromPgCache(
   }
 }
 
+/**
+ * F4: the durable cursor could not be read, so an admitted log may still owe an
+ * unapplied entry at position 0. Pin every log that has no position yet at 0,
+ * which keeps fresh snapshot seeding off it. Also mark it `snapshotSkipUnsafe`,
+ * which keeps the P-004 far-behind jump off it: that jump acts on positioned
+ * cursors, so the pin at 0 alone would no longer protect the entry. Exported so
+ * the boot F4 path can use the same helper instead of its own copy of the loop.
+ */
+export function pinUnknownDurableState(cursor: MergeCursor, keyHexes: Iterable<string>): void {
+  for (const key of keyHexes) {
+    if (cursor.positions.has(key)) continue;
+    cursor.positions.set(key, 0);
+    (cursor.snapshotSkipUnsafe ??= new Set()).add(key);
+  }
+}
+
 /** Create one seed cache per booted harness. A failed load is one-shot and
  * fail-open (the caller logs it; folds start at zero), matching the old latch. */
 export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
@@ -874,11 +1138,7 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   return {
     async seed(cursor, store, applyBinding, admittedKeyHexes) {
       if (invalidated) {
-        if (loadFailed) {
-          for (const key of admittedKeyHexes) {
-            if (!cursor.positions.has(key)) cursor.positions.set(key, 0);
-          }
-        }
+        if (loadFailed) pinUnknownDurableState(cursor, admittedKeyHexes);
         return;
       }
       if (!saved || savedApplyBinding !== applyBinding) {
@@ -891,9 +1151,7 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
         } catch (error) {
           invalidated = true;
           loadFailed = true;
-          for (const key of admittedKeyHexes) {
-            if (!cursor.positions.has(key)) cursor.positions.set(key, 0);
-          }
+          pinUnknownDurableState(cursor, admittedKeyHexes);
           throw error;
         }
       }
