@@ -59,6 +59,7 @@ const EVERY_ORIENTATION_DEP: Record<keyof OrientationDeps, true> = {
   toolSurface: true,
   carryBlindWindow: true,
   contextEpoch: true,
+  contextTokens: true,
 };
 
 const DEP_NAMES = Object.keys(EVERY_ORIENTATION_DEP) as Array<keyof OrientationDeps>;

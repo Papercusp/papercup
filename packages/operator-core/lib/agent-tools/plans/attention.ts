@@ -50,6 +50,7 @@ import {
   blockedSessionToAttention,
   blockedWorkItemToAttention,
   decisionOwedToAttention,
+  unhandledDirectiveToAttention,
 } from '../../attention/adapters';
 import {
   planItemsToAttention,
@@ -885,6 +886,21 @@ export default defineTool({
                   }),
                   occurredAt: toIsoOrNull(tsOf(d.closedAt)),
                 });
+              }
+            } catch {
+              /* best-effort */
+            }
+          })(),
+
+          // 17. Owner directives nobody is handling (owner-directive-delivery-redesign
+          //     P-008 / R-7) — open, their session ENDED, and no live fleet leader or
+          //     work-item holder to take them. Workspace-level: no harness scope.
+          (async () => {
+            try {
+              const { readUnhandledDirectives } = await import('../../attention/unhandled-directives-source');
+              const { activeWorkspaceId } = await import('../../workspace-registry');
+              for (const d of await readUnhandledDirectives({ workspaceId: activeWorkspaceId() })) {
+                items.push({ ...unhandledDirectiveToAttention(d), occurredAt: toIsoOrNull(tsOf(d.createdAt)) });
               }
             } catch {
               /* best-effort */
