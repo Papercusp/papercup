@@ -305,7 +305,7 @@ interface AdequacyDetails {
   skipped?: boolean;
   executed?: boolean;
   outcome?: string;
-  targeted?: boolean;
+  targeted?: boolean | string;
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
   scenarioIds?: string[];
   causalPairIds?: string[];
@@ -503,6 +503,13 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   };
   const scenarioIds = idList('scenarioIds');
   const causalPairIds = idList('causalPairIds');
+  const targeted =
+    typeof raw.targeted === 'boolean'
+      ? raw.targeted
+      : typeof raw.targeted === 'string' && SPEC_PROOF_OBLIGATION_ID_RE.test(raw.targeted.trim())
+        ? raw.targeted.trim()
+        : undefined;
+  if (raw.targeted !== undefined && targeted === undefined) contractMetadataIssues.push('targeted:invalid');
   return {
     ...(bool('fixtureCalibrated') !== undefined ? { fixtureCalibrated: bool('fixtureCalibrated') } : {}),
     ...(bool('falsifiable') !== undefined ? { falsifiable: bool('falsifiable') } : {}),
@@ -513,7 +520,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
     ...(bool('skipped') !== undefined ? { skipped: bool('skipped') } : {}),
     ...(bool('executed') !== undefined ? { executed: bool('executed') } : {}),
     ...(typeof raw.outcome === 'string' ? { outcome: raw.outcome } : {}),
-    ...(bool('targeted') !== undefined ? { targeted: bool('targeted') } : {}),
+    ...(targeted !== undefined ? { targeted } : {}),
     ...(coverage
       ? {
           coverageRungs: Object.fromEntries(
@@ -840,7 +847,7 @@ function riskFloorRating(
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
     details.coverageRungs?.l4 === true ||
     ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      details.targeted === true &&
+      (details.targeted === true || typeof details.targeted === 'string') &&
       SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''));
   const meetsL4 = detailRows.some(isL4Proof);
   const meetsL3 = meetsL4 || detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
@@ -1222,6 +1229,11 @@ export function evaluateSpecTestAdequacy(input: {
       (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') && isSuccessfulExecutableEvidence(row)
     );
   });
+  const clauseFalsifierScenarioIds = new Set(clause.falsifier?.requiredScenarios ?? []);
+  const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) => {
+    const targeted = detailsOf(row).targeted;
+    return typeof targeted === 'string' && clauseFalsifierScenarioIds.has(targeted);
+  });
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );
@@ -1261,16 +1273,28 @@ export function evaluateSpecTestAdequacy(input: {
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
-        : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
+        : boundMutationOrCounterexample.length > 0
+          ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not name a scenario declared in falsifier.requiredScenarios.`
+          : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`;
   ratings.falsifiability =
-    boundMutationOrCounterexample.length > 0
+    clauseScopedMutationOrCounterexample.length > 0
       ? {
           rating: 'pass',
           evidence: evidenceWithBindings(
-            `A bound mutation or counterexample binding demonstrates red capability for ${clauseIdentity(clause)}.`,
-            boundMutationOrCounterexample,
+            `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
+            clauseScopedMutationOrCounterexample,
           ),
         }
+      : boundMutationOrCounterexample.length > 0
+        ? {
+            rating: 'unknown',
+            evidence: evidenceWithBindings(
+              `Successful mutation or counterexample binding(s) lack a target matching this clause's falsifier.requiredScenarios for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
+              boundMutationOrCounterexample,
+            ),
+            suggestion:
+              'Set adequacy.targeted to a scenario id in this clause\'s falsifier.requiredScenarios; a boolean or sibling-case target is insufficient.',
+          }
       : attestedFalsifiableOnly.length > 0
         ? {
             rating: 'unknown',
