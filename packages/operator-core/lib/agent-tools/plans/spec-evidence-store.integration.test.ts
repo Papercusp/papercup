@@ -1649,3 +1649,118 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
     expect(Number(count)).toBe(0);
   });
 });
+
+/**
+ * P-019 (review-system-rework-reduction-2026-09-23, RSR-P-019-A). The adequacy evaluator grades
+ * every live row at a clause revision, so fresh sufficient proof could not rescue a clause while an
+ * older failing row stood beside it (R-11: 13 rows retracted by hand). `supersedeAtRevision:true`
+ * withdraws the same-kind siblings in one statement — and only when the new row is itself proof.
+ */
+describe('supersedeAtRevision withdraws same-kind siblings at the clause revision (P-019)', () => {
+  const PASSED = { collected: true, skipped: false, executed: true, outcome: 'passed', testLayer: 'integration' };
+
+  async function bindViaTool(binding: Record<string, unknown>, supersedeAtRevision?: boolean) {
+    const out = (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        binding: { workItemId: 'WI-101', specId: 'SPEC-003-01', sourceFingerprint: 'git:abc123', ...binding },
+        ...(supersedeAtRevision === undefined ? {} : { supersedeAtRevision }),
+      } as never,
+      CTX,
+    )) as { data: { results: Array<{ ok: boolean; id?: number }>; supersession?: unknown[] } };
+    expect(out.data.results[0]?.ok).toBe(true);
+    return { id: Number(out.data.results[0]!.id), supersession: out.data.supersession };
+  }
+
+  async function liveIds(): Promise<number[]> {
+    return (
+      await evidenceStore.listSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'],
+        workItemIds: ['WI-101'],
+      })
+    ).map((row) => Number((row as { id: number }).id));
+  }
+
+  it('retracts the older same-kind row, keeps the mutation proof, and names the superseding binding', async () => {
+    await specs.setSpecClause(clause());
+    const [oldRun, mutationRun, freshRun] = [
+      await seedExternalEvidence(),
+      await seedExternalEvidence(),
+      await seedExternalEvidence(),
+    ];
+    const old = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: 'test-run:old-attempt',
+      testRunId: oldRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'failed' } },
+    });
+    const mutation = await bindViaTool({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:guard-removed',
+      testRunId: mutationRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'killed' } },
+    });
+    // Positive control: without the flag nothing is withdrawn, so the assertion below is about
+    // supersedeAtRevision and not about some other path hiding the old row.
+    expect(await liveIds()).toEqual(expect.arrayContaining([old.id, mutation.id]));
+
+    const fresh = await bindViaTool(
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'test-run:fresh-attempt',
+        testRunId: freshRun.testRunId,
+        details: { adequacy: PASSED },
+      },
+      true,
+    );
+
+    expect(fresh.supersession).toEqual([
+      {
+        bindingId: fresh.id,
+        status: 'superseded',
+        clause: 'SPEC-003-01@1',
+        evidenceKind: 'test',
+        retracted: [{ bindingId: old.id, workItemId: 'WI-101', evidenceRef: 'test-run:old-attempt' }],
+      },
+    ]);
+    const live = await liveIds();
+    expect(live).toContain(fresh.id);
+    // A fresh TEST row must never withdraw the clause's mutation proof — a different obligation.
+    expect(live).toContain(mutation.id);
+    expect(live).not.toContain(old.id);
+    const [stamp] = await db.sql<{ retracted_by: string | null; retraction_reason: string | null }[]>`
+      SELECT retracted_by, retraction_reason FROM harness_shared.spec_evidence_bindings WHERE id = ${old.id}`;
+    expect(stamp?.retraction_reason).toBe(
+      `superseded by binding ${fresh.id} (plans:bind-spec-evidence supersedeAtRevision)`,
+    );
+    expect(stamp?.retracted_by).toBeTruthy();
+  });
+
+  it('binds a row that is not sufficient on its own but supersedes nothing, and says why', async () => {
+    await specs.setSpecClause(clause());
+    const oldRun = await seedExternalEvidence();
+    const old = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: 'test-run:ledger-backed',
+      testRunId: oldRun.testRunId,
+      details: { adequacy: PASSED },
+    });
+    // No testRunId: author-attested booleans only. Letting this withdraw ledger-backed proof
+    // would be the evidence-shedding D-011 forbids.
+    const weak = await bindViaTool(
+      { evidenceKind: 'test', evidenceRef: 'test-run:attested-only', details: { adequacy: PASSED } },
+      true,
+    );
+
+    expect(weak.supersession).toEqual([
+      expect.objectContaining({
+        bindingId: weak.id,
+        status: 'refused',
+        reason: expect.stringContaining('no testRunId/coverageEvidenceRef ledger reference'),
+      }),
+    ]);
+    expect(await liveIds()).toEqual(expect.arrayContaining([old.id, weak.id]));
+  });
+});

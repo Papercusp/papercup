@@ -339,6 +339,19 @@ export interface SpecTestAdequacyResult {
   requiredProofFloor: 'none' | 'l3' | 'l4';
   verdict: 'pass' | 'fail' | 'unknown';
   wouldBlock: string[];
+  /**
+   * P-019 (review-system-rework-reduction-2026-09-23): for each blocking criterion, the
+   * ids of the bound rows that DRAG it — the rows whose own content makes the criterion
+   * fail or read unknown. The any-drags rules (freshness, execution-integrity,
+   * traceability, disclosed-gap, the explicit-false boolean criteria) grade EVERY live
+   * binding at the clause revision, so one old row fails a clause whose newer proof is
+   * sufficient. Without the ids the fix was a hand hunt through plans:get-spec-evidence;
+   * with them it is one `plans:bind-spec-evidence { supersedeAtRevision:true }` or a
+   * targeted `retract`. A criterion blocked by ABSENCE (nothing bound) names no binding
+   * and is omitted. Kept beside `ratings`, not inside each entry, so the scorecard rating
+   * shape the completion gate matches on is unchanged.
+   */
+  draggingBindingIds: Partial<Record<AdequacyCriterion, number[]>>;
   scorecardDraft: {
     rubricRef: typeof SPEC_TEST_ADEQUACY_RUBRIC_REF;
     subject: { kind: 'plan'; ref: string };
@@ -371,6 +384,27 @@ const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
   'check',
   'operational',
 ]);
+
+/**
+ * P-019: the repair for an any-drags criterion whose clause ALSO carries sufficient proof.
+ * Bindings are append-only and every live row at the revision is graded, so an older
+ * weak/stale/failing row keeps a criterion blocked beside newer proof until it is withdrawn.
+ */
+export const SUPERSEDE_DRAGGING_SUGGESTION =
+  'The dragging binding ids are listed in draggingBindingIds. If newer bound proof already establishes this clause, ' +
+  're-bind that proof with plans:bind-spec-evidence { supersedeAtRevision:true } (retracts the other live rows of the ' +
+  'same kind at this revision) or retract the named ids with a reason; otherwise re-run the proof.';
+
+/**
+ * P-019: make the ledger requirement discoverable where the refusal lands. falsifiability,
+ * execution-integrity and traceability cannot pass without a real ledger row, and a
+ * mutation probe's row is recorded with source='mutation-probe', which testing:runs row
+ * listings hide unless that source is passed explicitly.
+ */
+export const LEDGER_PROOF_HINT =
+  'Ledger row required: testing:run { files, harness, evidence } records and binds a testRunId; ' +
+  'scripts/mutation-probe.sh with PAPERCUSP_TEST_RUN_HARNESS set records source=mutation-probe rows ' +
+  "(listed only by testing:runs { source:'mutation-probe' }).";
 
 const DURABLE_WORK_ITEM_REF_RE = /\b(?:WI|EI|F)-\d+\b/i;
 const DURABLE_ARTIFACT_REF_RE =
@@ -537,6 +571,9 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
   const lineage = classifySpecEvidenceLineage(row);
   const fields = [
+    // P-019: lead with the row id so a reader can act on THIS row (retract it, or re-bind
+    // over it with supersedeAtRevision) without a separate plans:get-spec-evidence hunt.
+    Number.isSafeInteger(row.id) ? `id=${row.id}` : null,
     `kind=${row.evidenceKind}`,
     `ref=${JSON.stringify(row.evidenceRef)}`,
     `lineage=${lineage.lineage}`,
@@ -687,6 +724,35 @@ function summarizeExecutableEvidenceGaps(rows: SpecEvidenceForAdequacy[]): strin
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([gap, count]) => (rows.length > 1 ? `${gap} on ${count}` : gap))
     .join(', ');
+}
+
+/**
+ * P-019: why a binding may NOT supersede its siblings at a clause revision (empty = it
+ * may). `plans:bind-spec-evidence { supersedeAtRevision:true }` retracts the other live
+ * rows of the same kind at that revision, so the superseding row must itself be proof the
+ * evaluator would accept on its own: successful ledger-backed executable evidence, with no
+ * explicit falsifiable=false and no author-disclosed gap. Anything weaker would let a
+ * binder shed adverse evidence by binding a weaker row over it — the evidence-shedding
+ * D-011 forbids. Reuses the evaluator's own conjuncts so the two cannot drift.
+ */
+export function supersedeEligibilityGaps(binding: {
+  evidenceKind: SpecEvidenceKind;
+  testRunId?: number | null;
+  coverageEvidenceRef?: number | null;
+  details?: Record<string, unknown>;
+}): string[] {
+  const row = {
+    evidenceKind: binding.evidenceKind,
+    testRunId: binding.testRunId ?? null,
+    coverageEvidenceRef: binding.coverageEvidenceRef ?? null,
+    details: binding.details ?? {},
+  } as SpecEvidenceForAdequacy;
+  const details = detailsOf(row);
+  return [
+    ...executableEvidenceGaps(row),
+    ...(details.falsifiable === false ? ['falsifiable=false'] : []),
+    ...(details.disclosedGap?.length ? ['an author-disclosed gap is recorded'] : []),
+  ];
 }
 
 function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
@@ -1357,7 +1423,7 @@ export function evaluateSpecTestAdequacy(input: {
 
   const executable = evidence.filter((row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
   const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));
-  const explicitBadExecution = executable.some((row) => {
+  const explicitBadExecutionRows = executable.filter((row) => {
     const d = detailsOf(row);
     return (
       d.collected === false ||
@@ -1366,6 +1432,7 @@ export function evaluateSpecTestAdequacy(input: {
       FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
     );
   });
+  const explicitBadExecution = explicitBadExecutionRows.length > 0;
   const successfulExecution = executable.some((row) => {
     const d = detailsOf(row);
     return (
@@ -1391,16 +1458,11 @@ export function evaluateSpecTestAdequacy(input: {
         rating: 'fail',
         evidence: evidenceWithBindings(
           `At least one relied-on binding reports an uncollected, skipped, unexecuted, or failing outcome for ${clauseIdentity(clause)}.`,
-          executable.filter((row) => {
-            const d = detailsOf(row);
-            return (
-              d.collected === false ||
-              d.skipped === true ||
-              d.executed === false ||
-              FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-            );
-          }),
+          explicitBadExecutionRows,
         ),
+        // P-019: bindings are append-only, so an older failing attempt keeps failing this
+        // criterion beside a newer passing one until it is withdrawn.
+        ...(successfulExecution ? { suggestion: SUPERSEDE_DRAGGING_SUGGESTION } : {}),
       }
     : unbackedExecution.length > 0
       ? {
@@ -1565,6 +1627,10 @@ export function evaluateSpecTestAdequacy(input: {
           `Stale binding(s) invalidate freshness for ${clauseIdentity(clause)}.`,
           evidence.filter((row) => row.currentness.overall === 'stale'),
         ),
+        // P-019: a stale row drags this criterion even when a current sibling proves the clause.
+        suggestion: evidence.some((row) => row.currentness.overall === 'current')
+          ? SUPERSEDE_DRAGGING_SUGGESTION
+          : 'Re-run the stale proof (testing:run with evidence) so the server re-measures it against current source.',
       }
     : freshnessStates.includes('unknown')
       ? {
@@ -1704,10 +1770,57 @@ export function evaluateSpecTestAdequacy(input: {
               : `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
         };
 
+  // P-019: surface the ledger requirement on every ledger-gated criterion that is still
+  // short of proof, where the binder reads the refusal, not in a doc they must find first.
+  for (const criterion of ['falsifiability', 'execution-integrity', 'traceability'] as const) {
+    const current = ratings[criterion];
+    if (current.rating !== 'fail' && current.rating !== 'unknown') continue;
+    ratings[criterion] = {
+      ...current,
+      suggestion: current.suggestion ? `${current.suggestion} ${LEDGER_PROOF_HINT}` : LEDGER_PROOF_HINT,
+    };
+  }
+
   const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
+  // P-019: name the rows that DRAG each blocking criterion. Each list is the population
+  // the criterion's own branch above judged adverse or incomplete; a criterion blocked by
+  // absence has no such row and is omitted rather than reported with an empty list.
+  const draggingRows: Partial<Record<AdequacyCriterion, SpecEvidenceForAdequacy[]>> = {
+    traceability: ephemeralEvidence.length > 0 ? ephemeralEvidence : unknownLineageEvidence,
+    'fixture-calibration': evidence.filter((row) => detailsOf(row).fixtureCalibrated === false),
+    falsifiability: [
+      ...evidence.filter((row) => detailsOf(row).falsifiable === false),
+      ...mutationInCohortNotExecutable,
+    ],
+    'correct-layer': evidence.filter((row) => detailsOf(row).pathReachable === false),
+    'oracle-independence': evidence.filter((row) => detailsOf(row).oracleIndependent === false),
+    'execution-integrity': explicitBadExecution
+      ? explicitBadExecutionRows
+      : unbackedExecution.length > 0
+        ? unbackedExecution
+        : incompleteMeasuredExecution.length > 0
+          ? incompleteMeasuredExecution
+          : successfulExecution
+            ? []
+            : executable,
+    freshness: evidence.some((row) => row.currentness.overall === 'stale')
+      ? evidence.filter((row) => row.currentness.overall === 'stale')
+      : evidence.filter((row) => row.currentness.overall === 'unknown'),
+    'disclosed-gap': disclosedGapRows,
+  };
+  const draggingBindingIds: Partial<Record<AdequacyCriterion, number[]>> = {};
+  for (const criterion of ADEQUACY_CRITERIA) {
+    if (!wouldBlock.includes(criterion)) continue;
+    const ids = [
+      ...new Set(
+        (draggingRows[criterion] ?? []).flatMap((row) => (Number.isSafeInteger(row.id) ? [row.id!] : [])),
+      ),
+    ].sort((a, b) => a - b);
+    if (ids.length > 0) draggingBindingIds[criterion] = ids;
+  }
   const verdict = wouldBlock.some((key) => ratings[key].rating === 'fail')
     ? 'fail'
     : wouldBlock.length > 0
@@ -1735,6 +1848,7 @@ export function evaluateSpecTestAdequacy(input: {
     requiredProofFloor: risk.floor,
     verdict,
     wouldBlock,
+    draggingBindingIds,
     scorecardDraft: {
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },
