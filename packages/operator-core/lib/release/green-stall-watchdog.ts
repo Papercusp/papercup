@@ -55,6 +55,10 @@ import {
 import { readManualRunAdmission, readQualificationAdmission } from '../release-checkpoint-config';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { integrationRoot } from '../release-deploy-launch';
+import {
+  DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS as RELEASE_TRIGGER_FIRE_STALE_MS,
+  evaluateReleaseTriggerFireStale as evaluateReleaseTriggerFireStaleShared,
+} from './release-trigger-fire-stale';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 import { PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
@@ -3241,7 +3245,7 @@ export async function checkReleaseTriggerFreeze(
  *  unconditionally at claim time, before the target action's own business logic
  *  runs), so a legitimate backoff never trips this false. `<=0` disables the
  *  check. */
-const DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS = 30 * 60 * 1000; // 30 min
+const DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS = RELEASE_TRIGGER_FIRE_STALE_MS;
 const RELEASE_TRIGGER_FIRE_STALE_PHASE = 'release-trigger-fire-stale-watchdog';
 
 export interface ReleaseTriggerFireStaleSnapshot {
@@ -3270,27 +3274,9 @@ export function evaluateReleaseTriggerFireStale(
   now: number,
   opts: { thresholdMs?: number } = {},
 ): ReleaseTriggerFireStaleVerdict {
-  const thresholdMs = opts.thresholdMs ?? DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS;
-  if (thresholdMs <= 0) return { stale: false, reason: null };
-  // No row, or explicitly paused — checkReleaseTriggerFreeze owns the paused case.
-  if (s.active !== true) return { stale: false, reason: null };
-  if (s.deployedBehindGreenPin == null || s.deployedBehindGreenPin <= 0) {
-    return { stale: false, reason: null }; // nothing green waiting — a quiet tick is healthy, not stale
-  }
-  // An unresolvable last_fired_at while green code is waiting is treated as
-  // maximally stale — mirrors the sibling checks' "unknown ⇒ never assumed fresh".
-  const ageMs = s.lastFiredMs != null ? now - s.lastFiredMs : Number.POSITIVE_INFINITY;
-  if (ageMs <= thresholdMs) return { stale: false, reason: null };
-  const mins = Number.isFinite(ageMs) ? Math.round(ageMs / 60_000) : null;
-  return {
-    stale: true,
-    reason:
-      `release-trigger is ACTIVE but has not FIRED${mins != null ? ` in ~${mins}m` : ' (never fired)'} while ` +
-      `${s.deployedBehindGreenPin} green commit(s) are deployable but not live — the documented cadence is ` +
-      `<=15min, so the scheduler/tick engine appears to have silently stopped driving this routine (a DIFFERENT ` +
-      `failure than a PAUSED routine — active is still true). Check schedule:inventory / routines:list for ` +
-      `release-trigger's health; release:deploy { op:'trigger', confirm:true } expedites once it's ticking again.`,
-  };
+  return evaluateReleaseTriggerFireStaleShared(s, now, {
+    thresholdMs: opts.thresholdMs ?? DEFAULT_RELEASE_TRIGGER_FIRE_STALE_MS,
+  });
 }
 
 /**
