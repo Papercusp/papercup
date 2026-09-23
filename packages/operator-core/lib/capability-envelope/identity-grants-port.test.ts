@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied,IDENTITY_BREAK_GLASS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
@@ -121,6 +121,7 @@ describe('P-005 current identity grants at the common kernel seat', () => {
   });
 
   it('bounds the pinned identity replay cache and replays an evicted row', async () => {
+    expect(IDENTITY_RESOLUTION_CACHE_MAX).toBe(128);
     const cache = pinModuleState('@papercusp/operator-core.identity-resolution-cache',
       () => new Map<string, { validatedAt: number; resolution: unknown }>());
     cache.clear();
@@ -136,11 +137,11 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       const firstReplayCount = io.replay.mock.calls.length;
       expect(firstReplayCount).toBeGreaterThan(0);
 
-      for (let index = 1; index <= 128; index += 1) {
+      for (let index = 1; index <= IDENTITY_RESOLUTION_CACHE_MAX; index += 1) {
         expect(await checkIdentityGrantKernel(f.request, stateFor(String(index)), f.record, read))
           .toMatchObject({ decision: 'allow' });
       }
-      expect(cache.size).toBeLessThanOrEqual(128);
+      expect(cache.size).toBeLessThanOrEqual(IDENTITY_RESOLUTION_CACHE_MAX);
       const replayCountAfterEviction = io.replay.mock.calls.length;
       expect(await checkIdentityGrantKernel(f.request, stateFor('0'), f.record, read))
         .toMatchObject({ decision: 'allow' });
@@ -151,6 +152,7 @@ describe('P-005 current identity grants at the common kernel seat', () => {
   });
 
   it('replays an unchanged launch row after the identity cache age bound', async () => {
+    expect(IDENTITY_RESOLUTION_CACHE_TTL_MS).toBe(5 * 60_000);
     const cache = pinModuleState('@papercusp/operator-core.identity-resolution-cache',
       () => new Map<string, { validatedAt: number; resolution: unknown }>());
     cache.clear();
@@ -169,7 +171,7 @@ describe('P-005 current identity grants at the common kernel seat', () => {
         .toMatchObject({ decision: 'allow' });
       expect(io.replay).toHaveBeenCalledTimes(firstReplayCount);
 
-      vi.advanceTimersByTime(5 * 60_000 + 1);
+      vi.advanceTimersByTime(IDENTITY_RESOLUTION_CACHE_TTL_MS + 1);
       expect(await checkIdentityGrantKernel(f.request, state, f.record, read))
         .toMatchObject({ decision: 'allow' });
       expect(io.replay.mock.calls.length).toBeGreaterThan(firstReplayCount);
