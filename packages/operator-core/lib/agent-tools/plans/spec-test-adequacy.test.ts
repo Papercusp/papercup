@@ -2023,6 +2023,28 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
 // refused the evaluator's OWN scorecardDraft with "unexpected criterion key(s): disclosed-gap"
 // — no spec-test-adequacy card could be emitted AT ALL for a clause with a disclosed gap.
 // Pin the bundle to the evaluator's own list so the two can never silently diverge again.
+// review-system-rework-reduction-2026-09-23 P-002 spec C. An amendment that changes only a
+// clause's test layers or check re-projects it and CARRIES its bindings onto the new
+// revision verbatim (carryUnchangedBarEvidenceBindings copies `details`). The carried row
+// must be judged against the NEW revision's layers, never pass on its old ones.
+describe('a carried binding is re-validated against the new clause revision (P-002 C)', () => {
+  it('passes at the old layers and fails correct-layer once a layers-only amendment raises them', () => {
+    const carriedRow = evidence();
+    const before = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [carriedRow], classRef: 'plan-class-feature-ship',
+    });
+    expect(before.ratings['correct-layer'].rating).toBe('pass');
+
+    const raised = clause({
+      revision: 2, currentRevision: 2, contentHash: 'sha256:spec-v2', requiredTestLayers: ['integration', 'e2e'],
+    });
+    const carried = { ...carriedRow, specRevision: 2, specFingerprint: 'sha256:spec-v2' };
+    const after = evaluateSpecTestAdequacy({ clause: raised, evidence: [carried], classRef: 'plan-class-feature-ship' });
+
+    expect(after.ratings['correct-layer'].rating).toBe('fail');
+  });
+});
+
 describe('spec-test-adequacy rubric bundle', () => {
   it('declares exactly the criteria the evaluator rates (EI-23499682118230306)', () => {
     const bundled = resolveLocalRubric('spec-test-adequacy');
