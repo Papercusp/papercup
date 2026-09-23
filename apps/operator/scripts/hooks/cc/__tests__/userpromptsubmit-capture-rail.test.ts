@@ -381,6 +381,24 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(calls.some((c) => c.name === 'sessions:record-prompt-origin')).toBe(false);
   });
 
+  it('a self-compaction continuation suffix is never captured as an owner directive', async () => {
+    const prompt =
+      'continued context before the self-compaction envelope\n' +
+      '⟦turn-origin:self-compaction nonce:aabbccddeeff0011⟧\n' +
+      'ADDRESSED TO su-capture-rail-test — this continuation was written for that session.\n' +
+      '## Post-compaction recovery (automatically delivered)\n' +
+      'automatic recovery was complete for this session.\n' +
+      'ds; deferred unclaimed work EI-24017132083176421 — this session filed/commented on it; ' +
+      'keep the ids and re-check before declaring idle; armed loop @papercusp 300s — its ' +
+      'loop:checkpoint re-delivers on wake, pointer only; drop resolved tool output and superseded state.';
+    const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-self-compaction' }));
+
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((c) => c.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
   it('a checkpoint-only carry prompt with no owner words is never captured as an owner directive', async () => {
     const prompt =
       'loop:checkpoint { checks }):\n' +
