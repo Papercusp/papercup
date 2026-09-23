@@ -1256,6 +1256,8 @@ export interface FlapEpisode {
    *  sweep watches this: once quiet for a full flap window with no re-fire,
    *  it is genuinely settled and gets exactly one final all-clear. */
   quietSinceMs: number | null;
+  recoveryObservationCount?: number;
+  lastRecoveryObservationAtMs?: number;
 }
 
 /** Signature → episode. Persisted as a single JSONB blob (see readFlapState /
@@ -1342,6 +1344,7 @@ export interface FlapMutationResult {
   next: FlapState;
   toPage: AlarmSignal[];
   toResolveSigs: string[];
+  toBumpSigs?: string[];
 }
 
 async function defaultUpdateFlapState(
@@ -1373,6 +1376,8 @@ async function defaultUpdateFlapState(
  *  before a suppressed flap episode is considered genuinely over and earns
  *  its one final all-clear. 30min — matches the escalation debounce. */
 const DEFAULT_FLAP_WINDOW_MS = DEFAULT_DEBOUNCE_MS;
+const RECOVERY_CONFIRMATION_OBSERVATIONS = 2;
+const RECOVERY_CONFIRMATION_SIGNATURES = new Set(['stale-paused-routines']);
 /** Fires 1 and 2 of an episode page normally (byte-identical to today's
  *  behavior — see the "re-fires only after recovery" test); the 3rd+ fire
  *  of the SAME still-open episode is classified as flapping and its page()
@@ -1970,6 +1975,59 @@ export async function runLivenessAlarmTick(
     beesLivenessForSignals,
     d026Quiescence,
   );
+  const openSigs = new Set(openBySig.keys());
+  const confirmedRecoverySigs = new Set(
+    [...openSigs].filter((sig) => !RECOVERY_CONFIRMATION_SIGNATURES.has(sig) || suppressedSigs.has(sig)),
+  );
+  let repeatedAfterPendingRecoverySigs = new Set<string>();
+  const recoverySignature = 'stale-paused-routines';
+  if (openSigs.has(recoverySignature) || currentSigs.has(recoverySignature)) {
+    const recoveryDecision = await updateFlapState(ws, (current) => {
+      const episodes = new Map<string, FlapEpisode>(Object.entries(current));
+      const episode = episodes.get(recoverySignature) ?? { fireCount: 0, quietSinceMs: null };
+      const toResolveSigs: string[] = [];
+      const toBumpSigs: string[] = [];
+      const hasRecoveryCandidate = (episode.recoveryObservationCount ?? 0) > 0;
+
+      if (hasRecoveryCandidate && (!openSigs.has(recoverySignature) || currentSigs.has(recoverySignature) || unobservableSigs.has(recoverySignature))) {
+        if (openSigs.has(recoverySignature) && currentSigs.has(recoverySignature)) toBumpSigs.push(recoverySignature);
+        episode.recoveryObservationCount = 0;
+        delete episode.lastRecoveryObservationAtMs;
+      }
+
+      if (openSigs.has(recoverySignature) && !currentSigs.has(recoverySignature) && !unobservableSigs.has(recoverySignature)) {
+        if (suppressedSigs.has(recoverySignature)) {
+          toResolveSigs.push(recoverySignature);
+          episode.recoveryObservationCount = 0;
+          delete episode.lastRecoveryObservationAtMs;
+        } else {
+          const observedAtMs = healthForSignals.evaluatedAt;
+          if (
+            Number.isFinite(observedAtMs) &&
+            (episode.lastRecoveryObservationAtMs === undefined || observedAtMs > episode.lastRecoveryObservationAtMs)
+          ) {
+            episode.recoveryObservationCount = (episode.recoveryObservationCount ?? 0) + 1;
+            episode.lastRecoveryObservationAtMs = observedAtMs;
+          }
+          if ((episode.recoveryObservationCount ?? 0) >= RECOVERY_CONFIRMATION_OBSERVATIONS) {
+            toResolveSigs.push(recoverySignature);
+          }
+        }
+      }
+
+      if (episodes.has(recoverySignature) || (episode.recoveryObservationCount ?? 0) > 0) {
+        episodes.set(recoverySignature, episode);
+      }
+      return {
+        next: Object.fromEntries(episodes),
+        toPage: [],
+        toResolveSigs,
+        toBumpSigs,
+      };
+    });
+    recoveryDecision.toResolveSigs.forEach((sig) => confirmedRecoverySigs.add(sig));
+    repeatedAfterPendingRecoverySigs = new Set(recoveryDecision.toBumpSigs ?? []);
+  }
   const resolved: string[] = [];
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
@@ -1981,6 +2039,7 @@ export async function runLivenessAlarmTick(
     // backlog sweep depends on exactly this). What must NOT happen is announcing it as
     // a RECOVERY, which is what made the durable log unreadable; see `reason` below.
     const policySuppressed = suppressedSigs.has(sig);
+    if (!policySuppressed && !confirmedRecoverySigs.has(sig)) continue;
     // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
     // sibling escalation_resolved event) counts. resolveEscalation is idempotent
     // and returns the sentinel strings 'not_found' / 'already_resolved' /
@@ -2103,9 +2162,11 @@ export async function runLivenessAlarmTick(
         // `newBlockerSignals`: it updates operator context without re-paging or
         // re-opening the flap episode.
         const renderedSummary = `${SUMMARY_PREFIX}${s.summary}`;
+        const shouldBump =
+          repeatedAfterPendingRecoverySigs.has(s.key) && openForSig.some((record) => record.severity === s.severity);
         const shouldRefresh =
           s.key === 'dead-routines' && openForSig.some((record) => record.summary !== renderedSummary);
-        if (shouldRefresh) {
+        if (shouldBump || shouldRefresh) {
           try {
             await escalate(escalationInput(s));
           } catch {

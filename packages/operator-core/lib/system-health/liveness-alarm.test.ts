@@ -1733,19 +1733,42 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(blockerStore.openCount()).toBe(1);
   });
 
-  it('(b) a cleared condition auto-resolves its open escalation, then re-fires only after recovery', async () => {
+  it('(b) a transient clear coalesces, while sustained recovery resolves after confirmation', async () => {
     const store = makeStore();
     let healthy = false;
-    const sick = mkHealth({
-      evaluatedAt: 100 * 60_000,
-      panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } },
-    });
-    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    let evaluatedAt = 100 * 60_000;
+    const health = () => healthy
+      ? mkHealth({
+          evaluatedAt,
+          panels: { workFeed: { data: { deadRoutines: 0, stalePausedRoutines: 0, stalePausedCriticalRoutines: 0 } } },
+        })
+      : mkHealth({
+          evaluatedAt,
+          panels: {
+            workFeed: {
+              data: {
+                deadRoutines: 0,
+                stalePausedRoutines: 1,
+                stalePausedRoutineNames: ['release-trigger'],
+                stalePausedCriticalRoutines: 1,
+              },
+            },
+          },
+        });
     let now = 100 * 60_000 + 60_000;
+    let repeatCount = 0;
+    const escalate = async (input: { severity: string; summary: string; meta?: Record<string, unknown> }) => {
+      if (store.openCount() > 0) {
+        repeatCount += 1;
+        return;
+      }
+      repeatCount = 1;
+      await store.escalate(input);
+    };
     const deps = {
-      readLast: () => (healthy ? well : sick),
-      computeHealth: async () => (healthy ? well : sick),
-      escalate: store.escalate,
+      readLast: health,
+      computeHealth: async () => health(),
+      escalate,
       listOpen: store.listOpen,
       resolve: store.resolve,
       now: () => now,
@@ -1755,22 +1778,42 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
 
     // Condition present → fires + opens one escalation.
     const t1 = await runLivenessAlarmTick('ws', deps);
-    expect(t1.fired.map((s) => s.key)).toEqual(['dead-routines']);
+    expect(t1.fired.map((s) => s.key)).toEqual(['stale-paused-routines']);
     expect(store.openCount()).toBe(1);
 
-    // Condition clears → auto-resolve drains the open escalation.
+    // One clear observation is not enough to drop the row.
     healthy = true;
     now += 60_000;
+    evaluatedAt += 60_000;
     const t2 = await runLivenessAlarmTick('ws', deps);
-    expect(t2.resolved.length).toBe(1);
-    expect(store.openCount()).toBe(0);
+    expect(t2.resolved).toEqual([]);
+    expect(store.openCount()).toBe(1);
 
-    // Re-occurrence AFTER recovery fires fresh — within what WOULD have been the
-    // in-memory debounce window, proving recovery cleared the cooldown.
+    // A re-fire before confirmation coalesces onto the existing open row.
     healthy = false;
     now += 60_000;
+    evaluatedAt += 60_000;
     const t3 = await runLivenessAlarmTick('ws', deps);
-    expect(t3.fired.map((s) => s.key)).toEqual(['dead-routines']);
+    expect(t3.fired).toEqual([]);
+    expect(t3.resolved).toEqual([]);
+    expect(store.openCount()).toBe(1);
+    expect(repeatCount).toBe(2);
+
+    healthy = true;
+    now += 60_000;
+    evaluatedAt += 60_000;
+    expect((await runLivenessAlarmTick('ws', deps)).resolved).toEqual([]);
+    now += 60_000;
+    evaluatedAt += 60_000;
+    const t5 = await runLivenessAlarmTick('ws', deps);
+    expect(t5.resolved.length).toBe(1);
+    expect(store.openCount()).toBe(0);
+
+    healthy = false;
+    now += 60_000;
+    evaluatedAt += 60_000;
+    const t6 = await runLivenessAlarmTick('ws', deps);
+    expect(t6.fired.map((s) => s.key)).toEqual(['stale-paused-routines']);
     expect(store.openCount()).toBe(1);
   });
 
@@ -2400,9 +2443,17 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
       evaluatedAt: 100 * 60_000,
       panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
     });
-    const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
-    await t.run();
-    expect(t.resolvedIds).toEqual(['esc-sp']);
+    const first = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
+    await first.run();
+    expect(first.resolvedIds).toEqual([]);
+
+    const nextHealth = mkHealth({
+      evaluatedAt: health.evaluatedAt + 60_000,
+      panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
+    });
+    const second = tickWith(nextHealth, [openRec('stale-paused-routines', 'esc-sp')]);
+    await second.run();
+    expect(second.resolvedIds).toEqual(['esc-sp']);
   });
 });
 
@@ -2642,20 +2693,24 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
     // Testing the helper alone would prove nothing about whether anything CALLS it —
     // so assert on the string the resolve() dep really receives.
     const notes: string[] = [];
-    const health = mkHealth({
-      evaluatedAt: 100 * 60_000,
+    let evaluatedAt = 100 * 60_000;
+    const health = () => mkHealth({
+      evaluatedAt,
       panels: { workFeed: { status: 'warn', data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
     });
-    await runLivenessAlarmTick('ws', {
-      readLast: () => health,
-      computeHealth: async () => health,
+    const deps = {
+      readLast: health,
+      computeHealth: async () => health(),
       listOpen: async () => [openRec('stale-paused-routines', 'esc-sp')],
       resolve: async (_id: string, _choice: string, note: string) => { notes.push(note); },
       escalate: async () => {},
       page: async () => {},
       now: () => 100 * 60_000 + 60_000,
       snapshotStaleMs: 6 * 60_000,
-    });
+    };
+    await runLivenessAlarmTick('ws', deps);
+    evaluatedAt += 60_000;
+    await runLivenessAlarmTick('ws', deps);
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("infra-liveness signal 'stale-paused-routines' cleared (condition recovered)");
     expect(notes[0]).toContain('observed workFeed status=warn stalePausedRoutines=0');
