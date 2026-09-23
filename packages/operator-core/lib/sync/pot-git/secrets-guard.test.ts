@@ -62,6 +62,13 @@ describe('secrets-guard rules', () => {
     const value = ['Zx9Kq2mNp7Rw4T', 'v8Lb3Yh6Fd1Gs5Jc0'].join('');
     const real = scanTextForSecrets('c.ts', `const client_secret = "${value}"`);
     expect(real.some((x) => x.rule === 'secret-assignment')).toBe(true);
+    const destructuringRename = scanTextForSecrets(
+      'byoc-readiness.test.ts',
+      'const { privateKey: PUBLICATION_PRIVATE_KEY, publicKey: PUBLICATION_PUBLIC_KEY } = generateKeyPairSync("ed25519");',
+    );
+    expect(destructuringRename).toEqual([]);
+    const unquotedEnvironmentSecret = scanTextForSecrets('.env', `PRIVATE_KEY=${value}`);
+    expect(unquotedEnvironmentSecret.some((x) => x.rule === 'secret-assignment')).toBe(true);
     // Low-entropy placeholder (repetitive / wordy) must NOT trip the build.
     const placeholder = scanTextForSecrets('c.ts', `const api_key = "your-api-key-goes-right-here"`);
     expect(placeholder.some((x) => x.rule === 'secret-assignment')).toBe(false);

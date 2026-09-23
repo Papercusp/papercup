@@ -116,6 +116,15 @@ export interface RunSnapshot {
   truncated: boolean;
 }
 
+export class TestingRunSnapshotUnavailableError extends Error {
+  readonly code = 'testing_run_snapshot_unavailable';
+
+  constructor() {
+    super('The detached test-run snapshot store could not be read.');
+    this.name = 'TestingRunSnapshotUnavailableError';
+  }
+}
+
 interface RunState {
   snapshot: RunSnapshot;
   proc: ChildProcess | null;
@@ -387,7 +396,7 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
 
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
-  if (!sql) return null;
+  if (!sql) throw new TestingRunSnapshotUnavailableError();
   let query: PromiseLike<unknown>;
   try {
     query = sql`
@@ -403,13 +412,14 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
        LIMIT 1
     `;
   } catch {
-    return null;
+    throw new TestingRunSnapshotUnavailableError();
   }
   const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query);
-  const row = rows?.[0];
+  if (rows === null) throw new TestingRunSnapshotUnavailableError();
+  const row = rows[0];
   if (!row) return null;
   const snapshot = snapshotFromRow(row);
-  if (!snapshot) return null;
+  if (!snapshot) throw new TestingRunSnapshotUnavailableError();
   return reconcilePersistedOrphan(snapshot, row, sql);
 }
 

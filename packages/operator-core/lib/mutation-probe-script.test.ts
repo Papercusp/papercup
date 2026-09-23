@@ -180,6 +180,33 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('runs concurrent copy-out probes on ONE subject with no cross-talk (P-011: probes run in parallel)', async () => {
+    // P-011 / P-018 (review-system-rework-reduction-2026-09-23): re-proving a BAR took ~1 min
+    // per mutation probe because probes were run one after another in the shared tree. Copy-out
+    // mode gives each probe a private mkdtemp scratch copy, so N probes can run at once. This pins
+    // that property: overlapping probes on the SAME subject each reach their OWN verdict (a shared
+    // scratch path or copy would hand one probe another's mutant) and the subject stays untouched.
+    const probe = (mutate: string) =>
+      new Promise<number>((resolveExit) => {
+        // The sleep makes the guard runs overlap in time, which is the only way a shared-state
+        // defect could show up; without it the probes could finish one after another.
+        const child = spawn('bash', [SCRIPT, '--file', subject, '--mutate', mutate, '--test', 'sleep 0.4; grep -q "^beta$" {}'], {
+          stdio: 'ignore',
+        });
+        child.on('close', (code) => resolveExit(code ?? -1));
+      });
+    // Interleaved verdicts: if any probe read another's scratch copy, a survivor would be
+    // scored caught (or the reverse) and this array would not match.
+    const codes = await Promise.all([
+      probe('s/beta/BETA/'), // caught
+      probe('s/gamma/GAMMA/'), // survives
+      probe('s/^beta$/b3ta/'), // caught
+      probe('s/alpha/ALPHA/'), // survives
+    ]);
+    expect(codes).toEqual([0, 1, 0, 1]);
+    expect(read()).toBe(ORIGINAL);
+  }, 60_000);
+
   it('reports a WEAK guard (exit 1) when the mutant survives, rather than passing quietly', () => {
     // The guard only checks "beta", so mutating "gamma" must slip past it.
     const code = runProbe(['--file', subject, '--mutate', 's/gamma/GAMMA/', '--test', 'grep -q "^beta$" {}']);

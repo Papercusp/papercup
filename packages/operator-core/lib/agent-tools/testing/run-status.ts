@@ -9,11 +9,12 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { getRunAsync, type RunSnapshot } from '../../testing-run-store';
+import { getRunAsync, TestingRunSnapshotUnavailableError, type RunSnapshot } from '../../testing-run-store';
 
 export type TestingRunStatusResult =
   | { ok: true; snapshot: RunSnapshot }
-  | { ok: false; error: 'unknown_run'; runId: string; message: string };
+  | { ok: false; error: 'unknown_run'; runId: string; message: string }
+  | { ok: false; error: 'snapshot_unavailable'; runId: string; retryable: true; message: string };
 
 const argsSchema = z.object({
   runId: z
@@ -30,11 +31,11 @@ export default defineTool({
   // function rather than re-deriving it. A scalar registry cell would require one entry per
   // detached run and add a read door without removing one.
   description:
-    'Read the local-first durable snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.',
+    'Read the local-first durable snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; an absent or expired id returns unknown_run, while an unreadable snapshot store returns retryable snapshot_unavailable.',
   guidance: {
     when: 'Poll the detachedRunId returned by testing:run after a foreground timeout until its snapshot reaches a terminal status.',
     notWhen:
-      'Start a test run (use testing:run), read persisted test history (use testing:runs), or poll a capability:bash job (use capability:bash_output). An unknown_run means the in-memory snapshot is missing or has expired; it is not evidence that the test passed.',
+      'Start a test run (use testing:run), read persisted test history (use testing:runs), or poll a capability:bash job (use capability:bash_output). unknown_run means a successful lookup found no snapshot; snapshot_unavailable means the store could not be read and is retryable. Neither is evidence that the test passed.',
     chaining: 'testing:run → timeout with detachedRunId → testing:run-status { runId } until status is pass, fail, cancelled, or error.',
     seeAlso: ['testing:run (start an exact-file run)', 'testing:runs (read persisted test-run history)'],
   },
@@ -43,7 +44,22 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: argsSchema,
   async handler(args): Promise<{ data: TestingRunStatusResult }> {
-    const snapshot = await getRunAsync(args.runId);
+    let snapshot: RunSnapshot | null;
+    try {
+      snapshot = await getRunAsync(args.runId);
+    } catch (error) {
+      if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
+      return {
+        data: {
+          ok: false,
+          error: 'snapshot_unavailable',
+          runId: args.runId,
+          retryable: true,
+          message:
+            'The detached test-run snapshot store could not be read. Retry testing:run-status; this does not mean the run is absent or that the test passed.',
+        },
+      };
+    }
     if (!snapshot) {
       return {
         data: {

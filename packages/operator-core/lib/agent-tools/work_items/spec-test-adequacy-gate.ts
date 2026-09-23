@@ -283,7 +283,15 @@ function adequacyFailureReason(label: string, result: SpecTestAdequacyResult): s
   const freshness = result.wouldBlock.includes('freshness') ? result.ratings.freshness : undefined;
   const details = freshness ? `freshness: ${humanizeFreshnessEvidence(freshness.evidence)}` : '';
   const boundedDetails = details.length > 2_000 ? `${details.slice(0, 1_997)}…` : details;
-  return `${label}: ${result.verdict} [${blockers}]${boundedDetails ? ` — ${boundedDetails}` : ''}`;
+  // P-019: name the rows that drag each blocking criterion, so the repair is a targeted
+  // retract / supersede instead of a hunt through plans:get-spec-evidence.
+  const dragging = Object.entries(result.draggingBindingIds ?? {})
+    .map(([criterion, ids]) => `${criterion}←${(ids ?? []).join('/')}`)
+    .join(', ');
+  const draggingDetail = dragging
+    ? ` — dragging bindings: ${dragging} (withdraw with plans:bind-spec-evidence retract, or re-bind sufficient proof with supersedeAtRevision:true)`
+    : '';
+  return `${label}: ${result.verdict} [${blockers}]${draggingDetail}${boundedDetails ? ` — ${boundedDetails}` : ''}`;
 }
 
 /**

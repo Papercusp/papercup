@@ -11,8 +11,20 @@ import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-re
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
+import {
+  MEASUREMENT_PIN_DETAILS_KEY,
+  buildMeasurementPin,
+  diffMeasuredFiles,
+  gitBlobId,
+  readMeasurementPin,
+  type GitRunner,
+  type MeasuredRepoFile,
+  type MeasurementPin,
+  type MovedPath,
+} from './evidence-measurement-pin';
 
-export { ADHOC_WORK_ITEM_SPEC_SCOPE };
+export { ADHOC_WORK_ITEM_SPEC_SCOPE, MEASUREMENT_PIN_DETAILS_KEY };
+export type { MeasurementPin, MovedPath };
 
 export const SPEC_EVIDENCE_KINDS = [
   'test',
@@ -118,10 +130,14 @@ function containedBy(root: string, candidate: string): boolean {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
-async function fingerprintRepoFileSet(repoRoot: string, declaredPaths: readonly string[]): Promise<string> {
+async function fingerprintRepoFileSet(
+  repoRoot: string,
+  declaredPaths: readonly string[],
+): Promise<{ fingerprint: string; files: Array<{ path: string; sha256: string; gitBlob: string }> }> {
   const root = await realpath(repoRoot);
   const paths = [...new Set(declaredPaths)].sort();
   const entries: Array<{ path: string; sha256: string }> = [];
+  const files: Array<{ path: string; sha256: string; gitBlob: string }> = [];
   let totalBytes = 0;
   for (const path of paths) {
     const candidate = resolve(root, path);
@@ -135,10 +151,39 @@ async function fingerprintRepoFileSet(repoRoot: string, declaredPaths: readonly 
       throw new Error(`repo_measurement_too_large:${totalBytes}>${MAX_REPO_MEASUREMENT_BYTES}`);
     }
     const content = await readFile(canonical);
-    entries.push({ path, sha256: createHash('sha256').update(content).digest('hex') });
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    // The digest input stays exactly `{ path, sha256 }` so every existing fingerprint is
+    // byte-identical; the git blob id rides alongside for the P-018 commit pin only.
+    entries.push({ path, sha256 });
+    files.push({ path, sha256, gitBlob: gitBlobId(content) });
   }
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  return `sha256-file-set-v1:${digest}`;
+  return { fingerprint: `sha256-file-set-v1:${digest}`, files };
+}
+
+/** The fingerprint tuple plus the per-file hashes it was computed from (P-018). */
+export interface DetailedRepoEvidenceMeasurement extends MeasuredRepoEvidenceFingerprints {
+  files: MeasuredRepoFile[];
+}
+
+/** Measure a repo-files recipe and keep the per-file hashes, in ONE read of each file. */
+export async function measureRepoFilesEvidenceDetailedAtRoot(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<DetailedRepoEvidenceMeasurement> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  const [source, test] = await Promise.all([
+    fingerprintRepoFileSet(repoRoot, parsed.sourcePaths),
+    parsed.testPaths ? fingerprintRepoFileSet(repoRoot, parsed.testPaths) : Promise.resolve(null),
+  ]);
+  return {
+    sourceFingerprint: source.fingerprint,
+    testFingerprint: test?.fingerprint ?? null,
+    files: [
+      ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
+      ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+    ],
+  };
 }
 
 /** Recompute a bounded repository-backed evidence tuple from the current harness tree. */
@@ -146,12 +191,24 @@ export async function measureRepoFilesEvidenceAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
-  const [sourceFingerprint, testFingerprint] = await Promise.all([
-    fingerprintRepoFileSet(repoRoot, parsed.sourcePaths),
-    parsed.testPaths ? fingerprintRepoFileSet(repoRoot, parsed.testPaths) : Promise.resolve(null),
-  ]);
+  const { sourceFingerprint, testFingerprint } = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
   return { sourceFingerprint, testFingerprint };
+}
+
+/**
+ * Measure a repo-files recipe AND pin it to the commit(s) it was measured against
+ * (P-018). The fingerprints come from the same single read the pin's per-file hashes
+ * do, so the two can never describe different bytes. Pinning never fails the
+ * measurement: a git probe that fails is recorded inside the pin.
+ */
+export async function measureAndPinRepoFilesEvidenceAtRoot(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+  options: { git?: GitRunner } = {},
+): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
+  const pin = await buildMeasurementPin(await realpath(repoRoot), detailed.files, options);
+  return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
 }
 
 async function resolveMeasurementRoot(
@@ -216,6 +273,21 @@ export async function measureEvidenceForScope(
   return measurement.kind === 'work-items'
     ? measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)
     : measureRepoFilesEvidence(workspaceId, harnessSlug, measurement);
+}
+
+/**
+ * `measureEvidenceForScope` plus the P-018 commit pin for a repo-files basis. A ledger
+ * (`work-items`) basis has no checkout, so it carries no pin.
+ */
+export async function measureAndPinEvidenceForScope(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: EvidenceMeasurement,
+): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin | null }> {
+  if (measurement.kind === 'work-items') {
+    return { ...(await measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)), pin: null };
+  }
+  return measureAndPinRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
 }
 
 function measurementFromDetails(details: Record<string, unknown>): EvidenceMeasurement | null {
@@ -353,8 +425,13 @@ interface CanonicalBinding {
 }
 
 export function specEvidenceBindingFingerprint(input: CanonicalBinding): string {
+  // P-018: the commit pin describes WHERE the bytes were measured, not the proof. A HEAD
+  // sha moves with every unrelated commit, so fingerprinting it would turn a re-bind of
+  // byte-identical proof into a fresh row instead of `unchanged`. Rows that predate the
+  // pin carry no such key, so their fingerprints are unchanged by this omission.
+  const { [MEASUREMENT_PIN_DETAILS_KEY]: _pin, ...fingerprintedDetails } = input.details;
   return createHash('sha256')
-    .update(JSON.stringify(canonicalJson(input)))
+    .update(JSON.stringify(canonicalJson({ ...input, details: fingerprintedDetails })))
     .digest('hex');
 }
 
@@ -1151,6 +1228,54 @@ export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
   });
 }
 
+export interface SupersedeSpecEvidenceOptions {
+  harnessSlug?: string;
+  /** The resolved spec scope slug the superseding binding landed in (bind result `planSlug`). */
+  planSlug: string;
+  specId: string;
+  specRevision: number;
+  evidenceKind: SpecEvidenceKind;
+  /** The binding doing the superseding; named in every retraction reason. */
+  supersedingBindingId: number;
+  /** Rows bound in the same call — never retracted by their own sibling. */
+  keepBindingIds: readonly number[];
+  actorId: string;
+}
+
+/**
+ * P-019 (review-system-rework-reduction-2026-09-23): withdraw, in ONE statement, every other
+ * live row of the same evidence kind at one clause revision, stamped as superseded by the
+ * named binding (D-011: stamped, never deleted, still returned by includeRetracted reads).
+ *
+ * The adequacy evaluator grades every live row at a revision, so one old weak, stale or
+ * failing row fails a criterion beside newer sufficient proof — measured on R-11, where a
+ * fresh targeted mutation proof could not pass the bar until 13 older rows were retracted by
+ * hand. Scoped to the same evidence KIND on purpose: a fresh test row must never withdraw the
+ * clause's mutation proof, which is a different obligation. Runs AFTER the superseding bind
+ * commits, so a failure here leaves the old rows live and never loses proof.
+ */
+export async function supersedeSpecEvidenceAtRevision(options: SupersedeSpecEvidenceOptions) {
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const actorId = options.actorId.trim();
+  const reason = `superseded by binding ${options.supersedingBindingId} (plans:bind-spec-evidence supersedeAtRevision)`;
+  const keep = [...new Set([options.supersedingBindingId, ...options.keepBindingIds])];
+  return withWorkspace(scope.workspaceId, async (tx) =>
+    tx<RetractedBindingRow[]>`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND plan_slug = ${options.planSlug}
+         AND spec_id = ${options.specId}
+         AND spec_revision = ${options.specRevision}
+         AND evidence_kind = ${options.evidenceKind}
+         AND retracted_at IS NULL
+         AND NOT (id = ANY(${keep}::bigint[]))
+      RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
+                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`,
+  );
+}
+
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // No namespace selected can never match a row, so say so without a round-trip. Kept
   // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
@@ -1330,6 +1455,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       if (!recipe) return null;
       try {
         let measured: MeasuredRepoEvidenceFingerprints;
+        let files: MeasuredRepoFile[] | null = null;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
@@ -1339,10 +1465,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             measurementRoots.get(rootHarnessSlug) ??
             resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe);
           measurementRoots.set(rootHarnessSlug, measurementRoot);
-          measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot, recipe);
+          // Same single read as before; the per-file hashes it now also returns are what
+          // name the moved paths below at zero extra IO.
+          const detailed = await measureRepoFilesEvidenceDetailedAtRoot(await measurementRoot, recipe);
+          measured = { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint };
+          files = detailed.files;
         }
         return {
           status: 'measured' as const,
+          files,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -1408,6 +1539,14 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
     }
+    // P-018: a source/test-stale verdict now names WHICH measured files moved. Only for a
+    // row that is stale on those dimensions — a current row has nothing to name, and a
+    // row that predates the pin reports `pinned:false` rather than an empty (false) list.
+    const fileStale = currentness.staleReasons.some((reason) => reason === 'source-stale' || reason === 'test-stale');
+    const movement =
+      fileStale && measured?.status === 'measured' && measured.files
+        ? diffMeasuredFiles(readMeasurementPin(row.details), measured.files)
+        : null;
     return {
       id: Number(row.id),
       workItemId: row.work_item_id,
@@ -1453,6 +1592,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
                     current: measured.current,
+                    ...(movement
+                      ? movement.pinned
+                        ? { pinned: true, movedPaths: movement.moved }
+                        : { pinned: false }
+                      : {}),
                   }
                 : measured,
           }

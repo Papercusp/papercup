@@ -70,6 +70,9 @@ export function shannonEntropy(s: string): number {
 
 /** Min entropy for the generic secret-assignment value to count as a secret. */
 const SECRET_ASSIGNMENT_MIN_ENTROPY = 3.2;
+const CODE_FILE_EXTENSION_RE = /\.(?:[cm]?[jt]sx?)$/i;
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const IDENTIFIER_PART_RE = /[A-Za-z0-9_$]/;
 
 /** Obvious placeholder values — suppress the generic rule so docs/examples don't
  *  block a commit (a real secret won't contain these markers). */
@@ -107,6 +110,17 @@ export function scanTextForSecrets(path: string, content: string): SecretFinding
         // entropy so a placeholder ("your-secret-here") doesn't trip the build.
         if (rule.id === 'secret-assignment') {
           const value = m[1] ?? '';
+          const valueIndex = m.index + m[0].lastIndexOf(value);
+          const precedingCharacter = line[valueIndex - 1] ?? '';
+          const followingCharacter = line[valueIndex + value.length] ?? '';
+          const isQuotedValue = precedingCharacter === "'" || precedingCharacter === '"';
+          if (
+            CODE_FILE_EXTENSION_RE.test(path) &&
+            !isQuotedValue &&
+            IDENTIFIER_RE.test(value) &&
+            !IDENTIFIER_PART_RE.test(precedingCharacter) &&
+            !IDENTIFIER_PART_RE.test(followingCharacter)
+          ) continue;
           if (shannonEntropy(value) < SECRET_ASSIGNMENT_MIN_ENTROPY) continue;
           if (PLACEHOLDER_RE.test(value)) continue; // an obvious example/placeholder, not a secret
           findings.push({ path, line: i + 1, rule: rule.id, excerpt: mask(value) });

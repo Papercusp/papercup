@@ -80,6 +80,13 @@ describe('frozen-candidate repair queue', () => {
     expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 2 })?.admissionPrecheck).toEqual(
       pending.admissionPrecheck,
     );
+    const pinned = {
+      ...pending,
+      admissionPrecheck: { ...pending.admissionPrecheck!, sourceCommit: C2 },
+    };
+    expect(
+      parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pinned)))?.admissionPrecheck,
+    ).toMatchObject({ sourceCommit: C2 });
     const admitted = markFrozenRepairAdmitted(parsed!, {
       atMs: T0 + 3,
       actor: 'su-test',
@@ -98,6 +105,7 @@ describe('frozen-candidate repair queue', () => {
     ['completedCount is not an integer', { completedCount: 0.5 }],
     ['totalCount disagrees with files', { totalCount: 2 }],
     ['heartbeat is newer than the marker version', { heartbeatAtMs: T0 + 2 }],
+    ['sourceCommit is malformed', { sourceCommit: 'not-a-sha' }],
   ])('drops malformed admission pre-check progress when %s', (_label, change) => {
     const raw = {
       ...fresh(),

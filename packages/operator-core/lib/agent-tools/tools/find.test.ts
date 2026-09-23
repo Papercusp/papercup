@@ -33,7 +33,8 @@ import capabilityRead from '../capability/read';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
 import rubricsPropose from '../rubrics/propose';
-import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
+import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
+import { chunkContentBudget } from '../coordination/tools/send-chunking';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
@@ -1179,34 +1180,35 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).not.toContain('premises?:array(≤20){');
   });
 
-  it('keeps the conditional joined-body cap in returned coord:send discovery, with validator parity', async () => {
+  it('keeps the joined-body chunk limit in returned coord:send discovery, with validator parity', async () => {
     const result = await callHandler({ query: 'coord:send', limit: 1 });
     const hit = result.hits.find((entry) => entry.tool === 'coord:send');
     expect(hit).toBeDefined();
-    const rule = `expects!=none => body text joined with "\\n\\n" <=${DEFAULT_INBOX_BODY_CAP} characters`;
+    const rule = `body text joined with "\\n\\n" must fit ${COORD_SEND_MAX_CHUNK_PARTS} parts of <=${DEFAULT_INBOX_BODY_CAP} characters`;
     expect(hit!.argSchema).toContain(`constraint:body (${rule})`);
     expect(hit!.argSchema).toContain(`constraint:items[].body (${rule})`);
     expect(hit!.argSchema!.length).toBeLessThanOrEqual(2200);
 
+    // RSR-P-008-B boundary: sections that each fill one part exactly. N of them
+    // take exactly N parts, so the documented limit parses and one more section
+    // is refused — for every expects, on both axes.
+    const fullPart = 'x'.repeat(chunkContentBudget());
     for (const bulk of [false, true]) {
       for (const expects of ['ack', 'answer', 'action', 'none']) {
         for (const excess of [0, 1]) {
-          // The separator contributes two characters to the aggregate. A
-          // per-section limit would wrongly accept the over-cap case.
           const message = {
             to: ['bee-1'],
             summary: 'cap parity',
             expects,
-            body: [
-              { text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP - 3 + excess), forYouBecause: { relation: 'owns' } },
-              { text: 'x' },
-            ],
+            body: Array.from({ length: COORD_SEND_MAX_CHUNK_PARTS + excess }, (_, i) =>
+              i === 0 ? { text: fullPart, forYouBecause: { relation: 'owns' } } : { text: fullPart },
+            ),
           };
           const parsed = coordSend.args.safeParse(bulk ? { items: [message] } : message);
-          expect(parsed.success, JSON.stringify({ bulk, expects, excess })).toBe(expects === 'none' || excess === 0);
+          expect(parsed.success, JSON.stringify({ bulk, expects, excess })).toBe(excess === 0);
           if (!parsed.success) {
             expect(parsed.error.issues.some((issue) =>
-              issue.message.includes(`${DEFAULT_INBOX_BODY_CAP}-character default inbox cap`),
+              issue.message.includes(`at most ${COORD_SEND_MAX_CHUNK_PARTS} parts`),
             )).toBe(true);
           }
         }

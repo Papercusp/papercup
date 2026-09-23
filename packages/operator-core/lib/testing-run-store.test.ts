@@ -634,6 +634,18 @@ describe('durable detached snapshot lifecycle', () => {
     });
   });
 
+  it('distinguishes an unavailable snapshot lookup from a missing row', async () => {
+    const unavailableSql = vi.fn(async () => {
+      throw new Error('database unavailable');
+    }) as unknown as Sql;
+    const missingSql = vi.fn(async () => []) as unknown as Sql;
+
+    await expect(store.getRunAsync('unavailable-run', unavailableSql)).rejects.toBeInstanceOf(
+      store.TestingRunSnapshotUnavailableError,
+    );
+    await expect(store.getRunAsync('missing-run', missingSql)).resolves.toBeNull();
+  });
+
   it('reconciles a persisted running snapshot when its linked task is terminal', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {

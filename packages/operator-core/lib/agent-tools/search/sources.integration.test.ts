@@ -1112,6 +1112,93 @@ describe('EI-23237047797741772 — compact transcript tokens use the literal fal
   });
 });
 
+/**
+ * EI-24045346484356708 — the literal-substring match used to be an OR arm of the
+ * index-served query, which no index can serve: live, a rare term went from a
+ * 1ms GIN bitmap scan to a 6.4s parallel seq scan of the whole table on EVERY
+ * call. It is now a separate, windowed FILL that runs only for a compact token
+ * and only for slots the dictionary match left empty.
+ *
+ * These assertions read the SQL actually SENT, through a second client whose
+ * postgres.js `debug` hook records every statement — so they cannot pass by
+ * re-deriving what the source "should" send. The positive control proves the
+ * recorder does see a substring statement when one is sent.
+ */
+describe('EI-24045346484356708 — the literal fallback is a bounded FILL, never an arm of the index query', () => {
+  let traced: postgres.Sql;
+  const sent: string[] = [];
+  const POSITION = /\bposition\s*\(/i;
+  const substringStatements = (): string[] => sent.filter((q) => POSITION.test(q));
+  const run = async (over: Partial<SearchSourceParams>) => {
+    sent.length = 0;
+    return byName('session_turn').lexical(params({ sql: traced, ...over }));
+  };
+
+  beforeAll(() => {
+    traced = postgres(db.url, {
+      max: 1,
+      onnotice: () => {},
+      prepare: false,
+      debug: (_connection, query) => {
+        sent.push(query);
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await traced?.end({ timeout: 5 });
+  });
+
+  it('compactLiteralToken admits a single compact token of 3+ chars and nothing else', () => {
+    expect(compactLiteralToken('furnishedfinder')).toBe('furnishedfinder');
+    expect(compactLiteralToken('  furnishedfinder  ')).toBe('furnishedfinder');
+    expect(compactLiteralToken('www.furnishedfinder.com/rooms')).toBe('www.furnishedfinder.com/rooms');
+    expect(compactLiteralToken('furnished finder')).toBeNull();
+    expect(compactLiteralToken('ok')).toBeNull();
+    expect(compactLiteralToken('   ')).toBeNull();
+  });
+
+  it('a multi-word query sends NO substring predicate at all, and its result is unchanged', async () => {
+    const out = await run({ query: P17_QUERY });
+    expect(out.map((r) => r.row.source_id).sort()).toEqual([T_ALL_A, T_ALL_B].sort());
+    expect(sent.some((q) => q.includes('ts_rank_cd'))).toBe(true);
+    expect(substringStatements()).toEqual([]);
+  });
+
+  it('a compact token whose dictionary hits already fill the limit sends no substring predicate', async () => {
+    // `clamp` matches four workspace-A turns through the dictionary; limit 2
+    // leaves no slot for a rank-0 literal row to occupy.
+    const out = await run({ query: 'clamp', limit: 2 });
+    expect(out).toHaveLength(2);
+    expect(substringStatements()).toEqual([]);
+  });
+
+  it('positive control: with empty slots the same token sends ONE windowed fill, separate from the index query', async () => {
+    const out = await run({ query: 'clamp', limit: 20 });
+    expect(out).toHaveLength(4);
+    const subs = substringStatements();
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatch(/ORDER BY ingested_at DESC\s+LIMIT/i);
+    const indexQuery = sent.find((q) => q.includes('ts_rank_cd'));
+    expect(indexQuery).toBeDefined();
+    expect(indexQuery).not.toMatch(POSITION);
+  });
+
+  it('EI-23237047797741772 recall still arrives, through the fill, at rank 0', async () => {
+    const out = await run({ query: COMPACT_QUERY, limit: 20 });
+    expect(out.map((r) => r.row.source_id)).toEqual([COMPACT_ID]);
+    expect(out[0].score).toBe(0);
+    expect(out[0].row.highlight).toContain('https://www.furnishedfinder.com/rooms/123');
+    expect(substringStatements()).toHaveLength(1);
+  });
+
+  it('coverage-graded mode never sends the fill (it never admitted literal rows)', async () => {
+    await run({ query: COMPACT_QUERY, limit: 20, lexicalMode: 'coverage-graded' });
+    expect(sent.length).toBeGreaterThan(0);
+    expect(substringStatements()).toEqual([]);
+  });
+});
+
 describe('P-017 — work_item.lexical lexicalMode (the second source the corpus leg reads)', () => {
   it("'and' returns only the all-terms issue; 'coverage-graded' is a superset ordered by coverage", async () => {
     const and = await byName('work_item').lexical(p17Params());

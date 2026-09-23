@@ -14,7 +14,7 @@ vi.mock('../../testing-run-store', async (orig) => ({
   getRunAsync: vi.fn(),
 }));
 
-import { getRunAsync, type RunSnapshot } from '../../testing-run-store';
+import { getRunAsync, TestingRunSnapshotUnavailableError, type RunSnapshot } from '../../testing-run-store';
 import { detachedRecoveryHint, detachedTestTimeoutHint } from './run';
 
 const getRunMock = vi.mocked(getRunAsync);
@@ -57,6 +57,20 @@ describe('testing:run-status handler', () => {
 
     expect(out.data).toMatchObject({ ok: false, error: 'unknown_run', runId: 'missing-run' });
     expect(String(out.data.message)).toContain('not evidence that the test passed');
+  });
+
+  it('returns retryable snapshot_unavailable when the durable store cannot be read', async () => {
+    getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
+
+    const out = await call('run-1');
+
+    expect(out.data).toEqual({
+      ok: false,
+      error: 'snapshot_unavailable',
+      runId: 'run-1',
+      retryable: true,
+      message: expect.stringContaining('Retry testing:run-status'),
+    });
   });
 
   it('documents the callable timeout recovery poll surface', () => {

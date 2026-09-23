@@ -19,10 +19,13 @@
  * DB). The single-pot survey itself is covered by survey.test.ts; the pure
  * papercup math by workspace-brain-scope.test.ts.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
+  shareScopedSurveyReads,
+  surveyPot,
   surveyWorkspace,
+  WORKSPACE_SURVEY_POT_CONCURRENCY,
   type FrontierRow,
   type HarnessBlockGraph,
   type SurveyDeps,
@@ -284,5 +287,149 @@ describe('surveyWorkspace — the cross-pot ranked backlog (P-003 Phase B / D-00
     expect(ws.hives).toEqual(['pot-a']);
     expect(ws.perPot).toHaveLength(1);
     expect(ws.crossPot.frontier.map((c) => c.id)).toEqual(['WI-A']);
+  });
+});
+
+/**
+ * WI-10002668: surveyWorkspace used to Promise.all every pot, and each pot re-ran
+ * the frontier / escalated / quarantined / reconcile reads for its scope. Most
+ * pots resolve to the SAME workspace-wide fallback scope (20 of 29 on the dev
+ * tower), so one call issued 20 identical workspace-wide scans of each query
+ * concurrently (42-80 in flight on the tower PG). These tests pin one read per
+ * distinct scope and a bounded pot fan-out. Every dep is injected (including
+ * fetchReconcile) so nothing falls through to the real PG reader.
+ */
+describe('surveyWorkspace — shared scope reads + bounded pot fan-out (WI-10002668)', () => {
+  function countingDeps(opts: { projects: Array<{ slug: string; hive_slug?: string }>; delayMs?: number }) {
+    const calls = { frontier: 0, escalated: 0, quarantined: 0, reconcile: 0, blockGraph: 0 };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const tick = async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, opts.delayMs ?? 0));
+      inFlight -= 1;
+    };
+    const deps: Partial<SurveyDeps> = {
+      now: () => NOW,
+      loadRegistry: async () => ({ projects: opts.projects }),
+      listPlanRows: async () => [],
+      fetchFrontier: async (surveySlugs) => {
+        calls.frontier += 1;
+        await tick();
+        return surveySlugs.length === 0
+          ? [frontierRow({ feature_id: 'WI-WS', harness_slug: 'loose-proj' })]
+          : surveySlugs
+              .filter((s) => s.startsWith('proj-'))
+              .map((s) => frontierRow({ feature_id: `WI-${s}`, harness_slug: s }));
+      },
+      fetchEscalatedIssues: async () => {
+        calls.escalated += 1;
+        return [];
+      },
+      fetchQuarantinedCount: async () => {
+        calls.quarantined += 1;
+        return 1;
+      },
+      fetchReconcile: async () => {
+        calls.reconcile += 1;
+        return { rows: [], total: 0 };
+      },
+      fetchBlockGraph: async () => {
+        calls.blockGraph += 1;
+        return noBlockers;
+      },
+    };
+    return { deps, calls, maxInFlight: () => maxInFlight };
+  }
+
+  it('issues ONE read per distinct survey scope, not one per pot', async () => {
+    // Three pots with no members (workspace-wide fallback scope) + one member-scoped pot.
+    const { deps, calls } = countingDeps({
+      projects: [{ slug: 'ws-1' }, { slug: 'ws-2' }, { slug: 'ws-3' }, { slug: 'real-pot' }, { slug: 'proj-r', hive_slug: 'real-pot' }],
+    });
+    const ws = await surveyWorkspace(WS, { listPotSlugs: async () => ['ws-1', 'ws-2', 'ws-3', 'real-pot'], deps });
+
+    // Two distinct scopes ⇒ two reads of each scope-keyed query (the old fan-out made 4).
+    expect(calls).toEqual({ frontier: 2, escalated: 2, quarantined: 2, reconcile: 2, blockGraph: 2 });
+
+    // CALIBRATION (falsifiability control, kept permanently): the pre-fix shape —
+    // one unshared surveyPot per pot over the SAME counting deps — must read once
+    // PER POT, so the 2 above is the sharing at work, not a counter that undercounts.
+    const control = countingDeps({
+      projects: [{ slug: 'ws-1' }, { slug: 'ws-2' }, { slug: 'ws-3' }, { slug: 'real-pot' }, { slug: 'proj-r', hive_slug: 'real-pot' }],
+    });
+    await Promise.all(['ws-1', 'ws-2', 'ws-3', 'real-pot'].map((pot) => surveyPot(WS, pot, { deps: control.deps })));
+    expect(control.calls.frontier).toBe(4);
+    expect(control.calls.escalated).toBe(4);
+    // Every pot still gets its full section from the shared read.
+    expect(ws.perPot.map((s) => [s.pot, s.survey.scope, s.survey.frontier.map((c) => c.id)])).toEqual([
+      ['ws-1', 'workspace', ['WI-WS']],
+      ['ws-2', 'workspace', ['WI-WS']],
+      ['ws-3', 'workspace', ['WI-WS']],
+      ['real-pot', 'members', ['WI-proj-r']],
+    ]);
+    // Per-pot counts are still summed per section (a shared read is not a de-dup of the sum).
+    expect(ws.crossPot.frontierQuarantined).toBe(4);
+    expect(ws.crossPot.frontier.map((c) => c.id).sort()).toEqual(['WI-WS', 'WI-proj-r']);
+  });
+
+  it(`surveys at most WORKSPACE_SURVEY_POT_CONCURRENCY (${WORKSPACE_SURVEY_POT_CONCURRENCY}) pots at once`, async () => {
+    const pots = ['pot-1', 'pot-2', 'pot-3', 'pot-4', 'pot-5'];
+    const { deps, calls, maxInFlight } = countingDeps({
+      projects: pots.flatMap((p, i) => [{ slug: p }, { slug: `proj-${i}`, hive_slug: p }]),
+      delayMs: 5,
+    });
+    const ws = await surveyWorkspace(WS, { listPotSlugs: async () => pots, deps });
+    // Five distinct member scopes: nothing to share, so five reads...
+    expect(calls.frontier).toBe(5);
+    // ...but never more pots in flight than the bound (the old code ran all five at once).
+    expect(maxInFlight()).toBeLessThanOrEqual(WORKSPACE_SURVEY_POT_CONCURRENCY);
+    expect(ws.perPot.map((s) => s.pot)).toEqual(pots); // registry order preserved
+
+    // CALIBRATION (falsifiability control, kept permanently): the pre-fix unbounded
+    // Promise.all over the same pots and deps MUST register more than the bound in
+    // flight — otherwise the in-flight counter above is blind and its pass is vacuous.
+    const control = countingDeps({
+      projects: pots.flatMap((p, i) => [{ slug: p }, { slug: `proj-${i}`, hive_slug: p }]),
+      delayMs: 5,
+    });
+    await Promise.all(pots.map((pot) => surveyPot(WS, pot, { deps: control.deps })));
+    expect(control.maxInFlight()).toBeGreaterThan(WORKSPACE_SURVEY_POT_CONCURRENCY);
+  });
+
+  it('shares a rejected read once; each pot still fails open on the escalated slice', async () => {
+    const { deps } = countingDeps({ projects: [{ slug: 'ws-1' }, { slug: 'ws-2' }] });
+    let escalatedCalls = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ws = await surveyWorkspace(WS, {
+      listPotSlugs: async () => ['ws-1', 'ws-2'],
+      deps: {
+        ...deps,
+        fetchEscalatedIssues: async () => {
+          escalatedCalls += 1;
+          throw new Error('pooler blip');
+        },
+      },
+    });
+    expect(escalatedCalls).toBe(1);
+    expect(ws.perPot.map((s) => s.survey.frontier.map((c) => c.id))).toEqual([['WI-WS'], ['WI-WS']]);
+    // Each pot observed the shared rejection through its own fail-open handler.
+    const failOpenWarns = warn.mock.calls.filter((c) => String(c[0]).includes('escalated-issue frontier read failed'));
+    expect(failOpenWarns).toHaveLength(2);
+    warn.mockRestore();
+  });
+
+  it('shareScopedSurveyReads keys on the slug SET and the limit', async () => {
+    const { deps, calls } = countingDeps({ projects: [] });
+    const shared = shareScopedSurveyReads(deps as SurveyDeps);
+    await Promise.all([
+      shared.fetchFrontier(['proj-b', 'proj-a'], 50),
+      shared.fetchFrontier(['proj-a', 'proj-b'], 50), // same set, other order ⇒ shared
+      shared.fetchFrontier(['proj-a', 'proj-b'], 10), // different limit ⇒ its own read
+      shared.fetchFrontier(['proj-a'], 50), // different scope ⇒ its own read
+      shared.fetchFrontier([], 50), // workspace-wide fallback is its own scope
+    ]);
+    expect(calls.frontier).toBe(4);
   });
 });

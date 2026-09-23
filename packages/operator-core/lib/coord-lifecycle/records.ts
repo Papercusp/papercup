@@ -387,7 +387,10 @@ function isPathShapedFilesChangedEntry(entry: string): boolean {
 }
 
 const FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE =
-  'filesChanged entries must be bare repo-relative paths, not prose and not a glob pattern. An entry ' +
+  'filesChanged entries for managed-checkout files must be bare repo-relative paths, not prose and not a glob ' +
+  'pattern. For a deliverable outside all managed checkouts, use its absolute path. Such absolute ' +
+  'paths are recorded as `outOfRepoArtifact` and are not verified against Git; do not use a repo-relative ' +
+  'alias for an out-of-tree deliverable because it is indistinguishable from a missing checkout path. An entry ' +
   "containing whitespace together with '(', ')', or ',' reads like a description that survived " +
   "splitting a comma-separated string, not a filename; an entry containing '*', '?', '{', or '}' is a " +
   'glob describing many files, not a claim that one path exists — every downstream blob-containment ' +
@@ -398,7 +401,10 @@ const FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE =
 
 const FilesChangedSchema = z
   .array(z.string().min(1).refine(isPathShapedFilesChangedEntry, { message: FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE }))
-  .optional();
+  .optional()
+  .describe(
+    'Use repo-relative paths for files in managed checkouts. For an out-of-tree deliverable, use its absolute path; work_items:complete records it as outOfRepoArtifact and excludes it from Git blob and settlement checks. External contents are not hashed. Do not use a repo-relative alias for an out-of-tree file because it is indistinguishable from a missing checkout path.',
+  );
 
 /**
  * P-021 / D-014 — the requirement-by-requirement disposition of the originating ask.
