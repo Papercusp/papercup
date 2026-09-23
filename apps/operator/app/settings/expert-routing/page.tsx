@@ -40,7 +40,7 @@
  * parity suite pins it to psu's own menu. Per that module: "UI pickers must
  * derive from THIS, never re-declare" — a hand-kept list here is exactly the
  * drift that shipped a stale picker in 2026-07. A stored alias the menu does not
- * know (the seed's `astra`) still renders and is never dropped, because the
+ * know (the seed's `gpt-6-astra` full ID) still renders and is never dropped, because the
  * launcher's accepted id set is open and the CLI owns it.
  */
 import { useCallback, useMemo, useState, type CSSProperties } from 'react';
@@ -420,7 +420,7 @@ export default function ExpertRoutingSettingsPage() {
                 <TextInput
                   value={customModel}
                   onChange={(e) => setCustomModel(e.target.value)}
-                  placeholder="alias, e.g. astra"
+              placeholder="alias or full model ID, e.g. gpt-6-astra"
                   aria-label="Custom model alias"
                   style={{ width: 180 }}
                 />
