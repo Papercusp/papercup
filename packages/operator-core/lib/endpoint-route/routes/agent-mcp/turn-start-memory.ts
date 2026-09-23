@@ -88,6 +88,13 @@ const turnStartMemory = defineTool({
       memoryEnabled?: boolean;
       /** Which TUI is asking — 'claude' | 'codex' | 'omp'. Recorded only (P-005). */
       client?: string;
+      /**
+       * ACK-ON-PROOF (owner-directive-delivery-redesign-2026-09-22 P-005): the
+       * orientation `deliveryToken` this hook last EMITTED, or null when it can
+       * prove none. The key's presence opts in; a hook that omits it keeps
+       * ack-on-arrival. See read-cursors.ts.
+       */
+      confirmedDelivery?: string | null;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -456,7 +463,8 @@ const turnStartMemory = defineTool({
       // 2.5s wall in the hook, so a third section must not add serial latency.
       // Flag-gated with a fail-OPEN default, and fail-soft internally, so the
       // worst case is the pre-P-004 `[control, memory]` composition unchanged.
-      const orientationPromise = (async () => {
+      const orientationPromise = (async (): Promise<{ block: string; deliveryToken: string | null }> => {
+        const none = { block: '', deliveryToken: null };
         try {
           const [{ getFlag }, { FLAGS }, { buildTurnStartOrientationBlock }] = await Promise.all([
             import('@papercusp/flags/server'),
@@ -464,10 +472,21 @@ const turnStartMemory = defineTool({
             import('../../../turn-start-orientation'),
           ]);
           const on = await getFlag(FLAGS.TURN_START_ORIENTATION, 'system').catch(() => true);
-          if (!on) return '';
-          return await buildTurnStartOrientationBlock({ ownerId: owner, workspaceId });
+          if (!on) return none;
+          return await buildTurnStartOrientationBlock({
+            ownerId: owner,
+            workspaceId,
+            ...('confirmedDelivery' in body
+              ? {
+                  confirmedDeliveryToken:
+                    typeof body.confirmedDelivery === 'string' && body.confirmedDelivery
+                      ? body.confirmedDelivery
+                      : null,
+                }
+              : {}),
+          });
         } catch {
-          return '';
+          return none;
         }
       })();
 
@@ -483,7 +502,8 @@ const turnStartMemory = defineTool({
       // Most-binding first; the private block is visibly separate and last.
       return Response.json({
         ok: true,
-        text: [control, orientation, memory, personal].filter(Boolean).join('\n\n'),
+        text: [control, orientation.block, memory, personal].filter(Boolean).join('\n\n'),
+        ...(orientation.deliveryToken ? { deliveryToken: orientation.deliveryToken } : {}),
       });
     } catch {
       return Response.json({ ok: true, text: '' });

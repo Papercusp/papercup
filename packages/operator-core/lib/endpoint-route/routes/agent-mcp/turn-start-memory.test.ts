@@ -101,14 +101,14 @@ const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
 };
 
-const post = async (body: unknown): Promise<{ ok: boolean; text: string }> => {
+const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliveryToken?: string }> => {
   const res = await endpoint.handler(
     new Request('http://localhost/agent-mcp/turn-start-memory', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
   );
-  return (await res.json()) as { ok: boolean; text: string };
+  return (await res.json()) as { ok: boolean; text: string; deliveryToken?: string };
 };
 
 beforeEach(() => {
@@ -129,7 +129,7 @@ beforeEach(() => {
       block: await build(),
     }),
   );
-  buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue('');
+  buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
 });
 
@@ -144,7 +144,10 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 describe('turn-start-memory admission (F-E: no length floor)', () => {
   it('returns orientation when memory misses its bounded deadline, without recording healthy quiet', async () => {
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'deadline', block: null });
-    buildTurnStartOrientationBlockMock.mockResolvedValue('## Orientation\n- improvement triage: top EI-1');
+    buildTurnStartOrientationBlockMock.mockResolvedValue({
+      block: '## Orientation\n- improvement triage: top EI-1',
+      deliveryToken: null,
+    });
 
     const out = await post({ owner: 'sess-1', prompt: 'continue', harness: 'papercusp' });
     await settle();
@@ -403,6 +406,39 @@ describe('granted-only Personal Vault ambient leg', () => {
 
     expect(out.text).toBe('');
     expect(buildPersonalAmbientContextBlockMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ACK-ON-PROOF pass-through (owner-directive-delivery-redesign-2026-09-22 P-005).
+ * The endpoint only relays: the key's PRESENCE in the body opts in, so an old
+ * hook that never sends it must reach the orientation builder with no token
+ * argument at all, not with a null that would discard its every delivery.
+ */
+describe('orientation delivery token relay (P-005)', () => {
+  it('relays a confirmed token in and the new delivery token out', async () => {
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\n- x', deliveryToken: 'tok-2' });
+
+    const out = await post({ owner: 'sess-1', prompt: 'go', confirmedDelivery: 'tok-1' });
+
+    expect(buildTurnStartOrientationBlockMock.mock.calls[0]![0]).toMatchObject({ confirmedDeliveryToken: 'tok-1' });
+    expect(out.deliveryToken).toBe('tok-2');
+    expect(out.text).toContain('## Orientation');
+  });
+
+  it('an explicit null opts in with nothing proven', async () => {
+    await post({ owner: 'sess-1', prompt: 'go', confirmedDelivery: null });
+
+    expect(buildTurnStartOrientationBlockMock.mock.calls[0]![0]).toMatchObject({ confirmedDeliveryToken: null });
+  });
+
+  it('a hook that omits the key stays on ack-on-arrival and gets no token field', async () => {
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\n- x', deliveryToken: null });
+
+    const out = await post({ owner: 'sess-1', prompt: 'go' });
+
+    expect(buildTurnStartOrientationBlockMock.mock.calls[0]![0]).not.toHaveProperty('confirmedDeliveryToken');
+    expect(out).not.toHaveProperty('deliveryToken');
   });
 });
 
