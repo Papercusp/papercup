@@ -1921,6 +1921,9 @@ export async function emitScorecard(
       if (!gradedObservation?.rubricRef || !gradedObservation.ratings) {
         return { ok: false as const, error: `audit subject '${args.subject.ref}' is not a scorecard` };
       }
+      if (gradedObservation.retracted) {
+        return { ok: false as const, error: `audit subject '${args.subject.ref}' is retracted and cannot be audited` };
+      }
       if (!gradedObservation.gradingAudit) {
         return {
           ok: false as const,
