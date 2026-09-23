@@ -458,7 +458,7 @@ describe('expert-model allowlist (D-004)', () => {
       { rank: 1, agent: 'claude', model: 'fable' },
       { rank: 2, agent: 'claude', model: 'opus' },
       { rank: 3, agent: 'codex', model: 'sol' },
-      { rank: 4, agent: 'codex', model: 'astra' },
+      { rank: 4, agent: 'codex', model: 'gpt-6-astra' },
     ]);
   });
 
