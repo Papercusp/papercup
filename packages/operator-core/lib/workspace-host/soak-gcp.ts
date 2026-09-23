@@ -9,6 +9,7 @@
  * (EI-24005526609432424).
  */
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
 import {
   GcpIapWorkspaceHostBootstrapNotReadyError,
   GcpIapWorkspaceHostInitializationOperations,
@@ -36,6 +37,13 @@ export const WORKSPACE_HOST_SOAK_REACH_ATTEMPT_TIMEOUT_MS = 45_000;
 /** Budget for one sample's reach check: up to ~3 attempts, absorbing a single dropped tunnel. */
 export const WORKSPACE_HOST_SOAK_REACH_BUDGET_MS = 45_000;
 export const WORKSPACE_HOST_SOAK_REACH_RETRY_MS = 15_000;
+/**
+ * Attempts for one sample's instance read. A transport failure (`fetch failed`) leaves all three
+ * strict checks unmeasured, and the evaluator needs 95% of samples measured: the r39 soak lost 15
+ * samples to single dropped requests with zero host failures, and could not pass (WI-10002796).
+ */
+export const WORKSPACE_HOST_SOAK_READ_ATTEMPTS = 3;
+export const WORKSPACE_HOST_SOAK_READ_RETRY_MS = 5_000;
 
 export interface GcpWorkspaceHostSoakSeamsInput {
   workspaceId: string;
@@ -70,19 +78,29 @@ export async function resolveGcpWorkspaceHostSoakSeams(
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
   const client = input.gcpClient ?? createGcpWorkspaceHostApiClientForDesired(desired);
   const now = input.now ?? (() => new Date());
+  const sleep = input.timing?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
+  // Only a TRANSPORT failure is asked again: an absent or observed instance is an answer, and a
+  // non-transient error (auth, quota) would fail the same way on every attempt.
   const readInstance = async (): Promise<WorkspaceHostSoakInstanceReading> => {
-    try {
-      const instance = await client.getInstance(identity.projectId, identity.zone, identity.instanceName);
-      if (!instance) return { kind: 'absent' };
-      return {
-        kind: 'observed',
-        status: instance.status,
-        ...(instance.instanceId ? { instanceId: instance.instanceId } : {}),
-        ...(instance.sourceImage ? { sourceImage: instance.sourceImage } : {}),
-      };
-    } catch (error) {
-      return { kind: 'unreadable', detail: detailOf(error) };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const instance = await client.getInstance(identity.projectId, identity.zone, identity.instanceName);
+        if (!instance) return { kind: 'absent' };
+        return {
+          kind: 'observed',
+          status: instance.status,
+          ...(instance.instanceId ? { instanceId: instance.instanceId } : {}),
+          ...(instance.sourceImage ? { sourceImage: instance.sourceImage } : {}),
+        };
+      } catch (error) {
+        if (attempt >= WORKSPACE_HOST_SOAK_READ_ATTEMPTS || !isTransientNetworkError(error)) {
+          // describeFetchError keeps undici's hidden cause code: r39 persisted a blind "fetch failed".
+          const tries = attempt > 1 ? ` (after ${attempt} attempts)` : '';
+          return { kind: 'unreadable', detail: `${describeFetchError(error).slice(0, 500)}${tries}` };
+        }
+        await sleep(WORKSPACE_HOST_SOAK_READ_RETRY_MS);
+      }
     }
   };
 
