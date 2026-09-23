@@ -179,12 +179,14 @@ describe('managed Codex PreCompact bridge', () => {
 });
 
 /**
- * WI-10002522 — the inherited-context respawn storm. A managed Codex carry
- * successor is a native fork of its predecessor, so an over-limit predecessor
+ * WI-10002522 — the inherited-context respawn storm. A legacy managed Codex carry
+ * successor was a native fork of its predecessor, so an over-limit predecessor
  * yields an over-limit successor that trips auto-compaction before its first
  * sample. Re-queuing the managed boundary there forked the same context again:
  * 13 cuts in 10 minutes, zero model turns (codex log: 784140 / 784800 tokens).
  * Fixtures mirror the rollout shape Codex 0.156 wrote for those successors.
+ * Preserve this guard for old hosts and explicit forks even though current
+ * managed carry now starts fresh (EI-24046655564306940).
  */
 describe('managed Codex PreCompact bridge — inherited-context successor', () => {
   const PREDECESSOR = '01a0cb00-df6e-7693-b888-867722b452ee';
