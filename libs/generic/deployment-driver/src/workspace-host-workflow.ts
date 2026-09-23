@@ -196,6 +196,17 @@ export function validateWorkspaceHostWorkflow(
       errors.push(`duplicate provider idempotency key '${step.idempotencyKey}'`);
     }
     providerKeys.add(step.idempotencyKey);
+    if (step.rollback) {
+      if (!step.rollback.idempotencyKey.trim()) {
+        errors.push(`step '${step.id}' rollback idempotencyKey must not be empty`);
+      } else if (providerKeys.has(step.rollback.idempotencyKey)) {
+        errors.push(`duplicate provider idempotency key '${step.rollback.idempotencyKey}'`);
+      }
+      providerKeys.add(step.rollback.idempotencyKey);
+      if (!step.dependsOn.length) {
+        errors.push(`step '${step.id}' rollback needs the destructive predecessor it compensates for`);
+      }
+    }
 
     for (const dependency of step.dependsOn) {
       if (!allStepIds.has(dependency)) errors.push(`step '${step.id}' has unknown dependency '${dependency}'`);
