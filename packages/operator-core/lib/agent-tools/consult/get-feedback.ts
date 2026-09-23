@@ -6,9 +6,10 @@
  * lib/consult/get-feedback-core.ts (core/binding split, mirrors
  * conversations-core.ts) — this file wires the prod seams:
  *   route   → routeConsult + buildQueryEmbedder + the liveness oracle
- *   open    → openConversation (kind='consult'; direct_to subscribes BEFORE
- *             fanout, so the responder is reached durably)
- *   reach   → notifyAgents (subscribe + ping + wake — the shared reach-core)
+ *   open    → openConversation (kind='consult'; the new conversation is not
+ *             directly addressed to the expert whose transcript is selected)
+ *   reach   → the fork/convert dispatcher (an isolated answer session from the
+ *             expert transcript; the expert's live session is not woken)
  *
  * Heavy deps are imported INSIDE the handler (probe-capacity style): the
  * embedder/search graph opens PG at import time, and registration must stay
@@ -17,9 +18,11 @@
  * Selection (consult-min-max-and-rubric-vetting-2026-08-17 D-001/D-003):
  * min_agents/max_agents map to the core's minResponders/maxResponders — the
  * selected set is every above-floor qualified candidate plus best-scoring
- * minimum-fill to reach min (labeled via:'minimum'), capped at max. Delivery
- * stays a cascade: the top selectee is woken, the rest are the menu
- * (remaining_candidates). The per-task wake budget is REMOVED (D-005).
+ * minimum-fill to reach min (labeled via:'minimum'), capped at max. The top
+ * selectee is dispatched as an isolated answer session; the rest are the
+ * cascade menu (`remaining_candidates`). A dead expert can still be selected
+ * because the transcript, not the source session's liveness, carries expertise.
+ * The per-task wake budget is REMOVED (D-005).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -37,14 +40,14 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Open a new feedback consult for a question — this is a request/creation verb, not a reader for an existing conversation. It discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. To read a known conversation or consult thread, use conversations:get { id }. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.',
+    'Open a new feedback consult for one unresolved question — this is a request/creation verb, not a reader for an existing conversation. It checks the closed-consult archive first, then selects expertise from cross-agent transcripts. A fresh consult dispatches an isolated answer session by same-backend fork or supported cross-backend conversion; it does not wake the expert’s live session. The dispatcher walks the ranked allowed-model list and skips walled backends or failed launches. To read a known conversation or consult thread, use conversations:get { id }. Below the relevance floor, it reports the honest routing outcome instead of inventing expertise.',
   guidance: {
     when:
-      'You need a new answer and a peer may already know it from their transcripts, code, or prior debugging, but you do not know who. Use this before re-deriving it.',
+      'A concrete, substantial technical question remains after a first-pass check of local code, docs, or search, and a peer may already have solved it in their transcript. Ask once before a long re-derivation; include what you tried, what you observed, and the decision the answer informs.',
     notWhen:
-      'Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).',
+      'Reading an existing conversation or consult thread (use conversations:get { id }); live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); assigning work; or anything local code, docs, or search already answer. Do not open duplicate consults or repeat an unchanged question after no_available_responder. A consult is advice, never a work handoff.',
     chaining:
-      "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id } first. Then, for a new request: served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters.",
+      "get_feedback opens a new consult; it does not read an existing conversation. For a known id, use conversations:get { id }. Archive matches may answer without launching a model session. Otherwise the expert's transcript is answered by an isolated session; the dispatcher already walks allowed model ranks and skips walled backends, so do not manually retry. Use latency_contract:'hard-blocked' only when you cannot proceed without the answer; otherwise proceed and reconcile later. Declines/expiries advance the existing cascade; do not open a new consult for a follow-up.",
     returns:
       '{ verdict, conversation_id, thread_id, responder, responder_via (floor | minimum), remaining_candidates, origin_task_ref, latency_contract, expires_at, wake:{ attempted, queued, pickupConfirmed, woke }, park_key, archive? (served_from_archive), hint }',
   },
