@@ -2951,6 +2951,32 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(projections[1]!.evidence_plane).toBe('tree');
   });
 
+  it('validates a supplied approval receipt during dry-run preview', async () => {
+    const seeded = await seedBarContract('dry-run-approval-receipt-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const approvedAmendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move the BAR to live evidence.',
+      criterionEvidencePlane: { key: before.criteria[0]!.key, evidencePlane: 'live' as const },
+    };
+    const approvalRef = await postApproval(approvedAmendment);
+
+    await expect(
+      rubrics.previewAcceptanceBarAmendment({ ...approvedAmendment, approvalRef }),
+    ).resolves.toMatchObject({ approvalRequired: true, changedBars: ['R-1'] });
+
+    await expect(
+      rubrics.previewAcceptanceBarAmendment({
+        ...approvedAmendment,
+        criterionEvidencePlane: { ...approvedAmendment.criterionEvidencePlane, evidencePlane: 'deployed' },
+        approvalRef,
+      }),
+    ).rejects.toThrow('acceptance_bar_approval_stale_or_mismatched');
+
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+  });
+
   it('serializes competing BAR amendments and refuses the stale CAS without partial writes', async () => {
     const seeded = await seedBarContract('concurrent-bar-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
