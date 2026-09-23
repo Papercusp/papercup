@@ -247,7 +247,8 @@ export interface GcpInstanceInsertInput {
       mode: 'READ_WRITE';
     },
   ];
-  serviceAccounts: readonly [{ email: string; scopes: readonly string[] }];
+  /** Absent = the instance holds no cloud identity at all (Papercusp-hosted hosts, D-399). */
+  serviceAccounts?: readonly [{ email: string; scopes: readonly string[] }];
   metadata: { items: readonly { key: string; value: string }[] };
 }
 
@@ -484,7 +485,8 @@ export interface GcpWorkspaceHostDesiredProviderSettings {
   imageId: string;
   network: ManagedNetworkSettings | ExistingNetworkSettings;
   access: GcpAccessSettings;
-  serviceAccountEmail: string;
+  /** The instance's own identity; absent = none (a Papercusp-hosted host, D-399). */
+  serviceAccountEmail?: string;
   serviceAccountScopes: readonly string[];
   instanceName: string;
   dataDiskName: string;
@@ -1081,16 +1083,45 @@ function stringRecord(value: unknown, label: string): Readonly<Record<string, st
   );
 }
 
-function stableName(prefix: string, hostId: string): string {
-  const suffix = createHash('sha256').update(hostId).digest('hex').slice(0, 8);
-  const slug =
-    hostId
+function nameSlug(value: string): string {
+  return (
+    value
       .toLowerCase()
       .replace(/[^a-z0-9-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'host';
-  const available = 63 - prefix.length - suffix.length - 2;
-  const body = slug.slice(0, Math.max(1, available)).replace(/-+$/g, '') || 'host';
+      .replace(/^-+|-+$/g, '') || 'host'
+  );
+}
+
+/** Room left for the slug once `prefix`, the 8-character digest and both dashes are placed. */
+function nameBodyLength(prefix: string): number {
+  return Math.max(1, 63 - prefix.length - 8 - 2);
+}
+
+function stableName(prefix: string, hostId: string): string {
+  const suffix = createHash('sha256').update(hostId).digest('hex').slice(0, 8);
+  const body = nameSlug(hostId).slice(0, nameBodyLength(prefix)).replace(/-+$/g, '') || 'host';
   return `${prefix}-${body}-${suffix}`;
+}
+
+/**
+ * The name prefixes of every GCP resource one workspace host owns, derived by the SAME
+ * functions that name them: network, subnetwork, firewall, router, instance and disks share
+ * `resource`; snapshots use `snapshot` (on demand) or `destroySnapshot` (kept at destroy).
+ * A grant scoped to these prefixes (hosted-gcp-hosting.ts) reaches this host and no other,
+ * because every host's `resource` prefix ends in a digest of its own id.
+ */
+export function gcpWorkspaceHostNamePrefixes(hostId: string): {
+  resource: string;
+  snapshot: string;
+  destroySnapshot: string;
+} {
+  const destroyBody = nameSlug(hostId).slice(0, nameBodyLength('pc-destroy'));
+  return {
+    resource: `${stableName('pc', hostId)}-`,
+    snapshot: stableName('pc-snapshot', hostId),
+    // Destroy snapshots are named from `${hostId}-${disk}`, whose slug begins with the host's.
+    destroySnapshot: `pc-destroy-${destroyBody}`,
+  };
 }
 
 /**
@@ -1210,7 +1241,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     imageId,
     network,
     access,
-    serviceAccountEmail: requireString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail'),
+    serviceAccountEmail: optionalString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail'),
     serviceAccountScopes: stringArray(provider.serviceAccountScopes, 'gcp.desired.provider.serviceAccountScopes', [
       GCP_CLOUD_PLATFORM_SCOPE,
     ]),
@@ -2097,7 +2128,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               mode: 'READ_WRITE',
             },
           ],
-          serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }],
+          ...(settings.serviceAccountEmail
+            ? { serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }] as const }
+            : {}),
           metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript) },
         },
       } satisfies GcpStepInput,
