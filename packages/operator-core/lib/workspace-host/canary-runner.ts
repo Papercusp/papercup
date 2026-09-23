@@ -81,6 +81,13 @@ export interface WorkspaceHostCanaryRunInput {
   readonly hostId: string;
   /** Required so retries rebuild byte-identical plans and therefore reuse replay identities. */
   readonly requestedAt: string;
+  /**
+   * WI-10002510: the release task this run is evidence for. Threaded ONLY into the initialize
+   * phase, whose runner records `workspace.root-bootstrap` + `workspace.fixed-agent-initialization`
+   * against it — and refuses before any operation row when the host does not run that release's
+   * bundle. The credential-lifecycle phases after it are journeys, not release milestones.
+   */
+  readonly releaseTaskId?: string;
   readonly source: WorkspaceHostInitializationSource;
   readonly credentials: {
     readonly initial: WorkspaceHostCanaryCredentialGeneration;
@@ -505,6 +512,7 @@ export async function runWorkspaceHostCanary(
     credentialMaterialSource: input.credentialMaterialSource,
     additionalCredentialAdmissions,
     ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
+    ...(input.releaseTaskId !== undefined ? { releaseTaskId: input.releaseTaskId } : {}),
     // The initialization runner invokes this only after the exact stored agent generation passed
     // admission and before it creates the operation row. A revoked generation therefore remains a
     // canary preflight rejection rather than masquerading as a durable remote-phase failure.

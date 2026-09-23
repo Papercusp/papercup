@@ -382,6 +382,32 @@ describe('runWorkspaceHostCanary', () => {
     expect(runLifecycle).toHaveBeenCalledTimes(4);
   });
 
+  // WI-10002510: a release task is evidence for the INITIALIZE phase only (root-bootstrap +
+  // fixed-agent-initialization). The four lifecycle phases are journeys; handing them the task
+  // would let a rotate/revoke masquerade as a release milestone.
+  it('threads releaseTaskId into initialization only, and omits it when absent', async () => {
+    const runInitialization = vi.fn(fakeInitialization);
+    const runLifecycle = vi.fn(fakeLifecycle);
+    await runWorkspaceHostCanary(
+      input({ destroyFinalization: destroyFinalization(), releaseTaskId: '0mudid6hj1kyckhk5ri' }),
+      { runInitialization, runLifecycle, verifyAgentCredentialAdmission, now: () => new Date(OBSERVED_AT) },
+    );
+    expect(runInitialization).toHaveBeenCalledWith(
+      expect.objectContaining({ releaseTaskId: '0mudid6hj1kyckhk5ri' }),
+    );
+    expect(runLifecycle).toHaveBeenCalledTimes(4);
+    for (const [call] of runLifecycle.mock.calls) expect(call).not.toHaveProperty('releaseTaskId');
+
+    const unbound = vi.fn(fakeInitialization);
+    await runWorkspaceHostCanary(input({ destroyFinalization: destroyFinalization() }), {
+      runInitialization: unbound,
+      runLifecycle: vi.fn(fakeLifecycle),
+      verifyAgentCredentialAdmission,
+      now: () => new Date(OBSERVED_AT),
+    });
+    expect(unbound.mock.calls[0]?.[0]).not.toHaveProperty('releaseTaskId');
+  });
+
   // D-338 (owner-directed) skips the funded Codex leg and continues on Claude and OMP. The canary
   // previously planned all three unconditionally, so that scope was declared but unrunnable: the
   // live r38 run reached 5/6 steps and died on `agent readiness did not pass for: codex
