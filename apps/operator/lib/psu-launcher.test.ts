@@ -108,6 +108,8 @@ import {
   launchModeFromArgs,
   trackedForkEnvelopeEnv,
   forkFallbackAccountRoute,
+  forkBootstrapFallbackMessage,
+  launchTrackedFork,
   freshSuBootstrapBody,
   launchesOnSuTier,
   suRoleFor,
@@ -4067,6 +4069,74 @@ describe("psu-launcher arg parsing", () => {
         notice: null,
       }),
     ).toMatchObject({ mode: "default", id: null, env: defaultAccountEnv() });
+  });
+
+  it("pre-pinned managed forks fail closed instead of launching without a record", async () => {
+    const source = {
+      agent: "claude",
+      sessionId: "native-source",
+      coordOwnerId: "su-source",
+      id: 17,
+      cwd: "/repo",
+    };
+    const account = { id: null, env: {}, notice: null };
+    const bootstrapFailures = [
+      vi.fn().mockRejectedValue(new Error("bootstrap unavailable")),
+      vi.fn().mockResolvedValue({ nativeSessionId: null, envelopeEnv: {} }),
+    ];
+
+    for (const postBootstrap of bootstrapFailures) {
+      const launchResume = vi.fn().mockResolvedValue(undefined);
+      await expect(
+        launchTrackedFork(source, { ownerId: "su-consult-fork" }, account, null, {
+          api: postBootstrap,
+          launchResume,
+        }),
+      ).rejects.toThrow(/pre-pinned managed identity requires a launch record/);
+      expect(launchResume).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps unpinned manual fallback, but refuses a pre-pinned unsupported source", async () => {
+    const account = { id: null, env: {}, notice: null };
+    const launchResume = vi.fn().mockResolvedValue(undefined);
+    const postBootstrap = vi.fn().mockRejectedValue(new Error("bootstrap unavailable"));
+    const claudeSource = {
+      agent: "claude",
+      sessionId: "native-source",
+      coordOwnerId: "su-source",
+      id: 17,
+      cwd: "/repo",
+    };
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await launchTrackedFork(claudeSource, {}, account, null, {
+        api: postBootstrap,
+        launchResume,
+      });
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("UNTRACKED fork"));
+      expect(launchResume).toHaveBeenCalledOnce();
+      expect(launchResume).toHaveBeenCalledWith(claudeSource, expect.objectContaining({ fork: true }));
+
+      const codexSource = { ...claudeSource, agent: "codex" };
+      await expect(
+        launchTrackedFork(codexSource, { ownerId: "su-consult-fork" }, account, null, {
+          api: postBootstrap,
+          launchResume,
+        }),
+      ).rejects.toThrow(/pre-pinned managed identity requires a launch record/);
+      expect(launchResume).toHaveBeenCalledOnce();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("keeps the manual fork warning explicit and refuses untracked managed forks", () => {
+    expect(forkBootstrapFallbackMessage(null, "fork bootstrap failed")).toContain("UNTRACKED fork");
+    expect(() => forkBootstrapFallbackMessage(" su-consult-fork ", "fork bootstrap failed")).toThrow(
+      /untracked fork su-consult-fork/,
+    );
   });
 
   it("freshSuBootstrapBody forwards launch_context so Codex can fold it into AGENTS.md", () => {
