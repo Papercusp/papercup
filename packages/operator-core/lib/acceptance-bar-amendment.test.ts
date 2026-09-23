@@ -435,6 +435,30 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
       expected,
     });
 
+  it('resolves an approval by workspace and post id without binding it to the request thread', async () => {
+    let query = '';
+    let values: unknown[] = [];
+    const sql = ((strings: TemplateStringsArray, ...parameters: unknown[]) => {
+      query = strings.join('?');
+      values = parameters;
+      return Promise.resolve([
+        { author_id: 'su-reviewer', body: JSON.stringify(RECEIPT), approved_at: '2026-09-07T00:00:00.000Z' },
+      ]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(
+      resolveAcceptanceBarApproval(sql, {
+        workspaceId: 'papercusp-workspace',
+        approvalRef: 'thread-post:123',
+        expected,
+      }),
+    ).resolves.toMatchObject({ approvedBy: 'su-reviewer' });
+    expect(query).toContain('WHERE workspace_id = ? AND id = ?::bigint');
+    expect(query).toContain("AND origin = 'local'");
+    expect(query).not.toMatch(/\b(?:thread|work_item)_id\b/);
+    expect(values).toEqual(['papercusp-workspace', '123']);
+  });
+
   it('strips a ```json fence before parsing, and leaves an unfenced body untouched', () => {
     expect(approvalReceiptJsonSource('```json\n{"a":1}\n```')).toBe('{"a":1}');
     expect(approvalReceiptJsonSource('```\n{"a":1}\n```')).toBe('{"a":1}');
