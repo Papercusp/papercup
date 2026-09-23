@@ -1236,14 +1236,15 @@ export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: str
  * plan row is the population; an active keyed acceptance filing is the driver.
  * A left join keeps "no active driver" visible instead of allowing the plan to
  * disappear when a filing was never created or was prematurely closed. */
-export async function readAcceptanceDrainVisibility(sql: Sql, workspaceId: string): Promise<NonNullable<WorkFeedHealth['acceptanceDrain']>> {
-  const rows = await sql<Array<{
-    awaiting: string;
-    with_driver: string;
-    without_driver: string;
-    escalated: string;
-    oldest_plan_updated_at: Date | null;
-  }>>`
+/** WI-10002538: the LATERAL probe runs once per awaiting-acceptance plan, so it
+ *  MUST be index-served (migration 1199, work_items_acceptance_drain_plan_idx).
+ *  Without it every probe seq-scanned work_items: 223 plans x 225k rows kept one
+ *  instance running 86.9s on the tower. The `IS NOT NULL` line restates the partial
+ *  index's predicate. The planner already proves it from the strict equality below
+ *  (EXPLAIN-probed 2026-09-23), so the line is belt-and-braces; what actually pins
+ *  index service is acceptance-drain-visibility.integration.test.ts, which EXPLAINs
+ *  this exported text against migration 1199. $1 = workspace id. */
+export const ACCEPTANCE_DRAIN_VISIBILITY_SQL = `
     SELECT count(*)::text AS awaiting,
            count(*) FILTER (WHERE d.feature_id IS NOT NULL)::text AS with_driver,
            count(*) FILTER (WHERE d.feature_id IS NULL)::text AS without_driver,
@@ -1254,15 +1255,25 @@ export async function readAcceptanceDrainVisibility(sql: Sql, workspaceId: strin
         SELECT wi.feature_id, wi.payload
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = p.workspace_id
+           AND (wi.payload->>'acceptanceDrainPlan') IS NOT NULL
            AND wi.payload->>'acceptanceDrainPlan' = (p.workspace_id || '/' || p.harness_slug || '/' || p.plan_slug)
            AND wi.status = ANY(ARRAY['open','todo','wip','in_progress','blocked','needs-human','validating','failing'])
          ORDER BY wi.created_ts, wi.feature_id
          LIMIT 1
       ) d ON TRUE
-     WHERE p.workspace_id = ${workspaceId}
+     WHERE p.workspace_id = $1
        AND p.status = 'awaiting-acceptance'
        AND p.template IS DISTINCT FROM 'rubric'
        AND p.archived = FALSE`;
+
+export async function readAcceptanceDrainVisibility(sql: Sql, workspaceId: string): Promise<NonNullable<WorkFeedHealth['acceptanceDrain']>> {
+  const rows = await sql.unsafe<Array<{
+    awaiting: string;
+    with_driver: string;
+    without_driver: string;
+    escalated: string;
+    oldest_plan_updated_at: Date | null;
+  }>>(ACCEPTANCE_DRAIN_VISIBILITY_SQL, [workspaceId]);
   const row = rows[0];
   return {
     awaiting: Number(row?.awaiting ?? 0),
