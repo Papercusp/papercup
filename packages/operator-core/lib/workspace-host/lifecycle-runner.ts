@@ -32,6 +32,7 @@ import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
   readWorkspaceHostDestroyTarget,
+  readWorkspaceHostOperationPlan,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostImage,
   recordWorkspaceHostObservation,
@@ -96,6 +97,7 @@ export interface WorkspaceHostLifecycleStore {
   readTarget: typeof readWorkspaceHostDestroyTarget;
   upsertHost: typeof upsertWorkspaceHost;
   beginOperation: typeof beginWorkspaceHostOperation;
+  readOperationPlan: typeof readWorkspaceHostOperationPlan;
   updateOperation: typeof updateWorkspaceHostOperation;
   readCheckpoints: typeof readWorkspaceHostResourceCheckpoints;
   upsertCheckpoint: typeof upsertWorkspaceHostResourceCheckpoint;
@@ -193,6 +195,7 @@ const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
   readTarget: readWorkspaceHostDestroyTarget,
   upsertHost: upsertWorkspaceHost,
   beginOperation: beginWorkspaceHostOperation,
+  readOperationPlan: readWorkspaceHostOperationPlan,
   updateOperation: updateWorkspaceHostOperation,
   readCheckpoints: readWorkspaceHostResourceCheckpoints,
   upsertCheckpoint: upsertWorkspaceHostResourceCheckpoint,
@@ -222,6 +225,19 @@ function controllerStore(
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * WI-10002527: the plan an earlier turn of this operation persisted, or undefined on its first
+ * turn. Only a plan carrying every step's input is executable; step identities alone are not.
+ */
+function persistedLifecyclePlan(stored: unknown): WorkspaceHostPlan | undefined {
+  if (!stored || typeof stored !== 'object') return undefined;
+  const plan = stored as Partial<WorkspaceHostPlan>;
+  if (typeof plan.planId !== 'string' || !Array.isArray(plan.steps)) return undefined;
+  return plan.steps.every((step) => typeof step === 'object' && step !== null && 'input' in step)
+    ? (plan as WorkspaceHostPlan)
+    : undefined;
 }
 
 function canonicalProductJson(value: unknown): string {
@@ -898,15 +914,27 @@ export async function runWorkspaceHostLifecycle(
   };
   await assertProviderConnectionUsable(input.provider, context);
 
+  // WI-10002527: a resumed turn executes the plan this operation resolved on its first turn and
+  // persisted with its request (beginOperation below), never a fresh one. Re-planning is unsound
+  // for any plan derived from state its own steps destroy: a GCP upgrade builds its re-create from
+  // a live read of the VM its first step deletes, so once that delete applied no new plan could be
+  // made, and the upgrade died with no VM and its precomputed rollback unreachable.
+  const persistedPlan = persistedLifecyclePlan(await store.readOperationPlan(workspaceId, operationId));
   let plan: WorkspaceHostPlan;
-  try {
-    plan = bindWorkspaceHostPlanRevision(
-      await input.provider.plan(planRequest(input, target, operationId, desiredRevision), context),
-      desiredRevision,
-    );
-  } catch (error) {
-    if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
-    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+  if (persistedPlan) {
+    plan = persistedPlan;
+  } else {
+    try {
+      plan = bindWorkspaceHostPlanRevision(
+        await input.provider.plan(planRequest(input, target, operationId, desiredRevision), context),
+        desiredRevision,
+      );
+      // Persisted verbatim with the operation, so it must hold nothing that may not be persisted.
+      assertWorkspaceHostSecretIsolation(plan, 'workspaceHost.lifecyclePlan');
+    } catch (error) {
+      if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
+      throw new WorkspaceHostProvisioningRequestError([message(error)]);
+    }
   }
   const resultHostId = input.action === 'restore' ? input.desired!.hostId : hostId;
   const identityProblems: string[] = [];
@@ -1028,10 +1056,9 @@ export async function runWorkspaceHostLifecycle(
     request: {
       sourceHostId: hostId,
       ...(input.name ? { name: input.name } : {}),
-      plan: {
-        planId: plan.planId,
-        steps: plan.steps.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),
-      },
+      // The whole resolved plan, step inputs and rollbacks included: every later turn reads it
+      // back instead of re-planning, and the request fence proves each turn executes this one.
+      plan,
     },
     desiredRevision,
   });

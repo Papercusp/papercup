@@ -90,6 +90,8 @@ function storeHarness(
   source: { observedState?: string; resources?: readonly (typeof vm)[] } = {},
 ) {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = seed.map((entry) => ({ ...entry }));
+  // The operation row: its first write wins (ON CONFLICT DO NOTHING) and round-trips through JSON as jsonb does.
+  let operationRequest: { plan?: unknown } | undefined;
   const store: WorkspaceHostLifecycleStore = {
     readTarget: vi.fn(async () => ({
       id: 'host-1',
@@ -104,7 +106,10 @@ function storeHarness(
       resources: (source.resources ?? [vm]).map((resource) => ({ resource, registeredAt: '2026-08-26T00:00:00Z' })),
     })),
     upsertHost: vi.fn(async () => {}),
-    beginOperation: vi.fn(async () => {}),
+    beginOperation: vi.fn(async ({ request }) => {
+      operationRequest ??= JSON.parse(JSON.stringify(request ?? {}));
+    }),
+    readOperationPlan: vi.fn(async () => operationRequest?.plan ?? null),
     updateOperation: vi.fn(async () => {}),
     readCheckpoints: vi.fn(async () => checkpoints.map((entry) => ({ ...entry }))),
     upsertCheckpoint: vi.fn(async ({ checkpoint }) => {

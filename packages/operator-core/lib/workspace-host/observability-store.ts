@@ -814,6 +814,22 @@ export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationI
   });
 }
 
+/**
+ * WI-10002527: the raw `request.plan` an operation stored when it began, or null before it has. A
+ * lifecycle resume executes that plan instead of re-planning (lifecycle-runner.ts).
+ */
+export async function readWorkspaceHostOperationPlan(workspaceId: string, operationId: string): Promise<unknown> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<Array<{ plan: unknown }>>`
+      SELECT request->'plan' AS plan
+      FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = ${operationId}
+      LIMIT 1
+    `;
+    return rows[0]?.plan ?? null;
+  });
+}
+
 export async function updateWorkspaceHostOperation(input: {
   workspaceId: string;
   operationId: string;

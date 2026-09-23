@@ -93,6 +93,8 @@ function providerHarness(hostBootstrap = false) {
 
 function storeHarness() {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = [];
+  // The operation row: its first write wins (ON CONFLICT DO NOTHING) and round-trips through JSON as jsonb does.
+  let operationRequest: { plan?: unknown } | undefined;
   const store: WorkspaceHostLifecycleStore = {
     readTarget: vi.fn(async () => ({
       id: 'host-1',
@@ -107,7 +109,10 @@ function storeHarness() {
       resources: [{ resource: vm, registeredAt: '2026-08-26T00:00:00Z' }],
     })),
     upsertHost: vi.fn(async () => {}),
-    beginOperation: vi.fn(async () => {}),
+    beginOperation: vi.fn(async ({ request }) => {
+      operationRequest ??= JSON.parse(JSON.stringify(request ?? {}));
+    }),
+    readOperationPlan: vi.fn(async () => operationRequest?.plan ?? null),
     updateOperation: vi.fn(async () => {}),
     readCheckpoints: vi.fn(async () => checkpoints.map((entry) => ({ ...entry }))),
     upsertCheckpoint: vi.fn(async ({ checkpoint }) => {
@@ -700,8 +705,56 @@ describe('runWorkspaceHostLifecycle upgrade rollback', () => {
       runWorkspaceHostLifecycle({ ...input(provider, store), action: 'upgrade', image: upgradeImage });
     const stepCalls = (mock: typeof apply | typeof reconcile, stepId: string) =>
       mock.mock.calls.filter(([request]) => request.step.id === stepId).length;
-    return { store, checkpoints, provider, apply, reconcile, destroyed, created, run, stepCalls };
+    return { store, checkpoints, provider, apply, reconcile, planProvider, destroyed, created, run, stepCalls };
   }
+
+  it('resumes from the persisted plan once the delete applied and the VM it was planned from is gone', async () => {
+    // WI-10002527: the GCP planner builds the re-create from a live read of the VM the first step
+    // deletes, so it cannot plan again after that delete. A delete that settles on a LATER turn must
+    // resume the plan the operation persisted, not die re-planning with no VM and no rollback.
+    const h = upgradeHarness();
+    const firstPlan = h.planProvider.getMockImplementation()!;
+    h.planProvider
+      .mockImplementationOnce(firstPlan)
+      .mockRejectedValue(new Error('GCP upgrade requires a fresh instance read with recreateInput'));
+    h.apply.mockImplementation(async (request) => {
+      if (request.step.id === 'delete-boot-runtime') {
+        return {
+          operationId: 'op-1',
+          stepId: request.step.id,
+          state: 'in-progress',
+          observedAt: '2026-08-27T00:00:01Z',
+          providerRequestId: 'delete-op-1',
+          retryAfterMs: 2_000,
+        };
+      }
+      return h.created(request.step.id);
+    });
+    h.reconcile.mockImplementation(async (request) => h.destroyed(request.step.id));
+
+    await expect(h.run()).resolves.toMatchObject({ status: 'in-progress' });
+    await expect(h.run()).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
+
+    expect(h.planProvider).toHaveBeenCalledOnce();
+    expect(h.reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        step: expect.objectContaining({ id: 'delete-boot-runtime' }),
+        previousProviderRequestId: 'delete-op-1',
+      }),
+      expect.anything(),
+    );
+    expect(h.stepCalls(h.apply, 'create-boot-runtime')).toBe(1);
+    expect(h.apply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        step: expect.objectContaining({
+          id: 'create-boot-runtime',
+          idempotencyKey: 'create-key:desired-revision:2',
+          input: { op: 'insert-instance', sourceImage: upgradeImage.id },
+        }),
+      }),
+      expect.anything(),
+    );
+  });
 
   it('re-creates the VM from the prior image when the upgraded re-create is refused after the delete', async () => {
     const h = upgradeHarness();
