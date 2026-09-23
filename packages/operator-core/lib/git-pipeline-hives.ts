@@ -167,8 +167,9 @@ async function revListCount(root: string, from: string, to: string): Promise<num
 }
 
 function gateStatusOf(gate: GitPipelineSnapshot['gate']): HiveGateStatus {
-  if (gate.stalled) return 'stalled';
+  if (gate.stalled === true) return 'stalled';
   if (gate.consecutiveReds > 0) return 'held';
+  if (gate.stalled === null || gate.stalled === undefined) return 'unknown';
   if (gate.lastGreenAtMs != null) return 'green';
   return 'unknown';
 }

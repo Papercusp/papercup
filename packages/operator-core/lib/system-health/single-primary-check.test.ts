@@ -8,6 +8,7 @@ import {
   d026QuiescenceIsActive,
   readD026QuiescenceEvidence,
   defaultIsCutQuiescing,
+  readBackgroundPrimaryLoadState,
   D026_RESTORE_UNIT,
   runSinglePrimaryCheck,
   openSinglePrimaryConditions,
@@ -90,6 +91,34 @@ describe('evaluatePrimaryCount — count 0 checks its consequence against live e
     const v = evaluatePrimaryCount(0, STALE);
     expect(v).toMatchObject({ ok: false, severity: 'blocker', key: 'no-primary' });
     expect(v.summary).toContain('all down');
+  });
+
+  it('a masked bg-host keeps the outage diagnosis but never recommends starting it', () => {
+    const v = evaluatePrimaryCount(0, STALE, undefined, undefined, 'masked');
+    expect(v).toMatchObject({ severity: 'blocker', key: 'no-primary' });
+    expect(v.summary).toContain('LoadState=masked');
+    expect(v.summary).toContain('Do NOT start, restart, or unmask bg-host automatically');
+    expect(v.summary).not.toContain('Start the bg-host');
+  });
+
+  it('a masked bg-host with active routines remains advisory without a restore instruction', () => {
+    const v = evaluatePrimaryCount(0, FIRING, undefined, undefined, 'masked');
+    expect(v).toMatchObject({ severity: 'advisory', key: 'no-dedicated-primary' });
+    expect(v.summary).toContain('Do NOT start, restart, or unmask bg-host automatically');
+    expect(v.summary).not.toContain('Restore the bg-host');
+  });
+
+  it('an unreadable or non-loaded bg-host state requires verification before recommending a start', () => {
+    const unreadable = evaluatePrimaryCount(0, STALE, undefined, undefined, null);
+    const notFound = evaluatePrimaryCount(0, STALE, undefined, undefined, 'not-found');
+    expect(unreadable.summary).toContain('could not verify the bg-host LoadState');
+    expect(notFound.summary).toContain('LoadState=not-found');
+    expect(unreadable.summary).not.toContain('Start the bg-host');
+    expect(notFound.summary).not.toContain('Start the bg-host');
+  });
+
+  it('a confirmed loaded bg-host keeps the existing restore recommendation', () => {
+    expect(evaluatePrimaryCount(0, STALE, undefined, undefined, 'loaded').summary).toContain('Start the bg-host');
   });
 
   it('zero with UNKNOWN evidence never invents a healthier read — it still pages', () => {
@@ -188,6 +217,25 @@ describe('D-026 Corestore quiescence evidence', () => {
       expect(evidence).toEqual({ cutActive: true, restoreActive: true });
       expect(d026QuiescenceIsActive(evidence)).toBe(true);
     });
+  });
+});
+
+describe('readBackgroundPrimaryLoadState', () => {
+  beforeEach(() => vi.mocked(execFileSync).mockReset());
+
+  it('reads the configured user unit LoadState', () => {
+    vi.mocked(execFileSync).mockReturnValue('masked\n');
+    expect(readBackgroundPrimaryLoadState('papercusp-bg-host.service')).toBe('masked');
+    expect(execFileSync).toHaveBeenCalledWith(
+      'systemctl',
+      ['--user', 'show', 'papercusp-bg-host.service', '-p', 'LoadState', '--value'],
+      { encoding: 'utf8' },
+    );
+  });
+
+  it('returns unknown when the unit state is empty', () => {
+    vi.mocked(execFileSync).mockReturnValue('');
+    expect(readBackgroundPrimaryLoadState('papercusp-bg-host.service')).toBeNull();
   });
 });
 
@@ -522,6 +570,21 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     expect(r.fired).toBe(false);
     expect(r.verdict.ok).toBe(true);
     expect(calls.length).toBe(0);
+  });
+
+  it('withholds start advice when the systemd LoadState probe fails', async () => {
+    const calls: Array<{ summary: string }> = [];
+    const result = await runSinglePrimaryCheck('ws', {
+      count: async () => 0,
+      routineFireAgeSec: async () => 3600,
+      backgroundUnitLoadState: async () => { throw new Error('systemctl unavailable'); },
+      escalate: async (input) => { calls.push(input); return { msg_id: 'masked-probe-1' }; },
+      now: () => 100 * 60_000,
+      sustainTicks: 1,
+    });
+    expect(result.verdict.summary).toContain('systemd could not verify the bg-host LoadState');
+    expect(result.verdict.summary).not.toContain('Start the bg-host');
+    expect(calls[0]?.summary).toContain(result.verdict.summary);
   });
 
   it('escalates on a SUSTAINED split-brain (>1)', async () => {

@@ -107,8 +107,10 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
       const adequacyState = bar.proof.adequacy?.state;
       if (mapping.planItemStatus !== 'done' || !bar.barHash ||
           (!manual && !bar.requiredTestLayers?.length) ||
-          mapping.sourceBarHash !== bar.barHash || mapping.sourceBarSetHash !== snapshot.plan!.barSetHash ||
-          mapping.sourceRubricRevision !== snapshot.rubric!.revision || mapping.evidencePlane !== bar.evidencePlane ||
+          // P-001: key the clause to its own bar (hash + plane). An amendment keeps an
+          // unchanged bar's clause at its revision, so its set-hash / rubric-revision pins
+          // are legitimately older than the plan's; the set is pinned at plan + rubric.
+          mapping.sourceBarHash !== bar.barHash || mapping.evidencePlane !== bar.evidencePlane ||
           bar.proof.state !== 'current' || bar.proof.uncertainEvidence > 0 ||
           (manual ? !(adequacyState === 'undeclared' || adequacyState === 'pass')
                   : adequacyState !== 'pass')) return false;

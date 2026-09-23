@@ -254,6 +254,20 @@ export function defaultIsCutQuiescing(unit: string): boolean {
   }
 }
 
+export function readBackgroundPrimaryLoadState(
+  unit = process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT ?? 'papercusp-bg-host.service',
+): string | null {
+  if (!unit.trim()) return null;
+  try {
+    const state = execFileSync('systemctl', ['--user', 'show', unit, '-p', 'LoadState', '--value'], {
+      encoding: 'utf8',
+    }).trim();
+    return state || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read the authoritative release-cut + restore contract used by D-026.
  *
@@ -316,6 +330,7 @@ export function evaluatePrimaryCount(
   evidence?: BackgroundActivityEvidence,
   quiescence?: D026QuiescenceEvidence,
   announcedQuiesce?: AnnouncedQuiesceEvidence,
+  backgroundUnitLoadState?: string | null,
 ): PrimaryVerdict {
   // WI-7291: the count was NOT READ. This is the absence of evidence, so it can never earn
   // the routine-engine-death text — but it still pages, on the same principle as the
@@ -375,6 +390,14 @@ export function evaluatePrimaryCount(
           'Do NOT start or restart bg-host while this window is active (self-reported, not systemd-verified — trust it, but verify with the announcer if anything looks wrong); wait for it to end or expire, then verify the primary and routine fires recover.',
       };
     }
+    const backgroundUnitRecovery =
+      backgroundUnitLoadState === undefined || backgroundUnitLoadState === 'loaded'
+        ? null
+        : backgroundUnitLoadState === 'masked'
+          ? 'systemd reports LoadState=masked. Do NOT start, restart, or unmask bg-host automatically; verify who masked it and whether the maintenance/release window is still active before restoring it.'
+          : backgroundUnitLoadState === null
+            ? 'systemd could not verify the bg-host LoadState. Do NOT start it from this alarm until the unit and any maintenance/mask reason are verified.'
+            : `systemd reports bg-host LoadState=${backgroundUnitLoadState}. Do NOT start it from this alarm until the unit state and any maintenance/mask reason are verified.`;
     // The consequence is CHECKED, not asserted — see the header note. Routines still
     // firing means redundancy is degraded, not that background work has stopped.
     if (routinesDemonstrablyFiring(evidence)) {
@@ -384,9 +407,9 @@ export function evaluatePrimaryCount(
         ok: false,
         severity: 'advisory',
         key: 'no-dedicated-primary',
-        evidenceNote: `observed: an active routine fired ${age}s ago`,
+        evidenceNote: `observed: an active routine fired ${age}s ago${backgroundUnitLoadState !== undefined ? `; bg-host LoadState=${backgroundUnitLoadState ?? 'unavailable'}` : ''}`,
         summary:
-          `no dedicated background primary (bg-host) — but background work is NOT stopped: an active routine fired ${age}s ago, so a routines-enabled non-primary host is serving them. Degraded redundancy (bg-host down or restarting), NOT the routine-engine-death class. Restore the bg-host.`,
+          `no dedicated background primary (bg-host) — but background work is NOT stopped: an active routine fired ${age}s ago, so a routines-enabled non-primary host is serving them. Degraded redundancy (bg-host down or restarting), NOT the routine-engine-death class. ${backgroundUnitRecovery ?? 'Restore the bg-host.'}`,
       };
     }
 
@@ -400,9 +423,9 @@ export function evaluatePrimaryCount(
         ok: false,
         severity: 'blocker',
         key: 'no-primary',
-        evidenceNote: `observed: no active routine has fired for ${Math.round(age)}s`,
+        evidenceNote: `observed: no active routine has fired for ${Math.round(age)}s${backgroundUnitLoadState !== undefined ? `; bg-host LoadState=${backgroundUnitLoadState ?? 'unavailable'}` : ''}`,
         summary:
-          'NO background primary running — DBOS routines, git-sync, and the Mug wake-loop are all down (the silent routine-engine-death class). Start the bg-host / restore a background worker.',
+          `NO background primary running — DBOS routines, git-sync, and the Mug wake-loop are all down (the silent routine-engine-death class). ${backgroundUnitRecovery ?? 'Start the bg-host / restore a background worker.'}`,
       };
     }
 
@@ -423,7 +446,7 @@ export function evaluatePrimaryCount(
       key: 'no-primary-unverified',
       evidenceNote: `NOT observed (${status ?? 'not-gathered'}): ${why}`,
       summary:
-        `background primaries read as 0, but this is UNVERIFIED: ${why}. Do NOT read this as "routines, git-sync and the Mug wake-loop are down" — that was never observed. The count is read through the SAME database handle as the failed liveness read, so the 0 itself is equally unverified. VERIFY BEFORE ACTING (restarting a healthy bg-host kills in-flight routine work): SELECT count(DISTINCT application_name) FROM pg_stat_activity WHERE application_name LIKE 'dbos_transact_%', and check max(last_fired_at) in harness_shared.routines.`,
+        `background primaries read as 0, but this is UNVERIFIED: ${why}. Do NOT read this as "routines, git-sync and the Mug wake-loop are down" — that was never observed. The count is read through the SAME database handle as the failed liveness read, so the 0 itself is equally unverified. VERIFY BEFORE ACTING (restarting a healthy bg-host kills in-flight routine work): SELECT count(DISTINCT application_name) FROM pg_stat_activity WHERE application_name LIKE 'dbos_transact_%', and check max(last_fired_at) in harness_shared.routines.${backgroundUnitRecovery ? ` ${backgroundUnitRecovery}` : ''}`,
     };
   }
   // >1 is a blocker on the COUNT alone — routine liveness neither confirms nor refutes a
@@ -665,6 +688,7 @@ export interface PrimaryGuardDeps {
    *  announced-quiesce.ts). Omitted in pure/unit callers, exactly like d026Quiescence
    *  above; the scheduled live guard wires the real PG-backed reader explicitly. */
   announcedQuiescence?: () => AnnouncedQuiesceEvidence | Promise<AnnouncedQuiesceEvidence>;
+  backgroundUnitLoadState?: () => string | null | Promise<string | null>;
   escalate?: (input: { severity: EscalationSeverity; summary: string; body?: string }) => Promise<unknown>;
   /** Resolve a previously-opened escalation by msg_id (self-clear on recovery). */
   resolve?: (input: { msg_id: string; choice: string; note?: string }) => Promise<unknown>;
@@ -782,7 +806,15 @@ export async function runSinglePrimaryCheck(
       announcedQuiesce = undefined;
     }
   }
-  const verdict = evaluatePrimaryCount(count, evidence, quiescence, announcedQuiesce);
+  let backgroundUnitLoadState: string | null | undefined;
+  if (count === 0 && deps.backgroundUnitLoadState) {
+    try {
+      backgroundUnitLoadState = await deps.backgroundUnitLoadState();
+    } catch {
+      backgroundUnitLoadState = null;
+    }
+  }
+  const verdict = evaluatePrimaryCount(count, evidence, quiescence, announcedQuiesce, backgroundUnitLoadState);
 
   // ── Healthy (exactly one primary): reset hysteresis + self-clear open alarms ──
   if (verdict.ok || !verdict.key) {
@@ -1000,6 +1032,7 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
         pageResolved: defaultPageResolved,
         d026Quiescence: readD026QuiescenceEvidence,
         announcedQuiescence: () => readActiveAnnouncedQuiesce(ANNOUNCED_QUIESCE_SUBJECT, Date.now()),
+        backgroundUnitLoadState: readBackgroundPrimaryLoadState,
       }).catch(() => {});
     },
     { category: 'watchdog' },

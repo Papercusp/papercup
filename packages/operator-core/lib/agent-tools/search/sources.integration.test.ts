@@ -26,9 +26,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { SEARCH_SOURCES } from './sources';
+import { SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
 
 const WS_A = 'ws-A';

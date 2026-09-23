@@ -969,6 +969,20 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     };
   }
 
+  // WI-10002659: a completed status batch outlived the MCP deadline, but the
+  // invocation ledger could only report its total wall time. Keep a bounded,
+  // low-noise phase trace on successful slow calls so the next occurrence can
+  // distinguish claim/coverage, the plan write, conversion, reconciliation,
+  // and finalization before anyone guesses at a cause.
+  const startedAtMs = performance.now();
+  let lastPhaseAtMs = startedAtMs;
+  const phasesMs: Record<string, number> = {};
+  const markPhase = (phase: string): void => {
+    const now = performance.now();
+    phasesMs[phase] = Math.round(Math.max(0, now - lastPhaseAtMs));
+    lastPhaseAtMs = now;
+  };
+
   const sctx = harnessScopedCtx(it.harness, ctx);
   const harnessSlug = resolveCtxHarnessSlug(sctx);
 
@@ -1303,6 +1317,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
 
   const rev = planRevisionCapture(ctx as PlanRevisionCtx, it.slug, it.rationale, harnessSlug ? { harnessSlug } : {});
   let carryRequired = false;
+  markPhase('preWrite');
   const result = await withPlanLock<SetStatusValue>(
     ctx as never,
     {
@@ -1461,6 +1476,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       };
     },
   );
+  markPhase('planWrite');
 
   if (result.kind === 'busy') {
     const claimRollback = await releaseNewWipClaim();
@@ -1615,6 +1631,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       }
     }
   }
+  markPhase('autoConvert');
 
   await emitPlanEventForCaller(ctx, {
     planSlug: it.slug,
@@ -1724,6 +1741,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       );
     }
   }
+  markPhase('eventAndReconcile');
 
   // Push the new item state to any live `useSyncQuery('planItems.byPlan')`
   // subscriber (the Create-tab kanban). The `items` jsonb was already
@@ -1913,6 +1931,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     verification: it.verification,
   });
 
+  markPhase('finalize');
+  const totalMs = Math.round(Math.max(0, lastPhaseAtMs - startedAtMs));
+  const slowPathTiming = totalMs >= 10_000 ? { totalMs, phasesMs } : null;
+  if (slowPathTiming) {
+    console.warn(`[plans:set-status] slow ${it.slug}#${it.itemId} ${JSON.stringify(slowPathTiming)}`);
+  }
+
   return {
     slug: it.slug,
     ...result.value,
@@ -1936,6 +1961,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       : {}),
     ...(residualWarning ? { residualWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
+    ...(slowPathTiming ? { slowPathTiming } : {}),
     ...(noteTruncated
       ? {
           noteTruncated: true,

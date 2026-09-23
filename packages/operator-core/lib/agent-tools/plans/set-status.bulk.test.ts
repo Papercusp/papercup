@@ -104,6 +104,34 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     expect(laneSync.dependents).not.toHaveBeenCalled();
   });
 
+  it('surfaces and logs a phase breakdown for a slow completed status write', async () => {
+    lockReturnsMutatorValue(new Set(['P-001']));
+    let tickMs = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      tickMs += 3_000;
+      return tickMs;
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
+      expect(b.results[0].slowPathTiming).toMatchObject({
+        totalMs: expect.any(Number),
+        phasesMs: {
+          preWrite: expect.any(Number),
+          planWrite: expect.any(Number),
+          autoConvert: expect.any(Number),
+          eventAndReconcile: expect.any(Number),
+          finalize: expect.any(Number),
+        },
+      });
+      expect(b.results[0].slowPathTiming.totalMs).toBeGreaterThanOrEqual(10_000);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('[plans:set-status] slow plan-a#P-001'));
+    } finally {
+      clock.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
   it('returns each item\'s stored importance for ordinary and terminal same-status flips', async () => {
     lockReturnsMutatorValue(new Set(['P-020', 'P-019']), {
       importanceByItem: { 'P-020': 'high', 'P-019': 'high' },

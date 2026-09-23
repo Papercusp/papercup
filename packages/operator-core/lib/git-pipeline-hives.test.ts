@@ -136,13 +136,14 @@ describe('gitPipelineHiveRows', () => {
     expect(row.lastGreenSha).toBe('newprefix123');
   });
 
-  it('gate status: stalled > held > green > unknown', async () => {
-    projects = [{ slug: 's' }, { slug: 'g' }, { slug: 'u' }];
-    envBySlug = { s: enabledEnv('s'), g: enabledEnv('g'), u: enabledEnv('u') };
+  it('gate status: stalled > held > unknown > green', async () => {
+    projects = [{ slug: 's' }, { slug: 'g' }, { slug: 'u' }, { slug: 'n' }];
+    envBySlug = { s: enabledEnv('s'), g: enabledEnv('g'), u: enabledEnv('u'), n: enabledEnv('n') };
     snapBySlug = {
       s: snap({ gate: { consecutiveReds: 3, lastGreenAtMs: 1, stalled: true } }),
       g: snap({ gate: { consecutiveReds: 0, lastGreenAtMs: 5, stalled: false } }),
       u: snap({ gate: { consecutiveReds: 0, lastGreenAtMs: null, stalled: false } }),
+      n: snap({ gate: { consecutiveReds: 0, lastGreenAtMs: 5, stalled: null } }),
     };
     const { gitPipelineHiveRows } = await import('./git-pipeline-hives');
     const rows = await gitPipelineHiveRows('default');
@@ -150,6 +151,7 @@ describe('gitPipelineHiveRows', () => {
     expect(m.s).toBe('stalled');
     expect(m.g).toBe('green');
     expect(m.u).toBe('unknown');
+    expect(m.n).toBe('unknown');
   });
 
   it('best-effort: a resolver throw for one hive does not break the others', async () => {

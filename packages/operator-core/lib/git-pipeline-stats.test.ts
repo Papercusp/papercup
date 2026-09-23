@@ -23,8 +23,11 @@ import {
   projectGateCandidateSnapshot,
   projectGatePromotionIdentity,
   gateFailingTestsMeasurement,
+  deriveInRoutineGateStalled,
+  combineGateStallSignals,
   type RawGateCounters,
 } from './git-pipeline-stats';
+import { decideStallNotification } from './release/stall-escalation-ladder';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 import { buildCandidateSnapshot } from './release/candidate-snapshot';
 
@@ -605,6 +608,73 @@ describe('pinProvenGateCorrection (EI-13714)', () => {
 
   it('leaves the raw counters untouched when the verdict is not stale at all', () => {
     expect(pinProvenGateCorrection(null, RAW)).toEqual(RAW);
+  });
+});
+
+describe('gate stalled health projection', () => {
+  const stallRedsThreshold = 3;
+  const stallAgeThresholdMs = 6 * 60 * 60 * 1000;
+
+  it('stays stalled on a repeated tick after the notification rung is deduplicated', () => {
+    const firstInput = {
+      consecutiveReds: 3,
+      stallAgeMs: 1_000,
+      stallRedsThreshold,
+      stallAgeThresholdMs,
+      marks: { stallAlerted: false },
+    };
+    const first = decideStallNotification(firstInput);
+    const second = decideStallNotification({
+      ...firstInput,
+      marks: { ...first.marks, stallAlerted: true },
+    });
+    const inRoutineStalled = deriveInRoutineGateStalled(firstInput);
+
+    expect(first.shouldNotify).toBe(true);
+    expect(second.shouldNotify).toBe(false);
+    expect(combineGateStallSignals(inRoutineStalled, false)).toBe(true);
+  });
+
+  it('includes the watchdog verdict when the count and age conditions are clear', () => {
+    const inRoutineStalled = deriveInRoutineGateStalled({
+      consecutiveReds: 0,
+      stallAgeMs: 1_000,
+      stallRedsThreshold,
+      stallAgeThresholdMs,
+    });
+
+    expect(inRoutineStalled).toBe(false);
+    expect(combineGateStallSignals(inRoutineStalled, true)).toBe(true);
+  });
+
+  it('returns false only when all signal sources are measured clear', () => {
+    const inRoutineStalled = deriveInRoutineGateStalled({
+      consecutiveReds: 0,
+      stallAgeMs: 1_000,
+      stallRedsThreshold,
+      stallAgeThresholdMs,
+    });
+
+    expect(combineGateStallSignals(inRoutineStalled, false)).toBe(false);
+  });
+
+  it('returns unknown when required stall inputs or the watchdog verdict are unavailable', () => {
+    expect(deriveInRoutineGateStalled({
+      consecutiveReds: null,
+      stallAgeMs: null,
+      stallRedsThreshold,
+      stallAgeThresholdMs,
+    })).toBeNull();
+    expect(combineGateStallSignals(false, null)).toBeNull();
+  });
+
+  it('keeps a measured positive stall even when another axis is unknown', () => {
+    expect(deriveInRoutineGateStalled({
+      consecutiveReds: 3,
+      stallAgeMs: null,
+      stallRedsThreshold,
+      stallAgeThresholdMs,
+    })).toBe(true);
   });
 });
 
