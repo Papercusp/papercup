@@ -316,7 +316,8 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     details: {
       evidencePlane: 'tree',
       adequacy: {
-        collected: true, skipped: false, executed: true, targeted: true, outcome: 'killed',
+        collected: true, skipped: false, executed: true,
+        targeted: evidence.specId.toLowerCase(), outcome: 'killed',
       },
     },
   })));

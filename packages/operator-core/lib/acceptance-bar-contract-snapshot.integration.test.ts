@@ -47,9 +47,11 @@ vi.mock('./harness-registry', async (orig) => {
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
-const { bindSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import('./agent-tools/plans/spec-evidence-store');
+const { bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import('./agent-tools/plans/spec-evidence-store');
+const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
 const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
 const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
+const { getRubric } = await import('./rubrics');
 const { createIssue } = await import('./issues-engineer');
 const { PAPERCUSP_WORKSPACE_ID } = await import('./harness/papercusp-workspace');
 const { runWithWorkspace } = await import('./workspace-als');
@@ -173,6 +175,34 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     expect(seeded).toMatchObject({ ok: true, rubricSlug: RUBRIC, rubricRevision: 1 });
     if (!seeded.ok) throw new Error(seeded.message);
 
+    // Acceptance seeding deliberately projects draft clauses. This fixture is
+    // about evidence reuse AFTER independent review, so promote the generated
+    // clause through the canonical append-only spec writer instead of silently
+    // treating draft work as enforceable proof.
+    const [draft] = await listSpecClauses({ harnessSlug: HARNESS, planSlug: PLAN, specIds: [SPEC] });
+    expect(draft).toMatchObject({ revision: 1, lifecycleStatus: 'draft', acceptanceRef: `${RUBRIC}@1:R-1` });
+    if (!draft?.acceptanceRef || !draft.sourceBar) throw new Error('seeded acceptance clause is incomplete');
+    const promoted = await setSpecClause({
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      specId: SPEC,
+      expectedRevision: draft.revision,
+      sourceValId: draft.sourceValId ?? undefined,
+      planItemId: draft.planItemId,
+      behavior: draft.behavior,
+      behaviorClass: draft.behaviorClass,
+      requiredEvidence: draft.requiredEvidence,
+      requiredTestLayers: draft.requiredTestLayers,
+      mutationRequired: draft.mutationRequired,
+      lifecycleStatus: 'active',
+      falsifier: draft.falsifier ?? undefined,
+      acceptanceRef: draft.acceptanceRef,
+      sourceBar: draft.sourceBar,
+      actorId: 'su-independent-reviewer',
+    });
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2 });
+    const promotedRevision = 2;
+
     await db.adminSql`
       INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug, taken_by)
@@ -208,7 +238,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           skipped: false,
           executed: true,
           outcome: 'pass',
-          targeted: true,
+          targeted: SPEC.toLowerCase(),
         },
       },
       observedAt: OBSERVED_AT,
@@ -216,9 +246,26 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     };
     const created = await bindSpecEvidence(bindingInput);
     const reused = await bindSpecEvidence(bindingInput);
-    expect(created).toMatchObject({ status: 'created', planSlug: PLAN, specId: SPEC, specRevision: 1 });
+    expect(created).toMatchObject({ status: 'created', planSlug: PLAN, specId: SPEC, specRevision: promotedRevision });
     expect(reused).toMatchObject({ status: 'unchanged', id: (created as { id: number }).id });
 
+    const [classified] = await listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: [PLAN],
+      evidenceRefs: [EVIDENCE_REF],
+    });
+    expect(classified).toMatchObject({
+      details: { currentMeasurement: measurement },
+      serverMeasurement: { status: 'measured' },
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        dimensions: { source: 'current', test: 'current', testRun: 'current' },
+      },
+    });
+
+    const currentRubric = await getRubric(RUBRIC);
+    if (!currentRubric) throw new Error('seeded acceptance rubric is unavailable');
     const grading = await runWithWorkspace(WORKSPACE, () =>
       createIssue({
         title: 'Independent acceptance snapshot grading',
@@ -229,6 +276,10 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           observation: {
             rubricRef: RUBRIC,
             rubricRevision: seeded.rubricRevision,
+            criteriaHash: currentRubric.criteriaHash,
+            ...(currentRubric.barContract?.meaningRevision != null
+              ? { rubricMeaningRevision: currentRubric.barContract.meaningRevision }
+              : {}),
             sourceHive: HARNESS,
             ratings: {
               'r-1': { rating: 'healthy', evidence: 'The exact evidence identity and freshness decision are visible.' },
@@ -238,21 +289,44 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       }),
     );
 
-    const current = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    const [classifiedAfterGrading] = await listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: [PLAN],
+      evidenceRefs: [EVIDENCE_REF],
+    });
+    expect(classifiedAfterGrading).toMatchObject({
+      specRevision: promotedRevision,
+      currentRevision: promotedRevision,
+      serverMeasurement: { status: 'measured' },
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        dimensions: { source: 'current', test: 'current', testRun: 'current' },
+      },
+    });
+
+    const current = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
     expect(current.bars).toHaveLength(1);
+    expect(current.bars[0]!.proof.history[0]!.currentness).toEqual(classifiedAfterGrading.currentness);
+    expect(current.bars[0]!.proof.history[0]).toMatchObject({
+      specId: SPEC,
+      specRevision: promotedRevision,
+      currentRevision: promotedRevision,
+      matchesCurrentSpec: true,
+    });
     expect(current.bars[0]).toMatchObject({
       barKey: 'R-1',
       criterionKey: 'r-1',
       requirement,
-      mappings: [{ planItemId: ITEM, specId: SPEC, specRevision: 1 }],
-      workContracts: [{ workItemId: WORK_ITEM, specId: SPEC, specRevision: 1, current: true }],
+      mappings: [{ planItemId: ITEM, specId: SPEC, specRevision: promotedRevision }],
+      workContracts: [{ workItemId: WORK_ITEM, specId: SPEC, specRevision: promotedRevision, current: true }],
       proof: {
         state: 'current',
         currentEvidence: 1,
         staleEvidence: 0,
         adequacy: {
           state: 'pass',
-          checks: [{ specId: SPEC, revision: 1, verdict: 'pass', wouldBlock: [], evidenceRefs: [EVIDENCE_REF] }],
+          checks: [{ specId: SPEC, revision: promotedRevision, verdict: 'pass', wouldBlock: [], evidenceRefs: [EVIDENCE_REF] }],
         },
       },
       grading: {
@@ -277,7 +351,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       }),
     ]);
     expect(current.bars[0]!.proof.history![0]!.details.adequacy).toMatchObject({
-      targeted: true,
+      targeted: SPEC.toLowerCase(),
       outcome: 'pass',
       testLayer: 'integration',
     });
@@ -297,7 +371,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     // Keep the independent negative control above while replacing an older
     // unknown execution, and prove the inverse cannot hide a later failure.
     const bindAttempt = async (n: number, outcome: string) => {
-      const binding = { specId: SPEC, specRevision: 1, testPath: TEST_PATH,
+      const binding = { specId: SPEC, specRevision: promotedRevision, testPath: TEST_PATH,
         sourcePaths: measurement.sourcePaths, testLayer: 'integration' };
       const pending = { ...bindingInput, evidenceKind: 'test' as const,
         evidenceRef: `test-run-group:attempt-${n}:0`, testRunId: null,
@@ -314,7 +388,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     };
     const oldAttempt = await bindAttempt(1, 'unknown');
     await bindAttempt(2, 'pass');
-    const selected = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    const selected = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
     expect(selected.bars[0]!.proof.adequacy?.state).toBe('pass');
     expect(selected.bars[0]!.proof.history).toHaveLength(5);
     expect(selected.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs)
@@ -329,13 +403,13 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     // A late corrected annotation of the older attempt cannot become a new run.
     await bindSpecEvidence({ ...oldAttempt, observedAt: '2099-01-01T00:00:00Z',
       details: { ...oldAttempt.details, adequacy: { ...oldAttempt.details.adequacy, outcome: 'pass' } } });
-    const failing = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    const failing = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
     expect(failing.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('execution-integrity');
     expect(failing.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs)
       .toEqual([EVIDENCE_REF, 'test-run-group:attempt-3:0'].sort());
 
     await writeFile(path.join(h.repoRoot, SOURCE_PATH), 'export const acceptanceSnapshot = false;\n');
-    const stale = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    const stale = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
     expect(stale.bars[0]).toMatchObject({
       proof: { state: 'stale', currentEvidence: 0, staleEvidence: 2 },
       grading: { state: 'pass', scorecardId: grading.id },
