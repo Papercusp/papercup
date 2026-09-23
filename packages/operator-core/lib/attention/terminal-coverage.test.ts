@@ -31,6 +31,7 @@ import {
   coordMessageToAttention,
   darkFlagRatificationToAttention,
   decisionOwedToAttention,
+  unhandledDirectiveToAttention,
   improvementToAttention,
   operatorReportToAttention,
   ownerWallToAttention,
@@ -121,6 +122,14 @@ const FIXTURES: Record<AttentionKind, AttentionItem> = {
     ownerAgentId: null,
     harnessSlug: null,
     closedAt: new Date().toISOString(),
+  }),
+  'unhandled-directive': unhandledDirectiveToAttention({
+    directiveId: 7,
+    displayText: '"ship it"',
+    recordedBy: 'su-ended',
+    why: 'no-fleet',
+    fleetSlug: null,
+    createdAt: new Date().toISOString(),
   }),
 };
 

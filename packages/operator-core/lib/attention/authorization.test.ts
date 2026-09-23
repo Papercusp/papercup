@@ -92,6 +92,7 @@ describe('deriveAuthorization (queue-authorization-redesign P-002)', () => {
       'blocked-session': 'delegable',
       'work-item-blocked': 'never-auto',
       'decision-owed': 'never-auto',
+      'unhandled-directive': 'never-auto',
     };
     expect(ATTENTION_KIND_AUTHORITY).toEqual(expected);
   });
