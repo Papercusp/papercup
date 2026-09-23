@@ -2,8 +2,9 @@
  * routines:fire — enqueue one live scheduled routine immediately.
  *
  * This is the recovery/test lever for a routine whose next cron tick is too far away.
- * It reads the routine row from the active workspace, then delegates queue selection,
- * timeout selection, and DBOS deduplication to the same seam used by routinesTick.
+ * Request-only hosts enqueue through a DBOS client pinned to the background primary;
+ * the background worker owns execution. Queue selection, timeout selection, and DBOS
+ * deduplication use the same seam as routinesTick.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -35,11 +36,13 @@ export default defineTool({
   name: 'routines:fire',
   profile: 'engineer',
   description:
-    'Enqueue one live scheduled routine immediately without changing its cron, active flag, or next_fire_at. Reads the routine from the current workspace, uses the routine target to select the same DBOS queue and timeout as the scheduler, and reports enqueued, deduplicated, or DBOS-unavailable explicitly.',
+    'Enqueue one live scheduled routine immediately without changing its cron, active flag, or next_fire_at. Uses local DBOS when started or a pinned client to the background primary from request-only hosts, with the same queue, timeout, and deduplication as the scheduler.',
   guidance: {
     when: 'You need to run a routine once now to verify or recover it without retuning its schedule.',
-    notWhen: 'To change cadence or pause/resume a routine, use routines:set. To inspect routine configuration, use routines:list.',
-    chaining: 'routines:list → routines:fire { name, installSlug } → inspect DBOS/routine health.',
+    notWhen:
+      'Do not manually fire release-trigger from a request-only operator host or the background worker; use release:deploy { op: "status" } then op:"trigger" for an already-green pin. To change cadence or pause/resume, use routines:set; to inspect routine configuration, use routines:list.',
+    chaining:
+      'routines:list → routines:fire { name, installSlug } → inspect DBOS/routine health. For release promotion, use release:deploy { op: "status" } → op:"trigger" for an already-green pin.',
     seeAlso: ['routines:list', 'routines:set', 'schedule:inventory'],
   },
   capability: 'operator:write',
@@ -78,8 +81,17 @@ export default defineTool({
 
     if (args.reason != null) ctx.metadata?.({ fireReason: args.reason });
     const result = await enqueueRoutineFire(routine);
+    const nextStep =
+      result.status === 'unavailable'
+        ? 'Routine fire could not enqueue to the DBOS primary. Inspect the background-worker MCP host primary app version and health before retrying.'
+        : undefined;
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ...result, routine: `${routine.installSlug}/${routine.name}` }) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ...result, ...(nextStep ? { nextStep } : {}), routine: `${routine.installSlug}/${routine.name}` }),
+        },
+      ],
     };
   },
 });

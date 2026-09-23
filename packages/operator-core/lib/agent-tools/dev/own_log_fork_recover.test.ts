@@ -90,7 +90,7 @@ describe('dev:own_log_fork_recover', () => {
     expect(rename).toHaveBeenCalledTimes(1);
     const [from, to] = vi.mocked(rename).mock.calls[0]!;
     expect(from).toBe(STORE);
-    expect(String(to)).toMatch(new RegExp(`^${STORE}\\.forked-f417b935852a-`));
+    expect(String(to)).toMatch(new RegExp(`^${STORE}\\.forked-${KEY}-`));
     expect(rebootHarness).toHaveBeenCalledWith(WS, HS, {
       workspaceRoot: `/tmp/own-log-fork-tool-test/${WS}`,
     });

@@ -303,3 +303,75 @@ describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback i
     vi.resetModules();
   });
 });
+
+describe('plans:set-status failed wip flips release new claims (WI-10002606)', () => {
+  it('releases a new claim and skips auto-conversion when the plan is missing', async () => {
+    vi.resetModules();
+    vi.doMock('../_harness-scope', async (orig) => ({
+      ...(await orig<typeof import('../_harness-scope')>()),
+      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
+    }));
+    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+    vi.doMock('./revisions', () => ({
+      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
+    }));
+    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: () => ({ ownerId: 'su-test-owner', ownerLabel: 'su · test', source: 'omp-hook-session' }),
+      isEphemeralMcpCallIdentity: () => false,
+    }));
+    const lock = vi.fn(async () => ({ kind: 'ok', value: { ok: false, code: 'not_found' } }));
+    vi.doMock('./with-plan-lock', () => ({ withPlanLock: lock, bumpUpdatedDate: (s: string) => s }));
+    vi.doMock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+    const claimForWork = vi.fn(async () => ({ ok: true, claimId: 'claim-1', alreadyHeld: false }));
+    const releaseOwnClaim = vi.fn(async () => true);
+    vi.doMock('../../plan-items/claim-discipline', () => ({ claimForWork, releaseOwnClaim }));
+    const convertPlanItem = vi.fn(async () => ({ status: 'converted' }));
+    vi.doMock('../../plan-items/convert', async (orig) => ({
+      ...(await orig<typeof import('../../plan-items/convert')>()),
+      convertPlanItem,
+    }));
+    vi.doMock('../../plan-items/agent-names', () => ({
+      bestEffortOwnerUser: () => null,
+      resolveAdoptedName: vi.fn(async () => null),
+    }));
+    vi.doMock('./source', () => ({
+      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
+    }));
+    const getFlag = vi.fn(async () => true);
+    vi.doMock('@papercusp/flags/server', () => ({ getFlag }));
+
+    const freshTool = (await import('./set-status')).default;
+    const out = (await freshTool.handler(
+      { slug: 'missing-plan', item: 'P-999', status: 'wip' } as never,
+      {} as never,
+    )) as { data: any };
+
+    expect(out.data).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      slug: 'missing-plan',
+      itemId: 'P-999',
+      error: 'not_found',
+      claimReleased: true,
+    });
+    expect(claimForWork).toHaveBeenCalledTimes(1);
+    expect(releaseOwnClaim).toHaveBeenCalledWith('default', 'papercup', 'missing-plan', 'P-999', 'su-test-owner');
+    expect(getFlag).not.toHaveBeenCalled();
+    expect(convertPlanItem).not.toHaveBeenCalled();
+
+    vi.doUnmock('../_harness-scope');
+    vi.doUnmock('./_ctx-opts');
+    vi.doUnmock('./revisions');
+    vi.doUnmock('../coordination/plan-events');
+    vi.doUnmock('../coordination/identity');
+    vi.doUnmock('./with-plan-lock');
+    vi.doUnmock('../../sync-sse');
+    vi.doUnmock('../../plan-items/claim-discipline');
+    vi.doUnmock('../../plan-items/convert');
+    vi.doUnmock('../../plan-items/agent-names');
+    vi.doUnmock('./source');
+    vi.doUnmock('@papercusp/flags/server');
+    vi.resetModules();
+  });
+});

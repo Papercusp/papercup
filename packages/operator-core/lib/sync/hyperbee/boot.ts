@@ -38,6 +38,7 @@ import {
   closeHarnessStore,
   getHarnessScopedStore,
   closeHarnessScopedStore,
+  harnessStorePath,
   type HarnessStoreOpts,
 } from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -125,9 +126,12 @@ import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
 import { offloadReplicationToSidecar } from './substrate-replication-offload';
 import {
   buildAnnounce,
+  buildLogSupersession,
   verifyAnnounceDetailed,
+  verifyLogSupersession,
   type SignedAnnounce,
 } from './announce';
+import { readSupersededOwnLogKeys } from './own-log-supersession';
 import {
   makeAdmissionDecider,
   announceSlugInScope,
@@ -634,6 +638,13 @@ export interface BootHarnessOpts {
    * undefined and uses the real `openRemoteLog`.
    */
   openRemoteLogOverride?: (store: Corestore, logKeyHex: string) => Promise<RemoteLog>;
+  /**
+   * Test seam (WI-10002600) — the own-log keys this device has retired, which
+   * its own-log announce lists as superseded. Production derives them from the
+   * `<store>.forked-<key>-<stamp>` directories an own-log fork recovery leaves
+   * beside the store (own-log-supersession.ts).
+   */
+  supersededOwnLogKeysOverride?: () => Promise<string[]>;
   /**
    * Slow re-verify interval (ms). At this cadence, every admitted peer's
    * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
@@ -1632,6 +1643,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // device_pubkey, so this multi-value reverse map is the bridge between them.
   const revoked = new Set<string>();
   const pubkeyToLogKeys = new Map<string, Set<string>>();
+  // WI-10002600: log keys a device has retired by a verified own-log supersession,
+  // → that device's pubkey. Refuses a late / out-of-order announce of the SAME key by
+  // the SAME device (it declared the log dead); other devices are unaffected, so a
+  // device can never use a supersession claim to block someone else's log.
+  const supersededLogs = new Map<string, string>();
 
   function trackDeviceLog(devicePubkey: string, logKey: string): void {
     let logKeys = pubkeyToLogKeys.get(devicePubkey);
@@ -1677,6 +1693,102 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           e,
         );
       });
+    }
+  }
+
+  /** The admitted/pending identity of `logKey`, when this process knows it. */
+  function knownLogOwner(logKey: string): string | undefined {
+    return admittedIdentities.get(logKey)?.devicePubkey ?? pendingPeers.get(logKey)?.frame.device_pubkey;
+  }
+
+  /**
+   * WI-10002600: does this frame carry a supersession that still has work to do
+   * here (a listed key this same device still has admitted or pending)? Lets the
+   * P-504 re-announce shortcut stay cheap without skipping an unapplied one.
+   */
+  function carriesUnappliedSupersession(frame: SignedAnnounce): boolean {
+    const keys = frame.supersedes_log_keys;
+    if (!Array.isArray(keys)) return false;
+    return keys.some(
+      (k) => typeof k === 'string' && knownLogOwner(k.toLowerCase()) === frame.device_pubkey,
+    );
+  }
+
+  /**
+   * WI-10002600: apply a verified own-log supersession. Runs inside the merge gate
+   * (drainAdmissionQueue) AFTER the announcing log itself was admitted, so the
+   * replacement is live before the old log is dropped.
+   *
+   * Only the log's OWN device may retire it: a key admitted (or pending) under another
+   * device, a key whose owner is unknown (e.g. a seed-admitted log), and this node's own
+   * log are all refused with a boot event. An unproven statement is ignored — the old
+   * log then stays admitted, which is exactly the behaviour before this field existed.
+   * Never throws: a supersession must not re-buffer the (already admitted) frame.
+   */
+  async function applyLogSupersession(frame: SignedAnnounce): Promise<void> {
+    try {
+      const verdict = verifyLogSupersession(frame);
+      if (verdict.status === 'absent') return;
+      if (verdict.status === 'invalid') {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_rejected',
+          `supersession ${verdict.reason} ${peerLabel(frame.log_core_key)}`,
+        );
+        return;
+      }
+      const retire: string[] = [];
+      for (const key of verdict.keys) {
+        const owner = knownLogOwner(key);
+        const refusal =
+          key === ownLog.keyHex
+            ? "names this node's own log"
+            : owner !== undefined && owner !== frame.device_pubkey
+              ? 'names a log owned by another device'
+              : owner === undefined && admitted.has(key)
+                ? 'names an admitted log with no known owner'
+                : null;
+        if (refusal) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_log_superseded',
+            `refused: ${peerLabel(frame.log_core_key)} ${refusal} (${peerLabel(key)})`,
+          );
+          continue;
+        }
+        supersededLogs.set(key, frame.device_pubkey);
+        if (pendingPeers.get(key)?.frame.device_pubkey === frame.device_pubkey) {
+          pendingPeers.delete(key);
+        }
+        if (admitted.has(key)) retire.push(key);
+      }
+      if (retire.length === 0) return;
+      await persistPeerLifecycle(
+        retire.map((logKeyHex) => ({
+          logKeyHex,
+          devicePubkey: frame.device_pubkey,
+          state: 'retired' as const,
+        })),
+        'own-log supersession',
+      );
+      for (const key of retire) {
+        dropAdmittedRemoteLog(key, frame.device_pubkey, 'own-log supersession');
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_log_superseded',
+          `${peerLabel(key)} superseded by ${peerLabel(frame.log_core_key)}`,
+        );
+      }
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'merge_error',
+        `own-log supersession failed for ${peerLabel(frame.log_core_key)}: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
   // WI-193 (G8): provenance tracking for the UN-REVOKE reconciliation below.
@@ -2861,6 +2973,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
         continue;
       }
+      // WI-10002600: this device already declared this log dead (own-log supersession).
+      // A late or out-of-order announce of it must not resurrect a log nobody serves.
+      if (supersededLogs.get(frame.log_core_key) === frame.device_pubkey) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_rejected',
+          `superseded-by-own-device ${peerLabel(frame.log_core_key)}`,
+        );
+        continue;
+      }
       try {
         if (!admitted.has(frame.log_core_key)) {
           const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(
@@ -2910,6 +3033,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             advertisedLogHighWater.set(frame.log_core_key, frame.log_length);
           }
         }
+        // WI-10002600: the replacement log is admitted; now retire the log(s) its device
+        // re-keyed away from. Merge-gated (we are inside drainAdmissionQueue).
+        await applyLogSupersession(frame);
         // WI-639 + WI-280 + WI-1585: the OWNER's trust-admit of an announced peer, gated on
         // the owner-signed membership policy. Runs for EVERY drained announce — NOT only the
         // first core-admission (WI-1585): announces arrive on (re)connect, and a peer whose
@@ -4488,7 +4614,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
       // P-504: a same-identity re-announce from an already-admitted peer is a
       // poke, not an admission — answer it without PG, boot history, or a merge.
-      if (sigValid && isSameIdentityReannounce(frame)) {
+      // WI-10002600: unless it carries a supersession this node has not applied yet.
+      if (sigValid && isSameIdentityReannounce(frame) && !carriesUnappliedSupersession(frame)) {
         noteSuppressedReannounce(frame);
         return { admit: true };
       }
@@ -5091,6 +5218,40 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // admitted sets (the WI-559 stale-peering root cause, distinct from the membership-miss path).
       // So pass a FACTORY that re-stamps (current ts) + re-signs per connection; `ourAnnounce` (the
       // initial build) seeds the static log_core_key (swarm entry key) + the first send.
+      const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
+      // WI-10002600: the own-log keys this device retired in an own-log fork recovery,
+      // signed ONCE here (the statement names only the device + the current own-log key,
+      // never `ts`) and carried on every own-log announce so each peer drops the dead log.
+      // Best-effort: a failure leaves the announce exactly as it was before this field.
+      let ownLogSupersession: Awaited<ReturnType<typeof buildLogSupersession>> = {};
+      try {
+        const superseded = await (
+          opts.supersededOwnLogKeysOverride ??
+          (() => readSupersededOwnLogKeys(harnessStorePath(storeOpts)))
+        )();
+        ownLogSupersession = await buildLogSupersession(
+          { device_pubkey: identity.devicePubkeyBase64, log_core_key: ownLog.keyHex },
+          superseded,
+          signOurAnnounce,
+        );
+        if (ownLogSupersession.supersedes_log_keys) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_log_superseded',
+            `announcing own-log supersession: ${ownLogSupersession.supersedes_log_keys
+              .map((k) => peerLabel(k))
+              .join(', ')} replaced by ${peerLabel(ownLog.keyHex)}`,
+          );
+        }
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          `own-log supersession skipped: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
       const announceBody = {
         device_pubkey: identity.devicePubkeyBase64,
         github_user_id: identity.githubUserId,
@@ -5102,8 +5263,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // single channel), the peer's onAnnounce slug-filter uses this to admit a log only into the
         // harness scope that should hold it. Absent on legacy peers → the filter treats absent as admit.
         harness_slug: opts.harnessSlug,
+        ...ownLogSupersession,
       };
-      const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
       // WI-38376: compute log_length at EACH fresh/re-flush build, not once at
       // boot. The periodic announce sweep is the writer-progress heartbeat.
       const buildOurAnnounce = () =>

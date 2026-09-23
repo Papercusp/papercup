@@ -1005,6 +1005,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     };
   }
   let claim: { claimId: string; autoClaimed: boolean } | null = null;
+  let claimScope: Awaited<ReturnType<typeof resolvePlanScope>> | null = null;
+  let claimOwnerName: string | null = null;
   /**
    * EI-22427741014249929: the wip auto-convert's outcome, surfaced instead of
    * discarded. The convert call below is best-effort and its result was thrown
@@ -1021,6 +1023,8 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   if (agentId && it.status === 'wip') {
     const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
     const ownerName = await resolveAdoptedName(scope.workspaceId, agentId.ownerId).catch(() => null);
+    claimScope = scope;
+    claimOwnerName = ownerName;
     const outcome = await claimForWork({
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
@@ -1065,57 +1069,26 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       };
     }
     claim = { claimId: outcome.claimId, autoClaimed: !outcome.alreadyHeld };
-
-    // work-queue-completeness Phase A (ENFORCEMENT): when the auto-convert flag is ON,
-    // the wip flip's auto-claim ALSO mints (or idempotently resumes) a tracked work_item
-    // via convertPlanItem — so flipping an item to wip never leaves untracked work.
-    // convertPlanItem re-runs the policy-checked lease (idempotent against the claim we
-    // just took above), so it is safe here. BEST-EFFORT: wrapped so a convert failure
-    // (or a flag-IO error) NEVER breaks the status flip — the claim already succeeded.
-    // Fail-safe to OFF on a flag-read error.
-    const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
-    if (autoConvert) {
-      const converted = await convertPlanItem({
-        workspaceId: scope.workspaceId,
-        harnessSlug: scope.harnessSlug,
-        planSlug: it.slug,
-        itemId: it.itemId,
-        owner: agentId.ownerId,
-        ownerLabel: agentId.ownerLabel,
-        ownerName,
-        ownerUser: bestEffortOwnerUser(ctx),
-        // Built by the shared helper, not a literal, so the non-conflict holder
-        // projection can tell this MECHANISM string apart from a declared goal
-        // (P-029/D-060) without a detector that drifts from the writer.
-        intent: autoConvertClaimIntent(it.itemId),
-      }).catch((e) => {
-        console.warn(`[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
-        return null;
-      });
-      // EI-22427741014249929: report what the auto-convert did to the EXECUTION
-      // RECORD. Both branches were previously silent — the refusal because the
-      // result was discarded, the takeover because it did not exist as a concept.
-      if (converted?.status === 'refused' && converted.assignee) {
-        executionRecord = {
-          outcome: 'held-by-live-peer',
-          workItemId: null,
-          heldBy: converted.assignee,
-          note: converted.reason,
-        };
-      } else if (
-        (converted?.status === 'resumed' || converted?.status === 'converted') &&
-        converted.executionRecordTakeover
-      ) {
-        const t = converted.executionRecordTakeover;
-        executionRecord = {
-          outcome: 'taken-over',
-          workItemId: t.workItemId,
-          priorHolder: t.priorHolder,
-          basis: t.basis,
-        };
-      }
-    }
   }
+
+  const releaseNewWipClaim = async (): Promise<{ claimReleased?: boolean; claimReleaseError?: string }> => {
+    if (!agentId || !claim?.autoClaimed || !claimScope) return {};
+    try {
+      return {
+        claimReleased: await releaseOwnClaim(
+          claimScope.workspaceId,
+          claimScope.harnessSlug,
+          it.slug,
+          it.itemId,
+          agentId.ownerId,
+        ),
+      };
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error);
+      console.warn(`[plans:set-status] failed wip-claim rollback ${it.slug}#${it.itemId}:`, message);
+      return { claimReleased: false, claimReleaseError: message };
+    }
+  };
 
   // WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an
   // AGENT who is NOT the item's live claim holder is REFUSED with the same per-item
@@ -1490,11 +1463,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   );
 
   if (result.kind === 'busy') {
+    const claimRollback = await releaseNewWipClaim();
     return {
       ok: false,
       slug: it.slug,
       itemId: it.itemId,
       error: 'busy',
+      ...claimRollback,
       busy: result.busy.map((b) => ({
         path: b.path,
         owner_label: b.owner_label,
@@ -1505,6 +1480,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   }
 
   if (!result.value.ok) {
+    const claimRollback = await releaseNewWipClaim();
     // A tripped terminal guard is a deliberate NO-OP, not a failure: the caller asked
     // for a non-destructive flip and the item was already finished. Reported ok:true so
     // an automated reflection does not read as broken (and does not get retried), but
@@ -1516,6 +1492,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         itemId: it.itemId,
         skipped: 'terminal_guard',
         currentStatus: result.value.currentStatus,
+        ...claimRollback,
         reason: `left at \`${result.value.currentStatus}\` — already terminal, and this flip (\`${it.status}\`) would have un-finished it`,
       };
     }
@@ -1528,6 +1505,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         itemId: it.itemId,
         skipped: 'blocked_guard',
         currentStatus: result.value.currentStatus,
+        ...claimRollback,
         reason:
           `left at \`${result.value.currentStatus}\` — this explicit gate was preserved; ` +
           `the automated flip (\`${it.status}\`) would have weakened it`,
@@ -1543,6 +1521,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         itemId: it.itemId,
         skipped: 'block_attribution_guard',
         currentStatus: result.value.currentStatus,
+        ...claimRollback,
         reason:
           `left at \`${result.value.currentStatus}\` — the live note does not attribute this ` +
           `block to ${it.onlyIfBlockAttributedTo}` +
@@ -1560,6 +1539,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         itemId: it.itemId,
         skipped: 'completed_guard',
         currentStatus: result.value.currentStatus,
+        ...claimRollback,
         reason:
           'left at `done` — finished work is never downgraded to `dropped` by an automated ' +
           'cascade; the work-item being dropped is not the one that completed this item',
@@ -1577,16 +1557,65 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         error: 'expected_status_mismatch',
         currentStatus: result.value.currentStatus,
         expectedStatus: result.value.expectedStatus,
+        ...claimRollback,
         reason:
           `not applied — this item was \`${result.value.expectedStatus}\` when the report was ` +
           `written and is \`${result.value.currentStatus ?? 'unknown'}\` now; applying it would ` +
           'have overwritten newer work',
       };
     }
-    return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
+    return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code, ...claimRollback };
   }
 
   // `result.value` is now narrowed to the ok-variant by the guard above.
+  // A wip auto-conversion is a second durable side effect. Run it only after the
+  // plan/item write succeeded: an unknown plan or item must leave neither a lease
+  // nor a converted work-item behind (WI-10002606).
+  if (agentId && claim && it.status === 'wip' && claimScope) {
+    const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+    if (autoConvert) {
+      const converted = await convertPlanItem({
+        workspaceId: claimScope.workspaceId,
+        harnessSlug: claimScope.harnessSlug,
+        planSlug: it.slug,
+        itemId: it.itemId,
+        owner: agentId.ownerId,
+        ownerLabel: agentId.ownerLabel,
+        ownerName: claimOwnerName,
+        ownerUser: bestEffortOwnerUser(ctx),
+        // Built by the shared helper, not a literal, so the non-conflict holder
+        // projection can tell this MECHANISM string apart from a declared goal
+        // (P-029/D-060) without a detector that drifts from the writer.
+        intent: autoConvertClaimIntent(it.itemId),
+      }).catch((e) => {
+        console.warn(`[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
+        return null;
+      });
+      // EI-22427741014249929: report what the auto-convert did to the EXECUTION
+      // RECORD. Both branches were previously silent — the refusal because the
+      // result was discarded, the takeover because it did not exist as a concept.
+      if (converted?.status === 'refused' && converted.assignee) {
+        executionRecord = {
+          outcome: 'held-by-live-peer',
+          workItemId: null,
+          heldBy: converted.assignee,
+          note: converted.reason,
+        };
+      } else if (
+        (converted?.status === 'resumed' || converted?.status === 'converted') &&
+        converted.executionRecordTakeover
+      ) {
+        const t = converted.executionRecordTakeover;
+        executionRecord = {
+          outcome: 'taken-over',
+          workItemId: t.workItemId,
+          priorHolder: t.priorHolder,
+          basis: t.basis,
+        };
+      }
+    }
+  }
+
   await emitPlanEventForCaller(ctx, {
     planSlug: it.slug,
     event: 'item_status_changed',

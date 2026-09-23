@@ -153,16 +153,41 @@ describe('orders:disposition — the rail does not block legitimate closes', () 
     expect(h.dispositionOwnerDirective).toHaveBeenCalledTimes(1);
   });
 
-  it('an UNREADABLE verdict falls through to the writer rather than blocking the close', async () => {
-    // Fail-open on purpose, and stated so it is a decision rather than an
-    // oversight: the pre-P-008 behaviour was an unguarded close, so a store
-    // read error must not become a new way to strand a directive the caller
-    // genuinely owns. The refusal requires a POSITIVE foreign verdict.
+  it('an UNREADABLE verdict REFUSES the close, retryably, and never reaches the writer', async () => {
+    // directive-ownership-clarity-2026-09-23 D-003 reverses the earlier fail-open
+    // choice. A refusal here strands nothing (the caller retries); a close let
+    // through can end ANOTHER session's directive, which is exactly the
+    // 2026-09-23 incident (five foreign rows closed by one agent).
     h.directiveActionVerdict.mockRejectedValue(new Error('pg down'));
 
     const result = await call({ id: 96, status: 'done', note: 'carried out' });
 
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
+    const [row] = envelopeOf(result).results as Array<Result & { retryable?: boolean }>;
+    expect(row!.error).toBe('verdict_unavailable');
+    expect(row!.retryable).toBe(true);
+    expect(h.dispositionOwnerDirective).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable verdict for ONE id in a batch refuses only that id', async () => {
+    h.directiveActionVerdict.mockImplementation(async ({ directiveId }: { directiveId: number }) => {
+      if (directiveId === 96) throw new Error('pg down');
+      return MINE;
+    });
+
+    const envelope = envelopeOf(
+      await call({
+        items: [
+          { id: 10, status: 'done', note: 'carried out, see WI-1' },
+          { id: 96, status: 'done', note: 'carried out, see WI-2' },
+        ],
+      }),
+    );
+
+    expect((envelope.results as Result[]).map((r) => [r.id, r.ok, r.error ?? null])).toEqual([
+      [10, true, null],
+      [96, false, 'verdict_unavailable'],
+    ]);
     expect(h.dispositionOwnerDirective).toHaveBeenCalledTimes(1);
   });
 

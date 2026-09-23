@@ -61,6 +61,16 @@ describe('result-door standing-context section', () => {
     expect(text).toMatch(/line-oriented text/);
   });
 
+  it('teaches JavaScript RegExp syntax and the ignoreCase alternative to inline PCRE flags', () => {
+    const text = renderResultDoorSection();
+
+    expect(text).toContain('JavaScript `RegExp` syntax, not PCRE/GNU grep.');
+    expect(text).toMatch(/inline PCRE\s+flags such as `\(\?i\)`/);
+    expect(text).toContain('`ignoreCase: true`');
+    expect(text).toContain('pattern: "error", ignoreCase: true');
+    expect(text).toContain('`fixed: true` for literal substrings.');
+  });
+
   it('teaches the parser-enforced maximum pick-list size', () => {
     expect(renderResultDoorSection()).toContain(`at most ${MAX_PICK_PATHS} paths`);
   });

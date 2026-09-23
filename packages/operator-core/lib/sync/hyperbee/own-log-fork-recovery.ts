@@ -24,6 +24,7 @@
 import { closeHarnessStore, harnessStorePath } from './corestore';
 import { clearOwnLogForkState, type OwnLogForkState } from './own-log-fork-guard';
 import { resolveOwnLogForkEi } from './own-log-fork-ei';
+import { forkedStoreAsidePath } from './own-log-supersession';
 
 export interface OwnLogForkRecoveryOpts {
   workspaceRoot: string;
@@ -131,7 +132,9 @@ export async function recoverForkedOwnLog(
 //     directory from here would pull the store out from under its owner;
 //   - the booted handle CLOSED BEFORE the store is touched (the primitive only
 //     closes the Corestore, leaving the handle pointing at a dead store);
-//   - the store MOVED ASIDE, never deleted, so the forked core stays inspectable;
+//   - the store MOVED ASIDE, never deleted, so the forked core stays inspectable
+//     (named with the full key: the next boot announces it as superseded, so
+//     peers drop the dead log instead of holding it with no replicator);
 //   - a fresh boot afterwards (Corestore mints a new own-log key on first open),
 //     attempted even when the retire step fails, so a failed recovery never
 //     leaves the harness closed.
@@ -219,14 +222,15 @@ export async function runOwnLogForkRecovery(
   const workspaceRoot = deps.workspaceRoot(workspaceId);
   const storePath = harnessStorePath({ workspaceRoot, harnessSlug });
   const stamp = new Date((deps.now ?? Date.now)()).toISOString().replace(/[:.]/g, '-');
-  const keyTag = (state.keyHex ?? 'unknown').slice(0, 12);
   const plan: OwnLogForkRecoveryPlan = {
     workspaceId,
     harnessSlug,
     forkedKeyHex: state.keyHex,
     detectedAtMs: state.detectedAtMs,
     storePath,
-    retireTo: `${storePath}.forked-${keyTag}-${stamp}`,
+    // WI-10002600: the FULL key, because the next boot reads it back from this
+    // name and announces it as superseded (own-log-supersession.ts).
+    retireTo: forkedStoreAsidePath(storePath, state.keyHex ?? 'unknown', stamp),
     flagEnabled: await (deps.isEnabled ?? defaultIsEnabled)(),
     substrateOwner: deps.isSubstrateOwner(),
   };

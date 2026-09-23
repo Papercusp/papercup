@@ -486,9 +486,9 @@ describe('loadRoleCapabilities', () => {
     expect(caps).toEqual(new Set(['agent_tools:read', ...CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS]));
   });
 
-  test('reviewer can inspect and claim adequacy-gate work without gaining plan writes', async () => {
+  test('reviewer can run grading-integrity audits and claim adequacy-gate work without gaining plan writes', async () => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'reviewer');
-    for (const capability of ['work_items:read', 'work_items:write', 'plans:read']) {
+    for (const capability of ['coord:read', 'coord:write', 'work_items:read', 'work_items:write', 'plans:read']) {
       expect(caps.has(capability), `reviewer missing ${capability}`).toBe(true);
     }
     expect(caps.has('plans:write')).toBe(false);
@@ -497,6 +497,21 @@ describe('loadRoleCapabilities', () => {
     for (const capability of CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS) {
       expect(caps.has(capability), `reviewer missing ${capability}`).toBe(true);
     }
+
+    const [coordinationRoles, scorecardGet, rubricGet, factsList, declareIntent, capture] = await Promise.all([
+      import('../../../agent-tools/coordination/roles.js'),
+      import('../../../agent-tools/scorecards/get.js'),
+      import('../../../agent-tools/rubrics/get.js'),
+      import('../../../agent-tools/facts/list.js'),
+      import('../../../agent-tools/coordination/tools/declare-intent.js'),
+      import('../../../agent-tools/improvements/capture.js'),
+    ]);
+    expect(coordinationRoles.COORD_ROLES).toContain('reviewer');
+    expect(scorecardGet.default.agentRoles, scorecardGet.default.name).toContain('reviewer');
+    expect(rubricGet.default.agentRoles, rubricGet.default.name).toContain('reviewer');
+    expect(factsList.default.agentRoles, factsList.default.name).toContain('reviewer');
+    expect(declareIntent.default.agentRoles, declareIntent.default.name).toContain('reviewer');
+    expect(capture.default.agentRoles, capture.default.name).toContain('reviewer');
   });
 
   test('operator: a provisioned row is unioned with the hive-decider baseline', async () => {

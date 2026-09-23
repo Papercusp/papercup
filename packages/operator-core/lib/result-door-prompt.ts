@@ -101,5 +101,9 @@ reduce it: \`head\` hands back the whole payload and a non-matching \`grep\` han
 nothing. Use **\`pick\`** for any JSON result — it is JSON-aware and is the only form
 that actually shrinks one. Keep **\`pipe\`** for genuinely line-oriented text: log
 reads, command output, file bodies. Operators: grep (fixed/ignoreCase/invert/before/
-after/context), head, tail, sort, uniq, cut, count — applied in order.`;
+after/context), head, tail, sort, uniq, cut, count — applied in order.
+
+\`grep.pattern\` uses JavaScript \`RegExp\` syntax, not PCRE/GNU grep. Do not use inline PCRE
+flags such as \`(?i)\`; set \`ignoreCase: true\`, for example \`projection: { pipe: [{ op: "grep", pattern: "error", ignoreCase: true }] }\`.
+Use \`fixed: true\` for literal substrings.`;
 }

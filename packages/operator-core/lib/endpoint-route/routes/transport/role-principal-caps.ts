@@ -25,11 +25,12 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
-  // The pipeline reviewer has no provisioned system_principals row, but its
-  // adequacy-gate workflow must inspect assigned work/spec evidence and claim
-  // the gate item. Keep this to the three capability-gated reads/claim writes;
+  // The pipeline reviewer has no provisioned system_principals row. Its grading-
+  // integrity workflow reads scorecards, rubrics and facts, declares coordination
+  // intent, and captures defects; it also inspects/claims adequacy-gate work. Keep
+  // the grant to coordination read/write, work-item read/write, and plan reads —
   // the independent role allowlists still decide which concrete tools it may use.
-  reviewer: ['work_items:read', 'work_items:write', 'plans:read'],
+  reviewer: ['coord:read', 'coord:write', 'work_items:read', 'work_items:write', 'plans:read'],
   // The green-checkpoint release-fixer is a launch-blueprint role with no
   // provisioned system_principals row. Its runbook uses the platform directly
   // to establish gate ownership, orient/claim/checkpoint its repair, hold file
