@@ -2324,6 +2324,53 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       await pane.stop().catch(() => {});
     }
   }, 180_000);
+
+  // P-009 "no orphan process after end": the owner's End (Operator tab, `E`)
+  // must reach the host as an `end` command, end the session, and take the
+  // engine's native process down with it.
+  test('P-009 END: ending the session from PUI ends it and leaves no native engine process', async ({ onTestFailed }) => {
+    const prompt = `P9 end ${randomUUID().slice(0, 8)}`;
+    let stage = 'compose';
+    let nativePid: number | null = null;
+    scriptedEngine.mode = 'success';
+    const enginesBefore = scriptedEngine.engines.length;
+    const alive = (pid: number) => {
+      try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+    };
+    const pane = new PuiPane(bin, operatorPort, home);
+    onTestFailed(() => console.info('PUI_P009_END_FAILURE', JSON.stringify({
+      stage, nativePid, alive: nativePid ? alive(nativePid) : null, ...pane.failureEvidence(),
+    })));
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      await pane.waitFor(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.engines.length).toBeGreaterThan(enginesBefore);
+      const engine = scriptedEngine.engines.at(-1)!;
+      nativePid = engine.pid();
+      // Positive control: the process this test will watch exists and is live.
+      expect(nativePid).toBeGreaterThan(0);
+      expect(alive(nativePid!)).toBe(true);
+
+      stage = 'end';
+      pane.escape();
+      pane.write('E');
+      await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('ended'), {
+        timeout: 30_000, interval: 100,
+      });
+      await vi.waitFor(() => expect(alive(nativePid!), `native engine pid ${nativePid} outlived End`).toBe(false), {
+        timeout: 15_000, interval: 100,
+      });
+      await engine.done;
+      console.info('PUI_P009_END_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, nativePid, lifecycle: engine.adapter.host.descriptor().lifecycle, frame: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 180_000);
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {

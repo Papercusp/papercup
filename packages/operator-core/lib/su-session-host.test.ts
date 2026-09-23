@@ -220,6 +220,35 @@ describe('durable SU owner-turn acceptance', () => {
     expect(store.finish).not.toHaveBeenCalled();
   });
 
+  it('refuses a turn retryably while the engine compacts, then runs that same turn exactly once after compaction ends', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = readyHost(execute);
+    const store: SuSessionCommandStore = {
+      reserve: vi.fn(async (input, fingerprint) => ({
+        created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt },
+      })),
+      finish: vi.fn(async () => {}),
+    };
+    host.transition('running', 'owner turn in flight');
+    host.transition('compacting', 'native context compacting');
+    const during = await host.acceptCommand(command('owner_turn'), store);
+    expect(during.accepted).toBeNull();
+    expect(await during.terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'session_not_ready', retryable: true },
+    });
+    expect(store.reserve).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+
+    // Both adapters leave 'compacting' when the native turn completes.
+    host.transition('waiting-for-owner', 'native turn completed');
+    const after = await host.acceptCommand(command('owner_turn'), store);
+    expect(after.replayed).toBe(false);
+    expect(after.accepted?.status).toBe('accepted');
+    expect((await after.terminal).status).toBe('completed');
+    expect(store.reserve).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('requires the executor as well as a stream and checks identity before reserving', async () => {
     const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
     const host = new SuSessionHost({ descriptor: { ...descriptor(), lifecycle: 'ready' } });
