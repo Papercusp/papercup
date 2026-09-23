@@ -91,6 +91,7 @@ import {
 } from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
+import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
 import {
@@ -1230,6 +1231,7 @@ export interface CheckpointDeps {
   readFrozenRepairQueueState?(): Promise<FrozenCandidateRepairQueueRead>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
+    options: WriteFrozenCandidateRepairQueueOptions,
   ): Promise<void>;
   /**
    * P-027 (D-014): the lost-update-safe writer. Re-reads the row, applies the PURE reducer to
@@ -1237,8 +1239,9 @@ export interface CheckpointDeps {
    * run's suite was running (the row's repairHead moved) is carried, never overwritten by the
    * run-start snapshot. `unchanged` means the reducer returned the fresh row itself (a verdict
    * for a head the row has already moved past); `absent` means the row was retired mid-run and
-   * nothing was written. Optional so historical stubs stay source-compatible: without it the
-   * gate applies the reducer to its snapshot and calls `writeFrozenRepairQueue` (pre-D-014).
+   * nothing was written. Optional for historical stubs: without it the gate reduces its
+   * snapshot and writes only if that snapshot's version is still current; a conflict fails
+   * closed instead of overwriting a concurrent admission.
    */
   transitionFrozenRepairQueue?(
     transition: (
@@ -5563,7 +5566,9 @@ async function commitFrozenRepairQueueTransition(
     return transition(snapshot);
   }
   const next = transition(snapshot);
-  await deps.writeFrozenRepairQueue?.(next);
+  await deps.writeFrozenRepairQueue?.(next, {
+    expectedUpdatedAtMs: snapshot.updatedAtMs,
+  });
   return next;
 }
 
@@ -10370,7 +10375,9 @@ async function runGreenCheckpointInner(
     deps.log(`P-008 post-promotion recovery: ${absorption.summary}`);
     if (absorption.ok) {
       try {
-        await deps.writeFrozenRepairQueue?.(null);
+        await deps.writeFrozenRepairQueue?.(null, {
+          expectedUpdatedAtMs: pendingQueue.updatedAtMs,
+        });
       } catch (error) {
         const summary =
           `${absorption.summary}; ancestry is absorbed but the ready-to-promote queue clear ` +
@@ -10733,7 +10740,9 @@ async function runGreenCheckpointInner(
           // when NO queue row exists).
           const abandonedQueue = repairQueue;
           const testedRepairHead = dispatchInfeasible.candidate;
-          await deps.writeFrozenRepairQueue?.(null);
+          await deps.writeFrozenRepairQueue?.(null, {
+            expectedUpdatedAtMs: abandonedQueue.updatedAtMs,
+          });
           repairQueue = null;
           candidate = await revParse(cfg.integrationRoot, testedRepairHead);
           initialCandidateVerification = true;
@@ -10994,8 +11003,9 @@ async function runGreenCheckpointInner(
           `repair head ${candidate.slice(0, 8)}: lockfile-drift convergence — ${describeLockfileConvergence(convergence)}`,
         );
         if (convergence.kind === "converged") {
+          const expectedUpdatedAtMs = repairQueue.updatedAtMs;
           repairQueue = applyLockfileConvergence(repairQueue, convergence);
-          await deps.writeFrozenRepairQueue(repairQueue);
+          await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
           candidate = repairQueue.repairHead;
         }
       }
@@ -11055,8 +11065,9 @@ async function runGreenCheckpointInner(
           );
         }
         if (heal.kind === "healed") {
+          const expectedUpdatedAtMs = repairQueue.updatedAtMs;
           repairQueue = applyGenCheckHeal(repairQueue, heal);
-          await deps.writeFrozenRepairQueue(repairQueue);
+          await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
           if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
             verification = await verifyRepairHead(verifyDeps, repairQueue);
@@ -11390,7 +11401,7 @@ async function runGreenCheckpointInner(
       affectedTestProofGroup: deps.runId ?? null,
       nowMs: Date.now(),
     });
-    await deps.writeFrozenRepairQueue(repairQueue);
+    await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs: null });
     repairQueueCreatedThisPass = true;
     initialCandidateVerification = true;
     deps.log(
@@ -12439,6 +12450,7 @@ async function runGreenCheckpointInner(
                 `(was ${repairQueue.repairHead.slice(0, 8)} in the pre-suite snapshot)`,
             );
           }
+          const expectedUpdatedAtMs = queueForRedTransition.updatedAtMs;
           repairQueue = markFrozenCandidateVerificationRed(
             queueForRedTransition,
             {
@@ -12446,7 +12458,7 @@ async function runGreenCheckpointInner(
               nowMs: Date.now(),
             },
           );
-          await deps.writeFrozenRepairQueue(repairQueue);
+          await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
         }
         repairQueueRedPersisted = true;
       } else if (!repairQueue) {
@@ -12562,7 +12574,9 @@ async function runGreenCheckpointInner(
           fired = dispatch.fired;
         } else {
           // Compatibility path for direct/older callers that do not expose the CAS hooks.
-          await deps.writeFrozenRepairQueue(repairQueue);
+          await deps.writeFrozenRepairQueue(repairQueue, {
+            expectedUpdatedAtMs: repairQueue.updatedAtMs,
+          });
           const dispatch = await dispatchFrozenRepair(repairQueue, false);
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
@@ -13888,7 +13902,9 @@ async function runGreenCheckpointInner(
       deps.log(`P-008 post-promotion staging bridge: ${absorption.summary}`);
       if (absorption.ok) {
         try {
-          await deps.writeFrozenRepairQueue?.(null);
+          await deps.writeFrozenRepairQueue?.(null, {
+            expectedUpdatedAtMs: repairQueue.updatedAtMs,
+          });
           repairQueue = null;
         } catch (error) {
           stagingAbsorptionNote =
@@ -13913,7 +13929,9 @@ async function runGreenCheckpointInner(
       // Compatibility for direct/test callers whose dependency object predates P-008. Every
       // recording production run wires the bridge above; keeping this fallback preserves old
       // stubs without pretending an absent production dep completed the bridge.
-      await deps.writeFrozenRepairQueue?.(null);
+      await deps.writeFrozenRepairQueue?.(null, {
+        expectedUpdatedAtMs: repairQueue.updatedAtMs,
+      });
       repairQueue = null;
     }
   }
@@ -17657,10 +17675,11 @@ export function realCheckpointDeps(
           },
           async writeFrozenRepairQueue(
             queue: FrozenCandidateRepairQueue | null,
+            options: WriteFrozenCandidateRepairQueueOptions,
           ) {
             const { writeFrozenCandidateRepairQueue } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-            await writeFrozenCandidateRepairQueue(repairTarget, queue);
+            await writeFrozenCandidateRepairQueue(repairTarget, queue, options);
           },
           // P-027 (D-014): the lost-update-safe writer — re-read, reduce on the fresh row,
           // CAS-write on `updatedAtMs` (see applyFrozenCandidateRepairQueueTransition).
