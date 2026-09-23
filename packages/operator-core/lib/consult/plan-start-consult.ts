@@ -15,23 +15,25 @@
  *   - What is REQUIRED is the ROUTING, not a wake — and per D-001 §2 the
  *     plan-step consult runs with min:1: a plan never promotes with zero
  *     feedback merely because nobody cleared the relevance threshold. The
- *     shared selectResponders (D-001 §1) picks floor-qualified live
- *     candidates first, then fills to the minimum with the best-available
- *     LIVE candidate below the floor, labeled via:'minimum' (D-002 — labeled,
- *     never silent).
- *   - ANY selected (live/parked) candidate → `nudge` (the tool layer refuses
- *     ONCE with the labeled candidates + evidence, overridable with
- *     consulted:false + a stated reason — the proven similar_exists/force:true
- *     shape). Dead floor-qualified candidates ride along as evidence — their
- *     history still grounds the "someone attempted this" claim.
- *   - Nothing selectable: floor-qualified but ALL dead (`ended`/`recorded`,
- *     the same DEAD_RESPONDER_STATES the consult wake gate uses) → no wake is
- *     possible, so inject transcript EXCERPTS instead (retrieval, not
- *     consult) and proceed. Excerpts stay scoped to FLOOR-QUALIFIED dead
- *     candidates — below-floor evidence is never injected (precision).
+ *     shared selectResponders (D-001 §1) picks floor-qualified candidates
+ *     first, then fills to the minimum with the best-available candidate
+ *     below the floor, labeled via:'minimum' (D-002 — labeled, never silent).
+ *     Liveness enters NONE of that (D-002): a consult forks or converts the
+ *     expert's TRANSCRIPT, so an `ended` session is a first-class candidate.
+ *   - ANY selected candidate → `nudge` (the tool layer refuses ONCE with the
+ *     labeled candidates + evidence, overridable with consulted:false + a
+ *     stated reason — the proven similar_exists/force:true shape). Qualified
+ *     candidates past the max ride along as evidence — their history still
+ *     grounds the "someone attempted this" claim.
+ *   - Nothing selectable: floor-qualified but every owner PAUSED (the one gate
+ *     that survived D-002, and the one kind of unreachable a fork cannot route
+ *     around — starting a session under a paused owner is the thing the pause
+ *     means) → inject transcript EXCERPTS instead (retrieval, not consult) and
+ *     proceed. Excerpts stay scoped to FLOOR-QUALIFIED candidates —
+ *     below-floor evidence is never injected (precision).
  *   - The honest proceed survives only where the minimum is physically
- *     unfillable (D-003): a pool that only liveness kept out →
- *     `no_live_responder`; no pool at all / embedder down →
+ *     unfillable (D-003): a pool that only the owner-pause gate kept out →
+ *     `all_responders_paused`; no pool at all / embedder down →
  *     `no_qualified_responder` (+ degraded).
  *   - NUDGE, never a hard block — plan-start must not be hostage to
  *     consult-thread latency. This module never opens a consult thread and
@@ -46,7 +48,7 @@
 import type { Sql } from 'postgres';
 import type { ConsultRouteParams, RouteResult, RoutingCandidate, SnapshotSelection, TurnEvidence } from './relevance-router';
 import { selectResponders, selectionSnapshot } from './relevance-router';
-import { DEAD_RESPONDER_STATES, DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
+import { DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 
 /** Query cap: the embedder's model window is far smaller than a big plan body,
  * and the query-embed memo keys on the full text — cap keeps both bounded. */
@@ -67,28 +69,29 @@ export interface PlanStartExcerpt {
 
 export type PlanStartConsultOutcome =
   /** The min:1 minimum was physically unfillable (D-003) — the start
-   * proceeds, annotated honestly: 'no_live_responder' = a candidate pool
-   * existed but only liveness kept everyone out; 'no_qualified_responder' =
-   * no pool at all (no match, or the embedder was down → degraded). */
+   * proceeds, annotated honestly: 'all_responders_paused' = a candidate pool
+   * existed but the owner-pause gate kept every one of them out;
+   * 'no_qualified_responder' = no pool at all (no match, or the embedder was
+   * down → degraded). Liveness is NOT a partition here any more (D-002). */
   | {
       outcome: 'proceed';
-      verdict: 'no_qualified_responder' | 'no_live_responder';
+      verdict: 'no_qualified_responder' | 'all_responders_paused';
       degraded?: 'embed-unavailable';
     }
-  /** At least one selectable (not-dead) candidate — floor-qualified or
-   * best-available minimum fill (D-001 §2 min:1). The tool layer refuses once
-   * with these candidates + their evidence; `selection` carries the
-   * via:'floor'|'minimum' provenance per selectee (D-002). `candidates` lists
-   * the selected set first, then any dead floor-qualified candidates whose
-   * evidence still grounds the "someone attempted this" claim. */
+  /** At least one selectable candidate — floor-qualified or best-available
+   * minimum fill (D-001 §2 min:1). The tool layer refuses once with these
+   * candidates + their evidence; `selection` carries the via:'floor'|'minimum'
+   * provenance per selectee (D-002). `candidates` lists the selected set
+   * first, then any qualified candidates past the max whose evidence still
+   * grounds the "someone attempted this" claim. */
   | {
       outcome: 'nudge';
       candidates: RoutingCandidate[];
       selection: SnapshotSelection;
     }
-  /** Floor-qualified candidates exist but every one's context is dead and no
-   * live below-floor fill exists — inject transcript excerpts (retrieval, not
-   * consult) and proceed. */
+  /** Floor-qualified candidates exist but every one's OWNER is paused, so no
+   * session may be started from them — inject transcript excerpts (retrieval,
+   * not consult) and proceed. */
   | {
       outcome: 'proceed_with_excerpts';
       candidates: RoutingCandidate[];
@@ -186,20 +189,20 @@ export async function checkpointConsult(
     // distinguishable wherever this route ends up recorded.
     route.snapshot.selection = selection;
     const picked = new Set(selected.map((s) => s.candidate.ownerId));
-    // Dead floor-qualified candidates ride along AFTER the selected set —
-    // their evidence still grounds the "someone attempted this" claim; the
-    // tool layer renders liveness per candidate so the caller knows who is
-    // actually reachable.
-    const deadQualified = route.qualified.filter((c) => !picked.has(c.ownerId));
+    // Qualified candidates the max left off the selected set ride along AFTER
+    // it — their evidence still grounds the "someone attempted this" claim.
+    // (This used to be the DEAD ones specifically; liveness no longer removes
+    // anyone from the selection, so what is left over is simply the overflow.)
+    const unselectedQualified = route.qualified.filter((c) => !picked.has(c.ownerId));
     return {
       outcome: 'nudge',
-      candidates: [...selected.map((s) => s.candidate), ...deadQualified],
+      candidates: [...selected.map((s) => s.candidate), ...unselectedQualified],
       selection,
     };
   }
 
-  // Nothing selectable. Floor-qualified but all-dead → retrieval: inject the
-  // dead candidates' transcript excerpts and proceed (excerpts stay scoped to
+  // Nothing selectable. Floor-qualified but every owner PAUSED → retrieval:
+  // inject their transcript excerpts and proceed (excerpts stay scoped to
   // floor-qualified evidence — below-floor matches are never injected).
   if (route.qualified.length > 0) {
     const excerpts = await deps
@@ -209,12 +212,14 @@ export async function checkpointConsult(
   }
 
   // The minimum was physically unfillable (D-003): distinguish a pool that
-  // only liveness kept out (no_live_responder) from no pool at all / a downed
-  // embedder (no_qualified_responder + degraded) — mirrors the get_feedback
-  // reason partition.
+  // only the owner-pause gate kept out (all_responders_paused) from no pool at
+  // all / a downed embedder (no_qualified_responder + degraded) — mirrors the
+  // get_feedback reason partition. Liveness is gone from this partition with
+  // the gate that produced it (D-002): an `ended` candidate is selectable, so
+  // reaching here with a non-empty pool now means every owner was paused.
   return {
     outcome: 'proceed',
-    verdict: route.snapshot.candidates.length > 0 ? 'no_live_responder' : 'no_qualified_responder',
+    verdict: route.snapshot.candidates.length > 0 ? 'all_responders_paused' : 'no_qualified_responder',
     ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),
   };
 }

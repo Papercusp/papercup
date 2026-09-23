@@ -27686,7 +27686,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You need to run a routine once now to verify or recover it without retuning its schedule.",
-        "notWhen": "For release promotion, use release:deploy { op: \"status\" } then op:\"trigger\" for an already-green pin; do not manually fire release-trigger. To change cadence or pause/resume, use routines:set; to inspect routine configuration, use routines:list.",
+        "notWhen": "Do not manually fire release-trigger from a request-only operator host or the background worker; use release:deploy { op: \"status\" } then op:\"trigger\" for an already-green pin. To change cadence or pause/resume, use routines:set; to inspect routine configuration, use routines:list.",
         "chaining": "routines:list → routines:fire { name, installSlug } → inspect DBOS/routine health. For release promotion, use release:deploy { op: \"status\" } → op:\"trigger\" for an already-green pin."
       }
     },

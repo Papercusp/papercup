@@ -911,6 +911,39 @@ describe('plans:audit phase:activation', () => {
     expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
+  it('previews the missing-Requirements refusal for a contract plan', async () => {
+    resolvePlanContent([
+      '---',
+      'title: Plan A',
+      'slug: plan-a',
+      'status: draft',
+      'created: 2026-08-27',
+      'updated: 2026-08-27',
+      'owner: test',
+      '---',
+      '',
+      '## Items',
+      '',
+      "- **P-001** `todo` Implement the audit gate on staging.",
+      '',
+    ].join('\n'));
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'bar_requirements_missing',
+      problems: [expect.objectContaining({ code: 'bar_requirements_missing' })],
+    });
+    expect(result.message).toContain('plan has no ## Requirements section');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
   it('does NOT demand a Bar-to-work map from a plan whose acceptance_bar_epoch is NULL', async () => {
     // The writer wraps EVERY BAR branch in `if (current.acceptance_bar_epoch != null)`
     // (plan-audits.ts:2182, closing 2319), so a plan outside the contract correctly

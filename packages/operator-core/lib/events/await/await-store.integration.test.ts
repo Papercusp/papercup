@@ -230,6 +230,25 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'plan-run-resume' });
   });
 
+  it('lists recent deliveries for one await with its composed verdict payload', async () => {
+    const subscriberId = 'su-focused-await-history';
+    const target = await store.registerAwait({ subscriberId, eventKey: 'composed-root:408' });
+    const other = await store.registerAwait({ subscriberId, eventKey: 'composed-root:409' });
+    const payload = {
+      composed: true,
+      satisfied: true,
+      reason: 'event',
+      fired: [{ event: 'green-checkpoint:inconclusive:papercusp', payload: { reason: 'skipped-locked' } }],
+    };
+    await store.insertDeliveries({ awaits: [target], payload, summary: 'composed verdict' });
+    await store.insertDeliveries({ awaits: [other], payload: { unrelated: true }, summary: 'other delivery' });
+
+    const recent = await store.listRecentDeliveries(subscriberId, 10, target.id);
+
+    expect(recent).toHaveLength(1);
+    expect(recent[0]).toMatchObject({ awaitId: target.id, payload, summary: 'composed verdict' });
+  });
+
   it('a newer loop fire drops older pending/parked wakes from the same loop instance', async () => {
     const awaited = await store.registerAwait({
       subscriberId: 'su-loop-supersession',

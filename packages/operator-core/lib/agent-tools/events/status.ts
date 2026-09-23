@@ -33,6 +33,18 @@ type ExpectedCondition =
   | { kind: 'sha'; sha: string }
   | { kind: 'predicate'; predicate: unknown };
 
+const STATUS_WAKE_PAYLOAD_MAX_CHARS = 2_000;
+
+function statusWakePayload(payload: unknown): Record<string, unknown> {
+  const serialized = JSON.stringify(payload) ?? 'null';
+  if (serialized.length <= STATUS_WAKE_PAYLOAD_MAX_CHARS) return { payload };
+  return {
+    payload_preview: serialized.slice(0, STATUS_WAKE_PAYLOAD_MAX_CHARS),
+    payload_chars: serialized.length,
+    payload_truncated: true,
+  };
+}
+
 function announcementState(row: AwaitRow): 'declared' | 'fired' | 'cancelled' | 'expired' | 'superseded' {
   if (row.supersededAt) return 'superseded';
   if (row.cancelledAt) return 'cancelled';
@@ -186,7 +198,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
-    await_id: z.number().int().positive().optional().describe('Filter the active await list to the id returned by events:await. Omit to inspect all of your active awaits. Mutually exclusive with `event`.'),
+    await_id: z.number().int().positive().optional().describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
     event: z.string().min(1).max(200).optional().describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Mutually exclusive with `await_id`.'),
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
@@ -204,7 +216,11 @@ export default defineTool({
     const exactEvent = args.event != null;
     const [awaits, recent, backlog, meter, composedRoots, eventHistory, eventSubscriptions] = await Promise.all([
       exactEvent ? Promise.resolve([]) : listActiveAwaits(identity.ownerId),
-      exactEvent ? Promise.resolve([]) : listRecentDeliveries(identity.ownerId, 10),
+      exactEvent
+        ? Promise.resolve([])
+        : args.await_id == null
+          ? listRecentDeliveries(identity.ownerId, 10)
+          : listRecentDeliveries(identity.ownerId, 1, args.await_id),
       exactEvent ? Promise.resolve(null) : deliveryBacklogSummary(identity.ownerId),
       args.meter ? wakeMeter() : Promise.resolve(null),
       exactEvent ? Promise.resolve([]) : listActiveComposedRoots(identity.ownerId),
@@ -374,6 +390,7 @@ export default defineTool({
                     last_error: d.lastError,
                     created_at: d.createdAt,
                     delivered_at: d.deliveredAt,
+                    ...(args.await_id != null ? statusWakePayload(d.payload) : {}),
                   })),
                   outstanding_deliveries: {
                     total: backlog?.total ?? 0,

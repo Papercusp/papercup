@@ -373,19 +373,60 @@ const specAdequacyCompletionSpec = z
         message: 'specRevision and specFingerprint must be supplied together for an immutable clause pin',
       });
     }
+    const currentWithClauseIdentity = (attestation.current ?? []).filter(
+      (current) =>
+        current.planSlug !== undefined &&
+        current.specId !== undefined &&
+        current.specRevision !== undefined &&
+        current.specFingerprint !== undefined,
+    );
+    const allCurrentRowsHaveClauseIdentity =
+      attestation.current !== undefined &&
+      attestation.current.length > 0 &&
+      currentWithClauseIdentity.length === attestation.current.length;
+    const currentClauseVersions = new Set(
+      currentWithClauseIdentity.map((current) => `${current.specRevision}:${current.specFingerprint}`),
+    );
+    const hasSingleClausePin =
+      attestation.specRevision !== undefined && attestation.specFingerprint !== undefined;
     if (
       attestation.replaySnapshot === true &&
-      (attestation.specRevision === undefined || attestation.specFingerprint === undefined)
+      !hasSingleClausePin &&
+      !allCurrentRowsHaveClauseIdentity
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['replaySnapshot'],
-        message: 'replaySnapshot requires specRevision and specFingerprint',
+        message:
+          'replaySnapshot requires specRevision and specFingerprint, or full clause identity on every current[] row',
+      });
+    }
+    if (attestation.replaySnapshot === true && hasSingleClausePin && currentClauseVersions.size > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['specFingerprint'],
+        message:
+          'a single replay clause pin cannot cover multiple current[] clause revisions; omit it and provide full clause identity on every current[] row',
+      });
+    }
+    if (
+      attestation.replaySnapshot === true &&
+      hasSingleClausePin &&
+      currentWithClauseIdentity.some(
+        (current) =>
+          current.specRevision !== attestation.specRevision ||
+          current.specFingerprint !== attestation.specFingerprint,
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['specFingerprint'],
+        message: 'the top-level replay clause pin must match every fully scoped current[] row',
       });
     }
   })
   .describe(
-    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled. Persisted evaluator rerun recipes may also supply specRevision + specFingerprint with replaySnapshot:true so the gate preserves the evaluator snapshot contract.',
+    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled. A single-clause replay supplies specRevision + specFingerprint; a multi-clause replay supplies full clause identity on every current[] row with replaySnapshot:true.',
   )
   // Same reuse as the completion record above, and the same fix: this attestation is
   // reached from both the single-item branch and each `items[]` entry, so without an id
@@ -575,6 +616,86 @@ function reportMalformedCompletionCoverage(
   if (Array.isArray(root.items)) {
     root.items.forEach((item, index) => inspect(item, ['items', index]));
   }
+}
+
+/**
+ * EI-23704816812454172: the generic flat-completion rescue also hoists a
+ * top-level rootCauseVerification beside an existing completion object. That
+ * makes a misplaced parent look like a missing nested leaf at the Zod boundary.
+ * Report the placement directly, and report missing required leaves in a
+ * present nested record before the shared storage schema emits its generic error.
+ */
+function reportRootCauseVerificationInputShape(
+  raw: unknown,
+  addIssue: (issue: { code: 'custom'; message: string; path: Array<string | number> }) => void,
+): void {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  if (!isRecord(raw)) return;
+
+  const inspect = (entry: Record<string, unknown>, prefix: Array<string | number>): void => {
+    if (entry.completion !== undefined && entry.rootCauseVerification !== undefined) {
+      addIssue({
+        code: 'custom',
+        message:
+          'REJECTED — rootCauseVerification was supplied beside completion. Move it inside completion.rootCauseVerification; the sibling placement is invalid.',
+        path: [...prefix, 'rootCauseVerification'],
+      });
+      return;
+    }
+
+    const completionRecord =
+      isRecord(entry.completion) ? entry.completion : entry.completion === undefined && typeof entry.id === 'string' ? entry : undefined;
+    if (!completionRecord || !isRecord(completionRecord.rootCauseVerification)) return;
+
+    const verification = completionRecord.rootCauseVerification;
+    const required = ['hypothesis', 'alternativeHypothesis', 'distinguishingTest', 'testResult'] as const;
+    const missing = required.filter(
+      (field) => typeof verification[field] !== 'string' || !(verification[field] as string).trim(),
+    );
+    if (missing.length === 0) return;
+
+    addIssue({
+      code: 'custom',
+      message:
+        'REJECTED — rootCauseVerification is present but incomplete at completion.rootCauseVerification. Missing required fields: ' +
+        missing.join(', ') +
+        '. Supply them inside the nested record; a missing parent is reported separately.',
+      path: [...prefix, 'completion', 'rootCauseVerification'],
+    });
+  };
+
+  if (Array.isArray(raw.items)) {
+    raw.items.forEach((entry, index) => {
+      if (isRecord(entry)) inspect(entry, ['items', index]);
+    });
+    return;
+  }
+  inspect(raw, []);
+}
+
+function firstRootCauseVerificationInputError(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstRootCauseVerificationInputError(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as { message?: unknown; errors?: unknown };
+  if (
+    typeof record.message === 'string' &&
+    record.message.startsWith('REJECTED — rootCauseVerification ')
+  ) {
+    return record.message;
+  }
+  if (!Array.isArray(record.errors)) return undefined;
+  for (const nested of record.errors) {
+    const message = firstRootCauseVerificationInputError(nested);
+    if (message) return message;
+  }
+  return undefined;
 }
 
 function firstCompletionCoverageContract(value: unknown): string | undefined {
@@ -5126,6 +5247,7 @@ export default defineTool({
   },
   args: z.preprocess(
     (raw, ctx) => {
+      reportRootCauseVerificationInputShape(raw, (issue) => ctx.addIssue(issue));
       const hoisted = hoistMisplacedCompletionFields(raw);
       const gathered = gatherFlatCompletion(hoisted);
       reportMalformedCompletionCoverage(gathered, (issue) => ctx.addIssue(issue));
@@ -5232,6 +5354,7 @@ export default defineTool({
           message:
             firstCompletionCoverageContract(issue) ??
             firstCompletionStringRejection(issue) ??
+            firstRootCauseVerificationInputError(issue) ??
             firstUnrecognizedKeyMessage(issue) ??
             COMPLETE_CLOSE_SHAPE_MESSAGE,
         }),

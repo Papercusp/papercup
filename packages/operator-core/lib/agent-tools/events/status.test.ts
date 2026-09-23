@@ -208,6 +208,52 @@ describe('events:status projection', () => {
     });
   });
 
+  it('exposes a bounded payload only when inspecting one await delivery', async () => {
+    const payload = {
+      composed: true,
+      consumed: true,
+      satisfied: true,
+      reason: 'event',
+      fired: [{ event: 'green-checkpoint:inconclusive:papercusp', payload: { reason: 'skipped-locked' } }],
+      pending: [],
+    };
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      { ...DELIVERY_ROW, id: 23, awaitId: 187914, eventKey: 'composed-root:408', payload },
+    ]);
+
+    const out = await call({ await_id: 187914 });
+
+    expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 1, 187914);
+    expect(out.recent_wakes[0]).toMatchObject({
+      delivery_id: 23,
+      event: 'composed-root:408',
+      payload,
+    });
+  });
+
+  it('does not expose delivery payloads in the unfiltered recent-wakes summary', async () => {
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      { ...DELIVERY_ROW, payload: { composed: true, satisfied: true } },
+    ]);
+
+    const out = await call({});
+
+    expect(out.recent_wakes[0]).not.toHaveProperty('payload');
+  });
+
+  it('caps an oversized payload in an exact-await inspection', async () => {
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      { ...DELIVERY_ROW, payload: { detail: 'x'.repeat(3_000) } },
+    ]);
+
+    const out = await call({ await_id: 11 });
+
+    expect(out.recent_wakes[0].payload_truncated).toBe(true);
+    expect(out.recent_wakes[0].payload_preview).toHaveLength(2_000);
+    expect(out.recent_wakes[0].payload_chars).toBeGreaterThan(2_000);
+    expect(out.recent_wakes[0]).not.toHaveProperty('payload');
+  });
+
   it('reports the full outstanding backlog even when recent_wakes hides older live rows', async () => {
     vi.mocked(listRecentDeliveries).mockResolvedValueOnce([{ ...DELIVERY_ROW, id: 30, status: 'delivered' }]);
     vi.mocked(deliveryBacklogSummary).mockResolvedValueOnce({

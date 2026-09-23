@@ -199,6 +199,36 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(unscoped.governingNote).toBeUndefined();
   });
 
+  it('persists non-governing scope and evaluator-build drift on every scorecardDraft criterion', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([{ specId: 'SPEC-001' } as never]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      evidenceRefs: ['test-run:1:spec-001'],
+      evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      governing: false,
+      evaluatorBuildDrift: {
+        recorded: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+        live: { sha: 'live-evaluator-sha', version: '1.2.3' },
+      },
+    });
+    const criteria = Object.values(result.rows[0].scorecardDraft.ratings) as Array<{ evidence: string }>;
+    expect(criteria).toHaveLength(9);
+    for (const criterion of criteria) {
+      expect(criterion.evidence).toContain('DIAGNOSTIC READ');
+      expect(criterion.evidence).toContain('EVALUATOR BUILD DRIFT');
+      expect(criterion.evidence).toContain('recorded-evaluator-sha');
+      expect(criterion.evidence).toContain('live-evaluator-sha');
+    }
+  });
+
   it('refuses an evidence-ref selector that matches no immutable binding', async () => {
     listEvidence.mockResolvedValue([]);
 
@@ -215,8 +245,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       error: 'selection_empty',
       selectedEvidenceCount: 0,
       selection: { evidenceRefs: ['testing:run:superseded'] },
-      remedy: expect.stringContaining('No exact evidence binding matches'),
+      remedy: expect.stringContaining('No current evidence binding matches'),
     });
+    expect(result.remedy).toContain('absent, retracted, or superseded');
+    expect(result.remedy).toContain('pass specIds without a binding selector');
     expect(listClauses).not.toHaveBeenCalled();
   });
 
@@ -287,6 +319,30 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
         currentProvenance: 'replayed-snapshot',
       }),
     );
+  });
+
+  it('documents and enforces the immutable clause pins required for replay snapshots', () => {
+    const baseArgs = {
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+    };
+    const result = tool.args.safeParse({ ...baseArgs, replaySnapshot: true });
+
+    if (result.success) throw new Error('Expected replaySnapshot without immutable pins to be rejected');
+    expect(result.error.issues.map((issue) => issue.message)).toContain(
+      'replaySnapshot requires specRevision and specFingerprint',
+    );
+    expect(tool.args.shape.replaySnapshot.description).toMatch(
+      /requires both specRevision and specFingerprint from the same immutable clause revision/i,
+    );
+    expect(tool.args.shape.specRevision.description).toMatch(/required when replaySnapshot is true/i);
+    expect(tool.args.shape.specFingerprint.description).toMatch(/required when replaySnapshot is true/i);
+    expect(tool.description).toContain(
+      'When replaySnapshot is true, include both specRevision and specFingerprint',
+    );
+
+    expect(tool.args.safeParse(baseArgs).success).toBe(true);
   });
 
   it.each(['newest-first', 'oldest-first'])('pins the latest logical binding measurement in a replay (%s)', async (order) => {
@@ -398,8 +454,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       ok: false,
       error: 'selection_empty',
       selectedEvidenceCount: 0,
-      remedy: expect.stringContaining('No exact evidence edge'),
+      remedy: expect.stringContaining('No current evidence edge'),
     });
+    expect(result.remedy).toContain('proof may have been retracted or superseded');
     expect(listClauses).not.toHaveBeenCalled();
   });
 });

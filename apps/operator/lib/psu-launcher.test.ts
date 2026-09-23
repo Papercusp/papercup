@@ -12633,7 +12633,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
       if (opts.method === "POST") throw timeout;
       statusReads += 1;
       return {
-        json: async () => statusReads < 3
+        json: async () => statusReads <= 3
           ? { ok: true, state: "pending", pending: true, ready: false }
           : { ok: true, state: "ready", pending: false, ready: true, sourceKind: "claude", written: 1, root: "/tmp/restored" },
       };
@@ -12656,8 +12656,8 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
         root: "/tmp/restored",
         restoredAfterTimeout: true,
       });
-      expect(statusReads).toBe(3);
-      expect(sleep).toHaveBeenCalledTimes(2);
+      expect(statusReads).toBe(4);
+      expect(sleep).toHaveBeenCalledTimes(3);
     } finally {
       errSpy.mockRestore();
     }

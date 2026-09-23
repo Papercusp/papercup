@@ -51,7 +51,11 @@ function connectionId(body: Body): string | null {
 
 function lifecycleFailure(cause: unknown): Response {
   const code = cause instanceof Error ? cause.message : 'hosted_provider_delegation_failed';
-  const status = /not_found/.test(code) ? 404 : /generation_conflict|requires_verified|is_revoked/.test(code) ? 409 : 422;
+  const status = /not_found/.test(code) ? 404
+    : /generation_conflict|requires_verified|is_revoked/.test(code) ? 409
+      // The organization's own GCP account could not be prepared: ours to fix, retryable.
+      : /identity_project|organization_account|delegation_source/.test(code) ? 503
+        : 422;
   return error(code, status);
 }
 
@@ -63,7 +67,10 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
       const body = await readBody(request); if (!body) return error('invalid_json', 400);
       const id = connectionId(body); if (!id) return error('invalid_connection_id', 400);
       try {
+        // The manager re-binds both the organization and the GCP trusted principal from the
+        // session (D-397); a body value for either never reaches the record.
         const result = await factory(scoped.principal).onboard({
+          organizationId: scoped.principal.activeOrganizationId,
           workspaceId: scoped.workspaceId,
           connectionId: id,
           label: body.label,
@@ -95,7 +102,7 @@ export function createHostedProviderDelegationRoutes(factory: HostedProviderDele
           label: body.label,
           credentialRef: body.credentialRef,
           configuration: body.configuration,
-        } as Omit<HostedProviderDelegationOnboardingInput, 'workspaceId' | 'connectionId' | 'generation'>);
+        } as Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'workspaceId' | 'connectionId' | 'generation'>);
         return Response.json({ ok: true, record });
       } catch (cause) { return lifecycleFailure(cause); }
     },

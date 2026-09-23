@@ -29,14 +29,16 @@
  * grant template the customer must apply in their cloud; later calls re-verify the SAME
  * delegation and, once it verifies, admit the workspace and select it on the session.
  *
- * OPEN SECURITY GATE (D-384). A verified GCP delegation currently proves only that the
- * control plane can impersonate the named service account — not that THIS organization owns
- * it. `isEnabledFor` therefore gates the route per organization until delegations are bound
- * to the organization; do not replace it with `() => true`.
+ * ORGANIZATION-BOUND DELEGATION (D-397, closes the D-384 confused deputy). The customer grants
+ * THIS organization's own Papercusp service account, and credentials resolve only through it,
+ * so naming another customer's service account can never verify. `isEnabledFor` still gates
+ * the route per organization until that is verified live; do not replace it with `() => true`.
  */
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import {
+  bindDelegationToOrganization,
   buildHostedProviderDelegationOnboarding,
+  type HostedDelegationOrganization,
   type HostedProviderDelegationConfiguration,
   type HostedProviderDelegationOnboarding,
   type HostedProviderDelegationOnboardingInput,
@@ -70,16 +72,16 @@ export interface HostedFirstWorkspaceDependencies {
   /** A workspace that cannot be provisioned must not be admitted. */
   provisioningAvailable(): boolean;
   /**
-   * The Papercusp identity customers grant impersonation to (D-386), in IAM member form. It is
-   * the server's own identity, so it is never read from the request body.
+   * The organization's delegation binding (D-397): the identity ITS customers grant, which
+   * only the server knows, so it is never read from the request body.
    */
-  delegationSourcePrincipal(): Promise<string>;
+  delegationOrganization(organizationId: string): HostedDelegationOrganization;
   /** Ids of the organization's live (non-deleted) workspace bindings. */
   organizationWorkspaceIds(organizationId: string): Promise<readonly string[]>;
   /** Control-plane-privileged delegation store/manager, keyed by the derived workspace id. */
   readDelegation(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null>;
   onboardDelegation(input: HostedProviderDelegationOnboardingInput): Promise<HostedProviderDelegationOnboarding>;
-  verifyDelegation(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord>;
+  verifyDelegation(organizationId: string, workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord>;
   /** Builds the admission port around a spec resolver bound to THIS verified delegation. */
   createAdmission(resolveDesiredSpec: ResolveFirstWorkspaceSpec): HostedOnboardingWorkspacePort;
   /** Rotate the caller's session onto the new workspace; null when the session moved on. */
@@ -225,6 +227,9 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       }
       if (!deps.isEnabledFor(organizationId)) return failure('first_workspace_not_enabled', 403, false);
       if (request.configuration.provider !== 'gcp') return failure('provider_not_supported', 422, false);
+      // Only impersonation chains through the organization's own account (D-397).
+      const method = (request.configuration.source as { method?: unknown } | undefined)?.method;
+      if (method !== 'service-account-impersonation') return failure('provider_not_supported', 422, false);
       const identity = firstWorkspaceIdentity(organizationId, request.attemptKey);
       // "First" is per organization. The workspace THIS attempt derives is not a conflict:
       // a replay after a failed session selection must be able to finish selecting it.
@@ -234,27 +239,21 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       }
       if (!deps.provisioningAvailable()) return failure('provisioning_unavailable', 503, true);
 
-      // The grant names the principal Papercusp impersonates FROM. Only the server knows it, and
-      // a browser-supplied value could only produce a grant that never verifies (D-386).
-      let configuration = request.configuration;
-      const source = configuration.source as { method?: unknown } | undefined;
-      if (source && typeof source === 'object' && source.method === 'service-account-impersonation') {
-        let trustedPrincipal: string;
-        try {
-          trustedPrincipal = await deps.delegationSourcePrincipal();
-        } catch {
-          return failure('delegation_source_unavailable', 503, true);
-        }
-        configuration = { ...configuration, source: { ...configuration.source, trustedPrincipal } } as typeof configuration;
+      // The grant names THIS organization's own Papercusp account (D-397), created here so the
+      // customer can bind it; a browser-supplied principal is discarded.
+      let onboardingInput: HostedProviderDelegationOnboardingInput;
+      try {
+        onboardingInput = await bindDelegationToOrganization({
+          organizationId,
+          workspaceId: identity.workspaceId,
+          connectionId: identity.connectionId,
+          label,
+          credentialRef: identity.credentialRef,
+          configuration: request.configuration,
+        }, deps.delegationOrganization(organizationId));
+      } catch {
+        return failure('delegation_source_unavailable', 503, true);
       }
-
-      const onboardingInput: HostedProviderDelegationOnboardingInput = {
-        workspaceId: identity.workspaceId,
-        connectionId: identity.connectionId,
-        label,
-        credentialRef: identity.credentialRef,
-        configuration,
-      };
       let planned: HostedProviderDelegationOnboarding;
       try {
         planned = buildHostedProviderDelegationOnboarding(onboardingInput);
@@ -277,7 +276,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
 
       let verified: HostedProviderDelegationRecord;
       try {
-        verified = await deps.verifyDelegation(identity.workspaceId, identity.connectionId);
+        verified = await deps.verifyDelegation(organizationId, identity.workspaceId, identity.connectionId);
       } catch {
         // Not an error from the customer's point of view: the grant is simply not applied yet.
         return failure('delegation_pending', 409, true, {
@@ -300,7 +299,11 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
           requestedWorkspaceId: identity.workspaceId,
           operationKey: identity.operationKey,
         });
-      } catch {
+      } catch (error) {
+        // A concurrent attempt with a different key won the organization's one slot.
+        if (error instanceof HostedWorkspaceAdmissionError && error.code === 'organization_has_live_workspace') {
+          return failure('organization_already_has_workspace', 409, false);
+        }
         return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
       }
 

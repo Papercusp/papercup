@@ -3141,3 +3141,46 @@ export function projectFrozenRepairConvergenceCell(
   }
   return { code, unmeasured: false, ...record, scope: projectFrozenRepairConvergenceScope(record) };
 }
+
+/**
+ * PURE: is the sha a verdict judged the head of a DELIBERATELY PINNED, still-active repair lineage?
+ *
+ * Plan D-004. The fossil rules exist to catch an ACCIDENTALLY stale candidate, whose red "can
+ * dispatch agents against code the gate never judged as current". That rationale INVERTS for a
+ * frozen repair head: the repair is working that exact immutable sha ON PURPOSE, so its red IS the
+ * failing-test signature the queue needs in order to advance. Suppressing it is what produced the
+ * measured 6-day freeze (`main` frozen at a2d69cef, 44 consecutive reds, `gate_health.failingTests`
+ * empty throughout — no signature was EVER published, so no fixer could be dispatched).
+ *
+ * Lives HERE, in the module owning the queue row, because BOTH sides of the gate need the same
+ * judgement: the WRITE side (green-checkpoint's withholding rule, which re-exports this) and the
+ * READ side ({@link reconcileGateVerdictFreshnessWithPinnedRepair}, via its caller). D-004 records
+ * that the withholding rule and the fossil release are a COUPLED PAIR and that fixing either alone
+ * re-creates the livelock; a second copy of this predicate is precisely how the two would drift
+ * back apart, so there is exactly one definition (WI-10002121).
+ *
+ * A queue that has GIVEN UP is deliberately NOT exempt: `blocked`/`blockedReason` means no repair
+ * is advancing, so the red stops being anybody's working signature and the ordinary rules apply.
+ */
+export function isJudgingPinnedActiveRepair(input: {
+  candidate: string;
+  /**
+   * Accepts BOTH spellings of a queue row on purpose, because both sides feed this one predicate:
+   * the WRITE side passes `FrozenCandidateRepairQueue`, whose `blockedReason?` is optional and
+   * never `null`; the READ side passes `FrozenRepairQueueDiagnostic`, whose `blockedReason` is
+   * required and nullable. Deriving the other three fields from the owning type keeps them honest
+   * (derived-truth ladder) while widening only that one field's nullability — the runtime test
+   * below is `== null`, which already covers both. Narrowing this back to a bare `Pick<…>` makes
+   * the read side un-callable and is what a second, drifting copy of the predicate would grow from.
+   */
+  repairQueue?:
+    | (Pick<FrozenCandidateRepairQueue, 'candidate' | 'repairHead' | 'phase'> & {
+        blockedReason?: FrozenCandidateBlockedReason | null;
+      })
+    | null;
+}): boolean {
+  const { candidate, repairQueue } = input;
+  if (repairQueue == null || repairQueue.repairHead !== candidate) return false;
+  if (repairQueue.phase === 'blocked') return false;
+  return repairQueue.blockedReason == null;
+}

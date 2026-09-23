@@ -74,6 +74,30 @@ describe('routines:fire', () => {
     expect(body(result)).toMatchObject({ ok: true, status: 'deduplicated' });
   });
 
+  it('explains DBOS-primary unavailability and keeps release promotion on release:deploy', async () => {
+    enqueueMock.mockResolvedValue({
+      ok: false,
+      status: 'unavailable',
+      reason: 'dbos-not-started',
+      routineId: row.id,
+      deduplicationId: `routine:${row.id}`,
+      queueName: 'routines-critical',
+      timeoutMs: 7_200_000,
+    });
+
+    const result = await tool.handler({ name: 'release-trigger', installSlug: 'home' } as never, {
+      role: 'operator',
+    } as never);
+
+    expect(body(result)).toMatchObject({
+      status: 'unavailable',
+      reason: 'dbos-not-started',
+      nextStep: expect.stringContaining('background-worker MCP host'),
+    });
+    expect(tool.guidance?.notWhen).toContain('request-only operator host');
+    expect(tool.guidance?.notWhen).toContain('release:deploy');
+  });
+
   it('returns a truthful not-found error without enqueueing', async () => {
     sqlMock.mockResolvedValue([]);
     const result = await tool.handler({ name: 'missing', installSlug: 'home' } as never, { role: 'operator' } as never);

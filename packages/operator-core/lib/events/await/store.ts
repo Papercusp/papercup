@@ -2540,11 +2540,16 @@ export async function deliveryBacklogSummary(subscriberId: string): Promise<Deli
 }
 
 /** Recent deliveries for a subscriber (events:status). */
-export async function listRecentDeliveries(subscriberId: string, limit = 10): Promise<DeliveryRow[]> {
+export async function listRecentDeliveries(
+  subscriberId: string,
+  limit = 10,
+  awaitId?: number,
+): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT * FROM harness_shared.event_wake_deliveries
      WHERE subscriber_id = ${subscriberId}
+       AND (${awaitId ?? null}::bigint IS NULL OR await_id = ${awaitId ?? null})
      ORDER BY created_at DESC
      LIMIT ${limit}
   `;

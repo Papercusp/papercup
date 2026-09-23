@@ -429,6 +429,47 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('distinguishes a top-level sibling from a missing nested required leaf', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const misplaced = safeParse({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'fixed the cache' },
+      rootCauseVerification: {
+        hypothesis: 'the cache was stale',
+        alternativeHypothesis: 'the writer stored a bad value',
+        distinguishingTest: 'Compare a direct read with the cached read.',
+        testResult: 'the direct read was correct',
+      },
+    });
+
+    expect(misplaced.success).toBe(false);
+    expect(String(misplaced.error)).toContain(
+      'Move it inside completion.rootCauseVerification; the sibling placement is invalid.',
+    );
+
+    const missingLeaf = safeParse({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the cache',
+        rootCauseVerification: {
+          hypothesis: 'the cache was stale',
+          alternativeHypothesis: 'the writer stored a bad value',
+          distinguishingTest: 'Compare a direct read with the cached read.',
+        },
+      },
+    });
+
+    expect(missingLeaf.success).toBe(false);
+    expect(String(missingLeaf.error)).toContain('Missing required fields: testResult');
+    expect(String(missingLeaf.error)).not.toContain('expected string, received undefined');
+  });
+
   it('rejects a block whose structured predictions name the same observable', () => {
     const result = (
       complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
@@ -2093,6 +2134,32 @@ describe('work_items:complete (keyed-array)', () => {
       specFingerprint: 'sha256:spec-v1',
       replaySnapshot: true,
     };
+    const multiClauseReplaySpecAdequacy = {
+      ...specAdequacy,
+      replaySnapshot: true,
+      current: [
+        {
+          planSlug: 'plan-one',
+          specId: 'SPEC-001-01',
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-v1',
+          evidenceKind: 'test' as const,
+          evidenceRef: 'test:reconnect',
+          sourceFingerprint: 'git:abc',
+          testFingerprint: 'sha256:test',
+        },
+        {
+          planSlug: 'plan-two',
+          specId: 'SPEC-002-01',
+          specRevision: 4,
+          specFingerprint: 'sha256:spec-v4',
+          evidenceKind: 'test' as const,
+          evidenceRef: 'test:reconnect-v2',
+          sourceFingerprint: 'git:def',
+          testFingerprint: 'sha256:test-v2',
+        },
+      ],
+    };
     const behaviorChangePath = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
 
     it.each([
@@ -2149,6 +2216,28 @@ describe('work_items:complete (keyed-array)', () => {
           specAdequacy: replaySpecAdequacy,
         }).success,
       ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: multiClauseReplaySpecAdequacy,
+        }).success,
+      ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: {
+            ...multiClauseReplaySpecAdequacy,
+            specRevision: 1,
+            specFingerprint: 'sha256:spec-v1',
+          },
+        }).success,
+      ).toBe(false);
       expect(
         (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
           items: [

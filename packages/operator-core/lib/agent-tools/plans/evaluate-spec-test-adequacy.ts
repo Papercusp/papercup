@@ -42,10 +42,16 @@ export const argsSchema = z.object({
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   /** Immutable clause revision/fingerprint selected by a persisted replay recipe. */
-  specRevision: z.number().int().positive().optional(),
-  specFingerprint: z.string().trim().min(1).max(256).optional(),
-  /** Reuse the supplied current tuple as a prior server measurement; do not re-measure live files. */
-  replaySnapshot: z.boolean().optional(),
+  specRevision: z.number().int().positive().optional().describe(
+    'Immutable clause revision pin. Supply together with specFingerprint; both are required when replaySnapshot is true.',
+  ),
+  specFingerprint: z.string().trim().min(1).max(256).optional().describe(
+    'Immutable clause fingerprint pin. Supply together with specRevision; both are required when replaySnapshot is true.',
+  ),
+  /** Reuse an earlier snapshot without measuring current evidence. */
+  replaySnapshot: z.boolean().optional().describe(
+    'When true, reuse the pinned evidence snapshot without server-side remeasurement. Requires both specRevision and specFingerprint from the same immutable clause revision. Omit or set false to use the normal current-measurement path; caller-supplied current fingerprints remain replayed-snapshot evidence, never server-measured evidence.',
+  ),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
     .union([
@@ -84,7 +90,7 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. evidenceRefs selects the exact immutable evidence identities to grade, so a replay can exclude superseded run-specific refs without rewriting history. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
   guidance: {
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
@@ -176,8 +182,8 @@ export default defineTool({
           },
           remedy:
             args.evidenceRefs !== undefined
-              ? 'No exact evidence binding matches the selected workItemIds/evidenceRefs; verify those immutable selectors or pass specIds without a binding selector to evaluate intended uncovered clauses.'
-              : 'No exact evidence edge exists for the selected work item(s); pass specIds to evaluate intended uncovered clauses.',
+              ? 'No current evidence binding matches the selected workItemIds/evidenceRefs. The binding may be absent, retracted, or superseded, or the selectors may not identify a bound proof. Check the target evidence history before changing them; pass specIds without a binding selector to evaluate intended uncovered clauses.'
+              : 'No current evidence edge exists for the selected work item(s). The work item may lack a binding, or its proof may have been retracted or superseded. Check the target history; pass specIds to evaluate intended uncovered clauses.',
         },
       };
     }
@@ -279,6 +285,39 @@ export default defineTool({
     const governingNote = governing
       ? null
       : 'DIAGNOSTIC READ — the evidence cohort is PINNED (workItemIds/evidenceRefs). The ship gate evaluates every binding of each clause UNSCOPED, so a pass here is not the ship verdict; read plans:get { slug, shipReadiness:true } for the governing per-bar state.';
+    const evaluatorBuildDriftNote = evaluatorBuildDrift
+      ? 'EVALUATOR BUILD DRIFT — request recorded evaluator ' +
+        String(evaluatorBuildDrift.recorded.sha ?? 'unknown') +
+        '@' +
+        evaluatorBuildDrift.recorded.version +
+        '; this draft was computed by live evaluator ' +
+        String(evaluatorBuildDrift.live.sha ?? 'unknown') +
+        '@' +
+        evaluatorBuildDrift.live.version +
+        ', not replayed under the recorded build. Compare ratings as cross-build results.'
+      : null;
+    const scorecardEvidenceNotes = [
+      ...(governingNote ? [governingNote] : []),
+      ...(evaluatorBuildDriftNote ? [evaluatorBuildDriftNote] : []),
+    ];
+    const scorecardRows =
+      scorecardEvidenceNotes.length > 0
+        ? rows.map((row) => ({
+            ...row,
+            scorecardDraft: {
+              ...row.scorecardDraft,
+              ratings: Object.fromEntries(
+                Object.entries(row.scorecardDraft.ratings).map(([criterion, rating]) => [
+                  criterion,
+                  {
+                    ...rating,
+                    evidence: [rating.evidence, ...scorecardEvidenceNotes].join('\n\n'),
+                  },
+                ]),
+              ),
+            },
+          }))
+        : rows;
     return {
       data: {
         ok: true,
@@ -290,7 +329,7 @@ export default defineTool({
         rubricRef: 'spec-test-adequacy',
         governing,
         ...(governingNote ? { governingNote } : {}),
-        rows,
+        rows: scorecardRows,
         count: rows.length,
         verdicts: {
           pass: rows.filter((row) => row.verdict === 'pass').length,
