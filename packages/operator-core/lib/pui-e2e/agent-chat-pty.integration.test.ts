@@ -567,7 +567,7 @@ class PuiPane {
     bin: string,
     operatorPort: number,
     home: string,
-    options: { args?: string[]; cols?: number; rows?: number; operatorToken?: string } = {},
+    options: { args?: string[]; cols?: number; rows?: number; operatorToken?: string; env?: Record<string, string> } = {},
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
@@ -2935,6 +2935,89 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         suOwnerId: ownerId, tasks: final, frame, reloadedFrame: reloaded }));
       console.info('PUI_TASK_PROMOTE_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         taskId: installer, link: promoted, workItem, promoteFrame, reloadedFrame: reloaded }));
+    } finally { await pane?.stop().catch(() => {}); }
+  }, 240_000);
+
+  test('PUI-SETTINGS-PICKERS: live pickers name defaults and reasons, and a launch-time pick on a running conversation opens a new session', async ({ onTestFailed }) => {
+    const prompt = 'PUI settings journey kickoff';
+    let stage = 'inventory';
+    let pane: PuiPane | undefined;
+    onTestFailed(() => console.info('PUI_SETTINGS_FAILURE', JSON.stringify({ stage, ...(pane?.failureEvidence() ?? {}) })));
+    const { readSuperuserToken } = await import('../superuser-token');
+    const served = await fetch(`http://127.0.0.1:${operatorPort}/api/agent-config`,
+      { headers: { authorization: `Bearer ${readSuperuserToken()}` } });
+    expect(served.status).toBe(200);
+    const config = await served.json() as {
+      effectiveTiers: Array<{ name: string; spec: string; loopCapability?: { executable?: boolean } }>;
+      effortLevels: string[];
+      launchableModes: Array<{ title: string }>;
+    };
+    expect(config.effectiveTiers.length).toBeGreaterThan(0);
+    const disabledTiers = config.effectiveTiers.filter((tier) => tier.loopCapability?.executable === false);
+    const launches = () => sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')
+      .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
+
+    pane = new PuiPane(bin, operatorPort, home);
+    try {
+      stage = 'launch';
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      const chat = await waitForSavedTurn(prompt);
+      pane.escape();
+      await pane.waitFor('i type · v speak');
+      // The overlay is 60% of the terminal; give long tier labels room.
+      pane.resize(160, 48);
+      const picker = async (target: PuiPane, key: string, title: string, rows: string[]) => {
+        target.write(key);
+        await target.waitFor(`${title} — Enter select`);
+        for (const row of rows) await target.waitFor(row);
+        const frame = target.screen();
+        target.escape();
+        await target.waitForGone(`${title} — Enter select`);
+        return frame;
+      };
+
+      stage = 'pickers';
+      // Every row comes from the operator's own inventory; the default row is
+      // named and an unsupported tier stays visible with its reason.
+      const frames = {
+        model: await picker(pane, 'm', 'Model', ['Default (',
+          ...config.effectiveTiers.map((tier) => `${tier.name} — ${tier.spec}`),
+          ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
+          ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])]),
+        effort: await picker(pane, 'e', 'Effort', ['Model/default effort', ...config.effortLevels]),
+        account: await picker(pane, 'a', 'Account route', ['Auto (gateway routing)', 'Default system account']),
+        mode: await picker(pane, 'u', 'Launch mode', ['Manual (no launch mode)', ...config.launchableModes.map((mode) => mode.title)]),
+        conversation: await picker(pane, 'l', 'Conversation', []),
+      };
+      for (const frame of Object.values(frames)) expect(frame).not.toContain(readSuperuserToken());
+
+      stage = 'restart-required-pick';
+      const executable = config.effectiveTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
+      expect(executable).toBeGreaterThanOrEqual(0);
+      const before = launches();
+      pane.write('m');
+      await pane.waitFor('Model — Enter select');
+      pane.write('j'.repeat(executable + 1));
+      pane.enter();
+      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('Applies to a new session');
+      const routeFrame = pane.screen();
+      expect(launches()).toBe(before);
+      pane.escape();
+      await pane.waitForGone('New SU session');
+      await pane.waitFor(prompt);
+      // Nothing launched; the running conversation keeps its one SU session.
+      expect(launches()).toBe(before);
+      const [binding] = await db.adminSql<Array<{ sessions: number }>>`
+        SELECT count(*)::int AS sessions FROM harness_shared.adv_sessions
+         WHERE workspace_id = ${WORKSPACE} AND su_agent_chat_id = ${chat.id}`;
+      expect(binding.sessions).toBe(1);
+      console.info('PUI_SETTINGS_PICKERS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
+        servedTiers: config.effectiveTiers.map((tier) => tier.spec), disabledTiers: disabledTiers.map((tier) => tier.spec),
+        pickedTier: config.effectiveTiers[executable].spec, frames, routeFrame }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 
