@@ -141,6 +141,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   readonly snapshotCalls: Array<{ input: GcpSnapshotInsertInput; requestId: string }> = [];
   readonly waitedOperations: GcpOperationRef[] = [];
   imageDiskSizeGb = 40;
+  readonly unreadableImages = new Set<string>();
   startCalls = 0;
   stopCalls = 0;
   resetCalls = 0;
@@ -355,7 +356,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     return this.snapshots.get(name);
   }
 
-  async getImageDiskSizeGb(_imageId: string) {
+  async getImageDiskSizeGb(imageId: string) {
+    if (this.unreadableImages.has(imageId)) throw new Error(`gcp_preflight_http_404: ${imageId}`);
     return this.imageDiskSizeGb;
   }
 
@@ -1295,6 +1297,127 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       status: 'READY',
       attachedInstanceNames: ['pc-host-gcp-1-vm'],
     });
+  });
+
+  // WI-10002490: once delete-boot-runtime applies there is no VM left to read, so the way back has
+  // to be computed now — as the same re-create, pointed at the prior image.
+  it('precomputes an upgrade rollback that re-creates the same VM from the prior image', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'operation:rollback-upgrade',
+        idempotencyKey: 'operation:rollback-upgrade',
+        host,
+        image: { id: 'projects/papercusp/global/images/papercusp-v2' },
+        rollbackImage: { id: 'projects/papercusp/global/images/papercusp-v1' },
+      },
+      context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
+    );
+    const [deleteStep, createStep] = plan.steps;
+    expect(deleteStep!.rollback).toBeUndefined();
+    const rollback = createStep!.rollback!;
+    const forward = createStep!.input as { requestId: string; request: GcpInstanceInsertInput };
+    const back = rollback.input as { requestId: string; request: GcpInstanceInsertInput };
+    expect(rollback.idempotencyKey).not.toBe(createStep!.idempotencyKey);
+    expect(back.requestId).not.toBe(forward.requestId);
+    expect(back.request.disks[0].initializeParams.sourceImage).toBe('projects/papercusp/global/images/papercusp-v1');
+    // Everything but the boot image is the forward re-create — name, data disk, bootstrap metadata.
+    expect({ ...back.request, disks: back.request.disks.slice(1) }).toEqual({
+      ...forward.request,
+      disks: forward.request.disks.slice(1),
+    });
+
+    await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: deleteStep!, knownResources: resources },
+      context(),
+    );
+    await provider.apply(
+      {
+        planId: plan.planId,
+        operationId: plan.operationId,
+        step: { ...createStep!, id: 'create-boot-runtime:rollback', idempotencyKey: rollback.idempotencyKey, input: rollback.input },
+        knownResources: resources,
+      },
+      context(),
+    );
+    expect(client.insertInstanceCalls.at(-1)!.input.disks[0].initializeParams.sourceImage).toBe(
+      'projects/papercusp/global/images/papercusp-v1',
+    );
+    expect((await client.getInstance('papercusp-dev-123', 'us-central1-a', 'pc-host-gcp-1-vm'))?.status).toBe(
+      'RUNNING',
+    );
+  });
+
+  it('refuses an upgrade whose rollback image is unusable before deleting anything', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const upgrade = (rollbackImage: string) =>
+      provider.plan(
+        {
+          action: 'upgrade',
+          operationId: 'operation:bad-rollback',
+          idempotencyKey: 'operation:bad-rollback',
+          host,
+          image: { id: 'projects/papercusp/global/images/papercusp-v2' },
+          rollbackImage: { id: rollbackImage },
+        },
+        context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
+      );
+    await expect(upgrade('projects/papercusp/global/images/family/papercusp-workspace-host')).rejects.toThrow(
+      'family aliases are forbidden',
+    );
+    client.unreadableImages.add('projects/papercusp/global/images/papercusp-retired');
+    await expect(upgrade('projects/papercusp/global/images/papercusp-retired')).rejects.toThrow(
+      'gcp_preflight_http_404',
+    );
+    expect(client.deleteCalls).toBe(0);
+  });
+
+  it('refuses on reconcile to adopt a same-named VM that boots a different image than the step creates', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'operation:adopt-check',
+        idempotencyKey: 'operation:adopt-check',
+        host,
+        image: { id: 'projects/papercusp/global/images/papercusp-v2' },
+        rollbackImage: { id: 'projects/papercusp/global/images/papercusp-v1' },
+      },
+      context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
+    );
+    const [deleteStep, createStep] = plan.steps;
+    await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: deleteStep!, knownResources: resources },
+      context(),
+    );
+    // The forward re-create left a v2 VM behind; the rollback's reconcile must not call it v1.
+    await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: createStep!, knownResources: resources },
+      context(),
+    );
+    const rollbackStep = {
+      ...createStep!,
+      id: 'create-boot-runtime:rollback',
+      idempotencyKey: createStep!.rollback!.idempotencyKey,
+      input: createStep!.rollback!.input,
+    };
+    await expect(
+      provider.reconcile(
+        { planId: plan.planId, operationId: plan.operationId, step: rollbackStep, knownResources: resources, reason: 'resume' },
+        context(),
+      ),
+    ).rejects.toMatchObject({ status: 412, message: expect.stringContaining('papercusp-v2') });
+    // Positive control: the forward step's own VM is still adoptable by its own reconcile.
+    await expect(
+      provider.reconcile(
+        { planId: plan.planId, operationId: plan.operationId, step: createStep!, knownResources: resources, reason: 'resume' },
+        context(),
+      ),
+    ).resolves.toMatchObject({ state: 'unchanged' });
   });
 
   it('refuses to delete a data disk with a foreign attachment or mismatched host labels', async () => {
