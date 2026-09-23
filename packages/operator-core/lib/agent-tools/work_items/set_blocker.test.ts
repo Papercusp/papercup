@@ -983,7 +983,8 @@ describe('work_items:set_blocker', () => {
       const out = await one({ id: 'WI-1', kind: 'gate', ref: 'WI-40086' });
 
       expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'work_item_ref_as_external_blocker' });
-      expect(out.error).toContain("work_items:link { rel:'blocks'");
+      expect(out.error).toContain("work_items:link { id: 'WI-40086', rel:'blocks', target_id: 'WI-1' }");
+      expect(out.error).not.toContain('source_id');
       expect(out.error).toContain('WI-40086');
       // Nothing may be persisted by a refused write.
       expect(mergeWorkItemPayload).not.toHaveBeenCalled();
