@@ -554,8 +554,11 @@ export async function ensureSendSideWired(handle: BootedHarnessHandle, deps: Sen
  * `apps/operator/lib/papercusp-root.ts` resolution but stops one level
  * above `.papercusp/` so the substrate (which appends `.papercusp/...`)
  * lands in the right place.
+ *
+ * Exported so a caller that must address a harness's on-disk store
+ * (dev:own_log_fork_recover) resolves it exactly the way every boot does.
  */
-function workspaceRootForId(workspaceId: string): string {
+export function workspaceRootForId(workspaceId: string): string {
   return join(workspacesRoot(), workspaceId);
 }
 

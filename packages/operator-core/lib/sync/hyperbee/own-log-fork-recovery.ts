@@ -22,7 +22,7 @@
  */
 
 import { closeHarnessStore, harnessStorePath } from './corestore';
-import { clearOwnLogForkState } from './own-log-fork-guard';
+import { clearOwnLogForkState, type OwnLogForkState } from './own-log-fork-guard';
 import { resolveOwnLogForkEi } from './own-log-fork-ei';
 
 export interface OwnLogForkRecoveryOpts {
@@ -112,4 +112,174 @@ export async function recoverForkedOwnLog(
   });
 
   return { ok: true, resetPath: path };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EI-21150671414510762: the INVOKABLE recovery path.
+//
+// `recoverForkedOwnLog` above had no caller at all — no tool, route or admin
+// action — so the "supported recovery" could only be performed by hand-deleting
+// a store directory. `runOwnLogForkRecovery` is the orchestration that
+// `dev:own_log_fork_recover` calls. Over the bare primitive it adds:
+//
+//   - a DRY RUN by default (the plan plus every blocker, nothing touched);
+//   - proof the fork is REAL and is the one the caller named (`keyHex` is
+//     REQUIRED to execute — never reset a store the caller did not identify);
+//   - a refusal outside the substrate-owner process. On a request-only host
+//     (:3070 under the dedicated bg-host topology) the booted handle and the
+//     Corestore's single-instance lock live in ANOTHER process, so deleting the
+//     directory from here would pull the store out from under its owner;
+//   - the booted handle CLOSED BEFORE the store is touched (the primitive only
+//     closes the Corestore, leaving the handle pointing at a dead store);
+//   - the store MOVED ASIDE, never deleted, so the forked core stays inspectable;
+//   - a fresh boot afterwards (Corestore mints a new own-log key on first open),
+//     attempted even when the retire step fails, so a failed recovery never
+//     leaves the harness closed.
+//
+// Pure: every side effect is an injected dependency.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type OwnLogForkRecoveryBlocker =
+  | 'not_forked'
+  | 'key_required'
+  | 'key_mismatch'
+  | 'not_substrate_owner'
+  | 'flag_off';
+
+const BLOCKER_DETAIL: Record<OwnLogForkRecoveryBlocker, string> = {
+  not_forked:
+    'This process has no own-log fork recorded for the harness. A store reset is only warranted for a live fork, so nothing was touched.',
+  key_required:
+    'Pass keyHex (the forked own-log key, plan.forkedKeyHex) to execute. Naming the key is what proves you are retiring the store you inspected.',
+  key_mismatch:
+    'keyHex does not match the fork this process recorded. Re-read the fork state before retrying.',
+  not_substrate_owner:
+    'This process does not own the substrate: the booted handle and the store lock live in another process. Run this against the substrate-owner host (the bg-host on a split topology, or the single desktop/VM operator).',
+  flag_off:
+    'papercusp-own-log-fork-auto-recovery is off. It is an owner-authority kill-switch on this destructive reset; enable it on the owning host for the recovery window.',
+};
+
+export interface OwnLogForkRecoveryPlan {
+  workspaceId: string;
+  harnessSlug: string;
+  forkedKeyHex: string | null;
+  detectedAtMs: number | null;
+  storePath: string;
+  /** Where the forked store is moved to. It is never deleted by this path. */
+  retireTo: string;
+  flagEnabled: boolean;
+  substrateOwner: boolean;
+}
+
+export interface RunOwnLogForkRecoveryArgs {
+  workspaceId: string;
+  harnessSlug: string;
+  keyHex?: string;
+  confirm?: boolean;
+}
+
+export interface RunOwnLogForkRecoveryDeps {
+  getForkState: (workspaceId: string, harnessSlug: string) => OwnLogForkState;
+  isSubstrateOwner: () => boolean;
+  workspaceRoot: (workspaceId: string) => string;
+  closeBootedHarness: (workspaceId: string, harnessSlug: string) => Promise<boolean>;
+  retireStore: (from: string, to: string) => Promise<void>;
+  reboot: (workspaceId: string, harnessSlug: string, opts: { workspaceRoot: string }) => Promise<unknown>;
+  isEnabled?: () => Promise<boolean>;
+  recover?: typeof recoverForkedOwnLog;
+  now?: () => number;
+}
+
+export type RunOwnLogForkRecoveryResult =
+  | { outcome: 'dry_run'; plan: OwnLogForkRecoveryPlan; blockers: OwnLogForkRecoveryBlocker[]; blockerDetail: string[] }
+  | { outcome: 'refused'; plan: OwnLogForkRecoveryPlan; reason: OwnLogForkRecoveryBlocker; detail: string }
+  | {
+      outcome: 'recovered';
+      plan: OwnLogForkRecoveryPlan;
+      closedHandle: boolean;
+      reboot: unknown;
+      forkStateAfter: OwnLogForkState;
+    }
+  | {
+      outcome: 'failed';
+      plan: OwnLogForkRecoveryPlan;
+      closedHandle: boolean;
+      stage: 'retire';
+      error: string;
+      /** The re-boot attempted after the failure (the old store is still in place). */
+      reboot: unknown;
+    };
+
+export async function runOwnLogForkRecovery(
+  args: RunOwnLogForkRecoveryArgs,
+  deps: RunOwnLogForkRecoveryDeps,
+): Promise<RunOwnLogForkRecoveryResult> {
+  const { workspaceId, harnessSlug } = args;
+  const state = deps.getForkState(workspaceId, harnessSlug);
+  const workspaceRoot = deps.workspaceRoot(workspaceId);
+  const storePath = harnessStorePath({ workspaceRoot, harnessSlug });
+  const stamp = new Date((deps.now ?? Date.now)()).toISOString().replace(/[:.]/g, '-');
+  const keyTag = (state.keyHex ?? 'unknown').slice(0, 12);
+  const plan: OwnLogForkRecoveryPlan = {
+    workspaceId,
+    harnessSlug,
+    forkedKeyHex: state.keyHex,
+    detectedAtMs: state.detectedAtMs,
+    storePath,
+    retireTo: `${storePath}.forked-${keyTag}-${stamp}`,
+    flagEnabled: await (deps.isEnabled ?? defaultIsEnabled)(),
+    substrateOwner: deps.isSubstrateOwner(),
+  };
+
+  const blockers: OwnLogForkRecoveryBlocker[] = [];
+  if (!state.forked || !state.keyHex) blockers.push('not_forked');
+  else if (!args.keyHex) blockers.push('key_required');
+  else if (args.keyHex.toLowerCase() !== state.keyHex.toLowerCase()) blockers.push('key_mismatch');
+  if (!plan.substrateOwner) blockers.push('not_substrate_owner');
+  if (!plan.flagEnabled) blockers.push('flag_off');
+
+  if (args.confirm !== true) {
+    return { outcome: 'dry_run', plan, blockers, blockerDetail: blockers.map((b) => BLOCKER_DETAIL[b]) };
+  }
+  if (blockers.length > 0) {
+    const reason = blockers[0]!;
+    return { outcome: 'refused', plan, reason, detail: BLOCKER_DETAIL[reason] };
+  }
+
+  const closedHandle = await deps.closeBootedHarness(workspaceId, harnessSlug);
+  const recover = deps.recover ?? recoverForkedOwnLog;
+  let retireError: string | null = null;
+  try {
+    const res = await recover({
+      workspaceRoot,
+      workspaceId,
+      harnessSlug,
+      keyHex: state.keyHex!,
+      confirm: true,
+      rm: (path) => deps.retireStore(path, plan.retireTo),
+      // Already evaluated above; re-reading could flip mid-call.
+      isEnabled: async () => plan.flagEnabled,
+    });
+    if (!res.ok) retireError = `recoverForkedOwnLog refused: ${res.reason ?? 'unknown'}`;
+  } catch (err) {
+    retireError = err instanceof Error ? err.message : String(err);
+  }
+
+  // Boot again whatever happened: after a successful retire this mints a fresh
+  // own-log key; after a failed one it restores the harness to its prior
+  // (forked but open) state instead of leaving it closed.
+  const reboot = await deps
+    .reboot(workspaceId, harnessSlug, { workspaceRoot })
+    .catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
+
+  if (retireError !== null) {
+    return { outcome: 'failed', plan, closedHandle, stage: 'retire', error: retireError, reboot };
+  }
+  return {
+    outcome: 'recovered',
+    plan,
+    closedHandle,
+    reboot,
+    forkStateAfter: deps.getForkState(workspaceId, harnessSlug),
+  };
 }

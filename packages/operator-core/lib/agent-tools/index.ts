@@ -540,6 +540,7 @@ import './dev/why';
 import './dev/coord_categorize';
 import './dev/advisory_bet_signal';
 import './dev/dogfood_substrate_status';
+import './dev/own_log_fork_recover';
 import './dev/ipc_echo';
 import './dev/state_counter';
 import './dev/event_emitter';

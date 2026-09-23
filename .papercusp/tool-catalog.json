@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 901,
+  "count": 902,
   "tools": [
     {
       "name": "ablation:report",
@@ -10041,6 +10041,29 @@
       "guidance": {
         "when": "Checking whether the orient-dedup guidance is landing (pctRedundant should trend down from the ~100% baseline).",
         "notWhen": "Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence)."
+      }
+    },
+    {
+      "name": "dev:own_log_fork_recover",
+      "http": {
+        "path": "/api/agent-tools/dev/own_log_fork_recover",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Recover a harness whose OWN hyperbee log forked (an own_log_forked EI): close the booted harness, move its Corestore aside, and boot fresh so a new own-log key is minted. Dry run by default. To execute it needs confirm:true, the forked keyHex, the substrate-owner process, and the papercusp-own-log-fork-auto-recovery flag.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "operator",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "dev:dogfood_substrate_status shows ownLogFork.forked=true for a harness (its local writes are frozen). Run it dry first and read plan + blockers.",
+        "notWhen": "A stalled REMOTE log (no_replicator) or a swarm topic change: that is the self-heal loop or rekeyHarness, not a store reset. Never on a healthy own log.",
+        "chaining": "dev:dogfood_substrate_status (ownLogFork, ownLogOps) → this dry → confirm:true + keyHex on the substrate-owner host → dev:dogfood_substrate_status again."
       }
     },
     {
