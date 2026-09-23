@@ -3421,6 +3421,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // for a table with real history it would be silent data loss. See
         // ./seed-excluded-tables.
         excludeTables: SEED_EXCLUDED_TABLES,
+        // P-003: under the proportional cadence the last unfiltered set can be far past
+        // the producer's tail-scan window, so without the hint a cut folds from 0 (the
+        // ~7h failure mode). An unfiltered set is a safe seed for this filtered fold:
+        // `SnapshotRowFolder.add` drops the excluded tables from its rows again.
+        ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
       });
       if (snap.appended) {
         // The cadence restarts from this set. It is filtered, so it never becomes

@@ -155,6 +155,7 @@ const h = vi.hoisted(() => {
       errorCode?: string | null;
     }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
+    resourceReads: [] as Array<Record<string, unknown>>,
     verifySpawnParams: vi.fn(
       async (_u: unknown, _options?: { includeKeyDigest?: boolean }): Promise<{ ok: boolean; reason?: string; keySha256?: string }> => ({ ok: true }),
     ),
@@ -334,6 +335,10 @@ vi.mock('../../superuser-token', async (importOriginal) => {
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   resolveBearer: h.resolveBearer,
+  readResource: async (opts: { uri: string; bearer?: string; principal?: Principal }) => {
+    h.resourceReads.push({ ...opts });
+    return { ok: true, contents: { uri: opts.uri, mimeType: 'text/plain', text: 'spill contents' } };
+  },
 }));
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -1267,6 +1272,57 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
   });
 });
 
+describe('MCP scratch resource authentication', () => {
+  it('reads a judge scratch spill with its verified signed-spawn identity', async () => {
+    const uri = 'papercusp://scratch/ws-test/tools:invoke/11111111-2222-4333-8444-555555555555/result.spill';
+    await withSdkHost(
+      extraFor(signedUrl({ role: 'judge', client: 'judge-session-1' })),
+      async client => {
+        const result = await client.readResource({ uri });
+        expect(result.contents).toEqual([{ uri, mimeType: 'text/plain', text: 'spill contents' }]);
+        expect(h.resourceReads).toHaveLength(1);
+        expect(h.resourceReads[0]).toMatchObject({
+          uri,
+          principal: {
+            kind: 'harness',
+            slug: 'judge-session-1',
+            workspaceId: 'ws-test',
+            authMethod: 'spawn-url',
+            trust: 'trusted',
+          },
+        });
+        expect(h.resourceReads[0]).not.toHaveProperty('bearer');
+      },
+      'memory',
+    );
+  });
+
+  it('reads a power-user scratch spill within the token workspace', async () => {
+    h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
+    const uri = 'papercusp://scratch/ws-claim/tools:invoke/11111111-2222-4333-8444-555555555555/result.spill';
+    await withSdkHost(
+      extraFor(`${MCP}?power_user=1`, { authorization: 'Bearer pu-token' }),
+      async client => {
+        const result = await client.readResource({ uri });
+        expect(result.contents).toEqual([{ uri, mimeType: 'text/plain', text: 'spill contents' }]);
+        expect(h.resourceReads).toHaveLength(1);
+        expect(h.resourceReads[0]).toMatchObject({
+          uri,
+          principal: {
+            kind: 'system',
+            slug: 'sess-1',
+            workspaceId: 'ws-claim',
+            authMethod: 'bearer-token',
+            trust: 'trusted',
+          },
+        });
+        expect(h.resourceReads[0]).not.toHaveProperty('bearer');
+      },
+      'memory',
+    );
+  });
+});
+
 describe('authenticated admission binding through the real MCP handler', () => {
   it('binds the resolved SU workspace and original ephemeral run, not a recovery UUID', async () => {
     const result = await callTool('gatingtest:scoped', {}, superuserExtra('&workspace=ws-test&harness=papercup&sid=su-binding'));
@@ -1597,6 +1653,7 @@ beforeEach(() => {
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
   h.getSessionBrief.mockResolvedValue(null);
   seen.length = 0;
+  h.resourceReads.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.workspaceAcquireError = null;

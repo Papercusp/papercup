@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   describeSnapshotSet,
   isSnapshotOp,
+  produceFilteredSnapshotIntoLog,
   produceLogSnapshot,
   shouldCompactOwnLog,
   snapshotCompactThreshold,
@@ -184,6 +185,72 @@ describe('produceLogSnapshot priorSnapshotHint (P-003)', () => {
     });
     expect(res.appended).toBe(true);
     expect(res.rowCount).toBe(25);
+  });
+});
+
+/**
+ * Both filtered producers — the release-cut head snapshot (`produceLogSnapshot` with
+ * `excludeTables`, boot.ts) and the offline seed cut (`produceFilteredSnapshotIntoLog`,
+ * seed-provider-corestore.ts) — must accept the hint too. Before this, neither caller
+ * passed one, so a cut after a proportional-cadence gap folded the whole history.
+ */
+describe('filtered producers accept priorSnapshotHint (P-003)', () => {
+  const EXCLUDED = ['presence'];
+
+  function presencePut(hbKey: string, ts: number): PeerLogOp {
+    return { type: 'put', table: 'presence', hbKey, value: { here: true }, ts, schema_version: 1, author_pubkey: 'me' };
+  }
+
+  /** An UNFILTERED set (routine compaction), then a tail past the 4,000-op window. */
+  async function logWithDistantUnfilteredSet() {
+    const m = memLog();
+    for (let i = 0; i < 50; i++) await m.log.append(put(`K-${i % 10}`, i, i + 1));
+    await m.log.append(presencePut('P-1', 60));
+    const first = await produceLogSnapshot(m.log, { now: 100, schemaVersion: 1 });
+    for (let i = 0; i < 4_500; i++) await m.log.append(put(`K-${i % 25}`, 1_000 + i, 1_000 + i));
+    return { ...m, first };
+  }
+
+  it('head snapshot: seeds a filtered fold from a distant unfiltered set and drops the excluded rows', async () => {
+    const hinted = await logWithDistantUnfilteredSet();
+    const full = await logWithDistantUnfilteredSet();
+    hinted.reads.length = 0;
+    const a = await produceLogSnapshot(hinted.log, {
+      now: 200,
+      schemaVersion: 1,
+      excludeTables: EXCLUDED,
+      priorSnapshotHint: { coversUpTo: hinted.first.coversUpTo, chunkCount: hinted.first.chunkCount },
+    });
+    expect(Math.min(...hinted.reads)).toBe(hinted.first.coversUpTo);
+    const b = await produceLogSnapshot(full.log, { now: 200, schemaVersion: 1, excludeTables: EXCLUDED });
+    const rows = rowsOf(hinted.ops, a.coversUpTo);
+    expect(rows).toEqual(rowsOf(full.ops, b.coversUpTo));
+    expect([...rows.keys()].some((k) => k.startsWith('presence::'))).toBe(false);
+  });
+
+  it('offline seed cut: seeds from the hinted source set instead of folding from 0', async () => {
+    const src = await logWithDistantUnfilteredSet();
+    const hintedTarget = memLog('dd'.repeat(32));
+    src.reads.length = 0;
+    const a = await produceFilteredSnapshotIntoLog(src.log, hintedTarget.log, {
+      now: 200,
+      schemaVersion: 1,
+      excludeTables: EXCLUDED,
+      priorSnapshotHint: { coversUpTo: src.first.coversUpTo, chunkCount: src.first.chunkCount },
+    });
+    expect(a.appended).toBe(true);
+    expect(Math.min(...src.reads)).toBe(src.first.coversUpTo);
+
+    const fullTarget = memLog('ee'.repeat(32));
+    src.reads.length = 0;
+    const b = await produceFilteredSnapshotIntoLog(src.log, fullTarget.log, {
+      now: 200,
+      schemaVersion: 1,
+      excludeTables: EXCLUDED,
+    });
+    // The control: with no hint the 4,000-op tail scan misses the set and folds from 0.
+    expect(Math.min(...src.reads)).toBe(0);
+    expect(rowsOf(hintedTarget.ops, a.coversUpTo)).toEqual(rowsOf(fullTarget.ops, b.coversUpTo));
   });
 });
 

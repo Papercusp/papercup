@@ -74,6 +74,7 @@ import {
 } from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
+  findLatestCompleteSnapshot,
   findLatestCompleteSnapshotDetailed,
   SNAPSHOT_SCAN_LOOKBACK,
   type AdmittedLog,
@@ -458,7 +459,12 @@ export async function mintFilteredSeedContentCore(inp: {
         );
       };
       const projection = seedSnapshotValueTransform(inp.redactValues);
+      // P-003: the producer's own seek only scans a short tail window, and the
+      // proportional cadence leaves the newest set far behind it. Locate it with the
+      // reader's unbounded scan and hand it over; a miss still folds from 0 correctly.
+      const priorSet = await findLatestCompleteSnapshot(sourceLog).catch(() => null);
       const produced = await produceFilteredSnapshotIntoLog(sourceLog, synthetic, {
+        ...(priorSet ? { priorSnapshotHint: { coversUpTo: priorSet.coversUpTo, chunkCount: priorSet.chunkCount } } : {}),
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,

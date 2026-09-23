@@ -616,10 +616,12 @@ interface ProducerSnapshotSeed {
 }
 
 /**
- * Keep seed discovery bounded when a log has never been snapshotted. The reader
- * uses the same four-compaction-window bound; a producer snapshot is expected
- * to be within one cadence window of the tail, while a missing/old seed safely
- * falls back to the full fold below.
+ * Keep the hint-less seed discovery bounded when a log has never been snapshotted.
+ * Since P-003 the cadence is proportional to the live row count, so the newest set
+ * can sit far outside this window: every producer caller must pass the set it already
+ * knows (`priorSnapshotHint` / `hint`, located with the reader's unbounded
+ * `findLatestCompleteSnapshot`). This window only catches a set the caller did not
+ * know about near the tail; a miss safely falls back to the full fold below.
  */
 const PRODUCER_SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
 
@@ -1379,6 +1381,14 @@ export async function produceFilteredSnapshotIntoLog(
     stallMs?: number;
     /** Override how long one prior-snapshot seek read may hang before it is abandoned. */
     seekReadBudgetMs?: number;
+    /**
+     * A complete set the caller already located in `sourceLog` (P-003), e.g. with the
+     * reader's unbounded `findLatestCompleteSnapshot`. Verified first, then checked by
+     * `conflictingSnapshotExclusion` like any discovered set. Without it the seek only
+     * scans `PRODUCER_SNAPSHOT_SCAN_LOOKBACK` blocks of the tail, and the proportional
+     * cadence leaves the last set far outside that window, so the cut would fold from 0.
+     */
+    priorSnapshotHint?: { coversUpTo: number; chunkCount: number };
   },
 ): Promise<ProduceSnapshotResult> {
   // An EMPTY SOURCE means there is nothing to seed — mirror `produceLogSnapshot`'s
@@ -1436,6 +1446,7 @@ export async function produceFilteredSnapshotIntoLog(
   const priorSnapshot = await findLatestProducerSnapshot(sourceLog, {
     readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
     describe: 'filtered source scan',
+    ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
   });
   let foldFrom = 0;
   if (priorSnapshot) {
