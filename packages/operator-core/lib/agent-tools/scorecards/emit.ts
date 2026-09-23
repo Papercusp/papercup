@@ -56,7 +56,12 @@ import {
 } from '../../scorecards';
 import { realGitProbe } from '../../release/judged-sha-containment';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
-import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import {
+  adequacyCardRevisionDisposition,
+  PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_RUBRIC_REF,
+  specTestAdequacySubjectRef,
+} from '../plans/spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
 import {
   collapseCriticsToSoleParty,
@@ -88,7 +93,6 @@ import {
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
-import { SPEC_TEST_ADEQUACY_RUBRIC_REF, specTestAdequacySubjectRef } from '../plans/spec-test-adequacy';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -732,7 +736,7 @@ async function validateSpecTestAdequacyReplay(
 }
 
 type GradingAuditReplayConsistencyError = {
-  code: 'grading_audit_replay_uncorroborated' | 'grading_audit_replay_consistent';
+  code: 'grading_audit_replay_uncorroborated' | 'grading_audit_replay_consistent' | 'grading_audit_evaluator_changed';
   error: string;
 };
 
@@ -831,6 +835,40 @@ export async function validateGradingAuditReplayConsistency(
     Array.isArray(row.wouldBlock) ? row.wouldBlock.filter((key): key is string => typeof key === 'string') : [],
   );
   const gradedRatings: ObservationRatings = gradedObservation.ratings ?? {};
+  const liveRatingsForRevision: Record<string, { rating: string }> = {};
+  for (const [criterion, replayRating] of Object.entries(replayRatings)) {
+    if (typeof replayRating?.rating !== 'string') continue;
+    liveRatingsForRevision[criterion] = {
+      rating:
+        wouldBlock.has(criterion) && ratingVerdict(replayRating.rating) === 'pass'
+          ? 'blocked'
+          : replayRating.rating,
+    };
+  }
+  for (const criterion of wouldBlock) {
+    liveRatingsForRevision[criterion] ??= { rating: 'blocked' };
+  }
+  const revisionDisposition = adequacyCardRevisionDisposition({
+    recordedRevision: parsedRecipe.data.evaluatorRevision,
+    recordedRatings: gradedRatings,
+    liveRatings: liveRatingsForRevision,
+  });
+  if (
+    revisionDisposition.recordedRevision < revisionDisposition.currentRevision &&
+    revisionDisposition.state === 'verdict-changed'
+  ) {
+    const changedRatings = revisionDisposition.changed
+      .map(({ criterion, recorded, current }) => `${criterion} ${recorded ?? 'unrecorded'} -> ${current ?? 'unavailable'}`)
+      .join(', ');
+    return {
+      code: 'grading_audit_evaluator_changed',
+      error:
+        `grading-integrity cannot classify degenerate-distribution='fail': the spec-test-adequacy evaluator revision ` +
+        `changed from ${revisionDisposition.recordedRevision} to ${revisionDisposition.currentRevision} and changed ` +
+        `recorded ratings (${changedRatings}); re-emit the target card under the current evaluator revision, then audit it; ` +
+        'no audit card was persisted',
+    };
+  }
   const mismatches = Object.entries(gradedRatings).flatMap(([criterion, graded]) => {
     const gradedVerdict = ratingVerdict(graded.rating);
     if (gradedVerdict === null) return [];
