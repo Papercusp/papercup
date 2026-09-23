@@ -361,6 +361,22 @@ export type FilterLeaf = z.infer<typeof filterLeafSchema>;
 export type FilterNode = FilterLeaf | { all: FilterNode[] } | { any: FilterNode[] } | { not: FilterNode };
 
 /**
+ * Positive targeting predicate shared by the goal/plan fleet watchdog and
+ * portfolio receipts. AND narrows; every OR arm must retain the target;
+ * negation is never positive scope. An IN allowlist may name multiple targets:
+ * this proves targeting, not exclusive ownership or a matching worker claim.
+ */
+export function claimSpecFilterPositivelyTargets(filter: unknown, field: ItemField, value: string): boolean {
+  if (!filter || typeof filter !== 'object') return false;
+  const node = filter as Record<string, unknown>;
+  if (Array.isArray(node.all)) return node.all.some((n) => claimSpecFilterPositivelyTargets(n, field, value));
+  if (Array.isArray(node.any)) return node.any.length > 0 && node.any.every((n) => claimSpecFilterPositivelyTargets(n, field, value));
+  if ('not' in node || node.field !== field) return false;
+  if (node.op === '=') return node.value === value;
+  return node.op === 'in' && Array.isArray(node.value) && node.value.includes(value);
+}
+
+/**
  * True when a claim spec's filter tree references `field` anywhere, including
  * below `all` / `any` / `not`. This is intentionally structural: callers that
  * use a field reference as an authorization signal must not re-implement a

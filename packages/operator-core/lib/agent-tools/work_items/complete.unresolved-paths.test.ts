@@ -42,7 +42,10 @@ import {
   unresolvedPathsInCompletion,
   workspaceQualifiedCompletionPathHint,
 } from './complete';
-import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
+import {
+  CompletionVerificationEvidenceSchema,
+  type CompletionVerificationEvidence,
+} from '../../coord-lifecycle/records';
 
 const ROOT = '/repo';
 const SIDESTAGE_ROOT = '/hives/sidestage';
@@ -369,6 +372,19 @@ describe('workspaceQualifiedCompletionPathHint', () => {
 
 describe('complete.ts workspace-qualified warning wiring', () => {
   const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
+
+  it('documents and accepts absolute paths for out-of-tree completion artifacts', () => {
+    const field = CompletionVerificationEvidenceSchema.shape.filesChanged;
+    expect(field.description).toContain('absolute path');
+    expect(field.description).toContain('outOfRepoArtifact');
+    expect(field.description).toContain('External contents are not hashed');
+    expect(
+      CompletionVerificationEvidenceSchema.safeParse({
+        filesChanged: ['/home/agent/interview-prep/answer.html'],
+      }).success,
+    ).toBe(true);
+    expect(unresolvedPathsInCompletion(ev(['/home/agent/interview-prep/answer.html']), probe)).toBeUndefined();
+  });
 
   it('computes the repair hint from each unresolved path and the active completion workspace', () => {
     expect(source).toMatch(

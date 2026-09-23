@@ -114,9 +114,14 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
     manualRunAuthority: null,
     releaseTrigger: {
       active: true,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
       pause: null,
       blocked: false,
       blockReason: null,
+      fireStale: false,
+      fireStaleReason: null,
     },
     liveCertification: null,
     canTriggerGreen: false,
@@ -193,9 +198,31 @@ afterEach(() => {
 
 describe('release:deploy — status', () => {
   it('returns the full status read-only (no launch)', async () => {
-    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
+    statusM.mockResolvedValue(
+      mkStatus({
+        state: 'gate-red',
+        canTriggerGreen: false,
+        gate: { ...mkStatus().gate, fireStale: false },
+        releaseTrigger: {
+          ...mkStatus().releaseTrigger,
+          cron: '0 */15 * * * *',
+          lastFiredAtMs: 1_790_161_000_000,
+          nextFireAtMs: 1_790_161_900_000,
+          fireStale: true,
+          fireStaleReason: 'release-trigger has not fired while green commits are pending',
+        },
+      }),
+    );
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'gate-red' });
+    expect(b.gate.fireStale).toBe(false);
+    expect(b.releaseTrigger).toMatchObject({
+      cron: '0 */15 * * * *',
+      lastFiredAtMs: 1_790_161_000_000,
+      nextFireAtMs: 1_790_161_900_000,
+      fireStale: true,
+      fireStaleReason: 'release-trigger has not fired while green commits are pending',
+    });
     expect(b.diagnosticVintage).toMatchObject({
       status: 'stale',
       stagingHeadSha: 'staging0head',
@@ -381,6 +408,9 @@ describe('release:deploy — trigger', () => {
         nothingToDeploy: false,
         releaseTrigger: {
           active: false,
+          cron: null,
+          lastFiredAtMs: null,
+          nextFireAtMs: null,
           pause: {
             reason: 'hold until repaired checkout is green',
             pausedBy: 'su-release-owner',
@@ -389,6 +419,8 @@ describe('release:deploy — trigger', () => {
           },
           blocked: true,
           blockReason: 'release-trigger is deliberately paused: hold until repaired checkout is green',
+          fireStale: false,
+          fireStaleReason: null,
         },
         recommendation: 'Do NOT resume until the repaired checkout is green.',
       }),

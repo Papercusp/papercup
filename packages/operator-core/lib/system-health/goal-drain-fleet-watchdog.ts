@@ -79,6 +79,7 @@ import {
 } from '../goals/holder';
 import {
   DEFAULT_CLAIM_SPEC,
+  claimSpecFilterPositivelyTargets as claimSpecFilterConstrainsField,
   validateClaimSpec,
   type ClaimSpec,
   type FilterNode,
@@ -201,30 +202,6 @@ export type DrainFleetSpecScope = 'goal-scoped' | 'not-goal-scoped' | 'goal-coho
  */
 export function claimSpecFilterConstrainsGoal(filter: unknown, goalId: string): boolean {
   return claimSpecFilterConstrainsField(filter, 'goal', goalId);
-}
-
-/**
- * PURE: does every row admitted by this filter carry one positive field value?
- *
- * An `all` narrows when any branch pins the value; an `any` pins only when every
- * branch does. Negation never counts. This is the same nullable-field rule the
- * goal-scoped drain-fleet check already used, lifted so the plan-fleet leg does
- * not grow a subtly different parser.
- */
-function claimSpecFilterConstrainsField(filter: unknown, field: 'goal' | 'plan', value: string): boolean {
-  if (!filter || typeof filter !== 'object') return false;
-  const node = filter as Record<string, unknown>;
-  if (Array.isArray(node.all)) {
-    return node.all.some((n) => claimSpecFilterConstrainsField(n, field, value));
-  }
-  if (Array.isArray(node.any)) {
-    return node.any.length > 0 && node.any.every((n) => claimSpecFilterConstrainsField(n, field, value));
-  }
-  if ('not' in node) return false;
-  if (node.field !== field) return false;
-  if (node.op === '=') return node.value === value;
-  if (node.op === 'in') return Array.isArray(node.value) && node.value.includes(value);
-  return false;
 }
 
 /** PURE: `claimSpecFilterConstrainsGoal` lifted to a whole stored spec. */

@@ -24122,7 +24122,7 @@
       "guidance": {
         "when": "An item's status changes — picking up (todo→wip, which also claims it), completing (wip→done), intentionally departing (→dropped with `note` preferred or `rationale` required), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
         "notWhen": "You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.",
-        "chaining": "plans:items { actionable: true } → plans:set-status { item, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On a per-item claim_conflict: coord:send the holder or pick another item."
+        "chaining": "plans:items { actionable: true } → plans:set-status { item, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict, coordinate only when a holder is returned; if claimHold is present, inspect its provenance and use work_items:hold_open only when clearing the park is appropriate."
       }
     },
     {
