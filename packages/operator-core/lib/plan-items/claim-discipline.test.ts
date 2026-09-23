@@ -109,6 +109,27 @@ describe('claimForWork', () => {
     const out = await claimForWork({ ...scope, itemId: 'P-001' });
     expect(out).toEqual({ ok: false, reason: 'assigned to bob' });
   });
+
+  it('preserves linked claim-hold context on a holderless refusal', async () => {
+    mockGetClaim.mockResolvedValue(null);
+    const claimHold = {
+      workItemId: 'WI-anonymous-park',
+      provenance: { heldOpen: null, parked: null, attributed: false },
+    };
+    mockClaimPlanItem.mockResolvedValue({
+      status: 'refused',
+      reason: 'work item WI-anonymous-park is parked by claimHold',
+      claimHold,
+    });
+
+    const out = await claimForWork({ ...scope, itemId: 'P-001' });
+
+    expect(out).toEqual({
+      ok: false,
+      reason: 'work item WI-anonymous-park is parked by claimHold',
+      claimHold,
+    });
+  });
 });
 
 describe('releaseOwnClaim', () => {

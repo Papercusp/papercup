@@ -1139,6 +1139,7 @@ export default defineTool({
           ? queue.admissionPrecheck
           : undefined;
         if (matchingPrecheck?.status === 'running' && matchingPrecheck.expiresAtMs > Date.now()) {
+          const retrySourceCommit = matchingPrecheck.sourceCommit ?? outcome.entry.source.sha;
           return json({
             ...base,
             ok: true,
@@ -1153,7 +1154,10 @@ export default defineTool({
               repairHead: queue.repairHead,
               updatedAtMs: queue.updatedAtMs,
             },
-            note: 'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+            note:
+              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
+              (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${retrySourceCommit}'` : '') +
+              '.',
           });
         }
         if (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true) {
@@ -1176,6 +1180,7 @@ export default defineTool({
             candidate: queue.candidate,
             repairHead: queue.repairHead,
             builtCommit,
+            sourceCommit: outcome.entry.source.sha,
             builtTree: outcome.tree,
             files: [...population.files],
             actor: identity.ownerId,
@@ -1273,7 +1278,10 @@ export default defineTool({
               repairHead: pendingQueue.repairHead,
               updatedAtMs: pendingQueue.updatedAtMs,
             },
-            note: 'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity.',
+            note:
+              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
+              (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
+              '.',
           });
         }
         if (!precheck.ok) {
@@ -1438,7 +1446,9 @@ export default defineTool({
             expectedUpdatedAtMs: expectedQueueIdentity.expectedUpdatedAtMs,
           });
         } else {
-          await writeFrozenCandidateRepairQueue(inspected.target, next);
+          await writeFrozenCandidateRepairQueue(inspected.target, next, {
+            expectedUpdatedAtMs: queue.updatedAtMs,
+          });
         }
       } catch {
         persisted = false;
@@ -1602,7 +1612,9 @@ export default defineTool({
       const next: FrozenCandidateRepairQueue = { ...queue, manifest: outcome.manifest };
       let persisted = true;
       try {
-        await writeFrozenCandidateRepairQueue(inspected.target, next);
+        await writeFrozenCandidateRepairQueue(inspected.target, next, {
+          expectedUpdatedAtMs: queue.updatedAtMs,
+        });
       } catch {
         persisted = false;
       }

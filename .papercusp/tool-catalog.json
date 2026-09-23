@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 905,
+  "count": 906,
   "tools": [
     {
       "name": "ablation:report",
@@ -27964,6 +27964,44 @@
       "guidance": {
         "when": "A rubrics:amend returned { pending:true, receipt } and you need its outcome.",
         "notWhen": "You have no receipt — read the rubric with rubrics:get instead."
+      }
+    },
+    {
+      "name": "rubrics:check-approver",
+      "http": {
+        "path": "/api/agent-tools/rubrics/check-approver",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read-only pre-dispatch lineage screen for a prospective reviewer of a started acceptance BAR amendment. This reports eligibility only; it does not approve, authorize, or apply an amendment.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before routing an outside-lineage reviewer for a started acceptance BAR amendment, when the candidate ownerId is known.",
+        "notWhen": "Do not treat an eligible result as approval. The reviewer must still inspect the full candidate criteria and fresh dry-run diff on a durable thread; the apply guard remains authoritative.",
+        "chaining": "rubrics:check-approver { rubricRef, ownerId } → route only eligible candidates → post the exact candidate criteria and fresh rubrics:amend dryRun diff for the reviewer to inspect → collect the approval receipt → apply with rubrics:amend."
       }
     },
     {

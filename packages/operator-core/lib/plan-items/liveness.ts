@@ -337,6 +337,15 @@ export async function notifyImplementingWorkItemHolderOfCollision(opts: ClaimPla
   }
 }
 
+export type LinkedClaimHold = {
+  workItemId: string;
+  provenance: {
+    heldOpen: { by: string; reason: string | null; at: string | null } | null;
+    parked: { by: string; reason: string | null; at: string | null } | null;
+    attributed: boolean;
+  };
+};
+
 export type ClaimPlanItemResult =
   | {
       status: 'claimed';
@@ -359,6 +368,7 @@ export type ClaimPlanItemResult =
       holder?: PlanItemClaim;
       holderLiveness?: HolderLiveness;
       hint?: string;
+      claimHold?: LinkedClaimHold;
     };
 
 /**
@@ -375,9 +385,12 @@ export type ClaimPlanItemResult =
 async function parkedImplementingWorkItem(
   planSlug: string,
   itemId: string,
-): Promise<{ id: string } | null> {
+): Promise<LinkedClaimHold | null> {
   try {
-    const [{ findImplementingWorkItem, TERMINAL_WORK_ITEM_STATES }, { isClaimHoldParked }] = await Promise.all([
+    const [
+      { findImplementingWorkItem, TERMINAL_WORK_ITEM_STATES },
+      { isClaimHoldParked, readWorkItemClaimHoldProvenance },
+    ] = await Promise.all([
       import('./convert'),
       import('../work-items'),
     ]);
@@ -389,7 +402,10 @@ async function parkedImplementingWorkItem(
     ) {
       return null;
     }
-    return { id: workItem.id };
+    return {
+      workItemId: workItem.id,
+      provenance: readWorkItemClaimHoldProvenance(workItem.payload),
+    };
   } catch {
     // An implementing record is optional for an unconverted plan item. Keep
     // the established fail-open behavior if its best-effort lookup is down.
@@ -447,8 +463,9 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     return {
       status: 'refused',
       reason:
-        `work item ${parked.id} is parked by claimHold; clear the durable park explicitly ` +
+        `work item ${parked.workItemId} is parked by claimHold; clear the claim hold explicitly ` +
         'before claiming this plan item again',
+      claimHold: parked,
     };
   }
 

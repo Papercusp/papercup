@@ -35,12 +35,22 @@ vi.mock('../agent-tools/plans/source', () => ({
 }));
 vi.mock('./assignments', () => ({
   listAssignmentsForPlan: async () => h.assignments,
+  getAssignment: async () => null,
 }));
 vi.mock('./claims', () => ({
   listClaimsForPlan: async () => h.claims,
+  getClaim: async () => null,
+  acquireClaim: async () => { throw new Error('unexpected claim acquisition'); },
+  forceTakeoverClaim: async () => { throw new Error('unexpected force takeover'); },
+  releaseClaim: async () => false,
 }));
 vi.mock('./convert', () => ({
   findImplementingWorkItem: (...args: [string, string]) => h.findImplementingWorkItem(...args),
+  TERMINAL_WORK_ITEM_STATES: new Set(['done', 'dropped', 'closed', 'resolved']),
+}));
+vi.mock('./work-group', () => ({
+  workGroupExists: async () => false,
+  isWorkGroupMember: async () => true,
 }));
 vi.mock('../work-items', () => ({
   isClaimHoldParked: (payload: unknown) => String((payload as { _claimHold?: unknown } | null)?._claimHold) === 'true',
@@ -62,7 +72,7 @@ vi.mock('../work-items', () => ({
     return { heldOpen, parked, attributed: Boolean(heldOpen || parked) };
   },
 }));
-import { mergedPlanItemStates, priorHolderStillLive } from './liveness';
+import { claimPlanItem, mergedPlanItemStates, priorHolderStillLive } from './liveness';
 import type { PlanItemClaim } from './claims';
 
 const lapsedClaim = (owner: string): Pick<PlanItemClaim, 'owner' | 'expired'> => ({ owner, expired: true });
@@ -167,5 +177,34 @@ describe('mergedPlanItemStates implementing-work-item projection (EI-22024943221
     expect(rows).toHaveLength(2);
     expect(rows[0]?.implementingWorkItem).toBeNull();
     expect(rows[0]?.disposition).toBe('pooled');
+  });
+});
+
+describe('claimPlanItem linked claim-hold refusal', () => {
+  it('returns the parked work-item id and makes missing provenance explicit', async () => {
+    h.implementing.set('P-001', {
+      id: 'WI-anonymous-park',
+      state: 'open',
+      payload: { _claimHold: true },
+    });
+
+    const result = await claimPlanItem({
+      workspaceId: 'default',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan',
+      itemId: 'P-001',
+      owner: 'su-reader',
+      ownerUser: 'reader@example.com',
+      livenessMode: 'availability',
+    });
+
+    expect(result).toMatchObject({
+      status: 'refused',
+      reason: expect.stringContaining('work item WI-anonymous-park is parked by claimHold'),
+      claimHold: {
+        workItemId: 'WI-anonymous-park',
+        provenance: { heldOpen: null, parked: null, attributed: false },
+      },
+    });
   });
 });

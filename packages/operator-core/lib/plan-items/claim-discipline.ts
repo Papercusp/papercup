@@ -22,7 +22,7 @@
  * (`claimPlanItem`) — this module only decides WHEN those verbs fire.
  */
 import { getClaim, listClaimsForPlan, releaseClaim } from './claims';
-import { claimPlanItem } from './liveness';
+import { claimPlanItem, type LinkedClaimHold } from './liveness';
 
 export interface ClaimForWorkOpts {
   workspaceId: string;
@@ -42,6 +42,7 @@ export type ClaimForWorkOutcome =
       ok: false;
       reason: string;
       holder?: { owner: string; ownerLabel: string | null; intent: string; expiresTs: string };
+      claimHold?: LinkedClaimHold;
     };
 
 /**
@@ -81,7 +82,11 @@ export async function claimForWork(opts: ClaimForWorkOpts): Promise<ClaimForWork
       },
     };
   }
-  return { ok: false, reason: res.reason };
+  return {
+    ok: false,
+    reason: res.reason,
+    ...(res.claimHold ? { claimHold: res.claimHold } : {}),
+  };
 }
 
 /**
