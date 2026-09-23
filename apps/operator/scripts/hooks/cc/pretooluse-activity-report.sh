@@ -100,7 +100,7 @@ fi
 
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
-import json, os, re, sys, time, urllib.request, urllib.parse
+import hashlib, json, os, re, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token_path, owner, agent, harness_slug, hook_dir = sys.argv[1:7]
@@ -192,12 +192,30 @@ def _within(path, window):
 if PRE_MIN_INTERVAL_SEC > 0 and any(
         _within(_report_marker(p), PRE_MIN_INTERVAL_SEC) for p in ('pre', 'post')):
     sys.exit(0)
+
+# ── Change of state (RSR-P-012-A, plan decision D-014) ──
+# A dispatch report identical to the last one sent (same args minus the per-call
+# tool_use_id) is not a change of state, so it is skipped. One exception counts as a
+# change: the activity-claim lease is due for renewal. activity:report is the only
+# liveness source for activity-mode claims (plan-items/activity-claim-renewal.ts, lease
+# >=20m), so an identical report still goes out once KEEPALIVE_SEC has passed since the
+# last dispatch report. The fingerprint is the marker file's content.
+KEEPALIVE_SEC = float(os.environ.get('PAPERCUSP_ACTIVITY_KEEPALIVE_SEC') or '600')
+_fp = hashlib.sha256(json.dumps(
+    {k: v for k, v in args.items() if k != 'tool_use_id'}, sort_keys=True, default=str,
+).encode()).hexdigest()
+try:
+    with open(_report_marker('pre')) as _f:
+        _last_fp = _f.read().strip()
+except Exception:
+    _last_fp = ''
+if _last_fp == _fp and _within(_report_marker('pre'), KEEPALIVE_SEC):
+    sys.exit(0)
 try:
     _m = _report_marker('pre')
     os.makedirs(os.path.dirname(_m), mode=0o700, exist_ok=True)
-    with open(_m, 'a'):
-        pass
-    os.utime(_m, None)
+    with open(_m, 'w') as _f:
+        _f.write(_fp)
 except Exception:
     pass  # an unwritable cache never suppresses the report
 

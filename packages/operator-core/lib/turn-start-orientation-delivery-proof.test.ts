@@ -29,6 +29,11 @@ import {
   resetReadCursorStore,
 } from './agent-tools/coordination/read-cursors';
 import { buildTurnStartOrientationBlock, type OrientationDeps } from './turn-start-orientation';
+import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
+import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
+import { GOAL_PLACEMENT_DELIVERY_KEY, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
+import type { TranscriptTailTurn } from './turn-journal';
+import { drainDetached } from './detached-imports';
 
 const HISTORY_LINE = 'post-claim history update(s)';
 
@@ -65,6 +70,7 @@ const deps: OrientationDeps = {
   toolSurface: async () => null,
   carryBlindWindow: async () => null,
   contextEpoch: async () => 1,
+  contextTokens: async () => null,
 };
 
 const turn = (confirmedDeliveryToken?: string | null) =>
@@ -80,7 +86,11 @@ beforeEach(() => {
   store = new RecordingStore();
   configureReadCursorStore(store);
 });
-afterEach(() => resetReadCursorStore());
+afterEach(async () => {
+  await drainDetached();
+  resetReadCursorStore();
+  vi.restoreAllMocks();
+});
 
 describe('turn-start orientation — ack-on-proof', () => {
   it('re-sends a line whose delivery was never proven, and stops once it is', async () => {
@@ -109,5 +119,108 @@ describe('turn-start orientation — ack-on-proof', () => {
     // Arrival alone acks: the line is suppressed although nothing was proven.
     const second = await turn();
     expect(second.block).not.toContain(HISTORY_LINE);
+  });
+});
+
+describe('goal placement receipts through the real orientation ACK path', () => {
+  function fixture() {
+    const at = (minute: number) => new Date(Date.UTC(2026, 8, 23, 0, minute));
+    const row = defineAgentObligation({
+      family: 'plan-placement', ruleId: 'placement', ruleRevision: 'v1',
+      scope: { ownerId: 'su-proof', workspaceId: 'ws-proof', goalId: 'goal', planSlug: 'plan' },
+      responsibleOwnerId: 'su-proof', title: 'Place plan', status: 'due', reason: 'No member claim.',
+      authority: { kind: 'policy', sourceRef: 'fixture:policy', revision: 'v1' },
+      priority: 'high', causalRank: 1, evidence: [], applicableDemand: 1,
+      sourceGeneration: 'generation-1', episode: 'fixture-episode',
+      clearsWhen: { id: 'claimed', summary: 'Member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
+      action: { kind: 'delegate', summary: 'Staff plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
+    });
+    const brief = projectAgentTurnStartObligationBrief({ schemaVersion: AGENT_OBLIGATION_SCHEMA_VERSION,
+      evaluatedAt: at(2).toISOString(), sourceGeneration: 'generation-1', evaluations: [row], primary: [row], conflicts: [] });
+    const native = { sourceKind: 'codex' as const, sessionId: 'native-proof', filePath: '/fixture/native' };
+    const nativeTurn = (id: string, minute: number, responseDisposition: TranscriptTailTurn['responseDisposition'] = 'delivered'): TranscriptTailTurn => ({
+      speaker: 'assistant', text: 'Response, not execution evidence.', ts: at(minute), requestId: id, responseDisposition,
+    });
+    let turns = [nativeTurn('prior', 1)];
+    let now = at(2).getTime();
+    const receiptDeps: GoalPlacementTurnReceiptDeps = {
+      current: vi.fn(async () => native), lookup: vi.fn(async () => native), tail: vi.fn(async () => turns),
+      append: vi.fn(async () => {}), now: () => now,
+    };
+    const goalDeps: OrientationDeps = { ...deps, held: async () => [], historyUpdates: async () => [],
+      loopArmed: async () => false, obligations: async () => brief };
+    return { row, brief, receiptDeps, goalDeps,
+      finish: (disposition: TranscriptTailTurn['responseDisposition'] = 'delivered') => {
+        turns = [nativeTurn('prior', 1), nativeTurn('current', 3, disposition)]; now = at(4).getTime();
+      },
+      turn: (token: string | null | undefined, overrides: Partial<OrientationDeps> = {}, budgetChars?: number) =>
+        buildTurnStartOrientationBlock({ ownerId: 'su-proof', workspaceId: 'ws-proof',
+          deps: { ...goalDeps, ...overrides }, progressReceiptDeps: receiptDeps,
+          ...(token === undefined ? {} : { confirmedDeliveryToken: token }),
+          ...(budgetChars === undefined ? {} : { budgetChars }),
+        }),
+    };
+  }
+
+  it('records the exact delivered row after ACK and native completion even when the next state is empty', async () => {
+    const f = fixture();
+    const first = await f.turn(null);
+    expect(first.block).toContain(formatAgentObligationLine(f.row, 'action'));
+    expect(first.deliveryToken).toEqual(expect.any(String));
+    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+    f.finish();
+    const next = await f.turn(first.deliveryToken, { obligations: async () => null });
+    await drainDetached();
+    expect(next.block).toBe('');
+    expect(store.acks[1]?.result.committed?.[GOAL_PLACEMENT_DELIVERY_KEY]).toMatchObject({ token: first.deliveryToken });
+    expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+      goalPlacementTurn: expect.objectContaining({ obligationId: f.row.id, deliveryToken: first.deliveryToken,
+        completedTurnRef: 'codex:native-proof:current', atConfirmation: null }),
+    } }));
+  });
+
+  it('a wrong token does not prove the first exposure; only a subsequently emitted retry can be recorded', async () => {
+    const f = fixture();
+    const first = await f.turn(null); f.finish();
+    const retry = await f.turn('not-the-token');
+    await drainDetached();
+    expect(retry.block).toContain(formatAgentObligationLine(f.row, 'action'));
+    expect(retry.deliveryToken).not.toBe(first.deliveryToken);
+    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+  });
+
+  it.each(['progress', 'interrupted'] as const)('does not record a %s native response despite valid delivery proof', async (disposition) => {
+    const f = fixture(); const first = await f.turn(null); f.finish(disposition);
+    await f.turn(first.deliveryToken); await drainDetached();
+    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+  });
+
+  it('legacy arrival ACK never becomes a goal exposure receipt', async () => {
+    const f = fixture();
+    const first = await f.turn(undefined); f.finish();
+    await f.turn(undefined); await drainDetached();
+    expect(first.deliveryToken).toBeNull();
+    expect(f.receiptDeps.current).not.toHaveBeenCalled();
+    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+  });
+
+  it('does not measure an action omitted by the outer orientation budget', async () => {
+    const f = fixture();
+    const first = await f.turn(null, {}, 10);
+    expect(first.block).not.toContain(formatAgentObligationLine(f.row, 'action'));
+    expect(f.receiptDeps.current).not.toHaveBeenCalled();
+  });
+
+  it('keeps the action deliverable when native baseline IO times out, without fabricating a receipt', async () => {
+    const f = fixture();
+    f.receiptDeps.current = vi.fn(() => new Promise(() => {}));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = await f.turn(null);
+    expect(first.block).toContain(formatAgentObligationLine(f.row, 'action'));
+    expect(first.deliveryToken).toEqual(expect.any(String));
+    await f.turn(first.deliveryToken, { obligations: async () => null }); await drainDetached();
+    expect(store.acks[1]?.result.committed?.[GOAL_PLACEMENT_DELIVERY_KEY]).toMatchObject({ unavailable: true, reason: 'timeout' });
+    expect(f.receiptDeps.lookup).not.toHaveBeenCalled();
+    expect(f.receiptDeps.append).not.toHaveBeenCalled();
   });
 });
