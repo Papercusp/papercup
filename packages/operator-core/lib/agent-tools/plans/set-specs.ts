@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { bulkContent, runBulk } from '../_bulk';
@@ -87,8 +88,9 @@ const specWriteSchema = z
     }
   });
 
-const argsSchema = z
-  .object({
+// RSR-P-008-A: the spec/items rule is reported alongside any shape defect.
+const argsSchema = refineEvenWithShapeIssues(
+  z.object({
     harness: harnessArg,
     slug: z
       .string()
@@ -113,10 +115,12 @@ const argsSchema = z
       .max(200)
       .optional()
       .describe('Append several clause revisions at once — each a full spec write.'),
-  })
-  .refine((args) => Boolean(args.spec) !== Boolean(args.items), {
-    message: 'pass exactly one of `spec` or `items`',
-  });
+  }),
+  (args, ctx) => {
+    if (Boolean(args.spec) !== Boolean(args.items)) return;
+    ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of `spec` or `items`' });
+  },
+);
 
 const OK = new Set(['created', 'revised', 'unchanged']);
 

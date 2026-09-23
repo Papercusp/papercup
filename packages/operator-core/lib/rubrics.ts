@@ -3346,6 +3346,15 @@ interface AcceptanceAmendmentResult {
   preview?: AcceptanceBarAmendmentPreview;
 }
 
+type AcceptanceBarApproverRelationVia = 'caller' | 'rubric-author' | 'subject-owner' | 'plan-implementer';
+type AcceptanceBarApproverEvaluation = {
+  approvedBy: string;
+  eligible: boolean;
+  relatedImplementer: string | null;
+  relatedVia?: AcceptanceBarApproverRelationVia;
+  eligibleWithUnrelatedApplier: boolean;
+};
+
 export interface AcceptanceBarAmendmentPreview {
   rubricRevision: number;
   subjectPlanRevision: number;
@@ -3423,9 +3432,50 @@ export interface AcceptanceBarAmendmentPreview {
     eligible: boolean;
     relatedImplementer: string | null;
     /** Which injected identity the approver is related to. `'caller'` ⇒ artifact, not history. */
-    relatedVia?: 'caller' | 'rubric-author' | 'subject-owner' | 'plan-implementer';
+    relatedVia?: AcceptanceBarApproverRelationVia;
     /** `eligible` recomputed over the population EXCLUDING the caller. */
     eligibleWithUnrelatedApplier?: boolean;
+  };
+}
+
+export type AcceptanceBarApproverEligibilityReason =
+  | 'eligible'
+  | 'related_to_plan_implementer'
+  | 'related_to_rubric_author'
+  | 'related_to_subject_owner'
+  | 'related_to_applier';
+
+export interface AcceptanceBarApproverEligibilityCheck {
+  rubricId: string;
+  subjectPlan: string;
+  ownerId: string;
+  eligible: boolean;
+  reason: AcceptanceBarApproverEligibilityReason;
+  eligibleWithUnrelatedApplier: boolean;
+}
+
+async function evaluateAcceptanceBarApproverEligibility(
+  approvedBy: string,
+  roles: ReadonlyMap<string, AcceptanceBarApproverRelationVia>,
+  opts: NonNullable<Parameters<typeof areAcceptanceLineageRelated>[2]> = {},
+): Promise<AcceptanceBarApproverEvaluation> {
+  const durable = [...roles.entries()].filter(([, via]) => via !== 'caller').map(([identity]) => identity);
+  const callerOnly = [...roles.entries()].filter(([, via]) => via === 'caller').map(([identity]) => identity);
+  const relatedTo = async (population: string[]) => {
+    for (const identity of population) {
+      if (await areAcceptanceLineageRelated(approvedBy, identity, opts)) return identity;
+    }
+    return null;
+  };
+  const durableRelation = await relatedTo(durable);
+  const callerRelation = durableRelation === null ? await relatedTo(callerOnly) : null;
+  const relatedImplementer = durableRelation ?? callerRelation;
+  return {
+    approvedBy,
+    eligible: relatedImplementer === null,
+    relatedImplementer,
+    relatedVia: relatedImplementer === null ? undefined : roles.get(relatedImplementer),
+    eligibleWithUnrelatedApplier: durableRelation === null,
   };
 }
 
@@ -4150,9 +4200,8 @@ async function amendAcceptanceBarRubric(
           // subject owner and the resolved plan implementers are durable history. Attribute
           // the durable roles FIRST so a caller who is independently a real implementer keeps
           // that attribution instead of being softened to 'caller'.
-          type RelatedVia = NonNullable<AcceptanceBarAmendmentPreview['approverEligibility']>['relatedVia'];
-          const roles = new Map<string, RelatedVia>();
-          const attribute = (identity: string | null | undefined, via: RelatedVia) => {
+          const roles = new Map<string, AcceptanceBarApproverRelationVia>();
+          const attribute = (identity: string | null | undefined, via: AcceptanceBarApproverRelationVia) => {
             const key = norm(identity);
             if (key && !roles.has(key)) roles.set(key, via);
           };
@@ -4168,34 +4217,11 @@ async function amendAcceptanceBarRubric(
           previewImplementers = [...roles.keys()].sort();
           const prospectiveApprover = norm(input.approvedBy);
           if (prospectiveApprover) {
-            const durable = previewImplementers.filter((identity) => roles.get(identity) !== 'caller');
-            const callerOnly = previewImplementers.filter((identity) => roles.get(identity) === 'caller');
-            const relatedTo = async (population: string[]) => {
-              for (const implementer of population) {
-                if (
-                  await areAcceptanceLineageRelated(prospectiveApprover, implementer, {
-                    sql: tx as never,
-                    workspaceId: subjectScope.workspaceId,
-                  })
-                ) {
-                  return implementer;
-                }
-              }
-              return null;
-            };
-            // Scan the durable population first: a genuine disqualification should be the one
-            // reported even when the caller also relates, and it short-circuits the extra read.
-            const durableRelation = await relatedTo(durable);
-            const callerRelation = durableRelation === null ? await relatedTo(callerOnly) : null;
-            const relatedImplementer = durableRelation ?? callerRelation;
-            approverEligibility = {
-              approvedBy: prospectiveApprover,
-              // Unchanged semantics: predicts the apply as performed by THIS caller.
-              eligible: relatedImplementer === null,
-              relatedImplementer,
-              relatedVia: relatedImplementer === null ? undefined : roles.get(relatedImplementer),
-              eligibleWithUnrelatedApplier: durableRelation === null,
-            };
+            approverEligibility = await evaluateAcceptanceBarApproverEligibility(
+              prospectiveApprover,
+              roles,
+              { sql: tx as never, workspaceId: subjectScope.workspaceId },
+            );
           }
         }
         const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
@@ -4601,6 +4627,73 @@ export async function previewAcceptanceBarAmendment(
   }
   const scope = await resolveRubricWriteScope(input.rubricId);
   return (await amendAcceptanceBarRubric(input, scope, true))?.preview ?? null;
+}
+
+export async function checkAcceptanceBarApproverEligibility(input: {
+  rubricId: string;
+  ownerId: string;
+  applierId?: string;
+}): Promise<AcceptanceBarApproverEligibilityCheck> {
+  const rubricId = input.rubricId.trim();
+  const ownerId = input.ownerId.trim();
+  const applierId = input.applierId?.trim();
+  if (!rubricId || !ownerId) throw new Error('acceptance_bar_approver_check_invalid_identity');
+  const rubric = await getRubric(rubricId);
+  if (!rubric) throw new Error('acceptance_bar_approver_check_rubric_unreadable_or_missing');
+  if (rubric.kind !== 'acceptance' || !rubric.barContract || !rubric.barSetHash || !rubric.subjectPlan) {
+    throw new Error('acceptance_bar_approver_check_requires_started_plan_acceptance_rubric');
+  }
+
+  const rubricScope = await resolveRubricWriteScope(rubric.rubricId);
+  const subjectScope = await resolveAcceptanceSubjectScope(
+    rubricScope.workspaceId,
+    rubric.subjectPlan,
+    rubric.subjectHarnessSlug,
+  );
+  const { sql } = getOrgPg();
+  const [subjectRow] = await sql<Array<{ owner: string | null }>>`
+    SELECT owner
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${subjectScope.workspaceId}
+       AND harness_slug = ${subjectScope.harnessSlug}
+       AND plan_slug = ${rubric.subjectPlan}
+     LIMIT 1`;
+  if (!subjectRow) throw new Error('acceptance_bar_approver_check_subject_unreadable');
+
+  const roles = new Map<string, AcceptanceBarApproverRelationVia>();
+  const attribute = (identity: string | null | undefined, via: AcceptanceBarApproverRelationVia) => {
+    const key = identity?.trim() ?? '';
+    if (key && !roles.has(key)) roles.set(key, via);
+  };
+  for (const implementer of await resolvePlanImplementerIdentities(rubric.subjectPlan, {
+    workspaceId: subjectScope.workspaceId,
+  })) {
+    attribute(implementer, 'plan-implementer');
+  }
+  attribute(rubric.createdBy, 'rubric-author');
+  attribute(subjectRow.owner, 'subject-owner');
+  if (applierId) attribute(applierId, 'caller');
+
+  const eligibility = await evaluateAcceptanceBarApproverEligibility(ownerId, roles, {
+    workspaceId: subjectScope.workspaceId,
+  });
+  const reason: AcceptanceBarApproverEligibilityReason = eligibility.eligible
+    ? 'eligible'
+    : eligibility.relatedVia === 'caller'
+      ? 'related_to_applier'
+      : eligibility.relatedVia === 'plan-implementer'
+        ? 'related_to_plan_implementer'
+        : eligibility.relatedVia === 'rubric-author'
+          ? 'related_to_rubric_author'
+          : 'related_to_subject_owner';
+  return {
+    rubricId: rubric.rubricId,
+    subjectPlan: rubric.subjectPlan,
+    ownerId,
+    eligible: eligibility.eligible,
+    reason,
+    eligibleWithUnrelatedApplier: eligibility.eligibleWithUnrelatedApplier,
+  };
 }
 
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {

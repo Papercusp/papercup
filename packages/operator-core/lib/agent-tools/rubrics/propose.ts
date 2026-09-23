@@ -5,6 +5,7 @@
  * same rubric_id updates its content.
  */
 import { z } from 'zod';
+import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -161,8 +162,9 @@ const criterion = z
     }
   });
 
-export const rubricsProposeArgs = z
-  .object({
+// RSR-P-008-A: the kind-profile rules are reported alongside any shape defect.
+export const rubricsProposeArgs = refineEvenWithShapeIssues(
+  z.object({
     rubricRef: z
       .string()
       .min(1)
@@ -277,8 +279,8 @@ export const rubricsProposeArgs = z
       .describe(
         "loss-guard ack (P-008): why a stored 'violatable' criterion is intentionally being downgraded to settle-once (removing its provisional-until-terminal protection)",
       ),
-  })
-  .superRefine((args, ctx) => {
+  }),
+  (args, ctx) => {
     // Keep the published dispatch schema aligned with rubricTemplateDataSchema and
     // proposeRubric: acceptance rubrics are one-shot definitions of done, so they
     // cannot participate in the reusable standard rubric release gate. Without this
@@ -366,7 +368,8 @@ export const rubricsProposeArgs = z
         });
       }
     }
-  });
+  },
+);
 
 export default defineTool({
   name: 'rubrics:propose',
