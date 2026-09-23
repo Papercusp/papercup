@@ -1196,16 +1196,31 @@ pub fn redact_url(value: &str) -> String {
     )
 }
 
-/// An environment value as a support export may show it.
+/// An environment value as a support export may show it. Credentials are
+/// redacted by name; beyond that only variables known to hold plain
+/// configuration (a path, URL, id or flag) show a value. Everything else —
+/// the unsent draft a reconnect carries in `PUI_SETUP_DRAFT`, a command line,
+/// a variable this build does not know — reports only that it is set, so
+/// conversation text cannot reach an export under a name nobody thought to deny.
 pub fn redact_env(name: &str, value: &str) -> String {
     let upper = name.to_ascii_uppercase();
     const SENSITIVE: &[&str] = &[
         "TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "AUTH", "COOKIE", "CREDENTIAL", "SESSION",
     ];
+    const CONFIGURATION: &[&str] = &[
+        "PUI_HOME", "PUI_BIN_DIR", "PUI_INSTALL_MANIFEST", "PUI_COMPANION_WASM",
+        "PUI_UPDATE_CHANNEL", "PUI_OPERATOR", "PUI_FLEET", "PUI_SEAT", "PUI_NOTIFY", "PUI_DUMP",
+        "PUI_LIVE_AUDIO", "PUI_VOICE_INPUT", "PUI_VOICE_OUTPUT", "PUI_BUILD_SHA", "PUI_BUILD_EPOCH",
+        "PUI_BUILD_DIRTY", "PUI_CENSUS_UPDATE", "PAPERCUSP_OPERATOR_URL", "PAPERCUSP_HONO_PORT",
+        "PAPERCUSP_HARNESS_SLUG", "PAPERCUSP_SID", "PAPERCUSP_AGENT", "PAPERCUSP_TUI_OWNER",
+        "ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_CONFIG_DIR",
+    ];
     if SENSITIVE.iter().any(|marker| upper.contains(marker)) {
         "[redacted]".to_string()
-    } else {
+    } else if CONFIGURATION.contains(&name) {
         redact_url(value)
+    } else {
+        "[set, value withheld]".to_string()
     }
 }
 
@@ -2396,16 +2411,23 @@ mod tests {
             ("PUI_OPERATOR", "https://me:pw@op.example/api?key=SECRET2"),
             ("PUI_FLEET", "alpha"),
             ("HOME_UNRELATED", "SECRET3"),
+            ("PUI_SETUP_DRAFT", "private draft λ PRIVATE4"),
+            ("PAPERCUSP_BRAIN_CMD", "brain --prompt PRIVATE5"),
+            ("PUI_NOT_YET_INVENTED", "PRIVATE6"),
         ];
 
         let report = diagnostics_report(&layout, &ctx(&env)).join("\n");
 
-        for secret in ["sk-live-SECRET", "SECRET2", "SECRET3", "hunter2", "pw@"] {
+        for secret in [
+            "sk-live-SECRET", "SECRET2", "SECRET3", "hunter2", "pw@", "PRIVATE4", "PRIVATE5", "PRIVATE6",
+        ] {
             assert!(!report.contains(secret), "{secret} leaked:\n{report}");
         }
         assert!(report.contains("env PAPERCUSP_API_TOKEN=[redacted]"), "{report}");
         assert!(report.contains("env PUI_OPERATOR=https://[redacted]@op.example/api?[redacted]"), "{report}");
         assert!(report.contains("env PUI_FLEET=alpha"), "{report}");
+        assert!(report.contains("env PUI_SETUP_DRAFT=[set, value withheld]"), "{report}");
+        assert!(report.contains("env PUI_NOT_YET_INVENTED=[set, value withheld]"), "{report}");
         assert!(report.contains("operator endpoint: https://[redacted]@op.example:9443/api?[redacted]"), "{report}");
 
         let saved = apply(&LifecycleOp::Diagnostics, &layout, &ctx(&env));

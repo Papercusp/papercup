@@ -37,6 +37,12 @@ const RELEASE_TOOLING = [
 ];
 /** The only tools the sandboxed PATH offers: what install.sh and an archive update need. */
 const SANDBOX_TOOLS = ['sh', 'dirname', 'sha256sum', 'tar', 'gzip'];
+/** Seeded into the PACKAGER's own environment: none may reach any byte of an archive. */
+const PACKAGING_SECRETS = {
+  PAPERCUSP_API_TOKEN: 'P011-PACKAGING-API-TOKEN',
+  PUI_OPERATOR_TOKEN: 'P011-PACKAGING-OPERATOR-TOKEN',
+  PUI_SETUP_DRAFT: 'P011-PACKAGING-PRIVATE-DRAFT',
+};
 
 interface PackageResult {
   archive: string;
@@ -62,7 +68,7 @@ const output = (run: SpawnSyncReturns<string>) => `status=${run.status}\n--- std
 function packageAt(sha: string, out: string, targetDir?: string): PackageResult {
   const run = spawnSync(PACKAGER, ['--target', TARGET, '--sha', sha, '--out', out], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024,
-    env: targetDir ? { ...process.env, PUI_PACKAGE_TARGET_DIR: targetDir } : process.env,
+    env: { ...process.env, ...PACKAGING_SECRETS, ...(targetDir ? { PUI_PACKAGE_TARGET_DIR: targetDir } : {}) },
   });
   const line = run.stdout?.split('\n').find((candidate) => candidate.startsWith('PUI_PACKAGE_RESULT '));
   if (run.status !== 0 || !line) {
@@ -309,11 +315,23 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(readFileSync(operator, 'utf8')).toBe(operatorConfig);
   });
 
-  test('AUTO-BAR-R-09-P-011: installing needs explicit consent and support output redacts credentials', { timeout: 300_000 }, () => {
+  test('AUTO-BAR-R-09-P-011: installing needs explicit consent, and neither the package nor the support export carries a seeded credential or private text', { timeout: 300_000 }, () => {
     const home = freshHome('consent');
     const env = sandboxEnv(home);
     const unit = unpack(B.archive, 'consent');
     const store = path.join(home, '.local', 'share', 'pui');
+
+    // Nothing seeded into the packager's environment reached any file of the
+    // unit, binaries included (a positive control proves the scan reads bytes).
+    const unitFiles = readdirSync(unit, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile()).map((entry) => path.join(entry.parentPath, entry.name));
+    expect(unitFiles.some((file) => readFileSync(file).includes(B.sourceSha))).toBe(true);
+    for (const file of unitFiles) {
+      const bytes = readFileSync(file);
+      for (const marker of Object.values(PACKAGING_SECRETS)) {
+        expect(bytes.includes(marker), `${marker} in ${path.relative(unit, file)}`).toBe(false);
+      }
+    }
 
     // No TTY and no --yes: refused, nothing installed.
     for (const [command, args] of [
@@ -338,23 +356,33 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(install.status, output(install)).toBe(0);
     expect(existsSync(path.join(home, '.papercusp'))).toBe(false);
 
+    // Private conversation text seeded wherever this PUI can hold it: the unsent
+    // draft a reconnect carries in PUI_SETUP_DRAFT, a variable no build knows,
+    // and PUI's own state on disk.
+    const privateText = 'P011-PRIVATE-CONVERSATION';
     const secrets = {
-      PAPERCUSP_API_TOKEN: 'sk-live-P011-SECRET',
+      PAPERCUSP_API_TOKEN: 'P011-API-TOKEN-SECRET',
       PUI_OPERATOR: 'https://owner:hunter2@op.example:9443/api?key=P011-QUERY-SECRET',
       PUI_FLEET: 'visible-fleet',
+      PUI_SETUP_DRAFT: `${privateText}: the draft I had not sent`,
+      PUI_NOT_YET_INVENTED: `${privateText}: a carrier nobody thought to deny`,
     };
+    mkdirSync(path.join(home, '.papercusp'));
+    writeFileSync(path.join(home, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true, note: privateText }));
     const launcher = path.join(home, '.local', 'bin', 'pui');
     const report = run(launcher, ['self', 'diagnostics'], sandboxEnv(home, secrets), home);
     expect(report.status, output(report)).toBe(0);
-    for (const leaked of ['sk-live-P011-SECRET', 'hunter2', 'P011-QUERY-SECRET']) {
-      expect(report.stdout, leaked).not.toContain(leaked);
+    for (const leaked of ['P011-API-TOKEN-SECRET', 'hunter2', 'P011-QUERY-SECRET', privateText]) {
+      expect(`${report.stdout}\n${report.stderr}`, leaked).not.toContain(leaked);
     }
     expect(report.stdout).toContain('env PAPERCUSP_API_TOKEN=[redacted]');
     expect(report.stdout).toContain('env PUI_FLEET=visible-fleet');
     expect(report.stdout).toContain('https://[redacted]@op.example:9443/api?[redacted]');
+    expect(report.stdout).toContain('env PUI_SETUP_DRAFT=[set, value withheld]');
+    expect(report.stdout).toContain('env PUI_NOT_YET_INVENTED=[set, value withheld]');
   });
 
-  test('AUTO-BAR-R-10-P-011: compatibility and runtime requirements are measured from the artifact, and unverified targets are not advertised', { timeout: 120_000 }, () => {
+  test('AUTO-BAR-R-10-P-011: runtime requirements are measured from the artifact, nothing is advertised without this candidate’s evidence, and a committed verified claim is refused', { timeout: 420_000 }, () => {
     const unit = unpack(B.archive, 'compat');
     const provenance = JSON.parse(readFileSync(path.join(unit, 'PROVENANCE.json'), 'utf8')) as Provenance;
     const binary = path.join(unit, 'bin', 'pui');
@@ -376,6 +404,35 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     }
     expect(compat.targets[TARGET].status).not.toBe('verified');
     expect(table).toContain('Not advertised');
+
+    // compatibility.json is committed before the candidate it ships in exists,
+    // so a 'verified' target there can only be another generation's evidence:
+    // a candidate claiming one is refused before anything is built. The claim
+    // is committed into a throwaway object store that borrows this repo's
+    // objects, so the shared checkout is never written; B above is the control
+    // (same packager, same tree, no claim).
+    const claimed = path.join(WORK, 'claims-verified.git');
+    execFileSync('git', ['init', '--bare', '--quiet', claimed]);
+    writeFileSync(path.join(claimed, 'objects', 'info', 'alternates'), `${path.resolve(REPO_ROOT, git('rev-parse', '--git-path', 'objects'))}\n`);
+    const scratchGit = (args: string[], input?: string) => execFileSync('git', ['--git-dir', claimed, ...args], {
+      encoding: 'utf8', input,
+      env: {
+        ...process.env, GIT_INDEX_FILE: path.join(claimed, 'scratch-index'),
+        GIT_AUTHOR_NAME: 'p011', GIT_AUTHOR_EMAIL: 'p011@invalid', GIT_COMMITTER_NAME: 'p011', GIT_COMMITTER_EMAIL: 'p011@invalid',
+      },
+    }).trim();
+    const claim = { ...compat, targets: { ...compat.targets, [TARGET]: { ...compat.targets[TARGET], status: 'verified', evidence: 'an earlier generation’s installed journey' } } };
+    scratchGit(['read-tree', HEAD]);
+    const claimBlob = scratchGit(['hash-object', '-w', '--stdin'], `${JSON.stringify(claim, null, 2)}\n`);
+    scratchGit(['update-index', '--cacheinfo', `100644,${claimBlob},apps/tui/release/compatibility.json`]);
+    const claimCommit = scratchGit(['commit-tree', scratchGit(['write-tree']), '-p', HEAD, '-m', 'claims verified']);
+    const refusedOut = path.join(WORK, 'dist-claims-verified');
+    const refused = spawnSync(PACKAGER, ['--target', TARGET, '--sha', claimCommit, '--out', refusedOut], {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 300_000, env: { ...process.env, GIT_DIR: claimed },
+    });
+    expect(refused.status, output(refused)).not.toBe(0);
+    expect(refused.stderr).toContain(`marks ${TARGET} verified`);
+    expect(existsSync(refusedOut)).toBe(false);
     for (const lib of needed) expect(table).toContain(lib);
     if (floor) expect(table).toContain(`Requires glibc ${floor} or newer`);
 
