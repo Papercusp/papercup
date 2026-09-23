@@ -474,6 +474,198 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(readNativeCache).toHaveBeenCalledTimes(2);
   });
 
+  it('fetches the selected subscription account live catalog, overrides a stale cache, and coalesces concurrent callers', async () => {
+    const home = await makeCodexHome('upstream-account');
+    // Test placeholder: the word "placeholder" keeps git-sync's secret-assignment rule from quarantining this file.
+    const accessToken = 'catalog-token-placeholder';
+    await fs.writeFile(
+      path.join(home, 'auth.json'),
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: {
+          access_token: accessToken,
+          refresh_token: 'catalog-refresh-sentinel',
+          account_id: 'upstream-account',
+        },
+      }),
+    );
+    await fs.writeFile(
+      path.join(home, 'models_cache.json'),
+      // The stale cache deliberately OVERLAPS a live slug (gpt-6-sol): the live catalog's metadata
+      // must win over the per-home cache for the same model, which is the "stale cache vs live"
+      // precedence the gpt-6-sol display_name assertion below pins. A non-overlapping cache alone
+      // cannot catch a merge that lets the cache override live rows.
+      JSON.stringify({
+        models: [
+          { slug: 'gpt-5.6-sol', display_name: 'stale cache' },
+          { slug: 'gpt-6-sol', display_name: 'stale cache GPT-6-Sol' },
+        ],
+      }),
+    );
+
+    let releaseCatalog!: () => void;
+    let markCatalogStarted!: () => void;
+    const catalogStarted = new Promise<void>((resolve) => {
+      markCatalogStarted = resolve;
+    });
+    const catalogHeld = new Promise<void>((resolve) => {
+      releaseCatalog = resolve;
+    });
+    let catalogCalls = 0;
+    let catalogTarget = '';
+    let catalogInit: RequestInit & { dispatcher?: unknown } = {};
+    const fetchImpl = vi.fn(async (target: RequestInfo | URL, init?: RequestInit) => {
+      catalogCalls += 1;
+      catalogTarget = String(target);
+      catalogInit = init ?? {};
+      markCatalogStarted();
+      await catalogHeld;
+      return new Response(
+        JSON.stringify({
+          models: [
+            {
+              slug: 'gpt-6-sol',
+              display_name: 'Native GPT-6-Sol',
+              visibility: 'list',
+              priority: 2,
+              supported_reasoning_levels: [{ effort: 'ultra', description: 'Native ultra' }],
+            },
+            { slug: 'gpt-6-luna', display_name: 'Native GPT-6-Luna', visibility: 'list', priority: 3 },
+            { slug: 'gpt-future', display_name: 'Future model', visibility: 'list', priority: 4 },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const cliAccount = {
+      accountId: 'chatgpt-live',
+      home,
+      egress: { localAddress: '127.0.0.1' },
+    };
+    await bootCodex(ok, [codexAcct('cdx-bearer')], {
+      codexCliAccounts: () => [cliAccount],
+      codexCliPool: createFailoverPool([{ accountId: cliAccount.accountId, token: async () => '' }]),
+      fetchImpl,
+    });
+
+    const headers = { [ACCOUNT_HEADER]: cliAccount.accountId };
+    const first = ask('/v1/models?client_version=0.156.0', { method: 'GET', headers });
+    const second = ask('/v1/models?client_version=0.156.0', { method: 'GET', headers });
+    await catalogStarted;
+    expect(catalogCalls).toBe(1);
+    releaseCatalog();
+    const responses = await Promise.all([first, second]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const bodies = (await Promise.all(responses.map((response) => response.json()))) as Array<{
+      models: Array<{ slug: string; display_name?: string }>;
+    }>;
+    for (const body of bodies) {
+      expect(body.models.find((model) => model.slug === 'gpt-6-sol')?.display_name).toBe('Native GPT-6-Sol');
+      expect(body.models.some((model) => model.slug === 'gpt-6-luna')).toBe(true);
+      expect(body.models.some((model) => model.slug === 'gpt-future')).toBe(true);
+      expect(JSON.stringify(body)).not.toContain(accessToken);
+      expect(JSON.stringify(body)).not.toContain('upstream-account');
+    }
+    expect(catalogTarget).toContain('/backend-api/codex/models?client_version=0.156.0');
+    const upstreamHeaders = new Headers(catalogInit.headers);
+    expect(upstreamHeaders.get('authorization')).toBe(`Bearer ${accessToken}`);
+    expect(upstreamHeaders.get('chatgpt-account-id')).toBe('upstream-account');
+    expect(catalogInit.dispatcher).toBeDefined();
+
+    const cached = await ask('/v1/models?client_version=0.156.0', { method: 'GET', headers });
+    expect(cached.status).toBe(200);
+    expect(catalogCalls).toBe(1);
+  });
+
+  it('refreshes an expired selected-account OAuth token before live catalog discovery', async () => {
+    const home = await makeCodexHome('refresh-account');
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const expired = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) - 60 })}.sig`;
+    await fs.writeFile(
+      path.join(home, 'auth.json'),
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: { access_token: expired, refresh_token: 'refresh-me', account_id: 'refresh-account' },
+      }),
+    );
+    const seen: Array<{ target: string; authorization: string | null }> = [];
+    const fetchImpl = vi.fn(async (target: RequestInfo | URL, init?: RequestInit) => {
+      const targetText = String(target);
+      seen.push({ target: targetText, authorization: new Headers(init?.headers).get('authorization') });
+      if (targetText.includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'refreshed-access', refresh_token: 'refresh-next' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ models: [{ slug: 'gpt-6-sol', visibility: 'list' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const cliAccount = { accountId: 'chatgpt-refresh', home };
+    await bootCodex(ok, [codexAcct('cdx-bearer')], {
+      codexCliAccounts: () => [cliAccount],
+      codexCliPool: createFailoverPool([{ accountId: cliAccount.accountId, token: async () => '' }]),
+      fetchImpl,
+    });
+
+    const response = await ask('/v1/models?client_version=0.156.0', {
+      method: 'GET',
+      headers: { [ACCOUNT_HEADER]: cliAccount.accountId },
+    });
+    expect(response.status).toBe(200);
+    expect(seen.some((entry) => entry.target.includes('/oauth/token'))).toBe(true);
+    expect(seen.find((entry) => entry.target.includes('/codex/models'))?.authorization).toBe(
+      'Bearer refreshed-access',
+    );
+  });
+
+  it.each([
+    [
+      'transport failure',
+      async () => {
+        throw new Error('catalog transport down');
+      },
+    ],
+    ['non-2xx response', async () => new Response('unavailable', { status: 503 })],
+    ['malformed JSON', async () => new Response('{not-json', { status: 200 })],
+    [
+      '401 whose refresh fails',
+      async (target: RequestInfo | URL) =>
+        String(target).includes('/oauth/token')
+          ? new Response('refresh refused', { status: 500 })
+          : new Response('unauthorized', { status: 401 }),
+    ],
+    [
+      'deadline expiry',
+      async (_target: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          const fail = () => reject(signal?.reason ?? new Error('aborted'));
+          if (signal?.aborted) fail();
+          else signal?.addEventListener('abort', fail, { once: true });
+        }),
+    ],
+  ])('serves the GPT-6 emergency catalog on %s', async (_label, fetchCatalog) => {
+    const home = await makeCodexHome(`fallback-${String(_label).replace(/\W+/g, '-')}`);
+    const cliAccount = { accountId: `chatgpt-fallback-${String(_label).replace(/\W+/g, '-')}`, home };
+    await bootCodex(ok, [codexAcct('cdx-bearer')], {
+      codexCliAccounts: () => [cliAccount],
+      codexCliPool: createFailoverPool([{ accountId: cliAccount.accountId, token: async () => '' }]),
+      fetchImpl: fetchCatalog as typeof fetch,
+      codexModelsCatalogTimeoutMs: 20,
+    });
+    const response = await ask('/v1/models?client_version=0.156.0', {
+      method: 'GET',
+      headers: { [ACCOUNT_HEADER]: cliAccount.accountId },
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { models: Array<{ slug: string }> };
+    expect(body.models.some((model) => model.slug === 'gpt-6-sol')).toBe(true);
+    expect(body.models.some((model) => model.slug === 'gpt-6-luna')).toBe(true);
+  });
+
   it('serves Codex /v1/models discovery without waiting behind a saturated admission queue', async () => {
     let releaseHeld!: () => void;
     let markHeld!: () => void;
