@@ -19,7 +19,7 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle } from '../cupboard/blueprint-release';
-import { resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
+import { compileBlueprintWithPackages, resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import {
@@ -444,6 +444,38 @@ export async function getIdentitySource(id: string, opts: IdentitySourceOptions 
   } catch (error) {
     return identityFailure(error);
   }
+}
+
+/** Resolve resource declarations from the same selected identity file that
+ * supplied its prompt. The existing package compiler owns pins, provider
+ * bindings and failure semantics; this adapter only establishes selection and
+ * refuses a source revision that changed between selection and compilation. */
+export async function compileSelectedIdentityResources(input: {
+  identityId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  repoDir?: string;
+}) {
+  const selected = await getIdentitySource(input.identityId, { repoDir: input.repoDir });
+  if (!selected.ok || !selected.sourcePath) {
+    throw new Error(`selected identity ${input.identityId} is unavailable for resource resolution`);
+  }
+  const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
+  const resolve = operatorResolveExtends({ localDirs: localDirs(input.repoDir) });
+  const source = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath, resolve });
+  if (!source.validation.ok || source.layers.at(-1)?.contentHash !== selected.contentHash) {
+    throw new Error(`selected identity ${input.identityId} source revision changed before resource resolution`);
+  }
+  const document = BlueprintSourceDocumentSchema.parse(source.merged);
+  if (!(document.bundles?.length || document.grants?.requires?.length ||
+      document.grants?.optional?.length || resolveSeedPackKey(document).packId)) return null;
+  if (!input.workspaceId.trim() || !input.harnessSlug.trim()) {
+    throw new Error('identity resources need an explicit workspace and harness scope');
+  }
+  return compileBlueprintWithPackages(raw, {
+    workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+    sourcePath: selected.sourcePath, resolve,
+  });
 }
 
 /**
