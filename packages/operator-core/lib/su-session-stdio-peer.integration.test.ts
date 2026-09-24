@@ -798,7 +798,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
-  it.each(['ok', 'preparation-drift', 'source-writer-busy', 'source-guard-conflict', 'source-guard-exited', 'source-lock-replaced'] as const)(
+  it.each(['ok', 'preparation-drift', 'source-writer-busy', 'source-guard-conflict', 'source-guard-exited', 'source-lock-replaced',
+    'ancestor', 'ancestor-writer-busy', 'ancestor-guard-conflict', 'source-acquisition-race', 'source-read'] as const)(
     'composes an unpaid frozen-source control and managed-carry candidate across native processes (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
@@ -810,7 +811,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
     resetGovernorRegistry();
-    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === 'T1')!;
+    const readSource = mode === 'source-read';
+    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === (readSource ? 'T2' : 'T1'))!;
+    const ancestorDepth = mode.startsWith('ancestor') ? 2 : 0;
     const owner = 'su-unpaid-carry-pair';
     const nativeHome = mkdtempSync(join(tmpdir(), 'unpaid-carry-pair-')); homes.push(nativeHome);
     const basePath = join(nativeHome, 'AGENTS.md');
@@ -821,12 +824,42 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     let phase: 'preparation' | 'control' | 'carry' | 'candidate' = 'preparation';
     const requests: Array<{ phase: string; body: Record<string, unknown> }> = [];
     const failures: string[] = [];
+    const mcpHosts: McpServer[] = [];
+    const observedReads: Array<{ phase: string; args: unknown }> = [];
+    let sourceWindow: Parameters<typeof inspectCarrySourceRead>[1] | undefined;
+    let readArgs: { file_path: string; byte_offset: number; byte_limit: number } | undefined;
     const upstream = createServer(async (req, res) => {
       try {
+        if (req.url === '/mcp') {
+          expect(req.headers.authorization).toBe('Bearer offline-fixture');
+          const host = new McpServer({ name: 'carry-pair-source-fixture', version: '1' }); mcpHosts.push(host);
+          host.registerTool('capability_read', {
+            inputSchema: { file_path: z.string(), byte_offset: z.number(), byte_limit: z.number() },
+            annotations: { readOnlyHint: true },
+          }, async args => {
+            observedReads.push({ phase, args });
+            return await sourceReadTool.handler(args as never, { projectDir: nativeHome } as never) as {
+              content: Array<{ type: 'text'; text: string }>;
+            };
+          });
+          const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+          await host.connect(transport); await transport.handleRequest(req, res); return;
+        }
         const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
         requests.push({ phase, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+        if (readSource && (phase === 'control' || phase === 'candidate') &&
+          requests.filter(request => request.phase === phase).length === 1) {
+          const item = { id: `fc_${phase}`, type: 'function_call', call_id: `source-${phase}`,
+            namespace: 'mcp__cache_receipts', name: 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
+          const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 1200, outputTokens: 40 }), output: [item] };
+          const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
+            event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
+          return;
+        }
         const response = phase === 'preparation' ? recipe.sourcePreparation.expectedAcknowledgement
-          : phase === 'carry' ? { carryReceived: true } : task.expected;
+          : phase === 'carry' ? { carryReceived: true } : readSource ? { ...task.expected, sourceRef: sourceWindow!.sourceRef } : task.expected;
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
           text: JSON.stringify(response), inputTokens: 1200, outputTokens: 40 })));
@@ -863,6 +896,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } },
         features: { apps: false, shell_tool: false, shell_snapshot: false, plugins: false, remote_plugin: false },
         web_search: 'disabled',
+        ...(readSource ? { mcp_servers: { cache_receipts: { url: `http://127.0.0.1:${address.port}/mcp`,
+          http_headers: { Authorization: 'Bearer offline-fixture' } } } } : {}),
       } as Parameters<typeof stringifyToml>[0]);
       const openNative = async () => {
         const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
@@ -876,7 +911,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       };
       const captureManifest = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string,
         extra: { artifacts: CarryArtifactInput[]; roots: CarryDependencyScope['roots'] } = { artifacts: [], roots: [] }) => {
-        const configuration = await captureCarryNativeConfiguration(live.p, { threadId, cwd: nativeHome, servers: [] });
+        if (readSource) await waitForMcpStartup(live.events, threadId, 'cache_receipts');
+        const configuration = await captureCarryNativeConfiguration(live.p, { threadId, cwd: nativeHome,
+          servers: readSource ? [{ name: 'cache_receipts', tools: ['capability_read'], authStatus: 'bearerToken' }] : [] });
         // Capture after thread/config startup as well: databases and rollouts
         // can open after initialize. Preserve mutable observations as evidence,
         // without pretending their live bytes are immutable dependencies.
@@ -906,12 +943,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             ['usage-parser', './interactive-usage/ingest-adapters.ts'], ['usage-writer', './interactive-usage/ingest-claude-transcripts.ts'],
             ['gateway', './inference-gateway/gateway.ts'], ['gateway-observer', './inference-gateway/request-stage-telemetry.ts'],
             ['clock', './process-monotonic-clock.ts'],
+            ...(readSource ? [['source-read-tool', './agent-tools/capability/read.ts']] : []),
           ].map(([id, path]) => ({ id, filePath: fileURLToPath(new URL(path, import.meta.url)), maxBytes: 1024 * 1024 })),
           { id: 'pricing', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing')), maxBytes: 1024 * 1024 },
           { id: 'pricing-package', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing/package.json')), maxBytes: 1024 * 1024 },
           ...extra.artifacts,
         ];
-        const manifest = await captureCarryArtifactManifest({ protocolRef: 'D017:unpaid-local-T1-pair', configuration, artifacts,
+        const manifest = await captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
           dependencyScope: { recipeSha256: recipe.sha256,
             roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'launcher', artifactIds: ['launcher'] },
               { role: 'native-runtime', artifactIds: frozenRuntime.map(a => a.id) },
@@ -944,23 +982,28 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         await vi.waitFor(() => expect(terminal() !== undefined).toBe(true), { timeout: 20_000 });
         expect(((terminal()!.params as RpcFrame).turn as RpcFrame).status, `unpaid native phase ${phase}`).toBe('completed');
         const threadRead = await live.p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
-        const trace = inspectCarryNativeTurn({ threadId, turnId, events: live.events.slice(eventStart), threadRead,
-          allowedMcpCalls: [], expectedInputText: text });
+        const evidence = { threadId, turnId, events: live.events.slice(eventStart), threadRead,
+          allowedMcpCalls: readSource && (phase === 'control' || phase === 'candidate')
+            ? [{ server: 'cache_receipts', tool: 'capability_read', arguments: readArgs }] : [], expectedInputText: text };
+        const trace = inspectCarryNativeTurn(evidence);
         expect(trace.status).toBe('verified');
         await recheckCarryArtifactManifest(manifest, live.p);
         assertSourceGuards();
         const runtimeAfter = await captureCarryRuntimeSnapshot(live.p.pid()!);
         runtimeBoundaries.push({ threadId, turnId, phase, runtime: runtimeAfter });
-        return { turnId, threadRead, trace, runtimeAfter };
+        return { turnId, threadRead, trace, runtimeAfter, evidence };
       };
       const options = { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: nativeHome,
         approvalPolicy: 'never', sandbox: 'read-only' };
       const preparation = await openNative();
       const started = await preparation.p.request({ method: 'thread/start', params: options });
-      const sourceId = String((started.thread as RpcFrame).id);
+      let sourceId = String((started.thread as RpcFrame).id);
+      const preparationArms = [{ threadId: sourceId, armId: 'preparation' }];
+      const preparationManifests: Awaited<ReturnType<typeof captureManifest>>[] = [];
       // Preparation is part of the population: bind its inputs before its first
       // request, not retroactively after the generated source is visible.
       const preparationManifest = await captureManifest(preparation, sourceId);
+      preparationManifests.push(preparationManifest);
       expect(preparationManifest.dependencyScope!.missingRoles).toEqual(['source']);
       if (mode === 'preparation-drift') {
         writeFileSync(recipePath, JSON.stringify({ altered: true }));
@@ -973,23 +1016,45 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       const preparationManifestPath = join(nativeHome, 'preparation-manifest.json');
       writeFileSync(preparationManifestPath, JSON.stringify(preparationManifest));
-      const prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt, preparationManifest);
+      let prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt, preparationManifest);
       expect(inspectCarryPreparationResponse(prepared.trace.finalResponse!).matches).toBe(true);
+      for (let depth = 0; depth < ancestorDepth; depth++) {
+        preparationArms.at(-1)!.armId = `preparation-ancestor-${depth}`;
+        const fork = await preparation.p.request({ method: 'thread/fork', params: { ...options, threadId: sourceId } });
+        const forkId = String((fork.thread as RpcFrame).id);
+        expect(forkId).not.toBe(sourceId);
+        sourceId = forkId;
+        preparationArms.push({ threadId: sourceId, armId: 'preparation' });
+        const manifest = await captureManifest(preparation, sourceId);
+        preparationManifests.push(manifest);
+        prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt, manifest);
+        expect(inspectCarryPreparationResponse(prepared.trace.finalResponse!).matches).toBe(true);
+      }
       source = await captureCompletedCarrySource(preparation.p, sourceId, prepared.turnId);
+      expect(source.ancestors).toHaveLength(ancestorDepth);
+      const sourceWindowPath = join(nativeHome, 'source-window.json');
+      if (readSource) {
+        const window = Buffer.from(String(task.expected.sourceSentinel));
+        const byteOffset = source.snapshot.bytes.indexOf(window);
+        expect(byteOffset).toBeGreaterThan(0);
+        readArgs = { file_path: source.filePath, byte_offset: byteOffset, byte_limit: window.length };
+        sourceWindow = { sourceRef: `codex:${source.threadId}/${source.turnId}@${source.snapshot.sha256}`,
+          server: 'cache_receipts', tool: 'capability_read', filePath: source.filePath,
+          byteOffset, byteLength: window.length, totalBytes: source.snapshot.completeBytes,
+          sha256: createHash('sha256').update(window).digest('hex') };
+        writeFileSync(sourceWindowPath, JSON.stringify(sourceWindow));
+      }
       captures.push({ receipts: preparation.receipts, state: preparation.p.receiptState?.(),
-        arms: [{ threadId: sourceId, armId: 'preparation' }] });
+        arms: preparationArms });
       expect(inspectCarryNativePopulation(captures[0]).status).toBe('closed-peer-reconciled');
       const preparationCloseoutPath = join(nativeHome, 'preparation-closeout.json');
       const sourceFiles = [source, ...source.ancestors];
+      const orderedSources = [...sourceFiles].sort((a, b) => a.threadId.localeCompare(b.threadId));
+      const preparationPhases = preparationArms.map(() => 'preparation');
       // Reuse the launcher's native lock identity, never infer exclusion from
       // thread/read or unchanged hashes. These advisory locks exclude Codex
       // writers that honor the native protocol, not arbitrary filesystem edits.
-      let competingWriter: Awaited<ReturnType<typeof openNative>> | undefined;
-      if (mode === 'source-writer-busy') {
-        competingWriter = await openNative();
-        await competingWriter.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } });
-      }
-      for (const member of [...sourceFiles].sort((a, b) => a.threadId.localeCompare(b.threadId))) {
+      const acquireSourceGuard = async (member: typeof sourceFiles[number]) => {
         const path = codexThreadWriterLockPath(nativeHome, member.threadId);
         // Native teardown removes its lock file. flock creates a fresh lock
         // inode in this owned test home; bind the inode AFTER acquisition.
@@ -999,32 +1064,77 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             process.stdout.write(JSON.stringify({ id: request.id, result: { locked: true } }) + '\\n');
           });
         `], {}, undefined, undefined, () => {});
-        if (mode === 'source-writer-busy') {
-          await expect(guard.request({ method: 'ready' }, 5000)).rejects.toThrow(/exited|closed|EPIPE/);
-          await expect(guard.done).rejects.toThrow(/exited|EPIPE/);
+        try {
+          expect(await guard.request({ method: 'ready' }, 5000)).toEqual({ locked: true });
+          const file = lstatSync(path, { bigint: true });
+          expect(file.isFile()).toBe(true);
+          sourceGuards.push({ peer: guard, threadId: member.threadId, path, device: file.dev, inode: file.ino });
+        } catch (error) {
+          await guard.close();
+          await guard.done.catch(() => undefined); // Original failure is rethrown below.
+          throw error;
+        }
+      };
+      if (mode === 'source-acquisition-race') {
+        const competitor = await openNative();
+        const outcomes = await Promise.allSettled([
+          acquireSourceGuard(source),
+          competitor.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } }),
+        ]);
+        expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+        if (outcomes[0].status === 'fulfilled') {
+          expect(String((outcomes[1] as PromiseRejectedResult).reason)).toMatch(/active writer/);
+          assertSourceGuards(); await recheckCarrySourceSnapshot(source);
+        } else {
+          expect(String(outcomes[0].reason)).toMatch(/exited|closed|EPIPE/);
+          const holder = codexThreadWriterHolder(nativeHome, sourceId);
+          expect(holder.held).toBe(true);
+          expect(competitor.runtime.processes.some(process => process.pid === holder.pid)).toBe(true);
+        }
+        expect(requests.map(request => request.phase)).toEqual(preparationPhases);
+        console.log('CARRY_SOURCE_ACQUISITION_RACE', JSON.stringify({
+          winner: outcomes[0].status === 'fulfilled' ? 'fixture-guard' : 'native-resume', armDispatches: 0,
+          sourceRefreshed: false, scope: 'one-observed-native-race' }));
+        await competitor.p.close(); await competitor.p.done;
+        return;
+      }
+      let competingWriter: Awaited<ReturnType<typeof openNative>> | undefined;
+      const busySource = mode === 'source-writer-busy' || mode === 'ancestor-writer-busy' ? orderedSources.at(-1) : undefined;
+      if (busySource) {
+        competingWriter = await openNative();
+        await competingWriter.p.request({ method: 'thread/resume', params: { ...options, threadId: busySource.threadId } });
+      }
+      for (const member of orderedSources) {
+        if (member === busySource) {
+          await expect(acquireSourceGuard(member)).rejects.toThrow(/exited|closed|EPIPE/);
           expect(codexThreadWriterHolder(nativeHome, member.threadId).held).toBe(true);
-          expect(requests.map(request => request.phase)).toEqual(['preparation']);
+          expect(sourceGuards).toHaveLength(ancestorDepth);
+          // Acquisition is all-or-nothing for dispatch: release previously
+          // acquired ancestors on failure, without touching the busy writer.
+          for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
+          for (const guard of sourceGuards) expect(codexThreadWriterHolder(nativeHome, guard.threadId).held).toBe(false);
+          sourceGuards.length = 0;
+          expect(requests.map(request => request.phase)).toEqual(preparationPhases);
           await competingWriter!.p.close(); await competingWriter!.p.done;
           return;
         }
-        expect(await guard.request({ method: 'ready' }, 5000)).toEqual({ locked: true });
-        const file = lstatSync(path, { bigint: true });
-        expect(file.isFile()).toBe(true);
-        sourceGuards.push({ peer: guard, threadId: member.threadId, path, device: file.dev, inode: file.ino });
+        await acquireSourceGuard(member);
       }
       assertSourceGuards();
       // Acquiring a lock cannot repair a source that changed in the interval
       // after its producing peer closed. Recheck the original cut unchanged.
       await recheckCarrySourceSnapshot(source);
-      if (mode === 'source-guard-conflict') {
+      if (mode === 'source-guard-conflict' || mode === 'ancestor-guard-conflict') {
         const competitor = await openNative();
-        await expect(competitor.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } }))
-          .rejects.toThrow(/active writer/);
+        for (const member of orderedSources) {
+          await expect(competitor.p.request({ method: 'thread/resume', params: { ...options, threadId: member.threadId } }))
+            .rejects.toThrow(/active writer/);
+        }
         assertSourceGuards();
         await recheckCarrySourceSnapshot(source);
-        expect(requests.map(request => request.phase)).toEqual(['preparation']);
+        expect(requests.map(request => request.phase)).toEqual(preparationPhases);
         await competitor.p.close(); await competitor.p.done;
-        await sourceGuards[0].peer.close(); await sourceGuards[0].peer.done;
+        for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
         sourceGuards.length = 0;
         const afterRelease = await openNative();
         expect((await afterRelease.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } })).thread)
@@ -1054,6 +1164,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         recipeSha256: recipe.sha256, inputSha256: prepared.trace.inputSha256,
         nativeCaptureSha256: createHash('sha256').update(JSON.stringify(captures[0])).digest('hex'),
         runtimeAfter: prepared.runtimeAfter,
+        preparationManifests,
         sourceWriterGuards: sourceGuards.map(guard => ({ threadId: guard.threadId, path: guard.path,
           device: guard.device.toString(), inode: guard.inode.toString(), pid: guard.peer.pid() })),
         source: sourceFiles.map(s => ({ threadId: s.threadId, turnId: s.turnId, filePath: s.filePath,
@@ -1078,12 +1189,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           params: { ...options, ...(arm === 'control' ? { threadId: sourceId } : {}) } });
         const thread = opened.thread as RpcFrame, threadId = String(thread.id);
         expect(threadId).not.toBe(sourceId);
-        expect((thread.turns as RpcFrame[]).map(turn => turn.id)).toEqual(arm === 'control' ? [source.turnId] : []);
+        expect((thread.turns as RpcFrame[]).map(turn => turn.id)).toEqual(arm === 'control' ? [...sourceFiles].reverse().map(member => member.turnId) : []);
         const manifest = await captureManifest(live, threadId, { artifacts: [
           ...sourceFiles.map((s, i) => ({ id: `source-${i}`, filePath: s.filePath, maxBytes: s.snapshot.highWaterBytes })),
           { id: 'carry', filePath: carry.launchContextPath, maxBytes: 1024 * 1024 },
           { id: 'preparation-manifest', filePath: preparationManifestPath, maxBytes: 1024 * 1024 },
           { id: 'preparation-closeout', filePath: preparationCloseoutPath, maxBytes: 1024 * 1024 },
+          ...(readSource ? [{ id: 'source-window', filePath: sourceWindowPath, maxBytes: 1024 * 1024 }] : []),
         ], roots: [{ role: 'source', artifactIds: sourceFiles.map((_, i) => `source-${i}`) }] });
         expect(manifest.dependencyScope!.missingRoles).toEqual([]);
         expect(JSON.parse(readFileSync(preparationManifestPath, 'utf8'))).toEqual(preparationManifest);
@@ -1093,17 +1205,40 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           phase = 'carry'; await turn(live, threadId, carry.carryText, manifest);
         }
         phase = arm;
-        const result = await turn(live, threadId, task.prompt, manifest);
-        expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! }).matches).toBe(true);
+        const prompt = readSource ? `${task.prompt}\nRecovery reference: ${sourceWindow!.sourceRef}\nByte window: ${JSON.stringify(readArgs)}` : task.prompt;
+        const result = await turn(live, threadId, prompt, manifest);
+        expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse!,
+          boundSourceRef: sourceWindow?.sourceRef }).matches).toBe(true);
+        if (readSource) {
+          expect(inspectCarrySourceRead(result.evidence, sourceWindow!)).toMatchObject({
+            status: 'verified', missing: [], violations: [], sourceRef: sourceWindow!.sourceRef });
+          expect(observedReads.filter(read => read.phase === arm)).toEqual([{ phase: arm, args: readArgs }]);
+          const armRequests = requests.filter(request => request.phase === arm);
+          expect(armRequests).toHaveLength(2);
+          expect(JSON.stringify(armRequests[1].body.input)).toContain(Buffer.from(String(task.expected.sourceSentinel)).toString('base64'));
+          // A correct scripted answer alone cannot prove source recovery. Both
+          // witnesses must pass, and the source identity comes from the freeze.
+          const missingRead = structuredClone(result.evidence);
+          const persisted = ((missingRead.threadRead.thread as RpcFrame).turns as RpcFrame[]).find(turn => turn.id === result.turnId)!;
+          persisted.items = (persisted.items as RpcFrame[]).filter(item => item.type !== 'mcpToolCall');
+          expect(inspectCarrySourceRead(missingRead, sourceWindow!).status).not.toBe('verified');
+          expect(inspectCarrySourceRead(result.evidence, { ...sourceWindow!, byteOffset: sourceWindow!.byteOffset + 1 }).status).not.toBe('verified');
+          expect(inspectCarrySourceRead(result.evidence, { ...sourceWindow!, sha256: '0'.repeat(64) }).status).toBe('violation');
+          expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! }).matches).toBe(false);
+          expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse!,
+            boundSourceRef: `codex:${randomUUID()}/${source.turnId}@${source.snapshot.sha256}` }).matches).toBe(false);
+        }
         await live.p.close(); await live.p.done;
         captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
         expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
         await recheckCarrySourceSnapshot(source);
         assertSourceGuards();
       }
-      expect(requests.map(request => request.phase)).toEqual(['preparation', 'control', 'carry', 'candidate']);
+      expect(requests.map(request => request.phase)).toEqual([...preparationPhases,
+        ...(readSource ? ['control', 'control', 'carry', 'candidate', 'candidate'] : ['control', 'carry', 'candidate'])]);
       expect(runtimeBoundaries.map(boundary => boundary.phase)).toEqual([
-        'before-first-turn', 'preparation', 'before-first-turn', 'control', 'before-first-turn', 'carry', 'candidate',
+        ...preparationArms.flatMap(() => ['before-first-turn', 'preparation']),
+        'before-first-turn', 'control', 'before-first-turn', 'carry', 'candidate',
       ]);
       expect(runtimeBoundaries.every(boundary => boundary.runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path)))).toBe(true);
       // The preparation closeout hashes its post-turn observation; each arm
@@ -1126,10 +1261,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           native: captures, gateway: gatewayCapture });
         expect(evidence).toMatchObject({ status: 'observations-linked', missing: [], violations: [],
           accountingComplete: false, admission: 'not-established' });
-        expect(evidence.native.turns.map(turn => turn.armId)).toEqual(['preparation', 'control', 'candidate', 'candidate']);
-        expect(evidence.canonical!.rows).toHaveLength(4);
+        expect(evidence.native.turns.map(turn => turn.armId)).toEqual([...preparationArms.map(arm => arm.armId), 'control', 'candidate', 'candidate']);
+        expect(evidence.canonical!.rows).toHaveLength(4 + ancestorDepth + (readSource ? 2 : 0));
         expect(evidence.inheritedUsage).toEqual([]);
-        expect(evidence.population!.turns.flatMap(turn => turn.usageEventKeys)).toHaveLength(4);
+        expect(evidence.population!.turns.flatMap(turn => turn.usageEventKeys)).toHaveLength(4 + ancestorDepth + (readSource ? 2 : 0));
         expect((await ingestInteractiveUsage({ adapters, includeIsolationRoots: false })).samples).toBe(0);
         for (let omitted = 0; omitted < captures.length; omitted++) {
           const incomplete = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
@@ -1137,7 +1272,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(incomplete.status).not.toBe('observations-linked');
           expect(incomplete.population!.unmatchedGatewayRequestIds.length).toBeGreaterThan(0);
         }
-        console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, sourceSha256: source.snapshot.sha256,
+        console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
+          sourceReadCount: observedReads.length, sourceWindow, responseQuality: 'not-established',
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
           preparationManifestSha256: preparationManifest.sha256,
           runtimeBoundarySha256, runtimeBoundaryCount: runtimeBoundaries.length,
@@ -1150,6 +1286,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     } finally {
       for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
       await gateway.close();
+      for (const host of mcpHosts) await host.close();
       await new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); });
       resetGovernorRegistry();
     }
