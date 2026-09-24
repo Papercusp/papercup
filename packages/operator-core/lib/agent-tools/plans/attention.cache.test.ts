@@ -125,6 +125,11 @@ const run = async (
   return res.data;
 };
 
+function assertWarmCountBudget(samples: readonly number[]): void {
+  expect(samples).toHaveLength(100);
+  expect([...samples].sort((a, b) => a - b)[94]).toBeLessThanOrEqual(250);
+}
+
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
@@ -258,10 +263,36 @@ describe("plans:attention — cache wiring", () => {
     const p50Ms = Object.fromEntries(outputs.map((output) => [
       output, timings[output].sort((a, b) => a - b)[50],
     ]));
-    // Evidence, not a flaky machine-speed threshold. The assertions above guard
-    // source coalescing and bounded payloads on every CI run.
-    console.info('ATTENTION_PROJECTION_BENCHMARK', JSON.stringify({ items: items.length, callsPerMode: 100, coldMs, p50Ms, bytes }));
+    const p95Ms = Object.fromEntries(outputs.map((output) => [output, timings[output][94]]));
+    // PERF-P-005: 100 completed warm count reads must meet the 250ms p95 ceiling.
+    assertWarmCountBudget(timings.counts);
+    console.info('ATTENTION_PROJECTION_BENCHMARK', JSON.stringify({
+      profile: 'attention-1000-items-2000-ascii-body-v1', workspace: 'ws-attn', concurrency: 1,
+      items: items.length, callsPerMode: 100, coldMs, p50Ms, p95Ms, bytes,
+    }));
   });
+
+  it('PERF-P-005 counterexample: six slow observer calls breach p95 even when the median is fast', async () => {
+    await run({ output: 'counts' }); // warm the real source cache first
+    const waitCell = new Int32Array(new SharedArrayBuffer(4));
+    const slowContext = ctx('ws-attn') as unknown as { metadata: () => void };
+    // Inject latency at the handler's real metadata callback seam. The wait
+    // runs only in this test process and uses no CPU-spinning or source mutation.
+    slowContext.metadata = () => { Atomics.wait(waitCell, 0, 0, 275); };
+    const samples: number[] = [];
+    for (let i = 0; i < 100; i++) {
+      const start = performance.now();
+      await run({ output: 'counts' }, i < 6 ? slowContext as never : ctx('ws-attn'));
+      samples.push(performance.now() - start);
+    }
+    expect(samples.filter((ms) => ms > 250)).toHaveLength(6);
+    expect(() => assertWarmCountBudget(samples)).toThrow();
+    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    console.info('ATTENTION_P95_COUNTEREXAMPLE', JSON.stringify({
+      completed: samples.length, injectedSlowReads: 6, ceilingMs: 250,
+      rejected: true, p95Ms: [...samples].sort((a, b) => a - b)[94],
+    }));
+  }, 10_000);
 
   it('marks compact output degraded when the shared source build exceeds its own deadline', async () => {
     vi.useFakeTimers();
