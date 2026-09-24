@@ -70,6 +70,7 @@ import {
   resumeAccountPlan,
   chooseResumeAccount,
   buildResumeEnv,
+  addClaudeResumeToolReferencesToEnv,
   ompTrackedResumeEnv,
   applyOmpResumeAccountRoute,
   ompDirectModelForRoute,
@@ -5093,6 +5094,37 @@ describe("psu-launcher arg parsing", () => {
     expect(omp.PAPERCUSP_CONTEXT_TIER).toBe("trimmed");
     expect(omp.ENABLE_TOOL_SEARCH).toBeUndefined();
     expect(omp.PAPERCUSP_TOOLS).toBeUndefined();
+  });
+
+  it("re-seeds deferred Papercusp tool references before a Claude transcript resumes", () => {
+    const root = mkdtempSync(join(tmpdir(), "psu-resume-tool-reference-"));
+    try {
+      const configDir = join(root, "claude");
+      const projectDir = join(configDir, "projects", "-repo");
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, "native-1.jsonl"), [
+        JSON.stringify({
+          type: "user",
+          message: { content: [{ type: "tool_reference", tool_name: "mcp__papercusp-su__plans_audit" }] },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { content: [{ type: "tool_reference", tool_name: "mcp__filesystem__read_file" }] },
+        }),
+      ].join("\n"));
+      const env = { PAPERCUSP_TOOLS: "tools:find,coord:orient" };
+
+      const result = addClaudeResumeToolReferencesToEnv(
+        { agent: "claude", sessionId: "native-1", configDir },
+        env,
+        { home: root },
+      );
+
+      expect(result).toMatchObject({ restored: 1, toolReferences: ["mcp__papercusp-su__plans_audit"] });
+      expect(env.PAPERCUSP_TOOLS).toBe("tools:find,coord:orient,mcp__papercusp-su__plans_audit");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("every CLI-spawn env builder stamps the context-trimming trio (WI-2140943 lane 2)", () => {
