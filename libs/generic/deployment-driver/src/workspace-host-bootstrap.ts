@@ -6,6 +6,7 @@ import {
   workspaceHostReleaseAddressingErrors,
 } from './workspace-host-build-manifest';
 import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from "./workspace-host-agent-authentication";
+import { WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML } from './workspace-host-agent-home';
 import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from "./workspace-host-credential-delivery";
 import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from "./workspace-host-remote-initializer";
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
@@ -125,6 +126,9 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
+/** Private key and host pin for the operator's loopback PTY hop into the customer identity. */
+export const WORKSPACE_HOST_HOSTED_PTY_SSH_KEY = `${WORKSPACE_HOST_STATE_ROOT}/hosted-pty-ssh/id_ed25519`;
+export const WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS = `${WORKSPACE_HOST_STATE_ROOT}/hosted-pty-ssh/known_hosts`;
 /**
  * Written by the specialised bootc image build from the exact namespace used in
  * both containers policy and registries.d.  Reading this pin avoids deriving a
@@ -1710,6 +1714,30 @@ function agentRuntimeInstallLines(
   return lines;
 }
 
+/** Publish only the credential-free OMP executable and model registry to the customer identity. */
+function workspaceOmpRuntimeInstallLines(
+  installs: readonly WorkspaceHostAgentRuntimeInstall[],
+): string[] {
+  if (!installs.some((install) => install.agent === 'omp')) return [];
+  const models = Buffer.from(WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML, 'utf8').toString('base64');
+  const installModels = [
+    'set -euo pipefail',
+    'umask 077',
+    'mkdir -p "$HOME/.omp/agent"',
+    `printf %s ${shellQuote(models)} | base64 -d > "$HOME/.omp/agent/models.yml"`,
+    'chmod 0600 "$HOME/.omp/agent/models.yml"',
+  ].join('\n');
+  return [
+    '',
+    '# The agent home holds platform credentials. Copy only the standalone public OMP executable.',
+    '[[ "$AGENT_RUNTIME_OMP" == "$AGENT_HOME/.local/bin/omp" && -f "$AGENT_RUNTIME_OMP" && ! -L "$AGENT_RUNTIME_OMP" ]] || die "vendor OMP is not the expected standalone executable"',
+    'install -m 0755 -o root -g root -- "$AGENT_RUNTIME_OMP" /usr/local/bin/omp',
+    `runuser -u "$WORKSPACE_USER" -- env HOME="/home/$WORKSPACE_USER" /bin/bash -c ${shellQuote(installModels)} || die "customer OMP model registry install failed"`,
+    'runuser -u "$WORKSPACE_USER" -- test -x /usr/local/bin/omp || die "customer cannot execute native OMP"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "customer OMP path exposes platform agent credentials"',
+  ];
+}
+
 /**
  * Install the local-inference runtime OMP proves its readiness against (D-266).
  *
@@ -2120,6 +2148,16 @@ export function buildWorkspaceHostBootstrap(
   const checksJson = JSON.stringify(
     workspaceHostBootstrapChecks(hostModel).map((name) => ({ name, ok: true })),
   );
+  const hostedPtySmoke = [
+    `test "$(id -un)" = ${shellQuote(workspaceUser)}`,
+    `test ! -r ${shellQuote(WORKSPACE_HOST_STATE_ROOT)}`,
+    `test ! -r ${shellQuote(`${WORKSPACE_HOST_STATE_ROOT}/embedded-pg`)}`,
+    `test ! -r ${shellQuote(`/home/${agentUser}`)}`,
+    `test -w ${shellQuote(WORKSPACE_HOST_DATA_ROOT)}`,
+    ...(agentRuntimeInstalls.some((install) => install.agent === 'omp')
+      ? ['test -x /usr/local/bin/omp']
+      : []),
+  ].join(' && ');
   // The three model-specific slices of the attestation jq. They are built as a matched TRIPLE —
   // args, discriminant fields, release object — because they have to stay consistent with one
   // another: a `--arg` without its field renders nothing, and a field without its `--arg` makes
@@ -2198,6 +2236,8 @@ export function buildWorkspaceHostBootstrap(
     assignment("RUNTIME_ROOT", WORKSPACE_HOST_RUNTIME_ROOT),
     assignment("STATE_ROOT", WORKSPACE_HOST_STATE_ROOT),
     assignment("WORKSPACE_ROOT", WORKSPACE_HOST_DATA_ROOT),
+    assignment("HOSTED_PTY_SSH_KEY", WORKSPACE_HOST_HOSTED_PTY_SSH_KEY),
+    assignment("HOSTED_PTY_KNOWN_HOSTS", WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS),
     assignment("INSTALL_ENTRYPOINT", entrypoints.install),
     assignment("ROLLBACK_ENTRYPOINT", entrypoints.rollback),
     assignment("NODE_ENTRYPOINT", entrypoints.node),
@@ -2349,6 +2389,18 @@ export function buildWorkspaceHostBootstrap(
     // hardened and not yet reachable; failing to write it at all bricks the host (D-238).
     'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER/.ssh"',
     'printf %s "$WORKSPACE_AUTHORIZED_KEYS_B64" | base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+    // A separate local key lets the unprivileged operator service start a PTY under the existing
+    // customer SSH identity. Re-add it on every bootstrap because controller keys are reset above.
+    'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$(dirname "$HOSTED_PTY_SSH_KEY")"',
+    'if [[ ! -f "$HOSTED_PTY_SSH_KEY" ]]; then runuser -u "$SERVICE_USER" -- ssh-keygen -q -t ed25519 -N "" -f "$HOSTED_PTY_SSH_KEY" || die "hosted PTY key generation failed"; fi',
+    '[[ ! -L "$HOSTED_PTY_SSH_KEY" && "$(stat -c %U:%G:%a "$HOSTED_PTY_SSH_KEY")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY private key ownership or mode is unsafe"',
+    'HOSTED_PTY_PUB="$(runuser -u "$SERVICE_USER" -- ssh-keygen -y -f "$HOSTED_PTY_SSH_KEY")" || die "hosted PTY public key is invalid"',
+    'printf \'restrict,pty,from="127.0.0.1" %s\\n\' "$HOSTED_PTY_PUB" >> "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+    // Pin the local sshd host key. StrictHostKeyChecking in the PTY launcher rejects any drift.
+    '[[ -s /etc/ssh/ssh_host_ed25519_key.pub ]] || die "loopback sshd host key is absent"',
+    'printf \'127.0.0.1 %s\\n\' "$(awk \'{print $1 " " $2}\' /etc/ssh/ssh_host_ed25519_key.pub)" > "$HOSTED_PTY_KNOWN_HOSTS"',
+    'chown "$SERVICE_USER:$SERVICE_GROUP" "$HOSTED_PTY_KNOWN_HOSTS"',
+    'chmod 0600 "$HOSTED_PTY_KNOWN_HOSTS"',
     'chown "$WORKSPACE_USER:$WORKSPACE_GROUP" "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
     'chmod 0600 "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
     // Fail loudly here rather than at the next connection: an empty authorized_keys and a
@@ -2563,6 +2615,7 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
     ...agentRuntimeInstallLines(agentRuntimeInstalls),
     ...localInferenceRuntimeInstallLines(agentRuntimeInstalls),
+    ...workspaceOmpRuntimeInstallLines(agentRuntimeInstalls),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[4]}'`,
     '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',
@@ -2851,6 +2904,13 @@ export function buildWorkspaceHostBootstrap(
     // an outage into a false positive.
     '[[ -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" ]] || die "workspace authorized_keys is unreadable or empty at attest time; the host is unreachable"',
     '[[ "$(stat -c "%U %a" "/home/$WORKSPACE_USER/.ssh/authorized_keys")" == "$WORKSPACE_USER 600" ]] || die "workspace authorized_keys ownership or mode is unsafe"',
+    '[[ "$(stat -c "%U:%G:%a" "$HOSTED_PTY_SSH_KEY")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY private key ownership or mode is unsafe at attest time"',
+    '[[ "$(stat -c "%U:%G:%a" "$HOSTED_PTY_KNOWN_HOSTS")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY host pin ownership or mode is unsafe at attest time"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$HOSTED_PTY_SSH_KEY" || die "customer can read hosted PTY private key"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT/embedded-pg" || die "customer PTY identity can read embedded database state"',
+    // Permissions checked via runuser alone would miss a bad key, host pin or sshd policy.
+    // Exercise the actual customer PTY identity switch before attesting the host healthy.
+    `timeout -k 5 30 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt -i "$HOSTED_PTY_SSH_KEY" -o "UserKnownHostsFile=$HOSTED_PTY_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=10 -l "$WORKSPACE_USER" 127.0.0.1 ${shellQuote(hostedPtySmoke)} || die "hosted customer PTY loopback authentication or isolation failed"`,
     'grep -Fx "pubkeyauthentication yes" <<<"$SSHD_POLICY" >/dev/null || die "sshd would refuse public-key authentication for the workspace user"',
     'grep -Eq "^authorizedkeysfile .*\\.ssh/authorized_keys" <<<"$SSHD_POLICY" || die "sshd does not read the authorized_keys this bootstrap wrote"',
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
