@@ -35,6 +35,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { compileJsonSchema } from '../json-schema-validation';
 import type { GatewayRequestTelemetrySnapshot } from '../inference-gateway/request-stage-telemetry';
+import type { SuStdioReceipt, SuStdioReceiptState } from '../su-session-stdio-peer';
 
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
@@ -799,6 +800,129 @@ export interface CarryCanonicalUsageRow {
   usage_event_key: string | null;
   session_id: string | null;
   usage_provenance: { turnId?: unknown } | null;
+}
+
+/** Derive the native turn population from a closed peer's complete wire
+ * history. This establishes a LOCAL capture boundary, not authentication or
+ * writer exclusion. Arm labels remain controller assignments. Inherited
+ * turns are retained separately; they must never become new trial requests.
+ */
+export function inspectCarryNativePopulation(input: {
+  receipts: readonly SuStdioReceipt[];
+  state: SuStdioReceiptState | undefined;
+  arms: readonly { armId: string; threadId: string }[];
+}) {
+  const missing = new Set<string>(), violations = new Set<string>();
+  const record = (v: unknown): Record<string, unknown> => asRecord(v) ?? {};
+  const nonblank = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const state = input.state;
+  if (!nonblank(state?.peerId) || !nonblank(state?.clockId)) missing.add('native-capture-identity-unavailable');
+  if (!state?.enabled || state.sinkFailed || !state.exited || state.pendingWrites !== 0) missing.add('native-capture-not-closed');
+  if (!state || !Number.isSafeInteger(state.emitted) || state.emitted < 1 || state.emitted !== input.receipts.length) {
+    missing.add('native-receipt-count-mismatch');
+  }
+  const sent = new Map<string, SuStdioReceipt>(), replies = new Map<string, SuStdioReceipt>();
+  const writes = new Map<string, SuStdioReceipt>();
+  const events: SuStdioReceipt[] = [];
+  let lastMs = -Infinity;
+  const idKey = (id: unknown) => typeof id === 'string' || (typeof id === 'number' && Number.isSafeInteger(id))
+    ? JSON.stringify(id) : null;
+  for (const [index, receipt] of input.receipts.entries()) {
+    if (receipt.peerId !== state?.peerId || receipt.clockId !== state?.clockId || receipt.sequence !== index + 1 ||
+      !Number.isFinite(receipt.atMs) || receipt.atMs < lastMs) violations.add('native-receipt-identity-or-sequence');
+    lastMs = receipt.atMs;
+    const frame = receipt.frame, id = idKey(frame.id);
+    if (!['write-started', 'write-completed', 'write-failed', 'received'].includes(receipt.phase)) violations.add('unknown-native-receipt-phase');
+    if (receipt.phase === 'write-started' && !id && frame.method !== 'initialized') violations.add('unidentified-native-command');
+    if (receipt.phase === 'write-failed') missing.add('native-write-failed');
+    if (receipt.phase === 'write-started' && id) {
+      if (sent.has(id)) violations.add('duplicate-native-rpc');
+      sent.set(id, receipt);
+    } else if (receipt.phase === 'write-completed' && id) {
+      if (writes.has(id) || !isDeepStrictEqual(sent.get(id)?.frame, frame)) violations.add('native-write-mismatch');
+      writes.set(id, receipt);
+    } else if (receipt.phase === 'received') {
+      if (id && !frame.method) {
+        if (replies.has(id) || !sent.has(id)) violations.add('unmatched-or-duplicate-native-reply');
+        replies.set(id, receipt);
+      } else if (frame.method) {
+        if (id) violations.add('native-server-request');
+        events.push(receipt);
+      }
+    }
+  }
+  const arms = new Map<string, string>();
+  for (const arm of input.arms) {
+    if (!nonblank(arm.threadId) || !nonblank(arm.armId) || arms.has(arm.threadId) || [...arms.values()].includes(arm.armId)) {
+      violations.add('invalid-or-duplicate-arm');
+    }
+    arms.set(arm.threadId, arm.armId);
+  }
+  const threads = new Map<string, { inheritedTurnIds: string[]; sourcePath: string | null; openedAt: number }>();
+  const reads = new Map<string, { thread: Record<string, unknown>; sequence: number }>();
+  const turns: Array<{ armId: string; threadId: string; turnId: string; status: 'completed' | 'failed' | 'interrupted' }> = [];
+  const readonly = new Set(['initialize', 'config/read', 'mcpServerStatus/list', 'thread/read']);
+  for (const [id, request] of sent) {
+    const frame = request.frame, params = record(frame.params), reply = replies.get(id), result = record(reply?.frame.result);
+    if (!writes.has(id) || !reply) { missing.add('unacknowledged-native-rpc'); continue; }
+    if (reply.frame.error != null) { missing.add('rejected-native-rpc'); continue; }
+    if (['thread/start', 'thread/fork', 'thread/resume'].includes(String(frame.method))) {
+      const thread = record(result.thread), threadId = thread.id;
+      if (!nonblank(threadId) || !arms.has(threadId) || threads.has(threadId)) { violations.add('unassigned-or-duplicate-native-thread'); continue; }
+      const inherited = Array.isArray(thread.turns) ? thread.turns.map(record) : null;
+      if (!inherited || inherited.some(t => !nonblank(t.id) || !['completed', 'failed', 'interrupted'].includes(String(t.status))) ||
+        new Set(inherited?.map(t => t.id)).size !== inherited?.length) missing.add('inherited-native-history-unavailable');
+      threads.set(threadId, { inheritedTurnIds: inherited?.map(t => String(t.id)) ?? [],
+        sourcePath: nonblank(thread.path) ? thread.path : null, openedAt: request.sequence });
+    } else if (frame.method === 'thread/read') {
+      const thread = record(result.thread);
+      if (params.includeTurns !== true || thread.id !== params.threadId || !Array.isArray(thread.turns)) missing.add('native-thread-read-incomplete');
+      else reads.set(String(thread.id), { thread, sequence: request.sequence });
+    } else if (frame.method === 'turn/start') {
+      const threadId = params.threadId, turnId = record(result.turn).id;
+      if (!nonblank(threadId) || !nonblank(turnId) || !arms.has(threadId) ||
+        !threads.has(threadId) || threads.get(threadId)!.openedAt >= request.sequence) {
+        violations.add('unassigned-native-turn'); continue;
+      }
+      const matching = events.filter(r => record(r.frame.params).threadId === threadId &&
+        record(record(r.frame.params).turn).id === turnId);
+      const starts = matching.filter(r => r.frame.method === 'turn/started');
+      const ends = matching.filter(r => r.frame.method === 'turn/completed');
+      const status = record(record(ends[0]?.frame.params).turn).status;
+      if (starts.length !== 1 || ends.length !== 1 || starts[0].sequence <= request.sequence ||
+        ends[0].sequence <= starts[0].sequence || !['completed', 'failed', 'interrupted'].includes(String(status))) {
+        missing.add('native-turn-boundary-unavailable'); continue;
+      }
+      if (turns.some(t => t.threadId === threadId && t.turnId === turnId) || threads.get(threadId)!.inheritedTurnIds.includes(turnId)) {
+        violations.add('duplicate-native-turn');
+      }
+      turns.push({ armId: arms.get(threadId)!, threadId, turnId, status: status as typeof turns[number]['status'] });
+    } else if (frame.method !== 'turn/interrupt' && !readonly.has(String(frame.method))) {
+      violations.add('unsupported-native-rpc');
+    }
+  }
+  for (const threadId of arms.keys()) {
+    const opened = threads.get(threadId), read = reads.get(threadId);
+    if (!opened || !read) { missing.add('missing-native-thread-boundary'); continue; }
+    const current = turns.filter(t => t.threadId === threadId);
+    const persisted = (read.thread.turns as unknown[]).map(record);
+    const expected = [...opened.inheritedTurnIds, ...current.map(t => t.turnId)];
+    if (!isDeepStrictEqual(persisted.map(t => t.id), expected) || current.some(t =>
+      persisted.find(p => p.id === t.turnId)?.status !== t.status)) violations.add('persisted-native-population-mismatch');
+    if (!current.length || events.some(r => record(r.frame.params).threadId === threadId &&
+      ['turn/started', 'turn/completed'].includes(String(r.frame.method)) &&
+      (!current.some(t => t.turnId === record(record(r.frame.params).turn).id) || r.sequence >= read.sequence))) {
+      missing.add('unaccounted-native-turn-boundary');
+    }
+    if (opened.sourcePath !== read.thread.path || !opened.sourcePath) missing.add('native-source-path-unavailable');
+  }
+  if (events.some(r => ['turn/started', 'turn/completed'].includes(String(r.frame.method)) &&
+    !arms.has(String(record(r.frame.params).threadId)))) violations.add('unassigned-native-turn-event');
+  if (!arms.size || !turns.length) missing.add('empty-native-population');
+  return { status: violations.size ? 'invalid' as const : missing.size ? 'incomplete' as const : 'closed-peer-reconciled' as const,
+    missing: [...missing], violations: [...violations], turns,
+    threads: [...threads].map(([threadId, thread]) => ({ threadId, sourcePath: thread.sourcePath,
+      inheritedTurnIds: thread.inheritedTurnIds })), accountingComplete: false as const };
 }
 
 /** Controller reconciliation for ONE isolated gateway's lifetime snapshot.

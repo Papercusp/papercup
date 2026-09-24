@@ -35,7 +35,8 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervi
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { processMonotonicClock } from './process-monotonic-clock';
 import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse,
-  inspectCarryRequestPopulation, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
+  inspectCarryRequestPopulation, inspectCarryNativePopulation, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
+import { captureCarryCanonicalUsagePopulation } from './launch-cost/scan-launch-transcripts';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import * as dbOrg from '@papercusp/db-org';
 import * as workspaceRegistry from './workspace-registry';
@@ -157,6 +158,13 @@ describe('native JSON-line pipe transport', () => {
     expect(receipts.filter(r => r.frame.method === 'notice').map(r => r.frame.params))
       .toEqual([{ value: 'original' }, { value: 'original' }]);
     expect(receipts.some(r => /provider|dispatch/.test(r.phase))).toBe(false);
+    expect(a.receiptState!()).toMatchObject({ enabled: true, exited: false, sinkFailed: false });
+    await a.close(); await b.close();
+    for (const p of [a, b]) {
+      const state = p.receiptState!();
+      expect(state).toMatchObject({ exited: true, pendingWrites: 0, sinkFailed: false });
+      expect(state.emitted).toBe(receipts.filter(r => r.peerId === state.peerId).length);
+    }
   });
 
   it('fails closed before writing if the receipt sink cannot retain the attempt', async () => {
@@ -165,6 +173,7 @@ describe('native JSON-line pipe transport', () => {
     `], {}, undefined, undefined, () => { throw new Error('receipt storage unavailable'); });
     await expect(p.request({ method: 'turn/start' })).rejects.toThrow('receipt storage unavailable');
     await expect(p.done).rejects.toThrow('receipt storage unavailable');
+    expect(p.receiptState!()).toMatchObject({ enabled: true, sinkFailed: true, emitted: 1 });
     await expect(p.request({ method: 'turn/start' })).rejects.toThrow('connection is closed');
   });
 
@@ -896,7 +905,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // Flush only this test's native process and ingest only its isolated home.
       // This exercises the real canonical writer, not a fabricated billing row.
       const nativeHome = homes.at(-1)!;
-      await p.close(); peers.splice(peers.indexOf(p), 1); p = undefined;
+      await p.close();
+      const nativePopulation = inspectCarryNativePopulation({ receipts, state: p.receiptState?.(),
+        arms: [{ armId: `fixture:${mode}`, threadId }] });
+      expect(nativePopulation).toMatchObject({ status: 'closed-peer-reconciled', missing: [], violations: [],
+        turns: [{ threadId, turnId, status: nativeStatus }] });
+      expect(inspectCarryNativePopulation({ receipts: receipts.slice(0, -1), state: p.receiptState?.(),
+        arms: [{ armId: `fixture:${mode}`, threadId }] }).status).not.toBe('closed-peer-reconciled');
+      peers.splice(peers.indexOf(p), 1); p = undefined;
       const transcriptPath = String((threadRead.thread as RpcFrame).path);
       const parsed = parseCodexChunk(readFileSync(transcriptPath, 'utf8'));
       const usageEvents = parsed.events ?? [];
@@ -921,8 +937,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           WHERE workspace_id = ${workspace}`;
         canonicalSamples = rows.length;
         expect(rows).toHaveLength(usageEvents.length);
+        const canonicalPopulation = await captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation });
+        expect(canonicalPopulation).toMatchObject({ coverage: 'complete-selected-snapshot',
+          ingestionCoverage: 'not-established', accountingComplete: false });
+        expect(canonicalPopulation.rows).toEqual(rows.map(({ session_id, usage_event_key, usage_provenance }) =>
+          ({ session_id, usage_event_key, usage_provenance })));
         const population = inspectCarryRequestPopulation({ ownerId: owner,
-          turns: [{ armId: `fixture:${mode}`, threadId, turnId, status: nativeStatus }], gateway: stages, usage: rows });
+          turns: nativePopulation.turns, gateway: stages, usage: canonicalPopulation.rows });
         expect(population).toMatchObject({ populationStatus: 'linked', missing: [], violations: [],
           chargeJoin: 'unavailable', accountingComplete: false, unmatchedGatewayRequestIds: [], unmatchedUsageRows: [],
           turns: [{ status: nativeStatus, gatewayRequestIds: [timeline.requestId],
@@ -947,6 +968,30 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         // transcript contains no usage. No sample means unknown charge, not zero.
         expect(timeline.upstreamWrites.calls.length).toBeGreaterThanOrEqual(canonicalSamples);
         if (mode === 'failover') expect(timeline.upstreamWrites.calls.length).toBe(canonicalSamples + 1);
+        if (mode === 'ok') {
+          // A filtered-to-known-turn query would hide these rows. Exercise all
+          // three scope keys and the workspace boundary against real Postgres.
+          const invalidRows = [
+            { workspace_id: workspace, session_id: threadId, run_id: null, usage_provenance: { turnId: 'inherited-or-unknown' } },
+            { workspace_id: workspace, session_id: 'wrong-session', run_id: null, usage_provenance: { sourceFile: transcriptPath } },
+            { workspace_id: workspace, session_id: null, run_id: threadId, usage_provenance: null },
+            { workspace_id: `foreign-${workspace}`, session_id: threadId, run_id: threadId, usage_provenance: { sourceFile: transcriptPath } },
+          ];
+          for (const row of invalidRows) await sql`
+            INSERT INTO harness_shared.agent_usage_samples
+              (workspace_id, ts, bucket_key, provider, model_class, source, session_id, run_id, usage_provenance)
+            VALUES (${row.workspace_id}, 1, 'fixture', 'codex', 'fixture', 'interactive', ${row.session_id},
+              ${row.run_id}, ${row.usage_provenance ? sql.json(row.usage_provenance) : null})`;
+          const expanded = await captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation, maxRows: 4 });
+          expect(expanded.rows).toHaveLength(4);
+          expect(expanded.rows.filter(r => r.usage_event_key === null)).toHaveLength(3);
+          expect(inspectCarryRequestPopulation({ ownerId: owner, turns: nativePopulation.turns,
+            gateway: stages, usage: expanded.rows })).toMatchObject({ populationStatus: 'invalid', unmatchedUsageRows: [1, 2, 3] });
+          await expect(captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation, maxRows: 3 }))
+            .rejects.toThrow('exceeded bound or lost rows');
+          await expect(captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace,
+            native: { ...nativePopulation, status: 'incomplete' } })).rejects.toThrow('requires a reconciled native scope');
+        }
         if (nativeStatus === 'failed') expect(timeline.upstreamWrites.calls.length).toBeGreaterThan(0);
       } finally {
         dbSpy.mockRestore(); workspaceSpy.mockRestore();

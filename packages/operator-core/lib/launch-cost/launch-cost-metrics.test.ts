@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { compileJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
+import type { RpcFrame, SuStdioReceipt } from '../su-session-stdio-peer';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -18,6 +19,7 @@ import {
   inspectCarryTaskResponse,
   inspectCarryPreparationResponse,
   inspectCarryRequestPopulation,
+  inspectCarryNativePopulation,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -29,6 +31,75 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry closed native population', () => {
+  function fixture(status: 'completed' | 'failed' | 'interrupted' = 'completed') {
+    const receipts: SuStdioReceipt[] = [];
+    const push = (phase: SuStdioReceipt['phase'], frame: RpcFrame) => receipts.push({ phase, frame,
+      peerId: 'peer', clockId: 'clock', sequence: receipts.length + 1, atMs: receipts.length });
+    const rpc = (id: string, method: string, params: RpcFrame, result: RpcFrame) => {
+      push('write-started', { id, method, params }); push('write-completed', { id, method, params });
+      push('received', { id, result });
+    };
+    rpc('open', 'thread/fork', { threadId: 'predecessor' }, { thread: { id: 'thread', path: '/native/rollout',
+      turns: [{ id: 'inherited', status: 'completed' }] } });
+    rpc('turn', 'turn/start', { threadId: 'thread' }, { turn: { id: 'new', status: 'inProgress' } });
+    push('received', { method: 'turn/started', params: { threadId: 'thread', turn: { id: 'new', status: 'inProgress' } } });
+    push('received', { method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'new', status } } });
+    rpc('read', 'thread/read', { threadId: 'thread', includeTurns: true }, { thread: { id: 'thread', path: '/native/rollout',
+      turns: [{ id: 'inherited', status: 'completed' }, { id: 'new', status }] } });
+    return { receipts, state: { peerId: 'peer', clockId: 'clock', emitted: receipts.length,
+      enabled: true, sinkFailed: false, exited: true, pendingWrites: 0 }, arms: [{ armId: 'arm', threadId: 'thread' }] };
+  }
+
+  it.each(['completed', 'failed', 'interrupted'] as const)('derives %s turns without charging inherited history', status => {
+    const input = fixture(status), before = structuredClone(input);
+    expect(inspectCarryNativePopulation(input)).toEqual({ status: 'closed-peer-reconciled', missing: [], violations: [],
+      turns: [{ armId: 'arm', threadId: 'thread', turnId: 'new', status }],
+      threads: [{ threadId: 'thread', sourcePath: '/native/rollout', inheritedTurnIds: ['inherited'] }], accountingComplete: false });
+    expect(input).toEqual(before);
+  });
+
+  it.each(['prefix', 'middle', 'tail', 'count', 'open', 'sink', 'disabled', 'write', 'state'] as const)(
+    'rejects an incomplete local capture (%s)', kind => {
+      const input: Parameters<typeof inspectCarryNativePopulation>[0] = fixture();
+      if (kind === 'prefix') input.receipts = input.receipts.slice(1);
+      if (kind === 'middle') input.receipts = input.receipts.filter((_, i) => i !== 4);
+      if (kind === 'tail') input.receipts = input.receipts.slice(0, -1);
+      if (kind === 'count') input.state!.emitted++;
+      if (kind === 'open') input.state!.exited = false;
+      if (kind === 'sink') input.state!.sinkFailed = true;
+      if (kind === 'disabled') input.state!.enabled = false;
+      if (kind === 'write') input.state!.pendingWrites++;
+      if (kind === 'state') input.state = undefined;
+      expect(inspectCarryNativePopulation(input).status).not.toBe('closed-peer-reconciled');
+    });
+
+  it.each(['peer', 'clock', 'time', 'sequence', 'unassigned', 'extra-persisted', 'missing-persisted',
+    'status', 'source', 'summary', 'unknown-rpc', 'duplicate-reply', 'foreign-event'] as const)(
+    'rejects conflicting population evidence (%s)', kind => {
+      const input = fixture(), final = (input.receipts.at(-1)!.frame.result as RpcFrame).thread as RpcFrame;
+      if (kind === 'peer') input.receipts[2].peerId = 'another-peer';
+      if (kind === 'clock') input.receipts[2].clockId = 'another-clock';
+      if (kind === 'time') input.receipts[2].atMs = -1;
+      if (kind === 'sequence') input.receipts[2].sequence++;
+      if (kind === 'unassigned') input.arms = [];
+      if (kind === 'extra-persisted') (final.turns as RpcFrame[]).push({ id: 'unobserved', status: 'completed' });
+      if (kind === 'missing-persisted') (final.turns as RpcFrame[]).pop();
+      if (kind === 'status') (final.turns as RpcFrame[])[1].status = 'failed';
+      if (kind === 'source') final.path = '/another/rollout';
+      if (kind === 'summary') delete final.turns;
+      if (kind === 'unknown-rpc') { input.receipts[3].frame.method = 'thread/compact/start'; input.receipts[4].frame.method = 'thread/compact/start'; }
+      if (kind === 'duplicate-reply') input.receipts[5].frame.id = 'open';
+      if (kind === 'foreign-event') (input.receipts[6].frame.params as RpcFrame).threadId = 'foreign';
+      expect(inspectCarryNativePopulation(input).status).not.toBe('closed-peer-reconciled');
+    });
+
+  it('keeps rejection and unknown delivery incomplete without inventing a completed turn', () => {
+    const input = fixture(); input.receipts[5].frame = { id: 'turn', error: { message: 'rejected' } };
+    expect(inspectCarryNativePopulation(input)).toMatchObject({ status: 'invalid', turns: [], accountingComplete: false });
+  });
+});
 
 describe('carry controller request population', () => {
   function fixture(): Parameters<typeof inspectCarryRequestPopulation>[0] {
