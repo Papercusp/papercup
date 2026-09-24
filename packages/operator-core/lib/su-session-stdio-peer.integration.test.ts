@@ -246,7 +246,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     }
   }, 90_000);
 
-  it.each([false, true])('cross-checks completed native item receipts against persisted history without provider inference (source read %s)', async readSource => {
+  for (const platform of [false, true]) {
+  it.skipIf(platform && process.env.PUI_NATIVE_PLATFORM_MCP !== '1').each(platform ? [true] : [false, true])(
+    `cross-checks completed native item receipts against persisted history without provider inference (platform ${platform}, source read %s)`, async readSource => {
     const events: RpcFrame[] = [];
     const fixtureHome = mkdtempSync(join(tmpdir(), 'carry-source-receipt-')); homes.push(fixtureHome);
     let predecessor: CarrySourceSnapshot | undefined;
@@ -254,6 +256,22 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     let readArgs = { file_path: '', byte_offset: 0, byte_limit: window.length };
     const observedReads: unknown[] = [], httpErrors: unknown[] = [], mcpHosts: McpServer[] = [];
     const providerCalls: Array<Record<string, unknown>> = [];
+    const serverName = platform ? 'papercusp-su' : 'cache_receipts';
+    const toolName = platform ? 'tools:invoke' : 'capability_read';
+    let functionNamespace = 'mcp__cache_receipts';
+    const identityArgs = { name: 'coord:whoami', args: {} };
+    const sourceArgs = () => platform ? { name: 'capability:read', args: readArgs } : readArgs;
+    let privateMcpConfig: string | undefined;
+    if (platform) {
+      const inherited = parseToml(readFileSync(join(process.env.CODEX_HOME!, 'config.toml'), 'utf8'));
+      const mcp = (inherited.mcp_servers as Record<string, Record<string, unknown>>)['papercusp-su'];
+      expect(new URL(String(mcp.url)).searchParams.get('client')).toBe(process.env.PAPERCUSP_SID);
+      expect(typeof (mcp.http_headers as Record<string, unknown>)?.Authorization === 'string').toBe(true);
+      privateMcpConfig = stringifyToml({ mcp_servers: { 'papercusp-su': {
+        url: mcp.url, http_headers: mcp.http_headers, enabled_tools: ['tools:invoke'],
+        tools: { 'tools:invoke': { approval_mode: 'approve' } },
+      } } } as Parameters<typeof stringifyToml>[0]);
+    }
     let requests = 0, preparationRequests = 0, preparingSource = readSource;
     const server = createServer(async (req, res) => {
       if (req.url === '/mcp') {
@@ -284,9 +302,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       providerCalls.push(JSON.parse(Buffer.concat(chunks).toString()));
       if (preparingSource) preparationRequests++; else requests++;
-      if (readSource && !preparingSource && requests === 1) {
-        const item = { id: 'fc_source', type: 'function_call', call_id: 'source-read-call',
-          namespace: 'mcp__cache_receipts', name: 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
+      if (readSource && !preparingSource && requests <= (platform ? 2 : 1)) {
+        if (platform) {
+          const namespaces = providerCalls.at(-1)?.tools as Array<Record<string, unknown>>;
+          const namespace = namespaces.find(entry => entry.type === 'namespace' &&
+            (entry.tools as Array<Record<string, unknown>>).some(tool => tool.name === 'tools_invoke'));
+          if (!namespace) { httpErrors.push('Missing native dispatcher namespace'); res.writeHead(500); res.end(); return; }
+          functionNamespace = String(namespace.name);
+        }
+        const identity = platform && requests === 1;
+        const item = { id: identity ? 'fc_identity' : 'fc_source', type: 'function_call',
+          call_id: identity ? 'identity-call' : 'source-read-call', namespace: functionNamespace,
+          name: platform ? 'tools_invoke' : 'capability_read',
+          arguments: JSON.stringify(identity ? identityArgs : sourceArgs()), status: 'completed' };
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
         const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -316,20 +344,38 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         'model_providers.cache_protocol_probe.request_max_retries': 0,
         'model_providers.cache_protocol_probe.stream_max_retries': 0,
         'features.apps': false, 'features.shell_tool': false, web_search: 'disabled',
-        ...(readSource ? {
+        ...(readSource && !platform ? {
           'mcp_servers.cache_receipts.url': `http://127.0.0.1:${address.port}/mcp`,
           'mcp_servers.cache_receipts.http_headers.Authorization': 'Bearer offline-fixture',
         } : {}),
       };
       const nativeTurn = async () => {
         p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
-          ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame));
+          ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame), privateMcpConfig);
         await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
         p.send({ method: 'initialized', params: {} });
         const start = await p.request({ method: 'thread/start', params: {
           model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
         } });
         const threadId = String((start.thread as RpcFrame).id);
+        if (readSource) {
+          const startup = () => events.find(frame => frame.method === 'mcpServer/startupStatus/updated' &&
+            (frame.params as RpcFrame).threadId === threadId && (frame.params as RpcFrame).name === serverName &&
+            ['ready', 'failed', 'cancelled'].includes(String((frame.params as RpcFrame).status)));
+          await vi.waitFor(() => expect(startup() !== undefined).toBe(true), { timeout: 15_000 });
+          expect((startup()!.params as RpcFrame).status).toBe('ready');
+        }
+        const beforeConfig = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
+        const beforeTools = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
+        if (readSource) {
+          const inventory = beforeTools.data as Array<Record<string, unknown>>;
+          expect(beforeTools.nextCursor == null).toBe(true);
+          expect(inventory.map(entry => entry.name)).toEqual([serverName]);
+          expect(inventory[0].runtimeStatus).toBe('connected');
+          expect(inventory[0].toolsError == null).toBe(true);
+          expect(Object.keys(inventory[0].tools as object)).toEqual([toolName]);
+          if (platform) expect(inventory[0].authStatus).toBe('bearerToken');
+        }
         const response = await p.request({ method: 'turn/start', params: {
           threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
         } });
@@ -339,6 +385,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
         })), { timeout: 20_000 });
         const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        expect(isDeepStrictEqual(beforeConfig,
+          await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } }))).toBe(true);
+        expect(isDeepStrictEqual(beforeTools,
+          await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } }))).toBe(true);
         return { threadId, turnId, threadRead };
       };
       if (readSource) {
@@ -355,23 +405,36 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       if (readSource) {
         // Native Codex received the platform result and returned it to the
         // next local provider request, not just a successful tools/list.
-        expect(providerCalls[0]?.tools).toContainEqual(expect.objectContaining({ type: 'namespace', name: 'mcp__cache_receipts',
-          tools: expect.arrayContaining([expect.objectContaining({ type: 'function', name: 'capability_read' })]) }));
+        expect(providerCalls[0]?.tools).toContainEqual(expect.objectContaining({ type: 'namespace', name: functionNamespace,
+          tools: expect.arrayContaining([expect.objectContaining({ type: 'function', name: platform ? 'tools_invoke' : 'capability_read' })]) }));
         expect(JSON.stringify(providerCalls.at(-1)?.input), JSON.stringify({
           outputs: (providerCalls.at(-1)?.input as Array<Record<string, unknown>>)?.filter(item => item.type === 'function_call_output') }))
           .toContain(window.toString('base64'));
       }
       const evidence = { threadId, turnId, events, threadRead, allowedMcpCalls: readSource
-        ? [{ server: 'cache_receipts', tool: 'capability_read', arguments: readArgs }] : [] };
+        ? [...(platform ? [{ server: serverName, tool: toolName, arguments: identityArgs }] : []),
+          { server: serverName, tool: toolName, arguments: sourceArgs() }] : [] };
       expect(inspectCarryNativeTurn(evidence),
         JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
         .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}',
-          mcpItemIds: readSource ? [expect.any(String)] : [] });
+          mcpItemIds: platform ? [expect.any(String), expect.any(String)] : readSource ? [expect.any(String)] : [] });
       if (readSource) {
-        expect(observedReads).toEqual([readArgs]);
+        expect(observedReads).toEqual(platform ? [] : [readArgs]);
+        if (platform) {
+          const items = ((threadRead.thread as RpcFrame).turns as RpcFrame[])[0].items as RpcFrame[];
+          const identity = items.filter(item => item.type === 'mcpToolCall' &&
+            (item.arguments as RpcFrame).name === 'coord:whoami');
+          expect(identity).toHaveLength(1);
+          const receipts = ((identity[0].result as RpcFrame).content as Array<{ text?: string }>).flatMap(block => {
+            try { const value = JSON.parse(block.text ?? ''); return value.ownerId ? [value] : []; } catch { return []; }
+          });
+          expect(receipts).toHaveLength(1);
+          expect(receipts[0].ownerId).toBe(process.env.PAPERCUSP_SID);
+          expect(receipts[0].workspaceId).toBe(process.env.PAPERCUSP_WORKSPACE);
+        }
         const sourceRef = `codex:${predecessor!.threadId}/${predecessor!.turnId}@${predecessor!.snapshot.sha256}`;
         expect(inspectCarrySourceRead(evidence, { sourceRef,
-          server: 'cache_receipts', tool: 'capability_read', filePath: predecessor!.filePath,
+          server: serverName, tool: toolName, filePath: predecessor!.filePath,
           byteOffset: readArgs.byte_offset, byteLength: window.length,
           totalBytes: predecessor!.snapshot.completeBytes, sha256: createHash('sha256').update(window).digest('hex') }))
           .toMatchObject({ status: 'verified', missing: [], violations: [], sourceRef });
@@ -379,13 +442,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(threadId).not.toBe(predecessor!.threadId);
       }
       expect(httpErrors).toEqual([]);
-      expect(requests).toBe(readSource ? 2 : 1);
+      expect(requests).toBe(platform ? 3 : readSource ? 2 : 1);
       expect(preparationRequests).toBe(readSource ? 1 : 0);
       const source = await captureCompletedCarrySource(p!, threadId, turnId);
       expect(source.filePath).toBe((threadRead.thread as RpcFrame).path);
       expect(source.snapshot.completeBytes).toBeGreaterThan(0);
       expect(source.snapshot.highWaterBytes).toBe(source.snapshot.completeBytes);
       await expect(recheckCarrySourceSnapshot(source)).resolves.toBeUndefined();
+      if (platform) console.info('CARRY_NATIVE_PLATFORM_SOURCE_RECEIPT', JSON.stringify({ threadId, turnId,
+        predecessorThread: predecessor!.threadId, predecessorTurn: predecessor!.turnId,
+        predecessorSha256: predecessor!.snapshot.sha256, successorSha256: source.snapshot.sha256,
+        windowSha256: createHash('sha256').update(window).digest('hex'),
+        ownerId: process.env.PAPERCUSP_SID, workspaceId: process.env.PAPERCUSP_WORKSPACE,
+        scriptedRequests: preparationRequests + requests, providerInference: false }));
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
       finally {
@@ -394,6 +463,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
     }
   }, 90_000);
+  }
 
   it.each(['invalid-request', 'retryable-http', 'incomplete-stream'] as const)(
     'Codex preserves native turn metadata and disables retries for %s without provider inference', async (failure) => {
