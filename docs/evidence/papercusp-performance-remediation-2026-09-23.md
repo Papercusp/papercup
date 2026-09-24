@@ -1040,3 +1040,66 @@ changed source/tests with zero requested diagnostics; the last four-file
 compile reports 24 other import-graph diagnostics, not a globally clean build.
 `git diff --check` is clean. The final subsequent edits only rename the read-only
 set and correct lifecycle documentation. No shipped-runtime claim is made.
+
+### P-003 warm recorder source unit (2026-09-24 13:37Z)
+
+Decision D-002 selects a 100 Hz recorder owned by the existing lag monitor.
+`event-loop-cpu-recorder.ts` retains V8's code map using overlapping named
+anchors, rotates on the existing monitor tick, and supplies foreground profiles
+through the existing `captureCpuProfile` artifact/retention seam. There is no
+new service, timer, flag or persistence table. The existing opt-in gate controls
+the whole recorder. Gate OFF/error, unsafe p95, delayed rotation and shutdown
+disconnect it and cancel active capture. A gate read spanning a tick revokes
+sampling; its stale result cannot restart it. Startup/slow rotation and
+foreground start/stop costs are logged explicitly as observer cost.
+
+This is a **soft** rotation bound. Native recording continues while JS cannot
+run. On the next overdue tick, disconnect discards the old profiles rather than
+serializing them. Node v25.9.0's bundled `v8-profiler-agent-impl.cc` corroborates
+that path: `disable()` calls `stopProfiling(..., false)` for console recordings
+and `stop(nullptr)` for the foreground; only `serialize=true` builds the
+protocol profile. The public `v8.startCpuProfile()` API has no sample-limit
+argument. No hard duration/memory bound or production overhead SLO is claimed.
+
+Canonical verification on `a0d29c3d57` plus local changes:
+
+- Recorder lifecycle unit run **19294029**: 10 passed, zero skipped; overlapping
+  anchors, one initialization across captures, disabled/unsafe/overdue/stop
+  revocation, pending setup, failure recovery, cancellation and single-flight.
+- Real isolated Node integration **19294031**: one passed, zero skipped. Forty
+  captures all contained multiple workload samples on a 25,000-function fixture.
+  Initial warmup cost 123.35 ms; foreground starts ranged 0.039–0.155 ms.
+  The deliberate overdue tick discarded the recorder, capture while unavailable
+  rejected, and a safe reinitialization cost 96.07 ms. Largest foreground was
+  18 samples / 2,790 bytes. Eight explicit-GC observations had constant RSS
+  166,952,960 bytes and heapUsed 49,930,656–50,033,336 bytes. This is a short
+  retention check, not a long-lived leak proof. Idle sampling used 4.102 ms CPU
+  over 499.47 ms; after disable, 0.204 ms over 502.69 ms. The earlier baseline
+  had 8.096 ms CPU, so it is **not** used to infer incremental overhead here.
+- Final monitor run **19294033**: 57 passed, zero skipped, including new quiet
+  prewarming, gate-OFF-during-capture and slow/stale gate cases. Safety-posture
+  run **19294032**: 9 passed, zero skipped. Five-file scoped typecheck passed
+  with zero requested or imported diagnostics.
+
+The first unit run failed one monitor case because the Vitest global console
+does not provide the native profiling behavior. The adapter now imports Node's
+native `profile/profileEnd` functions; the full monitor suite then passed. The
+real integration already uses Node's actual inspector. Existing experimental
+idle/loaded overhead results above remain relevant, but multi-repository Git
+measurement, sustained profiler acceptance and independent audits remain open.
+
+### P-003 comparable multi-repository transport proof (13:46Z)
+
+Run **19294494** passed the new canonical Git benchmark, zero skips. The full
+method and final table are in `papercusp-p003-git-sidecar-benchmark-2026-09-24.md`.
+Four temporary repositories, five read/write commands, 100 calls per block,
+local/sidecar/sidecar/local order, pre-populated indexes and identical result
+checks yielded zero fallbacks. Signal-bearing caller entry p50 was
+29.24/0.54/0.45/26.59 ms; loop-delay p95 was 36.21/11.10/10.66/31.16 ms.
+The real IPC/Git/kernel path uses fixture admission, so production DB/queue
+latency and a full scheduled git-sync action are explicitly outside this proof.
+No new production p95 or universal speedup claim follows. Source is
+`a0d29c3d57` plus local edits; scoped test typecheck has zero requested and
+23 other import-graph diagnostics. P-003 still needs sustained observer-cost
+acceptance and independent verification; whole-plan acceptance/shipment remains
+open.
