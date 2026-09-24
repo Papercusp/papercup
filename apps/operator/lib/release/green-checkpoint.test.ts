@@ -93,6 +93,9 @@ import {
   outputHasAssertionSignature,
   outputHasDeterministicFailureSignature,
   acquireCheckpointRunLock,
+  checkpointRunLockSkipSummary,
+  activateScheduledCheckpointRunner,
+  startScheduledQualificationProgress,
   checkpointRunLockDir,
   buildTerminationCheckpointResult,
   createTerminationSignalHandler,
@@ -3037,6 +3040,44 @@ describe("in-flight candidate retirement ownership", () => {
 });
 
 describe("acquireCheckpointRunLock", () => {
+  it("reports scheduled runner phases against the reserved attempt and stops before terminal output", async () => {
+    const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
+    const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+    const progress = startScheduledQualificationProgress({
+      target, attemptId: 'attempt-1', gateFireId: 'fire-1', runId: 'run-1', pid: process.pid,
+    }, record, 60_000);
+    progress.note('phase:suite');
+    progress.note('phase:isolating');
+    progress.note('phase:delivering');
+    await progress.stop();
+    expect(record.mock.calls.map(([, input]) => (input as { phase: string }).phase)).toEqual(['suite', 'isolating', 'delivering']);
+    expect(record).toHaveBeenCalledWith(target, expect.objectContaining({
+      attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1',
+      pidIdentity: expect.stringMatching(/:\d+$/),
+    }));
+    progress.note('phase:suite');
+    expect(record).toHaveBeenCalledTimes(3);
+  });
+  it("activates the exact scheduled reservation and refuses missing identity", async () => {
+    const reserve = vi.fn(async () => ({ status: 'updated' as const, transaction: {} as never }));
+    const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+    const input = {
+      scheduled: true, target, attemptId: 'attempt-1', gateFireId: 'fire-1',
+      runId: 'run-1', candidate: 'candidate-1', pid: process.pid,
+    };
+    const result = await activateScheduledCheckpointRunner(input, reserve);
+    expect(result.status).toBe('updated');
+    expect(reserve).toHaveBeenCalledWith(target, expect.objectContaining({
+      attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1',
+      candidate: 'candidate-1', pid: process.pid, pidIdentity: expect.stringMatching(/:\d+$/),
+      started: true, evidenceRefs: ['checkpoint-run:run-1'],
+    }));
+    expect((await activateScheduledCheckpointRunner({ ...input, gateFireId: undefined }, reserve)).status)
+      .toBe('missing-identity');
+    expect((await activateScheduledCheckpointRunner({ ...input, scheduled: false }, reserve)).status)
+      .toBe('not-scheduled');
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(
       repo,
@@ -3082,7 +3123,7 @@ describe("acquireCheckpointRunLock", () => {
     next.release();
   });
 
-  it("reclaims a lock that OUTLIVED the max run age even if its pid still looks alive (recycled-pid / hung-run freeze)", () => {
+  it("reclaims a recycled PID only when its boot/start identity changed", () => {
     // The green-checkpoint-stale-lock-2026-06-26 freeze: a crashed/hung run left a lock
     // whose recorded pid got recycled to an unrelated LIVE process, so the dead-pid check
     // never reclaimed it and `main` froze for 21h. An over-age lock must reclaim regardless.
@@ -3095,18 +3136,51 @@ describe("acquireCheckpointRunLock", () => {
     const first = acquireCheckpointRunLock(lockDir, {
       pid: 123,
       isPidAlive: () => true,
+      getPidIdentity: () => "boot-a:start-1",
       now: () => t0,
     });
     expect(first.acquired).toBe(true);
-    // 46 min later, pid 123 STILL "alive" — but the lock is past the 45-min run window.
+    // The same numeric PID now names a different process, so the former owner is dead.
     const next = acquireCheckpointRunLock(lockDir, {
       pid: 456,
       isPidAlive: () => true,
+      getPidIdentity: (pid) => pid === 123 ? "boot-a:start-2" : "boot-a:start-3",
       staleAfterMs: 45 * 60_000,
       now: () => t0 + 46 * 60_000,
     });
     expect(next.acquired).toBe(true);
     next.release();
+  });
+
+  it("keeps an old but live owner serialized and exposes its exceeded deadline", () => {
+    const lockDir = join(repo, ".checkpoint-logs", ".green-checkpoint-run.lock");
+    const t0 = Date.parse("2026-06-26T00:00:00Z");
+    const first = acquireCheckpointRunLock(lockDir, {
+      pid: 123, isPidAlive: () => true, getPidIdentity: () => "boot-a:start-1", now: () => t0,
+    });
+    const second = acquireCheckpointRunLock(lockDir, {
+      pid: 456, isPidAlive: () => true,
+      getPidIdentity: (pid) => pid === 123 ? "boot-a:start-1" : "boot-a:start-2",
+      staleAfterMs: 45 * 60_000, now: () => t0 + 191 * 60_000,
+    });
+    expect(second).toMatchObject({
+      acquired: false,
+      owner: { pid: 123, pidIdentity: "boot-a:start-1", detail: expect.stringContaining("deadline") },
+    });
+    first.release();
+  });
+
+  it("fails closed when a live PID has no measurable process identity", () => {
+    const lockDir = join(repo, ".checkpoint-logs", ".green-checkpoint-run.lock");
+    const first = acquireCheckpointRunLock(lockDir, {
+      pid: 123, isPidAlive: () => true, getPidIdentity: () => null,
+    });
+    const second = acquireCheckpointRunLock(lockDir, {
+      pid: 456, isPidAlive: () => true, getPidIdentity: () => null,
+    });
+    expect(second).toMatchObject({ acquired: false, owner: { detail: expect.stringContaining("unknown") } });
+    expect(checkpointRunLockSkipSummary(second)).toContain("live PID identity unknown; reclaim requires proof");
+    first.release();
   });
 
   it("does NOT reclaim a fresh lock with a live pid (genuine concurrent run still blocks)", () => {

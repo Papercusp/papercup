@@ -55,6 +55,7 @@ const readStoredQualification = vi.hoisted(() =>
 );
 const beginStoredQualification = vi.hoisted(() => vi.fn());
 const recordStoredQualificationScheduledFire = vi.hoisted(() => vi.fn());
+const reserveStoredQualificationRunner = vi.hoisted(() => vi.fn());
 const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
@@ -62,6 +63,7 @@ vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
   beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
   recordStoredQualificationScheduledFire: (...a: unknown[]) => recordStoredQualificationScheduledFire(...a),
+  reserveStoredQualificationRunner: (...a: unknown[]) => reserveStoredQualificationRunner(...a),
   probeRunnerLiveness: (...a: unknown[]) => probeRunnerLiveness(...a),
 }));
 
@@ -285,7 +287,10 @@ import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
-import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from '../../release/checkpoint-qualification-transaction';
+import {
+  CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  CHECKPOINT_SCHEDULED_RUN_ENV,
+} from '../../release/checkpoint-qualification-transaction';
 
 describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
@@ -1282,6 +1287,8 @@ beforeEach(() => {
   recordStoredQualificationScheduledFire.mockResolvedValue({
     status: 'updated', transaction: { attemptId: 'scheduled-attempt', phase: 'ready', currentPhysicalRunner: null, outcome: { kind: 'pending' } },
   });
+  reserveStoredQualificationRunner.mockReset();
+  reserveStoredQualificationRunner.mockResolvedValue({ status: 'updated' });
   probeRunnerLiveness.mockReset();
   probeRunnerLiveness.mockReturnValue('unknown');
   // EI-21363817573800034: admission defaults to CLEAR for every test, so the guard is invisible
@@ -2510,6 +2517,11 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       { env?: Record<string, string> },
     ];
     expect(options.env?.[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBe('attempt-transported');
+    expect(options.env?.[CHECKPOINT_SCHEDULED_RUN_ENV]).toBe('1');
+    expect(reserveStoredQualificationRunner).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+      expect.objectContaining({ attemptId: 'attempt-transported', started: false }),
+    );
     expect(args.at(-1)).toContain('attempt-transported');
     expect(args.at(-1)).toContain('ws-42');
     expect(args.at(-1)).toContain('my-harness');
@@ -2527,6 +2539,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     await getSystemAction('green-checkpoint')!(ctx);
 
     expect(beginStoredQualification).not.toHaveBeenCalled();
+    expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
     expect(recordStoredQualificationScheduledFire).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }), 'attempt-live',
     );
