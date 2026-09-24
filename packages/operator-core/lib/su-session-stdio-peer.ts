@@ -128,6 +128,12 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
       throw error;
     }
   }
+  // Pipe streams emit their own errors, independently of ChildProcess. A
+  // failed write invokes its callback AND emits on stdin; observing only the
+  // callback still leaves EPIPE uncaught in the supervising process.
+  child.stdin.on('error', fail);
+  child.stdout.on('error', fail);
+  child.stderr.on('error', fail);
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     buffer += chunk;
