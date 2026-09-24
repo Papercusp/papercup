@@ -410,9 +410,11 @@ export interface LifecycleActionPlan {
   overflow: LifecycleActionSpec[];
 }
 
+// "machine", not a bare verb: this row sits beside the Desktop tab, and a bare "Stop" read as
+// stopping the desktop (owner #454). Stopping powers off the VM, which also cuts psu access.
 const ACTION_LABELS: Record<LifecycleAction, string> = {
-  start: "Start",
-  stop: "Stop",
+  start: "Start machine",
+  stop: "Stop machine",
   repair: "Repair",
   snapshot: "Snapshot",
   destroy: "Destroy",

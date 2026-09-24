@@ -111,7 +111,16 @@ const GOOD = 'value = GOOD\n';
 
 function runLockedProbe(
   args: string[],
-  mode: 'all' | 'no-file' | 'no-resource' | 'heartbeat-refused' = 'all',
+  mode:
+    | 'all'
+    | 'no-file'
+    | 'no-resource'
+    | 'heartbeat-refused'
+    | 'timeout-once'
+    | 'heartbeat-timeout-once'
+    | 'auth-failure'
+    | 'input-failure' = 'all',
+  extraEnv: Record<string, string> = {},
 ): { code: number; out: string } {
   writeFileSync(lockLog, '');
   const result = runProbe(args, {
@@ -122,6 +131,12 @@ function runLockedProbe(
     MUTATION_PROBE_WINDOW_MAX_SEC: '600',
     MUTATION_PROBE_LOCK_MODE: mode,
     MUTATION_PROBE_LOCK_LOG: lockLog,
+    PAPERCUSP_OPERATOR_BASE: '',
+    PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070',
+    PAPERCUSP_HONO_PORT: '',
+    PAPERCUSP_MCP_PROXY_BASE: '',
+    PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    ...extraEnv,
   });
   // spawnSync reports null when the child died on a signal; -1 keeps that distinct from every real exit code.
   return { code: result.status ?? -1, out: result.out };
@@ -191,8 +206,10 @@ beforeAll(() => {
     '  const mode = process.env.MUTATION_PROBE_LOCK_MODE;',
     "  const projectionAt = argv.indexOf('--projection');",
     "  const projectionRaw = projectionAt >= 0 ? argv[projectionAt + 1] : undefined;",
+    '  const explicitUrl = argv.find((arg) => arg.startsWith("--url="));',
+    '  const targetUrl = explicitUrl ? explicitUrl.slice("--url=".length) : (process.env.PAPERCUSP_HONO_PORT ? "http://127.0.0.1:" + process.env.PAPERCUSP_HONO_PORT : (process.env.PAPERCUSP_OPERATOR_URL || "http://127.0.0.1:3070"));',
     '  if (process.env.MUTATION_PROBE_LOCK_LOG) {',
-    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw }) + "\\n");',
+    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw, targetUrl }) + "\\n");',
     '  }',
     // Mirror the real dispatch contract (WI-10002758): a projection must name
     // pick or pipe. The fake used to ignore --projection, so a probe sending
@@ -206,6 +223,27 @@ beforeAll(() => {
     '      process.exitCode = 1;',
     '      return;',
     '    }',
+    '  }',
+    '  const loggedCalls = process.env.MUTATION_PROBE_LOCK_LOG ? fs.readFileSync(process.env.MUTATION_PROBE_LOCK_LOG, "utf8").trim().split("\\n").filter(Boolean).map((line) => JSON.parse(line)) : [];',
+    '  if (mode === "timeout-once" && tool === "coord:presence" && targetUrl !== "http://127.0.0.1:3170" && loggedCalls.filter((call) => call.tool === "coord:presence" && call.targetUrl !== "http://127.0.0.1:3170").length === 1) {',
+    '    process.stderr.write("ptool: tools/call coord:presence failed: MCP error -32001: Request timed out; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.");',
+    '    process.exitCode = 1;',
+    '    return;',
+    '  }',
+    '  if (mode === "heartbeat-timeout-once" && tool === "locks:heartbeat" && targetUrl !== "http://127.0.0.1:3170" && loggedCalls.filter((call) => call.tool === "locks:heartbeat" && call.targetUrl !== "http://127.0.0.1:3170").length === 1) {',
+    '    process.stderr.write("ptool: tools/call locks:heartbeat failed: MCP error -32001: Request timed out; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.");',
+    '    process.exitCode = 1;',
+    '    return;',
+    '  }',
+    '  if (mode === "auth-failure" && tool === "coord:presence") {',
+    '    process.stderr.write("ptool: tools/call coord:presence failed: HTTP 401 authorization_denied");',
+    '    process.exitCode = 1;',
+    '    return;',
+    '  }',
+    '  if (mode === "input-failure" && tool === "coord:presence") {',
+    '    process.stderr.write("ptool: tools/call coord:presence failed: HTTP 400 InputValidationError");',
+    '    process.exitCode = 1;',
+    '    return;',
     '  }',
     "  if (mode === 'heartbeat-refused' && tool === 'locks:heartbeat') {",
     '    process.stderr.write("lock_not_owned: fake heartbeat refusal for the stderr-surfacing case");',
@@ -311,6 +349,95 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=');
     expect(out).not.toContain('mutant applied:');
+  });
+
+  it.each(['3070', '9071'])('retries a local :%s transport timeout once through staging :3170', (port) => {
+    const primaryUrl = 'http://127.0.0.1:' + port;
+    const endpointEnv = port === '9071'
+      ? { PAPERCUSP_HONO_PORT: port }
+      : { PAPERCUSP_OPERATOR_URL: primaryUrl };
+    const { code, out } = runLockedProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--sweep-lock-held',
+      ],
+      'timeout-once',
+      endpointEnv,
+    );
+
+    expect(code).toBe(0);
+    expect(out).toContain('recovered once through staging :3170');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.filter((call) => call.tool === 'coord:presence').map((call) => call.targetUrl))
+      .toEqual([primaryUrl, 'http://127.0.0.1:3170']);
+  });
+
+  it('retries a same-lock heartbeat timeout through staging and verifies the extension', () => {
+    const { code, out } = runLockedProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--sweep-lock-held',
+      ],
+      'heartbeat-timeout-once',
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070' },
+    );
+
+    expect(code).toBe(0);
+    expect(out).toContain('recovered once through staging :3170');
+    expect(out).toContain("verified this session's live file lock");
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.filter((call) => call.tool === 'locks:heartbeat').map((call) => call.targetUrl))
+      .toEqual(['http://127.0.0.1:3070', 'http://127.0.0.1:3170']);
+  });
+
+  it('does not reroute authentication or input failures to staging', () => {
+    for (const mode of ['auth-failure', 'input-failure'] as const) {
+      const { code, out } = runLockedProbe(
+        [
+          '--file', subject,
+          '--mutate', 's/GOOD/BAD/',
+          '--test', 'grep -q GOOD {}',
+          '--in-tree',
+          '--sweep-lock-held',
+        ],
+        mode,
+      );
+
+      expect(code).toBe(2);
+      expect(out).toContain('could not read this session');
+      const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(calls).toHaveLength(1);
+      expect(calls[0].targetUrl).toBe('http://127.0.0.1:3070');
+    }
+  });
+
+  it('does not route a timeout from an explicitly pinned remote operator to local staging', () => {
+    const { code, out } = runLockedProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--sweep-lock-held',
+      ],
+      'timeout-once',
+      { PAPERCUSP_OPERATOR_URL: 'https://pinned.example' },
+    );
+
+    expect(code).toBe(2);
+    expect(out).toContain('could not read this session');
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].targetUrl).toBe('https://pinned.example');
   });
 
   it('runs under --accept-sweep-race, records the accepted race, and restores the file', () => {

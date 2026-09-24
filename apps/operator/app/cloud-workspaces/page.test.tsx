@@ -492,7 +492,7 @@ describe("CloudWorkspacesPage — mutation seam", () => {
 
     H.queryDefaults = { ...onOperate };
     render(<CloudWorkspacesPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop machine" }));
     await waitFor(() =>
       expect(H.mutate).toHaveBeenCalledWith({
         action: "stop",
@@ -527,7 +527,7 @@ describe("CloudWorkspacesPage — mutation seam", () => {
 
     render(<CloudWorkspacesPage />);
     const [stopOne, stopTwo] = screen.getAllByRole("button", {
-      name: "Stop",
+      name: "Stop machine",
     }) as HTMLButtonElement[];
 
     fireEvent.click(stopOne);
@@ -1097,8 +1097,8 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     /* This host is stoppable and not startable, so Stop is the primary and
        Start is not rendered at all — the pre-redesign page greyed Start out
        on every running host. */
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop machine" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start machine" })).toBeNull();
 
     fireEvent.click(
       screen.getByRole("button", { name: "More actions for research-control" }),
