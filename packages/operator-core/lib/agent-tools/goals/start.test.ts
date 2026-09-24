@@ -145,7 +145,7 @@ vi.mock('@papercusp/agent-mcp/goal-deps', async (orig) => ({
 }));
 
 const goalsStart = (await import('./start')).default;
-const { buildGoalKickoffBrief } = await import('./start');
+const { bindGoalLaunchIdentity, buildGoalKickoffBrief } = await import('./start');
 const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
 
 /** SQL the handler actually issued, as (text, values) pairs. */
@@ -309,6 +309,19 @@ describe('goals:start — the happy path', () => {
     });
     expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain(dataOf(res).id as string);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('records an explicit mode-state omission when a recovery kickoff precedes GOAL attachment', async () => {
+    const receipt = await bindGoalLaunchIdentity({
+      goalId: 'goal-1', ownerId: 'su-recovery', workspaceId: 'ws-test',
+      kickoff: 'recovery GOAL kickoff', portfolio: null,
+    }, bindIdentityMock as never);
+    expect(receipt).toBe(identityReceipt);
+    expect(bindIdentityMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      outputs: expect.arrayContaining([
+        { contributionId: 'current-mode-state', omission: { reason: 'not-requested' } },
+      ]),
+    }));
   });
 
   it('reads goal history in the production handler and injects it into the kickoff env', async () => {

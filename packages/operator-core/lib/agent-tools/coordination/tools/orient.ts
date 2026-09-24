@@ -2948,6 +2948,41 @@ export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const
 /** Bind the one already-assembled orient result and write ONE merged invocation
  * metadata object. The result, priority shape and delivery cursors stay owned by
  * the existing orient path. */
+/** Fold the mode rows already read for orientation against ONE selected
+ * definition snapshot. Source failure stays explicit while the other orient
+ * folds remain available; built-in text must not impersonate an installed mode. */
+export async function composeSelectedOrientModes(
+  rows: readonly { mode: string; reason: string; setBy: string; ownerDirected: boolean; setAt: unknown }[],
+  resolver?: typeof import('../../../agent-identities/source').getSelectedModeDefinitions,
+) {
+  const active = rows.map((row) => ({
+    mode: row.mode, reason: row.reason, setBy: row.setBy,
+    ownerDirected: row.ownerDirected, setAt: row.setAt,
+  }));
+  try {
+    const resolve = resolver ?? (await import('../../../agent-identities/source')).getSelectedModeDefinitions;
+    const known = rows.filter((row) => modeById(row.mode)).map((row) => row.mode);
+    const selected = await resolve(known);
+    const missing = known.find((id) => !selected.has(id));
+    if (missing) throw new Error('selected definition missing for ' + missing);
+    return {
+      active,
+      contracts: rows.map((row) => selected.get(row.mode)?.contract).filter(Boolean).join('\n\n'),
+      definitionRevisions: Object.fromEntries(rows.flatMap((row) => {
+        const entry = selected.get(row.mode);
+        return entry ? [[row.mode, {
+          sourceRevision: entry.sourceRevision, definitionRevision: entry.contractRevision,
+        }]] : [];
+      })),
+    };
+  } catch (error) {
+    return {
+      active, contracts: '',
+      definitionUnavailable: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    };
+  }
+}
+
 export async function bindOrientOutputResult<T extends Record<string, unknown>>(
   result: T,
   scope: { ownerId: string | null; workspaceId: string; harness: string | null },
@@ -3796,6 +3831,8 @@ export default defineTool({
       | {
           active: Array<Record<string, unknown>>;
           contracts: string;
+          definitionRevisions?: Record<string, { sourceRevision: string; definitionRevision: string }>;
+          definitionUnavailable?: string;
           /** WI-2140700: GOAL holders only — the every-wake owner-report verdict
            *  (null = read failed / no active goal-mode row; absent = not a GOAL caller). */
           ownerReport?: GoalOwnerReportObligation | null;
@@ -3805,19 +3842,7 @@ export default defineTool({
     if (runtimeModeRows) {
       runtimeModeIds = runtimeModeRows.map((row) => row.mode);
       if (runtimeModeRows.length) {
-        modes = {
-          active: runtimeModeRows.map((r) => ({
-            mode: r.mode,
-            reason: r.reason,
-            setBy: r.setBy,
-            ownerDirected: r.ownerDirected,
-            setAt: r.setAt,
-          })),
-          contracts: runtimeModeRows
-            .map((r) => modeById(r.mode)?.contract)
-            .filter(Boolean)
-            .join('\n\n'),
-        };
+        modes = await composeSelectedOrientModes(runtimeModeRows);
         if (goalOwnerReportPromise) modes.ownerReport = await goalOwnerReportPromise;
       }
     }

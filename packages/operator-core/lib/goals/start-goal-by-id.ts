@@ -116,6 +116,8 @@ export type StartGoalByIdResult =
       ownerId: string;
       /** Fail-open policy reads and launch warnings, never swallowed. */
       warnings: string[];
+      /** The launch sink's selected GOAL component receipt, when supplied. */
+      identityContribution?: GoalHolderLaunchResult['identityContribution'];
       /** Non-null ONLY when the caller overrode the readiness gate. */
       startBlockedOverride: string | null;
     }
@@ -178,6 +180,7 @@ export interface StartGoalByIdDeps {
    * is how a test proves the goal's own fields reached it.
    */
   buildBrief: typeof buildGoalKickoffBrief;
+  renderPortfolio?: typeof renderGoalPortfolioBrief;
 }
 
 export const DEFAULT_START_GOAL_BY_ID_DEPS: StartGoalByIdDeps = {
@@ -356,6 +359,10 @@ export async function startGoalById(
     throw new Error(`goal-holder-launch refused for ${goalId}: ${resolvedLaunch.refusal.message}`);
   }
   const portfolio = resolvedLaunch.goalBrief?.portfolio ?? null;
+  const portfolioText = portfolio && (input.kickoffPrompt == null ||
+    !input.kickoffPrompt.includes('GOAL PORTFOLIO SNAPSHOT —'))
+    ? (deps.renderPortfolio ?? renderGoalPortfolioBrief)(portfolio)
+    : null;
   const kickoffPrompt =
     input.kickoffPrompt == null
       ? deps.buildBrief({
@@ -367,9 +374,10 @@ export async function startGoalById(
           budgetWindowSec: numericOrNull(goal.budget_window_sec),
           standing: goal.standing ?? false,
           portfolio,
+          renderedPortfolio: portfolioText,
         })
-      : portfolio && !input.kickoffPrompt.includes('GOAL PORTFOLIO SNAPSHOT —')
-        ? `${input.kickoffPrompt}\n\n${renderGoalPortfolioBrief(portfolio)}`
+      : portfolioText
+        ? input.kickoffPrompt + '\n\n' + portfolioText
         : input.kickoffPrompt;
 
   // ── launch, then attach (launch failures throw from the launch door) ────
@@ -380,6 +388,7 @@ export async function startGoalById(
     launcherOwnerId: input.launcherOwnerId ?? null,
     deferSpawn: input.deferSpawn ?? false,
     kickoffPrompt,
+    renderedPortfolio: portfolioText,
     resolvedLaunch,
   });
 
@@ -450,6 +459,7 @@ export async function startGoalById(
     goalId,
     ownerId: launched.ownerId,
     warnings,
+    ...(launched.identityContribution ? { identityContribution: launched.identityContribution } : {}),
     startBlockedOverride,
   };
 }

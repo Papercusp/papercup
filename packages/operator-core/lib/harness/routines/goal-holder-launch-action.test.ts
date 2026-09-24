@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { GoalLaunchResolution, GoalPortfolioBrief } from '../../goal-launch-settings';
+import { renderGoalPortfolioBrief, type GoalLaunchResolution, type GoalPortfolioBrief } from '../../goal-launch-settings';
 import {
   launchGoalHolderSession,
   neutralizeGoalHolderSession,
@@ -86,10 +86,14 @@ function portfolio(): GoalPortfolioBrief {
 function deps(resolved: GoalLaunchResolution = resolution()): GoalHolderLaunchDeps & {
   resolveGoalLaunch: ReturnType<typeof vi.fn>;
   launch: ReturnType<typeof vi.fn>;
+  bindIdentity: ReturnType<typeof vi.fn>;
+  renderPortfolio: ReturnType<typeof vi.fn>;
 } {
   return {
     resolveGoalLaunch: vi.fn(async () => resolved),
     launch: vi.fn(async () => ({ ok: true, ownerId: 'su-new-holder' })),
+    bindIdentity: vi.fn(async (_input: unknown) => ({ marker: 'goal-launch-bound' })) as never,
+    renderPortfolio: vi.fn(renderGoalPortfolioBrief),
     readHistory: vi.fn(
       async (goalId: string) =>
         ({
@@ -120,7 +124,9 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
         { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', launcherOwnerId: 'system-watchdog' },
         d,
       ),
-    ).resolves.toEqual({ ownerId: 'su-new-holder', warnings: [] });
+    ).resolves.toEqual({
+      ownerId: 'su-new-holder', warnings: [], identityContribution: { marker: 'goal-launch-bound' },
+    });
 
     expect(d.resolveGoalLaunch).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
@@ -146,6 +152,10 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     expect(kickoff).toContain('OUTCOME — Keep the queue moving');
     expect(kickoff).toContain('KILL THIS IF — the stewardship goal is explicitly stopped');
     expect(kickoff).toContain('CEILING — $10.00 per week');
+    expect(d.bindIdentity).toHaveBeenCalledExactlyOnceWith({
+      goalId: 'goal-1', ownerId: 'su-new-holder', workspaceId: 'workspace-1',
+      kickoff, portfolio: null,
+    });
   });
 
   it('threads the kickoff brief to launch-su as the first turn (P-017)', async () => {
@@ -173,6 +183,9 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     expect(kickoff).toContain('recovery context');
     expect(kickoff).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z');
     expect(kickoff.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
+    expect(d.bindIdentity).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      kickoff, portfolio: expect.stringContaining('GOAL PORTFOLIO SNAPSHOT — assembled'),
+    }));
   });
 
   it('uses an activation-supplied resolution without performing a second policy/portfolio read', async () => {
@@ -192,9 +205,25 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     );
 
     expect(d.resolveGoalLaunch).not.toHaveBeenCalled();
+    expect(d.renderPortfolio).toHaveBeenCalledTimes(1);
     expect(d.launch.mock.calls[0]?.[0]?.kickoffPrompt).toContain(
       'GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z',
     );
+  });
+
+  it('reuses an activation-rendered portfolio without calling its producer again', async () => {
+    const snapshot = portfolio();
+    const rendered = renderGoalPortfolioBrief(snapshot);
+    const d = deps(resolution({ goalBrief: { ...resolution().goalBrief!, portfolio: snapshot } }));
+    await launchGoalHolderSession({
+      workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1',
+      kickoffPrompt: 'activation brief\n\n' + rendered,
+      renderedPortfolio: rendered,
+    }, d);
+    expect(d.renderPortfolio).not.toHaveBeenCalled();
+    expect(d.bindIdentity).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      portfolio: rendered,
+    }));
   });
 
   it('rejects a supplied resolution for a different goal before launch', async () => {
@@ -255,6 +284,7 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       launchGoalHolderSession({ workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1' }, d),
     ).resolves.toEqual({
       ownerId: 'su-new-holder',
+      identityContribution: { marker: 'goal-launch-bound' },
       warnings: [
         'launch policy degraded: headcount read failed',
         'launch policy degraded: settings malformed',

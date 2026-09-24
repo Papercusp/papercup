@@ -17,6 +17,7 @@ import {
   type GoalLaunchResolution,
 } from '../../goal-launch-settings';
 import {
+  bindGoalLaunchIdentity,
   buildGoalKickoffBrief,
   GOAL_HISTORY_CONTEXT_HEADING,
   renderGoalHistoryContext,
@@ -43,6 +44,8 @@ export interface GoalHolderLaunchInput {
    *  the spawn-safe PAPERCUSP_KICKOFF_PROMPT env). Omitted ⇒ build the
    *  canonical brief from the goal row returned by launch-policy resolution. */
   kickoffPrompt?: string | null;
+  /** Exact portfolio text already rendered by the activation caller. */
+  renderedPortfolio?: string | null;
   /**
    * A resolution already assembled by the caller's activation transaction.
    * Existing-goal activation reads the goal's policy and GOAL portfolio once,
@@ -58,6 +61,7 @@ export interface GoalHolderLaunchResult {
   ownerId: string;
   /** Fail-open policy reads and launch-su process warnings, never swallowed. */
   warnings: string[];
+  identityContribution?: Awaited<ReturnType<typeof bindGoalLaunchIdentity>>;
 }
 
 export interface GoalHolderLaunchDeps {
@@ -70,6 +74,8 @@ export interface GoalHolderLaunchDeps {
   }) => Promise<GoalLaunchResolution>;
   launch: (opts: Parameters<typeof launchAgent>[0]) => Promise<LaunchAgentResult>;
   readHistory: (goalId: string) => Promise<GoalHistoryContext>;
+  bindIdentity?: typeof bindGoalLaunchIdentity;
+  renderPortfolio?: typeof renderGoalPortfolioBrief;
 }
 
 const GOAL_HOLDER_NEUTRALIZER: AgentIdentity = {
@@ -201,7 +207,12 @@ export async function launchGoalHolderSession(
   // respawner and the on-demand system action) gets the same canonical brief as
   // goals:start/startGoalById without another DB read or another prompt copy.
   const explicitKickoff = input.kickoffPrompt?.trim();
-  const portfolioBlock = resolved.goalBrief?.portfolio ? renderGoalPortfolioBrief(resolved.goalBrief.portfolio) : null;
+  const portfolioBlock = input.renderedPortfolio !== undefined
+    ? input.renderedPortfolio
+    : resolved.goalBrief?.portfolio &&
+        (!explicitKickoff || !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —'))
+      ? (deps.renderPortfolio ?? renderGoalPortfolioBrief)(resolved.goalBrief.portfolio)
+      : null;
   const history = await deps.readHistory(goalId);
   const historyBlock = renderGoalHistoryContext(history);
   const kickoffPrompt = explicitKickoff
@@ -213,7 +224,7 @@ export async function launchGoalHolderSession(
         .filter(Boolean)
         .join('\n\n')
     : resolved.goalBrief
-      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief, history })
+      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief, renderedPortfolio: portfolioBlock, history })
       : null;
   if (!kickoffPrompt) {
     throw new Error(
@@ -251,9 +262,14 @@ export async function launchGoalHolderSession(
       `goal-holder-launch failed for ${goalId}: launch-su succeeded without the pre-pinned ownerId needed to attach the holder`,
     );
   }
+  const identityContribution = await (deps.bindIdentity ?? bindGoalLaunchIdentity)({
+    goalId, ownerId: launched.ownerId, workspaceId, kickoff: kickoffPrompt,
+    portfolio: portfolioBlock,
+  });
 
   return {
     ownerId: launched.ownerId,
+    identityContribution,
     warnings: [
       ...resolved.degradedReasons.map((reason) => `launch policy degraded: ${reason}`),
       ...(launched.warning ? [`launch-su warning: ${launched.warning}`] : []),

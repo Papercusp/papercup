@@ -119,6 +119,7 @@ import {
   effectiveAutoMode,
   assertFleetJoined,
   roleBootstrapBody,
+  requireOmpRoleMcpJsonPath,
   forkSeedPaths,
   findUntrackedSession,
   findTrackedCodexHomeRollout,
@@ -988,7 +989,7 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
       "await writeOmpSessionConfigDirAsync(res.sessionId",
     );
     expect(roleBody).toContain(
-      'mcpJsonContents: readFileSync(res.mcpJsonPath, "utf8")',
+      'mcpJsonContents: readFileSync(requireOmpRoleMcpJsonPath(res), "utf8")',
     );
     expect(roleBody).not.toContain(
       'res.agent === "omp" && res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML',
@@ -1125,6 +1126,22 @@ describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () =
         OMP_SKIP_SETUP: "0",
       }),
     ).toEqual({});
+  });
+});
+
+describe("requireOmpRoleMcpJsonPath (role bootstrap contract)", () => {
+  it("returns the signed config path unchanged", () => {
+    expect(requireOmpRoleMcpJsonPath({
+      agent: "omp",
+      role: "judge",
+      mcpJsonPath: "/tmp/role-judge/.mcp.json",
+    })).toBe("/tmp/role-judge/.mcp.json");
+  });
+
+  it("fails with an actionable contract error when bootstrap omits the path", () => {
+    expect(() => requireOmpRoleMcpJsonPath({ agent: "omp", role: "judge" })).toThrow(
+      "psu: bootstrap-role omitted the signed MCP config path for omp role 'judge'; refusing to launch without the role-scoped MCP config",
+    );
   });
 });
 

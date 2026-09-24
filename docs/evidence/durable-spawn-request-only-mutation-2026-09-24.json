@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Request-only durable-spawn mutation probe",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=180",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/dbos/durable-spawn.ts",
+    "--mutate 's|if \\(!dbosStarted\\(\\)\\) \\{|if (false) {|'",
+    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/dbos/durable-spawn-request-only.integration.test.ts --reporter=dot'",
+    "--expect caught",
+    "--in-tree --sweep-lock-held --fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T13:56:28Z",
+  "finishedAt": "2026-09-24T13:57:30Z",
+  "summary": "The tool-call window is bounded by the P-022 mutation lock grant and completion. The real DBOS baseline passed with one test. Disabling the request-only branch caused that test to fail before any durable child was accepted; mutation-probe reported MUTANT CAUGHT and verified byte-identical source restoration.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real DBOS integration baseline: 1 passed, 0 failed."
+    },
+    {
+      "id": "request-only-branch-mutant-killed",
+      "passed": true,
+      "evidence": "Changing if (!dbosStarted()) to if (false) made the request-only integration test fail with DurableSpawnEnqueueUncertainError: DBOS.launch() must be called before running workflows; guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1; tree integrity VERIFIED for durable-spawn.ts."
+    }
+  ],
+  "workItemId": "WI-10002942",
+  "specId": "GBE-P-022-contract",
+  "testFile": "packages/operator-core/lib/dbos/durable-spawn-request-only.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/dbos/durable-spawn.ts"
+}

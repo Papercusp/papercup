@@ -83,6 +83,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('./agent-identities/source', () => ({
   listIdentitySources: vi.fn(async () => ({ ok: true, identities: [], unreadable: [], count: 0, scanned: 0, nextAfter: null })),
   getIdentitySource: vi.fn(async (id: string) => ({ ok: true, identity: { id, slots: [{ slot: 'domain' }] } })),
+  // The control-anchor refresh reads the selected mode catalog; getModes is mocked to [] below, so no
+  // mode ever resolves against it and an empty snapshot is exact.
+  getSelectedModeCatalog: vi.fn(async () => ({ revision: 'test-empty-mode-catalog', entries: [] })),
 }));
 
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));

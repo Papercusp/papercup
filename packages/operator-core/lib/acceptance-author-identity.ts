@@ -41,10 +41,12 @@ function identityEdges(sql: Sql, workspaceId: string) {
            AND args_json->>'from' IS NOT NULL
            AND COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id) IS NOT NULL
         UNION
-        SELECT launch_spec->>'launchedBy', coord_owner_id
+        -- Migration 1217 maintains this scalar from launch_spec, including
+        -- legacy writers. Avoid detoasting every prompt-bearing launch document.
+        SELECT launch_parent_owner, coord_owner_id
           FROM harness_shared.adv_sessions
          WHERE workspace_id = ${workspaceId}
-           AND NULLIF(launch_spec->>'launchedBy', '') IS NOT NULL
+           AND launch_parent_owner IS NOT NULL
            AND NULLIF(coord_owner_id, '') IS NOT NULL
         UNION
         SELECT parent_spawn_id, spawn_id

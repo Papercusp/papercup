@@ -13,7 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { goalReadiness } from '@papercusp/agent-mcp/goal-deps';
-import type { GoalLaunchResolution, GoalPortfolioBrief } from '../goal-launch-settings';
+import { renderGoalPortfolioBrief, type GoalLaunchResolution, type GoalPortfolioBrief } from '../goal-launch-settings';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import type { GoalHolders, ResolvedGoalHolder } from './holder';
 import { startGoalById, type StartGoalByIdDeps, type StartGoalByIdInput } from './start-goal-by-id';
@@ -323,6 +323,7 @@ describe('startGoalById — launch then attach', () => {
       // knowing its own goal. A caller who omits the brief now gets one built
       // from the goal row.
       kickoffPrompt: 'BRIEF(fix-the-roof-a1b2c3|Fix the roof|kc=no dry week by October|cents=80000)',
+      renderedPortfolio: null,
       resolvedLaunch: expect.objectContaining({ goalId: GOAL, refusal: null }),
     });
     expect(attach).toHaveBeenCalledWith(
@@ -480,14 +481,17 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
         portfolio,
       },
     });
+    const renderPortfolio = vi.fn(renderGoalPortfolioBrief);
     const { deps, launch } = makeDeps({
       resolveGoalLaunch: vi.fn().mockResolvedValue(resolved),
       buildBrief: vi.fn(buildGoalKickoffBrief),
+      renderPortfolio,
     });
 
     await run(deps);
 
     expect(deps.resolveGoalLaunch).toHaveBeenCalledTimes(1);
+    expect(renderPortfolio).toHaveBeenCalledTimes(1);
     expect(deps.resolveGoalLaunch).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WS,
@@ -497,9 +501,13 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
       }),
     );
     expect(deps.buildBrief).toHaveBeenCalledWith(expect.objectContaining({ portfolio }));
-    const sent = launch.mock.calls[0]?.[0] as { kickoffPrompt: string; resolvedLaunch: GoalLaunchResolution };
+    const sent = launch.mock.calls[0]?.[0] as {
+      kickoffPrompt: string; renderedPortfolio: string | null; resolvedLaunch: GoalLaunchResolution;
+    };
     expect(sent.resolvedLaunch).toBe(resolved);
     expect(sent.kickoffPrompt).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-09-04T23:00:00.000Z');
+    expect(sent.renderedPortfolio).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-09-04T23:00:00.000Z');
+    expect(sent.kickoffPrompt.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
   });
 
   it('adds the same snapshot to an explicit package brief exactly once', async () => {
@@ -522,6 +530,7 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
     const sent = launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
     expect(sent).toContain('package brief');
     expect(sent.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
+    expect(launch.mock.calls[0]?.[0]?.renderedPortfolio).toContain('GOAL PORTFOLIO SNAPSHOT — assembled');
     expect(deps.buildBrief).not.toHaveBeenCalled();
   });
 

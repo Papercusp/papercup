@@ -5,6 +5,7 @@ import {
   extractRecoveredFleetScope,
   orientServedDelta,
   bindOrientOutputResult,
+  composeSelectedOrientModes,
   orientRoleFolds,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
@@ -68,6 +69,41 @@ describe('coord:orient component receipt', () => {
       identityContribution: { status: 'unavailable', errorRef: 'coord:orient:identity-binding-failed' },
     });
     expect(metadata.mock.calls[0]![0]).not.toHaveProperty('deltaServed');
+  });
+});
+
+describe('coord:orient selected mode definitions', () => {
+  const rows = [
+    { mode: 'goal', reason: 'owns goal', setBy: 'owner', ownerDirected: true,
+      setAt: '2026-09-24T14:00:00.000Z' },
+    { mode: 'auto', reason: 'implied by goal', setBy: 'system', ownerDirected: false,
+      setAt: '2026-09-24T14:00:00.000Z' },
+  ];
+
+  it('uses one selected resolver result for the already-read mode rows', async () => {
+    const resolver = vi.fn(async (_ids: readonly string[]) => new Map([
+      ['goal', { contract: 'SELECTED GOAL', sourceRevision: 'goal-source',
+        contractRevision: 'goal-definition' }],
+      ['auto', { contract: 'SELECTED AUTO', sourceRevision: 'auto-source',
+        contractRevision: 'auto-definition' }],
+    ]));
+    const result = await composeSelectedOrientModes(rows, resolver as never);
+    expect(resolver).toHaveBeenCalledExactlyOnceWith(['goal', 'auto']);
+    expect(result.contracts).toBe('SELECTED GOAL\n\nSELECTED AUTO');
+    expect(result.active).toMatchObject(rows);
+    expect(result.definitionRevisions).toMatchObject({
+      goal: { sourceRevision: 'goal-source', definitionRevision: 'goal-definition' },
+      auto: { sourceRevision: 'auto-source', definitionRevision: 'auto-definition' },
+    });
+  });
+
+  it('keeps active mode attribution while disclosing a stale source instead of built-in text', async () => {
+    const result = await composeSelectedOrientModes(
+      rows, (async () => { throw new Error('approved source changed'); }) as never,
+    );
+    expect(result.active).toMatchObject(rows);
+    expect(result.contracts).toBe('');
+    expect(result.definitionUnavailable).toBe('approved source changed');
   });
 });
 

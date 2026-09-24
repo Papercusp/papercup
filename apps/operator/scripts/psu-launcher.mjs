@@ -14462,6 +14462,23 @@ async function brainFlow(args = {}) {
   process.exitCode = 2;
 }
 
+/** Require the signed role-scoped MCP config produced by bootstrap-role.
+ * OMP's per-session config copies these exact bytes; passing an omitted field
+ * directly to readFileSync turns a server/client contract mismatch into the
+ * opaque Node error "The path argument must be of type string". */
+export function requireOmpRoleMcpJsonPath(res) {
+  const configPath = res?.mcpJsonPath;
+  if (typeof configPath !== "string" || configPath.length === 0) {
+    const agent = typeof res?.agent === "string" ? res.agent : "unknown";
+    const role = typeof res?.role === "string" ? res.role : "unknown";
+    throw new Error(
+      `psu: bootstrap-role omitted the signed MCP config path for ${agent} role '${role}'; ` +
+        "refusing to launch without the role-scoped MCP config",
+    );
+  }
+  return configPath;
+}
+
 // `psu --role=<role>` (or picking a non-su role): an interactive,
 // role-scoped session — role persona + tools + feature context, human at
 // the keyboard. Goes through bootstrap-role + execs the raw backend with
@@ -14620,7 +14637,7 @@ async function roleFlow(args, role, rolesMeta) {
       discoveryOff: true,
       model: roleModel,
       modelsYml: res.envelopeEnv.PAPERCUSP_OMP_MODELS_YML,
-      mcpJsonContents: readFileSync(res.mcpJsonPath, "utf8"),
+      mcpJsonContents: readFileSync(requireOmpRoleMcpJsonPath(res), "utf8"),
       clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
       env: { ...process.env, ...res.envelopeEnv },
       interactive: !!process.stdout.isTTY,

@@ -211,24 +211,31 @@ export function buildGoalKickoffBrief(opts: {
     .join('\n');
 }
 
-/** Attach a receipt for the exact launch text after a successful spawn. The
- * existing kickoff environment variable remains the delivery sink. */
-export async function recordGoalLaunchIdentityBinding(
-  input: {
-    goalId: string; ownerId: string; workspaceId: string;
-    kickoff: string; portfolio: string | null; modeState: unknown;
-  },
-  metadata?: (data: Record<string, unknown>) => void,
+export interface GoalLaunchIdentityInput {
+  goalId: string;
+  ownerId: string;
+  workspaceId: string;
+  kickoff: string;
+  portfolio: string | null;
+  /** Omitted while a recovery holder launches before its GOAL mode attachment. */
+  modeState?: unknown;
+}
+
+/** Pin one successful launch's existing kickoff/portfolio bytes. Recovery
+ * launches explicitly omit the GOAL state until the later holder attachment. */
+export async function bindGoalLaunchIdentity(
+  input: GoalLaunchIdentityInput,
   binder?: typeof import('../../agent-identities/source').bindSelectedIdentityOutputs,
-): Promise<void> {
-  if (!metadata) return;
+){
   try {
     const bind = binder ?? (await import('../../agent-identities/source')).bindSelectedIdentityOutputs;
-    const receipt = await bind({
+    return await bind({
       identityId: 'su.mode-goal',
       sourceTier: 'selected',
       outputs: [
-        { contributionId: 'current-mode-state', value: input.modeState },
+        input.modeState === undefined
+          ? { contributionId: 'current-mode-state', omission: { reason: 'not-requested' } }
+          : { contributionId: 'current-mode-state', value: input.modeState },
         { contributionId: 'goal-kickoff', value: input.kickoff },
         input.portfolio
           ? { contributionId: 'goal-portfolio', value: input.portfolio }
@@ -237,14 +244,23 @@ export async function recordGoalLaunchIdentityBinding(
       scope: { workspace: input.workspaceId, goal: input.goalId, ownerId: input.ownerId },
       observedAt: new Date().toISOString(),
     });
-    metadata({ identityContributions: receipt });
   } catch (error) {
-    metadata({ identityContributions: {
+    return {
       identityId: 'su.mode-goal', status: 'unavailable',
-      errorRef: 'goals:start:identity-binding-failed',
+      errorRef: 'goal-launch:identity-binding-failed',
       detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
-    } });
+    };
   }
+}
+
+/** Attach the launch receipt through the existing tool invocation metadata.
+ * The kickoff environment variable remains the delivery sink. */
+export async function recordGoalLaunchIdentityBinding(
+  input: GoalLaunchIdentityInput,
+  metadata?: (data: Record<string, unknown>) => void,
+  binder?: typeof import('../../agent-identities/source').bindSelectedIdentityOutputs,
+): Promise<void> {
+  if (metadata) metadata({ identityContributions: await bindGoalLaunchIdentity(input, binder) });
 }
 
 export const GOAL_HISTORY_CONTEXT_HEADING = 'GOAL HISTORY — own and bounded descendant evidence';
