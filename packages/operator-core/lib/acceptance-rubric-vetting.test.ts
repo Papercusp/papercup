@@ -236,3 +236,97 @@ describe('getAcceptanceRubricVettingStatus refusal diagnostics', () => {
     expect(result.diagnosis).not.toContain('EI-good');
   });
 });
+
+describe('getAcceptanceRubricVettingStatus names a stand-down that strands a pending audit (EI-24121421744054354)', () => {
+  const pendingAudit = {
+    gradingAudit: {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-08T00:01:00.000Z',
+    },
+  } as Partial<ScorecardRow>;
+  const suppressed = { reason: 'workspace-wide-loop-standdown' as const, pausedOwnerCount: 7 };
+
+  it('appends the stand-down to the pending card and exposes it machine-readably', async () => {
+    let reads = 0;
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async () => {
+        reads += 1;
+        return suppressed;
+      },
+    });
+
+    expect(result.satisfied).toBe(false);
+    expect(result.reason).toBe('rejected-attestation');
+    expect(result.gradingAuditDispatchSuppressed).toEqual(suppressed);
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    // The original observation survives; the blocker is ADDED, not substituted.
+    expect(result.candidates[0]!.detail).toContain("audit is 'pending'");
+    expect(result.candidates[0]!.detail).toContain('workspace-wide loop stand-down');
+    expect(result.candidates[0]!.detail).toContain('7 loop owner(s)');
+    expect(result.diagnosis).toContain('workspace-wide loop stand-down');
+    expect(reads).toBe(1);
+  });
+
+  it('says nothing about a stand-down when none is active', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async () => null,
+    });
+
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+    expect(result.candidates[0]!.detail).not.toContain('stand-down');
+  });
+
+  it('fails open without text when the suppression read throws', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async () => {
+        throw new Error('pg down');
+      },
+    });
+
+    expect(result.satisfied).toBe(false);
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+    expect(result.candidates[0]!.detail).not.toContain('stand-down');
+  });
+
+  it('does not consult or cite the stand-down for a card rejected for another cause', async () => {
+    // A FAILED audit is not waiting on dispatch — re-launching would not settle it —
+    // so blaming the pause there would send the reader to the wrong repair.
+    let reads = 0;
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([
+        card({ gradingAudit: { state: 'failed', metaRubricRef: 'grading-integrity', stampedAt: '2026-09-08T00:01:00.000Z' } } as Partial<ScorecardRow>),
+      ]),
+      readGradingAuditDispatchSuppression: async () => {
+        reads += 1;
+        return suppressed;
+      },
+    });
+
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    expect(result.candidates[0]!.detail).not.toContain('stand-down');
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
+  it('does not consult the stand-down when a settled attestation already carries', async () => {
+    let reads = 0;
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([
+        card({ issueId: 'EI-good', createdAt: '2026-09-09T00:00:00.000Z' }),
+        card({ issueId: 'EI-pending', ...pendingAudit }),
+      ]),
+      readGradingAuditDispatchSuppression: async () => {
+        reads += 1;
+        return suppressed;
+      },
+    });
+
+    expect(result.satisfied).toBe(true);
+    expect(reads).toBe(0);
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+  });
+});

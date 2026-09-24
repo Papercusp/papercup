@@ -27,6 +27,7 @@ import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
+import type { GradingAuditDispatchSuppression } from './acceptance-rubric-vetting';
 import { routeSourceGradingAudit } from './grading-audit-routing';
 import { getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
@@ -716,6 +717,39 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
 }
 
 /**
+ * Is grade-the-grader dispatch suppressed in this workspace right now?
+ *
+ * The ONE predicate behind both the dispatch guard below and the vetting read's
+ * refusal text (EI-24121421744054354), so "why is this audit still pending" and
+ * "will an auditor be launched" can never disagree. Fails OPEN (null) on a read
+ * error: the guard only suppresses new work, so a scan failure must never strand
+ * the audit queue, and a vetting annotation must never invent a blocker.
+ */
+export async function readGradingAuditDispatchSuppression(
+  workspaceId: string,
+  deps: {
+    listWorkspaceWideLoopStanddownOwners?: (workspaceId: string, nowMs: number) => Promise<Set<string>>;
+    nowMs?: number;
+  } = {},
+): Promise<GradingAuditDispatchSuppression | null> {
+  const nowMs = deps.nowMs ?? Date.now();
+  let owners: Set<string>;
+  try {
+    owners = deps.listWorkspaceWideLoopStanddownOwners
+      ? await deps.listWorkspaceWideLoopStanddownOwners(workspaceId, nowMs)
+      : await listLoopStanddownOwners(getOrgPg().sql, { workspaceId, nowMs, workspaceWideOnly: true });
+  } catch (error) {
+    console.warn(
+      `[grading-integrity] workspace stand-down read failed (non-fatal, failing open): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return null;
+  }
+  return owners.size > 0 ? { reason: 'workspace-wide-loop-standdown', pausedOwnerCount: owners.size } : null;
+}
+
+/**
  * Launch one independent auditor for each currently pending target surfaced by
  * the completion gate, or for an oldest-first bounded backlog batch when no
  * explicit targets were supplied. The scorecard read deliberately includes
@@ -741,29 +775,11 @@ export async function dispatchPendingGradingAudits(
   const release = deps.release ?? releasePendingGradingAudit;
   const readTasks = deps.listTasks ?? listTasks;
   const workspaceId = input.ctx.workspaceId?.trim();
-  const readWorkspaceWideStanddowns =
-    deps.listWorkspaceWideLoopStanddownOwners ??
-    (async (id: string, nowMs: number) => {
-      try {
-        return await listLoopStanddownOwners(getOrgPg().sql, {
-          workspaceId: id,
-          nowMs,
-          workspaceWideOnly: true,
-        });
-      } catch (error) {
-        // This guard only suppresses new work. A read failure must preserve the
-        // pre-guard behavior rather than silently strand the audit queue.
-        console.warn(
-          `[grading-integrity] workspace stand-down read failed (non-fatal, failing open): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return new Set<string>();
-      }
-    });
   if (workspaceId) {
-    const standdownOwners = await readWorkspaceWideStanddowns(workspaceId, Date.now());
-    if (standdownOwners.size > 0) {
+    const suppression = await readGradingAuditDispatchSuppression(workspaceId, {
+      listWorkspaceWideLoopStanddownOwners: deps.listWorkspaceWideLoopStanddownOwners,
+    });
+    if (suppression) {
       return {
         requestedTargetIds: explicitTargetIds,
         receipts: explicitTargetIds.map((issueId) => ({

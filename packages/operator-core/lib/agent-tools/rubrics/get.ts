@@ -25,6 +25,7 @@ import { defineTool, formatVintageAge, readServerVintage } from '@papercusp/agen
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
+import { readGradingAuditDispatchSuppression } from '../../grading-integrity';
 import { getRubric, readRubricPlanRevision } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -188,6 +189,7 @@ export default defineTool({
               // The shared vetting helper otherwise closes over its production
               // defaults, which makes projected/unit dispatch escape the caller's
               // workspace and test doubles even though getRubric above did not.
+              const suppressionWorkspace = identity.workspaceId;
               const vetting = await getAcceptanceRubricVettingStatus(rubric, {
                 listScorecards,
                 getRubric,
@@ -195,6 +197,13 @@ export default defineTool({
                   const read = await readRubricPlanRevision(rubricId);
                   return read.ok ? read.revision : null;
                 },
+                // EI-24121421744054354: name an owner stand-down when it strands a pending audit.
+                ...(suppressionWorkspace && suppressionWorkspace !== '*'
+                  ? {
+                      readGradingAuditDispatchSuppression: () =>
+                        readGradingAuditDispatchSuppression(suppressionWorkspace),
+                    }
+                  : {}),
               });
               return { ok: true as const, rubricRef, ...shaped, vetting };
             }

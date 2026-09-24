@@ -78,6 +78,7 @@ import {
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditGateEnabled,
   needsGradingAudit,
+  readGradingAuditDispatchSuppression,
   type GradingAuditLaunchContext,
 } from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
@@ -1472,7 +1473,14 @@ export async function emitScorecard(
       // acceptance-verdict re-emit is unaffected, and the ship-time gate remains the
       // authoritative backstop for whatever this earlier check cannot see.
       if (!callerIsImplementer) {
-        const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
+        const suppressionWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
+        const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, {
+          listScorecards,
+          // EI-24121421744054354: name an owner stand-down when it is what strands a pending audit.
+          ...(suppressionWorkspace
+            ? { readGradingAuditDispatchSuppression: () => readGradingAuditDispatchSuppression(suppressionWorkspace) }
+            : {}),
+        });
         if (vettingStatus.required && !vettingStatus.satisfied) {
           return {
             ok: false as const,

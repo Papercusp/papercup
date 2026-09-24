@@ -166,8 +166,39 @@ by evidence row **10747**. The changed source files pass scoped semantic
 typechecking; 24 import-graph diagnostics remain outside the requested files.
 This is not a whole-tree typecheck or a release-gate verdict.
 
-Remaining for P-001: read back the new Infra metric on the current running build,
-bind operational evidence to `AUTO-BAR-R-1-P-001@1`, then close with evidence.
+At 2026-09-24T06:16:20Z, a read-only call to the existing
+`readSharedSnapshot('system.health', 'papercusp-workspace', 1, 3600000)`
+returned a snapshot computed at **06:15:18.879Z**, evaluated at
+**06:15:10.308Z**, with `panels.infra.data.performanceHistory` equal to
+`{ status: 'ok', lastCapturedAt: '2026-09-24T06:04:16.218Z', ageMs: 659225,
+note: 'lastCapturedAt=2026-09-24T06:04:16.218Z' }`. The shared snapshot was
+about 62 seconds old when read. This verifies the new field on the current
+background-host snapshot and a naturally persisted recent sample; it is one
+runtime read, not a duration or availability distribution. The pipeline-position
+read for `system-health/compute.ts` identified the current background-host build
+as `ff35678573` and staging operator build as `8702d166fa`, both containing the
+field. The green release operator at `80521d598f` did not yet contain that code,
+so final deployed-plane verification remains open.
+
+The `PERF-P-001@1` integration test binding is current. An operational binding
+for `AUTO-BAR-R-1-P-001@1` records the current-build readback above; its source
+measurement includes this report, so it must be remeasured when this paragraph
+changes. The rubric itself is still awaiting independent vetting.
+
+For the P-001 intent-tested coverage census, the real project integration suite
+`perf-regression-producer.integration.test.ts` exercises six distinct outcomes:
+two missed intervals produce an Infra warning with the last timestamp without
+calling the producer; a failed insert remains overdue until a later persisted
+sample; no series warns with `lastCapturedAt=never`; unreadable storage stays
+unknown; a future timestamp stays unknown; and the explicit kill switch stays
+disabled without querying storage. The first two cases are counterexamples to
+an assumed healthy producer and would fail their assertions if the alarm or
+persistence check were removed. The suite passed all six cases in recorded run
+**19210434**, with zero skipped. This covers the clause's producer, persistence,
+reader and Infra presentation path at the intent-tested L3 rung. It does not
+claim a mutation probe was run.
+
+P-001 item closure remains gated on the plan's spec-adequacy certification.
 P-002..P-009, controlled before/after workloads, independent final acceptance,
 the sustained observation and final shipment remain open.
 

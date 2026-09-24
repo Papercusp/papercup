@@ -57,6 +57,10 @@ describe('classifyGateOutcomeStatus — single-homed outcome classes', () => {
       'skipped-held': 'skip',
       'skipped-admission-unknown': 'skip',
       'skipped-memory-budget': 'skip',
+      'skipped-joined-attempt': 'skip',
+      'skipped-runner-liveness-unknown': 'skip',
+      'skipped-qualification-unreadable': 'skip',
+      'skipped-qualification-conflict': 'skip',
     };
     for (const [status, cls] of Object.entries(expected)) {
       expect({ status, cls: classifyGateOutcomeStatus(status) }).toEqual({ status, cls });

@@ -12,17 +12,30 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  registerSystemAction,
+  type SystemAction,
+  type SystemActionCtx,
+} from './system-actions';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { reconcileTick, type ReconcilerDeps } from '../../supervision/unit-reconciler';
+import {
+  fileSystemdDropInInstallEi,
+  resolveSystemdDropInInstallEi,
+  type SystemdDropInInstallEpisode,
+} from '../../supervision/systemd-dropin-install-ei';
 import { probeNamedService } from '../../service-health';
 import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../supervision/give-up-ei';
 import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../supervision/paused-unit-ei';
 
 const execFileP = promisify(execFile);
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+const DROP_IN_INSTALL_CHECK = resolve(REPO_ROOT, 'scripts/check-systemd-dropins-installed.mjs');
 
 /** Coord identity for the reconciler's own broadcasts (mirrors service-health.ts's HEALTH_IDENTITY
  *  + git-sync-action.ts's own static-client identity). */
@@ -86,6 +99,209 @@ function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
   };
 }
 
-registerSystemAction('supervision-reconcile', async (ctx: SystemActionCtx) => {
-  await reconcileTick(productionDeps(ctx));
-});
+export interface DropInInstallCheckEntry {
+  unit: string;
+  confName: string;
+}
+
+export interface DropInInstallCheckResult {
+  status: 'healthy' | 'missing' | 'skipped' | 'unavailable';
+  installed: number | null;
+  missingCount: number | null;
+  unitAbsent: number | null;
+  missing: DropInInstallCheckEntry[];
+  reason?: string;
+}
+
+export type DropInCheckExecutor = (
+  command: string,
+  args: string[],
+  options: { cwd: string; encoding: 'utf8'; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
+
+/** Parse the stable summary emitted by the existing host checker. */
+export function parseSystemdDropInCheckOutput(output: string): DropInInstallCheckResult {
+  if (/SKIPPED.*no user systemd manager reachable/i.test(output)) {
+    return {
+      status: 'skipped',
+      installed: null,
+      missingCount: null,
+      unitAbsent: null,
+      missing: [],
+      reason: 'no user systemd manager is reachable',
+    };
+  }
+
+  // An empty inventory is not proof that the host is healthy. Keep any prior condition open
+  // until the check has a non-empty population to measure.
+  if (/no tracked \*\.service\.d\/\*\.conf found/i.test(output)) {
+    return {
+      status: 'unavailable',
+      installed: null,
+      missingCount: null,
+      unitAbsent: null,
+      missing: [],
+      reason: 'the checker found no tracked user service drop-ins',
+    };
+  }
+
+  const counts = output.match(/^installed=(\d+) missing=(\d+) unit-absent=(\d+)$/m);
+  if (!counts) {
+    return {
+      status: 'unavailable',
+      installed: null,
+      missingCount: null,
+      unitAbsent: null,
+      missing: [],
+      reason: 'the checker output did not include its population summary',
+    };
+  }
+
+  const installed = Number(counts[1]);
+  const missingCount = Number(counts[2]);
+  const unitAbsent = Number(counts[3]);
+  const installedRows = [...output.matchAll(/^\s*INSTALLED\s+\S+\s+\S+\s*$/gm)];
+  const missing = [...output.matchAll(/^\s*MISSING\s+(\S+)\s+(\S+)\s*$/gm)].map((match) => ({
+    unit: match[1],
+    confName: match[2],
+  }));
+  const unitAbsentRows = [...output.matchAll(/^\s*UNIT-ABSENT\s+\S+\s+\S+\s+\(.+\)\s*$/gm)];
+  const unreadableUnitRows = [
+    ...output.matchAll(/^\s*UNIT-ABSENT\s+\S+\s+\S+\s+\(systemctl show failed\)\s*$/gm),
+  ];
+
+  if (
+    installed + missingCount + unitAbsent === 0 ||
+    installedRows.length !== installed ||
+    missing.length !== missingCount ||
+    unitAbsentRows.length !== unitAbsent
+  ) {
+    return {
+      status: 'unavailable',
+      installed,
+      missingCount,
+      unitAbsent,
+      missing,
+      reason: 'the checker summary and measured entry rows disagree',
+    };
+  }
+
+  if (unreadableUnitRows.length > 0) {
+    return {
+      status: 'unavailable',
+      installed,
+      missingCount,
+      unitAbsent,
+      missing,
+      reason: 'systemctl could not read DropInPaths for one or more units',
+    };
+  }
+
+  return {
+    status: missingCount > 0 ? 'missing' : 'healthy',
+    installed,
+    missingCount,
+    unitAbsent,
+    missing,
+  };
+}
+
+/** Run the existing checker once per supervision tick with a hard bound. */
+export async function runSystemdDropInInstallCheck(
+  execute: DropInCheckExecutor = async (command, args, options) => {
+    const { stdout, stderr } = await execFileP(command, args, options);
+    return { stdout, stderr };
+  },
+): Promise<DropInInstallCheckResult> {
+  try {
+    const { stdout } = await execute(
+      process.execPath,
+      [DROP_IN_INSTALL_CHECK, '--list'],
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024 },
+    );
+    return parseSystemdDropInCheckOutput(stdout);
+  } catch (error) {
+    return {
+      status: 'unavailable',
+      installed: null,
+      missingCount: null,
+      unitAbsent: null,
+      missing: [],
+      reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    };
+  }
+}
+
+export interface SupervisionReconcileHandlerDeps {
+  reconcile: (ctx: SystemActionCtx) => Promise<unknown>;
+  checkDropIns: () => Promise<DropInInstallCheckResult>;
+  fileMissing: (episode: SystemdDropInInstallEpisode) => Promise<string | null>;
+  resolveMissing: () => Promise<string[]>;
+}
+
+/**
+ * Compose the existing 60-second supervision routine with the drop-in check. A skipped or
+ * unreadable sample leaves an existing condition untouched; only a measured clean sample resolves
+ * it. Returning diagnostics makes each routine fire's measurement inspectable after the turn.
+ */
+export function createSupervisionReconcileHandler(deps: SupervisionReconcileHandlerDeps): SystemAction {
+  return async (ctx) => {
+    await deps.reconcile(ctx);
+
+    let check: DropInInstallCheckResult;
+    try {
+      check = await deps.checkDropIns();
+    } catch (error) {
+      check = {
+        status: 'unavailable',
+        installed: null,
+        missingCount: null,
+        unitAbsent: null,
+        missing: [],
+        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      };
+    }
+
+    let conditionAction: 'file' | 'resolve' | 'unchanged' = 'unchanged';
+    let conditionIds: string[] = [];
+    let conditionError: string | undefined;
+
+    try {
+      if (check.status === 'missing' && check.missingCount !== null) {
+        conditionAction = 'file';
+        const id = await deps.fileMissing({ missingCount: check.missingCount, entries: check.missing });
+        conditionIds = id ? [id] : [];
+      } else if (check.status === 'healthy') {
+        conditionAction = 'resolve';
+        conditionIds = await deps.resolveMissing();
+      }
+    } catch (error) {
+      conditionError = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+    }
+
+    return {
+      diagnostics: {
+        systemdDropInInstall: {
+          status: check.status,
+          installed: check.installed,
+          missingCount: check.missingCount,
+          unitAbsent: check.unitAbsent,
+          ...(check.reason ? { reason: check.reason } : {}),
+        },
+        conditionAction,
+        conditionIds,
+        ...(conditionError ? { conditionError } : {}),
+      },
+    };
+  };
+}
+
+registerSystemAction(
+  'supervision-reconcile',
+  createSupervisionReconcileHandler({
+    reconcile: (ctx) => reconcileTick(productionDeps(ctx)),
+    checkDropIns: runSystemdDropInInstallCheck,
+    fileMissing: fileSystemdDropInInstallEi,
+    resolveMissing: resolveSystemdDropInInstallEi,
+  }),
+);
