@@ -29,13 +29,34 @@ export function findBoxIdentityPaths(text: string): {
     text: string;
 }[];
 /**
- * identity_literals() ported from audit-release-bundle.py — same sources, same exclusions.
- * Returns `{ key: value }` for whatever resolves on THIS box (possibly empty on a bare/CI box).
+ * Resolve the three useful views from one read of git config. `box` mirrors the machine/git
+ * values after the release audit drops automation identities; `owner` contains only explicit
+ * owner assertions; `all` applies those assertions as per-class overrides, exactly as the audit
+ * does. Keeping the views together lets the broad repo lint retain its established box scope,
+ * while the sidecar-copy lint applies asserted owner values only where the source bypasses the
+ * source-archive scrub.
  *
  * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @param {NodeJS.ProcessEnv} [env] runtime identity env; injectable for tests
+ * @returns {{box:Record<string,string>,owner:Record<string,string>,all:Record<string,string>}}
+ */
+export function resolveIdentityLiteralScopes(readCmd?: (cmd: string, args: string[]) => string, env?: NodeJS.ProcessEnv): {
+    box: Record<string, string>;
+    owner: Record<string, string>;
+    all: Record<string, string>;
+};
+/**
+ * Resolve one identity scope. Existing callers default to `box`; release-gate consumers that
+ * need Python-audit parity request `all`, and narrowly scoped callers can request `owner`.
+ *
+ * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @param {{scope?:'box'|'owner'|'all',env?:NodeJS.ProcessEnv}} [opts] requested identity scope
  * @returns {Record<string,string>}
  */
-export function resolveIdentityLiterals(readCmd?: (cmd: string, args: string[]) => string): Record<string, string>;
+export function resolveIdentityLiterals(readCmd?: (cmd: string, args: string[]) => string, opts?: {
+    scope?: "box" | "owner" | "all";
+    env?: NodeJS.ProcessEnv;
+}): Record<string, string>;
 /** The match rule for one literal — word-anchored and case-sensitive when low-entropy. */
 export function literalPattern(lit: any): RegExp;
 /**
@@ -57,6 +78,8 @@ export function findIdentityLiterals(text: string, entries: [string, string][], 
 }[];
 /** True when `file` is outside the shipped-source set the CLASS-3 rule polices. */
 export function isSkippedPathForIdentityLiterals(file: any): boolean;
+/** True when `file` is copied verbatim into the sidecar outside the source-archive scrub. */
+export function isSidecarCopiedIdentityPath(file: any): boolean;
 /**
  * Strip every identity-leak class this module detects, returning source-safe text.
  *

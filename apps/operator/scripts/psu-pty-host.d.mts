@@ -464,36 +464,42 @@ export function verifyNativeTurnStartWithRetry({ agent, env, text, sinceMs, home
     reason: string | null;
 }>;
 /**
- * Did the model actually begin the kickoff turn? Returns as soon as ANY new pty
- * output appears after the baseline, otherwise reports a stall once the whole
- * budget has elapsed with zero new bytes.
+ * Did the model actually begin the kickoff turn? A post-marker native transcript
+ * row is authoritative when an isolated Codex/Claude transcript is available;
+ * PTY output is only a fallback when native activity cannot be inspected.
+ * @param {{lastOutputAt?: () => number, wait?: (ms: number) => Promise<any>,
+ *   pollMs?: number, polls?: number,
+ *   nativeTurnActivity?: (() => {available: boolean, started: boolean}) | null}} [options]
  *
- * Keyed on "new output since a baseline" rather than "output is quiet NOW",
- * because a healthy short turn ALSO ends quiet — quiet alone would flag every
- * fast kickoff. A turn that died at the sampling layer is distinguishable
- * precisely because it produces nothing whatsoever after the prompt is accepted.
+ * A task-start/assistant row after the unique marker counts even if its PTY
+ * bytes arrived before the post-proof baseline. A marker with no native activity
+ * remains retryable; unsupported transcript formats keep the PTY fallback.
  *
  * Fails SAFE: a disabled or zero-length budget reports `started:true` with
  * `observed:false`, so a caller never takes recovery action on an observation
  * that never ran. Pure apart from the injected reader/wait.
  */
-export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls, }?: {
-    lastOutputAt?: (() => number) | undefined;
-    wait?: ((ms: any) => Promise<any>) | undefined;
-    pollMs?: number | undefined;
-    polls?: number | undefined;
+export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls, nativeTurnActivity, }?: {
+    lastOutputAt?: () => number;
+    wait?: (ms: number) => Promise<any>;
+    pollMs?: number;
+    polls?: number;
+    nativeTurnActivity?: (() => {
+        available: boolean;
+        started: boolean;
+    }) | null;
 }): Promise<{
     started: boolean;
     observed: boolean;
     polls: number;
     budgetMs: number;
-    reason: string;
+    reason: null;
 } | {
     started: boolean;
     observed: boolean;
     polls: number;
     budgetMs: number;
-    reason: null;
+    reason: string;
 }>;
 /** A carry-respawn can bind transcript proof to a native session id only when
  * the backend actually mints one. Claude does; Codex deliberately starts a
@@ -2336,6 +2342,8 @@ export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs 
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
+ * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
+ *   injectable dead-operator-pin heal, run before each in-place respawn
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
@@ -2370,6 +2378,10 @@ export function hostThroughPty(o: {
     onRespawn?: ((...args: any[]) => any) | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
     hostCodeStalenessFn?: (() => any) | undefined;
+    healOperatorPin?: ((env: EnvironmentMap) => Promise<{
+        from: string;
+        to: string;
+    } | null>) | undefined;
     parentPidFn?: (() => number) | undefined;
     activityPersistMs?: number | undefined;
     nativePersistenceTimeoutMs?: number | undefined;

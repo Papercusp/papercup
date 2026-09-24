@@ -455,32 +455,116 @@ export const GENERIC_ACCOUNTS = new Set([
 export const isGenericHost = (h) => /^(runner|ci-|localhost)/i.test(h);
 
 /**
- * identity_literals() ported from audit-release-bundle.py — same sources, same exclusions.
- * Returns `{ key: value }` for whatever resolves on THIS box (possibly empty on a bare/CI box).
+ * identity_literals() ported from audit-release-bundle.py — same sources, same exclusions,
+ * automation filtering, and explicit owner overrides. Returns `{ key: value }` for whatever
+ * resolves on THIS box (possibly empty on a bare/CI box).
  *
  * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @param {NodeJS.ProcessEnv} [env] runtime identity env; injectable for tests
  * @returns {Record<string,string>}
  */
-export function resolveIdentityLiterals(readCmd) {
+const AUTOMATION_NAME_RE =
+  /(^|[-_ ])(agent|bot|ci|runner|automation|service|actions|daemon|noreply)([-_ ]|$)|\[bot\]/i;
+const AUTOMATION_EMAIL_RE =
+  /(^|[-_.+])(no-?reply|bot|ci|build|actions|automation|daemon|jenkins|dependabot|renovate)([-_.+]|@)|\bnoreply\b|users\.noreply\.github\.com$|\[bot\]/i;
+const OWNER_NAME_ENV = "PAPERCUSP_RELEASE_OWNER_NAME";
+const OWNER_EMAIL_ENV = "PAPERCUSP_RELEASE_OWNER_EMAIL";
+
+function explicitOwnerValues(env, envVar) {
+  return [
+    ...new Set(
+      String(env[envVar] ?? "")
+        .split(/[,;]/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function replaceIdentityClass(target, source, base) {
+  const overrides = Object.entries(source).filter(
+    ([key]) => key === base || key.startsWith(`${base}-`),
+  );
+  if (overrides.length === 0) return;
+  for (const key of Object.keys(target)) {
+    if (key === base || key.startsWith(`${base}-`)) delete target[key];
+  }
+  for (const [key, value] of overrides) target[key] = value;
+}
+
+/**
+ * Resolve the three useful views from one read of git config. `box` mirrors the machine/git
+ * values after the release audit drops automation identities; `owner` contains only explicit
+ * owner assertions; `all` applies those assertions as per-class overrides, exactly as the audit
+ * does. Keeping the views together lets the broad repo lint retain its established box scope,
+ * while the sidecar-copy lint applies asserted owner values only where the source bypasses the
+ * source-archive scrub.
+ *
+ * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @param {NodeJS.ProcessEnv} [env] runtime identity env; injectable for tests
+ * @returns {{box:Record<string,string>,owner:Record<string,string>,all:Record<string,string>}}
+ */
+export function resolveIdentityLiteralScopes(readCmd, env = process.env) {
   const run =
     readCmd ??
-    ((cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', timeout: 5000 }).toString());
-  const lits = {};
+    ((cmd, args) =>
+      execFileSync(cmd, args, { encoding: "utf8", timeout: 5000 }).toString());
+  const box = {};
   try {
     const account = os.userInfo().username;
-    if (account && !GENERIC_ACCOUNTS.has(account)) lits['build-user-name'] = account;
-  } catch { /* best-effort */ }
+    if (account && !GENERIC_ACCOUNTS.has(account))
+      box["build-user-name"] = account;
+  } catch {
+    /* best-effort */
+  }
   try {
     const host = os.hostname();
-    if (host && !isGenericHost(host)) lits['build-hostname'] = host;
-  } catch { /* best-effort */ }
-  for (const [key, cfg] of [['build-git-email', 'user.email'], ['build-git-name', 'user.name']]) {
-    try {
-      const v = run('git', ['config', '--get', cfg]).trim();
-      if (v) lits[key] = v;
-    } catch { /* unset — nothing to hunt */ }
+    if (host && !isGenericHost(host)) box["build-hostname"] = host;
+  } catch {
+    /* best-effort */
   }
-  return lits;
+  for (const [key, cfg] of [
+    ["build-git-email", "user.email"],
+    ["build-git-name", "user.name"],
+  ]) {
+    try {
+      const v = run("git", ["config", "--get", cfg]).trim();
+      if (!v) continue;
+      if (key === "build-git-name" && AUTOMATION_NAME_RE.test(v)) continue;
+      if (key === "build-git-email" && AUTOMATION_EMAIL_RE.test(v)) continue;
+      box[key] = v;
+    } catch {
+      /* unset — nothing to hunt */
+    }
+  }
+
+  const owner = {};
+  for (const [envVar, base] of [
+    [OWNER_NAME_ENV, "build-git-name"],
+    [OWNER_EMAIL_ENV, "build-git-email"],
+  ]) {
+    explicitOwnerValues(env, envVar).forEach((value, index) => {
+      owner[index === 0 ? base : `${base}-${index + 1}`] = value;
+    });
+  }
+
+  const all = { ...box };
+  replaceIdentityClass(all, owner, "build-git-name");
+  replaceIdentityClass(all, owner, "build-git-email");
+  return { box, owner, all };
+}
+
+/**
+ * Resolve one identity scope. Existing callers default to `box`; release-gate consumers that
+ * need Python-audit parity request `all`, and narrowly scoped callers can request `owner`.
+ *
+ * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @param {{scope?:'box'|'owner'|'all',env?:NodeJS.ProcessEnv}} [opts] requested identity scope
+ * @returns {Record<string,string>}
+ */
+export function resolveIdentityLiterals(readCmd, opts = {}) {
+  const scopes = resolveIdentityLiteralScopes(readCmd, opts.env ?? process.env);
+  return scopes[opts.scope ?? "box"];
 }
 
 /** needs_word_boundary() ported verbatim: a SHORT alnum literal must match as a
@@ -561,6 +645,20 @@ export const IDENTITY_LITERAL_EXTRA_SKIP = [
 /** True when `file` is outside the shipped-source set the CLASS-3 rule polices. */
 export function isSkippedPathForIdentityLiterals(file) {
   return isSkippedPath(file) || IDENTITY_LITERAL_EXTRA_SKIP.some((re) => re.test(file));
+}
+
+/**
+ * The sidecar copies these CC hook files directly from the live tree after source.tar.zst has
+ * been scrubbed. Keep the explicit-owner check on this exact copy set; its source is the
+ * `CC_HOOK_SRC_DIR` block in papercusp-desktop/bin/build-desktop-sidecar.sh.
+ */
+const SIDECAR_COPIED_IDENTITY_PATHS = [
+  /^apps\/operator\/scripts\/hooks\/cc\/[^/]+\.(?:sh|py|mjs)$/,
+];
+
+/** True when `file` is copied verbatim into the sidecar outside the source-archive scrub. */
+export function isSidecarCopiedIdentityPath(file) {
+  return SIDECAR_COPIED_IDENTITY_PATHS.some((re) => re.test(file));
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════

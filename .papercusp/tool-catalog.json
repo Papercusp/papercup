@@ -25921,7 +25921,7 @@
           "POST"
         ]
       },
-      "description": "Owner: the RUNTIME (no-restart) escape hatch for the pot-git secrets scanner (WI-5591) — clears a false positive that would otherwise permanently freeze git egress for the hive. Covers BOTH the own-head publish guard and the GitHub-bridge EGRESS guard (WI-5738). Actions: list {} | add {path, reason} — exempt from the scan starting the NEXT git-sync tick | remove {path} — re-arm.",
+      "description": "Owner: the no-restart escape hatch for the pot-git secrets scanner (own-head publish + GitHub egress guards) — clears a false positive that would otherwise freeze git egress for the hive. Actions: list {} | add {path, reason, pot?} — exempt from the next git-sync tick; on the pot-owner Swarm also signs it into the pot policy so every member honours it | remove {path} — re-arm + unsign | share {pot?, path?} — sign existing local rows into the pot policy.",
       "capabilities": [
         "audit:write"
       ],
@@ -25931,7 +25931,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "own_head_publish.refused === 'secrets' (harness_shared.routines.metadata->'own_head_publish'->>'refused') AND you have ADJUDICATED the flagged finding as a false positive (a detector fixture, a documented example credential, a placeholder — never a REAL live secret) — {action:'add', path, reason}.",
-        "notWhen": "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident. Never hand-edit secrets-guard.ts's FIXTURE_FILES for one path — that needs a restart; this table does not.",
+        "notWhen": "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident.",
         "chaining": "{action:'list'} (don't duplicate a row) → ADJUDICATE: `npx tsx scripts/adjudicate-publish-refusal.mts --commit <own_head_publish.blockedAtCommit> --exemptions` replays the guard and prints every finding it saw, so 'false positive' is MEASURED, not assumed — exit 2 means the scanner is UNUSABLE, never read that as clean → {action:'add', path, reason} → the next git-sync tick (or dev:restart) retries the publish."
       }
     },

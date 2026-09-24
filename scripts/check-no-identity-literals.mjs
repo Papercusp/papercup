@@ -67,12 +67,15 @@ import { readFileSync } from 'node:fs';
 import {
   IDENTITY_LITERAL_FIX_HINT,
   findIdentityLiterals,
+  isSidecarCopiedIdentityPath,
   isSkippedPathForIdentityLiterals,
   isVendorPath,
-  resolveIdentityLiterals,
-} from './lib/identity-leak-patterns.mjs';
+  resolveIdentityLiteralScopes,
+} from "./lib/identity-leak-patterns.mjs";
 
-const lits = resolveIdentityLiterals();
+const identityScopes = resolveIdentityLiteralScopes();
+const boxEntries = Object.entries(identityScopes.box);
+const sidecarEntries = Object.entries(identityScopes.all);
 /**
  * ⚠ SUPERPROJECT-ONLY, DELIBERATELY — do NOT convert this to a submodule-recursing
  * enumerator. WI-6730 swept most scripts/check-*.mjs guards onto
@@ -89,9 +92,10 @@ const lits = resolveIdentityLiterals();
  * scripts/check-no-owner-name-tags.mjs. The enumerator seam exists if policy ever
  * changes (`listFilesIncludingUntracked()`); the blocker is D-004, not tooling.
  */
-const entries = Object.entries(lits);
-if (entries.length === 0) {
-  console.log('✓ no build-box identity resolved on this host (nothing to hunt) — no-op on a bare/CI box, by design');
+if (boxEntries.length === 0 && sidecarEntries.length === 0) {
+  console.log(
+    "✓ no build-box identity resolved on this host (nothing to hunt) — no-op on a bare/CI box, by design",
+  );
   process.exit(0);
 }
 
@@ -112,6 +116,9 @@ try {
   console.error(`check-no-identity-literals: git ls-files failed: ${e?.message}`);
   process.exit(2);
 }
+if (boxEntries.length === 0 && sidecarEntries.length > 0) {
+  files = files.filter(isSidecarCopiedIdentityPath);
+}
 
 const findings = [];
 for (const file of files) {
@@ -121,6 +128,9 @@ for (const file of files) {
   } catch {
     continue; // binary / unreadable / vanished mid-run
   }
+  const entries = isSidecarCopiedIdentityPath(file)
+    ? sidecarEntries
+    : boxEntries;
   for (const hit of findIdentityLiterals(text, entries, { vendor: isVendorPath(file) })) {
     findings.push({ file, ...hit });
   }
@@ -128,7 +138,7 @@ for (const file of files) {
 
 if (findings.length === 0) {
   console.log(
-    `✓ no bare build-box identity literal (${Object.keys(lits).join(', ')}) in ${files.length} tracked + untracked-not-ignored source files`,
+    `✓ no bare build-box identity literal (${Object.keys(identityScopes.box).join(", ")}) in ${files.length} tracked + untracked-not-ignored source files; explicit owner values were checked only in copied CC hook files`,
   );
   process.exit(0);
 }

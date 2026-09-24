@@ -3,6 +3,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+import {
+  isSidecarCopiedIdentityPath,
+  resolveIdentityLiteralScopes,
+} from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 /**
  * EI-19462813694036210 — pin the RELATIONSHIP between the two identity-leak detectors, in BOTH
@@ -31,11 +35,11 @@ import { describe, expect, it } from 'vitest';
  *      `main`. EI-19462813694036210 proposed exactly this in good faith; the measurement is what
  *      stopped it.
  *
- * ⚠ THIS TEST ASSERTS ON KEY NAMES ONLY, NEVER ON RESOLVED VALUES, and it must stay that way.
- * This file is tracked source and is therefore scanned by the very lints it pins — a fixture
- * spelling a real identity would fail the gate from inside the guard written to prevent it (the
- * same reasoning as the module's own "THE LITERALS ARE A PARAMETER, NOT AN INTERNAL LOOKUP" note).
- * Nothing here executes either detector or reads this box's git config / hostname / OS account.
+ * Resolved-value fixtures below are synthetic only. This file is tracked source and is therefore
+ * scanned by the very lints it pins — a fixture spelling a real identity would fail the gate from
+ * inside the guard written to prevent it (the same reasoning as the module's own "THE LITERALS ARE
+ * A PARAMETER, NOT AN INTERNAL LOOKUP" note). The resolver's git seam is injected; assertions
+ * inspect only synthetic git/owner values and identity keys, never the live box's account/host.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -44,7 +48,7 @@ const PY_PATH = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'audit-release-bundl
 
 /** Keys the .mjs port assigns, e.g. `lits['build-user-name'] = account`. */
 export function mjsPortedKeys(source: string): string[] {
-  return [...source.matchAll(/lits\[['"]([a-z-]+)['"]\]\s*=/g)].map((m) => m[1]).sort();
+  return [...source.matchAll(/(?:lits|box)\[['"]([a-z-]+)['"]\]\s*=/g)].map((m) => m[1]).sort();
 }
 
 /** Keys the .mjs port assigns via its `[key, gitConfig]` loop pairs. */
@@ -167,7 +171,7 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
     // Affirmed: it STAYS UNPORTED, for the same reason as the other three. It is the owner's
     // GitHub handle, added from a MEASURED leak (10 occurrences inside the shipped seed
     // corestore), and it is owned by no box's `whoami` — so identity_literals(), which resolves
-    // only the building machine, could never produce it. Its remedy is stage-time redaction
+    // only the building machine and explicitly asserted owner values, could never produce it. Its remedy is stage-time redaction
     // (bin/stage-source-tree.sh), not a working-tree block: arming it in the edit-time detector
     // is the OVER-PORT failure this file's ⭐ test above independently pins.
     expect(knownSensitiveKeys).toEqual([
@@ -183,6 +187,66 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
     // as a bug and the obvious remedy is the harmful one.
     expect(mjs).toMatch(/KNOWN_SENSITIVE_IDENTITIES/);
     expect(mjs).toMatch(/stage-source-tree\.sh/);
+  });
+
+  it('mirrors the audit automation drops and explicit owner-class overrides', () => {
+    const gitValues: Record<string, string> = {
+      'user.name': 'papercusp-build-agent',
+      'user.email': 'papercusp-build-bot@example.test',
+    };
+    const resolved = resolveIdentityLiteralScopes((_command, args) => gitValues[args[2] ?? ''] ?? '', {
+      PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner,Alternate Owner;Synthetic Owner',
+      PAPERCUSP_RELEASE_OWNER_EMAIL: 'owner@example.test;alternate@example.test',
+    });
+
+    const gitClass = (literals: Record<string, string>) =>
+      Object.fromEntries(Object.entries(literals).filter(([key]) => key.startsWith('build-git-')));
+    expect(Object.keys(gitClass(resolved.box))).toEqual([]);
+    expect(gitClass(resolved.owner)).toEqual({
+      'build-git-name': 'Synthetic Owner',
+      'build-git-name-2': 'Alternate Owner',
+      'build-git-email': 'owner@example.test',
+      'build-git-email-2': 'alternate@example.test',
+    });
+    expect(gitClass(resolved.all)).toEqual(gitClass(resolved.owner));
+    expect(Object.keys(gitClass(resolved.all))).not.toContain('build-git-name-3');
+
+    const human = resolveIdentityLiteralScopes(
+      (_command, args) =>
+        (({ 'user.name': 'Synthetic Human', 'user.email': 'human@example.test' }) as Record<string, string>)[
+          args[2] ?? ''
+        ] ?? '',
+      {},
+    );
+    expect(gitClass(human.all)).toEqual({
+      'build-git-name': 'Synthetic Human',
+      'build-git-email': 'human@example.test',
+    });
+
+    // Pin the Python side's value rules too; comparing only key names missed this exact drift.
+    expect(py).toMatch(/AUTOMATION_NAME_RE\s*=\s*re\.compile/);
+    expect(py).toMatch(/AUTOMATION_EMAIL_RE\s*=\s*re\.compile/);
+    expect(py).toMatch(/looks_like_automation_identity\(v\)/);
+    expect(py).toMatch(/looks_like_automation_email\(v\)/);
+    expect(py).toMatch(/explicit_owner_values\(env_var\)/);
+  });
+
+  it('scopes explicit owner linting to the sidecar CC files copied verbatim', () => {
+    const builderPath = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh');
+    const lintPath = join(REPO_ROOT, 'scripts', 'check-no-identity-literals.mjs');
+    const builder = readFileSync(builderPath, 'utf8');
+    const lint = readFileSync(lintPath, 'utf8');
+    expect(isSidecarCopiedIdentityPath('apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs')).toBe(true);
+    expect(isSidecarCopiedIdentityPath('apps/operator/scripts/hooks/cc/pretooluse-proof.sh')).toBe(true);
+    expect(isSidecarCopiedIdentityPath('apps/operator/scripts/hooks/cc/__tests__/hook.test.mjs')).toBe(false);
+    expect(isSidecarCopiedIdentityPath('apps/operator/lib/release/owner-identity-env.ts')).toBe(false);
+    expect(builder).toMatch(/CC_HOOK_SRC_DIR="\$WEB_DIR\/scripts\/hooks\/cc"/);
+    expect(builder).toMatch(/"\$CC_HOOK_SRC_DIR"\/\*\.sh/);
+    expect(builder).toMatch(/"\$CC_HOOK_SRC_DIR"\/\*\.py/);
+    expect(builder).toMatch(/"\$CC_HOOK_SRC_DIR"\/\*\.mjs/);
+    expect(lint).toMatch(/resolveIdentityLiteralScopes\(\)/);
+    expect(lint).toMatch(/isSidecarCopiedIdentityPath\(file\)/);
+    expect(lint).toMatch(/sidecarEntries/);
   });
 
   // ---- permanent controls: prove the parsers discriminate ---------------------------

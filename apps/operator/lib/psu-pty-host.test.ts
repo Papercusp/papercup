@@ -4877,6 +4877,34 @@ describe('observeKickoffModelTurnStart (WI-2140591 — a marker proves SUBMISSIO
     expect(run.waits).toEqual([5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
   });
 
+  it('accepts native post-marker activity that completed before the PTY baseline was sampled', async () => {
+    const nativeTurnActivity = vi.fn(() => ({ available: true, started: true }));
+    const run = runWith([1_000, 1_000], { nativeTurnActivity });
+    await expect(run.result).resolves.toMatchObject({
+      started: true,
+      observed: true,
+      polls: 0,
+      reason: null,
+    });
+    expect(nativeTurnActivity).toHaveBeenCalledTimes(1);
+    expect(run.waits).toHaveLength(0);
+  });
+
+  it('does not treat PTY-only output as turn activity when the native transcript is authoritative', async () => {
+    const run = runWith([1_000, 2_500, 3_000], {
+      nativeTurnActivity: () => ({ available: true, started: false }),
+      pollMs: 5,
+      polls: 2,
+    });
+    await expect(run.result).resolves.toMatchObject({
+      started: false,
+      observed: true,
+      polls: 2,
+      reason: 'no-native-turn-activity-after-kickoff',
+    });
+    expect(run.waits).toHaveLength(2);
+  });
+
   it('does NOT flag a healthy SHORT turn that produced output and then went quiet', async () => {
     // The false positive a "is the output quiet NOW?" predicate would produce:
     // the agent answered immediately and returned to an idle prompt. Keying on

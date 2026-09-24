@@ -50,7 +50,6 @@
  *     same documented no-op the gate lint has.
  */
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHookProcess } from './spawn-hook';
@@ -109,19 +108,6 @@ function gateIdentityLints(): string[] {
   return identityScripts;
 }
 
-/**
- * Does a real box identity resolve here? A non-empty `git config user.name` is enough: unlike the
- * OS account and hostname, the resolver applies no exclusion list to it, so it always becomes a
- * hunted literal. Empty ⇒ the bare/CI box no-op, and the one test that needs a real literal skips.
- */
-const BOX_GIT_NAME = (() => {
-  try {
-    return execFileSync('git', ['config', '--get', 'user.name'], { encoding: 'utf8', timeout: 5000 }).trim();
-  } catch {
-    return '';
-  }
-})();
-
 type Leak = { line: number; name: string; form: 'bracket' | 'paren'; text: string };
 type PathLeak = { line: number; user: string; text: string };
 type LiteralLeak = { line: number; key: string; text: string };
@@ -133,7 +119,12 @@ interface Detector {
     entries: [string, string][],
     opts?: { vendor?: boolean },
   ): LiteralLeak[];
-  resolveIdentityLiterals(): Record<string, string>;
+  resolveIdentityLiteralScopes(): {
+    box: Record<string, string>;
+    owner: Record<string, string>;
+    all: Record<string, string>;
+  };
+  isSidecarCopiedIdentityPath(file: string): boolean;
   isSkippedPath(file: string): boolean;
   isSkippedPathForIdentityLiterals(file: string): boolean;
   renderLeak(f: Leak): string;
@@ -146,16 +137,17 @@ const loadDetector = (): Promise<Detector> => import(DETECTOR) as Promise<Detect
 /** Run the hook with a synthetic PreToolUse payload and return its advisory text (or ''). */
 async function runHook(
   toolInput: Record<string, unknown>,
-  tool = 'Edit',
+  tool = "Edit",
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ text: string; status: number | null }> {
   const res = await runHookProcess(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: tool, tool_input: toolInput }),
-    env: process.env,
+    env,
   });
-  let text = '';
+  let text = "";
   if (res.stdout.trim()) {
-    const parsed = JSON.parse(res.stdout.trim().split('\n').pop() as string);
-    text = parsed?.hookSpecificOutput?.additionalContext ?? '';
+    const parsed = JSON.parse(res.stdout.trim().split("\n").pop() as string);
+    text = parsed?.hookSpecificOutput?.additionalContext ?? "";
   }
   return { text, status: res.status };
 }
@@ -396,7 +388,9 @@ describe('every gate identity class has EDIT-TIME coverage (EI-18759401203875869
   it('each gate lint IMPORTS the shared detector instead of carrying its own copy', () => {
     for (const { script } of Object.values(FAMILY)) {
       const src = readFileSync(join(REPO_ROOT, script), 'utf8');
-      expect(src, script).toMatch(/from '\.\/lib\/identity-leak-patterns\.mjs'/);
+      expect(src, script).toMatch(
+        /from ["']\.\/lib\/identity-leak-patterns\.mjs["']/,
+      );
     }
   });
 
@@ -410,20 +404,36 @@ describe('every gate identity class has EDIT-TIME coverage (EI-18759401203875869
     expect(status).toBe(0); // advisory, never a block
   });
 
-  // Reads the literal from the environment and never writes it down — see the header. Skips on a
-  // bare / CI box where nothing resolves, mirroring the gate lint's own documented no-op.
-  it.skipIf(BOX_GIT_NAME === '')(
-    'lint:no-identity-literals class — warns at edit time on a real box-identity literal',
-    async () => {
-      const { text, status } = await runHook({
-        file_path: repoFile(SRC),
-        new_string: `// debug note left by ${BOX_GIT_NAME} while chasing the transport bug`,
-      });
-      expect(text).toContain('identity-leak');
-      expect(text).toContain('build-git-name');
-      expect(status).toBe(0);
-    },
-  );
+  it("applies explicit owner literals to the sidecar CC hook copy set only", async () => {
+    const syntheticOwner = "SyntheticOwnerForTest";
+    const ownerEnv = {
+      ...process.env,
+      PAPERCUSP_RELEASE_OWNER_NAME: syntheticOwner,
+    };
+    const copiedHook = await runHook(
+      {
+        file_path: repoFile(
+          "apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs",
+        ),
+        new_string: `// release order from ${syntheticOwner} #302`,
+      },
+      "Edit",
+      ownerEnv,
+    );
+    expect(copiedHook.text).toContain("identity-leak");
+    expect(copiedHook.text).toContain("build-git-name");
+    expect(copiedHook.status).toBe(0); // advisory, never a block
+
+    const ordinarySource = await runHook(
+      {
+        file_path: repoFile("apps/operator/lib/release/owner-identity-env.ts"),
+        new_string: `// release note for ${syntheticOwner}`,
+      },
+      "Edit",
+      ownerEnv,
+    );
+    expect(ordinarySource.text).toBe("");
+  });
 
   it('reports EVERY class present in one edit, not just the first', async () => {
     const { text } = await runHook({

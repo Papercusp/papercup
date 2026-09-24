@@ -237,17 +237,22 @@ async function checkIdentityLeaks(filePath, content) {
         : skipped;
     if (
       !skippedForLiterals &&
-      typeof mod.findIdentityLiterals === 'function' &&
-      typeof mod.resolveIdentityLiterals === 'function'
+      typeof mod.findIdentityLiterals === "function" &&
+      typeof mod.resolveIdentityLiteralScopes === "function"
     ) {
-      const entries = Object.entries(mod.resolveIdentityLiterals());
-      const vendor = typeof mod.isVendorPath === 'function' ? mod.isVendorPath(rel) : false;
+      const scopes = mod.resolveIdentityLiteralScopes();
+      const ownerScoped =
+        typeof mod.isSidecarCopiedIdentityPath === "function" &&
+        mod.isSidecarCopiedIdentityPath(rel);
+      const entries = Object.entries(ownerScoped ? scopes.all : scopes.box);
+      const vendor =
+        typeof mod.isVendorPath === "function" ? mod.isVendorPath(rel) : false;
       const leaks = mod.findIdentityLiterals(content, entries, { vendor });
       if (leaks.length) {
         const fix =
-          typeof mod.IDENTITY_LITERAL_FIX_HINT === 'string'
+          typeof mod.IDENTITY_LITERAL_FIX_HINT === "string"
             ? mod.IDENTITY_LITERAL_FIX_HINT
-            : 'Remove the literal — never add an exception to make the build pass.';
+            : "Remove the literal — never add an exception to make the build pass.";
         notes.push(
           `⚠️ identity-leak (EI-18759401203875869): ${leaks.length} bare build-box identity ` +
             `literal(s) in ${where}.\n${renderHits(leaks, (f) => `[${f.key}]`)}\n\n` +

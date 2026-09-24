@@ -3384,7 +3384,8 @@ export function mintCarryRespawnArgs(
     .toLowerCase();
   // Claude rotates its native id and consumes the carry through
   // --append-system-prompt-file. Codex has no equivalent CLI flag; its system
-  // prompt is CODEX_HOME/AGENTS.md, handled below. OMP still has no managed
+  // base instructions use CODEX_HOME/AGENTS.md; the changing checkpoint is
+  // delivered once in the provenance-marked first turn below. OMP has no managed
   // carry-respawn consumer.
   // `personaFile` (P-002) rides through to mintRecycleArgs, which owns the
   // --system-prompt-file swap — the copy-through it fixes lives there, so both
@@ -3511,7 +3512,11 @@ export function mintCarryRespawnArgs(
       "---",
       "## Managed carry checkpoint",
       "",
-      effectiveText,
+      // The host also sends carryText as the first turn. Embedding the full
+      // checkpoint here duplicated it in model context. Keep an addressable
+      // fallback only; the per-cut file and native delivery proof remain intact.
+      "The full checkpoint is delivered in the first managed turn, not repeated here.",
+      `If that turn is missing or incomplete, read this exact checkpoint file: ${launchContextPath}`,
       "",
     ].join("\n");
     const tmp = `${agentsPath}.${process.pid}.carry.tmp`;
