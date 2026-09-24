@@ -1855,6 +1855,9 @@ import { startAwaitSweeper } from '../events/await/engine';
 // handler (feeds a dead loop wake turn into the autoloop circuit + 429-aware re-arm). Mirrors
 // the lock-grant-bridge reconciler registration; must be imported at boot to take effect.
 import '../harness/routines/loop-turn-outcome';
+// P-020: terminal work-item rows carry a durable done-event intent. Register
+// its source reconciler on this existing await sweep before the first tick.
+import '../work-item-completion-event-reconciler';
 try {
   startAwaitSweeper();
 } catch {
