@@ -234,6 +234,54 @@ export async function getSelectedModeCatalog() {
   return selected;
 }
 
+export interface SelectedModeDefinition {
+  modeId: string;
+  contract: string;
+  contractRevision: string;
+  sourceId: string;
+  sourceRevision: string;
+  catalogRevision: string;
+  definitionHash: string;
+}
+
+/** Resolve one approved catalog snapshot, then read each selected definition
+ * once. A changed source or prompt refuses instead of silently serving the
+ * built-in text under an installed identity's selected id. */
+export async function getSelectedModeDefinitions(modeIds: readonly string[]): Promise<Map<string, SelectedModeDefinition>> {
+  const catalog = await getSelectedModeCatalog();
+  const unique = [...new Set(modeIds)];
+  const definitions = await Promise.all(unique.map(async (modeId) => {
+    const catalogId = modeId === 'cold-auto' ? 'auto' : modeId;
+    const entry = catalog.entries.find((candidate) => candidate.id === catalogId);
+    if (!entry || entry.definition.source !== 'fixed' || entry.definition.inputKind !== 'prompt-file') {
+      throw new Error('mode ' + modeId + ' has no selected fixed definition');
+    }
+    const identity = await getIdentitySource(entry.sourceId);
+    if (!identity.ok || !identity.sourcePath || identity.contentHash !== entry.sourceHash) {
+      throw new Error('selected mode ' + modeId + ' source revision is unavailable or stale');
+    }
+    const path = join(dirname(identity.sourcePath), 'prompts', entry.slot + '.md');
+    const definition = await readFile(path, 'utf8');
+    const hash = createHash('sha256').update(definition).digest('hex');
+    if (hash !== entry.definitionHash) {
+      throw new Error('selected mode ' + modeId + ' definition changed after catalog resolution');
+    }
+    let contract = definition;
+    if (modeId === 'cold-auto') {
+      const heading = '## COLD AUTO — the same autonomy component across fresh-context wakes';
+      const start = definition.indexOf(heading);
+      if (start < 0) throw new Error('selected AUTO identity has no COLD AUTO carry rider');
+      contract = definition.slice(start).trimEnd();
+    }
+    return [modeId, {
+      modeId, contract, contractRevision: createHash('sha256').update(contract).digest('hex'),
+      sourceId: entry.sourceId, sourceRevision: entry.sourceHash,
+      catalogRevision: catalog.revision, definitionHash: entry.definitionHash,
+    }] as const;
+  }));
+  return new Map(definitions);
+}
+
 export interface ProducedIdentityOutput {
   contributionId: string;
   value?: unknown;
@@ -331,7 +379,7 @@ export async function bindSelectedIdentityOutputs(input: {
     source: raw,
     sourcePath,
     resolve: resolver,
-    promptFiles: fixedPrompts,
+    ...(fixedPrompts.length ? { promptFiles: fixedPrompts } : {}),
     settings,
     inputClosure: closure,
     contributionOmissions: omissions,
