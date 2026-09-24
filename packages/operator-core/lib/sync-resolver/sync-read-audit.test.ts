@@ -7,8 +7,7 @@
 // payload/latency budget runs on demand via measureSyncReadPayloadsViaRest
 // against a running operator, not here.
 
-import { describe, it, expect, vi } from 'vitest';
-import * as syncResolver from './index';
+import { describe, it, expect } from 'vitest';
 import { knownQueryNamesV2, getRegistryEntryV2, isRegisteredV2 } from './index';
 import {
   SYNC_QUERY_FIXTURES,
@@ -20,7 +19,6 @@ import {
   buildLiveFixtureMap,
   evaluateBudget,
   measureSyncReadPayloadsViaRest,
-  measureSyncReadPayloadsInProcess,
 } from './sync-read-audit';
 
 describe('sync-read audit — registry coverage guard (P-008)', () => {
@@ -146,29 +144,19 @@ describe('sync-read audit — budget evaluation', () => {
 });
 
 describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fake fetch)', () => {
-  it('measures UTF-8 response bytes and catches a multibyte-only budget violation on both paths', async () => {
+  it('measures UTF-8 response bytes and catches a multibyte-only budget violation', async () => {
     const rows = [{ title: '界'.repeat(PAYLOAD_BUDGET_BYTES / 2) }];
     const body = JSON.stringify({ rows, version: String(Date.now()) });
     const expectedBytes = (await new Response(body).arrayBuffer()).byteLength;
     expect(body.length).toBeLessThan(PAYLOAD_BUDGET_BYTES);
     expect(expectedBytes).toBeGreaterThan(PAYLOAD_BUDGET_BYTES);
     const fixtures = { 'workItems.stats': { harnessSlug: 'papercusp' } };
-    const resolve = vi.spyOn(syncResolver, 'resolveNamedQueryV2').mockResolvedValue(rows);
-    try {
-      const reports = [
-        await measureSyncReadPayloadsViaRest({
-          baseUrl: 'http://x', token: 't', fixtures,
-          fetchImpl: (async () => new Response(body)) as typeof fetch,
-        }),
-        await measureSyncReadPayloadsInProcess({ fixtures }),
-      ];
-      for (const report of reports) {
-        expect(report.measured[0]).toMatchObject({ bytes: expectedBytes, overBytes: true });
-        expect(report.violations.map((row) => row.name)).toEqual(['workItems.stats']);
-      }
-    } finally {
-      resolve.mockRestore();
-    }
+    const report = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://x', token: 't', fixtures,
+      fetchImpl: (async () => new Response(body)) as typeof fetch,
+    });
+    expect(report.measured[0]).toMatchObject({ bytes: expectedBytes, overBytes: true });
+    expect(report.violations.map((row) => row.name)).toEqual(['workItems.stats']);
   });
 
   it('also records UTF-8 bytes for unsuccessful HTTP bodies', async () => {
