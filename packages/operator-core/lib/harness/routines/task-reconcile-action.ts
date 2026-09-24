@@ -8,8 +8,8 @@
  * production deps — the real /sys + /proc reader, the repo-root foreign
  * signature, and the coord broadcast.
  *
- * REPORT-ONLY for the general population (plan D-010) — with ONE enforcement
- * carve-out since 2026-08-25: the AGENT-SESSION reaper (`./task-manager/reaper`,
+ * REPORT-ONLY for the general population (task-manager D-010), with two narrow
+ * enforcement carve-outs. First, since 2026-08-25: the AGENT-SESSION reaper (`./task-manager/reaper`,
  * WI-41607 / plan agent-session-scope-reaper-2026-08-25). D-010's precondition
  * ("classification right for a sustained window") was met by the censuses this
  * file already runs, and the owner directed enforcement twice after the third
@@ -17,7 +17,10 @@
  * consults `isAutoReapExempt` (terminal-psu-session-enrolment D-001), archives
  * log tails first, is capped per tick, and sits behind the
  * `papercusp-task-reaper` kill-switch flag (default ON, explicit OFF honored).
- * Everything else here remains report-only.
+ * Second, memory-reduction D-010: a prompted agent may record a structured
+ * process-lifecycle `kill` verdict, but only this trusted routine may enforce it,
+ * through the existing exact task/scope control primitives. Everything else
+ * here remains report-only.
  */
 import { readlinkSync, statSync } from 'node:fs';
 
@@ -205,11 +208,21 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
       console.info(
         `[task-lifecycle] pass: ${lifecycle.rowsInspected} ledger row(s), ` +
           `${lifecycle.candidates} candidate(s), ${lifecycle.candidateItems.length} filed/refreshed, ` +
-          `${lifecycle.suppressedByKeep} keep-suppressed, ${lifecycle.openItems.length} open; ` +
+          `${lifecycle.suppressedByKeep} keep-suppressed, ` +
+          `${lifecycle.suppressedByVerdict} verdict-suppressed, ${lifecycle.openItems.length} open; ` +
           (lifecycle.judge.attempted
             ? `judge ${lifecycle.judge.ok ? 'admitted' : 'not admitted'}${lifecycle.judge.deduped ? ' (interval dedupe)' : ''}`
             : 'no judge needed'),
       );
+      for (const outcome of lifecycle.enforcement) {
+        console.info(
+          `[task-lifecycle] verdict ${outcome.taskId}=${outcome.decision}: ` +
+            `${outcome.settled ? 'settled' : 'not settled'} via ${outcome.target}` +
+            `${outcome.targetId ? ` ${outcome.targetId}` : ''}` +
+            `${outcome.error ? ` (${outcome.error})` : ''}` +
+            `${outcome.detail ? ` — ${outcome.detail}` : ''}`,
+        );
+      }
     } catch (err) {
       // This judgement layer must never break the kernel reconcile/reaper pass.
       console.warn('[task-lifecycle] sweep failed', err);

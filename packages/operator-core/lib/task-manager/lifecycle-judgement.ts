@@ -9,8 +9,9 @@
  *   ledger/reconcile -> pure candidates -> one condition-keyed item per task
  *                    -> one idempotent all-candidate judge per hour
  *
- * Nothing here kills a process automatically. The spawned judge must re-read
- * live evidence and can act only through `processes:kill { taskId }`.
+ * The spawned judge is evidence-only: it re-reads live state and records a
+ * structured verdict. A later sweep enforces `kill` verdicts inside this trusted
+ * task-manager process through the existing identity-safe control primitives.
  */
 
 import { statSync } from 'node:fs';
@@ -21,7 +22,8 @@ import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { mergeWorkItemPayload } from '../work-items';
-import { listLifecycleJudgementTasks, mergeTaskLifecycleProbes } from './store';
+import { getTask, listLifecycleJudgementTasks, mergeTaskLifecycleProbes } from './store';
+import { killScopeUnit, killTask, type ControlOutcome, type ScopeControlOutcome } from './control';
 import { isAutoReapExempt, isTerminalState, type TaskRow } from './types';
 
 export const LIFECYCLE_LAUNCHER_ENDED_GRACE_MS = 15 * 60_000;
@@ -31,11 +33,12 @@ export const LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_JUDGE_INTERVAL_MS = 60 * 60_000;
 export const LIFECYCLE_SWEEP_INTERVAL_MS = 5 * 60_000;
 /**
- * `spawnAgentInHarness` accepts registered persona ids, not the coordination
- * label (`su`) used for interactive superuser sessions. Keep this exported so
- * the production-wiring test can pin it against the runtime role registry.
+ * `mug` is the existing prompted autonomous coding-harness persona. It receives
+ * read-only process inventory access for this evidence pass; process signalling
+ * remains outside its capability envelope and is performed below by trusted
+ * task-manager code.
  */
-export const LIFECYCLE_JUDGE_ROLE = 'operator' as const;
+export const LIFECYCLE_JUDGE_ROLE = 'mug' as const;
 
 const PROBE_DETAIL_KEY = 'processLifecycleProbe';
 const CANDIDATE_PAYLOAD_KEY = 'processLifecycleCandidate';
@@ -87,7 +90,28 @@ export interface LifecycleCandidate {
 export interface LifecycleEvaluation {
   candidates: LifecycleCandidate[];
   suppressedByKeep: string[];
+  suppressedByVerdict: string[];
   probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe }>;
+}
+
+export interface LifecycleVerdictEnforcement {
+  taskId: string;
+  decision: 'kill' | 'gone';
+  target: 'task-id' | 'scope-unit' | 'none';
+  targetId: string | null;
+  /** Goal-state semantics: true means this verdict needs no further signal. */
+  settled: boolean;
+  /** True only when the control primitive reported that it sent a signal. */
+  signalled: boolean;
+  reapTerminalResidue: boolean;
+  error?: string;
+  detail?: string;
+}
+
+export interface LifecycleVerdictEnforcementDeps {
+  loadTask(taskId: string): Promise<TaskRow | null>;
+  killTask(taskId: string, opts: { reapTerminalResidue?: boolean }): Promise<ControlOutcome>;
+  killScopeUnit(scopeUnit: string): Promise<ScopeControlOutcome>;
 }
 
 export interface OpenLifecycleCandidateItem {
@@ -101,6 +125,7 @@ export interface LifecycleJudgementDeps {
   resolveLauncherStates(ownerIds: readonly string[]): Promise<Map<string, string | null>>;
   statLogMtimeMs(path: string): number | null;
   readLatestVerdicts(workspaceId: string, taskIds: readonly string[]): Promise<Map<string, ProcessLifecycleVerdict>>;
+  enforceVerdicts(verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>): Promise<LifecycleVerdictEnforcement[]>;
   persistProbes(updates: readonly { taskId: string; probe: ProcessLifecycleProbe }[]): Promise<number>;
   upsertCandidate(
     conditionKey: string,
@@ -187,6 +212,120 @@ function activeKeepVerdict(verdict: ProcessLifecycleVerdict | undefined, nowMs: 
   return Number.isFinite(recheckAtMs) && recheckAtMs > nowMs;
 }
 
+function controlOutcomeSettled(
+  outcome: ControlOutcome | ScopeControlOutcome,
+  terminalConfinedTask: boolean,
+): boolean {
+  if (outcome.ok) return true;
+  if (outcome.error === 'already_gone') return true;
+  // With reapTerminalResidue, not_live on a confined terminal row means the
+  // authoritative cgroup re-read found it empty. The same error on an
+  // unconfined row is a safety refusal, hence the explicit caller guard.
+  return terminalConfinedTask && outcome.error === 'not_live';
+}
+
+export const nodeLifecycleVerdictEnforcementDeps: LifecycleVerdictEnforcementDeps = {
+  loadTask: (taskId) => getTask(taskId),
+  killTask: (taskId, opts) => killTask(taskId, opts),
+  killScopeUnit: (scopeUnit) => killScopeUnit(scopeUnit),
+};
+
+/** Enforce completed agent verdicts from the trusted task-manager boundary. */
+export async function enforceLifecycleVerdicts(
+  verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>,
+  deps: LifecycleVerdictEnforcementDeps = nodeLifecycleVerdictEnforcementDeps,
+): Promise<LifecycleVerdictEnforcement[]> {
+  const outcomes: LifecycleVerdictEnforcement[] = [];
+  for (const [taskId, verdict] of verdicts) {
+    if (verdict.decision === 'keep') continue;
+    if (verdict.decision === 'gone') {
+      outcomes.push({
+        taskId,
+        decision: 'gone',
+        target: 'none',
+        targetId: null,
+        settled: true,
+        signalled: false,
+        reapTerminalResidue: false,
+        detail: verdict.reason,
+      });
+      continue;
+    }
+
+    let row = await deps.loadTask(taskId);
+    if (!row) {
+      outcomes.push({
+        taskId,
+        decision: 'kill',
+        target: 'none',
+        targetId: null,
+        settled: true,
+        signalled: false,
+        reapTerminalResidue: false,
+        error: 'task_not_found',
+        detail: 'task row disappeared before enforcement; nothing remains to signal',
+      });
+      continue;
+    }
+
+    if (row.state === 'unaccounted') {
+      if (!row.scopeUnit) {
+        outcomes.push({
+          taskId,
+          decision: 'kill',
+          target: 'scope-unit',
+          targetId: null,
+          settled: false,
+          signalled: false,
+          reapTerminalResidue: false,
+          error: 'no_target',
+          detail: 'unaccounted row has no exact scope unit; refusing to infer a target',
+        });
+        continue;
+      }
+      const outcome = await deps.killScopeUnit(row.scopeUnit);
+      outcomes.push({
+        taskId,
+        decision: 'kill',
+        target: 'scope-unit',
+        targetId: row.scopeUnit,
+        settled: controlOutcomeSettled(outcome, false),
+        signalled: outcome.ok,
+        reapTerminalResidue: false,
+        ...(!outcome.ok ? { error: outcome.error } : {}),
+        ...(outcome.detail ? { detail: outcome.detail } : {}),
+      });
+      continue;
+    }
+
+    let reapingResidue = isTerminalState(row.state);
+    let outcome = await deps.killTask(taskId, { reapTerminalResidue: reapingResidue });
+    // A live row can become terminal between the routing read and killTask's own
+    // authoritative read. Re-read once and use the positive residue path.
+    if (!outcome.ok && outcome.error === 'not_live' && !reapingResidue) {
+      const refreshed = await deps.loadTask(taskId);
+      if (refreshed && isTerminalState(refreshed.state)) {
+        row = refreshed;
+        reapingResidue = true;
+        outcome = await deps.killTask(taskId, { reapTerminalResidue: true });
+      }
+    }
+    const terminalConfinedTask = reapingResidue && row.confined && Boolean(row.scopeUnit);
+    outcomes.push({
+      taskId,
+      decision: 'kill',
+      target: 'task-id',
+      targetId: taskId,
+      settled: controlOutcomeSettled(outcome, terminalConfinedTask),
+      signalled: outcome.ok,
+      reapTerminalResidue: reapingResidue,
+      ...(!outcome.ok ? { error: outcome.error } : {}),
+      ...(outcome.detail ? { detail: outcome.detail } : {}),
+    });
+  }
+  return outcomes;
+}
+
 /**
  * Pure candidate selection. A missing/unreadable activity signal never means
  * idle. For a no-log task, the first CPU sample establishes the quiet baseline;
@@ -197,11 +336,13 @@ export function evaluateLifecycleCandidates(input: {
   confirmedResidueTaskIds: ReadonlySet<string>;
   launcherStates: ReadonlyMap<string, string | null>;
   latestVerdicts: ReadonlyMap<string, ProcessLifecycleVerdict>;
+  settledVerdictTaskIds?: ReadonlySet<string>;
   statLogMtimeMs: (path: string) => number | null;
   nowMs: number;
 }): LifecycleEvaluation {
   const candidates: LifecycleCandidate[] = [];
   const suppressedByKeep: string[] = [];
+  const suppressedByVerdict: string[] = [];
   const probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe }> = [];
 
   for (const row of input.rows) {
@@ -289,6 +430,10 @@ export function evaluateLifecycleCandidates(input: {
 
     if (kinds.length === 0) continue;
     const previousVerdict = input.latestVerdicts.get(row.taskId);
+    if (previousVerdict?.decision === 'gone' || input.settledVerdictTaskIds?.has(row.taskId)) {
+      suppressedByVerdict.push(row.taskId);
+      continue;
+    }
     if (activeKeepVerdict(previousVerdict, input.nowMs)) {
       suppressedByKeep.push(row.taskId);
       continue;
@@ -318,7 +463,7 @@ export function evaluateLifecycleCandidates(input: {
     });
   }
 
-  return { candidates, suppressedByKeep, probeUpdates };
+  return { candidates, suppressedByKeep, suppressedByVerdict, probeUpdates };
 }
 
 export function lifecycleCandidateConditionKey(taskId: string): string {
@@ -336,9 +481,9 @@ export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]
     '',
     ...refs,
     '',
-    'For each item: read and claim the work item; call processes:list with { taskId, live:true } and judge current evidence. Never kill by pid, name, pattern, shell, or systemctl.',
-    'If it should end, call processes:kill with { taskId }. When the ledger row is terminal/unaccounted but its confined scope still has processes, pass reapTerminalResidue:true only after the fresh processes:list re-verification.',
-    'Complete every item with assumptions:"none" and top-level outputPayload.processLifecycleVerdict = { taskId, decision:"keep"|"kill"|"gone", reason, keepCount, recheckAt, decidedAt }. A keep MUST give a future ISO recheckAt and increment prior keepCount; kill/gone use recheckAt:null. Record concrete processes:list/kill evidence in completion. Then exit.',
+    'For each item: read and claim the work item; call processes:list with { taskId, live:true } and judge current evidence.',
+    'You produce evidence and a verdict only. NEVER signal a process: do not call processes:kill, shell, systemctl, or any pid/name/pattern kill. Trusted task-manager code enforces a completed kill verdict later through the exact task/scope identity.',
+    'Complete every item with assumptions:"none" and top-level outputPayload.processLifecycleVerdict = { taskId, decision:"keep"|"kill"|"gone", reason, keepCount, recheckAt, decidedAt }. A keep MUST give a future ISO recheckAt and increment prior keepCount; kill/gone use recheckAt:null. Record concrete processes:list evidence in completion. Then exit.',
   ].join('\n');
 }
 
@@ -346,7 +491,9 @@ export interface LifecycleSweepResult {
   rowsInspected: number;
   candidates: number;
   suppressedByKeep: number;
+  suppressedByVerdict: number;
   probesPersisted: number;
+  enforcement: LifecycleVerdictEnforcement[];
   candidateItems: string[];
   openItems: string[];
   judge: {
@@ -383,11 +530,16 @@ export async function runLifecycleJudgementSweep(
     deps.resolveLauncherStates(launcherIds),
     deps.readLatestVerdicts(input.workspaceId, taskIds),
   ]);
+  const enforcement = await deps.enforceVerdicts(latestVerdicts);
+  const settledVerdictTaskIds = new Set(
+    enforcement.filter((outcome) => outcome.settled).map((outcome) => outcome.taskId),
+  );
   const evaluation = evaluateLifecycleCandidates({
     rows,
     confirmedResidueTaskIds: new Set(residueTaskIds),
     launcherStates,
     latestVerdicts,
+    settledVerdictTaskIds,
     statLogMtimeMs: deps.statLogMtimeMs,
     nowMs,
   });
@@ -405,13 +557,18 @@ export async function runLifecycleJudgementSweep(
 
   // Query after filing. This also recovers items left open by an earlier failed
   // launch even if their task stopped matching the detector in the meantime.
-  const open = await deps.listOpenCandidateItems(input.workspaceId);
+  const open = (await deps.listOpenCandidateItems(input.workspaceId)).filter(
+    (item) =>
+      !settledVerdictTaskIds.has(item.taskId) && latestVerdicts.get(item.taskId)?.decision !== 'gone',
+  );
   if (open.length === 0) {
     return {
       rowsInspected: rows.length,
       candidates: evaluation.candidates.length,
       suppressedByKeep: evaluation.suppressedByKeep.length,
+      suppressedByVerdict: evaluation.suppressedByVerdict.length,
       probesPersisted,
+      enforcement,
       candidateItems,
       openItems: [],
       judge: { attempted: false, idempotencyKey: null },
@@ -429,7 +586,9 @@ export async function runLifecycleJudgementSweep(
     rowsInspected: rows.length,
     candidates: evaluation.candidates.length,
     suppressedByKeep: evaluation.suppressedByKeep.length,
+    suppressedByVerdict: evaluation.suppressedByVerdict.length,
     probesPersisted,
+    enforcement,
     candidateItems,
     openItems: open.map((item) => item.id),
     judge: {
@@ -489,6 +648,8 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
     }
     return out;
   },
+
+  enforceVerdicts: (verdicts) => enforceLifecycleVerdicts(verdicts),
 
   persistProbes: (updates) => mergeTaskLifecycleProbes(updates),
 

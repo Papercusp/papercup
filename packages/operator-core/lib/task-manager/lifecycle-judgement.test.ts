@@ -7,11 +7,13 @@ import {
   LIFECYCLE_JUDGE_INTERVAL_MS,
   LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
+  enforceLifecycleVerdicts,
   evaluateLifecycleCandidates,
   lifecycleCandidateConditionKey,
   lifecycleJudgeIntervalKey,
   runLifecycleJudgementSweep,
   type LifecycleJudgementDeps,
+  type LifecycleVerdictEnforcementDeps,
   type ProcessLifecycleProbe,
   type ProcessLifecycleVerdict,
 } from './lifecycle-judgement';
@@ -212,6 +214,87 @@ describe('evaluateLifecycleCandidates', () => {
     expect(due.candidates).toHaveLength(1);
     expect(due.candidates[0].previousVerdict).toEqual(keep);
   });
+
+  it('suppresses a gone verdict permanently instead of refiling the same task', () => {
+    const candidate = row({ taskId: 'gone', rootTaskId: 'gone', state: 'unaccounted' });
+    const gone: ProcessLifecycleVerdict = {
+      taskId: 'gone',
+      decision: 'gone',
+      reason: 'fresh inventory found no process',
+      keepCount: 0,
+      recheckAt: null,
+    };
+    const result = evaluate({ rows: [candidate], residue: ['gone'], verdicts: [['gone', gone]] });
+    expect(result.candidates).toEqual([]);
+    expect(result.suppressedByVerdict).toEqual(['gone']);
+  });
+});
+
+describe('enforceLifecycleVerdicts', () => {
+  const killVerdict = (taskId: string): ProcessLifecycleVerdict => ({
+    taskId,
+    decision: 'kill',
+    reason: 'fresh evidence says this task should end',
+    keepCount: 0,
+    recheckAt: null,
+  });
+
+  function enforcementDeps(over: Partial<LifecycleVerdictEnforcementDeps> = {}): LifecycleVerdictEnforcementDeps {
+    return {
+      loadTask: async () => null,
+      killTask: async (taskId) => ({ ok: true, taskId, action: 'kill' }),
+      killScopeUnit: async (scopeUnit) => ({ ok: true, scopeUnit, action: 'kill' }),
+      ...over,
+    };
+  }
+
+  it('routes an unaccounted row only through its exact scope unit', async () => {
+    const killTask = vi.fn();
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => ({ ok: true as const, scopeUnit, action: 'kill' }));
+    const outcome = await enforceLifecycleVerdicts(
+      new Map([['orphan', killVerdict('orphan')]]),
+      enforcementDeps({
+        loadTask: async () =>
+          row({ taskId: 'orphan', rootTaskId: 'orphan', state: 'unaccounted', scopeUnit: 'pc-orphan.scope' }),
+        killTask,
+        killScopeUnit,
+      }),
+    );
+    expect(killScopeUnit).toHaveBeenCalledWith('pc-orphan.scope');
+    expect(killTask).not.toHaveBeenCalled();
+    expect(outcome[0]).toMatchObject({ target: 'scope-unit', targetId: 'pc-orphan.scope', settled: true });
+  });
+
+  it('routes an owned row by task id and positively re-verifies terminal residue', async () => {
+    const taskKill = vi.fn(async (taskId: string, opts: { reapTerminalResidue?: boolean }) => ({
+      ok: true as const,
+      taskId,
+      action: 'kill',
+      detail: String(Boolean(opts.reapTerminalResidue)),
+    }));
+    const deps = enforcementDeps({ killTask: taskKill });
+    deps.loadTask = async (taskId) =>
+      row({
+        taskId,
+        rootTaskId: taskId,
+        state: taskId === 'terminal' ? 'exited' : 'running',
+        endedAt: taskId === 'terminal' ? new Date(NOW - 60_000).toISOString() : null,
+      });
+
+    const outcomes = await enforceLifecycleVerdicts(
+      new Map([
+        ['owned', killVerdict('owned')],
+        ['terminal', killVerdict('terminal')],
+      ]),
+      deps,
+    );
+    expect(taskKill).toHaveBeenNthCalledWith(1, 'owned', { reapTerminalResidue: false });
+    expect(taskKill).toHaveBeenNthCalledWith(2, 'terminal', { reapTerminalResidue: true });
+    expect(outcomes.map((outcome) => [outcome.taskId, outcome.target, outcome.reapTerminalResidue])).toEqual([
+      ['owned', 'task-id', false],
+      ['terminal', 'task-id', true],
+    ]);
+  });
 });
 
 function depsForRunner(over: Partial<LifecycleJudgementDeps> = {}): LifecycleJudgementDeps {
@@ -220,6 +303,7 @@ function depsForRunner(over: Partial<LifecycleJudgementDeps> = {}): LifecycleJud
     resolveLauncherStates: async () => new Map(),
     statLogMtimeMs: () => null,
     readLatestVerdicts: async () => new Map(),
+    enforceVerdicts: async () => [],
     persistProbes: async (updates) => updates.length,
     upsertCandidate: async (_key, candidate) => ({ id: `WI-${candidate.taskId}` }),
     listOpenCandidateItems: async () => [],
@@ -267,7 +351,8 @@ describe('runLifecycleJudgementSweep', () => {
     expect(replay.judge.idempotencyKey).toBe(first.judge.idempotencyKey);
     expect(actualLaunches.size).toBe(1);
     expect(spawn.mock.calls[0][0].brief).toContain('WI-left-open | taskId=older-task');
-    expect(spawn.mock.calls[0][0].brief).toContain('reapTerminalResidue:true');
+    expect(spawn.mock.calls[0][0].brief).toContain('NEVER signal a process');
+    expect(spawn.mock.calls[0][0].brief).not.toContain('call processes:kill with');
   });
 
   it('changes the launch key only when the one-hour interval changes', () => {
@@ -289,6 +374,52 @@ describe('runLifecycleJudgementSweep', () => {
     expect(result.judge.attempted).toBe(true);
     expect(spawn).toHaveBeenCalledTimes(1);
   });
+
+  it('does not refile or relaunch a successfully enforced kill verdict in the same sweep', async () => {
+    const candidate = row({ taskId: 'settled-kill', rootTaskId: 'settled-kill', state: 'unaccounted' });
+    const upsert = vi.fn();
+    const spawn = vi.fn(async () => ({ ok: true, spawnId: 'should-not-spawn' }));
+    const verdict: ProcessLifecycleVerdict = {
+      taskId: 'settled-kill',
+      decision: 'kill',
+      reason: 'confirmed residue',
+      keepCount: 0,
+      recheckAt: null,
+    };
+    const result = await runLifecycleJudgementSweep(
+      {
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        confirmedResidueTaskIds: ['settled-kill'],
+        nowMs: NOW,
+      },
+      depsForRunner({
+        loadRows: async () => [candidate],
+        readLatestVerdicts: async () => new Map([['settled-kill', verdict]]),
+        enforceVerdicts: async () => [
+          {
+            taskId: 'settled-kill',
+            decision: 'kill',
+            target: 'scope-unit',
+            targetId: 'pc-settled-kill.scope',
+            settled: true,
+            signalled: true,
+            reapTerminalResidue: false,
+          },
+        ],
+        upsertCandidate: upsert,
+        listOpenCandidateItems: async () => [
+          { id: 'WI-stale-open', taskId: 'settled-kill', harnessSlug: 'papercusp' },
+        ],
+        spawnJudge: spawn,
+      }),
+    );
+    expect(result.candidates).toBe(0);
+    expect(result.suppressedByVerdict).toBe(1);
+    expect(result.openItems).toEqual([]);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('task-reconcile production wiring', () => {
@@ -302,9 +433,14 @@ describe('task-reconcile production wiring', () => {
     expect(actionSource).toContain('intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS');
   });
 
-  it('launches one headless quick-tier operator through the durable interval idempotency seam', () => {
+  it('launches one prompted headless quick-tier mug through the durable interval idempotency seam', () => {
     expect(AGENT_ROLES).toContain(LIFECYCLE_JUDGE_ROLE);
-    expect(LIFECYCLE_JUDGE_ROLE).toBe('operator');
+    expect(LIFECYCLE_JUDGE_ROLE).toBe('mug');
+    const prompt = readFileSync(
+      new URL('../../../../libs/papercusp/packages/harness/blueprints/coding/prompts/mug.md', import.meta.url),
+      'utf8',
+    );
+    expect(prompt.trim().length).toBeGreaterThan(0);
     expect(lifecycleSource).toContain('role: LIFECYCLE_JUDGE_ROLE');
     expect(lifecycleSource).toContain("tier: 'quick'");
     expect(lifecycleSource).toContain("accountOverride: 'auto'");

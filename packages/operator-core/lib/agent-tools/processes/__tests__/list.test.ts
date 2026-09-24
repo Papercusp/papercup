@@ -40,6 +40,10 @@ function makeTx() {
 }
 
 describe('processes:list structured output', () => {
+  it('allows the prompted mug lifecycle judge to read evidence', () => {
+    expect(projected.agentRoles).toContain('mug');
+  });
+
   it('accepts the singular state filter used by sibling task surfaces', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     vi.mocked(listTasks).mockClear();

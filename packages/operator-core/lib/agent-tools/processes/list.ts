@@ -182,8 +182,10 @@ export default defineTool({
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
-  // failed checkpoint or diagnosing a dead prior fixer.
-  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'release-fixer'],
+  // failed checkpoint or diagnosing a dead prior fixer. Mug receives this same
+  // read-only inventory for the lifecycle-verdict pass; the protected
+  // processes:kill capability remains unavailable to that role.
+  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'release-fixer'],
   args: z.object({
     state: z.enum(TASK_STATES).optional().describe('filter by one lifecycle state (shorthand for `states: [state]`)'),
     states: z.array(z.enum(TASK_STATES)).optional().describe('filter by one or more lifecycle states'),
