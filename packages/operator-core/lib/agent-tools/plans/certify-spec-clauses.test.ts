@@ -103,7 +103,19 @@ const MEASUREMENT = {
 };
 
 function bindingRow(
-  over: { id: number; specId: string; evidenceKind: string; evidenceRef: string; outcome: string },
+  over: {
+    id: number;
+    specId: string;
+    evidenceKind: string;
+    evidenceRef: string;
+    outcome: string;
+    /**
+     * adequacy.targeted. A mutation/counterexample row only demonstrates falsifiability when
+     * this is the clause's own lowercase specId (spec-test-adequacy isAcceptedMutationTarget,
+     * WI-10002724); a boolean `true` rates falsifiability `unknown` (WI-10002879).
+     */
+    targeted?: boolean | string;
+  },
   fingerprints: { sourceFingerprint: string; testFingerprint: string | null },
 ): Record<string, unknown> {
   return {
@@ -136,7 +148,7 @@ function bindingRow(
         collected: true,
         skipped: false,
         executed: true,
-        targeted: true,
+        targeted: over.targeted ?? true,
         coverageRungs: { l3: true, l4: false },
         outcome: over.outcome,
       },
@@ -226,7 +238,10 @@ beforeEach(async () => {
   // positive proof, so falsifiability cannot be demonstrated and the clause is blocked.
   h.rows = [
     bindingRow({ id: 1, specId: 'SPEC-PASS', evidenceKind: 'coverage-census', evidenceRef: 'surface:pass', outcome: 'passed' }, bound),
-    bindingRow({ id: 2, specId: 'SPEC-PASS', evidenceKind: 'counterexample', evidenceRef: 'counterexample:pass', outcome: 'pass' }, bound),
+    bindingRow(
+      { id: 2, specId: 'SPEC-PASS', evidenceKind: 'counterexample', evidenceRef: 'counterexample:pass', outcome: 'pass', targeted: 'spec-pass' },
+      bound,
+    ),
     bindingRow({ id: 3, specId: 'SPEC-BLOCKED', evidenceKind: 'coverage-census', evidenceRef: 'surface:blocked', outcome: 'passed' }, bound),
   ];
   listClauses.mockImplementation(async (input: { specIds?: string[] }) => {

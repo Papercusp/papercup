@@ -76,35 +76,64 @@ const INTENTIONALLY_ABSENT: Readonly<Record<string, string>> = {
   created_at: 'pre-688 legacy alias — superseded by created_ts, which the capture emits',
 };
 
-/** The migration file that currently defines the live capture function. */
-function latestCaptureMigration(): { file: string; sql: string } {
-  const definesCaptureFunction =
-    /\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+harness_shared\.capture_work_items_outbox\s*\(/i;
+/** WI-10002875 (mig 1208): the ONE issue wire projection, shared by capture and stamp. */
+const WIRE_ROW_FN = 'harness_shared.engineer_issue_wire_row';
+
+/** The migration file that currently defines `fn` (a real CREATE FUNCTION, not a mention). */
+function latestDefinitionOf(fn: string): { file: string; sql: string; at: number } {
+  const escaped = fn.replace(/\./g, '\\.');
+  const defines = new RegExp(`\\bCREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+${escaped}\\s*\\(`, 'i');
   const candidates = readdirSync(SQL_DIR)
     .filter((f) => /^\d+-.*\.sql$/.test(f))
     // Later trigger-only migrations mention the function in comments and
     // EXECUTE clauses. Neither is a definition, so selecting on the bare words
     // `FUNCTION <name>` can silently inspect a file with no wire-row builder.
-    .filter((f) => definesCaptureFunction.test(readFileSync(resolve(SQL_DIR, f), 'utf8')))
+    .filter((f) => defines.test(readFileSync(resolve(SQL_DIR, f), 'utf8')))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
   const file = candidates[candidates.length - 1];
-  if (!file) throw new Error(`no migration defines ${CAPTURE_FN}`);
-  return { file, sql: readFileSync(resolve(SQL_DIR, file), 'utf8') };
+  if (!file) throw new Error(`no migration defines ${fn}`);
+  const sql = readFileSync(resolve(SQL_DIR, file), 'utf8');
+  return { file, sql, at: sql.search(defines) };
+}
+
+/** The migration file that currently defines the live capture function. */
+function latestCaptureMigration(): { file: string; sql: string } {
+  return latestDefinitionOf(CAPTURE_FN);
+}
+
+/** The body of the function defined at `at`, up to its closing dollar-quote. */
+function functionBodyAt(sql: string, at: number): string {
+  const end = sql.indexOf('$function$;', at);
+  return sql.slice(at, end < 0 ? undefined : end);
+}
+
+/** The capture's ISSUE branch: from `v_tbl := 'engineer_issues'` to the feature branch. */
+function captureIssueBranch(sql: string): string {
+  const start = sql.indexOf(`v_tbl := 'engineer_issues'`);
+  if (start < 0) throw new Error('issue-family branch not found in capture SQL');
+  const end = sql.indexOf(`'harness_features_consolidated'`, start);
+  return sql.slice(start, end < 0 ? undefined : end);
 }
 
 /**
- * The key literals the ISSUE-family builder emits. Scoped to the
- * `jsonb_build_object(...)` that follows `v_tbl := 'engineer_issues'` so the FEATURE
- * branch (which ships `to_jsonb(v_rec)` and therefore carries every column for free)
- * can never be mistaken for it.
+ * The key literals the ISSUE-family builder emits. Scoped to the issue branch of the
+ * capture so the FEATURE branch (which ships `to_jsonb(v_rec)` and therefore carries
+ * every column for free) can never be mistaken for it. Since mig 1208 the branch
+ * delegates to `engineer_issue_wire_row()`, so the keys are read from THAT function's
+ * latest definition — the builder that actually ships.
  */
 function issueWireKeysEmittedBySql(sql: string): Set<string> {
-  const start = sql.indexOf(`v_tbl := 'engineer_issues'`);
-  if (start < 0) throw new Error('issue-family branch not found in capture SQL');
-  const buildStart = sql.indexOf('jsonb_build_object', start);
-  const buildEnd = sql.indexOf('END IF;', buildStart);
-  if (buildStart < 0 || buildEnd < 0) throw new Error('issue-family jsonb_build_object not found');
-  const block = sql.slice(buildStart, buildEnd);
+  const branch = captureIssueBranch(sql);
+  let block: string;
+  if (branch.includes('engineer_issue_wire_row(')) {
+    const def = latestDefinitionOf(WIRE_ROW_FN);
+    block = functionBodyAt(def.sql, def.at);
+  } else {
+    const buildStart = branch.indexOf('jsonb_build_object');
+    if (buildStart < 0) throw new Error('issue-family jsonb_build_object not found');
+    block = branch.slice(buildStart);
+  }
+  if (!block.includes('jsonb_build_object')) throw new Error('issue-family jsonb_build_object not found');
   const keys = new Set<string>();
   for (const m of block.matchAll(/'([a-z_]+)'\s*,/g)) keys.add(m[1]);
   return keys;
@@ -171,6 +200,23 @@ describe('issue-family CDC wire row — capture SQL covers every key the mapper 
       [...['terminal_owner', 'terminal_completion_ref', 'terminal_reason'].filter((k) => !emitted.has(k))],
       `missing from the issue-family wire row in ${file} — completion evidence would land NULL on every peer`,
     ).toEqual([]);
+  });
+
+  it('capture and stamp share ONE issue wire projection (WI-10002875)', () => {
+    // The stamp trigger decides whether the clock moves; the capture decides what
+    // ships. If they read different column sets, a local-only write mints a
+    // clock-only wire op (54% of engineer_issues repeats, measured 2026-09-24).
+    // Both must call engineer_issue_wire_row, not a hand-copied projection.
+    const capture = latestCaptureMigration();
+    expect(
+      captureIssueBranch(capture.sql).includes('engineer_issue_wire_row('),
+      `${capture.file}: the capture's issue branch must build its row with ${WIRE_ROW_FN}`,
+    ).toBe(true);
+    const stamp = latestDefinitionOf('harness_shared.stamp_local_federated_write');
+    expect(
+      functionBodyAt(stamp.sql, stamp.at).includes('engineer_issue_wire_row('),
+      `${stamp.file}: stamp_local_federated_write must decide issue-family content with ${WIRE_ROW_FN}`,
+    ).toBe(true);
   });
 
   it('the mapper never fabricates created_ts — a guard must not be fed a synthesized value', () => {

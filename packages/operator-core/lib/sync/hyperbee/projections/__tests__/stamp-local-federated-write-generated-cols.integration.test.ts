@@ -64,9 +64,15 @@ function readLatestStampFunctionSql(): { file: string; sql: string } {
   // so surrounding DDL in that migration — table rewrites, backfills, other tables'
   // triggers — is not dragged into this minimal fixture.
   const start = body.indexOf(FN_SIGNATURE);
-  const end = body.indexOf('$fn$;', start);
-  if (end === -1) throw new Error(`could not find the $fn$ terminator in ${file}`);
-  return { file, sql: body.slice(start, end + '$fn$;'.length) };
+  // The dollar-quote tag is arbitrary: `$fn$` through mig 824, `$function$` (the
+  // pg_get_functiondef default) from mig 1208. Read it from the definition rather than
+  // assume one, or a correct new migration fails this guard at collection time.
+  const tag = /\bAS\s+(\$[A-Za-z_]*\$)/.exec(body.slice(start))?.[1];
+  if (!tag) throw new Error(`could not find the dollar-quote opener in ${file}`);
+  const open = body.indexOf(tag, start);
+  const end = body.indexOf(`${tag};`, open + tag.length);
+  if (end === -1) throw new Error(`could not find the ${tag} terminator in ${file}`);
+  return { file, sql: body.slice(start, end + `${tag};`.length) };
 }
 
 /**
