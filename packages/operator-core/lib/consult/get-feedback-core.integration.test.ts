@@ -46,6 +46,7 @@ import { advanceCascade } from './cascade-core';
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
+import { GRADING_INTEGRITY_AUDIT_POLICY } from './selection-policies';
 import type { ScorecardRow } from '../scorecards';
 import type { Rubric } from '../rubrics';
 
@@ -690,7 +691,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(fixture.reached[0].body).not.toContain('Answer FROM your transcript');
   });
 
-  it('excludes author/critic lineage from every pool, reuses the chain, declines then expires with exact audit copy, and settles once', async () => {
+  it('excludes author/critic lineage and limits each reservation epoch to one audit responder', async () => {
     const source = {
       issueId: 'EI-source-router', createdBy: 'source-author', rubricRef: 'source-rubric',
       createdAt: NOW.toISOString(), subject: { kind: 'plan', ref: 'frozen-plan' },
@@ -733,6 +734,8 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const row = await stateRow(conversationId);
     const snapshot = row.routing as RoutingSnapshot;
     expect(snapshot.candidates.map((c) => c.ownerId)).toEqual(['independent-a', 'independent-b', 'independent-c']);
+    expect(snapshot.policy).toBe(GRADING_INTEGRITY_AUDIT_POLICY);
+    expect(snapshot.selection).toMatchObject({ max: 1, selected: [expect.objectContaining({ ownerId: 'independent-a' })] });
     expect(snapshot.cascade).toMatchObject({
       flavor: 'grading-integrity', issueId: source.issueId,
       reservationKey: `grading-audit:${source.issueId}`, reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
@@ -740,18 +743,14 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const replay = await dispatchPendingGradingAudits({ targetIds: [source.issueId], ctx }, dispatchDeps);
     expect(replay.receipts[0]).toMatchObject({ state: 'deduped', conversationId });
     expect(fixture.opened).toHaveLength(1);
-    await consultDeclineCore({ workspaceId: WS, conversationId, authorId: 'independent-a', reason: 'unavailable' }, {
-      getSql: () => rootSql,
-      post: async (input) => ({ post: { id: 99001, thread_id: 'audit-thread', author_id: 'independent-a', body: input.body, created_ts: NOW.toISOString() }, delivered: 0 }),
-      emitReplyEvent: async () => {}, dispatch: async (input) => { fixture.reached.push(input); return { woke: 1 }; }, now: () => NOW,
-    });
-    expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-b', body: expect.stringContaining('frozen-source-bytes') });
     await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${new Date(NOW.getTime() - 1).toISOString()} WHERE conversation_id = ${conversationId}`;
     await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {},
       notifyRequester: async () => {},
       dispatch: async (input) => { fixture.reached.push(input); return { woke: 1 }; },
     });
-    expect(fixture.reached.at(-1)).toMatchObject({ responder: 'independent-c', body: expect.stringContaining("ref:'EI-source-router'") });
+    expect(fixture.reached).toHaveLength(1);
+    expect((await stateRow(conversationId)).state).toBe('expired');
+    await rootSql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{observation,gradingAudit,state}', '"passed"'::jsonb, true) WHERE feature_id = ${source.issueId}`;
     await closeSourceAuditConsults(WS, source.issueId, rootSql);
     expect((await stateRow(conversationId)).state).toBe('closed_answered');
     const deliveries = fixture.reached.length;
