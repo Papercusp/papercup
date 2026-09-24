@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-23T16:19:35.761Z",
+  "generatedAt": "2026-09-24T10:26:29.112Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 116854,
-      "sha256": "5bb3961474161a6d10856fa116a79d448dcc2e21665d0be912fbd571fa5f7c0a",
+      "totalBytes": 116948,
+      "sha256": "740bc8fa5dbfe967805a5da17d58f39c88330ac1b5c01664f337a58e703af8db",
       "sections": [
         {
           "heading": "(preamble)",
@@ -97,8 +97,8 @@
         {
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 4026,
-          "sha256": "47edb8bba265b3a2e503a00b768c99f3f8d9f95a2eaaab6be48070c2a7a7c49c"
+          "bytes": 4120,
+          "sha256": "5ef79adefb198abcaebf3d38734c80e7adef78e41f81036ecf97f7bf0f86041e"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 116854,
-      "sha256": "5bb3961474161a6d10856fa116a79d448dcc2e21665d0be912fbd571fa5f7c0a",
+      "totalBytes": 116948,
+      "sha256": "740bc8fa5dbfe967805a5da17d58f39c88330ac1b5c01664f337a58e703af8db",
       "sections": [
         {
           "heading": "(preamble)",
@@ -241,8 +241,8 @@
         {
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 4026,
-          "sha256": "47edb8bba265b3a2e503a00b768c99f3f8d9f95a2eaaab6be48070c2a7a7c49c"
+          "bytes": 4120,
+          "sha256": "5ef79adefb198abcaebf3d38734c80e7adef78e41f81036ecf97f7bf0f86041e"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",

@@ -1299,10 +1299,11 @@ describe('testing:run (integration)', () => {
 
     // The foreground transport ceiling is about 45s. Detached recovery must
     // not inherit that wall or it reproduces the SIGTERM/143 failure as soon
-    // as the recovery starts; the recovery floor is the normal 5-minute run
-    // budget for both single-root and mixed-root continuations.
-    expect(request.runtimeMaxSec).toBe(300);
-    expect(mixedRequest.runtimeMaxSec).toBe(300);
+    // as the recovery starts. Measured integration work took 227s before the
+    // adjacent unit group and startup; use the existing 15-minute maximum for
+    // both single-root and mixed-root continuations.
+    expect(request.runtimeMaxSec).toBe(900);
+    expect(mixedRequest.runtimeMaxSec).toBe(900);
     expect(request.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
     expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
   });

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Work-item completion event intent mutation probe",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=180",
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/work-items-events.ts",
+    "--mutate",
+    "s|const completionIntentId = completionEventIntentIdOf\\(wi\\);|const completionIntentId = null;|",
+    "--test",
+    "npx vitest run packages/operator-core/lib/work-items-lifecycle.integration.test.ts -t \"P-020 completion event intent\" --reporter=dot",
+    "--expect",
+    "caught",
+    "--in-tree",
+    "--sweep-lock-held",
+    "--fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T10:46:48Z",
+  "finishedAt": "2026-09-24T10:48:09Z",
+  "summary": "The guarded baseline passed all four focused PostgreSQL completion-intent cases. A mutant that removed the completion intent token from the done-event payload failed three cases, including the killed-producer recovery and both normal work-item families. The probe reported MUTANT CAUGHT and restored the source byte-for-byte.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Focused Vitest baseline: 4 passed, 46 filtered, exit 0."
+    },
+    {
+      "id": "missing-token-mutant-killed",
+      "passed": true,
+      "evidence": "Mutation changed only completionIntentIdOf(wi) to null inside emitWorkItemDoneEvent. Focused Vitest reported 3 failed assertions: the killed-producer reconciler could not acknowledge its intent, and normal feature and issue completion latches lacked the matching token."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "mutation-probe.sh reported target=in-tree:lock-held, verdict=caught, baseline_exit=0, guard_exit=1, and tree integrity VERIFIED for work-items-events.ts."
+    }
+  ],
+  "workItemId": "WI-10002940",
+  "specId": "GBE-P-020-contract",
+  "testFile": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/work-items-events.ts"
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { RetractSpecEvidenceOptions } from '../plans/spec-evidence-store';
 import {
   deferredTestEvidenceRecoveryBundle,
   prepareTestEvidence,
@@ -9,6 +10,7 @@ import {
 } from './evidence';
 import type { TestFilesCoreResult } from './run';
 import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
+import type { RunSnapshot } from '../../testing-run-store';
 
 /**
  * The SUCCESS member of the result union. Every helper below builds a run that COMPLETED, and
@@ -34,6 +36,29 @@ const deps = () => ({
   ledger: vi.fn().mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass', finished_at: '2026-09-08T00:00:00Z' }]),
   list: vi.fn().mockResolvedValue([]),
   unattributed: vi.fn().mockResolvedValue(0),
+  runStatus: vi.fn(async (_runId: string): Promise<RunSnapshot | null> => null),
+  retract: vi.fn(async (options: RetractSpecEvidenceOptions) => ({
+    status: 'retracted' as const,
+    bindingId: options.bindingId,
+    binding: {
+      id: options.bindingId,
+      work_item_id: 'WI-1',
+      plan_slug: 'p1',
+      spec_id: 'R-1',
+      spec_revision: 2,
+      evidence_kind: 'test' as const,
+      evidence_ref: `test-run-group:${runId}:0`,
+      retracted_at: new Date('2026-09-24T00:00:00Z'),
+      retracted_by: options.actorId,
+      retraction_reason: options.reason,
+    },
+  })),
+});
+
+const detachedRunSnapshot = (runId: string, status: RunSnapshot['status'], exitCode: number | null,
+  finishedAt: number | null = 10_000): RunSnapshot => ({
+  runId, kind: 'vitest', label: 'detached test run', command: ['node', 'scripts/test-files.mjs'],
+  status, exitCode, startedAt: 1, finishedAt, output: '', truncated: false,
 });
 
 describe('test-time evidence continuity', () => {
@@ -256,8 +281,10 @@ describe('test-time evidence continuity', () => {
     workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: detached,
     testNamePattern: null, passed: 2, failed: 0, skipped: 0, collectionFailed: false,
     mutationPhase: null, commitSha: null, worktreeDirty: false };
-  async function pendingRecovery(detail: unknown, status = 'pass', sourceChanged = false) {
+  async function pendingRecovery(detail: unknown, status = 'pass', sourceChanged = false, detachedRun?: RunSnapshot) {
     const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
     await finishTestEvidence(prepared, runId, detached, scope,
       { ok: false, runId, root: scope.root, error: 'timeout' }, d);
@@ -266,10 +293,71 @@ describe('test-time evidence continuity', () => {
       sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
     d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status,
       finished_at: '2026-09-09T00:00:00Z', execution_details: detail }]);
+    d.runStatus.mockResolvedValue(detachedRun ?? null);
     if (sourceChanged) d.measure.mockResolvedValue({ sourceFingerprint: 'changed', testFingerprint: 'test-before' });
     return { d, bundle: await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
       originRunId: runId, runId: detached }, scope, d) };
   }
+
+  const pendingEvidenceRow = (id: number, details: unknown) => ({
+    id, workItemId: 'WI-1', planSlug: 'p1', specId: 'R-1', specRevision: 2, evidenceKind: 'test',
+    evidenceRef: `test-run-group:${runId}:0`, testRunId: null, details,
+    fingerprints: { sourceFingerprint: 'source-before', testFingerprint: 'test-before' },
+  });
+
+  it('retires pending rows for a detached run that terminated before a file-level ledger result', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    const detachedTwin = { ...initial.details,
+      testExecution: { ...initial.details.testExecution, runId: detached } };
+    d.list.mockResolvedValue([
+      pendingEvidenceRow(1, initial.details),
+      pendingEvidenceRow(2, detachedTwin),
+    ] as never);
+    d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'fail', 143));
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached }, scope, d);
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'terminal-no-result', outcome: 'unknown',
+      testRunId: null, bindingStatus: 'not-bound' });
+    expect(bundle.detachedRunStatus).toMatchObject({ status: 'fail', exitCode: 143 });
+    expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 2, bindingIds: [1, 2] });
+    expect(d.bind).toHaveBeenCalledTimes(1);
+    expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([1, 2]);
+    expect(d.retract.mock.calls[0]![0].reason).toContain('exit 143');
+  });
+
+  it('keeps evidence pending while the detached run is still progressing', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    d.list.mockResolvedValue([pendingEvidenceRow(1, initial.details)] as never);
+    d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'running', null, null));
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached }, scope, d);
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'pending', outcome: 'unknown' });
+    expect(bundle.detachedRunStatus).toMatchObject({ status: 'running' });
+    expect(d.retract).not.toHaveBeenCalled();
+    expect(d.bind).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires pending twins after a terminal run yielded a settled file-level result', async () => {
+    const { d, bundle } = await pendingRecovery(measured, 'pass', false,
+      detachedRunSnapshot(detached, 'fail', 143));
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 1, bindingIds: [2] });
+    expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([2]);
+  });
+
   it('settles a current reporter row with mutationPhase:null from complete measured details', async () => {
     const { bundle } = await pendingRecovery(measured);
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
