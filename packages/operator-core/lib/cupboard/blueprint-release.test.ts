@@ -52,6 +52,42 @@ async function source(version: string, prompt: string, maxCostUsd: number) {
 }
 
 describe('immutable blueprint release lifecycle', () => {
+  it('stores mode policy approval only for the exact moderated artifact', async () => {
+    const dir = join(root, 'mode-source');
+    const yaml = 'id: su.mode-auto-custom\nversion: 1.0.0\nslots: [{ slot: autonomy }]\n';
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'blueprint.yaml'), yaml);
+    const pin = pinPackageInput({
+      packageKind: 'blueprint', ref: 'su.mode-auto-custom', revision: '1.0.0',
+      files: [{ path: 'blueprint.yaml', bytes: yaml }],
+      value: { id: 'su.mode-auto-custom', version: '1.0.0', slots: [{ slot: 'autonomy' }],
+        mode: { id: 'auto', policyRef: 'auto' } },
+    });
+    const contentHash = buildBlueprintReleaseArchive([pin], 'su.mode-auto-custom').package.rootHash;
+    const request = {
+      installedDir, sourceDir: dir, id: 'su.mode-auto-custom', version: '1.0.0',
+      source: 'https://github.com/acme/mode', pins: [pin],
+    };
+    await expect(commitBlueprintRelease(request)).rejects.toThrow(/mode policy needs approval/);
+    await expect(commitBlueprintRelease({ ...request, modeApproval: {
+      listingId: 'listing-1', policyRef: 'auto', approvedArtifactContentHash: 'wrong',
+    } })).rejects.toThrow(/mode policy needs approval/);
+    const installed = await commitBlueprintRelease({ ...request, modeApproval: {
+      listingId: 'listing-1', policyRef: 'auto', approvedArtifactContentHash: contentHash,
+    } });
+    expect(installed.record.modePolicyApproval).toEqual({
+      listingId: 'listing-1', policyRef: 'auto', artifactContentHash: contentHash,
+    });
+    expect((await readBlueprintLifecycle(installedDir, request.id)).active?.modePolicyApproval)
+      .toEqual(installed.record.modePolicyApproval);
+    const renewed = await commitBlueprintRelease({ ...request, modeApproval: {
+      listingId: 'listing-2', policyRef: 'auto', approvedArtifactContentHash: contentHash,
+    } });
+    expect(renewed.operation).toBe('no-op');
+    expect((await readBlueprintLifecycle(installedDir, request.id)).active?.modePolicyApproval?.listingId)
+      .toBe('listing-2');
+  });
+
   it('installs, updates with exact prompt/knob diffs, rolls back, and uninstalls without erasing pinned history', async () => {
     const v1 = await source('1.0.0', 'sell potatoes\n', 2);
     const first = await commitBlueprintRelease({

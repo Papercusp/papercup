@@ -64,6 +64,8 @@ export interface BlueprintReleaseRecord {
   installedAtMs: number;
   slots: string[];
   pins: Array<{ packageKind: string; ref: string; revision: string; contentHash: string }>;
+  /** Server-moderated policy approval, bound to this release's full artifact hash. */
+  modePolicyApproval?: { listingId: string; policyRef: string; artifactContentHash: string };
   retiredAtMs?: number;
 }
 
@@ -113,6 +115,7 @@ export interface CommitBlueprintReleaseInput {
     contentHash?: string | null;
     manifest?: CupboardReleaseManifest | null;
   };
+  modeApproval?: { listingId: string; policyRef: string; approvedArtifactContentHash: string };
   nowMs?: number;
 }
 
@@ -611,6 +614,12 @@ export async function commitBlueprintRelease(
   assertSafeId(input.id);
   return withLifecycleLock(input.installedDir, input.id, async () => {
     const archive = buildBlueprintReleaseArchive(input.pins, input.id);
+    const modePolicyRef = (archive.root.value as { mode?: { policyRef?: unknown } } | undefined)?.mode?.policyRef;
+    if (typeof modePolicyRef === 'string' &&
+        (!input.modeApproval || input.modeApproval.policyRef !== modePolicyRef ||
+         input.modeApproval.approvedArtifactContentHash.toLowerCase() !== archive.package.rootHash.toLowerCase())) {
+      throw new BlueprintLifecycleError(`blueprint ${input.id} mode policy needs approval for this exact artifact`, 422);
+    }
     const slots = slotsOf(archive.root);
     const activationPreflight = preflightBlueprintActivation({ id: input.id, slots }, input.activationStack ?? []);
     if (!activationPreflight.ok) {
@@ -674,6 +683,15 @@ export async function commitBlueprintRelease(
       : null;
     const nowMs = input.nowMs ?? Date.now();
     const existing = index.releases.find((release) => release.contentHash === archive.root.contentHash);
+    const modePolicyApproval = typeof modePolicyRef === 'string' ? {
+      listingId: input.modeApproval!.listingId,
+      policyRef: modePolicyRef,
+      artifactContentHash: archive.package.rootHash,
+    } : undefined;
+    const approvalChanged = Boolean(existing && modePolicyApproval &&
+      (existing.modePolicyApproval?.listingId !== modePolicyApproval.listingId ||
+       existing.modePolicyApproval?.artifactContentHash !== modePolicyApproval.artifactContentHash));
+    if (existing && modePolicyApproval) existing.modePolicyApproval = modePolicyApproval;
     const record: BlueprintReleaseRecord = existing ?? {
       schemaVersion: INDEX_SCHEMA_VERSION,
       id: input.id,
@@ -684,6 +702,7 @@ export async function commitBlueprintRelease(
       installedAtMs: nowMs,
       slots,
       pins: archive.pins.map(releasePinSummary),
+      ...(modePolicyApproval ? { modePolicyApproval } : {}),
     };
     const historyDir = versionDir(input.installedDir, input.id, archive.root.contentHash);
     if (!existing) {
@@ -697,6 +716,10 @@ export async function commitBlueprintRelease(
       await fs.writeFile(join(stage, 'release.json'), JSON.stringify(record, null, 2) + '\n');
       await fs.rename(stage, historyDir);
       index.releases.push(record);
+    } else if (approvalChanged) {
+      // Moderation can approve an already retained byte-identical release.
+      // Persist its receipt without changing the immutable source closure.
+      await atomicWriteJson(join(historyDir, 'release.json'), record);
     }
     const operation =
       index.activeContentHash === archive.root.contentHash
@@ -708,7 +731,7 @@ export async function commitBlueprintRelease(
     // of truth, so an untracked/stale file in the active compatibility directory
     // is repaired rather than silently surviving a reinstall.
     await materializeActive(input.installedDir, input.id, join(historyDir, 'content'));
-    if (operation !== 'no-op') {
+    if (operation !== 'no-op' || approvalChanged) {
       index.activeContentHash = archive.root.contentHash;
       await atomicWriteJson(indexPath(input.installedDir, input.id), index);
     }
