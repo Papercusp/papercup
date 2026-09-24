@@ -1989,6 +1989,10 @@ impl OpenFilePicker {
 pub struct App {
     pub should_quit: bool,
     pub status: String,
+    /// The terminal's last known geometry (cols, rows), from startup and every
+    /// `Event::Resize`. Below `ui::MIN_COLS`×`ui::MIN_ROWS` the screen is the
+    /// blocking too-small view and `on_key` holds every key but quit.
+    pub viewport: (u16, u16),
     pub tab: Tab,
     /// Startup preferences may arrive after the owner starts using the UI.
     /// Consume them once, only while no interactive input has superseded them.
@@ -2694,6 +2698,8 @@ impl App {
         Self {
             should_quit: false,
             status: "pui".to_string(),
+            // Unknown until main reads the terminal; never "too small" before then.
+            viewport: (u16::MAX, u16::MAX),
             // D-031 / P-019: Agent Chat is the product front door. `title()`
             // remains Operator only as the stable persistence identity.
             tab: Tab::Operator,
@@ -9216,6 +9222,10 @@ impl App {
         }
         match ev {
             Event::Paste(text) => {
+                // Held like keys while the blocking too-small view shows.
+                if crate::ui::too_small(self.viewport.0, self.viewport.1) {
+                    return Action::None;
+                }
                 // Text-entry overlays consume the paste as DATA. Newlines are
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
@@ -9275,7 +9285,10 @@ impl App {
             }
             Event::Tick => self.on_tick(),
             // Repaint at the new geometry immediately (see Event::Resize).
-            Event::Resize => Action::Render,
+            Event::Resize(cols, rows) => {
+                self.viewport = (cols, rows);
+                Action::Render
+            }
             Event::Plans(p) => {
                 self.set_plans(p);
                 self.publish_active_plan();
@@ -11144,6 +11157,18 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        // Below the supported size the screen is the blocking too-small view
+        // (PUBLIC_RELEASE_UX.md): q and Ctrl-C still quit, as they do from
+        // navigation, and every other key is held so nothing the owner cannot
+        // see (the draft above all) changes underneath it.
+        if crate::ui::too_small(self.viewport.0, self.viewport.1) {
+            let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
+            if code == KeyCode::Char('q') || ctrl_c {
+                self.should_quit = true;
+                return Action::Quit;
+            }
+            return Action::None;
+        }
         // The install-lifecycle panel is modal while open (P-011 / D-016).
         if self.lifecycle.is_some() {
             return self.lifecycle_key(code);
