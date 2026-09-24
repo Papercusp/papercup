@@ -6,7 +6,7 @@
  * against the real isolated test database; it never contacts a cloud provider.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { OrgTestDb } from '../test/_org-test-db';
+import type { OrgTestDb } from '../../test/_org-test-db';
 import {
   closeCloudResourceObligation,
   createCloudResourceObligationCloseObserver,
@@ -14,7 +14,7 @@ import {
   recordCloudResourceObligation,
 } from './cloud-resource-obligations';
 
-const { createOrgTestDb } = await import('../test/_org-test-db');
+const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 describe('cloud resource obligation VM incarnation lifecycle (real Postgres)', () => {
   let db: OrgTestDb;

@@ -1818,9 +1818,7 @@ describe('GCP workspace-host provider created-resource reporting', () => {
     expect(events.length).toBeGreaterThan(0);
     expect(events.map((event) => event.resource.providerId)).toContain('pc-host-gcp-1-vm');
     const vmEvent = events.find((event) => event.resource.kind === 'vm');
-    expect(vmEvent?.resource.incarnationId).toBe(
-      client.getInstance('project', 'zone', 'pc-host-gcp-1-vm')?.instanceId,
-    );
+    expect(vmEvent?.resource.incarnationId).toBe(client.insertInstanceCalls[0]?.requestId);
 
     // Named, not counted: a bare count would not say WHICH resource is unreclaimable.
     expect(events.filter((event) => (event.hostId ?? '') === '').map((event) => event.resource.providerId)).toEqual(
