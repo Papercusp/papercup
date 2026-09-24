@@ -1387,3 +1387,53 @@ operator compiler also completed with errors outside this file, and no diagnosti
 in this file (`/tmp/p006-bench-tsc.log`). Neither result establishes a clean whole
 operator build. A later scorecard read confirmed the independent audit was
 pending with a dispatch reservation; no audit PASS is claimed here.
+
+## P-007 native baseline and phase diagnostics — 2026-09-24 16:12Z
+
+WI-10002829 owns this work. The first native run used the existing packaged
+release shell selected by WDIO at
+`/mnt/data/cargo-target/release/bundle/deb/Papercusp GUI_0.0.20_amd64/data/usr/bin/papercusp-desktop`
+(binary timestamp September 16). This is an old-package baseline, not a staging
+acceptance result. `DISPLAY` was removed from the runner environment so its
+existing driver wrapper provided a private Xvfb display.
+
+Command: from `tools/perf-test/wdio`,
+`env -u DISPLAY PAPERCUSP_PERF_RUN_ID=p007-baseline-20260924T1559 npm run test:wdio -- --spec ./specs/plan-popup-open.perf.spec.ts --spec ./specs/smoke.spec.ts`.
+Log: `/tmp/p007-native-baseline-20260924.log`; persisted desktop receipt
+`perfrun-1790265553071-rrdf99`. Popup **1507ms** exceeded the unchanged **1500ms**
+budget. Web Vitals smoke passed with FCP **2457ms**, LCP **3558ms**, and no missing
+expected metric. This run does not explain the earlier missing-metric incident.
+The sidebar's first candidate was `papercusp/su-agent-behavior`.
+
+Extended the existing User Timing seam and shared `PlanDocumentView` callback:
+`content-ready` is cumulative click-to-data-and-React-mount; `renderer-ready`
+follows CSS/JS loading; `preview-rendered` follows the awaited Vditor preview.
+The original total still ends after shared plan decoration, at `onParsed`.
+Phase diagnostics are first-observation-only, bounded to the current interaction,
+and do not change the total endpoint or budget. WDIO retains these diagnostics,
+the opened plan identity, and resource durations (paths only, no query strings).
+`PAPERCUSP_PERF_PLAN_SLUG` can freeze the selected visible sidebar plan; it cannot
+silently fall back to a different plan when the requested row is absent.
+
+Source verification: `npm run test:file -- apps/operator/app/_components/perf/perf-marks.test.ts apps/operator/app/admin/plans/PlanEditor.test.tsx libs/generic/ui-primitives/src/PlanDocumentView.test.tsx`
+passed **32 tests, zero skipped**, receipts **19311377/19311378/19311379**.
+Log `/tmp/p007-phase-tests-20260924.log`: superproject `c36a6834a5` plus local
+edits; ui-primitives `287d95c71a` plus local edits. Delayed-render and cancelled
+render cases distinguish preparation from actual completion. Scoped app source
+typecheck passed with zero requested-file or import-graph diagnostics.
+
+The runner's own typecheck was blocked before checking source by its retired
+`moduleResolution=node10` under installed TypeScript 7 (TS5108 reproduced in
+`/tmp/p007-wdio-tsc-original-20260924.log`). NodeNext matches the current Node/tsx
+runtime and exposed one unsafe optional row lookup, now guarded. `npm test` now
+runs typechecking first; `npm run typecheck` and all four existing runner unit
+tests pass. The scoped tool's relocated configuration separately failed to find
+runner-local ambient types; the successful runner-local check is authoritative
+for this project. No pure typecheck is presented as a behavior test.
+
+Remaining: build and exercise the instrumented current UI in the native shell,
+attribute and fix the measured latency, investigate any reproduced missing
+metric, and retain ten named-build native results plus cold/warm coverage.
+The isolated Vite build is queued through the existing heavy-work admission and
+singleflight wrappers, output root `/tmp/p007-current-20260924`, log
+`/tmp/p007-current-build-20260924.log`. No P-007 acceptance or shipment claim.
