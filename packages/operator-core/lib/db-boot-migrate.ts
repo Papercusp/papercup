@@ -316,6 +316,15 @@ export interface ApplyPendingMigrationsNowOptions {
    * from this process's ambient cwd/env (WI-41490).
    */
   sqlDir?: string;
+  /**
+   * Coord-broadcast a failed migration and schema-ahead-of-code drift (default
+   * true). WI-10002822: the bg-host boot-gate retry loop re-checks every minute
+   * while the background plane is withheld and owns ONE episode alarm of its
+   * own, so it passes `false` — otherwise the same failure would be re-broadcast
+   * to every inbox once a minute for as long as the migration stays pending.
+   * Failures are still console-logged either way.
+   */
+  broadcast?: boolean;
 }
 
 /** Apply pending sql/*.sql on operator boot (native box). Idempotent per
@@ -344,6 +353,7 @@ export async function applyPendingMigrationsNow(
   options: ApplyPendingMigrationsNowOptions = {},
 ): Promise<BootMigrateResult | null> {
   const sqlDir = options.sqlDir ?? resolveSqlDir();
+  const broadcast = options.broadcast !== false;
   if (!sqlDir) {
     // EI-18737837917400418: this used to be a console.warn — easy to miss on a
     // packaged/headless boot where nobody is watching the console, and the
@@ -617,7 +627,7 @@ export async function applyPendingMigrationsNow(
       // Loud coord broadcast so peers see the broken migration (the dev-api
       // booted anyway). Ambient-categorised so it doesn't spam every inbox by
       // default but is opt-in visible (include_ambient) + in the coord stream.
-      await sendMessage(BOOT_MIGRATE_IDENTITY, {
+      if (broadcast) await sendMessage(BOOT_MIGRATE_IDENTITY, {
         to: ['*'],
         summary: `⚠ ${failed.length} migration(s) failed to apply on operator boot — left pending: ${files}`,
         body: `The native-box boot apply (A1) skipped these so the dev-api could start; they will retry next restart. Fix the SQL then restart the operator (or db:migrate). Errors:\n${failed
@@ -647,7 +657,7 @@ export async function applyPendingMigrationsNow(
             'This operator is running STALE CODE against a newer-migrated shared DB — expect `relation does not exist` failures on renamed tables and a silently-dead federation plane (WI-4070 class). ' +
             'Update/redeploy this code tree (stale dev-source / old bundle / lagging checkout) before trusting this host.',
         );
-        await sendMessage(BOOT_MIGRATE_IDENTITY, {
+        if (broadcast) await sendMessage(BOOT_MIGRATE_IDENTITY, {
           to: ['*'],
           summary: `🚨 schema AHEAD of code on operator boot: DB carries ${drift.schemaAhead.length} migration(s) newer than this code tree — stale operator (WI-4070 class), update/redeploy it`,
           body: `Newest DB-side migrations unknown to this tree: ${head}${drift.schemaAhead.length > 5 ? ', …' : ''}. A stale tree against a newer-migrated DB fails as scattered "relation does not exist" errors and can silently kill federation. Refresh the running code (dev-source tree / bundle / checkout), then restart.`,

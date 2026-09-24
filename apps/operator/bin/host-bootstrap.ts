@@ -1553,43 +1553,52 @@ export function runBootstrap(): void {
       // schema turns one pending migration into a fleet-wide retry storm.
       // Awaited here so migrations are in place BEFORE the boot-gate flips +
       // the substrate (which reads those tables) starts.
-      const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-      const migrationResult = await applyPendingMigrationsAtBoot();
-      if (!migrationResult || migrationResult.failed.length > 0) {
-        const failureSummary = migrationResult
-          ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
-              .map((failure) => failure.file)
-              .join(', ')}`
-          : 'migration state could not be determined';
-        console.error(
-          `[boot-migrate] 🚨 BACKGROUND STARTUP WITHHELD: ${failureSummary}. ` +
-            'The request plane may still start after its bounded gate timeout, but schema-dependent background machinery will stay off. ' +
-            'Repair/apply the migration, then restart this host.',
-        );
-        // WI-2144760: resolve the substrate-routing latch explicitly when the
-        // migration gate fails. Without this, an early standalone
-        // bootSingleHarness waits the full 300s latch timeout and then falls
-        // back to an in-process engine before bootSubstrateWithFallback can
-        // install WI-3297's durable PG merge-cursor factory (and can race a
-        // sidecar). The background plane is withheld, so fail closed and let
-        // the next host boot retry after the migration is repaired.
-        try {
-          const { markSubstrateBootRoutingFailed } = await import(
-            '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
-          );
-          markSubstrateBootRoutingFailed(`migration gate failed: ${failureSummary}`);
-        } catch (e) {
-          // The migration failure is already being surfaced above. Keep this
-          // secondary routing notification best-effort so a module-load issue
-          // cannot turn the request-plane fail-soft boot into an unhandled
-          // rejection.
-          console.warn(
-            '[boot-migrate] failed to publish substrate routing failure (non-fatal):',
-            e instanceof Error ? e.message : e,
-          );
-        }
-        return;
-      }
+      const { applyPendingMigrationsAtBoot, applyPendingMigrationsNow } = await import(
+        '@papercusp/operator-core/lib/db-boot-migrate'
+      );
+      const { awaitBootMigrationGate, raiseBootMigrationGateAlarm, clearBootMigrationGateAlarm } = await import(
+        '@papercusp/operator-core/lib/boot-migration-gate'
+      );
+      const { hostIdentity } = await import('@papercusp/operator-core/lib/serving-host-identity');
+      const gateHost = `${utilityHost ? 'utility' : 'bg'}-host:${hostIdentity()}`;
+      // WI-10002822: the gate used to be one-shot — a failed apply withheld the
+      // background plane (and with it every pot's P2P replication) until a human
+      // restarted this host, even after the migration was applied out of band.
+      // awaitBootMigrationGate re-checks on a bounded tick, pages once when the
+      // plane stays withheld, and RETURNS once the gate passes, so everything
+      // below — the substrate boot included — starts in place with no restart.
+      await awaitBootMigrationGate({
+        applyAtBoot: applyPendingMigrationsAtBoot,
+        // Never re-call applyPendingMigrationsAtBoot: its once-per-process guard
+        // returns null forever, which reads as "state could not be determined".
+        applyRetry: () => applyPendingMigrationsNow({ broadcast: false }),
+        onWithheld: async (failureSummary) => {
+          // WI-2144760: resolve the substrate-routing latch explicitly when the
+          // migration gate fails. Without this, an early standalone
+          // bootSingleHarness waits the full 300s latch timeout and then falls
+          // back to an in-process engine before bootSubstrateWithFallback can
+          // install WI-3297's durable PG merge-cursor factory (and can race a
+          // sidecar). The latch clears again when the gate recovers and
+          // bootSubstrateWithFallback → setSubstrateBootDefaults runs below.
+          try {
+            const { markSubstrateBootRoutingFailed } = await import(
+              '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
+            );
+            markSubstrateBootRoutingFailed(`migration gate failed: ${failureSummary}`);
+          } catch (e) {
+            // The migration failure is already being surfaced. Keep this
+            // secondary routing notification best-effort so a module-load issue
+            // cannot turn the request-plane fail-soft boot into an unhandled
+            // rejection.
+            console.warn(
+              '[boot-migrate] failed to publish substrate routing failure (non-fatal):',
+              e instanceof Error ? e.message : e,
+            );
+          }
+        },
+        raiseAlarm: (alarm) => raiseBootMigrationGateAlarm(alarm, gateHost),
+        clearAlarm: (alarm) => clearBootMigrationGateAlarm(alarm, gateHost),
+      });
       // WI-5441/WI-5764 (public-release boot-window federation-capture-hole
       // guard): flip the request-serving gate the INSTANT migrations are
       // applied — i.e. the instant every table's substrate_outbox capture

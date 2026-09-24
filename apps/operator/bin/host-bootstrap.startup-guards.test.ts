@@ -136,26 +136,32 @@ describe('host-bootstrap wires every startup guard', () => {
 });
 
 describe('host-bootstrap fails the background plane closed on migration failure', () => {
-  it('checks the boot-migration result before marking migrations applied or starting background machinery', () => {
-    // Request-only hosts now run their own preflight in waitForBootMigrationGate().
-    // Select the later background-host occurrence this describe is about.
-    const apply = bootSrc.lastIndexOf('const migrationResult = await applyPendingMigrationsAtBoot()');
-    const failureGuard = bootSrc.indexOf('if (!migrationResult || migrationResult.failed.length > 0)', apply);
-    const withheld = bootSrc.indexOf('BACKGROUND STARTUP WITHHELD', failureGuard);
-    const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', failureGuard);
-    const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
+  it('awaits the boot-migration gate before marking migrations applied or starting background machinery', () => {
+    // WI-10002822: the background owner no longer checks the result once and
+    // returns (which left the substrate down until a manual restart). It awaits
+    // awaitBootMigrationGate, which only resolves on a clean result and retries in
+    // place while failed — so the ordering below is still the fail-closed contract.
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({');
+    const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', gate);
+    const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', gate);
     const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
 
-    expect(apply).toBeGreaterThan(-1);
-    expect(failureGuard).toBeGreaterThan(apply);
-    expect(withheld).toBeGreaterThan(failureGuard);
-    expect(routingFailure).toBeGreaterThan(withheld);
-    expect(requestGate).toBeGreaterThan(withheld);
+    expect(gate).toBeGreaterThan(-1);
+    expect(routingFailure).toBeGreaterThan(gate);
+    expect(requestGate).toBeGreaterThan(routingFailure);
     expect(backgroundStartup).toBeGreaterThan(requestGate);
 
-    const guardBody = bootSrc.slice(failureGuard, requestGate);
-    expect(guardBody).toMatch(/BACKGROUND STARTUP WITHHELD[\s\S]*?return;/);
-    expect(guardBody).toMatch(/markSubstrateBootRoutingFailed[\s\S]*?return;/);
+    const gateCall = bootSrc.slice(gate, requestGate);
+    expect(gateCall).toContain('applyAtBoot: applyPendingMigrationsAtBoot,');
+    // The retry must NOT re-call the once-per-process boot entry (null forever)
+    // and must not re-broadcast the same failure once a minute.
+    expect(gateCall).toContain('applyRetry: () => applyPendingMigrationsNow({ broadcast: false }),');
+    expect(gateCall).toMatch(/onWithheld:[\s\S]*markSubstrateBootRoutingFailed\(/);
+    expect(gateCall).toContain('raiseAlarm:');
+    expect(gateCall).toContain('clearAlarm:');
+    // No early exit between the gate and background startup: a failed gate must
+    // recover IN PLACE, never abandon the background plane for this process.
+    expect(bootSrc.slice(gate, backgroundStartup)).not.toMatch(/^\s*return;\s*$/m);
   });
 });
 
@@ -254,7 +260,8 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
     expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
     expect(bootSrc.match(/const migrationResult = await applyPendingMigrationsAtBoot\(\)/g))
-      .toHaveLength(2); // one request-only single-flight body + one background-owner body
+      .toHaveLength(1); // the request-only single-flight body; the background owner goes through awaitBootMigrationGate
+    expect(bootSrc.match(/applyAtBoot: applyPendingMigrationsAtBoot,/g)).toHaveLength(1);
   });
 
   it('runs the coordinated boot preflight and marks the request gate only after a clean result', () => {

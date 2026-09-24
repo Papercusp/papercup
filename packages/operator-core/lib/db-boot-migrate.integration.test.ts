@@ -414,6 +414,26 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
        WHERE filename IN ('950-good.sql','951-bad.sql','952-good.sql') ORDER BY filename`;
     expect(rows.map((r) => r.filename)).toEqual(['950-good.sql', '952-good.sql']);
   });
+
+  it('broadcast:false still reports the failure but sends no coord broadcast (WI-10002822 retry loop)', async () => {
+    // The bg-host gate retry re-checks every minute while withheld; with the
+    // default broadcast every tick would re-post the same failure to every inbox.
+    const dir = makeSqlDir({ '956-quiet-bad.sql': 'CREATE TABLE no_such_schema_xyz.quiet_bad (id int);' });
+    await seedMigrationReservations(['956-quiet-bad.sql']);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof applyPendingMigrationsNow>>;
+    let errCalls = 0;
+    try {
+      result = await applyPendingMigrationsNow({ sqlDir: dir, broadcast: false });
+      errCalls = errSpy.mock.calls.length;
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(errCalls).toBeGreaterThan(0); // still loud in the host log
+    expect(result).not.toBeNull();
+    expect(result!.failed.map((f) => f.file)).toEqual(['956-quiet-bad.sql']);
+    expect(h.sendMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('native boot migration/backup rendezvous (EI-21443484375613585)', () => {
