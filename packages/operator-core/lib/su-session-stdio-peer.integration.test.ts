@@ -781,13 +781,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
-  it.each(['ok', 'failover', 'http-error', 'incomplete-stream'] as const)(
+  it.each(['ok', 'failover', 'http-error', 'incomplete-stream', 'fork', 'fork-http-error'] as const)(
     'joins native turns to gateway HTTP write observations without provider inference (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
     const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
     resetGovernorRegistry();
-    const task = createCarryTrialRecipe().tasks.find(task => task.id === 'T1')!;
+    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === 'T1')!;
+    const forked = mode === 'fork' || mode === 'fork-http-error';
+    let preparingSource = forked;
+    let source: { threadId: string; turnId: string; path: string } | undefined;
     const expectedResponse = JSON.stringify(task.expected);
     const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
     const requests: Array<{ body: Record<string, unknown>; account: string }> = [];
@@ -800,8 +803,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const account = req.headers.authorization === 'Bearer PRIVATE_NATIVE_A' ? 'fixture-a'
           : req.headers.authorization === 'Bearer PRIVATE_NATIVE_B' ? 'fixture-b' : 'unexpected';
         requests.push({ body, account });
-        if (mode === 'http-error' || (mode === 'failover' && account === 'fixture-a')) {
-          res.writeHead(mode === 'http-error' ? 503 : 429, { 'content-type': 'application/json', 'retry-after': '3600' });
+        if (!preparingSource && (mode === 'http-error' || mode === 'fork-http-error' || (mode === 'failover' && account === 'fixture-a'))) {
+          res.writeHead(mode === 'failover' ? 429 : 503, { 'content-type': 'application/json', 'retry-after': '3600' });
           res.end(JSON.stringify({ error: { message: 'local native-gateway fixture refusal' } }));
           return;
         }
@@ -812,7 +815,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"fixture-incomplete"}}\n\n');
         } else {
           res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
-            text: expectedResponse, inputTokens: 1200, outputTokens: 40 })));
+            text: preparingSource ? JSON.stringify(recipe.sourcePreparation.expectedAcknowledgement) : expectedResponse,
+            inputTokens: preparingSource ? 600 : 1200, outputTokens: preparingSource ? 20 : 40 })));
         }
       } catch { fixtureErrors.push('local upstream fixture failed'); res.destroy(); }
     });
@@ -839,11 +843,33 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       p.send({ method: 'initialized', params: {} });
       const start = await p.request({ method: 'thread/start', params: { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
         cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
-      const threadId = String((start.thread as RpcFrame).id);
+      let threadId = String((start.thread as RpcFrame).id);
+      if (forked) {
+        const prepared = await p.request({ method: 'turn/start', params: { threadId,
+          input: [{ type: 'text', text: recipe.sourcePreparation.prompt }] } });
+        const preparedTurnId = String((prepared.turn as RpcFrame).id);
+        await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ method: 'turn/completed',
+          params: expect.objectContaining({ threadId, turn: expect.objectContaining({ id: preparedTurnId, status: 'completed' }) }),
+        })), { timeout: 20_000 });
+        const preparedRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        const preparedTrace = inspectCarryNativeTurn({ threadId, turnId: preparedTurnId, events, threadRead: preparedRead,
+          allowedMcpCalls: [], expectedInputText: recipe.sourcePreparation.prompt });
+        expect(preparedTrace.status).toBe('verified');
+        expect(inspectCarryPreparationResponse(preparedTrace.finalResponse!).matches).toBe(true);
+        source = { threadId, turnId: preparedTurnId, path: String((preparedRead.thread as RpcFrame).path) };
+        const fork = await p.request({ method: 'thread/fork', params: { threadId, model: 'gpt-6-sol',
+          modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
+        threadId = String((fork.thread as RpcFrame).id);
+        expect(threadId).not.toBe(source.threadId);
+        expect((fork.thread as RpcFrame).turns).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: source.turnId, status: 'completed' }),
+        ]));
+        preparingSource = false;
+      }
       const response = await p.request({ method: 'turn/start', params: { threadId,
         input: [{ type: 'text', text: task.prompt }] } });
       const turnId = String((response.turn as RpcFrame).id);
-      const nativeStatus = mode === 'ok' || mode === 'failover' ? 'completed' : 'failed';
+      const nativeStatus = mode === 'ok' || mode === 'failover' || mode === 'fork' ? 'completed' : 'failed';
       await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ method: 'turn/completed',
         params: expect.objectContaining({ threadId, turn: expect.objectContaining({ id: turnId, status: nativeStatus }) }),
       })), { timeout: 20_000 });
@@ -857,29 +883,32 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(trace.status).not.toBe('verified');
         expect(trace.finalResponse).toBeNull();
       }
-      await vi.waitFor(() => expect(gateway.stats().requestStages!.recent).toHaveLength(1));
-      const stages = gateway.stats().requestStages!, timeline = stages.recent[0];
+      await vi.waitFor(() => expect(gateway.stats().requestStages!.recent).toHaveLength(forked ? 2 : 1));
+      const stages = gateway.stats().requestStages!;
+      const timeline = stages.recent.find(row => row.nativeCorrelation.threadId === threadId)!;
       expect(stages.requests).toMatchObject({ active: 0, reconciled: true });
       expect(timeline).toMatchObject({ ownerId: owner, protocol: 'openai-responses', transport: 'bearer-http',
         nativeCorrelation: { status: 'observed', threadId, turnId } });
       const accounts = mode === 'failover' ? ['fixture-a', 'fixture-b'] : ['fixture-a'];
-      expect(requests.map(request => request.account)).toEqual(accounts);
+      expect(requests.map(request => request.account)).toEqual(forked ? ['fixture-a', ...accounts] : accounts);
       expect(timeline.upstreamWrites.calls.map(call => call.accountId)).toEqual(accounts);
       expect(timeline.upstreamWrites.calls.map(call => call.responseStatus)).toEqual(
-        mode === 'failover' ? [429, 200] : mode === 'http-error' ? [503] : [200]);
+        mode === 'failover' ? [429, 200] : nativeStatus === 'failed' && mode !== 'incomplete-stream' ? [503] : [200]);
       expect(timeline.upstreamWrites.droppedCalls).toBe(0);
       for (const call of timeline.upstreamWrites.calls) {
         expect(call).toMatchObject({ matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
         expect(call.events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
       }
-      for (const request of requests) {
+      for (const [index, request] of requests.entries()) {
         const metadata = JSON.parse((request.body.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
-        expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
+        expect(metadata).toMatchObject(forked && index === 0
+          ? { thread_id: source!.threadId, turn_id: source!.turnId } : { thread_id: threadId, turn_id: turnId });
         expect(request.body).toMatchObject({ model: 'gpt-6-sol', reasoning: { effort: 'medium' } });
       }
       // A gateway failover creates two upstream sends for ONE native request;
       // never count the local request id as a unique charged-request identity.
-      const writes = receipts.filter(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start');
+      const writes = receipts.filter(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start' &&
+        (receipt.frame.params as RpcFrame).threadId === threadId);
       expect(writes).toHaveLength(1);
       const terminal = receipts.filter(receipt => receipt.phase === 'received' && receipt.frame.method === 'turn/completed' &&
         (receipt.frame.params as RpcFrame).threadId === threadId &&
@@ -906,20 +935,34 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // This exercises the real canonical writer, not a fabricated billing row.
       const nativeHome = homes.at(-1)!;
       await p.close();
-      const nativeCapture = { receipts, state: p.receiptState?.(), arms: [{ armId: `fixture:${mode}`, threadId }] };
+      const arms = [...(source ? [{ armId: 'preparation', threadId: source.threadId }] : []),
+        { armId: `fixture:${mode}`, threadId }];
+      const nativeCapture = { receipts, state: p.receiptState?.(), arms };
       const nativePopulation = inspectCarryNativePopulation(nativeCapture);
       expect(nativePopulation).toMatchObject({ status: 'closed-peer-reconciled', missing: [], violations: [],
-        turns: [{ threadId, turnId, status: nativeStatus }] });
+        turns: [...(source ? [{ armId: 'preparation', threadId: source.threadId, turnId: source.turnId, status: 'completed' }] : []),
+          { threadId, turnId, status: nativeStatus }] });
       expect(inspectCarryNativePopulation({ receipts: receipts.slice(0, -1), state: p.receiptState?.(),
-        arms: [{ armId: `fixture:${mode}`, threadId }] }).status).not.toBe('closed-peer-reconciled');
+        arms }).status).not.toBe('closed-peer-reconciled');
+      if (source) {
+        expect(nativePopulation.threads).toEqual([
+          { threadId: source.threadId, sourcePath: source.path, inheritedTurnIds: [] },
+          { threadId, sourcePath: (threadRead.thread as RpcFrame).path, inheritedTurnIds: [source.turnId] },
+        ]);
+      }
       peers.splice(peers.indexOf(p), 1); p = undefined;
       const transcriptPath = String((threadRead.thread as RpcFrame).path);
       const parsed = parseCodexChunk(readFileSync(transcriptPath, 'utf8'));
       const usageEvents = parsed.events ?? [];
-      expect(usageEvents).toHaveLength(nativeStatus === 'completed' ? 1 : 0);
+      expect(usageEvents).toHaveLength((forked ? 1 : 0) + (nativeStatus === 'completed' ? 1 : 0));
       if (nativeStatus === 'completed') {
-        expect(usageEvents[0]).toMatchObject({ turnId, inputTotalTokens: 1200,
-          usage: { outputTokens: 40 }, requestOrdinal: 1 });
+        expect(usageEvents.at(-1)).toMatchObject({ turnId, inputTotalTokens: 1200,
+          usage: { outputTokens: 40 }, requestOrdinal: forked ? 2 : 1 });
+      }
+      if (source) {
+        expect(usageEvents[0]).toMatchObject({ turnId: source.turnId, inputTotalTokens: 600,
+          usage: { outputTokens: 20 }, requestOrdinal: 1 });
+        expect(parseCodexChunk(readFileSync(source.path, 'utf8')).events).toHaveLength(1);
       }
       const org = await createOrgTestDb();
       const sql = org.adminSql, workspace = `native-carry-${randomUUID()}`;
@@ -936,7 +979,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           output_tokens, usage_provenance FROM harness_shared.agent_usage_samples
           WHERE workspace_id = ${workspace}`;
         canonicalSamples = rows.length;
-        expect(rows).toHaveLength(usageEvents.length);
+        expect(rows).toHaveLength(usageEvents.length + (source ? 1 : 0));
         const canonicalPopulation = await captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation });
         expect(canonicalPopulation).toMatchObject({ coverage: 'complete-selected-snapshot',
           ingestionCoverage: 'not-established', accountingComplete: false });
@@ -944,19 +987,37 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           ({ session_id, usage_event_key, usage_provenance })));
         const evidence = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
           native: nativeCapture, gateway: stages });
-        expect(evidence).toMatchObject({ status: 'observations-linked', inheritedUsage: [], violations: [], missing: [],
+        const inheritedRows = source ? rows.filter(row => row.session_id === threadId && row.usage_provenance?.turnId === source.turnId) : [];
+        expect(evidence).toMatchObject({ status: 'observations-linked', violations: [], missing: [],
           native: nativePopulation, canonical: canonicalPopulation, accountingComplete: false, admission: 'not-established' });
+        expect(evidence.inheritedUsage).toEqual(inheritedRows.map(({ session_id, usage_event_key, usage_provenance }) =>
+          ({ session_id, usage_event_key, usage_provenance })));
+        expect(inheritedRows).toHaveLength(source ? 1 : 0);
         expect(evidence.captureSha256).toMatch(/^[a-f0-9]{64}$/);
         expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE_NATIVE|From the inherited task state/);
         const population = evidence.population!;
         expect(population).toMatchObject({ populationStatus: 'linked', missing: [], violations: [],
-          chargeJoin: 'unavailable', accountingComplete: false, unmatchedGatewayRequestIds: [], unmatchedUsageRows: [],
-          turns: [{ status: nativeStatus, gatewayRequestIds: [timeline.requestId],
-            usageEventKeys: rows.map(row => row.usage_event_key) }] });
-        expect(population.turns[0].upstreamAttempts.map(call => call.responseStatus)).toEqual(
+          chargeJoin: 'unavailable', accountingComplete: false, unmatchedGatewayRequestIds: [], unmatchedUsageRows: [] });
+        const currentRows = rows.filter(row => row.session_id === threadId && row.usage_provenance?.turnId === turnId);
+        const currentTurn = population.turns.find(turn => turn.threadId === threadId)!;
+        expect(currentTurn).toMatchObject({ status: nativeStatus, gatewayRequestIds: [timeline.requestId],
+          usageEventKeys: currentRows.map(row => row.usage_event_key) });
+        expect(currentTurn.upstreamAttempts.map(call => call.responseStatus)).toEqual(
           timeline.upstreamWrites.calls.map(call => call.responseStatus));
+        if (source) {
+          const preparationRows = rows.filter(row => row.session_id === source.threadId);
+          expect(preparationRows).toHaveLength(1);
+          expect(population.turns).toHaveLength(2);
+          expect(population.turns.find(turn => turn.threadId === source.threadId)).toMatchObject({ armId: 'preparation',
+            turnId: source.turnId, status: 'completed', usageEventKeys: preparationRows.map(row => row.usage_event_key) });
+          expect(new Set(rows.map(row => row.usage_event_key)).size).toBe(rows.length);
+          // The cloned historical sample stays visible, but cannot count as a
+          // new source or arm request. All three partitions conserve the query.
+          expect(population.turns.flatMap(turn => turn.usageEventKeys)).not.toContain(inheritedRows[0].usage_event_key);
+          expect(preparationRows.length + inheritedRows.length + currentRows.length).toBe(rows.length);
+        }
         if (nativeStatus === 'completed') {
-          const row = rows[0], event = usageEvents[0];
+          const row = currentRows[0], event = usageEvents.at(-1)!;
           expect(row).toMatchObject({ session_id: threadId, account_id: null, cost_source: 'estimated',
             output_tokens: 40, usage_provenance: { turnId, sourceId: event.sourceId,
               inputTotalTokens: 1200, accountSource: 'unavailable', grain: 'request' } });
@@ -971,7 +1032,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(count).toBe(canonicalSamples);
         // A failed attempt is retained by the gateway even when the native
         // transcript contains no usage. No sample means unknown charge, not zero.
-        expect(timeline.upstreamWrites.calls.length).toBeGreaterThanOrEqual(canonicalSamples);
+        expect(timeline.upstreamWrites.calls.length).toBeGreaterThanOrEqual(currentRows.length);
         if (mode === 'failover') expect(timeline.upstreamWrites.calls.length).toBe(canonicalSamples + 1);
         if (mode === 'ok') {
           // A filtered-to-known-turn query would hide these rows. Exercise all
@@ -1008,7 +1069,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       console.log('CARRY_NATIVE_GATEWAY_RECEIPT', JSON.stringify({ mode, threadId, turnId, nativeStatus,
         gatewayRequestId: timeline.requestId, upstreamAttempts: timeline.upstreamWrites.calls.length,
         selectedAccounts: accounts, gatewayOutcome: timeline.outcome, providerInference: false,
-        canonicalUsageSamples: canonicalSamples, canonicalChargeJoin: false, colocatedClockBound: true }));
+        canonicalUsageSamples: canonicalSamples, inheritedUsageSamples: source ? 1 : 0,
+        preparationThreadId: source?.threadId ?? null, canonicalChargeJoin: false, colocatedClockBound: true }));
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
       finally {
