@@ -94,6 +94,8 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
       // spawning. Keep this multi-session fixture hermetic and model a winning
       // claim; the production claim path has its own focused coverage.
       claimResume: async () => true,
+      // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
       spawnDetached: (bin, args, opts) => {
         captured.push({ bin, args, cwd: opts.cwd, env: opts.env });
         return 4242;
@@ -230,6 +232,8 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
       // The production claim is intentionally outside this isolation fixture;
       // make the resume writer a winner so the test reaches the spawn seam.
       claimResume: async () => true,
+      // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
       // Keep this filesystem-isolation test independent of the launch-spec PG
       // reader used by the production Codex-home repair helper.
       ensureCodexHomeForWake: async () => ({ ok: true, repaired: false }),

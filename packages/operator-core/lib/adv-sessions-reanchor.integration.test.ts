@@ -16,7 +16,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
-import { markAdvSessionEnded, reanchorAdvSessionNativeId, reanchorAdvSessionNativeIdByOwner, type AdvSessionExpectedBinding } from './adv-sessions';
+import {
+  markAdvSessionEnded,
+  reanchorAdvSessionNativeId,
+  reanchorAdvSessionNativeIdByOwner,
+  setAdvSessionPid,
+  type AdvSessionExpectedBinding,
+} from './adv-sessions';
+import { activeWorkspaceId } from './workspace-registry';
 import { resolveSessionRef } from './compaction-usage';
 
 // Exercise the lifecycle SQL without scheduling real delayed cleanup of test rows.
@@ -215,5 +222,37 @@ describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` coho
   it('an unknown owner touches nothing and reports false', async () => {
     const res = await reanchorAdvSessionNativeIdByOwner('su-nobody', FRESH_ID);
     expect(res).toEqual({ reanchored: false, owner: null });
+  });
+});
+
+describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
+  // The wake executor runs pinned to the coordination workspace, which is not the
+  // workspace the row belongs to. The resumed turn's pid write therefore has to
+  // name the row's workspace. The ambient scope matches zero rows and reports
+  // nothing.
+  it('the ambient scope misses a row in another workspace; the explicit override lands the pid', async () => {
+    expect(activeWorkspaceId()).not.toBe(WS); // precondition: the two scopes really differ
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+
+    await setAdvSessionPid(id, 4242);
+    const [ambient] = await admin<{ pid: number | null }[]>`SELECT pid FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(ambient.pid).toBeNull();
+
+    await setAdvSessionPid(id, 4242, undefined, WS);
+    const [scoped] = await admin<{ pid: number | null; terminal_bin: string | null }[]>`
+      SELECT pid, terminal_bin FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(scoped.pid).toBe(4242);
+    expect(scoped.terminal_bin).toBeNull(); // an omitted terminalBin never blanks or invents one
+  });
+
+  it('keeps a terminal_bin another writer set (the headless launch-log key the roster reads)', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    await admin`UPDATE harness_shared.adv_sessions SET terminal_bin = 'psu-headless:/tmp/x.log' WHERE id = ${id}`;
+    await setAdvSessionPid(id, 5151, undefined, WS);
+    const [row] = await admin<{ pid: number | null; terminal_bin: string | null }[]>`
+      SELECT pid, terminal_bin FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(row).toEqual({ pid: 5151, terminal_bin: 'psu-headless:/tmp/x.log' });
   });
 });

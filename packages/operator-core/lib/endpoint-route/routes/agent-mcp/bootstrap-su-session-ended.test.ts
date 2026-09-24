@@ -16,7 +16,8 @@ beforeAll(async () => {
   routes = mod.default as unknown as typeof routes;
 }, 30_000);
 
-const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async () => {}));
+// Resolves a boolean like the real function: the route now reports `ended` from it (WI-10002854).
+const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => true));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -64,6 +65,7 @@ describe('POST bootstrap-su/session-ended — child-exit classification', () => 
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'self', {
       signal: null,
       throwOnError: true,
+      observedAt: null,
     });
   });
 
@@ -79,6 +81,7 @@ describe('POST bootstrap-su/session-ended — child-exit classification', () => 
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'signal', {
       signal: 'SIGHUP',
       throwOnError: true,
+      observedAt: null,
     });
   });
 
@@ -95,6 +98,7 @@ describe('POST bootstrap-su/session-ended — child-exit classification', () => 
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'cleanup', {
       signal: null,
       throwOnError: true,
+      observedAt: null,
     });
   });
 
@@ -118,7 +122,27 @@ describe('POST bootstrap-su/session-ended — child-exit classification', () => 
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 1, 'self', {
       signal: null,
       throwOnError: true,
+      observedAt: null,
     });
+  });
+
+  // WI-10002854: the observation time is what lets markAdvSessionEnded refuse to end a
+  // successor incarnation (a headless wake resume) with a killed predecessor's report.
+  it('forwards a valid observedAt as a Date and ignores an unparseable one', async () => {
+    await postEnded({ advSessionId: 42, exitCode: 0, endAttemptKey: 'end-obs-42', observedAt: '2026-09-24T01:02:05.000Z' });
+    const opts = markAdvSessionEndedMock.mock.calls[0]![3] as { observedAt: Date | null };
+    expect(opts.observedAt).toBeInstanceOf(Date);
+    expect(opts.observedAt!.toISOString()).toBe('2026-09-24T01:02:05.000Z');
+
+    await postEnded({ advSessionId: 42, exitCode: 0, endAttemptKey: 'end-obs-bad', observedAt: 'yesterday-ish' });
+    expect((markAdvSessionEndedMock.mock.calls[1]![3] as { observedAt: Date | null }).observedAt).toBeNull();
+  });
+
+  it('reports ended:false (still ok) when the store refuses a stale end, so the launcher drops its witness', async () => {
+    markAdvSessionEndedMock.mockResolvedValueOnce(false);
+    const res = await postEnded({ advSessionId: 42, exitCode: 0, endAttemptKey: 'end-stale-42', observedAt: '2026-09-24T01:02:05.000Z' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ended: false, endAttemptKey: 'end-stale-42' });
   });
 
   it('returns 503 when ending cannot be persisted', async () => {

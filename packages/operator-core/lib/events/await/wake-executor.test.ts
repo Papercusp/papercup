@@ -309,6 +309,11 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     countAgentToolCallsFn: vi.fn(async () => null) as never,
     forceResume: vi.fn(async () => false),
     claimResume: vi.fn(async () => true),
+    // WI-10002854 — hermetic by default. The real accountant writes a task-ledger
+    // row and the adv-session pid to PG, and the real oracle reads the host's
+    // /proc. Tests of the fence inject their own.
+    accountHeadlessResumeTurn: vi.fn(() => ({ pidRecorded: Promise.resolve(), finish: vi.fn() })),
+    isHeadlessResumeTurn: vi.fn(() => false),
     // Hermetic by default: the cold no-host limbo guard's real binding READS+WRITES
     // PG (routines metadata / pause / escalation). null = "not tracked" — the park
     // behaves exactly as before the guard existed (EI-21431587306904888).

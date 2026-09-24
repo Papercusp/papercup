@@ -109,6 +109,8 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       // outcome under test. The claim's own losing/faulting behaviour is
       // covered explicitly below.
       claimResume: async () => true,
+      // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
       ...over,
     };
   }

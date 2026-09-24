@@ -54,6 +54,28 @@
 export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence'];
 
 /**
+ * Tables whose own-log rows something REGENERATES on a short cadence, so a snapshot set
+ * that left them out is still a complete seed for a fold that keeps them.
+ *
+ * `presence` is re-announced every `DEFAULT_REFRESH_MS` (30s, presence-announce.ts), and
+ * the own log is single-writer, so its only presence rows are THIS machine's heartbeat.
+ * A fold seeded from a presence-filtered set therefore regains every presence row within
+ * one keep-alive of the tail it folds.
+ *
+ * WHY THIS EXISTS (WI-10002836, measured 2026-09-24 on the tower): every snapshot set on
+ * the papercusp pot's own log was a release-cut head snapshot, and each excludes
+ * `SEED_EXCLUDED_TABLES`. The unfiltered periodic compaction refused to seed from any of
+ * them (`conflictingSnapshotExclusion`), so it folded all 7.76M ops from 0 — about 30
+ * minutes, ending in an OOM recycle of bg-host at 99.5%. Readers already seed from these
+ * same sets (they seed from the newest set, whatever it excluded).
+ *
+ * Every `SEED_EXCLUDED_TABLES` entry MUST be listed here (pinned by
+ * seed-excluded-tables.test.ts): excluding a table from the live log is only safe when
+ * its rows come back on their own, which is exactly what this set asserts.
+ */
+export const SELF_REGENERATING_TABLES: ReadonlySet<string> = new Set(['presence']);
+
+/**
  * Tables whose rows are STRUCTURAL to the hive — the roster, the owner's signed policy
  * and settings, the epoch keys a joiner decrypts with, and the contributor ledgers. A row
  * dropped from one of these breaks the joiner outright (no owner in the roster, no epoch

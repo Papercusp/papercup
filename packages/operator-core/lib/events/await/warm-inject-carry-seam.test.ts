@@ -118,6 +118,8 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // claim. The claim's losing/faulting paths are covered in
     // wake-executor-matrix.test.ts.
     claimResume: async () => true,
+    // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+    accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
     ...over,
   };
 }
