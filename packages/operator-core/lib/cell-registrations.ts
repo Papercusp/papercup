@@ -1035,6 +1035,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       },
     },
     evidence: [
+      'gate.ownership.eventKey',
+      'gate.ownership.workItem',
       'gate.ownership.holderSessionState',
       'gate.ownership.takenBy',
       'gate.ownership.takenAt',

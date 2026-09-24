@@ -22,9 +22,12 @@ import { writeFileSync } from 'node:fs';
 
 describe('EI-1754 — resolveCapabilityBaseDir', () => {
   const orig = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  const origCanonical = process.env.PAPERCUSP_CANONICAL_TREE;
   afterEach(() => {
     if (orig === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     else process.env.PAPERCUSP_INTEGRATION_ROOT = orig;
+    if (origCanonical === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = origCanonical;
   });
 
   it('ctx.projectDir WINS — a harness-scoped agent keeps its own tree (env is ignored)', () => {
@@ -33,17 +36,27 @@ describe('EI-1754 — resolveCapabilityBaseDir', () => {
   });
 
   it('superuser ctx (projectDir undefined) falls back to PAPERCUSP_INTEGRATION_ROOT, NOT process.cwd()', () => {
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
     process.env.PAPERCUSP_INTEGRATION_ROOT = '/canonical';
     expect(resolveCapabilityBaseDir({})).toBe('/canonical');
     expect(resolveCapabilityBaseDir({ projectDir: undefined })).toBe('/canonical');
   });
 
+  it('superuser ctx prefers PAPERCUSP_CANONICAL_TREE over a serving mirror', () => {
+    process.env.PAPERCUSP_CANONICAL_TREE = '/canonical-edit-tree';
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/papercusp-staging';
+    expect(resolveCapabilityBaseDir({})).toBe('/canonical-edit-tree');
+    expect(resolveCapabilityBaseDir({ projectDir: undefined })).toBe('/canonical-edit-tree');
+  });
+
   it('no projectDir + no env → process.cwd() (last-resort, unchanged from the old behavior)', () => {
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
     delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     expect(resolveCapabilityBaseDir({})).toBe(process.cwd());
   });
 
   it('empty / whitespace env is treated as unset → process.cwd()', () => {
+    process.env.PAPERCUSP_CANONICAL_TREE = '   ';
     process.env.PAPERCUSP_INTEGRATION_ROOT = '   ';
     expect(resolveCapabilityBaseDir({})).toBe(process.cwd());
   });
@@ -121,6 +134,23 @@ describe('EI-1754 — resolveAgentWorkspaceRoot', () => {
     // The regression this pins: resolveCapabilityBaseDir alone returns `pkg`, and
     // join(pkg,'scripts','test-files.mjs') does not exist — the router never runs.
     expect(resolveAgentWorkspaceRoot({ projectDir: pkg })).toBe(repo);
+  });
+
+  it('prefers the canonical edit tree over the serving mirror for a superuser test root', () => {
+    const canonical = makeRepoRoot(join(tmp, 'papercusp'));
+    const mirror = makeRepoRoot(join(tmp, 'papercusp-staging'));
+    const previousCanonical = process.env.PAPERCUSP_CANONICAL_TREE;
+    const previousIntegration = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_CANONICAL_TREE = canonical;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = mirror;
+    try {
+      expect(resolveAgentWorkspaceRoot({})).toBe(canonical);
+    } finally {
+      if (previousCanonical === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+      else process.env.PAPERCUSP_CANONICAL_TREE = previousCanonical;
+      if (previousIntegration === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = previousIntegration;
+    }
   });
 
   it('does NOT stop inside a git SUBMODULE (a submodule carries a .git FILE, not a directory)', () => {

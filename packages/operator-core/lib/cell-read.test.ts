@@ -104,6 +104,8 @@ describe('readCell — the happy path', () => {
     dispatchReadOnlyTool.mockResolvedValue({
       gate: {
         ownership: {
+          eventKey: 'green-stall:papercusp',
+          workItem: 'WI-10002718',
           claimState: 'held',
           takenBy: 'su-gate-holder',
           takenAt: '2026-08-27T04:00:00.000Z',
@@ -123,6 +125,8 @@ describe('readCell — the happy path', () => {
     expect(r.value).toBe('held');
     expect(r.assessment?.status).toBe('resolved');
     if (r.assessment?.status !== 'resolved') return;
+    expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.eventKey', value: 'green-stall:papercusp' });
+    expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.workItem', value: 'WI-10002718' });
     expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.takenBy', value: 'su-gate-holder' });
     expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.takenAt', value: '2026-08-27T04:00:00.000Z' });
     expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.lastProgressAt', value: '2026-08-27T04:30:00.000Z' });

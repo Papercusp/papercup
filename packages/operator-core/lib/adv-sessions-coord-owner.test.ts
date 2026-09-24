@@ -103,7 +103,7 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     const rows = await mod.listResumableSessions();
     expect(rows[0]?.harnessSlug).toBe('papercusp');
 
-    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    const strings = sql.mock.calls.at(-1)?.[0] as TemplateStringsArray | undefined;
     const query = strings ? Array.from(strings).join(' ? ') : '';
     expect(query).toContain("'launch_spec'");
     expect(query).toContain("'harnessSlug'");

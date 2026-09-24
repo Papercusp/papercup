@@ -433,6 +433,8 @@ describe('P-007: the four verdict cells', () => {
 
     expect(ownership).toBeDefined();
     expect(ownership!.assessment).not.toBeNull();
+    expect(ownership!.assessment!.evidence).toContain('gate.ownership.eventKey');
+    expect(ownership!.assessment!.evidence).toContain('gate.ownership.workItem');
     expect(ownership!.assessment!.evidence).toContain('gate.ownership.holderSessionState');
     expect(ownership!.assessment!.evidence).toContain('gate.ownership.takenBy');
     // ...and the cell pointing AT it substantiates its own, unrelated claim. THE INTENT

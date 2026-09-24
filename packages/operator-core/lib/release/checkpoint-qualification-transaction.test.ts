@@ -182,7 +182,11 @@ describe('logical checkpoint qualification transaction', () => {
       green: true,
       nowMs: 300,
     });
-    expect(duplicateFromOtherRun).toMatchObject({ status: 'terminal', transaction: first.transaction });
+    expect(duplicateFromOtherRun).toMatchObject({ status: 'conflict', transaction: first.transaction });
+    expect(settleQualificationTransaction(first.transaction, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+      reason: 'advanced', green: true, nowMs: 300,
+    }).status).toBe('conflict');
   });
 
   it('WI-10002454: names every identity behind a settle conflict, and nothing when identities agree', () => {

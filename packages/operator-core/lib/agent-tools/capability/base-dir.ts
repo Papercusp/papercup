@@ -12,11 +12,12 @@
  * STALE release checkout, not the canonical/integration tree where the agent's edits
  * land (and the resolved release sub-path often doesn't exist → `spawn ENOENT`).
  *
- * Fix: fall back to `PAPERCUSP_INTEGRATION_ROOT` (exported into the operator's unit
- * env, pointing at the canonical tree — the same resolver `db:next-migration`,
- * `ship-link`, and `register-papercusp` use) BEFORE `process.cwd()`.
+ * Fix: fall back to `PAPERCUSP_CANONICAL_TREE` when the serving unit declares a
+ * separate edit tree (the :3170 staging mirror exports both), then to
+ * `PAPERCUSP_INTEGRATION_ROOT` (the usual canonical tree — the same resolver
+ * `db:next-migration`, `ship-link`, and `register-papercusp` use) BEFORE `process.cwd()`.
  *
- * Order is `projectDir → PAPERCUSP_INTEGRATION_ROOT → process.cwd()`: projectDir-FIRST
+ * Order is `projectDir → PAPERCUSP_CANONICAL_TREE → PAPERCUSP_INTEGRATION_ROOT → process.cwd()`: projectDir-FIRST
  * means a harness bee's correct tree always wins and is never overridden by the env
  * (so the env's presence in a bee's inherited environment is irrelevant); the env is
  * ONLY consulted when projectDir is absent (the superuser case this fixes). An empty /
@@ -98,9 +99,17 @@ function isWorkspaceRoot(dir: string): boolean {
  *  before symlink resolution. Exported for unit tests of the selection order. */
 export function pickCapabilityBaseDir(ctx: { projectDir?: string }): string {
   if (ctx.projectDir) return ctx.projectDir;
+  const canonicalTree = configuredCanonicalTree();
+  if (canonicalTree) return canonicalTree;
   const integrationRoot = configuredCapabilityIntegrationRoot();
   if (integrationRoot) return integrationRoot;
   return process.cwd();
+}
+
+function configuredCanonicalTree(
+  env: { PAPERCUSP_CANONICAL_TREE?: string } = process.env,
+): string | undefined {
+  return env.PAPERCUSP_CANONICAL_TREE?.trim() || undefined;
 }
 
 /**

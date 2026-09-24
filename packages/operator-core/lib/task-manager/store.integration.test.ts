@@ -1012,3 +1012,52 @@ describe('listTasks coordOwnerId filter (P-023)', () => {
     );
   });
 });
+
+describe('process-lifecycle judgement ledger seam (P-009)', () => {
+  it('reads every live/residue row plus only the terminal ids positively named by reconcile', async () => {
+    await insertAgentSessionTask({ taskId: 'live-row', coordOwnerId: 'su-live' });
+    await insertUnaccounted('unaccounted-row');
+    await insertAgentSessionTask({ taskId: 'terminal-residue', coordOwnerId: 'su-ended', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'terminal-history', coordOwnerId: 'su-history', state: 'exited' });
+
+    const rows = await store.listLifecycleJudgementTasks({
+      workspaceId: WS,
+      residueTaskIds: ['terminal-residue'],
+    });
+
+    expect(rows.map((task) => task.taskId).sort()).toEqual(['live-row', 'terminal-residue', 'unaccounted-row']);
+  });
+
+  it('persists probe clocks additively and never mutates an ended row', async () => {
+    await insertAgentSessionTask({ taskId: 'live-probe', coordOwnerId: 'su-live' });
+    await insertAgentSessionTask({ taskId: 'ended-probe', coordOwnerId: 'su-ended', state: 'exited' });
+    const probe = {
+      version: 1,
+      launcherEndedSinceMs: 123,
+      logPath: null,
+      logMtimeMs: null,
+      cpuUsec: 55,
+      lastActivityAtMs: 456,
+    };
+
+    await expect(
+      store.mergeTaskLifecycleProbes([
+        { taskId: 'live-probe', probe },
+        { taskId: 'ended-probe', probe },
+      ]),
+    ).resolves.toBe(1);
+
+    const rows = await db.sql`
+      SELECT task_id, detail FROM harness_shared.task_ledger
+       WHERE task_id IN ('live-probe', 'ended-probe') ORDER BY task_id
+    `;
+    expect(rows[0]).toEqual({
+      task_id: 'ended-probe',
+      detail: { coordOwnerId: 'su-ended' },
+    });
+    expect(rows[1]).toEqual({
+      task_id: 'live-probe',
+      detail: { coordOwnerId: 'su-live', processLifecycleProbe: probe },
+    });
+  });
+});

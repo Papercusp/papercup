@@ -119,7 +119,7 @@ describe('listResumableSessions launch provenance', () => {
       '--model=gpt-5.6-terra:high',
       '--model-source=explicit',
     ];
-    advSessionRowsMock.mockResolvedValueOnce([
+    advSessionRowsMock.mockResolvedValueOnce([{ present: true }]).mockResolvedValueOnce([]).mockResolvedValueOnce([
       {
         id: 7,
         workspace_id: 'ws-test',
@@ -148,7 +148,7 @@ describe('listResumableSessions launch provenance', () => {
 
     const rows = await listResumableSessions(1);
     expect(rows[0]?.launchArgv).toEqual(launchArgv);
-    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    const template = (advSessionRowsMock.mock.calls as unknown[][]).at(-1)?.[0];
     expect((template as readonly string[]).join(' ')).toContain('a.launch_argv');
   });
 });

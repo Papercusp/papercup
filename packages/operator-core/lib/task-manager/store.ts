@@ -775,6 +775,73 @@ export async function listLiveTasks(workspaceId?: string, inject?: Sql): Promise
   return listTasks({ workspaceId, states: ['pending', 'running'], limit: 2000 }, inject);
 }
 
+/**
+ * The complete ledger population inspected by the process-lifecycle judge.
+ *
+ * This is deliberately NOT composed from `listLiveTasks`: that general-purpose
+ * read is capped at 2,000 rows, while the lifecycle contract is "every launch".
+ * Live/persisted-residue rows are therefore read without a result cap. Terminal
+ * rows are admitted only when the current kernel reconcile positively named
+ * their task id as residue, so old history never becomes a candidate merely by
+ * being retained in the ledger.
+ */
+export async function listLifecycleJudgementTasks(
+  input: { workspaceId?: string; residueTaskIds?: readonly string[] } = {},
+  inject?: Sql,
+): Promise<TaskRow[]> {
+  const sql = sqlOf(inject);
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const residueTaskIds = [...new Set((input.residueTaskIds ?? []).filter(Boolean))];
+  const rows = await sql`
+    SELECT * FROM harness_shared.task_ledger
+     WHERE workspace_id = ${ws}
+       AND (
+         (ended_at IS NULL AND state IN ('pending', 'running', 'unaccounted'))
+         ${residueTaskIds.length ? sql`OR task_id = ANY(${sql.array(residueTaskIds)})` : sql``}
+       )
+     ORDER BY started_at ASC
+  `;
+  return rows.map(toRow);
+}
+
+export interface TaskLifecycleProbeUpdate {
+  taskId: string;
+  probe: object;
+}
+
+/**
+ * Persist restart-safe activity/launcher clocks without replacing any other
+ * task detail. The lifecycle sweep emits only changed probes, so the common
+ * no-delta pass performs no write at all.
+ */
+export async function mergeTaskLifecycleProbes(
+  updates: readonly TaskLifecycleProbeUpdate[],
+  inject?: Sql,
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  const sql = sqlOf(inject);
+  const payload = updates.map((update) => ({ taskId: update.taskId, probe: update.probe }));
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger t
+       SET detail = jsonb_set(
+             CASE WHEN jsonb_typeof(t.detail) = 'object' THEN t.detail ELSE '{}'::jsonb END,
+             '{processLifecycleProbe}',
+             u.probe,
+             true
+           ),
+           updated_at = now()
+      FROM (
+        SELECT x->>'taskId' AS task_id, x->'probe' AS probe
+          FROM jsonb_array_elements(${JSON.stringify(payload)}::text::jsonb) AS x
+      ) u
+     WHERE t.task_id = u.task_id
+       AND t.ended_at IS NULL
+       AND jsonb_typeof(u.probe) = 'object'
+    RETURNING t.task_id
+  `;
+  return rows.length;
+}
+
 export async function getTask(taskId: string, inject?: Sql): Promise<TaskRow | null> {
   const sql = sqlOf(inject);
   const rows = await sql`SELECT * FROM harness_shared.task_ledger WHERE task_id = ${taskId} LIMIT 1`;
