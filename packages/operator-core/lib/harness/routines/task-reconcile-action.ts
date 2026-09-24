@@ -28,7 +28,7 @@ import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
-import { gcTerminalTasks, listLiveTasks, listTasks, markStranded } from '../../task-manager/store';
+import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
 import {
   consultAnswerFacts,
   consultSettlement,
@@ -46,7 +46,11 @@ import {
 import type { TaskRow } from '../../task-manager/types';
 import type { ResidueGroup } from '../../task-manager/reconcile';
 import { absCgroupDir, walkCgroupTree } from '../../task-manager/cgroup-read';
-import { scopeCgroupRelPath } from '../../task-manager/types';
+import { scopeCgroupRelPath, taskIdFromScopeUnit } from '../../task-manager/types';
+import {
+  LIFECYCLE_SWEEP_INTERVAL_MS,
+  runLifecycleJudgementSweep,
+} from '../../task-manager/lifecycle-judgement';
 import {
   censusAgentSessionProgress,
   evaluateAgentSessionResidue,
@@ -98,6 +102,10 @@ const PROGRESS_RENOTIFY_MS = 6 * 60 * 60_000;
  * only re-scan the same untouchable set.
  */
 const A11Y_SWEEP_INTERVAL_MS = 60 * 60_000;
+/** Candidate filing is cheap but need not refresh condition-keyed work items on
+ * every 30-second reconcile. Five minutes stays well below the 15-minute dead-
+ * launcher grace; the judge launch itself is independently capped at one/hour. */
+let lastLifecycleSweepAtMs: number | null = null;
 /**
  * How many quiet agent-sessions before this reports (EI-21268871278252116).
  *
@@ -174,6 +182,39 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   });
 
   const nowMs = Date.now();
+
+  if (isMaintDue({ lastAtMs: lastLifecycleSweepAtMs, nowMs, intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS })) {
+    // Stamp before awaiting so overlapping/replayed routine ticks cannot fan out
+    // filings. A process restart may run this early; the durable hourly spawn
+    // idempotency key still prevents a second judge.
+    lastLifecycleSweepAtMs = nowMs;
+    try {
+      const confirmedResidueTaskIds = [
+        ...new Set(
+          tick.confirmedUnaccounted.map(
+            (group) => (group.scopeUnit && taskIdFromScopeUnit(group.scopeUnit)) || residueTaskId(group.cgroupPath),
+          ),
+        ),
+      ];
+      const lifecycle = await runLifecycleJudgementSweep({
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        confirmedResidueTaskIds,
+        nowMs,
+      });
+      console.info(
+        `[task-lifecycle] pass: ${lifecycle.rowsInspected} ledger row(s), ` +
+          `${lifecycle.candidates} candidate(s), ${lifecycle.candidateItems.length} filed/refreshed, ` +
+          `${lifecycle.suppressedByKeep} keep-suppressed, ${lifecycle.openItems.length} open; ` +
+          (lifecycle.judge.attempted
+            ? `judge ${lifecycle.judge.ok ? 'admitted' : 'not admitted'}${lifecycle.judge.deduped ? ' (interval dedupe)' : ''}`
+            : 'no judge needed'),
+      );
+    } catch (err) {
+      // This judgement layer must never break the kernel reconcile/reaper pass.
+      console.warn('[task-lifecycle] sweep failed', err);
+    }
+  }
 
   if (isMaintDue({ lastAtMs: lastGcAtMs, nowMs, intervalMs: GC_INTERVAL_MS })) {
     // Stamp BEFORE awaiting: a failed GC must not re-fire every 30s, and the stamp
