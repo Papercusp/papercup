@@ -969,3 +969,74 @@ kernel process/cgroup identity, prove recovery when that exact server dies,
 then integrate the caller without retrying an ambiguous mutation or releasing
 its repository lease early. Do not use `killScopeUnit.ok` as an exit verdict,
 nor destroy a live shared sidecar after a single client's connection fault.
+
+### P-003 kernel containment and cancellable caller recovery (13:09Z)
+
+`sidecar-exec-lifetime.ts` now supplies strict exit observations using the
+existing process-identity parsers, task-manager scope names and scope-control
+operation. The spawner mints the managed task ID before launch and passes its
+expected scope to the server. The capability response advertises containment
+only when the kernel confirms that exact scope, so an unconfined fallback
+cannot accidentally authorize killing the caller's inherited scope. The
+snapshot binds PID, boot/start identity, cgroup path and mount/scope inode
+identities. Read errors, malformed data and changed mount/scope identities
+remain unknown. A dead/recycled/zombie server permits cleanup of its original
+scope; only `cgroup.events populated=0` or confirmed removal of that previously
+observed scope establishes exit. A signal receipt does not.
+
+Signal-bearing `runCommandViaSpawnerSidecar` calls now use a separate connection,
+verify containment before dispatch and send the preflight connection fence.
+On transport loss they revoke/drain that connection through the existing
+`process:drain` protocol, or reap the confirmed-dead server's original scope.
+Failed observations keep the promise pending, preserving the caller's lease.
+A lost result resolves as an unknown outcome after exit is proven; it neither
+throws into local fallback nor uses the infrastructure-fault prefix. Other
+calls on the shared host connection remain independent.
+
+Verification at HEAD `bbdf4f8d19` plus local changes: **59 unit tests** across
+the lifetime, caller cancellation, spawner launch/confinement and IPC suites
+passed. The updated process integration suite passed **22 cases**, including
+the actual caller losing a reply after a real file mutation: one mutation,
+child exit before resolution, and a second client's command still alive.
+That in-process test substitutes the containment handshake; the separate
+Linux integration test uses real managed systemd scopes and kernel reads. It
+kills the test server while its helper survives, observes the populated scope,
+then verifies cleanup and preservation of a separate live scope. It passed
+with zero skips. Its first run (19293964) failed only on the expected orphan
+warning from deliberate fixture teardown; marking the managed fixture's
+teardown explicitly corrected that test setup. The seven initial changed
+TypeScript paths passed scoped checking (23 other import-graph diagnostics).
+The added Linux test subsequently needed its required `TaskSpec.argv` field;
+the final test/typecheck result is recorded on WI-10002825.
+
+The joined proof subsequently passed in **19294001** at `c3df817a17` plus local
+changes: all **three** Linux integration cases, zero skipped. Two cases launch
+the actual IPC server and exec implementation in separate managed scopes,
+substituting only admission persistence with a fixture receipt/barrier. The
+actual caller's containment handshake and recovery are unmocked. Killing the
+server after a file mutation confirms scope exit and exactly one mutation;
+killing it while admission waits confirms exit with no child/mutation ever
+created. The server accepts an optional exec dependency for this fixture; its
+default remains the production implementation. The parameterized fixture's
+Vitest context typing was then corrected without changing these assertions.
+
+With that proof in place, `runGitBounded` now allows signal-bearing mutations
+through the same cancellable sidecar path. Optional Git locks are disabled only
+for the read-only command set. Routing regressions distinguish safe preflight
+fallback from a post-dispatch unknown outcome, which must not replay locally.
+The final routing/test/typecheck results are on WI-10002825. Profiler policy,
+comparable multi-repository measurements, independent acceptance and shipment
+remain open; these are source verification results, not a deployed-runtime
+claim. Prior tests 19293953–19293958 cover the first 59 unit/21 integration
+matrix; 19293980 adds the full-caller live-server case (22 passed). The later
+13:11 run crossed an automatic commit and is not used as settled-source proof.
+
+Final changed integration/routing verification at settled `c3df817a17` plus
+local changes: **19294006** (22 real IPC/process cases), **19294007** (3 actual
+Linux scope and separate-server cases), **19294008** (5 Git routing/fallback
+cases) all passed, zero skipped. Together with the unchanged 59-case unit
+matrix this source unit has 89 passing cases. Scoped typechecks cover the
+changed source/tests with zero requested diagnostics; the last four-file
+compile reports 24 other import-graph diagnostics, not a globally clean build.
+`git diff --check` is clean. The final subsequent edits only rename the read-only
+set and correct lifecycle documentation. No shipped-runtime claim is made.
