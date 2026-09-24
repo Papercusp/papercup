@@ -6,6 +6,7 @@
  * improvements were being skipped. Amending preserves the stored lifecycle
  * status — an active rubric stays active.
  */
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -204,7 +205,7 @@ export default defineTool({
     'Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. A started BAR meaning change needs outside-lineage approval first (guidance.chaining has the steps). Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.',
   guidance: {
     returns:
-      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). An amend still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
+      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
@@ -284,26 +285,39 @@ export default defineTool({
       actorId: identity.ownerId,
     };
     if (args.dryRun) {
-      const preview = await previewAcceptanceBarAmendment(input);
-      if (preview === null) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                dryRun: true,
-                code: 'rubric_not_found',
-                error: `no rubric '${args.rubricRef}' — rubrics:list to see refs`,
-                rubricRef: args.rubricRef,
-              }),
+      const receiptKey = 'preview-' + randomUUID();
+      const run = trackAmendRun(receiptKey, args.rubricRef, (async (): Promise<Record<string, unknown>> => {
+        const preview = await previewAcceptanceBarAmendment(input);
+        if (preview === null) {
+          return {
+            ok: false,
+            dryRun: true,
+            code: 'rubric_not_found',
+            error: `no rubric '${args.rubricRef}' — rubrics:list to see refs`,
+            rubricRef: args.rubricRef,
+          };
+        }
+        return { ok: true, dryRun: true, preview };
+      })());
+      const settled = await settleWithin(run, amendForegroundBudgetMs());
+      if (settled.kind === 'rejected') throw settled.error;
+      const payload = settled.kind === 'resolved'
+        ? settled.value
+        : {
+            ok: true,
+            dryRun: true,
+            pending: true,
+            idempotencyKey: receiptKey,
+            receipt: {
+              idempotencyKey: receiptKey,
+              rubricRef: args.rubricRef,
+              poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
             },
-          ],
-        };
-      }
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, dryRun: true, preview }) }],
-      };
+            note:
+              'The dry-run preview is still running after ' + Math.round(amendForegroundBudgetMs() / 1000) +
+              's and continues server-side. Poll rubrics:amend-status with this receipt; dryRun applies no writes.',
+          };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
     }
     // RSR-P-008-C: hold a receipt BEFORE the work starts. An amend that outlives
     // the foreground budget returns that receipt instead of letting the transport
