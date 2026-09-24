@@ -29,6 +29,7 @@ import {
   throttleSnapshotFoldProgress,
 } from '../log-snapshot';
 import type { PeerLogOp } from '../peer-log';
+import { SnapshotFoldWorker } from '../snapshot-fold-offload';
 
 const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
 const WS = 'ws-p003-offgate';
@@ -57,7 +58,13 @@ function tmpWorkspaceRoot(): string {
   return dir;
 }
 
-async function boot(slug: string, extra: { ownCompactionProgressIntervalMs?: number } = {}) {
+async function boot(
+  slug: string,
+  extra: Pick<
+    Parameters<typeof bootHarnessSubstrate>[0],
+    'ownCompactionProgressIntervalMs' | 'ownCompactionFoldWorker' | 'ownCompactionFailureBackoffBaseMs'
+  > = {},
+) {
   const handle = await bootHarnessSubstrate({
     workspaceRoot: tmpWorkspaceRoot(),
     workspaceId: WS,
@@ -189,6 +196,40 @@ describe('own-log compaction runs off the merge gate (P-003 / R-7)', () => {
     await closing;
     expect(compactionEvents(slug)).toHaveLength(0);
   });
+});
+
+describe('a failed compaction backs off, then retries even on an IDLE pot (WI-10002836)', () => {
+  it('does not restart inside the backoff, and restarts on an idle pass once it expires', async () => {
+    // The failures this pins: (1) a deterministically failing compaction (a worker OOM on
+    // a live set larger than its cap) used to restart its full fold on the very next pass,
+    // forever; (2) the trigger sat BELOW the merge pass's idle early-return, so a pot whose
+    // cursor had caught up never compacted at all (quartermaster-ops: due=true on every
+    // boot for a day) — and with a backoff, a failed run on an idle pot would never retry.
+    const BACKOFF_MS = 2_000;
+    const slug = 'wi10002836-retry';
+    let opens = 0;
+    const { handle } = await boot(slug, {
+      ownCompactionFailureBackoffBaseMs: BACKOFF_MS,
+      ownCompactionFoldWorker: async (init) => {
+        opens++;
+        if (opens === 1) throw new Error('synthetic worker start failure');
+        return SnapshotFoldWorker.open(init);
+      },
+    });
+    await appendOps(handle, 0, SNAPSHOT_COMPACT_EVERY_OPS);
+    await handle.mergeNow(); // merges the ops AND kicks the compaction off; it fails
+    const failed = await waitFor(() => compactionEvents(slug).find((e) => /^log compaction failed/.test(e.message ?? '')));
+    expect(failed.message).toMatch(/synthetic worker start failure \(failures=1 nextAttemptInMs=2000\)$/);
+
+    await handle.mergeNow(); // idle, inside the backoff
+    expect(opens).toBe(1);
+
+    await new Promise((r) => setTimeout(r, BACKOFF_MS + 100));
+    await handle.mergeNow(); // idle (nothing new since the first pass), backoff expired
+    const seed = await waitFor(() => findLatestCompleteSnapshot(handle.ownLog));
+    expect(seed.coversUpTo).toBe(SNAPSHOT_COMPACT_EVERY_OPS);
+    expect(opens).toBe(2);
+  }, 30_000);
 });
 
 describe('own-log compaction is observable after the fact (P-005)', () => {

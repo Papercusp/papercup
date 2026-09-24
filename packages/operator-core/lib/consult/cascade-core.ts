@@ -260,6 +260,10 @@ export interface AdvanceCascadeParams {
   /** Row state to leave on a successful advance: 'active' when triggered by a
    * reply (a responder engaged), 'awaiting_responder' for decline/expiry. */
   stateOnAdvance: 'awaiting_responder' | 'active';
+  /** Optional expiry-sweep snapshot guards. A due-row snapshot must not append
+   * an expiry event or advance after another writer has refreshed its TTL. */
+  expectedState?: string;
+  expectedExpiresAt?: string | Date | null;
   nowIso: string;
 }
 
@@ -492,6 +496,8 @@ export async function advanceCascade(
                  updated_at = ${params.nowIso}::timestamptz
            WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
              AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+             AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
+             AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
           RETURNING conversation_id
         `) as unknown as Array<{ conversation_id: string }>;
         if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -559,6 +565,8 @@ export async function advanceCascade(
                    updated_at = ${params.nowIso}::timestamptz
              WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
                AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+               AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
+               AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
             RETURNING conversation_id
           `) as unknown as Array<{ conversation_id: string }>);
       if (wroteTerminal.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -577,6 +585,8 @@ export async function advanceCascade(
              updated_at = ${params.nowIso}::timestamptz
        WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
          AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+         AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
+         AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
       RETURNING conversation_id
     `) as unknown as Array<{ conversation_id: string }>;
     if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -598,6 +608,8 @@ export async function advanceCascade(
            updated_at = ${params.nowIso}::timestamptz
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
        AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+       AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
+       AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
     RETURNING conversation_id
   `) as unknown as Array<{ conversation_id: string }>;
   if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };

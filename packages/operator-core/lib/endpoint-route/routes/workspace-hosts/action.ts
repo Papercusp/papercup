@@ -47,6 +47,10 @@ import {
   recordWorkspaceHostReleaseCleanup,
   WorkspaceHostReleaseCleanupError,
 } from '../../../workspace-host/release-cleanup-release-receipt';
+import {
+  recordWorkspaceHostReleaseShipment,
+  WorkspaceHostReleaseShipmentError,
+} from '../../../workspace-host/release-shipment-green-receipt';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -65,6 +69,8 @@ interface WorkspaceHostActionBody {
   desired?: unknown;
   /** Release task whose destroy, acceptance, or cleanup milestone is being recorded. */
   releaseTaskId?: unknown;
+  /** Shipment only: the published prior release that should match the manifest rollback target. */
+  rollbackReleaseTaskId?: unknown;
   /** Customer acceptance only: the active customer workspace attached to the hosted takeover. */
   customerWorkspaceId?: unknown;
   /** Customer acceptance only: exact authenticated hosted session and control channel. */
@@ -76,6 +82,7 @@ const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart', 'repair', 'snapshot', 'up
 type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
 const CUSTOMER_ACCEPTANCE_ACTION = 'customer-acceptance';
 const RELEASE_CLEANUP_ACTION = 'release-cleanup';
+const RELEASE_SHIPMENT_ACTION = 'release-shipment';
 const DESTROY_DISPOSITIONS = ['snapshot', 'backup', 'discard'] as const;
 type DestroyDisposition = (typeof DESTROY_DISPOSITIONS)[number];
 
@@ -185,6 +192,8 @@ export interface WorkspaceHostActionRouteDependencies {
   recordCustomerAcceptance?: typeof recordWorkspaceHostCustomerAcceptance;
   /** Measure D-396's release cleanup predicate and record it on the exact release task. */
   recordReleaseCleanup?: typeof recordWorkspaceHostReleaseCleanup;
+  /** Verify green-main shipment and the published rollback target on the exact release task. */
+  recordReleaseShipment?: typeof recordWorkspaceHostReleaseShipment;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
@@ -196,6 +205,7 @@ const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
   startLifecycle: startWorkspaceHostLifecycleWorkflow,
   recordCustomerAcceptance: recordWorkspaceHostCustomerAcceptance,
   recordReleaseCleanup: recordWorkspaceHostReleaseCleanup,
+  recordReleaseShipment: recordWorkspaceHostReleaseShipment,
 };
 
 function requestError(error: string, status = 400, extra: Record<string, unknown> = {}): Response {
@@ -222,6 +232,7 @@ export function createWorkspaceHostActionRoute(
         action !== 'destroy' &&
         action !== CUSTOMER_ACCEPTANCE_ACTION &&
         action !== RELEASE_CLEANUP_ACTION &&
+        action !== RELEASE_SHIPMENT_ACTION &&
         !LIFECYCLE_ACTIONS.includes(action as LifecycleAction)
       ) {
         return requestError('workspace-host lifecycle action is not implemented', 501, {
@@ -235,8 +246,15 @@ export function createWorkspaceHostActionRoute(
         return requestError('invalid operationId');
       }
       if (body.releaseTaskId !== undefined) {
-        if (action !== 'destroy' && action !== CUSTOMER_ACCEPTANCE_ACTION && action !== RELEASE_CLEANUP_ACTION) {
-          return requestError('releaseTaskId is recorded only by a destroy, customer acceptance, or release cleanup');
+        if (
+          action !== 'destroy' &&
+          action !== CUSTOMER_ACCEPTANCE_ACTION &&
+          action !== RELEASE_CLEANUP_ACTION &&
+          action !== RELEASE_SHIPMENT_ACTION
+        ) {
+          return requestError(
+            'releaseTaskId is recorded only by a destroy, customer acceptance, release cleanup, or release shipment',
+          );
         }
         if (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId)) {
           return requestError('releaseTaskId has an invalid value');
@@ -258,6 +276,23 @@ export function createWorkspaceHostActionRoute(
       }
       if (action === RELEASE_CLEANUP_ACTION && (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId))) {
         return requestError('release cleanup requires a valid releaseTaskId');
+      }
+      if (body.rollbackReleaseTaskId !== undefined) {
+        if (action !== RELEASE_SHIPMENT_ACTION) {
+          return requestError('rollbackReleaseTaskId is recorded only by a release shipment');
+        }
+        if (typeof body.rollbackReleaseTaskId !== 'string' || !TASK_ID.test(body.rollbackReleaseTaskId)) {
+          return requestError('rollbackReleaseTaskId has an invalid value');
+        }
+      }
+      if (
+        action === RELEASE_SHIPMENT_ACTION &&
+        (typeof body.releaseTaskId !== 'string' ||
+          !TASK_ID.test(body.releaseTaskId) ||
+          typeof body.rollbackReleaseTaskId !== 'string' ||
+          !TASK_ID.test(body.rollbackReleaseTaskId))
+      ) {
+        return requestError('release shipment requires valid current and rollback releaseTaskId values');
       }
       let destroyAdmission:
         | {
@@ -343,6 +378,31 @@ export function createWorkspaceHostActionRoute(
             });
           }
           return requestError('workspace-host release cleanup could not be recorded', 500);
+        }
+      }
+      if (action === RELEASE_SHIPMENT_ACTION) {
+        try {
+          const receipt = await (dependencies.recordReleaseShipment ?? recordWorkspaceHostReleaseShipment)({
+            workspaceId,
+            hostId,
+            releaseTaskId: body.releaseTaskId as string,
+            rollbackReleaseTaskId: body.rollbackReleaseTaskId as string,
+          });
+          return receipt.outcome === 'committed'
+            ? Response.json({ ok: true, receipt })
+            : requestError('workspace-host release shipment requirements are not met', 409, { receipt });
+        } catch (error) {
+          if (error instanceof WorkspaceHostReleaseShipmentError) {
+            return requestError('workspace-host release shipment could not be verified', 409, {
+              reason: error.reason,
+            });
+          }
+          if (error instanceof WorkspaceHostReleaseBindingError) {
+            return requestError('workspace-host release shipment could not bind to the release', 409, {
+              reason: error.reason,
+            });
+          }
+          return requestError('workspace-host release shipment could not be recorded', 500);
         }
       }
       if (!dependencies.provisioningAvailable()) {

@@ -4,6 +4,7 @@ import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostActionRoute, type WorkspaceHostActionRouteDependencies } from './action';
 import { WorkspaceHostCustomerAcceptanceError } from '../../../workspace-host/customer-acceptance-release-receipt';
 import { WorkspaceHostReleaseCleanupError } from '../../../workspace-host/release-cleanup-release-receipt';
+import { WorkspaceHostReleaseShipmentError } from '../../../workspace-host/release-shipment-green-receipt';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
@@ -563,6 +564,102 @@ describe('POST /workspace-hosts/action release-cleanup', () => {
     );
 
     const response = await post({ ...h.dependencies, recordReleaseCleanup }, cleanupBody);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, reason: 'release-task-not-found' });
+  });
+});
+
+describe('POST /workspace-hosts/action release-shipment', () => {
+  const shipmentBody = {
+    action: 'release-shipment',
+    workspaceId: 'host-1',
+    releaseTaskId: 'release-task-1',
+    rollbackReleaseTaskId: 'rollback-task-1',
+  };
+
+  it('records the green shipment check on the explicit current and rollback release tasks', async () => {
+    const h = harness();
+    const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>(
+      async () => ({
+        outcome: 'committed',
+        stage: 'release.shipment.green',
+        releaseTaskId: 'release-task-1',
+        rollbackReleaseTaskId: 'rollback-task-1',
+        hostId: 'host-1',
+        bundleSha256: 'c'.repeat(64),
+        sourceSha: 'a'.repeat(40),
+        evidenceRefs: ['shipment-source-in-main:' + 'a'.repeat(40)],
+      }),
+    );
+
+    const response = await post(
+      { ...h.dependencies, provisioningAvailable: () => false, recordReleaseShipment },
+      shipmentBody,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      receipt: { stage: 'release.shipment.green', outcome: 'committed' },
+    });
+    expect(recordReleaseShipment).toHaveBeenCalledWith({
+      workspaceId: 'workspace_1',
+      hostId: 'host-1',
+      releaseTaskId: 'release-task-1',
+      rollbackReleaseTaskId: 'rollback-task-1',
+    });
+    expect(h.readTarget).not.toHaveBeenCalled();
+    expect(h.startDestroy).not.toHaveBeenCalled();
+    expect(h.startLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('returns the measured refusal receipt without claiming shipment committed', async () => {
+    const h = harness();
+    const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>(
+      async () => ({
+        outcome: 'refused',
+        stage: 'release.shipment.green',
+        releaseTaskId: 'release-task-1',
+        rollbackReleaseTaskId: 'rollback-task-1',
+        hostId: 'host-1',
+        bundleSha256: 'c'.repeat(64),
+        sourceSha: 'a'.repeat(40),
+        evidenceRefs: ['shipment-failed:source-not-in-main'],
+      }),
+    );
+
+    const response = await post({ ...h.dependencies, recordReleaseShipment }, shipmentBody);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      receipt: { outcome: 'refused', evidenceRefs: ['shipment-failed:source-not-in-main'] },
+    });
+  });
+
+  it('requires explicit current and rollback release task ids before invoking the writer', async () => {
+    const h = harness();
+    const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>();
+
+    const response = await post(
+      { ...h.dependencies, recordReleaseShipment },
+      { ...shipmentBody, rollbackReleaseTaskId: undefined },
+    );
+
+    expect(response.status).toBe(400);
+    expect(recordReleaseShipment).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed conflict when the release task cannot be resolved', async () => {
+    const h = harness();
+    const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>(
+      async () => {
+        throw new WorkspaceHostReleaseShipmentError('release-task-not-found', 'no release task');
+      },
+    );
+
+    const response = await post({ ...h.dependencies, recordReleaseShipment }, shipmentBody);
 
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ ok: false, reason: 'release-task-not-found' });

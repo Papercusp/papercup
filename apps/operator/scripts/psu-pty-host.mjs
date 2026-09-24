@@ -4253,6 +4253,10 @@ export function createHeadlessNormalizedLogWriter(path, {
  * window.
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS = 30_000;
+// A fresh headless Claude kickoff must either reach the real composer or fail
+// inside the detached launcher's 30s receipt window. Reserve the remaining
+// time for native-transcript proof; never type into a quiet welcome/menu screen.
+export const HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS = 20_000;
 const HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS = 32_768;
 const HEADLESS_CLAUDE_THEME_PROMPT_RE =
   /(?:\b(?:choose|select|pick)\b[\s\S]{0,160}\btheme\b|\btheme\b[\s\S]{0,160}\b(?:dark|light|system)\b)/i;
@@ -4334,6 +4338,14 @@ export function makeHeadlessClaudeOnboardingStateMachine({
       phase = 'complete';
       observed = '';
       return snapshot('submit', 'security');
+    }
+    if (claudeStandaloneComposerPromptVisible(visible)) {
+      // No onboarding wizard appeared (or its final Enter already reached the
+      // editor). This positive composer marker ends the detector window instead
+      // of reporting a false onboarding expiry 30s into an ordinary startup.
+      phase = 'complete';
+      observed = '';
+      return snapshot('ready');
     }
     return snapshot();
   };
@@ -4579,9 +4591,11 @@ export function makeScrollbackGuard() {
   };
 }
 
-/** A launch seed must not reach a TUI before its editor exists. Most backends
- * are ready for the existing quiet-window check after their first output byte,
- * but OMP emits terminal capability probes before it paints any UI, and Codex
+/** A launch seed must not reach a TUI before its editor exists. Headless Claude
+ * requires a standalone composer glyph; its welcome and onboarding screens can
+ * emit output before an editor exists. Most other backends are ready for the
+ * existing quiet-window check after their first output byte, but OMP emits
+ * terminal capability probes before it paints any UI, and Codex
  * animates a multi-second character-by-character "Tip: ..." onboarding line
  * (plus, occasionally, an MCP-startup warning typed the same way) before its
  * composer ever paints — a mid-animation pause can look "quiet at a prompt"
@@ -4607,6 +4621,15 @@ export function makeScrollbackGuard() {
  * footer while MCP servers are still booting, so only a non-Starting status
  * counts as the composer being installed. */
 const CODEX_STATUS_FOOTER_RE = /([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g;
+export function headlessClaudeKickoffReadiness({
+  enabled = false,
+  requireInitialOutput = false,
+  promptReady = false,
+} = {}) {
+  if (!enabled || !requireInitialOutput) return 'ordinary-gate';
+  return promptReady ? 'composer-ready' : 'wait-for-composer';
+}
+
 export function startupOutputReady(agent, output) {
   const visible = stripAnsi(output);
   const normalized = String(agent ?? '').toLowerCase();
@@ -4620,6 +4643,7 @@ export function startupOutputReady(agent, output) {
     }
     return false;
   }
+  if (normalized === 'claude') return freshChildPromptReady(normalized, output);
   return String(output ?? '').length > 0;
 }
 
@@ -6790,6 +6814,22 @@ export function hostThroughPty(o) {
     const freshChildWasInterrupted = () =>
       freshChildOwnerInputGeneration !== null &&
       ownerInputGeneration !== freshChildOwnerInputGeneration;
+    const codexMarkerKickoffRequiresFrame = () =>
+      requireInitialOutput &&
+      verifyKickoffMarkerEcho &&
+      childBackendTuiStartedAt > 0 &&
+      String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
+    const startupReadinessProven = () =>
+      codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
+    const startupFallbackCanAuthorize = () =>
+      !codexMarkerKickoffRequiresFrame() && childStartupFallbackElapsed();
+    const codexBackendFrameWaitExpired = () => {
+      if (!codexMarkerKickoffRequiresFrame() || childBackendFirstFrameAt > 0) return false;
+      const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
+      return waitStartedAt > 0 &&
+        Date.now() - waitStartedAt >= startupMarkerFallbackMs *
+          (CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER + 1);
+    };
     try {
       // A scripted resume/port begins this task before wireChildData() is
       // reached later in host setup. Yield until the listener has observed at
@@ -6798,9 +6838,10 @@ export function hostThroughPty(o) {
       // sentinel lastOutputAt=0 value.
       while (
         requireInitialOutput &&
-        !childStartupReady &&
+        !startupReadinessProven() &&
         !freshChildWasInterrupted() &&
-        !childStartupFallbackElapsed() &&
+        !startupFallbackCanAuthorize() &&
+        !codexBackendFrameWaitExpired() &&
         Date.now() < deadline
       ) {
         const recoveryState = claudeResumeCompaction.tick();
@@ -6815,7 +6856,7 @@ export function hostThroughPty(o) {
       // not return or break from this outer try block when the recovery machine
       // has already timed out; its next gated check observes the same terminal
       // state and exits through that shared path.
-      const startupFallbackReady = childStartupFallbackElapsed();
+      const startupFallbackReady = startupFallbackCanAuthorize();
       // EI-20270422678541544 — TERMINAL FALLBACK. A missing startup-ready marker
       // used to return from here with `attempts: 0`, having never once tried to
       // write. That is a GUARANTEED strand whenever marker detection has a false
@@ -6835,7 +6876,7 @@ export function hostThroughPty(o) {
       // attempts >= 1 and a reason recording that the fallback was exercised, so
       // the two cases stop being indistinguishable in the ledger.
       const startupMarkerMissing =
-        requireInitialOutput && !childStartupReady && !startupFallbackReady;
+        requireInitialOutput && !startupReadinessProven() && !startupFallbackReady;
       if (startupMarkerMissing) dropReason = 'no-startup-ready-marker';
       let lastResortSpent = false;
       // eslint-disable-next-line no-constant-condition
@@ -6852,6 +6893,17 @@ export function hostThroughPty(o) {
           dropReason = 'fresh-child-owner-input';
           break;
         }
+        if (codexBackendFrameWaitExpired()) {
+          const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
+          appendHostEvent(ownerId, 'launch-kickoff-backend-frame-timeout', {
+            elapsedMs: waitStartedAt > 0 ? Math.max(0, Date.now() - waitStartedAt) : null,
+            tuiStarted: childBackendTuiStartedAt > 0,
+            budgetMs: startupMarkerFallbackMs *
+              (CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER + 1),
+          });
+          dropReason = 'codex-backend-frame-not-observed';
+          break;
+        }
         attempts++;
         const recoveryBeforeBusy = await waitForClaudeResumeCompaction(deadline);
         if (!recoveryBeforeBusy.ready) {
@@ -6864,12 +6916,26 @@ export function hostThroughPty(o) {
         // proof plus no intervening owner input establishes readiness without
         // requiring raw PTY silence. Reused children and heuristic fallbacks
         // still take the ordinary busy gate.
+        const claudeKickoffReadiness = headlessClaudeKickoffReadiness({
+          enabled: headlessClaudeOnboardingEnabled(env),
+          requireInitialOutput,
+          promptReady: childPromptReady,
+        });
         const freshPromptReady = freshChildOwnerInputGeneration !== null &&
-          (childPromptReady ||
-            (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' && childStartupReady));
+          (codexMarkerKickoffRequiresFrame()
+            ? childBackendFirstFrameAt > 0
+            : childPromptReady ||
+              (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' && childStartupReady));
         const atPrompt = freshPromptReady
           ? { deferred: false }
-          : await agentBusyGate.waitAtPrompt();
+          : claudeKickoffReadiness === 'composer-ready'
+            ? { deferred: false }
+            : claudeKickoffReadiness === 'wait-for-composer'
+              ? { deferred: true, reason: 'headless-claude-composer-not-ready' }
+              : await agentBusyGate.waitAtPrompt();
+        if (claudeKickoffReadiness === 'wait-for-composer') {
+          dropReason = 'headless-claude-composer-not-ready';
+        }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         if (!atPrompt.deferred) {
           // The menu can be painted while the ordinary quiet gate is settling.
@@ -6893,13 +6959,15 @@ export function hostThroughPty(o) {
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
           const turnWriteStartedAt = Date.now();
-          const turnWriteAuthorizedBy = childStartupReady
-            ? 'startup-ready-marker'
+          const turnWriteAuthorizedBy = codexMarkerKickoffRequiresFrame()
+            ? 'backend-session-frame'
             : childPromptReady
               ? 'prompt-ready'
-              : startupFallbackReady
-                ? 'startup-fallback'
-                : 'last-resort';
+              : childStartupReady
+                ? 'startup-ready-marker'
+                : startupFallbackReady
+                  ? 'startup-fallback'
+                  : 'last-resort';
           const steps = controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env);
           let markerEchoFailureReason = null;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
@@ -6982,6 +7050,8 @@ export function hostThroughPty(o) {
               msSinceBackendFirstFrame: childBackendFirstFrameAt
                 ? turnWriteStartedAt - childBackendFirstFrameAt
                 : null,
+              promptReady: childPromptReady,
+              startupReady: childStartupReady,
             });
           }
           if (child !== injectChild) {
@@ -7116,6 +7186,9 @@ export function hostThroughPty(o) {
       const r = await injectTurnAtPrompt({
         text: launchKickoff,
         label,
+        ...(headlessClaudeOnboardingEnabled(env)
+          ? { budgetMs: Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS) }
+          : {}),
         requireInitialOutput: true,
         verifyKickoffMarkerEcho,
         freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
@@ -8643,6 +8716,10 @@ export function hostThroughPty(o) {
         });
       }
       const onboarding = headlessClaudeOnboarding.observe(raw);
+      if (onboarding.complete && headlessClaudeOnboardingExpiryTimer) {
+        clearTimeout(headlessClaudeOnboardingExpiryTimer);
+        headlessClaudeOnboardingExpiryTimer = null;
+      }
       if (onboarding.action === 'submit') {
         try {
           // One raw CR per detected prompt. Do not use controlWritesForAgent:

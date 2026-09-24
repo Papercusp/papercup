@@ -56,27 +56,31 @@ describe('carry startup recurrence detectors (P-009)', () => {
 });
 
 describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => {
-  const cohort = (): CarryTaskEvaluation[] => Array.from({ length: 20 }, (_, n) => ['control', 'candidate'].map(arm => ({
+  const cohort = (): CarryTaskEvaluation[] => Array.from({ length: 30 }, (_, n) => ['control', 'candidate'].map(arm => ({
     taskId: `task-${n}`, arm: arm as 'control' | 'candidate', model: 'gpt-6-sol', transport: 'subscription',
     authorizationScope: 'tenant-a/account-a', workloadFingerprint: 'fixture-v1', completed: true,
     quality: 'pass' as const, qualityEvidenceRef: `fixture:test-${n}-${arm}`, firstUsefulResponseMs: 1000,
     accountingComplete: true, requests: [
-      { id: 'one', phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 700000 : 50000 },
-      { id: 'two', phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 690000 : 50000 },
-      { id: 'work', phase: 'work' as const, uncachedInputTokens: 100000 },
+      { id: `${n}-${arm}-one`, phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 700000 : 50000 },
+      { id: `${n}-${arm}-two`, phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 690000 : 50000 },
+      { id: `${n}-${arm}-work`, phase: 'work' as const, uncachedInputTokens: 100000 },
     ],
   }))).flat();
   it('computes adopted thresholds on a complete paired cohort', () => {
     const result = evaluateCarryTaskPairs(cohort());
     expect(result.status).toBe('pass');
-    expect(result.pairs).toBe(20);
-    expect(result.metrics?.controlTotal).toBe(29_800_000);
-    expect(result.metrics?.candidateTotal).toBe(4_000_000);
+    expect(result.pairs).toBe(30);
+    expect(result.metrics?.controlTotal).toBe(44_700_000);
+    expect(result.metrics?.candidateTotal).toBe(6_000_000);
+    expect(result.metrics?.uncertainty).toMatchObject({ method: 'paired-bootstrap-mean-difference',
+      resamplingUnit: 'task-pair', ci: 0.95, iterations: 10000, seed: 12345 });
+    expect(result.metrics?.uncertainty.firstTwo.delta).toEqual({ point: -1_290_000, lower: -1_290_000, upper: -1_290_000, ci: 0.95 });
+    expect(result.metrics?.uncertainty.task.delta).toEqual({ point: -1_290_000, lower: -1_290_000, upper: -1_290_000, ci: 0.95 });
   });
   it('fails relocated cost in preparation/compaction/recovery/retry even when startup looks cheap', () => {
     for (const phase of ['preparation', 'compaction', 'recovery', 'retry'] as const) {
       const rows = cohort().map(row => row.arm === 'candidate' ? { ...row,
-        requests: [...row.requests, { id: 'hidden-cost', phase, uncachedInputTokens: 1_400_000 }] } : row);
+        requests: [...row.requests, { id: `${row.taskId}-hidden-cost`, phase, uncachedInputTokens: 1_400_000 }] } : row);
       const result = evaluateCarryTaskPairs(rows);
       expect(result.status).toBe('fail');
       expect(result.failures).toContain('task-reduction-below-25-percent');
@@ -103,6 +107,35 @@ describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => 
     expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, qualityEvidenceRef: null }))).status).toBe('insufficient');
     expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, requests: [...row.requests, row.requests[0]] }))).status).toBe('insufficient');
     expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, requests: row.requests.map(request => ({ ...request, uncachedInputTokens: null })) }))).status).toBe('insufficient');
+  });
+  it('requires the registered initial 30 pairs by default', () => {
+    expect(evaluateCarryTaskPairs(cohort().slice(0, 58)).status).toBe('insufficient');
+  });
+  it('does not inflate the cohort by reusing one charged event under another task or arm', () => {
+    for (const target of [1, 2]) {
+      const rows = cohort();
+      rows[target] = { ...rows[target], requests: rows[target].requests.map((request, n) =>
+        n === 0 ? { ...request, id: rows[0].requests[0].id } : request) };
+      expect(evaluateCarryTaskPairs(rows).status).toBe('insufficient');
+    }
+  });
+  it('does not pass savings supported only by one outlier when the paired interval includes zero', () => {
+    const rows = cohort().map(row => row.taskId === 'task-0' ? row : { ...row,
+      requests: row.requests.map(request => ({ ...request, uncachedInputTokens: 10 })) });
+    const result = evaluateCarryTaskPairs(rows);
+    expect(result.status).toBe('insufficient');
+    expect(result.failures).toEqual([]);
+    expect(result.metrics?.uncertainty.task.delta.upper).toBe(0);
+    expect(result.insufficient).toContain('task-improvement-not-supported-by-paired-95-ci');
+    expect(evaluateCarryTaskPairs([...rows].reverse()).metrics?.uncertainty).toEqual(result.metrics?.uncertainty);
+  });
+  it('rejects unsafe aggregate token sums even when individual counts are safe integers', () => {
+    // Cover overflow within one task and only after summing otherwise-safe tasks.
+    for (const tokens of [Number.MAX_SAFE_INTEGER, 1_000_000_000_000_000]) {
+      const rows = cohort().map(row => ({ ...row, requests: row.requests.map(request => ({ ...request,
+        uncachedInputTokens: row.arm === 'control' ? tokens : 10 })) }));
+      expect(evaluateCarryTaskPairs(rows).status).toBe('insufficient');
+    }
   });
 });
 

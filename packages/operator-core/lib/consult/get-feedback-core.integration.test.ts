@@ -594,6 +594,33 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(row.outcome).toMatchObject({ source: 'grading-integrity', issueId });
   });
 
+  it('repairs an expired source-audit consult when its exact target later settles', async () => {
+    const issueId = 'EI-settled-after-expired-source-audit';
+    const conversationId = 'conv-settled-after-expired-source-audit';
+    const reservationKey = `grading-audit:${issueId}`;
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, expires_at, closed_at, routing)
+      VALUES (
+        ${WS}, ${conversationId}, 'audit-requester', 'audit-responder', 'expired',
+        'audit exact source card', 'hard-blocked', ${new Date(NOW.getTime() + 30 * 60_000).toISOString()}::timestamptz,
+        ${NOW.toISOString()}::timestamptz,
+        ${rootSql.json({ cascade: {
+          flavor: 'grading-integrity', issueId, reservationKey,
+          reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+        } } as never)}
+      )
+    `;
+
+    await closeSourceAuditConsults(WS, issueId, rootSql);
+
+    const row = await stateRow(conversationId);
+    expect(row.state).toBe('closed_answered');
+    expect(row.closed_at).not.toBeNull();
+    expect(row.outcome).toMatchObject({ source: 'grading-integrity', issueId });
+  });
+
   it('repairs a missed no-qualified settlement cleanup before any further cascade dispatch', async () => {
     const issueId = 'EI-settled-no-qualified-cascade';
     const fixture = makeDeps(routeOf([cand('settled-cascade-a'), cand('settled-cascade-b')]));

@@ -94,6 +94,7 @@ import {
   SnapshotAbortedError,
   throttleSnapshotFoldProgress,
   type ProduceSnapshotResult,
+  type SnapshotFoldWorkerFactory,
 } from './log-snapshot';
 import { SnapshotFoldWorker } from './snapshot-fold-offload';
 
@@ -417,6 +418,13 @@ export interface BootHarnessOpts {
    * Default `OWN_COMPACTION_PROGRESS_INTERVAL_MS`. Tests pass 0 to record every window.
    */
   ownCompactionProgressIntervalMs?: number;
+  /**
+   * WI-10002836 test seams: the fold-worker factory (default `SnapshotFoldWorker.open`) and
+   * the first backoff after a failed own compaction (default
+   * `OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS`), so a test can fail one run and watch the retry.
+   */
+  ownCompactionFoldWorker?: SnapshotFoldWorkerFactory;
+  ownCompactionFailureBackoffBaseMs?: number;
   /**
    * WI-6324 test seam: managed recurring timers are inert under Vitest by
    * default. The zombie-socket integration repro opts in ONLY the independent
@@ -2446,6 +2454,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    */
   let ownCompactionRetryAt = 0;
   let ownCompactionFailures = 0;
+  /** Aborted by close(): releases a compaction that is still queued for a fold slot. */
+  const ownCompactionAbort = new AbortController();
 
   /** Discover the cadence anchor (own-compaction-anchor.ts). Returns the boot-row token. */
   async function discoverOwnCompactionAnchor(): Promise<string> {
@@ -3412,6 +3422,45 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * failure caused by the engine stopping underneath it is not recorded at all.
    */
   /**
+   * P-005 (design A, flag-gated): compact the OWN log once it has grown past the threshold
+   * since its last snapshot — append ONE additive snapshot set (no fork). The threshold is
+   * proportional to the prior set's row count (p2p-join-catchup-speed P-003, bar R-6).
+   *
+   * KICKED OFF, NOT AWAITED (bar R-7). The first compaction of a long log folds its whole
+   * history (7.75M ops on the tower's papercusp pot), and awaiting it in the merge pass held
+   * the merge gate for that entire read. A merge pass never appends to the own log (see
+   * servicePendingHeadSnapshot), ordinary writes already append outside this gate, and
+   * produceLogSnapshot re-anchors to appends that land during its read (WI-37526) — so the
+   * gate bought no safety for this read. The in-flight guard keeps one compaction at a time;
+   * the head-snapshot path waits for it so two producers never append concurrently.
+   *
+   * WI-10002836: never from an UNKNOWN anchor (retry the discovery instead, in the same
+   * one-at-a-time slot), and never again before a failed run's backoff expires. Called at the
+   * TOP of every merge pass. It used to sit below the `!changed` idle early-return, so a pot
+   * whose cursor had caught up never compacted however far past its threshold it was
+   * (measured: quartermaster-ops `due=true` on every boot for a day, no compaction), and a
+   * failed run or an unknown anchor on an idle pot could never be retried.
+   */
+  function maybeStartOwnCompaction(): void {
+    if (!snapshotProducerEnabled || ownCompactionInFlight || stopped) return;
+    const now = Date.now();
+    if (!ownCompactionAnchorKnown) {
+      if (now >= ownCompactionAnchorRetryAt) {
+        ownCompactionInFlight = retryOwnCompactionAnchor().finally(() => {
+          ownCompactionInFlight = null;
+        });
+      }
+    } else if (
+      now >= ownCompactionRetryAt &&
+      shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))
+    ) {
+      ownCompactionInFlight = runOwnCompaction().finally(() => {
+        ownCompactionInFlight = null;
+      });
+    }
+  }
+
+  /**
    * WI-10002836 — re-run the cadence-anchor discovery that boot could not complete. Runs in
    * the own-compaction slot, never under the merge gate. Never rejects.
    */
@@ -3467,7 +3516,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // fold held this host's event loop for 30+ min (lag p50 2.8s, PG connects timed
         // out, routines and git-sync stalled). No inline fallback: a worker failure
         // fails this compaction (recorded below) instead of freezing the host.
-        foldWorker: (init) => SnapshotFoldWorker.open(init),
+        foldWorker:
+          opts.ownCompactionFoldWorker ??
+          ((init) => SnapshotFoldWorker.open(init, { signal: ownCompactionAbort.signal })),
         // WI-10002836: without a position the first full-history fold (7.76M ops on the
         // tower) was indistinguishable from a hang for its whole 30-minute run.
         onProgress: throttleSnapshotFoldProgress(
@@ -3510,7 +3561,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     } catch (e) {
       if (stopped || e instanceof SnapshotAbortedError) return;
       ownCompactionFailures += 1;
-      const backoffMs = ownCompactionBackoffMs(ownCompactionFailures, OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS);
+      const backoffMs = ownCompactionBackoffMs(
+        ownCompactionFailures,
+        opts.ownCompactionFailureBackoffBaseMs ?? OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS,
+      );
       ownCompactionRetryAt = Date.now() + backoffMs;
       try {
         recordBootEvent(
@@ -3665,6 +3719,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // P-019 — BEFORE anything that can return early (notably the `!changed` idle
     // short-circuit further down). See servicePendingHeadSnapshot's doc comment.
     await servicePendingHeadSnapshot();
+    // WI-10002836 — also before the idle early-return, for the same reason.
+    maybeStartOwnCompaction();
     try {
       // Snapshot the dynamic memory gate under the merge lock before any cursor
       // binding, seeding, or projection apply for this pass. A live OFF→ON edge
@@ -4325,39 +4381,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
 
-      // P-005 (design A, flag-gated): compact the OWN log once it has grown past
-      // the threshold since its last snapshot — append ONE additive snapshot set
-      // (no fork). The threshold is proportional to the prior set's row count
-      // (p2p-join-catchup-speed P-003, bar R-6).
-      //
-      // KICKED OFF, NOT AWAITED (bar R-7). The first compaction of a long log folds
-      // its whole history (7.75M ops on the tower's papercusp pot), and awaiting it
-      // here held the merge gate for that entire read. A merge pass never appends
-      // to the own log (see servicePendingHeadSnapshot), ordinary writes already
-      // append outside this gate, and produceLogSnapshot re-anchors to appends that
-      // land during its read (WI-37526) — so the gate bought no safety for this
-      // read. The in-flight guard keeps one compaction at a time; the head-snapshot
-      // path waits for it so two producers never append concurrently.
-      //
-      // WI-10002836: never from an UNKNOWN anchor (retry the discovery instead, in the
-      // same one-at-a-time slot), and never again before a failed run's backoff expires.
-      if (snapshotProducerEnabled && !ownCompactionInFlight && !stopped) {
-        const now = Date.now();
-        if (!ownCompactionAnchorKnown) {
-          if (now >= ownCompactionAnchorRetryAt) {
-            ownCompactionInFlight = retryOwnCompactionAnchor().finally(() => {
-              ownCompactionInFlight = null;
-            });
-          }
-        } else if (
-          now >= ownCompactionRetryAt &&
-          shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))
-        ) {
-          ownCompactionInFlight = runOwnCompaction().finally(() => {
-            ownCompactionInFlight = null;
-          });
-        }
-      }
+      // (The periodic own-log compaction is kicked off at the TOP of the pass, before
+      // the idle early-return — see `maybeStartOwnCompaction`, WI-10002836.)
 
       // ── Merge-refresh (D-002): the revocation refresh now runs at the TOP of
       // the pass (G7 fix) — BEFORE the merge set is collected — so a peer revoked
@@ -6260,6 +6285,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     async close() {
       stopped = true;
+      // WI-10002836: a compaction still QUEUED for a fold slot must not hold close() hostage.
+      ownCompactionAbort.abort();
       if (writerProgressAnnounceTimer) {
         clearTimeout(writerProgressAnnounceTimer);
         writerProgressAnnounceTimer = null;

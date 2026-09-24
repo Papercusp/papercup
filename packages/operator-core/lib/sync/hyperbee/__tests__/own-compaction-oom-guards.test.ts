@@ -331,6 +331,7 @@ describe('(d) the fold worker is capped below the host and reports its own heap'
           value: { big: big + w + k },
           ts: w,
           schema_version: CURRENT_SCHEMA_VERSION,
+          author_pubkey: '',
         }),
       );
       await worker.fold(window).catch((e: unknown) => {
@@ -350,7 +351,15 @@ describe('snapshot block recognition and the worker-side skip', () => {
     ts: NOW,
     schema_version: CURRENT_SCHEMA_VERSION,
   })[0]!;
-  const plain: PeerLogOp = { type: 'put', table: 'oom_t', hbKey: 'k', value: 1, ts: 1, schema_version: CURRENT_SCHEMA_VERSION };
+  const plain: PeerLogOp = {
+    type: 'put',
+    table: 'oom_t',
+    hbKey: 'k',
+    value: 1,
+    ts: 1,
+    schema_version: CURRENT_SCHEMA_VERSION,
+    author_pubkey: '',
+  };
 
   it('recognizes what both producers store, and nothing else', async () => {
     expect(isSnapshotBlock(encodeStoredBlock(chunk))).toBe(true);

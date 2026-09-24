@@ -28,6 +28,8 @@
  *    fields are all absent totals 0 and is rejected by the `minPromptTokens` floor.
  */
 
+import { pairedBootstrapCI } from '@papercusp/bench-metrics';
+
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
   /** False/absent means the numeric sum is only a known lower bound, not a complete prompt count. */
@@ -344,6 +346,7 @@ export interface CarryTaskEvaluation {
   firstUsefulResponseMs: number | null;
   /** Every charged request, including work done BEFORE creating the successor. */
   requests: readonly {
+    /** Canonical source-event identity, unique across the entire evaluation. */
     id: string;
     phase: 'preparation' | 'startup' | 'work' | 'compaction' | 'recovery' | 'retry';
     uncachedInputTokens: number | null;
@@ -352,10 +355,11 @@ export interface CarryTaskEvaluation {
 }
 
 /** R-4/R-8 acceptance arithmetic. A passing synthetic test is not a passing live cohort. */
-export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], minimumPairs = 20) {
+export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], minimumPairs = 30) {
   if (!Number.isSafeInteger(minimumPairs) || minimumPairs < 2) throw new Error('minimumPairs must be at least two');
   const insufficient: string[] = [];
   const failures: string[] = [];
+  const chargedRequests = new Set<string>();
   const byTask = new Map<string, CarryTaskEvaluation[]>();
   for (const sample of samples) byTask.set(sample.taskId, [...(byTask.get(sample.taskId) ?? []), sample]);
   const pairs: Array<{ control: CarryTaskEvaluation; candidate: CarryTaskEvaluation }> = [];
@@ -378,8 +382,12 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], 
     for (const row of [a, b]) {
       if (!row.accountingComplete || row.requests.some(request => !request.id ||
         request.uncachedInputTokens === null || !Number.isSafeInteger(request.uncachedInputTokens) || request.uncachedInputTokens < 0) ||
-        new Set(row.requests.map(request => request.id)).size !== row.requests.length) {
+        !Number.isSafeInteger(row.requests.reduce((sum, request) => sum + (request.uncachedInputTokens ?? NaN), 0))) {
         insufficient.push(`incomplete-accounting:${taskId}:${row.arm}`);
+      }
+      for (const request of row.requests) {
+        if (chargedRequests.has(request.id)) insufficient.push(`reused-request:${taskId}:${row.arm}:${request.id}`);
+        chargedRequests.add(request.id);
       }
       if (row.requests.filter(request => request.phase === 'startup').length < 2) {
         insufficient.push(`missing-startup:${taskId}:${row.arm}`);
@@ -393,6 +401,9 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], 
   if (pairs.length < minimumPairs) insufficient.push(`too-few-pairs:${pairs.length}/${minimumPairs}`);
   if (insufficient.length) return { status: failures.length ? 'fail' as const : 'insufficient' as const,
     pairs: pairs.length, insufficient, failures, metrics: null };
+  // Seeded resampling must not change when the same ledger rows arrive in a
+  // different order. The two arms stay index-aligned by their workload identity.
+  pairs.sort((a, b) => a.control.taskId < b.control.taskId ? -1 : a.control.taskId > b.control.taskId ? 1 : 0);
   const total = (arm: 'control' | 'candidate') => pairs.reduce((sum, pair) => sum +
     pair[arm].requests.reduce((n, request) => n + request.uncachedInputTokens!, 0), 0);
   const startup = (arm: 'control' | 'candidate') => pairs.reduce((sum, pair) => sum +
@@ -400,16 +411,37 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], 
       .reduce((n, request) => n + request.uncachedInputTokens!, 0), 0);
   const latency = (arm: 'control' | 'candidate') => percentile(pairs.map(pair => pair[arm].firstUsefulResponseMs!), 0.95);
   const controlTotal = total('control'), controlStartup = startup('control'), controlP95 = latency('control');
+  const candidateTotal = total('candidate'), candidateStartup = startup('candidate'), candidateP95 = latency('candidate');
+  if (![controlTotal, controlStartup, candidateTotal, candidateStartup].every(Number.isSafeInteger)) return {
+    status: 'insufficient' as const, pairs: pairs.length, insufficient: ['unsafe-aggregate-token-total'], failures, metrics: null,
+  };
   if (controlTotal <= 0 || controlStartup <= 0 || controlP95 <= 0) return {
     status: 'insufficient' as const, pairs: pairs.length, insufficient: ['zero-control-denominator'], failures, metrics: null,
   };
-  const candidateTotal = total('candidate'), candidateStartup = startup('candidate'), candidateP95 = latency('candidate');
+  const bootstrap = { ci: 0.95, iterations: 10_000, seed: 12345 };
+  const taskCounts = (arm: 'control' | 'candidate', startupOnly: boolean) => pairs.map(pair => {
+    const requests = startupOnly ? pair[arm].requests.filter(request => request.phase === 'startup').slice(0, 2)
+      : pair[arm].requests;
+    return requests.reduce((sum, request) => sum + request.uncachedInputTokens!, 0);
+  });
+  const uncertainty = {
+    method: 'paired-bootstrap-mean-difference' as const,
+    resamplingUnit: 'task-pair' as const,
+    ...bootstrap,
+    // Candidate minus control; these intervals describe mean token differences,
+    // not the pooled reduction ratios or the p95 latency metric below.
+    firstTwo: pairedBootstrapCI(taskCounts('control', true), taskCounts('candidate', true), bootstrap),
+    task: pairedBootstrapCI(taskCounts('control', false), taskCounts('candidate', false), bootstrap),
+  };
   const metrics = { controlTotal, candidateTotal, controlStartup, candidateStartup, controlP95, candidateP95,
     firstTwoUncachedReduction: 1 - candidateStartup / controlStartup,
     taskUncachedReduction: 1 - candidateTotal / controlTotal,
-    p95LatencyChange: candidateP95 / controlP95 - 1 };
+    p95LatencyChange: candidateP95 / controlP95 - 1, uncertainty };
   if (metrics.firstTwoUncachedReduction < 0.5) failures.push('first-two-reduction-below-50-percent');
   if (metrics.taskUncachedReduction < 0.25) failures.push('task-reduction-below-25-percent');
   if (metrics.p95LatencyChange > 0.1 + Number.EPSILON) failures.push('p95-latency-regression-above-10-percent');
-  return { status: failures.length ? 'fail' as const : 'pass' as const, pairs: pairs.length, insufficient, failures, metrics };
+  if (uncertainty.firstTwo.delta.upper >= 0) insufficient.push('first-two-improvement-not-supported-by-paired-95-ci');
+  if (uncertainty.task.delta.upper >= 0) insufficient.push('task-improvement-not-supported-by-paired-95-ci');
+  return { status: failures.length ? 'fail' as const : insufficient.length ? 'insufficient' as const : 'pass' as const,
+    pairs: pairs.length, insufficient, failures, metrics };
 }

@@ -583,6 +583,18 @@ describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007
     expect(out).toEqual([atThreshold]);
   });
 
+  // memory-reduction-2026-09-24 P-007: an idle HEADLESS CLI is ended after 45 min,
+  // not 4h. Pinned as a literal so a silent widening back to hours fails here.
+  it('the idle threshold is 45 minutes: a headless su idle 50 min is flagged, an owner pane is not', () => {
+    expect(IDLE_ACTIVITY_THRESHOLD_MS).toBe(45 * 60 * 1000);
+    const headless = cand('su-headless-50m', 30_000, 50 * 60 * 1000, null, ['psu', '--headless']);
+    const ownerPane = cand('su-173cbb09-c016-4d62-8806-70487830c24f', 30_000, 50 * 60 * 1000);
+    const recent = cand('su-headless-40m', 30_000, 40 * 60 * 1000, null, ['psu', '--headless']);
+    expect(
+      classifyLiveIdle({ candidates: [headless, ownerPane, recent], busyOwners: new Set(), nowMs: NOW }),
+    ).toEqual([headless]);
+  });
+
   // ── P-001 / D-001: owner-directed (responsive) sessions are NEVER live-terminated ──
   it('does NOT flag an owner-directed su session (roleless su-… id) even when idle + alive + not busy', () => {
     const c = cand('su-173cbb09-c016-4d62-8806-70487830c24f', 30_000, 5 * 60 * 60 * 1000);

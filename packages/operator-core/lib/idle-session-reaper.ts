@@ -1139,10 +1139,17 @@ export async function runWorkItemLeaseReap(
 /** Default "idle" threshold. A session is idle when it has done no GENUINE
  *  activity for this long — `coord_presence.last_active_at` (mig 277) is bumped
  *  ONLY by real activity, NOT by the per-60s supervisor heartbeat — while its
- *  process is still alive (fresh `heartbeat_at`). 4h: long enough that a human
- *  between tasks isn't flagged, short enough to catch abandoned-but-alive
- *  sessions. */
-export const IDLE_ACTIVITY_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+ *  process is still alive (fresh `heartbeat_at`).
+ *
+ *  45 min (was 4h; memory-reduction-2026-09-24 P-007, owner directive #440).
+ *  Only headless / non-responsive sessions reach this test — `classifyLiveIdle`
+ *  never selects an owner-directed pane — so no human-between-tasks is at risk.
+ *  An idle headless CLI costs ~150 MB+ resident, its prompt cache has already
+ *  expired well before 45 min, and ending it loses nothing: the wake-executor
+ *  `--resume`s it on its next wake and session-dir-gc keeps its dir for that.
+ *  At 4h the tower held 100+ such idle CLIs (~26 GB RSS + 15 GB swap, measured
+ *  2026-09-24). */
+export const IDLE_ACTIVITY_THRESHOLD_MS = 45 * 60 * 1000;
 
 export interface LiveIdleCandidate {
   coordOwnerId: string;
