@@ -402,6 +402,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   const contractPriority = (name: string): number => {
     if (name === 'rootCauseVerification') return 100;
     if (name === 'verification') return 90;
+    // rerunRecipe.current.supplied is a required decision input. A wide
+    // selection object must not push that shape behind the segment tail.
+    if (name === 'current' && nested.required.has(name)) return 85;
     // A bounded read envelope's thread window is the only discoverable path
     // to recent comments. Keep its nested total/posts contract ahead of a
     // wide diagnostic sibling such as checkpointChecks, whose full shape can
@@ -1253,8 +1256,8 @@ export default defineTool({
     // `tools:find` returns a hand-serialized ToolResult, so the generic
     // payload-tier shaper cannot expand its compact discovery projection for
     // an explicit `payloadTier:'full'` request. Preserve the ordinary bounded
-    // shape by default, but honor the framework's call-level escape hatch by
-    // returning the already-built, unbounded corpus schema for each hit.
+    // shape by default; an explicit full request gets the complete JSON schema
+    // so deep fields omitted by the searchable one-level corpus text remain available.
     const fullArgSchemaRequested = ctx.payloadTierOverride === 'full';
 
     // Honest mode marker (never silently pretend semantic ran):
@@ -1267,7 +1270,7 @@ export default defineTool({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
       argSchema: fullArgSchemaRequested
-        ? h.argSchema
+        ? JSON.stringify(schemaByTool.get(h.tool)) ?? h.argSchema
         : compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       returns: returnsByTool.get(h.tool) ?? null,
       returnsSource: returnSourcesByTool.get(h.tool) ?? null,

@@ -116,15 +116,22 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
-  it('Codex preserves native turn metadata on a loopback Responses request without provider inference', async () => {
+  it.each(['invalid-request', 'retryable-http', 'incomplete-stream'] as const)(
+    'Codex preserves native turn metadata and disables retries for %s without provider inference', async (failure) => {
     const requests: Array<Record<string, unknown>> = [];
+    const events: RpcFrame[] = [];
     const server = createServer(async (req, res) => {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       // An intentional local refusal ends this wire-format probe. No provider,
       // credential, model inference, or synthetic charged-usage record is used.
-      res.writeHead(400, { 'content-type': 'application/json' });
+      if (failure === 'incomplete-stream') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"local-probe"}}\n\n');
+        return;
+      }
+      res.writeHead(failure === 'retryable-http' ? 500 : 400, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'local protocol probe complete', type: 'invalid_request_error' } }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -146,7 +153,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         web_search: 'disabled',
       };
       p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
-        ['-c', `${key}=${JSON.stringify(value)}`])]);
+        ['-c', `${key}=${JSON.stringify(value)}`])], {}, (frame) => events.push(frame));
       await p.request({ method: 'initialize', params: {
         clientInfo: { name: 'papercusp_cache_protocol_test', version: '1' },
         capabilities: { experimentalApi: true },
@@ -161,12 +168,21 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         threadId, input: [{ type: 'text', text: 'Offline wire-format probe; the local endpoint will refuse.' }],
         responsesapiClientMetadata: { cache_eval_case: 'native-correlation-control' },
       } });
-      await vi.waitFor(() => expect(requests).toHaveLength(1), { timeout: 20_000 });
+      const turnId = (turn.turn as RpcFrame).id;
+      // Waiting for terminal failure, rather than only the first request, catches
+      // both HTTP and stream retries that would otherwise escape an arm's budget.
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({
+          threadId, turn: expect.objectContaining({ id: turnId, status: 'failed' }),
+        }),
+      })), { timeout: 20_000 });
+      expect(requests).toHaveLength(1);
       const clientMetadata = requests[0].client_metadata as Record<string, string>;
       const metadata = JSON.parse(clientMetadata['x-codex-turn-metadata']) as Record<string, string>;
       expect(metadata).toMatchObject({
         thread_id: threadId,
-        turn_id: (turn.turn as RpcFrame).id,
+        turn_id: turnId,
         cache_eval_case: 'native-correlation-control',
       });
     } finally {

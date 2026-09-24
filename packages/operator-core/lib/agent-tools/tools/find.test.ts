@@ -892,7 +892,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const compact = compactSchemaForResult(schema);
 
     expect(compact).toContain('rerunRecipe?:object{');
-    expect(compact).toContain('current:object{supplied:boolean}');
+    expect(compact).toMatch(/rerunRecipe\?:object\{current:object\{[^}]*supplied:boolean/);
   });
 
 });
@@ -1066,11 +1066,12 @@ describe('handler — graceful degrade + result shape', () => {
     expect(full.hits[0]?.tool).toBe('plans:bind-spec-evidence');
     expect(compactSchema).toContain('…+');
     expect(fullSchema).not.toContain('…+');
-    expect(fullSchema.length).toBeGreaterThan(compactSchema.length);
-    expect(fullSchema).toContain('fixtureFingerprint?');
-    expect(fullSchema).toContain('rubricFingerprint?');
-    expect(fullSchema).toContain('environmentFingerprint?');
-    expect(fullSchema).toContain('observedAt?');
+    expect(fullSchema).not.toBe(compactSchema);
+    expect(() => JSON.parse(fullSchema)).not.toThrow();
+    expect(fullSchema).toContain('"fixtureFingerprint"');
+    expect(fullSchema).toContain('"rubricFingerprint"');
+    expect(fullSchema).toContain('"environmentFingerprint"');
+    expect(fullSchema).toContain('"observedAt"');
   });
 });
 
