@@ -16,7 +16,12 @@ import { join } from 'node:path';
 import { bootHarnessSubstrate } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestCompleteSnapshot } from '../read-merge';
-import { listBootHistory } from '../boot-history';
+import {
+  _resetBootHistoryForTests,
+  _setMirrorForTests,
+  _setPgWriteForTests,
+  listBootHistory,
+} from '../boot-history';
 import { SNAPSHOT_COMPACT_EVERY_OPS } from '../log-snapshot';
 import type { PeerLogOp } from '../peer-log';
 
@@ -103,9 +108,10 @@ function gateHistoryReads(log: { get(i: number): Promise<PeerLogOp | null> }, be
   return { release, blockedReads: () => blockedReads };
 }
 
+/** Compaction OUTCOMES only (appended / failed) — not the boot anchor or the start rows. */
 function compactionEvents(slug: string) {
-  return listBootHistory({ workspaceId: WS, harnessSlug: slug, kinds: ['peer_capped'] }).filter((e) =>
-    /own log compaction|log compaction failed/.test(e.message ?? ''),
+  return listBootHistory({ workspaceId: WS, harnessSlug: slug, kinds: ['own_log_compaction'] }).filter((e) =>
+    /^own log compaction: |^log compaction failed/.test(e.message ?? ''),
   );
 }
 
@@ -166,5 +172,38 @@ describe('own-log compaction runs off the merge gate (P-003 / R-7)', () => {
     gate.release();
     await closing;
     expect(compactionEvents(slug)).toHaveLength(0);
+  });
+});
+
+describe('own-log compaction is observable after the fact (P-005)', () => {
+  afterEach(() => {
+    _resetBootHistoryForTests();
+  });
+
+  it('records the boot anchor, the start and the outcome under own_log_compaction, all durably mirrored', async () => {
+    // The failure this pins: the lifecycle used to be recorded as 'peer_capped', which
+    // is neither stdout- nor PG-mirrored, so on the tower nobody could tell whether a
+    // compaction ever ran or how long its full-history read took.
+    const pgRows: Array<{ kind: string; message?: string; harnessSlug: string }> = [];
+    const stdout: string[] = [];
+    _setPgWriteForTests((entry) => pgRows.push(entry));
+    _setMirrorForTests((line) => stdout.push(line));
+
+    const slug = 'p005-observable';
+    const { handle } = await boot(slug);
+    await appendOps(handle, 0, SNAPSHOT_COMPACT_EVERY_OPS);
+    await handle.mergeNow();
+    await waitFor(() => findLatestCompleteSnapshot(handle.ownLog));
+    await waitFor(() => (compactionEvents(slug).length > 0 ? true : null));
+
+    const mine = pgRows.filter((r) => r.harnessSlug === slug && r.kind === 'own_log_compaction');
+    const messages = mine.map((r) => r.message ?? '');
+    expect(messages[0]).toMatch(
+      /^own log compaction anchor: producer=on ownLogLength=0 lastCoversUpTo=0 lastRows=0 threshold=1000 due=false$/,
+    );
+    expect(messages.some((m) => /^own log compaction started: ownLogLength=1000 lastCoversUpTo=0 threshold=1000 /.test(m))).toBe(true);
+    expect(messages.some((m) => /^own log compaction: coversUpTo=1000 .*elapsedMs=\d+ mergeGateHeld=false$/.test(m))).toBe(true);
+    // stdout mirror carries the same rows (the journal is the other durable surface).
+    expect(stdout.filter((l) => l.includes(slug) && l.includes('own_log_compaction')).length).toBe(mine.length);
   });
 });
