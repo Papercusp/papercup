@@ -1227,6 +1227,7 @@ beforeAll(async () => {
     'PAPERCUSP_SU_OMP_HOMES_DIR',
     'PAPERCUSP_SESSION_CLAUDE_DIR',
     'PAPERCUSP_SESSION_MCP_DIR',
+    'PAPERCUSP_EMBED_DEVICE',
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -1244,6 +1245,10 @@ beforeAll(async () => {
     PAPERCUSP_SU_OMP_HOMES_DIR: path.join(home, 'native-omp'),
     PAPERCUSP_SESSION_CLAUDE_DIR: path.join(home, 'native-claude'),
     PAPERCUSP_SESSION_MCP_DIR: path.join(home, 'native-mcp'),
+    // This suite tests the installed PUI and operator journey, not GPU
+    // availability. Keep incidental CUDA allocation failures from turning a
+    // correctly recovered embedding fallback into a console-warning failure.
+    PAPERCUSP_EMBED_DEVICE: 'cpu',
   });
   // The org fixture reuses numeric ids. Resolve the actual writers' roots
   // before any bootstrap so they cannot replace a real user's native home.
