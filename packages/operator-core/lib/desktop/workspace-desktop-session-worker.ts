@@ -7,6 +7,8 @@ import { startA11yBus } from './a11y-bus-core';
 import { serveWorkspaceDesktop } from './workspace-desktop-session';
 
 export const WORKSPACE_DESKTOP_HOME = '/var/lib/papercusp-desktop';
+/** Neutral grey, so a desktop with no windows is visibly alive in Watch (WI-10002863). */
+export const WORKSPACE_DESKTOP_ROOT_COLOR = '#4b5563';
 
 export function assertWorkspaceDesktopIdentity(identity: { uid: number; username: string; home: string }): void {
   if (identity.uid <= 0 || identity.username !== 'papercusp-desktop' || identity.home !== WORKSPACE_DESKTOP_HOME) {
@@ -71,7 +73,7 @@ export async function runWorkspaceDesktopWorker(argv: string[]): Promise<number>
   const number = Number(argv[1]);
   if (number < 110 || number > 250 || existsSync(`/tmp/.X${number}-lock`)) throw new Error('desktop display unavailable');
   await serveWorkspaceDesktop(process.stdin, process.stdout, options => provisionSandboxDesktop({
-    ...options, displayNumber: number, xServer: 'kasmvnc',
+    ...options, displayNumber: number, xServer: 'kasmvnc', rootColor: WORKSPACE_DESKTOP_ROOT_COLOR,
     credentialDir: `${WORKSPACE_DESKTOP_HOME}/credentials`, sandboxHomeDir: WORKSPACE_DESKTOP_HOME,
   }, runtime));
   return 0;

@@ -89,6 +89,16 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt-get update'));
   });
 
+  it('ships a usable desktop floor: a terminal for the openbox menu and a root painter (WI-10002863)', () => {
+    // Measured on avi-test r43: openbox's stock menu executes x-terminal-emulator, which
+    // nothing provided, and the root stayed black, so Watch could not tell "empty" from "dead".
+    const script = render();
+    const install = script.match(/^retry \d+ apt-get install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
+    expect(install.split(' ')).toEqual(expect.arrayContaining(['xterm', 'x11-xserver-utils']));
+    expect(script).toContain('command -v x-terminal-emulator >/dev/null 2>&1 || fail x-stack');
+    expect(script).toContain('command -v xsetroot  >/dev/null 2>&1 || fail x-stack');
+  });
+
   it('pins Ubuntu 24.04, matching the bootstrap contract', () => {
     expect(render()).toMatch(/VERSION_ID:-\}" = '24\.04' \] \|\| fail ubuntu-24\.04/);
   });

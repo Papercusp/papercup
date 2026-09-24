@@ -138,6 +138,14 @@ export const WORKSPACE_HOST_DESKTOP_PACK_APT = {
   driver: ['xdotool', 'imagemagick', 'x11-utils'],
   /** D-015/D-016 per-app confinement. */
   sandbox: ['bubblewrap', 'nftables'],
+  /**
+   * The floor of a USABLE desktop (WI-10002863). Without these a started desktop is a
+   * black X root with openbox alone: Watch cannot tell it from a dead stream, and
+   * openbox's right-click menu points at `x-terminal-emulator`, which nothing provides.
+   * `xterm` registers that alternative; `x11-xserver-utils` ships `xsetroot`, which the
+   * session worker uses to paint the root a non-black colour.
+   */
+  desktopFloor: ['xterm', 'x11-xserver-utils'],
 } as const;
 
 export const WORKSPACE_HOST_DESKTOP_PACK_PHASES = [
@@ -316,6 +324,7 @@ export function buildWorkspaceHostDesktopPackScript(
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.accessibility,
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.driver,
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.sandbox,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.desktopFloor,
   ];
 
   const script = `#!/usr/bin/env bash
@@ -524,6 +533,9 @@ command -v openbox   >/dev/null 2>&1 || fail x-stack
 command -v xdotool   >/dev/null 2>&1 || fail x-stack
 command -v import    >/dev/null 2>&1 || fail x-stack
 command -v bwrap     >/dev/null 2>&1 || fail x-stack
+command -v xsetroot  >/dev/null 2>&1 || fail x-stack
+# The name openbox's stock menu executes, not merely the package that should provide it.
+command -v x-terminal-emulator >/dev/null 2>&1 || fail x-stack
 command -v dbus-daemon >/dev/null 2>&1 || fail a11y-stack
 [ -f /usr/lib/at-spi2-core/at-spi-bus-launcher ] || [ -f /usr/libexec/at-spi-bus-launcher ] || fail a11y-stack
 command -v glxinfo >/dev/null 2>&1 || fail gl-stack

@@ -60,6 +60,16 @@ describe('desktop prerequisites', () => {
       .toThrow(/missing kasmvnc prerequisites: kasmvncpasswd/);
   });
 
+  it('requires xsetroot only when a root colour is requested, and refuses a malformed colour', () => {
+    const installed = new Set(['Xkasmvnc', 'xdpyinfo', 'openbox', 'kasmvncpasswd']);
+    const has = (binary: string) => installed.has(binary);
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc' }, has)).not.toThrow();
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc', rootColor: '#4b5563' }, has))
+      .toThrow(/missing kasmvnc prerequisites: xsetroot/);
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc', rootColor: 'grey; rm -rf /' }, () => true))
+      .toThrow(/rootColor must be #rrggbb/);
+  });
+
   it('honors a custom server, existing credentials, and a disabled window manager', () => {
     const installed = new Set(['/opt/kasm/Xkasmvnc', 'xdpyinfo']);
     expect(() => assertDesktopPrerequisites({

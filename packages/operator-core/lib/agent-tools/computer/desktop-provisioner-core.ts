@@ -203,6 +203,12 @@ export interface ProvisionOptions {
   captureHeight?: number;
   /** Launch a window manager (openbox). Default true. */
   windowManager?: boolean;
+  /**
+   * Paint the X root this solid `#rrggbb` colour once the display is up. Default: leave
+   * the server's black root. A customer-facing desktop sets it so that an empty desktop
+   * reads differently from a dead stream (WI-10002863); requires `xsetroot`.
+   */
+  rootColor?: string;
   /** Apps to launch on the desktop, as argv arrays (e.g. [['xterm'], ['firefox','--no-remote']]). */
   apps?: string[][];
   /** How long to wait for the X server to accept connections. Default 8s. */
@@ -470,6 +476,12 @@ export function assertDesktopPrerequisites(
   const xServer = opts.xServer ?? 'xvfb';
   const required = [opts.xServerBinaryPath ?? (xServer === 'kasmvnc' ? 'Xkasmvnc' : 'Xvfb'), 'xdpyinfo'];
   if (opts.windowManager !== false) required.push('openbox');
+  if (opts.rootColor !== undefined) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(opts.rootColor)) {
+      throw new Error(`desktop-provisioner — rootColor must be #rrggbb, got ${JSON.stringify(opts.rootColor)}`);
+    }
+    required.push('xsetroot');
+  }
   if (xServer === 'kasmvnc' && !opts.kasmvncPasswordFile) {
     required.push(opts.kasmvncPasswdBinaryPath ?? 'kasmvncpasswd');
   }
@@ -601,6 +613,16 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions, runtime: D
     // ISOLATION: the WM + apps run with a host-stripped env bound to the sandbox
     // display only — never the operator's inherited DISPLAY=:0 / gdm XAUTHORITY.
     const env = sandboxXEnv(display);
+
+    // xsetroot sets the root background and exits; openbox never repaints the root, so
+    // the order against the WM does not matter. A failure here is a failed desktop, not
+    // a cosmetic miss: the colour is what tells Watch "empty" apart from "dead".
+    if (opts.rootColor !== undefined) {
+      const paint = spawnSync('xsetroot', ['-solid', opts.rootColor], { env, stdio: 'ignore' });
+      if (paint.status !== 0) {
+        throw new Error(`desktop-provisioner — xsetroot on ${display} exited ${paint.status ?? paint.signal}`);
+      }
+    }
 
     // ⚠ GL IS MEASURED FURTHER DOWN, not here (WI-1223202). It used to be measured at this
     // point, which is after `waitForDisplay` — necessary, because every rung probes THROUGH
