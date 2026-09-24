@@ -823,3 +823,49 @@ without waiting for child exit. Its existing mock rejects synchronously on
 abort, so it cannot detect that release interval. The next acceptance guard
 must delay actual child settlement and assert repository leases stay held.
 The idle-race repair does not resolve that gap or prove PERF-P-003 complete.
+
+## P-003 local command lifetime and repository leases (2026-09-24 11:54Z)
+
+The gap above is now repaired in the current source under WI-10002825 and
+EI-24141765530574665. Two independent boundaries needed changes:
+
+- The local Git runner signalled only its direct child and could resolve after
+  parent close while an ignored-stdio helper was alive. It also fabricated
+  completion after 20 seconds and left its SIGKILL timer armed after settlement.
+- The action guard rejected its pipeline promise immediately on abort, then
+  stopped the repository lease heartbeat and released leases while the actual
+  Git execution was still pending. The old test's child mock rejected immediately
+  on abort, so it never exercised that interval.
+
+Local Git now owns a referenced POSIX process group and uses the same exit fence
+as the sidecar. The existing sidecar signal/probe code was extracted into
+`fleet/process-group-lifetime.ts`; this keeps local Git independent of sidecar
+admission imports and prevents a second implementation of that lifetime rule.
+Only successful exit proof permits completion; failed probes remain pending.
+The existing 10-second escalation is cleared on settlement. Pre-aborted requests
+return without spawning. Windows retains direct-child behavior; helper-group
+coverage here is POSIX-only.
+
+The action reuses `RunGitSyncOpts.runGit` to track real Git promises separately
+from the cancellation race. Cleanup waits for these promises before starting its
+15-second DB-cleanup budget or stopping the heartbeat. Setup and metadata awaits
+retain their existing liveness deadlines, and no new Git call starts after abort.
+
+Counterexamples: old-source run **19288100** failed both delayed settlement
+variants (resolve/reject); old-source **19289497** failed all three local cases
+(pre-aborted spawn, cancelled helper, successful parent with a live helper).
+The full action/local/IPC lifecycle run passed via detached recovery
+**05f155f3-0ad2-416a-91a1-87bc7b41bb27**, rows **19289816**, **19289815**,
+**19289818**, at HEAD `9449244055` with local source edits. The action regression
+was then strengthened to keep the child pending for 20.1 seconds of fake time,
+past both deadlines and the cleanup budget: **19289822**, 2 passed, 141 unrelated
+cases filtered. It confirms lease renewal during cancellation and release only
+after settlement for both fulfillment and rejection.
+
+Scoped typecheck passed all six changed TypeScript source/test paths with no
+requested-file diagnostics; 23 other import-graph diagnostics remain. The spawn
+lint initially flagged the already-governed, awaited sidecar group; the existing
+documented awaited-group exemption now covers both runners (EI-24143584172308161).
+`git diff --check` and the spawn lint pass. This is source/current-build proof,
+not deployment proof or P-003 completion. IPC transport-loss exit fencing,
+profiler policy and comparable multi-repository performance remain open.

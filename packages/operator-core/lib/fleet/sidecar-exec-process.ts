@@ -28,6 +28,7 @@ import * as fsp from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
+import { processGroupLifetime } from './process-group-lifetime';
 
 import type { AdmissionContext } from '../resource-governor/admission';
 import {
@@ -190,48 +191,11 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let idleCheck: ReturnType<typeof setImmediate> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
       let removeAbortListener = (): void => {};
-      const processGroup = process.platform !== 'win32' ? child.pid : undefined;
-      const signalCommand = (signal: NodeJS.Signals): void => {
-        if (processGroup === undefined) {
-          child.kill(signal);
-          return;
-        }
-        try {
-          process.kill(-processGroup, signal);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-            stderr += `\nsidecar process-group ${signal} failed: ${String(error)}`;
-          }
-        }
-      };
+      const groupLifetime = processGroupLifetime(child, (message) => { stderr += `\nsidecar ${message}`; });
+      const signalCommand = groupLifetime.signal;
       const waitForCommandExit = async (): Promise<void> => {
-        if (processGroup === undefined) {
-          commandExited = true;
-          return;
-        }
-        // A parent can close its pipes while a helper still runs with its own
-        // stdio, including after a successful parent exit. Keep the guards and
-        // cancellation escalation armed until the GROUP exits.
-        // No deadline may manufacture an exit receipt and release caller locks.
-        let probeFailureReported = false;
-        for (;;) {
-          try {
-            process.kill(-processGroup, 0);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
-              commandExited = true;
-              return;
-            }
-            // A failed liveness probe is not proof of exit. Keep the request
-            // pending (and its escalation armed), rather than letting the
-            // admission-error handler manufacture completion for a live group.
-            if (!probeFailureReported) {
-              stderr += `\nsidecar process-group exit unverified: ${String(error)}`;
-              probeFailureReported = true;
-            }
-          }
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await groupLifetime.waitForExit();
+        commandExited = true;
       };
       const clearTimers = (): void => {
         if (hardTimer) clearTimeout(hardTimer);
