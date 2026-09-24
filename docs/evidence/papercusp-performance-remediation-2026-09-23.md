@@ -869,3 +869,48 @@ documented awaited-group exemption now covers both runners (EI-24143584172308161
 `git diff --check` and the spawn lint pass. This is source/current-build proof,
 not deployment proof or P-003 completion. IPC transport-loss exit fencing,
 profiler policy and comparable multi-repository performance remain open.
+
+Final compatibility results: **19289825–19289827** passed 41 routing,
+cancellation and spawn-guard cases with no skips; **19289828** passed 18
+Git-sidecar cases with no skips; the full `run-git-sync.test.ts` suite passed
+as **19289841**, detached run **ce8ba1a3-33dc-4c77-b40a-a17aadc41edc**.
+The background routine committed the named source/test paths at `a131b1bcb6`;
+their working-tree state was clean when checked. EI-24141765530574665 closed
+with **committed** completion authority. The minor lint-exemption item
+EI-24143584172308161 was closed with proposed authority before that sweep;
+its recorded content manifest awaits automatic settlement. Neither result
+claims deployed behavior or completion of the whole performance plan.
+
+## P-003 file-output progress and idle-check liveness (2026-09-24 12:16Z)
+
+EI-24142656580054437 is reproduced and repaired. `stdoutPath` sends stdout
+straight to a file descriptor, so it emits no pipe data events. The idle guard
+previously observed stderr alone and killed a healthy file-only writer.
+Old-source run **19289858** failed the binary streaming and hard-deadline
+controls; the silent-after-one-write control passed.
+
+The existing idle-deadline callback now samples the already-open output handle's
+size. It never reads/copies the file contents into JavaScript and adds no polling
+timer, watcher or config key. Size changes renew the idle deadline and report
+observed output activity. This conservative sampled observation can add up to
+one idle interval after the last write; the independent absolute deadline is
+unchanged. A generation check invalidates pending stats after pipe progress,
+cancellation or child exit. A failed size probe terminates with an explicit
+verification-failure diagnostic rather than inventing output progress.
+
+The new cases also isolated EI-24144921179345016. With the size-probe change
+alone, **19289859** still failed: the unreferenced one-shot `setImmediate`
+could wait for child close or the hard deadline when no pipe traffic woke POLL.
+Removing only `idleCheck.unref` made the three file-output cases pass in
+**19289860**. The same correction is applied to the local Git and action guards;
+their existing cancellation paths still clear the one-shot handle.
+
+Final verification: **19289865** passed all 17 fd-handoff cases, including byte
+fidelity, streaming, stopped output, hard timeout, and delayed-stat races with
+stderr progress, abort and the hard deadline. **19289864** passed 18 existing
+sidecar cases; **19289868** passed 5 local lifecycle/progress cases;
+**19289869** passed 143 action cases; **19289870** passed 16 real IPC lifecycle
+cases. All 199 passed with zero skips. Scoped typecheck passed the four changed
+TypeScript source/test paths, with 23 other import-graph diagnostics; diff
+whitespace checks passed. This proves current source behavior, not deployment,
+transport-loss exit recovery, a profiler-overhead remedy or P-003 completion.
