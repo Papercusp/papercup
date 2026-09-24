@@ -1947,7 +1947,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       ],
     } as never);
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
-    guardM.mockImplementation(runGuard(fenceOk(12)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(12)));
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
 
@@ -1967,7 +1967,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
   });
 
   it('uses the :3070 listener as the restart readiness contract instead of a one-shot MainPID read', async () => {
-    guardM.mockImplementation(runGuard(fenceOk(3)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(3)));
     mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
 
     const b = body(await call({ confirm: true }));

@@ -80,9 +80,16 @@ describe('coord:ack handler (bulk keyed-array)', () => {
     resolveRefM.mockResolvedValueOnce({
       status: 'found',
       msgId: projectionId,
-      message: { msg_id: projectionId, from: 'human', kind: 'escalation', harness_slug: 'papercusp' },
+      message: {
+        ts: '2026-09-24T07:20:00.000Z',
+        msg_id: projectionId,
+        from: 'human',
+        to: ['me'],
+        kind: 'escalation',
+        harness_slug: 'papercusp',
+      },
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const b = await body({ msg_id: projectionId });
 

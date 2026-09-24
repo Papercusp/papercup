@@ -28,9 +28,19 @@ function makeRoot(): string {
 
 it('refuses the run before root discovery when the checkout has an active mutation-probe lock', async () => {
   readQueueMock.mockResolvedValue({
-    active_locks: [{ path: 'src/subject.ts', intent: ' mutation probe ' }],
+    active_locks: [{
+      lock_id: 'probe-lock',
+      path: 'src/subject.ts',
+      owner: 'peer',
+      owner_label: 'Peer',
+      intent: ' mutation probe ',
+      goal_ref: null,
+      acquired_ts: new Date('2026-09-24T07:00:00.000Z'),
+      expires_ts: new Date('2026-09-24T08:00:00.000Z'),
+      coordination_domain: '/repo',
+    }],
     waiting: [],
-  } as never);
+  });
 
   const checkout = makeRoot();
   const result = await runTestFilesCore({ root: checkout, files: ['tests/subject.test.ts'] });
@@ -50,7 +60,7 @@ it('fails closed when the lock ledger cannot establish whether a probe is active
 });
 
 it('continues to ordinary root validation when no mutation-probe lock is active', async () => {
-  readQueueMock.mockResolvedValue({ active_locks: [], waiting: [] } as never);
+  readQueueMock.mockResolvedValue({ active_locks: [], waiting: [] });
 
   const result = await runTestFilesCore({ root: makeRoot(), files: ['tests/subject.test.ts'] });
 

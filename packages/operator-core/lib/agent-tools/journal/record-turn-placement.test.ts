@@ -1,7 +1,7 @@
 /** The existing journal endpoint must actually invoke the native-policy producer. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ record: vi.fn(async () => ({ recorded: true })), path: vi.fn(async () => '/native/session') }));
+const h = vi.hoisted(() => ({ record: vi.fn(async () => ({ recorded: true })), path: vi.fn(async (): Promise<string | null> => '/native/session') }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'holder', workspaceId: 'workspace' }), requireWorkspaceId: () => 'workspace',
 }));
@@ -25,7 +25,7 @@ describe('journal native placement seam', () => {
     expect(h.record).not.toHaveBeenCalled();
   });
   it('leaves a missing transcript unknown without invoking the producer', async () => {
-    h.path.mockResolvedValue(null as never);
+    h.path.mockResolvedValue(null);
     await tool.handler({ session_id: 'native', source_kind: 'codex' }, {} as never);
     expect(h.record).not.toHaveBeenCalled();
   });
