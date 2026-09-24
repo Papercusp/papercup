@@ -323,17 +323,24 @@ provenance = {
 
 entry = compat["targets"][target]
 lines = [
-    f"# PUI {version} compatibility — {target}",
+    f"# PUI {version} build-time compatibility — {target}",
+    "",
+    "This document is packaged before installed-product acceptance can run. Its",
+    "verification statuses describe the build-time record, not the final release",
+    "advertisement. A published release must include the adjacent",
+    f"`pui-{version}-{target}.tar.gz.acceptance.json` report. Treat a platform/backend",
+    "as verified only if that report passes and its `candidate.archiveSha256`",
+    "matches the SHA-256 of the archive you downloaded.",
     "",
     "## This archive",
     "",
     f"- Runs on: {', '.join(entry['platforms'])}.",
-    f"- Verification: **{entry['status']}**"
+    f"- Build-time verification: **{entry['status']}**"
     + (f" — evidence: {entry['evidence']}" if entry.get("evidence") else "")
     + ".",
 ]
 if entry["status"] != "verified":
-    lines.append("- Not advertised: no installed-product acceptance has been recorded for this target yet.")
+    lines.append("- Not advertised by this build-time record; check the exact archive's release-stage acceptance report for the final verdict.")
 if entry.get("blocker"):
     lines.append(f"- Blocker: {entry['blocker']}")
 if glibc:
@@ -342,7 +349,7 @@ if needed:
     lines.append(f"- Loads these system libraries (measured): {', '.join(needed)}.")
     if any(lib.startswith("libasound") for lib in needed):
         lines.append("  `libasound.so.2` is ALSA (voice); a minimal system may need `libasound2t64` (Debian/Ubuntu/WSL2) or `alsa-lib` (Fedora).")
-lines += ["", "## All targets", "", "| Target | Platforms | Status |", "| --- | --- | --- |"]
+lines += ["", "## All targets at build time", "", "| Target | Platforms | Build-time status |", "| --- | --- | --- |"]
 for name, t in compat["targets"].items():
     lines.append(f"| {name} | {', '.join(t['platforms'])} | {t['status']} |")
 backend = compat["backend"]
