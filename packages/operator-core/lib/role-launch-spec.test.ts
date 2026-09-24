@@ -297,6 +297,106 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  it('keeps an existing SU mode producer binding out of the resource artifact', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'su-mode-launch-artifact-'));
+    try {
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'su', stack: ['autonomy:su.mode-auto'],
+        state: { schemaVersion: 1 },
+      });
+      expect(launch.specificationArtifact.configuration.mode).toBeUndefined();
+      expect(launch.promptText).toBe('SU KERNEL');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('launches a prompt-only generic identity without SU assignment or work-item configuration', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'generic-identity-artifact-'));
+    const identityDir = join(dir, '.papercusp', 'blueprints', 'plain-domain');
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: plain-domain', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'PLAIN DOMAIN\n');
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'worker', stack: ['domain:plain-domain'],
+        state: { schemaVersion: 1 }, renderStack: true,
+      });
+      expect(launch.promptText).toContain('PLAIN DOMAIN');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('workItem');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('spine');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('fleet');
+      expect(launch.specificationArtifact.configuration.roles ?? []).toEqual([]);
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'plain-domain',
+      }));
+
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-generic-1' },
+      });
+      const role = await buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        operatorBaseUrl: 'http://localhost:3070', stack: ['domain:plain-domain'],
+      });
+      const url = new URL(role.mcpUrl);
+      expect(url.searchParams.get('role')).toBe('worker');
+      expect(url.searchParams.has('superuser')).toBe(false);
+      expect(role.promptText).toContain('PLAIN DOMAIN');
+      expect(role.specificationArtifact.configuration).not.toHaveProperty('workItem');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('pins a fixed contribution beside selected configuration without rendering the document twice', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mixed-fixed-identity-artifact-'));
+    const identityDir = join(dir, '.papercusp', 'blueprints', 'mixed-domain');
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: mixed-domain', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain',
+        'knobs:', '  aiBackend:', '    default:', '      model: mixed-model',
+        'contributions:',
+        '  - id: mixed-rules',
+        '    purpose: prompt',
+        '    source: fixed',
+        '    refresh: source-change',
+        '    inputKind: prompt-file',
+        '    ref: fixed:domain', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'MIXED DOMAIN RULES\n');
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'worker', stack: ['domain:mixed-domain'],
+        state: { schemaVersion: 1 }, renderStack: true,
+      });
+      expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model).toBe('mixed-model');
+      expect(launch.promptText.match(/MIXED DOMAIN RULES/g)).toHaveLength(1);
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'prompt-file', ref: 'fixed:domain', bytes: 'MIXED DOMAIN RULES\n',
+      }));
+      expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
+        path: 'contribution.mixed-rules', decision: 'fixed:source-change',
+      }));
+      await expect(compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'worker', stack: ['domain:mixed-domain'],
+        state: { schemaVersion: 1 }, renderStack: false,
+      })).rejects.toThrow(/pinned fixed prompt is absent from the delivered prompt/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('omits the feature param for a no-feature role', async () => {
     assembleRolePromptMock.mockReturnValue({
       text: 'SCOPER PROMPT',
