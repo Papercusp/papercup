@@ -4240,7 +4240,7 @@ describe("psu-launcher arg parsing", () => {
   it("freshSuBootstrapBody forwards a su-tier role NAME as su_role, never addendum prose (EI-996)", () => {
     // Owner ask 2026-06-17: a planner should be a full su agent + a few role
     // lines. The launcher sends the NAME; bootstrap-su resolves the text from
-    // prompts/su-role-planner.addendum.md. The wire must never carry the prose
+    // the built-in su.specialist-planner identity. The wire must never carry the prose
     // itself — this endpoint mints a SUPERUSER-tier prompt, so a free-text field
     // would be an open prompt-injection surface for any loopback caller.
     const body = freshSuBootstrapBody(
