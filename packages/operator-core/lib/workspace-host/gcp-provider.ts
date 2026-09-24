@@ -741,6 +741,8 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     repair: true,
     confirmedDestroy: true,
     hostBootstrap: true,
+    // `enable-guest-attributes=TRUE` is set on every instance this provider creates.
+    bootstrapStatusChannel: 'gce-guest-attributes',
   },
   transportKinds: [...GCP_WORKSPACE_HOST_TRANSPORTS],
   constraints: [

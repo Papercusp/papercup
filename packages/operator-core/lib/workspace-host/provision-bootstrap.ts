@@ -39,6 +39,7 @@ import {
   type WorkspaceHostAgentRuntimeInstall,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
+  type WorkspaceHostBootstrapStatusChannel,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 import { buildFrameworkInstallSpec } from '../endpoint-route/routes/desktop/setup-pty-commands';
@@ -257,6 +258,8 @@ export async function resolveWorkspaceHostProvisionBootstrapProfile(
 export function renderWorkspaceHostProvisionBootstrap(
   hostId: string,
   profile: WorkspaceHostProvisionBootstrapProfile,
+  /** The provider's declared report channel (WI-10002837); omitted renders no report. */
+  options: { statusChannel?: WorkspaceHostBootstrapStatusChannel } = {},
 ): string {
   return buildWorkspaceHostBootstrap({
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
@@ -269,6 +272,7 @@ export function renderWorkspaceHostProvisionBootstrap(
     workspaceAuthorizedKeys: profile.workspaceAuthorizedKeys,
     agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
     ...(profile.hostedConnector ? { hostedConnector: profile.hostedConnector } : {}),
+    ...(options.statusChannel ? { statusChannel: options.statusChannel } : {}),
   });
 }
 

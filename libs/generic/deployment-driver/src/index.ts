@@ -380,6 +380,8 @@ export type {
   WorkspaceHostNativeDependencyProvider,
   WorkspaceHostNativeDependencyCoverageInput,
   WorkspaceHostNativeDependencyCoverage,
+  WorkspaceHostBootstrapStatusChannel,
+  WorkspaceHostBootstrapReportedStatus,
 } from "./workspace-host-bootstrap";
 export {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
@@ -424,6 +426,11 @@ export {
   evaluateWorkspaceHostNativeDependencyCoverage,
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS,
+  parseWorkspaceHostBootstrapReportedStatus,
 } from "./workspace-host-bootstrap";
 export type {
   WorkspaceHostDesktopPackArtifact,

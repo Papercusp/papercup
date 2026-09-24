@@ -38,6 +38,7 @@ import {
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
+  type WorkspaceHostBootstrapStatusChannel,
   type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
@@ -141,10 +142,11 @@ export interface ControllerWorkspaceHostBootstrap {
 /** Resolve script and the closed signed-runtime identity from one trusted controller profile. */
 export async function resolveControllerWorkspaceHostBootstrap(
   hostId: string,
+  options: { statusChannel?: WorkspaceHostBootstrapStatusChannel } = {},
 ): Promise<ControllerWorkspaceHostBootstrap> {
   const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
   return {
-    script: renderWorkspaceHostProvisionBootstrap(hostId, profile),
+    script: renderWorkspaceHostProvisionBootstrap(hostId, profile, options),
     runtimeRelease: workspaceHostRuntimeRelease(
       profile.release,
       WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
@@ -929,7 +931,11 @@ export async function runWorkspaceHostProvisioning(
       if (input.renderHostBootstrap) {
         hostBootstrapScript = await input.renderHostBootstrap(hostId);
       } else {
-        const resolved = await resolveControllerWorkspaceHostBootstrap(hostId);
+        const statusChannel = input.provider.capabilities.lifecycle.bootstrapStatusChannel;
+        const resolved = await resolveControllerWorkspaceHostBootstrap(
+          hostId,
+          statusChannel ? { statusChannel } : {},
+        );
         hostBootstrapScript = resolved.script;
         runtimeRelease = resolved.runtimeRelease;
       }

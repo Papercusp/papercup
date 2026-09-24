@@ -1,3 +1,5 @@
+import type { WorkspaceHostBootstrapStatusChannel } from "./workspace-host-bootstrap";
+
 /**
  * Provider-neutral contract for durable Papercusp workspace hosts.
  *
@@ -157,6 +159,11 @@ export interface WorkspaceHostLifecycleCapabilities {
    * field today and its hosts must be bootstrapped some other way.
    */
   hostBootstrap: boolean;
+  /**
+   * The out-of-band channel this provider's hosts report bootstrap status through, and the
+   * controller reads it back from (WI-10002837). Omitted means no report is rendered.
+   */
+  bootstrapStatusChannel?: WorkspaceHostBootstrapStatusChannel;
 }
 export interface WorkspaceHostProviderCapabilities {
   discovery: WorkspaceHostDiscoveryCapabilities;

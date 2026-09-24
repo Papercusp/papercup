@@ -895,7 +895,11 @@ export async function runWorkspaceHostLifecycle(
       if (input.renderHostBootstrap) {
         hostBootstrapScript = await input.renderHostBootstrap(bootstrapHostId);
       } else {
-        const resolved = await resolveControllerWorkspaceHostBootstrap(bootstrapHostId);
+        const statusChannel = input.provider.capabilities.lifecycle.bootstrapStatusChannel;
+        const resolved = await resolveControllerWorkspaceHostBootstrap(
+          bootstrapHostId,
+          statusChannel ? { statusChannel } : {},
+        );
         hostBootstrapScript = resolved.script;
         runtimeRelease = resolved.runtimeRelease;
       }

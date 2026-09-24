@@ -454,6 +454,60 @@ export type WorkspaceHostBootstrapPhase =
   (typeof WORKSPACE_HOST_BOOTSTRAP_PHASES)[number];
 
 /**
+ * Out-of-band channels through which a bootstrap reports its own lifecycle, so a controller can
+ * see a terminal failure WITHOUT SSH (WI-10002837). SSH cannot carry that report: the workspace
+ * key is authorized after `harden-os` installs packages, so a fresh host that dies there is
+ * unreachable, and the controller used to wait out its whole readiness budget on a script that
+ * had already exited.
+ *
+ * - `gce-guest-attributes`: PUT to the GCE metadata server's guest attributes, which the
+ *   controller reads through `compute.instances.getGuestAttributes`.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS = [
+  'gce-guest-attributes',
+] as const;
+export type WorkspaceHostBootstrapStatusChannel =
+  (typeof WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS)[number];
+
+/** Where the `gce-guest-attributes` report lives: `<namespace>/<key>`. */
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE =
+  'papercusp';
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY = 'bootstrap';
+
+/** The longest die() message a report carries; the serial console has the full log. */
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS = 300;
+
+export type WorkspaceHostBootstrapReportedStatus =
+  | { state: 'running' }
+  | { state: 'succeeded' }
+  | {
+      state: 'failed';
+      exitCode: number;
+      /** The phase that was running, or null if the script died before the first one. */
+      phase: string | null;
+      /** The die() message, or null when the script was stopped by `set -e` instead. */
+      error: string | null;
+    };
+
+/**
+ * Parse one bootstrap status report. Anything that is not a report this bootstrap writes parses
+ * to null, so a foreign or truncated value reads as "no report" (keep waiting), never as a failure.
+ */
+export function parseWorkspaceHostBootstrapReportedStatus(
+  value: string,
+): WorkspaceHostBootstrapReportedStatus | null {
+  if (value === 'running' || value === 'succeeded') return { state: value };
+  const match = /^failed exit=(\d{1,3}) phase=(\S*) error=(.*)$/s.exec(value);
+  if (!match) return null;
+  return {
+    state: 'failed',
+    exitCode: Number(match[1]),
+    phase: match[2] || null,
+    error: match[3] || null,
+  };
+}
+
+/**
  * Checks EVERY host model must attest, whatever delivered the bits.
  *
  * Membership here is a claim that the property is model-invariant, not that the observation is:
@@ -808,6 +862,11 @@ export interface WorkspaceHostBootstrapInput {
    * request cannot redirect where the host sends its ticket. Omitted means no conduit.
    */
   hostedConnector?: WorkspaceHostBootstrapHostedConnector;
+  /**
+   * Report `running` / `succeeded` / `failed` out of band (WI-10002837). Omitted means the host
+   * reports nothing and a controller can only learn of a failure by timing out.
+   */
+  statusChannel?: WorkspaceHostBootstrapStatusChannel;
   /** Persistable labels only. Secret-shaped keys and private-key values are rejected. */
   publicMetadata?: Readonly<Record<string, unknown>>;
 }
@@ -1129,6 +1188,18 @@ interface ValidatedBootstrapInput {
   agentRuntimeInstalls: readonly WorkspaceHostAgentRuntimeInstall[];
   /** The normalized origin (`URL.origin`), or null when no conduit is rendered. */
   connectorOrigin: string | null;
+  statusChannel: WorkspaceHostBootstrapStatusChannel | null;
+}
+
+function normalizedStatusChannel(
+  value: unknown,
+): WorkspaceHostBootstrapStatusChannel | null {
+  if (value === undefined) return null;
+  requireCondition(
+    (WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS as readonly unknown[]).includes(value),
+    `statusChannel must be one of: ${WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS.join(', ')}`,
+  );
+  return value as WorkspaceHostBootstrapStatusChannel;
 }
 
 /** A bare HTTPS origin: no path, query, fragment or credentials. Returns `URL.origin`. */
@@ -1330,6 +1401,7 @@ function validateInput(
           'hostedConnector.controlPlaneOrigin',
         )
       : null,
+    statusChannel: normalizedStatusChannel(input.statusChannel),
   };
 }
 
@@ -1957,6 +2029,37 @@ function bootcReleaseLines(
 }
 
 /**
+ * The status report (WI-10002837): `running` first, then `succeeded` or
+ * `failed exit=<n> phase=<phase> error=<die message>` from the EXIT trap. A rebooted host re-runs
+ * this script, so its first act overwrites whatever the previous boot left behind.
+ *
+ * Delivery is best-effort by construction: a report that cannot be delivered must never change
+ * the bootstrap's own outcome, so every send ends in `|| true` and the trap re-exits with the
+ * original status. With no channel, `report_status` is a no-op and nothing leaves the host.
+ */
+function statusReportLines(
+  channel: WorkspaceHostBootstrapStatusChannel | null,
+): string[] {
+  const url =
+    'http://169.254.169.254/computeMetadata/v1/instance/guest-attributes/' +
+    `${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE}/${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY}`;
+  const deliver =
+    channel === 'gce-guest-attributes'
+      ? 'report_status() { curl --silent --max-time 5 --output /dev/null --request PUT ' +
+        `--header "Metadata-Flavor: Google" --data-binary "$1" ${shellQuote(url)} || true; }`
+      : 'report_status() { :; }';
+  return [
+    'BOOTSTRAP_PHASE=""',
+    'BOOTSTRAP_ERROR=""',
+    deliver,
+    'report_outcome() { if [[ "$1" -eq 0 ]]; then report_status succeeded; else ' +
+      `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${BOOTSTRAP_ERROR:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
+    `trap 'status=$?; report_outcome "$status"; exit "$status"' EXIT`,
+    'report_status running',
+  ];
+}
+
+/**
  * Emit a deterministic, replay-safe root bootstrap for install, upgrade, or
  * rollback. The release bundle supplies Node, embedded Postgres tooling and psu, plus the psu
  * WRAPPERS named after the agent CLIs; the vendor agent runtimes themselves are installed at
@@ -1985,6 +2088,7 @@ export function buildWorkspaceHostBootstrap(
     workspaceAuthorizedKeys,
     agentRuntimeInstalls,
     connectorOrigin,
+    statusChannel,
   } = validated;
   const harden = hostModelHardenLines(validated);
   const connectorEnrollment = connectorOrigin ? connectorEnrollmentLines(connectorOrigin) : null;
@@ -2114,13 +2218,15 @@ export function buildWorkspaceHostBootstrap(
       : []),
     "",
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
-    'die() { log "ERROR: $1" >&2; exit 1; }',
-    'phase() { log "phase:$1"; }',
+    // Both record what the status report (below) says about a failure.
+    'die() { log "ERROR: $1" >&2; BOOTSTRAP_ERROR="$1"; exit 1; }',
+    'phase() { log "phase:$1"; BOOTSTRAP_PHASE="$1"; }',
     // Bounded retry for the few commands that reach the network before anything else has. A fresh
     // boot can lose its first egress attempts (WI-10002837: every archive fetch failed ~110s after
     // boot, the host re-ran the same bootstrap fine minutes later), and a single try turned that
     // blip into a dead host. Logs go to stderr so a caller's `>/dev/null` cannot hide them.
     'retry() { local max="$1" attempt=1; shift; until "$@"; do (( attempt >= max )) && return 1; log "attempt $attempt/$max failed, retrying in $(( attempt * 5 ))s: $*" >&2; sleep $(( attempt * 5 )); attempt=$(( attempt + 1 )); done; }',
+    ...statusReportLines(statusChannel),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`,
     '[[ "${EUID}" -eq 0 ]] || die "bootstrap must run as root"',
@@ -2350,6 +2456,8 @@ export function buildWorkspaceHostBootstrap(
     '  if [[ "$status" -ne 0 ]]; then restore_previous; fi',
     '  [[ -z "$STAGE_DIR" || ! -d "$STAGE_DIR" ]] || rm -rf -- "$STAGE_DIR"',
     '  rm -rf -- "$WORK_DIR"',
+    // This trap replaces the one statusReportLines installed, so it must report too.
+    '  report_outcome "$status"',
     '  exit "$status"',
     "}",
     "trap cleanup EXIT",
