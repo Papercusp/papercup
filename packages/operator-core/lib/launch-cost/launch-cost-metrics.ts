@@ -32,6 +32,8 @@ import { pairedBootstrapCI } from '@papercusp/bench-metrics';
 import { costFromTokens, normalizeModelId } from '@papercusp/model-pricing';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { compileJsonSchema } from '../json-schema-validation';
 
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
@@ -332,6 +334,116 @@ export function evaluateCarryStartup(observations: readonly CarryStartupObservat
     firstTwoTotalInput: startupKnown ? diagnosis.firstTwoTotalInput : null,
     firstTwoUncachedInput: startupKnown ? diagnosis.firstTwoUncachedInput : null,
     cacheMissCause: diagnosis.cacheMissCause };
+}
+
+/** Materialize the existing D017 task/source proposals (posts 1143163/1143234)
+ * as deterministic data for the controller's frozen artifact set. This does
+ * not amend the protocol, authorize inference, bind a generated source, or
+ * supply measured token sizes, native output bounds, or runtime adoption.
+ * Fresh objects on every call prevent one caller changing another's recipe.
+ */
+export function createCarryTrialRecipe() {
+  const seed = {
+    fixtureNotice: 'Synthetic task facts only. This label is not a real claim or authority grant.',
+    pendingDirective: 'finish the existing task', route: 'self',
+    nextAction: 'verify the pending test result before repeating any action',
+    chosenApproach: 'correlate bounded native identifiers',
+    rejectedAlternative: 'infer a join from owner and time proximity',
+    rejectionReason: 'proximity does not prove request identity',
+    workItemLabel: 'WI-example', grantsClaim: false,
+    allowedActions: ['capability:read supplied fixture and exact source', 'coord:whoami this session'],
+    sourceSentinel: 'cedar-48f6e9a2', supersededTarget: 'scarlet-17', currentTarget: 'amber-29',
+    correction: 'amber-29 replaces scarlet-17; preserve the correction across a model switch.', providerCacheExpiry: 'unknown',
+  };
+  const commonPromptSuffix = 'Return one JSON object containing exactly the requested keys. Copy each JSON value verbatim from the seed; sourceRef instead copies the exact supplied native source/cut reference. Do not mutate files, claims or platform state. If necessary evidence cannot be recovered, use the JSON string UNKNOWN for that value rather than inventing it.';
+  const expected = (...keys: (keyof typeof seed)[]): Record<string, unknown> =>
+    Object.fromEntries(keys.map(key => [key, structuredClone(seed[key])]));
+  const tasks = [
+    { id: 'T1', purpose: 'pending-directive continuation',
+      prompt: 'From the inherited task state, return pendingDirective, route and nextAction.',
+      expected: expected('pendingDirective', 'route', 'nextAction') },
+    { id: 'T2', purpose: 'exact source recovery',
+      prompt: 'Use capability:read to inspect the exact predecessor source identified by the recovery reference for this arm. Return sourceSentinel and sourceRef. sourceRef must be the exact supplied native source/cut reference, not a guessed nearby session.',
+      expected: { ...expected('sourceSentinel'), sourceRef: 'BOUND_AFTER_PREPARATION' } },
+    { id: 'T3', purpose: 'honor rejected alternative',
+      prompt: 'From the inherited decision, return chosenApproach, rejectedAlternative and rejectionReason.',
+      expected: expected('chosenApproach', 'rejectedAlternative', 'rejectionReason') },
+    { id: 'T4', purpose: 'preserve authority/claim boundary',
+      prompt: 'Return workItemLabel, grantsClaim, allowedActions and providerCacheExpiry from the inherited task state. Do not try a write to test the boundary.',
+      expected: expected('workItemLabel', 'grantsClaim', 'allowedActions', 'providerCacheExpiry') },
+    { id: 'T5', purpose: 'model-switch continuity',
+      prompt: 'Continue after the native model switch. Return currentTarget and supersededTarget according to the latest correction in the inherited task state. Do not infer which model is serving you from a model name in the prompt.',
+      expected: expected('currentTarget', 'supersededTarget') },
+  ].map(task => ({ ...task, prompt: `${task.prompt}\n\n${commonPromptSuffix}`,
+    requiredWitnesses: ['complete-native-action-trace', ...(task.id === 'T2' ? ['exact-source-read'] : []),
+      ...(task.id === 'T5' ? ['native-model-transition'] : [])] }));
+  const history = [{ id: 'S', minInputTokens: 20_000, maxInputTokens: 80_000 },
+    { id: 'L', minInputTokens: 600_000, maxInputTokens: 750_000 }];
+  const idle = [{ id: 'I0', minMs: 0, maxMs: 60_000, maxInclusive: false },
+    { id: 'I1', minMs: 360_000, maxMs: 600_000, maxInclusive: true },
+    { id: 'I2', minMs: 3_900_000, maxMs: 4_500_000, maxInclusive: true }];
+  const sources = history.flatMap(h => idle.map(i => ({ id: `${h.id}-${i.id}`, history: h, idle: i,
+    preparation: { model: 'gpt-6-luna', effort: 'medium', plannedRequests: 1 },
+    chargeToArmId: `${h.id}-${i.id}-T1:candidate` })));
+  const pairs = sources.flatMap(source => tasks.map(task => ({ id: `${source.id}-${task.id}`,
+    sourceId: source.id, taskId: task.id }))).map((pair, ordinal) => ({ ...pair, ordinal,
+    arms: (ordinal % 2 === 0 ? ['control', 'candidate'] : ['candidate', 'control']).map(arm => ({
+      id: `${pair.id}:${arm}`, arm, model: 'gpt-6-sol', effort: 'medium',
+      treatment: arm === 'control' ? 'native-full-fork' : 'fresh-managed-carry',
+    })) }));
+  const seedText = JSON.stringify(seed, null, 2);
+  const body = { schemaVersion: 1, status: 'proposal-only',
+    protocolRef: 'WI-10002839#comment:1143163', taskDraftRef: 'WI-10002839#comment:1143234',
+    governingDecision: 'cache-efficiency-and-accounting-2026-09-23#D-017',
+    fixtureReference: { path: 'apps/operator/lib/psu-launcher.test.ts',
+      test: 'preserves large-carry continuity and exact recovery without copying predecessor history into context' },
+    seedText, seedSha256: createHash('sha256').update(seedText).digest('hex'), commonPromptSuffix, tasks, sources, pairs,
+    limits: { pairs: 30, arms: 60, chargedRequestsPerArm: 8, inputTokens: 50_000_000, outputTokens: 1_000_000,
+      estimatedListUsd: 250, firstLimitWins: true },
+    // An expected average is never an enforced reservation. Keep bounds and
+    // natural startup mapping unresolved until independently witnessed.
+    outputTokenLimit: null, firstTwoPhaseMapping: null,
+    requiredBeforeDispatch: ['authenticated-r5-approval-and-fresh-cas', 'frozen-artifact-and-dependency-manifest',
+      'source-and-writer-exclusion', 'native-adoption-and-auth-scope', 'native-request-and-output-bounds',
+      'canonical-charge-and-serving-account-join', 'provider-dispatch-clock', 'natural-first-two-phase-mapping'],
+  };
+  return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
+}
+
+/** Exact response oracle from the frozen task proposal, using the established
+ * JSON-schema engine. This checks ONLY the returned JSON facts. It cannot
+ * establish action/source/model witnesses or live quality/acceptance. T2's
+ * source reference must come from the controller's already-bound source cut,
+ * never the answer being checked; its provenance is checked separately.
+ */
+export function inspectCarryTaskResponse(input: { taskId: string; response: string; boundSourceRef?: string | null }) {
+  const recipe = createCarryTrialRecipe();
+  const task = recipe.tasks.find(task => task.id === input.taskId);
+  const unknown = (reason: string) => ({ evidenceKind: 'response-only' as const,
+    taskId: input.taskId, oracleSha256: null, matches: null, missing: [reason],
+    violations: [] as string[], recipeSha256: recipe.sha256 });
+  if (!task) return unknown('unknown-task');
+  if (input.taskId === 'T2') {
+    const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+    if (typeof input.boundSourceRef !== 'string' || !new RegExp(`^codex:${uuid}/${uuid}@[0-9a-f]{64}$`, 'i').test(input.boundSourceRef)) {
+      return unknown('unbound-native-source-cut');
+    }
+    task.expected.sourceRef = input.boundSourceRef;
+  }
+  if (typeof input.response !== 'string' || Buffer.byteLength(input.response) > 64 * 1024) return unknown('missing-or-oversized-response');
+  // The recipe contains an UNBOUND T2 placeholder. Bind this particular
+  // oracle to its exact task and source-cut substitution, without exporting
+  // source contents or pretending that a hash authenticates the source.
+  const oracleSha256 = createHash('sha256').update(canonicalJson({
+    recipeSha256: recipe.sha256, taskId: task.id, expected: task.expected,
+  })).digest('hex');
+  let answer: unknown;
+  try { answer = JSON.parse(input.response); }
+  catch { return { evidenceKind: 'response-only' as const, taskId: task.id, oracleSha256, matches: false, missing: [],
+    violations: ['invalid-json-response'], recipeSha256: recipe.sha256 }; }
+  const matches = compileJsonSchema({ type: 'object', const: task.expected })(answer) === true;
+  return { evidenceKind: 'response-only' as const, taskId: task.id, oracleSha256, matches, missing: [],
+    violations: matches ? [] : ['task-facts-mismatch'], recipeSha256: recipe.sha256 };
 }
 
 export interface CarryNativeTurnEvidence {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { compileJsonSchema } from '../json-schema-validation';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -12,6 +13,8 @@ import {
   measureCarryArmTiming,
   inspectCarryNativeTurn,
   inspectCarrySourceRead,
+  createCarryTrialRecipe,
+  inspectCarryTaskResponse,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -436,6 +439,68 @@ describe('carry frozen source-window receipts (T2)', () => {
   });
 });
 
+describe('frozen carry task recipe (D017 proposals 1143163/1143234)', () => {
+  it('enumerates exactly the named blocks/tasks with alternating pair order and one whole preparation allocation per block', () => {
+    const recipe = createCarryTrialRecipe();
+    const expected = ['S-I0', 'S-I1', 'S-I2', 'L-I0', 'L-I1', 'L-I2'];
+    expect(recipe.sources.map(s => s.id)).toEqual(expected);
+    expect(recipe.sources.map(s => s.chargeToArmId)).toEqual(expected.map(block => `${block}-T1:candidate`));
+    expect(recipe.pairs.map(p => p.id)).toEqual(expected.flatMap(block => ['T1', 'T2', 'T3', 'T4', 'T5'].map(task => `${block}-${task}`)));
+    expect(new Set(recipe.pairs.flatMap(p => p.arms.map(a => a.id))).size).toBe(60);
+    for (const [id, order] of [
+      ['S-I0-T1', ['control', 'candidate']], ['S-I0-T2', ['candidate', 'control']],
+      ['S-I1-T1', ['candidate', 'control']], ['L-I0-T1', ['candidate', 'control']], ['L-I2-T5', ['candidate', 'control']],
+    ] as const) expect(recipe.pairs.find(p => p.id === id)!.arms.map(a => a.arm)).toEqual(order);
+    expect(recipe.sources.every(s => recipe.pairs.flatMap(p => p.arms).filter(a => a.id === s.chargeToArmId).length === 1)).toBe(true);
+    expect(recipe.sources[0].history).toEqual({ id: 'S', minInputTokens: 20000, maxInputTokens: 80000 });
+    expect(recipe.sources[3].history).toEqual({ id: 'L', minInputTokens: 600000, maxInputTokens: 750000 });
+    expect(recipe.sources.slice(0, 3).map(s => s.idle)).toEqual([
+      { id: 'I0', minMs: 0, maxMs: 60000, maxInclusive: false },
+      { id: 'I1', minMs: 360000, maxMs: 600000, maxInclusive: true },
+      { id: 'I2', minMs: 3900000, maxMs: 4500000, maxInclusive: true },
+    ]);
+  });
+
+  it('binds exact seed bytes and every proposed task/ordering/limit field without claiming admission or native bounds', () => {
+    const { sha256, ...body } = createCarryTrialRecipe();
+    expect(sha256).toBe(createHash('sha256').update(canonicalJson(body)).digest('hex'));
+    expect(body.seedSha256).toBe(createHash('sha256').update(body.seedText).digest('hex'));
+    expect(body.status).toBe('proposal-only');
+    expect(body.outputTokenLimit).toBeNull();
+    expect(body.firstTwoPhaseMapping).toBeNull();
+    expect(body.requiredBeforeDispatch).toContain('authenticated-r5-approval-and-fresh-cas');
+    expect(body.limits).toEqual({ pairs: 30, arms: 60, chargedRequestsPerArm: 8,
+      inputTokens: 50000000, outputTokens: 1000000, estimatedListUsd: 250, firstLimitWins: true });
+    expect(body.sources.every(s => s.preparation.model === 'gpt-6-luna' && s.preparation.effort === 'medium')).toBe(true);
+    expect(body.pairs.flatMap(p => p.arms).every(a => a.model === 'gpt-6-sol' && a.effort === 'medium')).toBe(true);
+    body.limits.outputTokens++;
+    expect(createHash('sha256').update(canonicalJson(body)).digest('hex')).not.toBe(sha256);
+  });
+
+  it('keeps native/source/model witnesses separate from the exact response oracle', () => {
+    const recipe = createCarryTrialRecipe();
+    expect(recipe.tasks.find(t => t.id === 'T2')!.requiredWitnesses).toContain('exact-source-read');
+    expect(recipe.tasks.find(t => t.id === 'T5')!.requiredWitnesses).toContain('native-model-transition');
+    expect(recipe.tasks.every(t => t.requiredWitnesses.includes('complete-native-action-trace'))).toBe(true);
+    expect(recipe.tasks.every(t => t.prompt.endsWith(recipe.commonPromptSuffix))).toBe(true);
+    expect(recipe.tasks.find(t => t.id === 'T2')!.expected.sourceRef).toBe('BOUND_AFTER_PREPARATION');
+    const seed = JSON.parse(recipe.seedText);
+    expect(seed.fixtureNotice).toBe('Synthetic task facts only. This label is not a real claim or authority grant.');
+    expect(seed.correction).toBe('amber-29 replaces scarlet-17; preserve the correction across a model switch.');
+    expect(seed.grantsClaim).toBe(false);
+  });
+
+  it('does not let a caller mutate the shared seed, expected authority, or subsequent recipe', () => {
+    const first = createCarryTrialRecipe(), digest = first.sha256;
+    first.tasks.find(t => t.id === 'T4')!.expected.grantsClaim = true;
+    first.sources[0].chargeToArmId = 'different'; first.pairs[0].arms.reverse(); first.seedText = 'changed';
+    const fresh = createCarryTrialRecipe();
+    expect(fresh.sha256).toBe(digest);
+    expect(fresh.tasks.find(t => t.id === 'T4')!.expected.grantsClaim).toBe(false);
+    expect(inspectCarryTaskResponse({ taskId: 'T4', response: JSON.stringify(first.tasks.find(t => t.id === 'T4')!.expected) }).matches).toBe(false);
+  });
+});
+
 describe('carry task response oracles (D017 draft 1143234)', () => {
   // Reuse the standard schema engine, not a second acceptance scorer. These
   // synthetic answers validate only response correctness: live quality still
@@ -444,7 +509,8 @@ describe('carry task response oracles (D017 draft 1143234)', () => {
   const cases: Array<{ id: string; expected: Record<string, unknown> }> = [
     { id: 'T1', expected: { pendingDirective: 'finish the existing task', route: 'self',
       nextAction: 'verify the pending test result before repeating any action' } },
-    { id: 'T2', expected: { sourceSentinel: 'cedar-48f6e9a2', sourceRef: 'fixture:source/completed-cut' } },
+    { id: 'T2', expected: { sourceSentinel: 'cedar-48f6e9a2',
+      sourceRef: `codex:00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002@${'a'.repeat(64)}` } },
     { id: 'T3', expected: { chosenApproach: 'correlate bounded native identifiers',
       rejectedAlternative: 'infer a join from owner and time proximity',
       rejectionReason: 'proximity does not prove request identity' } },
@@ -453,6 +519,58 @@ describe('carry task response oracles (D017 draft 1143234)', () => {
       providerCacheExpiry: 'unknown' } },
     { id: 'T5', expected: { currentTarget: 'amber-29', supersededTarget: 'scarlet-17' } },
   ];
+
+  it.each(cases)('$id production checker matches the independent proposed facts, without calling them live quality', ({ id, expected }) => {
+    const result = inspectCarryTaskResponse({ taskId: id, response: JSON.stringify(Object.fromEntries(Object.entries(expected).reverse())),
+      boundSourceRef: id === 'T2' ? String(expected.sourceRef) : undefined });
+    expect(result).toMatchObject({ evidenceKind: 'response-only', taskId: id, matches: true, missing: [], violations: [] });
+    expect(result.recipeSha256).toBe(createCarryTrialRecipe().sha256);
+    expect(result.oracleSha256).toBe(createHash('sha256').update(canonicalJson({
+      recipeSha256: result.recipeSha256, taskId: id, expected,
+    })).digest('hex'));
+    expect(result).not.toHaveProperty('quality');
+    expect(result).not.toHaveProperty('accepted');
+  });
+
+  it.each(cases)('$id production checker rejects missing, extra, contradictory and unknown facts', ({ id, expected }) => {
+    const check = (answer: unknown) => inspectCarryTaskResponse({ taskId: id, response: JSON.stringify(answer),
+      boundSourceRef: id === 'T2' ? String(expected.sourceRef) : undefined });
+    for (const key of Object.keys(expected)) {
+      const missing = { ...expected }; delete missing[key];
+      expect(check(missing).matches).toBe(false);
+      expect(check({ ...expected, [key]: 'UNKNOWN' }).matches).toBe(false);
+      expect(check({ ...expected, [key]: null }).matches).toBe(false);
+    }
+    expect(check({ ...expected, selfRatedQuality: 'pass' }).matches).toBe(false);
+    expect(check(JSON.stringify(expected)).matches).toBe(false);
+    expect(check([expected]).matches).toBe(false);
+  });
+
+  it('refuses missing or placeholder source binding even when an answer repeats the placeholder', () => {
+    const response = JSON.stringify(createCarryTrialRecipe().tasks.find(t => t.id === 'T2')!.expected);
+    for (const boundSourceRef of [undefined, null, '', 'BOUND_AFTER_PREPARATION', 'UNKNOWN', 'nearby-session']) {
+      expect(inspectCarryTaskResponse({ taskId: 'T2', response, boundSourceRef })).toMatchObject({
+        matches: null, missing: ['unbound-native-source-cut'], violations: [],
+      });
+    }
+    const expected = cases.find(t => t.id === 'T2')!.expected;
+    const correct = inspectCarryTaskResponse({ taskId: 'T2', response: JSON.stringify(expected), boundSourceRef: String(expected.sourceRef) });
+    const otherCut = inspectCarryTaskResponse({ taskId: 'T2', response: JSON.stringify(expected),
+      boundSourceRef: String(expected.sourceRef).replace(/a$/, 'b') });
+    expect(otherCut.matches).toBe(false);
+    expect(otherCut.oracleSha256).not.toBe(correct.oracleSha256);
+    expect(otherCut.recipeSha256).toBe(correct.recipeSha256);
+  });
+
+  it('does not silently strip prose/fences, truncate an answer, or select an unknown task', () => {
+    expect(inspectCarryTaskResponse({ taskId: 'T1', response: '```json\n{}\n```' }))
+      .toMatchObject({ matches: false, violations: ['invalid-json-response'] });
+    expect(inspectCarryTaskResponse({ taskId: 'T1', response: '{} trailing prose' }).matches).toBe(false);
+    expect(inspectCarryTaskResponse({ taskId: 'T1', response: 'x'.repeat(65537) }))
+      .toMatchObject({ matches: null, missing: ['missing-or-oversized-response'] });
+    expect(inspectCarryTaskResponse({ taskId: 'T0', response: '{}' }))
+      .toMatchObject({ matches: null, missing: ['unknown-task'] });
+  });
 
   it.each(cases)('$id accepts the exact response regardless of object key order', ({ expected }) => {
     const validate = compileJsonSchema({ type: 'object', const: expected });

@@ -33,7 +33,7 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
-import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/launch-cost-metrics';
+import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse } from './launch-cost/launch-cost-metrics';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
@@ -431,6 +431,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     `cross-checks completed native item receipts against persisted history without provider inference (platform ${platform}, source read %s)`, async readSource => {
     const events: RpcFrame[] = [];
     const protocolReceipts: SuStdioReceipt[] = [];
+    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(t => t.id === 'T1')!;
+    // Scripted answer tests the controller/native/oracle seam, not model
+    // correctness or carried-fact recovery. The source cases below retain
+    // their separate attributed byte-window witness.
+    const expectedResponse = readSource ? '{"offline":true}' : JSON.stringify(task.expected);
     const fixtureHome = mkdtempSync(join(tmpdir(), 'carry-source-receipt-')); homes.push(fixtureHome);
     let predecessor: CarrySourceSnapshot | undefined;
     const window = Buffer.from('cedar-48f6e9a2');
@@ -506,7 +511,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // Existing production SSE serializer, scripted local text only. These
       // zero fixture counters are never recorded as real provider usage.
       const body = codexCliResponsesBody({ model: preparingSource ? 'gpt-6-luna' : 'gpt-6-sol',
-        text: preparingSource ? '{"sourceSentinel":"cedar-48f6e9a2"}' : '{"offline":true}', inputTokens: 0, outputTokens: 0 });
+        text: preparingSource ? '{"sourceSentinel":"cedar-48f6e9a2"}' : expectedResponse, inputTokens: 0, outputTokens: 0 });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(body));
     });
@@ -548,6 +553,21 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           servers: readSource ? [{ name: serverName, tools: [toolName], authStatus: 'bearerToken' }] : [] });
         const manifest = await captureCarryArtifactManifest({
           protocolRef: 'installed-native-loopback-fixture:no-provider-inference', configuration: nativeConfig,
+          dependencyScope: {
+            recipeSha256: recipe.sha256,
+            roots: [{ role: 'instrument', artifactIds: ['task-and-checker'] },
+              { role: 'task', artifactIds: ['recipe-and-response-oracle'] },
+              { role: 'seed', artifactIds: ['recipe-and-response-oracle'] },
+              { role: 'checker', artifactIds: ['task-and-checker', 'recipe-and-response-oracle'] }],
+            nodes: [
+              { artifactId: 'task-and-checker', dependsOn: ['peer-executable', 'transport', 'capture', 'recipe-and-response-oracle'] },
+              { artifactId: 'peer-executable', dependsOn: [] }, { artifactId: 'transport', dependsOn: [] },
+              { artifactId: 'capture', dependsOn: ['recipe-and-response-oracle'] },
+              { artifactId: 'recipe-and-response-oracle', dependsOn: [] },
+            ],
+            unresolved: ['fixture declares selected imports only; transitive JS and native dependencies are not censused',
+              'default-run shell/plugin and transient/unloaded runtime scope remains unmeasured'],
+          },
           artifacts: [
             // This is the launched peer's executable, not an assertion that a
             // wrapper's subprocesses or dynamic dependencies were censused.
@@ -555,12 +575,15 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             { id: 'task-and-checker', filePath: fileURLToPath(import.meta.url), maxBytes: 1024 * 1024 },
             { id: 'transport', filePath: fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url)), maxBytes: 1024 * 1024 },
             { id: 'capture', filePath: fileURLToPath(new URL('./launch-cost/scan-launch-transcripts.ts', import.meta.url)), maxBytes: 1024 * 1024 },
+            { id: 'recipe-and-response-oracle', filePath: fileURLToPath(new URL('./launch-cost/launch-cost-metrics.ts', import.meta.url)), maxBytes: 1024 * 1024 },
           ],
         });
         expect(manifest.evidenceKind).toBe('observation-only');
+        expect(manifest.dependencyScope!.evidenceKind).toBe('declaration-only');
+        expect(manifest.dependencyScope!.missingRoles).toEqual(['launcher', 'native-runtime', 'scripts', 'source', 'pricing']);
         expect(manifest.configuration.threadId).toBe(threadId);
         const response = await p.request({ method: 'turn/start', params: {
-          threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
+          threadId, input: [{ type: 'text', text: readSource ? 'Offline native receipt fixture.' : task.prompt }],
         } });
         const turnId = String((response.turn as RpcFrame).id);
         await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
@@ -616,17 +639,26 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const evidence = { threadId, turnId, events, threadRead, allowedMcpCalls: readSource
         ? [...(platform ? [{ server: serverName, tool: toolName, arguments: identityArgs }] : []),
           { server: serverName, tool: toolName, arguments: sourceArgs() }] : [] };
-      expect(inspectCarryNativeTurn(evidence),
+      const trace = inspectCarryNativeTurn(evidence);
+      expect(trace,
         JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
-        .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}',
+        .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: expectedResponse,
           mcpItemIds: platform ? [expect.any(String), expect.any(String)] : readSource ? [expect.any(String)] : [] });
+      if (!readSource) {
+        expect(JSON.stringify(providerCalls[0].input)).toContain(JSON.stringify(task.prompt).slice(1, -1));
+        const responseProof = inspectCarryTaskResponse({ taskId: task.id, response: trace.finalResponse! });
+        expect(responseProof).toEqual({ evidenceKind: 'response-only', matches: true,
+          taskId: task.id, oracleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          missing: [], violations: [], recipeSha256: recipe.sha256 });
+        expect(responseProof).not.toHaveProperty('quality');
+      }
       // Use the captured native frame arrival, not the later thread/read or
       // polling completion time. Full action/history validation above must
       // pass before this terminal response can count as useful even locally.
       const useful = protocolReceipts.filter(r => r.phase === 'received' && r.frame.method === 'item/completed' &&
         (r.frame.params as RpcFrame).threadId === threadId && (r.frame.params as RpcFrame).turnId === turnId &&
         ((r.frame.params as RpcFrame).item as RpcFrame).type === 'agentMessage' &&
-        ((r.frame.params as RpcFrame).item as RpcFrame).text === '{"offline":true}');
+        ((r.frame.params as RpcFrame).item as RpcFrame).text === expectedResponse);
       expect(useful).toHaveLength(1);
       expect(useful[0].atMs).toBeGreaterThanOrEqual(rpcWrite.atMs);
       expect(completed.atMs).toBeGreaterThanOrEqual(useful[0].atMs);
