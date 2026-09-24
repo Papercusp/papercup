@@ -27,7 +27,10 @@ import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
-import type { GradingAuditDispatchSuppression } from './acceptance-rubric-vetting';
+import {
+  describeGradingAuditDispatchSuppression,
+  type GradingAuditDispatchSuppression,
+} from './acceptance-rubric-vetting';
 import { routeSourceGradingAudit } from './grading-audit-routing';
 import { getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
@@ -730,13 +733,24 @@ export async function readGradingAuditDispatchSuppression(
   deps: {
     listWorkspaceWideLoopStanddownOwners?: (workspaceId: string, nowMs: number) => Promise<Set<string>>;
     nowMs?: number;
+    targetOwnerId?: string | null;
   } = {},
 ): Promise<GradingAuditDispatchSuppression | null> {
   const nowMs = deps.nowMs ?? Date.now();
-  let owners: Set<string>;
+  const owners = await readActiveLoopStanddownOwners(
+    workspaceId, deps.listWorkspaceWideLoopStanddownOwners, nowMs,
+  );
+  return gradingAuditSuppressionForOwnerSet(owners, deps.targetOwnerId);
+}
+
+async function readActiveLoopStanddownOwners(
+  workspaceId: string,
+  reader: ((workspaceId: string, nowMs: number) => Promise<Set<string>>) | undefined,
+  nowMs: number,
+): Promise<Set<string>> {
   try {
-    owners = deps.listWorkspaceWideLoopStanddownOwners
-      ? await deps.listWorkspaceWideLoopStanddownOwners(workspaceId, nowMs)
+    return reader
+      ? await reader(workspaceId, nowMs)
       : await listLoopStanddownOwners(getOrgPg().sql, { workspaceId, nowMs, workspaceWideOnly: true });
   } catch (error) {
     console.warn(
@@ -744,9 +758,22 @@ export async function readGradingAuditDispatchSuppression(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return null;
+    return new Set();
   }
-  return owners.size > 0 ? { reason: 'workspace-wide-loop-standdown', pausedOwnerCount: owners.size } : null;
+}
+
+function gradingAuditSuppressionForOwnerSet(
+  owners: Set<string>,
+  targetOwnerId?: string | null,
+): GradingAuditDispatchSuppression | null {
+  if (owners.size === 0) return null;
+  const target = targetOwnerId?.trim() || null;
+  if (target && !owners.has(target)) return null;
+  return {
+    reason: 'workspace-wide-loop-standdown',
+    pausedOwnerCount: owners.size,
+    ...(target ? { targetOwnerId: target } : {}),
+  };
 }
 
 /**
@@ -775,21 +802,9 @@ export async function dispatchPendingGradingAudits(
   const release = deps.release ?? releasePendingGradingAudit;
   const readTasks = deps.listTasks ?? listTasks;
   const workspaceId = input.ctx.workspaceId?.trim();
-  if (workspaceId) {
-    const suppression = await readGradingAuditDispatchSuppression(workspaceId, {
-      listWorkspaceWideLoopStanddownOwners: deps.listWorkspaceWideLoopStanddownOwners,
-    });
-    if (suppression) {
-      return {
-        requestedTargetIds: explicitTargetIds,
-        receipts: explicitTargetIds.map((issueId) => ({
-          issueId,
-          state: 'skipped' as const,
-          reason: 'dispatch suppressed by active workspace-wide loop stand-down',
-        })),
-      };
-    }
-  }
+  const pausedOwners = workspaceId
+    ? await readActiveLoopStanddownOwners(workspaceId, deps.listWorkspaceWideLoopStanddownOwners, Date.now())
+    : new Set<string>();
   const cards = await readCards({
     includeSuperseded: true,
     includeRetracted: true,
@@ -840,6 +855,16 @@ export async function dispatchPendingGradingAudits(
         rubricRef: card.rubricRef,
         state: 'skipped',
         reason: `target rubric kind '${rubric.kind}' is not standard`,
+      };
+    }
+
+    const suppression = gradingAuditSuppressionForOwnerSet(pausedOwners, card.createdBy);
+    if (suppression) {
+      return {
+        issueId,
+        rubricRef: card.rubricRef,
+        state: 'skipped',
+        reason: describeGradingAuditDispatchSuppression(suppression),
       };
     }
 

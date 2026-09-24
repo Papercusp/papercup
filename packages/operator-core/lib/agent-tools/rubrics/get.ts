@@ -200,8 +200,8 @@ export default defineTool({
                 // EI-24121421744054354: name an owner stand-down when it strands a pending audit.
                 ...(suppressionWorkspace && suppressionWorkspace !== '*'
                   ? {
-                      readGradingAuditDispatchSuppression: () =>
-                        readGradingAuditDispatchSuppression(suppressionWorkspace),
+                      readGradingAuditDispatchSuppression: (targetOwnerId) =>
+                        readGradingAuditDispatchSuppression(suppressionWorkspace, { targetOwnerId }),
                     }
                   : {}),
               });

@@ -14,6 +14,7 @@ import {
   GRADING_AUDIT_DISPATCH_ACTOR,
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditorLaunchCtx,
+  readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
   resolveGradingAuditQuotaBackoff,
   type GradingAuditReservationResult,
@@ -36,6 +37,29 @@ function launchResult(data: unknown): LaunchResult {
 }
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'];
+
+describe('grading audit stand-down owner scope', () => {
+  it('suppresses only the scorecard author named by the active stand-down set', async () => {
+    const listWorkspaceWideLoopStanddownOwners = vi.fn(async () => new Set(['su-paused']));
+
+    const paused = await readGradingAuditDispatchSuppression('ws-test', {
+      listWorkspaceWideLoopStanddownOwners,
+      targetOwnerId: 'su-paused',
+    });
+    const resumed = await readGradingAuditDispatchSuppression('ws-test', {
+      listWorkspaceWideLoopStanddownOwners,
+      targetOwnerId: 'su-resumed',
+    });
+    const unknown = await readGradingAuditDispatchSuppression('ws-test', {
+      listWorkspaceWideLoopStanddownOwners,
+    });
+
+    expect(paused).toMatchObject({ reason: 'workspace-wide-loop-standdown', targetOwnerId: 'su-paused' });
+    expect(resumed).toBeNull();
+    expect(unknown).toMatchObject({ reason: 'workspace-wide-loop-standdown', pausedOwnerCount: 1 });
+    expect(listWorkspaceWideLoopStanddownOwners).toHaveBeenCalledTimes(3);
+  });
+});
 
 // Fresh auditors launch as the system dispatch actor, never as the dispatching
 // caller — the caller is often the card author (EI-23911815311476758). Spelled
@@ -302,26 +326,33 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
-  it('suppresses terminal auditor dispatch during an active workspace-wide loop stand-down', async () => {
+  it('suppresses a paused scorecard owner during an active workspace-wide loop stand-down', async () => {
     const d = deps();
     d.listWorkspaceWideLoopStanddownOwners.mockResolvedValue(new Set(['su-owner']));
+    d.listScorecards.mockResolvedValue([card('EI-paused', { createdBy: 'su-owner' })]);
 
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-paused'], ctx }, d);
 
-    expect(result).toEqual({
-      requestedTargetIds: ['EI-paused'],
-      receipts: [
-        {
-          issueId: 'EI-paused',
-          state: 'skipped',
-          reason: 'dispatch suppressed by active workspace-wide loop stand-down',
-        },
-      ],
-    });
-    expect(d.listScorecards).not.toHaveBeenCalled();
+    expect(result.receipts).toMatchObject([{ issueId: 'EI-paused', state: 'skipped' }]);
+    expect(result.receipts[0]!.reason).toContain("scorecard owner 'su-owner'");
+    expect(d.listScorecards).toHaveBeenCalledOnce();
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.listWorkspaceWideLoopStanddownOwners).toHaveBeenCalledWith('ws-test', expect.any(Number));
+  });
+
+  it('dispatches an unpaused owner’s card while unrelated owners remain stood down', async () => {
+    const d = deps();
+    d.listWorkspaceWideLoopStanddownOwners.mockResolvedValue(new Set(['su-paused']));
+    d.listScorecards.mockResolvedValue([card('EI-unpaused', { createdBy: 'su-resumed' })]);
+    d.route.mockResolvedValue({ state: 'routed', conversationId: 'audit-unpaused-owner' });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-unpaused'], ctx }, d);
+
+    expect(result.receipts).toMatchObject([{ issueId: 'EI-unpaused', state: 'routed' }]);
+    expect(d.reserve).toHaveBeenCalledOnce();
+    expect(d.route).toHaveBeenCalledOnce();
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('dispatches terminal auditor work again after the workspace-wide stand-down is cleared', async () => {

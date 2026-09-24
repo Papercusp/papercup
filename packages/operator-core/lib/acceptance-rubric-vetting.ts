@@ -114,6 +114,8 @@ export interface GradingAuditDispatchSuppression {
   reason: 'workspace-wide-loop-standdown';
   /** Loop owners currently held by an unexpired workspace-wide stand-down. */
   pausedOwnerCount: number;
+  /** Present when this particular scorecard owner, rather than the whole workspace, is held. */
+  targetOwnerId?: string;
 }
 
 export interface AcceptanceRubricVettingDeps {
@@ -133,11 +135,19 @@ export interface AcceptanceRubricVettingDeps {
    * consulted (no behavior change). A throw is treated as "not suppressed" —
    * this read only ANNOTATES a refusal, it never decides one.
    */
-  readGradingAuditDispatchSuppression?: () => Promise<GradingAuditDispatchSuppression | null>;
+  readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
 }
 
 /** Text appended to a pending-audit rejection while dispatch is suppressed. */
 export function describeGradingAuditDispatchSuppression(s: GradingAuditDispatchSuppression): string {
+  if (s.targetOwnerId) {
+    return (
+      `NO auditor will be launched for scorecard owner '${s.targetOwnerId}' while ` +
+      `an active workspace-wide loop stand-down holds ${s.pausedOwnerCount} loop owner(s); this pending audit ` +
+      `cannot settle until that owner resumes or the stand-down expires (scorecards:repair returns ` +
+      `'skipped: dispatch suppressed'). Waiting or re-emitting will not help.`
+    );
+  }
   return (
     `NO auditor will be launched while an active workspace-wide loop stand-down holds ` +
     `${s.pausedOwnerCount} loop owner(s) — grade-the-grader dispatch is suppressed, so this pending audit ` +
@@ -299,7 +309,7 @@ export async function getAcceptanceRubricVettingStatus(
   // independent reviewer's comments land on.
   const candidates: AcceptanceRubricVettingCandidate[] = [];
   const vettedCards: ScorecardRow[] = [];
-  const pendingAuditCandidates: AcceptanceRubricVettingCandidate[] = [];
+  const pendingAuditCandidates: Array<{ candidate: AcceptanceRubricVettingCandidate; targetOwnerId: string | null }> = [];
   let current: ScorecardRow | undefined;
   for (const card of [...metaCards].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
     const { rejectedBy, detail } = classifyVettingCandidate(card, {
@@ -317,7 +327,7 @@ export async function getAcceptanceRubricVettingStatus(
     };
     candidates.push(candidate);
     if (rejectedBy === 'grading-audit-unsettled' && card.gradingAudit?.state === 'pending') {
-      pendingAuditCandidates.push(candidate);
+      pendingAuditCandidates.push({ candidate, targetOwnerId: card.createdBy });
     }
     if (rejectedBy === null || rejectedBy === 'stale-revision') vettedCards.push(card);
     if (rejectedBy === null && !current) current = card;
@@ -327,11 +337,17 @@ export async function getAcceptanceRubricVettingStatus(
   // reads as "wait a bit" while nothing can move until an owner pause lifts.
   let gradingAuditDispatchSuppressed: GradingAuditDispatchSuppression | undefined;
   if (!current && pendingAuditCandidates.length > 0 && deps.readGradingAuditDispatchSuppression) {
-    const suppression = await deps.readGradingAuditDispatchSuppression().catch(() => null);
-    if (suppression) {
-      gradingAuditDispatchSuppressed = suppression;
-      const note = describeGradingAuditDispatchSuppression(suppression);
-      for (const candidate of pendingAuditCandidates) candidate.detail = `${candidate.detail}. ${note}`;
+    const suppressionByOwner = new Map<string | null, GradingAuditDispatchSuppression | null>();
+    for (const { candidate, targetOwnerId } of pendingAuditCandidates) {
+      let suppression: GradingAuditDispatchSuppression | null;
+      if (suppressionByOwner.has(targetOwnerId)) suppression = suppressionByOwner.get(targetOwnerId) ?? null;
+      else {
+        suppression = await deps.readGradingAuditDispatchSuppression(targetOwnerId).catch(() => null);
+        suppressionByOwner.set(targetOwnerId, suppression);
+      }
+      if (!suppression) continue;
+      gradingAuditDispatchSuppressed ??= suppression;
+      candidate.detail = `${candidate.detail}. ${describeGradingAuditDispatchSuppression(suppression)}`;
     }
   }
   const attestedRevisions = [

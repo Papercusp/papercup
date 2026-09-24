@@ -245,14 +245,15 @@ describe('getAcceptanceRubricVettingStatus names a stand-down that strands a pen
       stampedAt: '2026-09-08T00:01:00.000Z',
     },
   } as Partial<ScorecardRow>;
-  const suppressed = { reason: 'workspace-wide-loop-standdown' as const, pausedOwnerCount: 7 };
+  const suppressed = { reason: 'workspace-wide-loop-standdown' as const, pausedOwnerCount: 7, targetOwnerId: 'su-author' };
 
   it('appends the stand-down to the pending card and exposes it machine-readably', async () => {
     let reads = 0;
     const result = await getAcceptanceRubricVettingStatus(rubric, {
       ...deps([card(pendingAudit)]),
-      readGradingAuditDispatchSuppression: async () => {
+      readGradingAuditDispatchSuppression: async (targetOwnerId) => {
         reads += 1;
+        expect(targetOwnerId).toBe('su-author');
         return suppressed;
       },
     });
@@ -272,7 +273,22 @@ describe('getAcceptanceRubricVettingStatus names a stand-down that strands a pen
   it('says nothing about a stand-down when none is active', async () => {
     const result = await getAcceptanceRubricVettingStatus(rubric, {
       ...deps([card(pendingAudit)]),
-      readGradingAuditDispatchSuppression: async () => null,
+      readGradingAuditDispatchSuppression: async (targetOwnerId) => {
+        expect(targetOwnerId).toBe('su-author');
+        return null;
+      },
+    });
+
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+    expect(result.candidates[0]!.detail).not.toContain('stand-down');
+  });
+
+  it('does not attribute an unrelated owner stand-down to this card', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async (targetOwnerId) =>
+        targetOwnerId === 'su-paused' ? { reason: 'workspace-wide-loop-standdown', pausedOwnerCount: 1,
+          targetOwnerId } : null,
     });
 
     expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
