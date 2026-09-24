@@ -25,7 +25,14 @@
 
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
-import { applyHyperbeeOpToPg, lwwPick, type StoredOrderPrefetch } from './projection';
+import type postgres from 'postgres';
+import {
+  applyHyperbeeOpToPg,
+  lwwPick,
+  runInProjectionBatch,
+  type ProjectionBatchSession,
+  type StoredOrderPrefetch,
+} from './projection';
 import { encodeHlc } from '@papercusp/locks-core';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -479,6 +486,15 @@ export interface MergeCursor {
   /** Reuse a timed-out write while it is still in flight, rather than starting
    * another unbounded PG operation on every merge tick. */
   pendingApplies?: Map<string, PendingMergeApply>;
+  /**
+   * P-002 step 2 (batched fold commits): per log, the end (exclusive) of the
+   * window a LOST batch transaction covered. Ops before it replay outside the
+   * batch (autocommit, the serial path). An op that loses every batch it joins (a
+   * projection that swallows a statement error, an apply that always times out)
+   * then costs one serial window instead of rewinding the fold forever. In memory
+   * only; dropped once the log's cursor reaches it.
+   */
+  batchSerialUntil?: Map<string, number>;
   /**
    * WI-2003: per-position CONSECUTIVE read-throw counter (`${log.keyHex}:${pos}`
    * → count), the READ-side mirror of `applyThrows`. `readOpBoundedDetailed`
@@ -1842,13 +1858,21 @@ async function applyRecordingWinner(
   applyTimeoutMs: number = MERGE_APPLY_TIMEOUT_MS,
   maxWinnersEntries: number = DEFAULT_MAX_WINNERS_ENTRIES,
   onWinnersEvicted?: (evictedCount: number, size: number) => void,
+  batch?: { fold: FoldBatch; pos: number },
 ): Promise<MergeApplyOutcome> {
   const ident = opIdent(groupKey, env);
   let outcome: MergeApplyOutcome;
+  let batchOpId = 0;
+  let timedOut = false;
   try {
     const pending = (cursor.pendingApplies ??= new Map<string, PendingMergeApply>());
     let physical = pending.get(ident);
     if (!physical) {
+      // A reused in-flight apply (above) started outside this batch and autocommits,
+      // so only a fresh apply is bound to the batch.
+      const bound = batch ? batch.fold.beginOp(batch.pos, apply) : null;
+      if (bound) batchOpId = bound.opId;
+      const run = bound ? bound.apply : apply;
       let markStarted: () => void = () => {};
       const started = new Promise<void>((resolve) => {
         markStarted = resolve;
@@ -1857,7 +1881,7 @@ async function applyRecordingWinner(
         // Queue time is safe backpressure, not a slow PG write. Start both the
         // named-stage clock and the hard apply timeout only after admission.
         markStarted();
-        return logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => apply(env)));
+        return logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => run(env)));
       });
       physical = { started, result };
       pending.set(ident, physical);
@@ -1870,6 +1894,7 @@ async function applyRecordingWinner(
     const result = await raceApplyTimeout(groupKey, physical.result, applyTimeoutMs);
     outcome = typeof result === 'boolean' ? { kind: 'applied', changed: result } : result;
   } catch (err) {
+    timedOut = err instanceof MergeApplyTimeoutError;
     const code = (err as { code?: unknown } | null)?.code;
     outcome = {
       kind: isStructuralApplyFailure(err) ? 'dependency-waiting' : 'retryable',
@@ -1877,9 +1902,17 @@ async function applyRecordingWinner(
       ...(typeof code === 'string' ? { errorCode: code } : {}),
     };
   }
+  // P-002 step 2: an op that wrote into the batch transaction keeps its winner
+  // provisional until COMMIT (FoldBatch.commit records it then).
+  const provisional =
+    batch && batchOpId !== 0
+      ? await batch.fold.endOp(batchOpId, outcome.kind === 'applied', timedOut, groupKey, env, ident)
+      : false;
   if (outcome.kind === 'applied') {
-    cursor.applyThrows?.delete(ident);
-    recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
+    if (!provisional) {
+      cursor.applyThrows?.delete(ident);
+      recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
+    }
   } else {
     const counts = (cursor.applyThrows ??= new Map());
     const n = (counts.get(ident) ?? 0) + 1;
@@ -1892,6 +1925,361 @@ async function applyRecordingWinner(
     }
   }
   return outcome;
+}
+
+/**
+ * P-002 step 2 (p2p-join-catchup-speed D-002) — batched fold commits.
+ *
+ * Measured on the P-203 VM (WI-10002779): every folded op was its own autocommit
+ * transaction, costing an xid, a WAL record and a synchronous commit flush. That
+ * held true even for the common no-op, because `ON CONFLICT ... WHERE` locks the
+ * row when its WHERE is false. A serial await-per-op loop peaked at about 47 ops/s.
+ *
+ * A {@link FoldBatch} folds a window of ops into ONE transaction on a reserved
+ * connection, with one SAVEPOINT per op, so every per-op outcome stays exactly
+ * what the serial path produces: a failed op rolls back to its savepoint (its
+ * deferral / apply_failure is recorded as before) and later ops keep applying.
+ * The winners of ops that wrote into the transaction are PROVISIONAL (an overlay)
+ * until COMMIT is confirmed. The one unsafe direction is recording a winner whose
+ * write rolled back: the op would then be skipped forever (WI-255). It cannot
+ * happen here, because a lost batch discards the overlay and rewinds the cursor to
+ * the batch's first op. The replay is idempotent under LWW.
+ *
+ * Only projections that declare `batchable` join the transaction (via
+ * `projectionSql`). Any other projection's write first commits the open batch.
+ */
+export const MERGE_BATCH_MAX_OPS = 50;
+/** Bounds how long a batch's row locks can hold up a local writer (ms). */
+export const MERGE_BATCH_MAX_MS = 500;
+/** Bound on the COMMIT round trip (ms); past it the batch counts as lost and is replayed. */
+export const MERGE_BATCH_COMMIT_TIMEOUT_MS = 30_000;
+
+export interface MergeBatchOpts {
+  /**
+   * Commit after this many ops wrote into the batch. Keep it under 64, PG's
+   * per-backend cache of subtransaction ids: past it every concurrent snapshot
+   * pays subtrans lookups for as long as the transaction stays open.
+   */
+  maxOps?: number;
+  /** Commit once the batch has been open this long (ms). */
+  maxMs?: number;
+  /** Bound on the COMMIT round trip (ms). */
+  commitTimeoutMs?: number;
+}
+
+/** Batch counters for one incremental pass. */
+export interface MergeBatchStats {
+  /** Batch transactions committed. */
+  commits: number;
+  /** Ops that applied inside a committed batch. */
+  ops: number;
+  /** Batches lost (commit or savepoint failure, or an apply timeout inside one) and replayed from their first op. */
+  rewinds: number;
+}
+
+type MergeApplyFn = (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
+
+/** A batch the fold must replay: its transaction could not commit. */
+export class MergeBatchLostError extends Error {
+  constructor(reason: string) {
+    super(`read-merge batch transaction lost: ${reason}`);
+    this.name = 'MergeBatchLostError';
+  }
+}
+
+const BATCH_SAVEPOINT = 'read_merge_op';
+
+class FoldBatch {
+  private reserved: postgres.ReservedSql | null = null;
+  private target: postgres.Sql | null = null;
+  private opening: Promise<void> | null = null;
+  private txGen = 0;
+  private pipelined: Promise<unknown>[] = [];
+  /** Provisional winners in apply order (re-inserted per apply, like recordWinner's MRU order). */
+  private readonly overlay = new Map<string, { meta: WinnerMeta; ident: string }>();
+  /** Timed-out ops whose statements may still be running inside a lost transaction. */
+  private readonly poisoned = new Set<string>();
+  private currentOp = 0;
+  private nextOpId = 1;
+  private opPos = -1;
+  private opTouched = false;
+  private opTxGen = -1;
+  private opsInTx = 0;
+  private openedAt = 0;
+  private failureReason: string | null = null;
+  /** Log position of the first op whose writes sit in the open transaction; -1 when none do. */
+  startPos = -1;
+  readonly stats: MergeBatchStats = { commits: 0, ops: 0, rewinds: 0 };
+
+  constructor(
+    private readonly cursor: MergeCursor,
+    private readonly maxOps: number,
+    private readonly maxMs: number,
+    private readonly commitTimeoutMs: number,
+    private readonly maxWinnersEntries: number,
+    private readonly onWinnersEvicted?: (evictedCount: number, size: number) => void,
+  ) {}
+
+  /** The open transaction can no longer commit; the fold must replay from {@link startPos}. */
+  get failed(): boolean {
+    return this.failureReason !== null;
+  }
+
+  get reason(): string {
+    return this.failureReason ?? 'unknown';
+  }
+
+  /** The open transaction reached its op or age bound. */
+  get due(): boolean {
+    return this.reserved !== null && (this.opsInTx >= this.maxOps || Date.now() - this.openedAt >= this.maxMs);
+  }
+
+  /** The provisional winner for `groupKey`, which outranks `cursor.winners` while the batch is open. */
+  provisional(groupKey: string): WinnerMeta | undefined {
+    return this.overlay.get(groupKey)?.meta;
+  }
+
+  /** Bind `apply` to a fresh op at log position `pos`. */
+  beginOp(pos: number, apply: MergeApplyFn): { opId: number; apply: MergeApplyFn } {
+    const opId = this.nextOpId++;
+    this.currentOp = opId;
+    this.opPos = pos;
+    this.opTouched = false;
+    this.opTxGen = -1;
+    const session: ProjectionBatchSession = {
+      sqlFor: (target) => this.sqlFor(opId, target),
+      flush: () => this.flushFor(opId),
+      recover: () => this.recoverFor(opId),
+    };
+    return { opId, apply: (env) => runInProjectionBatch(session, () => apply(env)) };
+  }
+
+  /**
+   * Close op `opId`. Returns true when its writes sit in the batch transaction, so
+   * its winner must stay provisional until COMMIT. False means it wrote nothing
+   * there (autocommitted like the serial path) and may be recorded now.
+   */
+  async endOp(
+    opId: number,
+    applied: boolean,
+    timedOut: boolean,
+    groupKey: string,
+    env: OpEnvelope,
+    ident: string,
+  ): Promise<boolean> {
+    if (opId !== this.currentOp) return false;
+    this.currentOp = 0;
+    if (!this.opTouched) return false;
+    const reserved = this.reserved;
+    if (!reserved || this.opTxGen !== this.txGen) {
+      // The transaction this op wrote into is gone. It was committed mid-op
+      // (durable, so record now) unless the batch failed (keep provisional; the
+      // rewind discards it).
+      return this.failureReason !== null;
+    }
+    if (applied) {
+      this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`));
+      this.overlay.delete(groupKey);
+      this.overlay.set(groupKey, { meta: toMeta(env), ident });
+      this.opsInTx++;
+      return true;
+    }
+    if (timedOut) {
+      // Its statement is still running on the batch connection, so nothing sent
+      // behind it could be awaited. Lose the batch; the fold replays it.
+      this.fail(`apply timed out inside the batch transaction (${groupKey})`);
+      this.poisoned.add(ident);
+      return true;
+    }
+    try {
+      await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
+      await reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`);
+    } catch (err) {
+      this.fail(err);
+    }
+    return true;
+  }
+
+  /**
+   * Commit the open transaction and promote its provisional winners. Returns false
+   * when the batch is lost; the caller must then {@link discard} and replay.
+   */
+  async commit(): Promise<boolean> {
+    if (this.opening) await this.opening;
+    const reserved = this.reserved;
+    if (!reserved) return this.failureReason === null;
+    this.reserved = null;
+    this.target = null;
+    const pipelined = this.pipelined;
+    this.pipelined = [];
+    if (this.failureReason === null) {
+      try {
+        await Promise.all(pipelined);
+        if (this.failureReason !== null) throw new Error(this.failureReason);
+        const res = await raceMergeDeadline(reserved.unsafe('COMMIT'), this.commitTimeoutMs, 'batch COMMIT');
+        // PG answers COMMIT on an aborted transaction with the ROLLBACK tag, not an error.
+        if (res.command !== 'COMMIT') {
+          throw new Error(`the batch transaction ended as ${res.command ?? 'unknown'}; one of its statements failed`);
+        }
+      } catch (err) {
+        this.fail(err);
+      }
+    }
+    if (this.failureReason !== null) {
+      abandonReserved(reserved);
+      return false;
+    }
+    reserved.release();
+    for (const [groupKey, { meta, ident }] of this.overlay) {
+      this.cursor.applyThrows?.delete(ident);
+      recordWinner(this.cursor, groupKey, meta, this.maxWinnersEntries, this.onWinnersEvicted);
+    }
+    this.overlay.clear();
+    this.stats.commits++;
+    this.stats.ops += this.opsInTx;
+    this.opsInTx = 0;
+    this.startPos = -1;
+    return true;
+  }
+
+  /** Drop a lost batch: roll back what is open, forget its provisional winners and its poisoned in-flight applies. */
+  discard(): void {
+    const hadWork = this.reserved !== null || this.overlay.size > 0 || this.failureReason !== null;
+    if (this.reserved) abandonReserved(this.reserved);
+    this.reserved = null;
+    this.target = null;
+    this.pipelined = [];
+    for (const ident of this.poisoned) this.cursor.pendingApplies?.delete(ident);
+    this.poisoned.clear();
+    this.overlay.clear();
+    this.opsInTx = 0;
+    this.startPos = -1;
+    this.failureReason = null;
+    if (hadWork) this.stats.rewinds++;
+  }
+
+  private fail(err: unknown): void {
+    this.failureReason ??= (err instanceof Error ? err.message : String(err)).replaceAll('\0', '').slice(0, 400);
+  }
+
+  private pipe(q: postgres.PendingQuery<postgres.Row[]>): void {
+    // Sent now, awaited at COMMIT: SAVEPOINT / RELEASE cost no extra wait per op.
+    this.pipelined.push(q.execute().catch((err: unknown) => this.fail(err)));
+  }
+
+  private async open(target: postgres.Sql): Promise<void> {
+    try {
+      const reserved = await target.reserve();
+      this.reserved = reserved;
+      this.target = target;
+      this.txGen++;
+      this.openedAt = Date.now();
+      this.startPos = this.opPos;
+      this.pipe(reserved.unsafe('BEGIN'));
+    } catch {
+      // No connection, no transaction: this op simply autocommits.
+    } finally {
+      this.opening = null;
+    }
+  }
+
+  private async sqlFor(opId: number, target: postgres.Sql): Promise<postgres.Sql> {
+    // A timed-out op still running, or a batch that can no longer commit, writes
+    // on the plain handle (autocommit), exactly as the serial path does.
+    if (opId !== this.currentOp || this.failureReason !== null) return target;
+    if (this.reserved && this.target !== target && !(await this.commit())) return target;
+    if (!this.reserved) {
+      this.opening ??= this.open(target);
+      await this.opening;
+    }
+    const reserved = this.reserved;
+    if (!reserved || opId !== this.currentOp || this.failureReason !== null) return target;
+    if (!this.opTouched) {
+      this.opTouched = true;
+      this.opTxGen = this.txGen;
+      this.pipe(reserved.unsafe(`SAVEPOINT ${BATCH_SAVEPOINT}`));
+    }
+    return this.guard(reserved, opId, this.txGen);
+  }
+
+  /**
+   * The op's handle refuses once the op is over or its transaction is gone. An
+   * op that timed out keeps running and keeps this handle. Unguarded, its next
+   * statement would run on a connection already handed back to the pool, possibly
+   * inside another caller's transaction.
+   */
+  private guard(reserved: postgres.ReservedSql, opId: number, gen: number): postgres.Sql {
+    const live = (): void => {
+      if (opId !== this.currentOp || gen !== this.txGen || this.reserved !== reserved || this.failureReason !== null) {
+        throw new MergeBatchLostError('statement issued after its op or batch ended');
+      }
+    };
+    return new Proxy(reserved, {
+      apply: (t, thisArg, args) => {
+        live();
+        return Reflect.apply(t, thisArg, args);
+      },
+      get: (t, prop, recv) => {
+        const v: unknown = Reflect.get(t, prop, recv);
+        if (typeof v !== 'function') return v;
+        if (prop === 'unsafe' || prop === 'file') {
+          return (...a: unknown[]) => {
+            live();
+            return (v as (...x: unknown[]) => unknown).apply(t, a);
+          };
+        }
+        return (v as (...x: unknown[]) => unknown).bind(t);
+      },
+    }) as unknown as postgres.Sql;
+  }
+
+  private async flushFor(opId: number): Promise<void> {
+    if (opId !== this.currentOp) return;
+    if (!(await this.commit())) throw new MergeBatchLostError(this.reason);
+  }
+
+  /**
+   * The projection caught a statement error and will keep going. Roll the op back
+   * to its savepoint (which stays in place), so the aborted transaction accepts
+   * statements again. When the op wrote nothing into the batch there is nothing to
+   * recover; when the batch is gone its next statement refuses on its own.
+   */
+  private async recoverFor(opId: number): Promise<void> {
+    const reserved = this.reserved;
+    if (opId !== this.currentOp || !this.opTouched || !reserved || this.opTxGen !== this.txGen) return;
+    if (this.failureReason !== null) return;
+    try {
+      await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
+    } catch (err) {
+      this.fail(err);
+    }
+  }
+}
+
+/** Roll back whatever a lost batch left open and hand the connection back once that settles. */
+function abandonReserved(reserved: postgres.ReservedSql): void {
+  // Queued behind any statement still running on this connection, so the release
+  // waits for it; ROLLBACK after a completed COMMIT is a harmless warning.
+  void Promise.resolve(reserved.unsafe('ROLLBACK'))
+    .catch(() => {})
+    .finally(() => reserved.release());
+}
+
+async function raceMergeDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  if (ms <= 0) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} exceeded ${ms}ms`)), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    p.catch(() => {});
+  }
 }
 
 /** A log the incremental merge can OPTIONALLY range-prefetch (RemoteLog does;
@@ -1909,6 +2297,14 @@ export interface IncrementalMergeOpts {
    *  hung one can't wedge the whole merge loop forever. Default `MERGE_APPLY_
    *  TIMEOUT_MS`; `<= 0` disables the bound (today's unbounded-await behavior). */
   applyTimeoutMs?: number;
+  /**
+   * P-002 step 2 (p2p-join-catchup-speed D-002): fold a window of ops into one
+   * transaction with a savepoint per op (see {@link FoldBatch}). ON by default;
+   * `false` restores one autocommit transaction per op. Only projections that
+   * declare `batchable` join the transaction, so an `applyImpl` that never calls
+   * `projectionSql` behaves exactly as with `false`.
+   */
+  batchApply?: false | MergeBatchOpts;
   /**
    * Per-LOG per-PASS read budget (the old `maxOpsPerAuthor` reshaped). A pass
    * advances each log's cursor by at most this many ops; the remainder is
@@ -1988,6 +2384,8 @@ export interface IncrementalMergeResult {
    * `prefetchStoredOrder`). Present only when that option is set.
    */
   storedOrderSkips?: number;
+  /** P-002 step 2: batch-transaction counters. Present unless `batchApply: false`. */
+  batch?: MergeBatchStats;
 }
 
 /**
@@ -2135,6 +2533,34 @@ export async function mergeAdmittedLogsIncremental(
   cursor: MergeCursor,
   opts?: IncrementalMergeOpts,
 ): Promise<IncrementalMergeResult> {
+  // P-002 step 2: batched fold commits (D-002), ON unless batchApply === false.
+  const batchOpts = opts?.batchApply;
+  const batch =
+    batchOpts === false
+      ? null
+      : new FoldBatch(
+          cursor,
+          Math.max(1, batchOpts?.maxOps ?? MERGE_BATCH_MAX_OPS),
+          batchOpts?.maxMs ?? MERGE_BATCH_MAX_MS,
+          batchOpts?.commitTimeoutMs ?? MERGE_BATCH_COMMIT_TIMEOUT_MS,
+          opts?.maxWinnersEntries ?? DEFAULT_MAX_WINNERS_ENTRIES,
+          opts?.onWinnersEvicted,
+        );
+  try {
+    return await mergeIncrementalPass(logs, cursor, opts, batch);
+  } finally {
+    // Every normal exit has already committed or discarded; this catches a throw
+    // mid-pass, which must never leave a reserved connection holding row locks.
+    batch?.discard();
+  }
+}
+
+async function mergeIncrementalPass(
+  logs: AdmittedLog[],
+  cursor: MergeCursor,
+  opts: IncrementalMergeOpts | undefined,
+  batch: FoldBatch | null,
+): Promise<IncrementalMergeResult> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const applyTimeoutMs = opts?.applyTimeoutMs ?? MERGE_APPLY_TIMEOUT_MS;
@@ -2224,6 +2650,33 @@ export async function mergeAdmittedLogsIncremental(
     };
     const effectivePos = (p: number): number =>
       firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
+    // P-002 step 2: commit the open batch. When it is lost, rewind to its first op
+    // and hold the cursor there, so no position past a rolled-back write is ever
+    // persisted; the next pass replays the window (idempotent under LWW).
+    // Ops before `serialUntil` replay outside the batch (MergeCursor.batchSerialUntil).
+    let serialUntil = cursor.batchSerialUntil?.get(log.keyHex) ?? 0;
+    if (serialUntil > 0 && from >= serialUntil) {
+      cursor.batchSerialUntil?.delete(log.keyHex);
+      serialUntil = 0;
+    }
+    const batchAt = (p: number): { fold: FoldBatch; pos: number } | undefined =>
+      batch && p >= serialUntil ? { fold: batch, pos: p } : undefined;
+    // `through` is the exclusive end of what the batch may hold: `pos` where the op
+    // at `pos` has not started, `pos + 1` where it has.
+    const settleBatch = async (through: number): Promise<boolean> => {
+      if (!batch || (await batch.commit())) return true;
+      const start = batch.startPos >= 0 ? batch.startPos : pos;
+      const reason = batch.reason;
+      batch.discard();
+      // The replay of [start, through) runs serially, so the op that lost this batch
+      // cannot lose the next one the same way.
+      const serial = (cursor.batchSerialUntil ??= new Map());
+      serial.set(log.keyHex, Math.max(serial.get(log.keyHex) ?? 0, through));
+      if (start < pos) pos = start;
+      if (firstDeferredPos >= pos) firstDeferredPos = -1;
+      holdCursorHere({ kind: 'retryable', reason: `batch transaction lost: ${reason}` }, 'read-merge batch');
+      return false;
+    };
     // P-008: the snapshot set this pass is crossing on this log, so a long APPLY is
     // visible while it runs (start, every SNAPSHOT_SET_PROGRESS_LOG_MS, done) and a
     // SKIP leaves one line. console.info, not warn: this is expected progress.
@@ -2295,6 +2748,8 @@ export async function mergeAdmittedLogsIncremental(
         lastYieldAt = Date.now();
         await yieldToEventLoop();
       }
+      // P-002 step 2: bound the batch's size (subtransactions) and age (row locks).
+      if (batch?.due && !(await settleBatch(pos))) break;
       // WI-2105 REV fix (persist-after-apply): checkpoint the cursor at the
       // persist cadence. ops [from, pos) have all applied (each apply awaited a
       // projection commit), so next-to-read = pos — persisting `pos` never
@@ -2303,6 +2758,8 @@ export async function mergeAdmittedLogsIncremental(
       // the 240s bg-host watchdog and never return.
       if (onCursorAdvance && ++opsSincePersist >= MERGE_PERSIST_EVERY_OPS) {
         opsSincePersist = 0;
+        // P-002 step 2: [from, pos) is only durable once the open batch commits.
+        if (!(await settleBatch(pos))) break;
         cursor.positions.set(log.keyHex, effectivePos(pos));
         // WI-10002474: a failure carried in from a PREVIOUS pass is resolved once
         // this pass has applied past its position without deferring anything.
@@ -2329,6 +2786,8 @@ export async function mergeAdmittedLogsIncremental(
       // can't wedge every subsequent op in this peer's strictly-sequential log
       // forever (the pre-fix behavior — "silent REV fed_event outage class").
       if (prefetchStoredOrder && pos >= peekedUpTo) {
+        // P-002 step 2: the look-ahead reads committed rows; commit first.
+        if (!(await settleBatch(pos))) break;
         peekedUpTo = Math.min(upper, pos + prefetchWindow);
         await peekAndSeedStoredOrder({
           cursor,
@@ -2480,9 +2939,14 @@ export async function mergeAdmittedLogsIncremental(
         if (rows.length > 1) opsSincePersist += rows.length - 1;
         let retryable = false;
         for (const row of rows) {
+          // P-002 step 2: one chunk can hold thousands of rows; bound the batch inside it too.
+          if (batch?.due && !(await settleBatch(pos + 1))) {
+            retryable = true;
+            break;
+          }
           const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
-          const prev = cursor.winners.get(groupKey);
+          const prev = batch?.provisional(groupKey) ?? cursor.winners.get(groupKey);
           // stale row, never applied (P-002: a seeded winner skips only a strictly-older op)
           if (prev && isStaleAgainst(env, prev)) {
             if (prev.seeded) storedOrderSkips++;
@@ -2497,7 +2961,14 @@ export async function mergeAdmittedLogsIncremental(
             applyTimeoutMs,
             maxWinnersEntries,
             onWinnersEvicted,
+            batchAt(pos),
           );
+          // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
+          if (batch?.failed) {
+            await settleBatch();
+            retryable = true;
+            break;
+          }
           if (outcome.kind === 'applied') {
             if (outcome.changed) applied++;
           } else {
@@ -2514,7 +2985,7 @@ export async function mergeAdmittedLogsIncremental(
       }
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
-      const prev = cursor.winners.get(groupKey);
+      const prev = batch?.provisional(groupKey) ?? cursor.winners.get(groupKey);
       // ts-guard: stale op, never applied (P-002: a seeded winner skips only a strictly-older op)
       if (prev && isStaleAgainst(env, prev)) {
         if (prev.seeded) storedOrderSkips++;
@@ -2529,7 +3000,13 @@ export async function mergeAdmittedLogsIncremental(
         applyTimeoutMs,
         maxWinnersEntries,
         onWinnersEvicted,
+        batchAt(pos),
       );
+      // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
+      if (batch?.failed) {
+        await settleBatch();
+        break;
+      }
       if (outcome.kind === 'applied') {
         if (outcome.changed) applied++;
       } else {
@@ -2539,9 +3016,17 @@ export async function mergeAdmittedLogsIncremental(
         if (outcome.kind === 'retryable') break;
       }
     }
+    // P-002 step 2: every exit from the loop above (end of log, a read stall, a
+    // retryable apply) lands here, so this commit covers them all. A lost batch
+    // rewinds `pos` before the position below is taken.
+    await settleBatch();
     // WI-559: never advance PAST a structurally-deferred op — positions are
     // monotonic, so doing so loses it exactly as permanently as quarantining it.
     cursor.positions.set(log.keyHex, effectivePos(pos));
+    // P-002 step 2: the serial replay is over once the cursor reaches its end. Read
+    // the map, not `serialUntil`: a batch lost this pass has just raised it.
+    const serialEnd = cursor.batchSerialUntil?.get(log.keyHex);
+    if (serialEnd !== undefined && effectivePos(pos) >= serialEnd) cursor.batchSerialUntil?.delete(log.keyHex);
     if (firstDeferredPos < 0) cursor.applyFailures?.delete(log.keyHex);
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —
     // the pass's applies committed above). Guarded on `pos > from` so an
@@ -2564,9 +3049,13 @@ export async function mergeAdmittedLogsIncremental(
     }
   }
 
+  // P-002 step 2: batch counters only when a batch transaction actually ran, so a
+  // pass whose sink never joined one reports exactly what it did before.
+  const batchStats =
+    batch && (batch.stats.commits > 0 || batch.stats.rewinds > 0) ? { batch: { ...batch.stats } } : {};
   return prefetchStoredOrder
-    ? { applied, decoded, caughtUp, truncated: false, storedOrderSkips }
-    : { applied, decoded, caughtUp, truncated: false };
+    ? { applied, decoded, caughtUp, truncated: false, storedOrderSkips, ...batchStats }
+    : { applied, decoded, caughtUp, truncated: false, ...batchStats };
 }
 
 /**
