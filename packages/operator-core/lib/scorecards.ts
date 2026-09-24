@@ -1531,6 +1531,58 @@ async function replaceSettledGradingAuditAtomically(
   return rows.length > 0;
 }
 
+interface ActiveSourceAuditConsultRow {
+  answering_owner_id: string | null;
+}
+
+async function readActiveSourceAuditConsultResponder(
+  tx: OrgSql,
+  workspaceId: string,
+  issueId: string,
+  reservation: { key: string; reservedAt: string },
+): Promise<ActiveSourceAuditConsultRow | null> {
+  const rows = await tx<ActiveSourceAuditConsultRow[]>`
+    SELECT routing #>> ARRAY[
+             'selection',
+             'selected',
+             cascade_cursor::text,
+             'answeringOwnerId'
+           ] AS answering_owner_id
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId}
+       AND routing->'cascade'->>'flavor' = 'grading-integrity'
+       AND routing->'cascade'->>'issueId' = ${issueId}
+       AND routing->'cascade'->>'reservationKey' = ${reservation.key}
+       AND routing->'cascade'->>'reservationReservedAt' = ${reservation.reservedAt}
+       AND state IN ('awaiting_responder', 'active')
+       AND closed_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 1
+     FOR UPDATE`;
+  return rows[0] ?? null;
+}
+
+/**
+ * Every candidate in a grading-audit consult receives the same reservation
+ * epoch. Bind a routed emission to the answerer on the current cascade cursor
+ * so an earlier fork cannot settle with the next candidate's still-live lease.
+ * Direct launch fallbacks have no active consult row and use the launcher's
+ * existing single-task idempotency guard.
+ */
+export async function isCurrentSourceAuditResponder(
+  issueId: string,
+  reservation: { key: string; reservedAt: string },
+  auditor: string,
+  deps: ScorecardAtomicWriteDeps = {},
+): Promise<boolean> {
+  const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
+  const transact = deps.transact ?? boundedOrgTxn;
+  return transact(async (tx) => {
+    const current = await readActiveSourceAuditConsultResponder(tx, workspaceId, issueId, reservation);
+    return !current || current.answering_owner_id === auditor;
+  });
+}
+
 /** Settle only the exact pending stamp read by the caller, unless retraction has won. */
 export async function settlePendingGradingAuditAtomically(
   issueId: string,
@@ -1540,28 +1592,39 @@ export async function settlePendingGradingAuditAtomically(
 ): Promise<boolean> {
   const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
   const transact = deps.transact ?? boundedOrgTxn;
-  const rows = await transact((tx: OrgSql) => tx<{ feature_id: string }[]>`
-    UPDATE harness_shared.work_items
-       SET payload = jsonb_set(
-             COALESCE(payload, '{}'::jsonb),
-             '{observation,gradingAudit}',
-             ${JSON.stringify(settled)}::jsonb,
-             true
-           ),
-           origin = 'local',
-           updated_ts = ${Date.now()}
-     WHERE workspace_id = ${workspaceId}
-       AND feature_id = ${issueId}
-       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
-       AND payload->'observation'->'retracted' IS NULL
-       AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
-       AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${expected.metaRubricRef}
-       AND payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
-       AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${expected.rubricRevision == null ? null : String(expected.rubricRevision)}
-       AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${expected.criteriaHash ?? null}
-       AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ${expected.dispatchReservation?.key ?? null}
-       AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ${expected.dispatchReservation?.reservedAt ?? null}
-     RETURNING feature_id`);
+  const rows = await transact(async (tx: OrgSql) => {
+    if (expected.dispatchReservation) {
+      const current = await readActiveSourceAuditConsultResponder(
+        tx,
+        workspaceId,
+        issueId,
+        expected.dispatchReservation,
+      );
+      if (current && current.answering_owner_id !== settled.auditor) return [];
+    }
+    return tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb),
+               '{observation,gradingAudit}',
+               ${JSON.stringify(settled)}::jsonb,
+               true
+             ),
+             origin = 'local',
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND payload->'observation'->'retracted' IS NULL
+         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${expected.metaRubricRef}
+         AND payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
+         AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${expected.rubricRevision == null ? null : String(expected.rubricRevision)}
+         AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${expected.criteriaHash ?? null}
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ${expected.dispatchReservation?.key ?? null}
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ${expected.dispatchReservation?.reservedAt ?? null}
+       RETURNING feature_id`;
+  });
   return rows.length > 0;
 }
 
