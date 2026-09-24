@@ -9367,7 +9367,7 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     ).toThrow(/Claude and Codex/);
   });
 
-  it("restarts Codex as a fresh thread and layers the carry into CODEX_HOME/AGENTS.md", () => {
+  it("restarts Codex as a fresh thread with one full carry and an AGENTS recovery pointer", () => {
     const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });
     writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n", {
@@ -9392,9 +9392,9 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
       "-m",
       "gpt-5.6-luna",
     ]);
-    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
-      "first deterministic carry",
-    );
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).not.toContain("first deterministic carry");
+    expect(first.carryText).toContain("first deterministic carry");
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(first.launchContextPath);
     expect(
       readFileSync(join(codexHome, ".papercusp-carry-base-AGENTS.md"), "utf8"),
     ).toBe("# Base persona\n");
@@ -9417,7 +9417,9 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     ]);
     const agents = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
     expect(agents).toContain("# Base persona");
-    expect(agents).toContain("second deterministic carry");
+    expect(agents).not.toContain("second deterministic carry");
+    expect(second.carryText).toContain("second deterministic carry");
+    expect(agents).toContain(second.launchContextPath);
     expect(agents).not.toContain("first deterministic carry");
   });
 
@@ -9456,9 +9458,8 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(readFileSync(out.launchContextPath, "utf8")).toContain(
       codexCarryLineageMarker(predecessor),
     );
-    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
-      `predecessor:${predecessor}`,
-    );
+    expect(out.carryText).toContain(`predecessor:${predecessor}`);
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(out.launchContextPath);
     expect(JSON.parse(readFileSync(out.lineagePath, "utf8"))).toMatchObject({
       predecessorSessionId: predecessor,
       successorMode: "fresh",
@@ -9508,9 +9509,9 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     });
 
     expect(out.args).toEqual(["--dangerously-bypass-hook-trust"]);
-    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
-      "recovered carry",
-    );
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(out.launchContextPath);
+    expect(out.carryText).toContain("recovered carry");
+    expect(readFileSync(out.launchContextPath, "utf8")).toContain("recovered carry");
     expect(readFileSync(join(codexHome, ".papercusp-carry-base-AGENTS.md"), "utf8")).toBe("");
   });
 
@@ -9538,7 +9539,7 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
       );
     }
 
-    mintCarryRespawnArgs(
+    const out = mintCarryRespawnArgs(
       ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna"],
       {
         systemPromptAddendum: "fresh carry after repair",
@@ -9556,7 +9557,9 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     );
     expect(base).toBe("# Base persona\n");
     expect(agents).toContain("# Base persona");
-    expect(agents).toContain("fresh carry after repair");
+    expect(agents).not.toContain("fresh carry after repair");
+    expect(out.carryText).toContain("fresh carry after repair");
+    expect(agents).toContain(out.launchContextPath);
     expect(agents).not.toContain("stale carry from a predecessor");
     expect(agents.match(/^## Managed carry checkpoint$/gm) ?? []).toHaveLength(
       1,
