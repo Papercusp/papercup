@@ -1074,6 +1074,20 @@ describe('fresh headless Claude kickoff composer gate', () => {
     expect(freshChildPromptReady('claude', '❯ 1. Choose a theme')).toBe(false);
   });
 
+  it('recognizes the current Claude placeholder composer without accepting a menu row', () => {
+    const observedFrame = '\x1b[38;5;244m────────────────\x1b[39m\r\n' +
+      '❯\u00a0Try "how do I log an error?"\r\n' +
+      '\x1b[38;5;246m◐ medium · /effort\x1b[39m';
+    expect(freshChildPromptReady('claude', observedFrame)).toBe(true);
+    expect(startupOutputReady('claude', observedFrame)).toBe(true);
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: true,
+      promptReady: freshChildPromptReady('claude', observedFrame),
+    })).toBe('composer-ready');
+    expect(freshChildPromptReady('claude', '❯ 1. Resume from summary')).toBe(false);
+    expect(freshChildPromptReady('claude', '❯ Try again')).toBe(false);
+  });
+
   it('waits for the composer during a fresh headless launch and keeps the ordinary gate elsewhere', () => {
     expect(headlessClaudeKickoffReadiness({
       enabled: true,
