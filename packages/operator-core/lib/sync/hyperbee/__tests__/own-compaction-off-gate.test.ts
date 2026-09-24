@@ -22,7 +22,12 @@ import {
   _setPgWriteForTests,
   listBootHistory,
 } from '../boot-history';
-import { SNAPSHOT_COMPACT_EVERY_OPS } from '../log-snapshot';
+import {
+  formatSnapshotFoldProgress,
+  SNAPSHOT_COMPACT_EVERY_OPS,
+  SNAPSHOT_READ_CONCURRENCY,
+  throttleSnapshotFoldProgress,
+} from '../log-snapshot';
 import type { PeerLogOp } from '../peer-log';
 
 const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
@@ -52,7 +57,7 @@ function tmpWorkspaceRoot(): string {
   return dir;
 }
 
-async function boot(slug: string) {
+async function boot(slug: string, extra: { ownCompactionProgressIntervalMs?: number } = {}) {
   const handle = await bootHarnessSubstrate({
     workspaceRoot: tmpWorkspaceRoot(),
     workspaceId: WS,
@@ -61,6 +66,7 @@ async function boot(slug: string) {
     loadRevokedOverride: async () => new Set(),
     applyOverride: async () => true,
     rekeyDepsOverride: null,
+    ...extra,
   });
   let closed = false;
   cleanups.push(async () => {
@@ -91,20 +97,30 @@ async function appendOps(handle: Awaited<ReturnType<typeof boot>>['handle'], fro
  * Hold every read of an own-log index BELOW `below` until released. The merge cursor
  * is already past those indices, so only the compaction's history fold waits on it.
  */
-function gateHistoryReads(log: { get(i: number): Promise<PeerLogOp | null> }, below: number) {
-  const original = log.get.bind(log);
+function gateHistoryReads(
+  log: { get(i: number): Promise<PeerLogOp | null>; getRaw?(i: number): Promise<Uint8Array | null> },
+  below: number,
+) {
   let release!: () => void;
   const gate = new Promise<void>((r) => {
     release = r;
   });
   let blockedReads = 0;
-  log.get = async (i: number) => {
+  const hold = async <T>(i: number, read: (i: number) => Promise<T>): Promise<T> => {
     if (i < below) {
       blockedReads++;
       await gate;
     }
-    return original(i);
+    return read(i);
   };
+  const originalGet = log.get.bind(log);
+  log.get = (i: number) => hold(i, originalGet);
+  // WI-10002855: the compaction now reads RAW blocks (`getRaw`) and folds them in a
+  // worker thread, so its history reads go through getRaw — gate that path too.
+  if (log.getRaw) {
+    const originalGetRaw = log.getRaw.bind(log);
+    log.getRaw = (i: number) => hold(i, originalGetRaw);
+  }
   return { release, blockedReads: () => blockedReads };
 }
 
@@ -205,5 +221,97 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     expect(messages.some((m) => /^own log compaction: coversUpTo=1000 .*elapsedMs=\d+ mergeGateHeld=false$/.test(m))).toBe(true);
     // stdout mirror carries the same rows (the journal is the other durable surface).
     expect(stdout.filter((l) => l.includes(slug) && l.includes('own_log_compaction')).length).toBe(mine.length);
+    // Default cadence: a fold this short finishes inside one interval and adds no progress rows.
+    expect(messages.some((m) => m.startsWith('own log compaction progress:'))).toBe(false);
+  });
+
+  it('reports the fold position while a compaction is running, not only when it ends (WI-10002836)', async () => {
+    // The failure this pins: the tower's first papercusp compaction folded 7.76M ops for
+    // 30+ minutes, and nothing between its start row and its outcome row showed whether
+    // it was moving or hung. The progress row must land WHILE the fold is still open.
+    const pgRows: Array<{ kind: string; message?: string; harnessSlug: string }> = [];
+    _setPgWriteForTests((entry) => pgRows.push(entry));
+
+    const slug = 'p005-progress';
+    const { handle } = await boot(slug, { ownCompactionProgressIntervalMs: 0 });
+    // More than one read window, so the fold reports more than once before it ends.
+    const ops = SNAPSHOT_COMPACT_EVERY_OPS + SNAPSHOT_READ_CONCURRENCY;
+    await appendOps(handle, 0, ops);
+    await handle.mergeNow();
+    await waitFor(() => (compactionEvents(slug).length > 0 ? true : null));
+
+    const mine = pgRows.filter((r) => r.harnessSlug === slug && r.kind === 'own_log_compaction');
+    const outcomeAt = mine.findIndex((r) => /^own log compaction: coversUpTo=/.test(r.message ?? ''));
+    const startedAt = mine.findIndex((r) => /^own log compaction started: /.test(r.message ?? ''));
+    const progressAt = mine
+      .map((r, i) => (/^own log compaction progress: /.test(r.message ?? '') ? i : -1))
+      .filter((i) => i >= 0);
+    expect(startedAt).toBeGreaterThanOrEqual(0);
+    expect(outcomeAt).toBeGreaterThan(startedAt);
+    expect(progressAt.length).toBeGreaterThanOrEqual(2);
+    // Every progress row is written between the start row and the outcome row, i.e. WHILE folding.
+    for (const i of progressAt) {
+      expect(i).toBeGreaterThan(startedAt);
+      expect(i).toBeLessThan(outcomeAt);
+    }
+    const progress = progressAt.map((i) => mine[i]!.message ?? '');
+    expect(progress[0]).toMatch(
+      /^own log compaction progress: cursor=\d+\/\d+ \(\d+%\) sourceStart=0 decodedOps=\d+ decodedBytes=\d+ heapUsedMb=\d+ elapsedMs=\d+$/,
+    );
+    const cursors = progress.map((m) => Number(/cursor=(\d+)\//.exec(m)![1]));
+    // Monotonic: the anchor-convergence re-fold never reports a position behind an earlier one.
+    expect(cursors).toEqual([...cursors].sort((a, b) => a - b));
+    expect(new Set(cursors).size).toBe(cursors.length);
+    expect(cursors[cursors.length - 1]).toBe(ops);
+  });
+});
+
+describe('throttleSnapshotFoldProgress (WI-10002836)', () => {
+  const at = (processed: number, total = 100) => ({
+    phase: 'own-compaction',
+    sourceStart: 0,
+    sourceEnd: total,
+    processed,
+    total,
+    decodedOps: processed,
+    decodedBytes: processed * 10,
+  });
+
+  it('emits at most once per interval, measured from creation, and never on a short fold', () => {
+    let clock = 1_000;
+    const seen: number[] = [];
+    const report = throttleSnapshotFoldProgress((p) => seen.push(p.processed), {
+      minIntervalMs: 60_000,
+      now: () => clock,
+    });
+    report(at(10));
+    clock += 59_999;
+    report(at(20));
+    expect(seen).toEqual([]); // a fold that ends inside one interval emits nothing
+    clock += 1;
+    report(at(30));
+    clock += 30_000;
+    report(at(40));
+    clock += 30_000;
+    report(at(50));
+    expect(seen).toEqual([30, 50]);
+  });
+
+  it('drops repeated and backwards positions so the reported cursor stays monotonic', () => {
+    let clock = 0;
+    const seen: number[] = [];
+    const report = throttleSnapshotFoldProgress((p) => seen.push(p.processed), { minIntervalMs: 0, now: () => clock });
+    for (const n of [5, 5, 3, 8, 7, 9]) {
+      clock += 1;
+      report(at(n));
+    }
+    expect(seen).toEqual([5, 8, 9]);
+  });
+
+  it('formats a bounded one-line position', () => {
+    expect(formatSnapshotFoldProgress(at(25, 200))).toBe(
+      'cursor=25/200 (12%) sourceStart=0 decodedOps=25 decodedBytes=250',
+    );
+    expect(formatSnapshotFoldProgress(at(0, 0))).toContain('(100%)');
   });
 });
