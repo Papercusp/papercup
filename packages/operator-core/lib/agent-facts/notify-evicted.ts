@@ -196,6 +196,12 @@ function scopeLabel(scope: string, scopeRef?: string | null): string {
   return scopeRef ? `${scope}/${scopeRef}` : scope;
 }
 
+/** Keep a bounded, single-line stack for the best-effort failure log. */
+function errorDetails(error: unknown): string {
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  return detail.replace(/\s*\r?\n\s*/g, ' | ').slice(0, 2_000);
+}
+
 /**
  * Notify each evicted fact's author. NEVER throws and never rejects — an
  * eviction notice failing must not turn a successful `facts:assert` into an
@@ -271,7 +277,7 @@ export async function notifyEvictedFactOwners(args: NotifyEvictedArgs): Promise<
         failedOwners.push(owner);
         console.warn(
           `[notify-evicted] failed to notify ${owner} of ${victims.length} eviction(s) in ${label}: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
+            errorDetails(err),
         );
       }
     }
@@ -294,7 +300,7 @@ export async function notifyEvictedFactOwners(args: NotifyEvictedArgs): Promise<
     const evictedCount = Array.isArray(args.evicted) ? args.evicted.length : '?';
     console.error(
       `[notify-evicted] eviction-notice pipeline threw for ${evictedCount} evicted fact(s) in ` +
-        `${label} — NO owner was notified: ${err instanceof Error ? err.message : String(err)}`,
+        `${label} — NO owner was notified: ${errorDetails(err)}`,
     );
     return [];
   }

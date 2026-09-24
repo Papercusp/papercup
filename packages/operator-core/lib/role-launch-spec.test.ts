@@ -80,9 +80,9 @@ vi.mock('./papercusp-root', async (importOriginal) => ({
   papercuspPathForWorkspace: vi.fn((ws: string) => `/ws-root/${ws}`),
 }));
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   buildRoleLaunchSpec,
   buildLaunchSpec,
@@ -920,6 +920,48 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(out.text.startsWith('# DEFAULT GUIDE\n\n## Addressed guidance')).toBe(true);
     expect(out.text).toContain('LEADER ONLY RULE');
     expect(out.addressed?.partKeys).toEqual(['lead-1']);
+  });
+
+  it('first render and guide addressing use the selected moderated mode revision', async () => {
+    const { parse: parseYaml, stringify: stringifyYaml } = await import('yaml');
+    const { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends } =
+      await import('@papercusp/orchestrator/blueprint');
+    const { buildBlueprintReleaseArchive, commitBlueprintRelease } = await import('./cupboard/blueprint-release');
+    const { getSelectedModeCatalog } = await import('./agent-identities/source');
+    const root = mkdtempSync(join(tmpdir(), 'launch-mode-selection-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const baseline = await getSelectedModeCatalog();
+      const id = 'su.mode-auto-launch-variant';
+      const sourceDir = join(root, 'source');
+      cpSync(dirname(builtinBlueprintPath('su.mode-auto')), sourceDir, { recursive: true });
+      const sourceFile = join(sourceDir, 'blueprint.yaml');
+      const raw = parseYaml(readFileSync(sourceFile, 'utf8')) as Record<string, unknown>;
+      raw.id = id;
+      raw.mode = { ...(raw.mode as Record<string, unknown>), title: 'AUTO launch variant',
+        replacesRevision: baseline.entries.find((entry) => entry.id === 'auto')!.revision };
+      writeFileSync(sourceFile, stringifyYaml(raw));
+      writeFileSync(join(sourceDir, 'prompts', 'autonomy.md'), '## AUTO selected from moderated install\n\nFollow the approved variant.\n');
+      const resolved = resolveBlueprintSource(raw, { sourcePath: sourceFile, resolve: resolveBuiltinExtends,
+        lint: { approvedModePolicyRefs: ['auto'] } });
+      const pins = blueprintPackageInputs(resolved, []);
+      const hash = buildBlueprintReleaseArchive(pins, id).package.rootHash;
+      await commitBlueprintRelease({ installedDir: join(root, 'blueprints'), sourceDir, id,
+        version: '1.0.0', source: 'https://github.com/acme/mode', pins,
+        modeApproval: { listingId: 'moderated-listing', policyRef: 'auto', approvedArtifactContentHash: hash } });
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      await buildLaunchSpec({ ...su, modes: ['auto'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText).toContain('AUTO selected from moderated install');
+      expect(rendered.baseText).not.toContain("AUTO mode — the owner's switch");
+      await composerFromLastRender()({ text: 'G', source: '/repo/CLAUDE.md' });
+      expect(lastRead().tokens).toContain(`blueprint:${id}`);
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('two launches in the same pot with different stacks are read with DIFFERENT tokens', async () => {

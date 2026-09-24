@@ -269,7 +269,8 @@ const runGitLocalBounded = (
           idleCheck = null;
           terminate(`made no output progress for ${idleTimeoutMs}ms`);
         });
-        idleCheck.unref?.();
+        // This one-shot verdict must also run when the child emits nothing;
+        // unref would let POLL wait for child close or the hard deadline.
       }, idleTimeoutMs);
       idleTimer.unref?.();
     };

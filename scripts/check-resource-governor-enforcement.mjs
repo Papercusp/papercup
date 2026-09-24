@@ -1603,6 +1603,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/project-doc-parts.mjs: verifyDocClaims() makes exactly one synchronous spawnSync('npx', ['vitest','run',...,'lib/doc-claims/']) to run the doc-claims guards against the corpus this projection just wrote — the only moment that corpus exists on disk before git-sync sweeps it into the gate's candidate. It is not a cheap metadata read (~40s), but it cannot materially increase residency: spawnSync is awaited by construction, exactly one child exists and it must exit before the projection continues, and the child is handed PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1 so it provably cannot recurse into a second verify. It runs only when a human or a release script projects doc parts (a handful of times a day), never on a scheduled or serving path, and starts no detached worker, network request, or resident queue. Two deliberate escape hatches (--no-verify, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1) let a mid-repair or non-interactive caller skip the start entirely.",
   },
   {
+    path: "apps/operator/lib/release/green-checkpoint.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for green-checkpoint.ts: createCheckpointTerminalEventBuffer's pending Map holds only terminal wake events from one qualification result, keyed by event/sha/runId; flush copies and clears it after the durable result is recorded or withholds it on failure. It is per-run notification correlation state, not resident work or an independently draining queue.",
+  },
+  {
     path: "packages/operator-core/lib/sync/hyperbee/snapshot-fold-offload.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

@@ -230,7 +230,9 @@ describe('notifyEvictedFactOwners — silent failures are now loud (WI-2142302)'
   it('logs a warning (and still returns []) when the coord plane throws for one owner', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      sendMessage.mockRejectedValueOnce(new Error('coord plane down'));
+      const failure = new Error('coord plane down');
+      failure.stack = 'Error: coord plane down\n    at mockedSendMessage (fixture)';
+      sendMessage.mockRejectedValueOnce(failure);
       const notified = await notifyEvictedFactOwners({
         evicted: [victim()],
         writerOwnerId: 'su-writer',
@@ -241,6 +243,7 @@ describe('notifyEvictedFactOwners — silent failures are now loud (WI-2142302)'
       expect(warn).toHaveBeenCalled();
       expect(warn.mock.calls.some(([msg]) => String(msg).includes('su-owner'))).toBe(true);
       expect(warn.mock.calls.some(([msg]) => String(msg).includes('coord plane down'))).toBe(true);
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('at mockedSendMessage (fixture)'))).toBe(true);
     } finally {
       warn.mockRestore();
     }

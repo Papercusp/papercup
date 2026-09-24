@@ -964,6 +964,9 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   let suBaseSource: string | undefined;
   let suOverlayDir: string | undefined;
   let suBaseText: string | undefined;
+  const modeCatalog = input.modes?.length
+    ? await (await import('./agent-identities/source')).getSelectedModeCatalog()
+    : undefined;
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
@@ -987,13 +990,31 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           // launches into and the definition identity of each mode it launches with — is
           // part of the FIRST render (an inject-now layer also renders in place on every
           // full render). Derived from the same facts presence + agent_modes carry.
-          const derived = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null });
+          const derived = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
           const launchBinding = normalizeStackBinding([...requestedStack.layers, ...derived.layers]);
+          const selectedModeDocs = new Map<string, import('@papercusp/orchestrator/blueprint').StackDocument>();
+          if (modeCatalog) {
+            const { getIdentitySource } = await import('./agent-identities/source');
+            for (const layer of derived.layers) {
+              if (!modeCatalog.entries.some((entry) => entry.sourceId === layer.id && entry.slot === layer.slot)) continue;
+              const identity = await getIdentitySource(layer.id);
+              if (!identity.ok || !identity.sourcePath) {
+                throw new Error(`selected mode identity ${layer.id} is no longer available`);
+              }
+              const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
+              selectedModeDocs.set(`${layer.slot}:${layer.id}`, {
+                id: layer.id, layer: 'modes', slot: layer.slot,
+                text: await fs.readFile(sourcePath, 'utf8'), sourcePath,
+              });
+            }
+          }
           suBaseText = composeSuStackSource({
             harnessDir,
             binding: launchBinding,
+            resolveLayer: (layer) => selectedModeDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
         } catch (e) {
+          if (modeCatalog) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
@@ -1029,7 +1050,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     try {
       const { SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
       const { projectGuideComposerForWearer } = await import('./doc-projection/addressed-project-guide');
-      const binding = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null });
+      const binding = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
       return projectGuideComposerForWearer({
         wearer: { role: 'su', layers: [...SU_STATIC_LAYERS, ...binding.layers] },
         workspaceId: input.workspaceId,

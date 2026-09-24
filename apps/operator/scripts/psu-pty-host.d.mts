@@ -2147,6 +2147,17 @@ export function controlWrites(decoded: any, crDelayMs?: number): {
  *  @param {EnvironmentMap} [env]
  */
 export function turnSubmitCrDelayForAgent(agent: any, env?: EnvironmentMap): any;
+/** EI-24141825238362808: the child TUI's bracketed-paste mode (DECSET 2004)
+ *  after it wrote `chunk`, given the mode before it and the tail of its earlier
+ *  output, so a toggle split across two pty chunks is still seen. The last
+ *  toggle wins; output with no toggle leaves the mode unchanged. Claude Code
+ *  emits `ESC[?2004h` in its first ~100 output bytes, well before its composer
+ *  prompt. Pure — exported for tests. */
+export function bracketedPasteModeAfter(enabled: any, prevTail: any, chunk: any): boolean;
+/** Frame turn text as ONE bracketed paste. Embedded paste markers are removed
+ *  so the payload cannot close the frame early and have its remainder read as
+ *  typed keys. Pure — exported for tests. */
+export function bracketedPasteFrame(text: any): string;
 /** Backend-aware write plan for an injected turn. Codex and OMP receive one
  *  redundant delayed submit CR because the first CR can be consumed as input,
  *  leaving the turn text visible but unsent. OMP used to receive LF instead of
@@ -2154,9 +2165,21 @@ export function turnSubmitCrDelayForAgent(agent: any, env?: EnvironmentMap): any
  *  write but persisted no user message and produced no transcript at all.
  *  A `reset` (RESET-CONTEXT) is a turn PREFIXED by the backend's context-clear
  *  command (see resetWritesForAgent).
+ *
+ *  EI-24141825238362808: when the Claude child has enabled bracketed paste
+ *  (`opts.bracketedPaste`), its turn text is framed as one paste. Unframed text
+ *  leaves the paste boundary to Claude's read-timing heuristic. When Claude is
+ *  busy between pty reads, a long turn fragments and the trailing fragment plus
+ *  the submit CR are read as typed keys. Measured on claude 2.1.280: the head
+ *  of an 8 KB kickoff was lost, and a 2 KB kickoff's first CR was swallowed
+ *  (the fleet-wide ~20 s resubmit lag). Framed, both submitted intact on the
+ *  first CR.
  *  @param {EnvironmentMap} [env]
+ *  @param {{ bracketedPaste?: boolean }} [opts]
  */
-export function controlWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap): ({
+export function controlWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap, opts?: {
+    bracketedPaste?: boolean;
+}): ({
     data: any;
     delayMs: number;
 } | {
@@ -2618,6 +2641,9 @@ export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER: 4;
  *  legitimate late retry of an already-accepted delivery is always still deduped, while
  *  the map cannot grow unbounded on a long-lived host. Exported for tests. */
 export const DELIVERY_DEDUP_TTL_MS: number;
+/** Enough trailing output to hold a DEC private-mode toggle split across two
+ *  pty chunks (`ESC[?1004;2004h` is 14 chars). */
+export const BRACKETED_PASTE_TAIL_CHARS: 32;
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */

@@ -5675,6 +5675,35 @@ function ompTurnResubmitCrDelay(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_OMP_RESUBMIT_CR_MS, CODEX_TURN_RESUBMIT_CR_DELAY_MS);
 }
 
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+const DEC_PRIVATE_MODE_RE = /\x1b\[\?([0-9;]+)([hl])/g;
+/** Enough trailing output to hold a DEC private-mode toggle split across two
+ *  pty chunks (`ESC[?1004;2004h` is 14 chars). */
+export const BRACKETED_PASTE_TAIL_CHARS = 32;
+
+/** EI-24141825238362808: the child TUI's bracketed-paste mode (DECSET 2004)
+ *  after it wrote `chunk`, given the mode before it and the tail of its earlier
+ *  output, so a toggle split across two pty chunks is still seen. The last
+ *  toggle wins; output with no toggle leaves the mode unchanged. Claude Code
+ *  emits `ESC[?2004h` in its first ~100 output bytes, well before its composer
+ *  prompt. Pure — exported for tests. */
+export function bracketedPasteModeAfter(enabled, prevTail, chunk) {
+  let mode = enabled === true;
+  for (const m of `${prevTail ?? ''}${chunk ?? ''}`.matchAll(DEC_PRIVATE_MODE_RE)) {
+    if (m[1].split(';').includes('2004')) mode = m[2] === 'h';
+  }
+  return mode;
+}
+
+/** Frame turn text as ONE bracketed paste. Embedded paste markers are removed
+ *  so the payload cannot close the frame early and have its remainder read as
+ *  typed keys. Pure — exported for tests. */
+export function bracketedPasteFrame(text) {
+  const body = String(text ?? '').replaceAll(BRACKETED_PASTE_START, '').replaceAll(BRACKETED_PASTE_END, '');
+  return `${BRACKETED_PASTE_START}${body}${BRACKETED_PASTE_END}`;
+}
+
 /** Backend-aware write plan for an injected turn. Codex and OMP receive one
  *  redundant delayed submit CR because the first CR can be consumed as input,
  *  leaving the turn text visible but unsent. OMP used to receive LF instead of
@@ -5682,12 +5711,29 @@ function ompTurnResubmitCrDelay(env = process.env) {
  *  write but persisted no user message and produced no transcript at all.
  *  A `reset` (RESET-CONTEXT) is a turn PREFIXED by the backend's context-clear
  *  command (see resetWritesForAgent).
+ *
+ *  EI-24141825238362808: when the Claude child has enabled bracketed paste
+ *  (`opts.bracketedPaste`), its turn text is framed as one paste. Unframed text
+ *  leaves the paste boundary to Claude's read-timing heuristic. When Claude is
+ *  busy between pty reads, a long turn fragments and the trailing fragment plus
+ *  the submit CR are read as typed keys. Measured on claude 2.1.280: the head
+ *  of an 8 KB kickoff was lost, and a 2 KB kickoff's first CR was swallowed
+ *  (the fleet-wide ~20 s resubmit lag). Framed, both submitted intact on the
+ *  first CR.
  *  @param {EnvironmentMap} [env]
+ *  @param {{ bracketedPaste?: boolean }} [opts]
  */
-export function controlWritesForAgent(decoded, agent, env = process.env) {
+export function controlWritesForAgent(decoded, agent, env = process.env, opts = {}) {
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
-  if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env);
+  if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env, opts);
   const normalized = String(agent || '').trim().toLowerCase();
+
+  if (normalized === 'claude' && opts.bracketedPaste === true) {
+    return controlWrites(
+      { ...decoded, data: bracketedPasteFrame(decoded.data) },
+      turnSubmitCrDelayForAgent(agent, env),
+    );
+  }
 
   if (normalized === 'omp') {
     const crDelayMs = turnSubmitCrDelayForAgent(agent, env);
