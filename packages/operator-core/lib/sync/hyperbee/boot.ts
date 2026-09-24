@@ -69,6 +69,7 @@ import {
   createMergeCursor,
   createPgMergeCursorSeedCache,
   mergeAdmittedLogsIncremental,
+  rewindMergeCursor,
   seedCursorFromSnapshots,
   persistCursor,
   combineSnapshotApplyMarks,
@@ -76,6 +77,7 @@ import {
   snapshotApplyMarks,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
+  type MergeCursor,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
   type MergeApplyFailure,
@@ -2405,6 +2407,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // log or evicted deferred state) must still disable PG seeding for this boot.
   let forceReFoldCanReloadPgSeed = false;
 
+  // p2p-join-catchup-speed P-522 (WI-10002899): the deferral-eviction re-fold. An op
+  // evicted from a content-deferral buffer must be read again, but resetting the cursor
+  // on the very next pass livelocks a joiner. Its fold restarts before it can reach the
+  // key or member row that would let the evicted ops apply. P-007 run #1 reset log
+  // 5b00878b to 0 about every 2 min, 11 times in a row.
+  //
+  // So an eviction now OWES a re-fold, paid once the fold has SETTLED: after a pass in
+  // which no admitted log could advance any further. The re-fold rewinds each log only to
+  // its deferral floor, the position it had the last time both buffers were empty at a
+  // pass start. Every op a buffer holds or has evicted was deferred after that moment, so
+  // the floor bounds its source position from below. The floors describe
+  // `deferralFloorsCursor` only. A cursor replaced while deferrals were still buffered has
+  // no trustworthy floor, and an eviction then falls back to the full reset.
+  let evictionReFoldOwed = false;
+  let mergeSettled = false;
+  let deferralFloors = new Map<string, number>();
+  let deferralFloorsExact = true;
+  let deferralFloorsCursor: MergeCursor | null = null;
+  const deferralBuffersHold = (): boolean =>
+    (rekeyDeps?.pending.size() ?? 0) > 0 || pendingMemberContent.size() > 0;
+
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED.
   // WI-3370 (2026-07-10) split ONE boolean into two: (a) the READER —
   // SUBSTRATE_LOG_SNAPSHOT_READER (default ON) — seeds a fresh/reset cursor at
@@ -3738,18 +3761,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // short of a process restart, because there is otherwise no steady-state re-fold in
       // production — createMergeCursor only resets at boot / log-set change / an explicit
       // forceReFold below. Poll-and-clear each buffer's eviction signal once per pass (cheap:
-      // O(1) flag reads, false in the overwhelmingly common case of zero evictions) and trip
-      // forceReFold on a hit so the SAME re-fold mechanism the rekey rebind already uses
-      // re-encounters (and, for a still-relevant deferral, re-applies) the evicted op on the
-      // very next pass instead of waiting on a restart.
-      if (rekeyDeps?.pending.consumeEvictionSignal()) {
-        forceReFold = true;
-        forceReFoldCanReloadPgSeed = false;
-      }
-      if (pendingMemberContent.consumeEvictionSignal()) {
-        forceReFold = true;
-        forceReFoldCanReloadPgSeed = false;
-      }
+      // O(1) flag reads, false in the overwhelmingly common case of zero evictions). A hit
+      // owes a re-fold that re-encounters (and, for a still-relevant deferral, re-applies)
+      // the evicted op without waiting on a restart. P-522: it is paid below once the fold
+      // has settled, as a rewind to the deferral floors (see `evictionReFoldOwed`).
+      // Both signals are read every pass, so neither can stay latched behind the other.
+      const epochEvicted = rekeyDeps?.pending.consumeEvictionSignal() ?? false;
+      const memberEvicted = pendingMemberContent.consumeEvictionSignal();
+      if (epochEvicted || memberEvicted) evictionReFoldOwed = true;
 
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
@@ -3892,10 +3911,39 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         mergeCursor = createMergeCursor();
         // A real apply-binding change selects an independent, scope-stamped PG
         // seed set; the binding-aware cache below reloads it safely. Same-binding
-        // re-folds and every structural reset must start from zero instead.
-        if (!forceReFoldCanReloadPgSeed) pgCursorSeedCache?.invalidate();
+        // re-folds and every structural reset must start from zero instead. So must
+        // a reset that also pays an owed eviction re-fold (P-522): durable progress
+        // may sit past the evicted ops.
+        if (!forceReFoldCanReloadPgSeed || evictionReFoldOwed) pgCursorSeedCache?.invalidate();
         forceReFold = false;
         forceReFoldCanReloadPgSeed = false;
+      }
+
+      // P-522 (WI-10002899): pay an owed deferral-eviction re-fold once the fold has
+      // settled (see `evictionReFoldOwed`). A cursor replaced above re-reads every log from
+      // its seed, which pays it already; the floors then start over below.
+      if (deferralFloorsCursor !== mergeCursor) {
+        evictionReFoldOwed = false;
+      } else if (evictionReFoldOwed && mergeSettled) {
+        evictionReFoldOwed = false;
+        if (deferralFloorsExact) {
+          const moved = rewindMergeCursor(mergeCursor, deferralFloors);
+          console.warn(
+            `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] P-522 eviction re-fold: rewound ` +
+              (moved.length === 0
+                ? 'no log (every cursor already at its floor)'
+                : moved.map((k) => `${k.slice(0, 12)}→${deferralFloors.get(k) ?? 0}`).join(', ')),
+          );
+        } else {
+          // Deferrals buffered across a cursor replacement came from positions no floor
+          // records. Only a full re-fold is sure to reach them.
+          mergeCursor = createMergeCursor();
+          pgCursorSeedCache?.invalidate();
+          console.warn(
+            `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] P-522 eviction re-fold: full reset ` +
+              '(deferrals were buffered across a cursor replacement, so no floor is known)',
+          );
+        }
       }
 
       // WI-2105 + EI-20317490590418053 (flag-gated, default ON): load PG once,
@@ -3955,6 +4003,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             'merge_error',
             `snapshot-seed: ${e instanceof Error ? e.message : String(e)}`,
           );
+        }
+      }
+
+      // P-522: the deferral floors, taken after seeding so they are where this pass's fold
+      // starts. With both buffers empty and no re-fold owed, every log's floor moves up to
+      // its current position. Otherwise the floors hold, and a log positioned since the last
+      // refresh gets its first position: nothing it defers can come from below that.
+      if (deferralFloorsCursor !== mergeCursor) {
+        deferralFloorsCursor = mergeCursor;
+        deferralFloors = new Map();
+        deferralFloorsExact = !deferralBuffersHold();
+      }
+      if (!evictionReFoldOwed && !deferralBuffersHold()) {
+        deferralFloors = new Map(mergeCursor.positions);
+        deferralFloorsExact = true;
+      } else {
+        for (const [keyHex, position] of mergeCursor.positions) {
+          if (!deferralFloors.has(keyHex)) deferralFloors.set(keyHex, position);
         }
       }
 
@@ -4028,6 +4094,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
       if (!changed && !memoryReplayCursor) {
+        mergeSettled = true; // P-522: every log is at its length
         // applyRevocationRefresh + drainReverifyDropQueue already ran at the top
         // of this pass; on the idle tick maybeReverifyAdmitted only re-drains and
         // (cadence permitting) kicks off the LOCKLESS verify — zero I/O here.
@@ -4282,6 +4349,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           (mergeCursor.positions.get(a.keyHex) ?? 0) -
           (b.length - (mergeCursor.positions.get(b.keyHex) ?? 0)),
       );
+      const positionsBeforeFold = new Map(mergeCursor.positions);
       let result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       // EI-79 step 3 (correctness escape hatch): a TRUNCATED log (length dropped
       // below its cursor — a reset/forked peer log) invalidates the standing fold.
@@ -4306,6 +4374,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // fold order (WI-2105 acceleration); reuse it rather than re-sorting.
         result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       }
+      // P-522: settled = no admitted log can advance any further right now. Each one is at
+      // its length, or this pass could not move it (a read stall or an apply-failure hold,
+      // which a re-fold would only repeat). A log still held for its seed scan has not
+      // started, so it is not settled.
+      mergeSettled = logs.every((log) => {
+        const position = mergeCursor.positions.get(log.keyHex);
+        if (position === undefined) return log.length === 0;
+        return position >= log.length || position === positionsBeforeFold.get(log.keyHex);
+      });
       let { applied } = result;
 
       // WI-3985 LIVE OFF→ON repair. Run the ordinary main merge first, then
