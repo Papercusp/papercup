@@ -258,15 +258,17 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
          AND caller_id = 'test-principal' AND operation_id = 'run-monitor'
          AND request_key = 'batch-001'
     `;
+    // The seed and promotion committed before the receipt target update; then
+    // the template changed. Replay must still finish from the original seed.
+    await sql`
+      UPDATE harness_shared.harness_plans SET version = version + 1
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
+    `;
     const repaired = await acceptBlueprintPlanRun(sql, request);
     expect(repaired).toMatchObject({ instanceSlug: first.instanceSlug, runId: first.runId, replayed: true });
     await expect(acceptBlueprintPlanRun(sql, { ...request, input: { segment: 'west' } }))
       .rejects.toThrow('reused with different input');
 
-    await sql`
-      UPDATE harness_shared.harness_plans SET version = version + 1
-       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
-    `;
     await expect(acceptBlueprintPlanRun(sql, { ...request, requestKey: 'batch-002' }))
       .rejects.toThrow('plan_run_template_pin_mismatch');
     expect((await acceptBlueprintPlanRun(sql, request)).runId).toBe(first.runId);

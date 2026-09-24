@@ -235,6 +235,16 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
       await waitForMainThreadQuietInPage();
 
+      // Reuse the live scheduler's public metrics; a quiet JS thread can still
+      // have queued network work. This is diagnostic, never a budget override.
+      const schedulerBefore = await browser.execute(() => {
+        const metrics = (window as unknown as {
+          __sync_metrics__?: { snapshot(): { scheduler?: unknown } };
+        }).__sync_metrics__;
+        return metrics?.snapshot().scheduler ?? null;
+      });
+      console.log('[perf] plan-popup scheduler before click', JSON.stringify(schedulerBefore));
+
       // Clear the previous attempt's measure + any dangling start immediately
       // before the CURRENT trigger, so a later plan can never be credited with
       // an earlier plan's timing.
@@ -292,6 +302,20 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         opened = candidate;
         break;
       }
+
+      const unfinished = await browser.execute((name) => {
+        const metrics = (window as unknown as {
+          __sync_metrics__?: { snapshot(): { scheduler?: unknown } };
+        }).__sync_metrics__;
+        return {
+          scheduler: metrics?.snapshot().scheduler ?? null,
+          phases: performance.getEntriesByType('measure')
+            .filter((entry) => entry.name.startsWith(`${name}:phase:`))
+            .map((entry) => ({ name: entry.name, ms: Math.round(entry.duration) })),
+          placeholder: document.querySelector('[data-testid="plan-popup-body"] .pc-plans__placeholder')?.textContent?.trim() ?? null,
+        };
+      }, INTERACTION_NAME);
+      console.log('[perf] plan-popup unfinished', JSON.stringify({ outcome, ...unfinished }));
 
       lastFailure = String(outcome);
       attempts.push(
@@ -462,6 +486,13 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         }));
     }, INTERACTION_NAME);
     console.log('[perf] plan-popup scenario and resources', JSON.stringify({ opened, resources }));
+    const schedulerAfter = await browser.execute(() => {
+      const metrics = (window as unknown as {
+        __sync_metrics__?: { snapshot(): { scheduler?: unknown } };
+      }).__sync_metrics__;
+      return metrics?.snapshot().scheduler ?? null;
+    });
+    console.log('[perf] plan-popup scheduler after render', JSON.stringify(schedulerAfter));
     for (const phase of phases) {
       recordMeasure({ ...phase, unit: 'ms', budget: null, ok: true });
     }

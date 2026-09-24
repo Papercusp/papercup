@@ -23,8 +23,40 @@ import {
   agentMcpOperatorId,
 } from './endpoint-ipc-discovery';
 
+const savedPapercuspHome = process.env.PAPERCUSP_HOME;
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'ipc-disc-'));
+  // Every case below except the isolation block assumes the default ~/.papercusp root.
+  delete process.env.PAPERCUSP_HOME;
+});
+afterEach(() => {
+  if (savedPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+  else process.env.PAPERCUSP_HOME = savedPapercuspHome;
+});
+
+describe('PAPERCUSP_HOME isolation (writer agrees with the native reader)', () => {
+  it('writes both discovery files under an explicit PAPERCUSP_HOME and none under ~/.papercusp', async () => {
+    const isolated = await mkdtemp(join(tmpdir(), 'ipc-disc-iso-'));
+    process.env.PAPERCUSP_HOME = isolated;
+    process.env.PAPERCUSP_HONO_PORT = '33700';
+    try {
+      expect(endpointIpcDiscoveryPath()).toBe(join(isolated, 'endpoint-ipc.json'));
+      expect(endpointIpcDiscoveryPathForPort(33700)).toBe(join(isolated, 'endpoint-ipc.33700.json'));
+      await writeEndpointIpcDiscovery('/tmp/sockets/iso.sock');
+      const perPort = JSON.parse(await readFile(join(isolated, 'endpoint-ipc.33700.json'), 'utf8'));
+      expect(perPort).toMatchObject({ socketPath: '/tmp/sockets/iso.sock', port: 33700 });
+      expect((await readEndpointIpcDiscovery())?.socketPath).toBe('/tmp/sockets/iso.sock');
+      const leaked = await readFile(join(h.home, '.papercusp', 'endpoint-ipc.33700.json'), 'utf8').catch(() => null);
+      expect(leaked).toBeNull();
+    } finally {
+      delete process.env.PAPERCUSP_HONO_PORT;
+    }
+  });
+
+  it('treats an empty PAPERCUSP_HOME as unset, like serve.ts and the native reader', () => {
+    process.env.PAPERCUSP_HOME = '';
+    expect(endpointIpcDiscoveryPath()).toBe(join(h.home, '.papercusp', 'endpoint-ipc.json'));
+  });
 });
 
 describe('agent MCP selected-operator discovery', () => {

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Blueprint direct receipt recovery mutation probe after workspace-scope repair",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=300",
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/blueprint/operation-admission.ts",
+    "--mutate",
+    "s/LIMIT 2/LIMIT 0/",
+    "--test",
+    "npx vitest run packages/operator-core/lib/work-items-lifecycle.integration.test.ts -t \"admits one .* work item under concurrent replay\" --reporter=dot",
+    "--expect",
+    "caught",
+    "--in-tree",
+    "--sweep-lock-held",
+    "--fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T18:40:56Z",
+  "finishedAt": "2026-09-24T18:42:00Z",
+  "summary": "After the explicit-workspace admission repair, the current source passed both focused feature and bug replay tests. Mutating the lost-receipt recovery SELECT from LIMIT 2 to LIMIT 0 made both tests fail: recovery returned WI-2 rather than the accepted WI-1. The mutation runner reported MUTANT CAUGHT and restored operation-admission.ts byte for byte.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Current-source focused Vitest baseline exited 0 for both direct feature and bug replay tests."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "Mutation probe reported verdict=caught, baseline_exit=0, guard_exit=1; both tests failed at work-items-lifecycle.integration.test.ts:422 with expected WI-1, received WI-2."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "Mutation probe reported tree integrity VERIFIED: operation-admission.ts byte-identical to its pre-probe state; the mutation file lock was released."
+    }
+  ],
+  "workItemId": "WI-10002931",
+  "specId": "GBE-P-004-contract",
+  "testFile": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/blueprint/operation-admission.ts"
+}

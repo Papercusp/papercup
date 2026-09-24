@@ -28,9 +28,20 @@ const REL_FILE = 'endpoint-ipc.json';
 /** Private initialize metadata; supplied by the client, never by the model. */
 export const AGENT_MCP_AUTH_META = 'com.papercusp/connection';
 
-/** Absolute path to the discovery file under the (real) user home. */
+/**
+ * This instance's runtime directory: an explicit PAPERCUSP_HOME isolates it, empty/unset falls back to
+ * `~/.papercusp`. The SAME resolution serve.ts uses for operator.json and the native desktop uses to READ this
+ * file (papercusp-desktop main.rs `native_papercusp_dir`, EI-24161953656319715). Writer and reader must agree:
+ * when they did not, every isolated verifier (VERIFY_TAURI_ISOLATED_DB sets PAPERCUSP_HOME) polled a directory
+ * its operator never wrote, and /api sat on the capped HTTP fallback until the origin health check timed out.
+ */
+function discoveryDir(): string {
+  return process.env.PAPERCUSP_HOME || join(homedir(), REL_DIR);
+}
+
+/** Absolute path to the discovery file in this instance's runtime directory. */
 export function endpointIpcDiscoveryPath(): string {
-  return join(homedir(), REL_DIR, REL_FILE);
+  return join(discoveryDir(), REL_FILE);
 }
 
 /**
@@ -45,7 +56,7 @@ export function endpointIpcDiscoveryPath(): string {
  * src-tauri: read_dev_ipc_socket_for_port).
  */
 export function endpointIpcDiscoveryPathForPort(port: number): string {
-  return join(homedir(), REL_DIR, `endpoint-ipc.${port}.json`);
+  return join(discoveryDir(), `endpoint-ipc.${port}.json`);
 }
 
 export interface EndpointIpcDiscovery {
@@ -108,7 +119,7 @@ export async function writeEndpointIpcDiscovery(
   socketPath: string,
   options: { agentMcp?: AgentMcpEndpoint; port?: number } = {},
 ): Promise<void> {
-  const dir = join(homedir(), REL_DIR);
+  const dir = discoveryDir();
   await mkdir(dir, { recursive: true });
   const port = options.port ?? (Number(process.env.PAPERCUSP_HONO_PORT) || 3070);
   if (options.agentMcp && !validAgentEndpoint(options.agentMcp)) throw new Error('Invalid MCP endpoint');
@@ -229,10 +240,15 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
 /** Native clients must select a build/port, never the last-writer singleton. */
 export async function readAgentMcpDiscoveryForPort(
   port: number,
-  home = homedir(),
+  explicitHome?: string,
 ): Promise<EndpointIpcDiscovery | null> {
+  const home = explicitHome ?? homedir();
   try {
-    const file = join(home, REL_DIR, `endpoint-ipc.${port}.json`);
+    // No explicit home: read where this instance's operator writes (discoveryDir), so an isolated
+    // PAPERCUSP_HOME client finds its own operator rather than the box's default one.
+    const file = explicitHome === undefined
+      ? endpointIpcDiscoveryPathForPort(port)
+      : join(explicitHome, REL_DIR, `endpoint-ipc.${port}.json`);
     const fileStat = await lstat(file);
     if (!fileStat.isFile() || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o077)) return null;
     const descriptor = await readEndpointIpcDiscoveryFrom(file);

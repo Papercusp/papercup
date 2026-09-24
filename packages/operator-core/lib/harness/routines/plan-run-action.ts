@@ -211,6 +211,44 @@ async function runScheduledPlanFireTx(
   // home. Mixing those two keys makes replay miss its own ledger row.
   const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
 
+  // A pinned blueprint operation can crash after its immutable instance and
+  // ledger commit but before its invocation receipt points at that run. If the
+  // template changes meanwhile, the original fire still has to repair its
+  // promotion from the seeded snapshot. The receipt id is a unique decimal
+  // run token; this branch applies only to that explicit plan-target path.
+  const pinnedToken = opts.runToken === undefined ? null : String(opts.runToken).trim();
+  if (opts.expectedTemplate && opts.execution === null && pinnedToken && /^\d+$/.test(pinnedToken)) {
+    const instanceSlug = planRunInstanceSlug(templateSlug, pinnedToken);
+    const seeded = await sql<Array<{
+      run_id: number | string; run_seq: number | null; inputs: unknown;
+      plan_content_hash: string; item_kind: string | null; instance_slug: string | null;
+    }>>`
+      SELECT r.id AS run_id, p.run_seq, r.inputs, r.plan_content_hash,
+             r.replay_item_kind AS item_kind, p.plan_slug AS instance_slug
+        FROM harness_shared.plan_runs r
+        LEFT JOIN harness_shared.harness_plans p
+          ON p.workspace_id = r.workspace_id AND p.harness_slug = ${planStorageSlug}
+         AND p.plan_slug = r.instance_plan_slug AND p.template_slug = ${templateSlug}
+       WHERE r.workspace_id = ${workspaceId} AND r.harness_slug = ${installSlug}
+         AND r.plan_slug = ${templateSlug} AND r.instance_plan_slug = ${instanceSlug}
+       LIMIT 1
+    `;
+    if (seeded[0]) {
+      const prior = seeded[0];
+      if (prior.plan_content_hash !== opts.expectedTemplate.contentHash || !prior.instance_slug) {
+        throw new Error(`plan_run_replay_seed_conflict:${instanceSlug}`);
+      }
+      if (!prior.item_kind || !(ACTIVE_FEATURE_FAMILY_KINDS as readonly string[]).includes(prior.item_kind)) {
+        throw new Error(`plan_run_replay_context_missing:${instanceSlug}`);
+      }
+      return {
+        started: true, instanceSlug, runId: Number(prior.run_id), runSeq: prior.run_seq ?? -1,
+        replayed: true, itemKind: prior.item_kind as ActiveFeatureFamilyKind,
+        runInputs: prior.inputs, appHarnessSlug: installSlug, execution: null,
+      };
+    }
+  }
+
   // 1. The template plan.
   const tpl = await sql<
     Array<{
@@ -556,10 +594,12 @@ async function runScheduledPlanFireTx(
   const runRows = await sql<Array<{ id: number }>>`
     INSERT INTO harness_shared.plan_runs
       (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
-       status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq, inputs)
+       status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq, inputs,
+       replay_item_kind)
     VALUES (${workspaceId}, ${appHarnessSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
             ${PLAN_RUN_LAUNCHER}, ${now}, 'running', ${template.title}, ${now},
-            'scheduled', ${trigger}, ${instanceSlug}, ${runSeq}, ${runInputsJson}::text::jsonb)
+            'scheduled', ${trigger}, ${instanceSlug}, ${runSeq}, ${runInputsJson}::text::jsonb,
+            ${itemKind})
     RETURNING id
   `;
   const runId = Number(runRows[0].id);
