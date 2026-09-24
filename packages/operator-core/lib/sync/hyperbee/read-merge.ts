@@ -2209,7 +2209,39 @@ export const MERGE_SNAPSHOT_LANE_MIN_ROWS = 32;
  * (the id-sequence floor), held until COMMIT. Two lanes inserting WI-N rows would take
  * turns on it at transaction length, so every such row goes to lane 0.
  */
-const WI_N_KEY = /(?:^|[^A-Za-z0-9-])WI-\d+(?:$|[^0-9])/;
+const WI_N_KEY = /(?:^|[^A-Za-z0-9])WI-\d+(?![0-9])/;
+
+/** P-527: one applicable snapshot row, routed to a lane. */
+interface LaneRow {
+  env: OpEnvelope;
+  groupKey: string;
+}
+
+/**
+ * P-527: split one chunk's applicable rows over `k` lanes. Every row keyed by a WI-N id
+ * goes to lane 0 ({@link WI_N_KEY}); every other row joins the shortest lane, so lane 0
+ * is not the longest when a chunk is mostly work items. A key seen twice stays on one
+ * lane, so two lanes never write the same row.
+ */
+function partitionSnapshotRows(rows: readonly LaneRow[], k: number): LaneRow[][] {
+  const lanes: LaneRow[][] = Array.from({ length: k }, () => []);
+  const pinned = rows.map((row) => WI_N_KEY.test(row.env.hbKey ?? ''));
+  rows.forEach((row, i) => {
+    if (pinned[i]) lanes[0].push(row);
+  });
+  const laneOf = new Map<string, number>();
+  for (const [i, row] of rows.entries()) {
+    if (pinned[i]) continue;
+    let lane = laneOf.get(row.groupKey);
+    if (lane === undefined) {
+      lane = 0;
+      for (let i = 1; i < k; i++) if (lanes[i].length < lanes[lane].length) lane = i;
+      laneOf.set(row.groupKey, lane);
+    }
+    lanes[lane].push(row);
+  }
+  return lanes;
+}
 
 export interface MergeBatchOpts {
   /**
@@ -3039,6 +3071,15 @@ async function mergeIncrementalPass(
   // P-524: optional key-before-content seek; at most one seek per (log, pot, epoch) per pass.
   const keySeek = opts?.keySeek;
   const keySeeksThisPass = new Set<string>();
+  // P-527 (D-014): parallel lanes for a snapshot chunk. They need the batch, and are capped
+  // at the process-wide apply admission limit.
+  const batchApply = opts?.batchApply || undefined;
+  const snapshotLanes = batch
+    ? Math.max(
+        1,
+        Math.min(DEFAULT_MERGE_APPLY_CONCURRENCY, Math.floor(batchApply?.snapshotLanes ?? MERGE_SNAPSHOT_LANES)),
+      )
+    : 1;
 
   let applied = 0;
   let decoded = 0;
@@ -3129,6 +3170,12 @@ async function mergeIncrementalPass(
     }
     const batchAt = (p: number): { fold: FoldBatch; pos: number } | undefined =>
       batch && p >= serialUntil ? { fold: batch, pos: p } : undefined;
+    // P-527: chunks before `laneSerialUntil` apply serially (MergeCursor.laneSerialUntil).
+    let laneSerialUntil = cursor.laneSerialUntil?.get(log.keyHex) ?? 0;
+    if (laneSerialUntil > 0 && from >= laneSerialUntil) {
+      cursor.laneSerialUntil?.delete(log.keyHex);
+      laneSerialUntil = 0;
+    }
     // `through` is the exclusive end of what the batch may hold: `pos` where the op
     // at `pos` has not started, `pos + 1` where it has.
     const settleBatch = async (through: number): Promise<boolean> => {
@@ -3152,16 +3199,20 @@ async function mergeIncrementalPass(
      * P-524: after an apply, seek this device's key for each (pot, epoch) that apply could
      * not decrypt. Commits the open batch first, so its row locks are not held across the
      * seek. False when that commit lost the batch; the caller then ends the pass, as for any
-     * lost batch.
+     * lost batch. `taken` is misses a caller already took (P-527's lanes).
      */
-    const seekMissedKeys = async (): Promise<boolean> => {
+    const keySeekSettled = (miss: EpochKeyMiss): boolean => {
+      const memoKey = keySeekMemoKey(log.keyHex, miss);
+      return keySeeksThisPass.has(memoKey) || cursor.keySeeks?.get(memoKey)?.found === true;
+    };
+    const seekMissedKeys = async (taken?: readonly EpochKeyMiss[]): Promise<boolean> => {
       if (!keySeek) return true;
-      const misses = keySeek.takeMisses();
+      const misses = taken ?? keySeek.takeMisses();
       if (misses.length === 0) return true;
       let settled = false;
       for (const miss of misses) {
         const memoKey = keySeekMemoKey(log.keyHex, miss);
-        if (keySeeksThisPass.has(memoKey) || cursor.keySeeks?.get(memoKey)?.found) continue;
+        if (keySeekSettled(miss)) continue;
         keySeeksThisPass.add(memoKey);
         if (!settled) {
           if (!(await settleBatch(pos + 1))) return false;
@@ -3198,6 +3249,112 @@ async function mergeIncrementalPass(
         }
       }
       return true;
+    };
+    /**
+     * P-527 (D-014): apply one snapshot chunk's rows on parallel lanes, each with its own
+     * batch transaction ({@link FoldBatch.laneBatches}). Per row it does what the serial
+     * loop does: skip a stale row, apply, count, and hold the cursor at this chunk on the
+     * first deferral. The chunk ends only when every lane has committed. Returns false
+     * when the pass must end at this chunk (the serial loop's `retryable` break):
+     *  - a lost lane batch replays the chunk outside any batch (batchSerialUntil), as a
+     *    lost serial batch does;
+     *  - a retryable outcome replays the chunk on the serial path (laneSerialUntil), so a
+     *    failure the lanes caused cannot repeat every pass.
+     * A key miss (P-524) stops the lanes, commits them, seeks the key, then resumes where
+     * each lane stopped.
+     */
+    const applyChunkOnLanes = async (rows: readonly SnapshotRow[], lanes: FoldBatch[]): Promise<boolean> => {
+      // The open batch holds ops before this chunk; commit it so its row locks are gone.
+      if (!(await settleBatch(pos))) return false;
+      const applicable: LaneRow[] = [];
+      for (const row of rows) {
+        const env = snapshotRowToEnvelope(row, log.keyHex);
+        const groupKey = `${env.table}::${env.hbKey}`;
+        const prev = cursor.winners.get(groupKey);
+        // stale row, never applied (P-002: a seeded winner skips only a strictly-older op)
+        if (prev && isStaleAgainst(env, prev)) {
+          if (prev.seeded) storedOrderSkips++;
+          continue;
+        }
+        applicable.push({ env, groupKey });
+      }
+      const queues = partitionSnapshotRows(applicable, lanes.length);
+      const next = queues.map(() => 0);
+      const halt: { reason: 'lost' | 'retryable' | 'key-miss' | null; misses: EpochKeyMiss[] } = {
+        reason: null,
+        misses: [],
+      };
+      const runLane = async (i: number): Promise<void> => {
+        const lane = lanes[i];
+        const queue = queues[i];
+        lane.coalesceNotify = true;
+        while (next[i] < queue.length && halt.reason === null) {
+          if (lane.due && !(await lane.commit())) {
+            halt.reason ??= 'lost';
+            return;
+          }
+          const { env, groupKey } = queue[next[i]];
+          next[i]++;
+          const outcome = await applyRecordingWinner(
+            cursor,
+            groupKey,
+            env,
+            apply,
+            `${cursorTag}${log.keyHex}`,
+            applyTimeoutMs,
+            maxWinnersEntries,
+            onWinnersEvicted,
+            { fold: lane, pos },
+          );
+          if (lane.failed) {
+            halt.reason ??= 'lost';
+            return;
+          }
+          if (outcome.kind === 'applied') {
+            if (outcome.changed) applied++;
+          } else {
+            holdCursorHere(outcome, groupKey);
+            if (outcome.kind === 'retryable') {
+              halt.reason ??= 'retryable';
+              return;
+            }
+          }
+          if (keySeek) {
+            const fresh = keySeek.takeMisses().filter((miss) => !keySeekSettled(miss));
+            if (fresh.length > 0) {
+              halt.misses.push(...fresh);
+              halt.reason ??= 'key-miss';
+              return;
+            }
+          }
+        }
+      };
+      for (;;) {
+        await Promise.all(queues.map((_, i) => runLane(i)));
+        let lost = halt.reason === 'lost';
+        for (const lane of lanes) if (!(await lane.commit())) lost = true;
+        if (lost) {
+          const reason = lanes.find((lane) => lane.failed)?.reason ?? 'unknown';
+          for (const lane of lanes) lane.discard();
+          const serial = (cursor.batchSerialUntil ??= new Map());
+          serial.set(log.keyHex, Math.max(serial.get(log.keyHex) ?? 0, pos + 1));
+          holdCursorHere({ kind: 'retryable', reason: `snapshot lane batch lost: ${reason}` }, 'read-merge snapshot lane');
+          return false;
+        }
+        if (halt.reason === 'retryable') {
+          const serial = (cursor.laneSerialUntil ??= new Map());
+          serial.set(log.keyHex, Math.max(serial.get(log.keyHex) ?? 0, pos + 1));
+          return false;
+        }
+        if (halt.reason === 'key-miss') {
+          const misses = halt.misses;
+          halt.reason = null;
+          halt.misses = [];
+          if (!(await seekMissedKeys(misses))) return false;
+          continue;
+        }
+        return true;
+      }
     };
     // P-008: the snapshot set this pass is crossing on this log, so a long APPLY is
     // visible while it runs (start, every SNAPSHOT_SET_PROGRESS_LOG_MS, done) and a
@@ -3463,6 +3620,18 @@ async function mergeIncrementalPass(
         if (rows.length > 1) opsSincePersist += rows.length - 1;
         // P-525: one chunk expands to thousands of rows, so a set is bulk wherever it sits.
         if (batch) batch.coalesceNotify = true;
+        // P-527: a chunk large enough to pay for its lanes applies them in parallel.
+        if (
+          batch &&
+          snapshotLanes > 1 &&
+          rows.length >= MERGE_SNAPSHOT_LANE_MIN_ROWS &&
+          pos >= serialUntil &&
+          pos >= laneSerialUntil
+        ) {
+          if (!(await applyChunkOnLanes(rows, batch.laneBatches(snapshotLanes)))) break;
+          endSnapshotChunk(payload);
+          continue;
+        }
         let retryable = false;
         for (const row of rows) {
           // P-002 step 2: one chunk can hold thousands of rows; bound the batch inside it too.
