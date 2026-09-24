@@ -15,7 +15,8 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import type { SnapshotFoldWindowResult, SnapshotFoldWorkerLike } from './log-snapshot';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { SnapshotAbortedError, type SnapshotFoldWindowResult, type SnapshotFoldWorkerLike } from './log-snapshot';
 import { resolveMemoryWatchdogLimitMb } from '../../memory-watchdog';
 import type { PeerLogOp } from './peer-log';
 import {
@@ -62,13 +63,83 @@ export function snapshotFoldWorkerHeapMb(limitMb: number = resolveMemoryWatchdog
   return Math.max(SNAPSHOT_FOLD_WORKER_MIN_HEAP_MB, Math.floor(limitMb * SNAPSHOT_FOLD_WORKER_HEAP_FRACTION));
 }
 
+/**
+ * WI-10002836 — how many fold workers may run at once in this PROCESS, across every pot.
+ *
+ * The heap cap above is per worker, so it bounds the host only if folds do not stack.
+ * One bg-host boots ~100 pots, each with its own engine and its own compaction; many are
+ * due at the same boot. Without this limit, a papercusp-sized fold plus a few mid-sized
+ * ones could together exceed the recycle limit that each alone respects. Waiting is cheap
+ * (small pots queue behind a big one for minutes); a host recycle costs every agent.
+ */
+export const SNAPSHOT_FOLD_MAX_CONCURRENT = 1;
+
+const foldSlots = pinModuleState('@papercusp/operator-core.snapshot-fold-slots', () => ({
+  active: 0,
+  waiters: [] as Array<() => void>,
+}));
+
+/**
+ * Take a fold slot; resolves with its release function. Rejects (and leaves the queue) if
+ * `signal` aborts first, so a stopping engine is never held hostage by another pot's fold.
+ */
+export function acquireSnapshotFoldSlot(
+  signal?: AbortSignal,
+  max: number = SNAPSHOT_FOLD_MAX_CONCURRENT,
+): Promise<() => void> {
+  const release = (): void => {
+    foldSlots.active -= 1;
+    foldSlots.waiters.shift()?.();
+  };
+  const once = (): (() => void) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+    };
+  };
+  if (signal?.aborted) return Promise.reject(new SnapshotAbortedError('[snapshot] fold slot wait aborted'));
+  if (foldSlots.active < max) {
+    foldSlots.active += 1;
+    return Promise.resolve(once());
+  }
+  return new Promise((resolveSlot, reject) => {
+    const grant = (): void => {
+      signal?.removeEventListener('abort', onAbort);
+      foldSlots.active += 1;
+      resolveSlot(once());
+    };
+    const onAbort = (): void => {
+      const i = foldSlots.waiters.indexOf(grant);
+      if (i >= 0) foldSlots.waiters.splice(i, 1);
+      reject(new SnapshotAbortedError('[snapshot] fold slot wait aborted'));
+    };
+    foldSlots.waiters.push(grant);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Test/diagnostic view of the process-wide fold slots. */
+export function snapshotFoldSlotState(): { active: number; waiting: number } {
+  return { active: foldSlots.active, waiting: foldSlots.waiters.length };
+}
+
 export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (r: SnapshotFoldResponse) => void; reject: (e: Error) => void }>();
   private failure: Error | null = null;
   private closed = false;
 
-  private constructor(private readonly worker: Worker) {
+  /**
+   * @param releaseSlot the process-wide fold slot this worker holds (idempotent). Released
+   *   when the thread is gone — on `close()`, or on an unexpected exit (a heap-cap OOM), so
+   *   a crashed worker can never strand the slot and freeze every other pot's compaction.
+   */
+  private constructor(
+    private readonly worker: Worker,
+    private readonly releaseSlot: () => void = () => {},
+  ) {
     worker.on('message', (res: SnapshotFoldResponse) => {
       const waiter = this.pending.get(res.id);
       if (!waiter) return;
@@ -85,19 +156,32 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     });
     worker.on('exit', (code) => {
       if (!this.closed) this.failAll(new Error(`snapshot fold worker exited unexpectedly (code ${code})`));
+      this.releaseSlot();
     });
   }
 
-  /** Spawn a worker and initialize its fold. Rejects if the worker cannot start. */
+  /**
+   * Spawn a worker and initialize its fold. Waits for a process-wide fold slot first
+   * (`SNAPSHOT_FOLD_MAX_CONCURRENT`); the slot is held until `close()`. Rejects if the
+   * worker cannot start, or with `SnapshotAbortedError` if `signal` aborts while queued.
+   */
   static async open(
     init: { excludeTables: readonly string[] },
-    opts: { workerPath?: string; maxOldGenerationSizeMb?: number } = {},
+    opts: { workerPath?: string; maxOldGenerationSizeMb?: number; signal?: AbortSignal } = {},
   ): Promise<SnapshotFoldWorker> {
-    const client = new SnapshotFoldWorker(
-      new Worker(opts.workerPath ?? snapshotFoldWorkerPath(), {
-        resourceLimits: { maxOldGenerationSizeMb: opts.maxOldGenerationSizeMb ?? snapshotFoldWorkerHeapMb() },
-      }),
-    );
+    const releaseSlot = await acquireSnapshotFoldSlot(opts.signal);
+    let client: SnapshotFoldWorker;
+    try {
+      client = new SnapshotFoldWorker(
+        new Worker(opts.workerPath ?? snapshotFoldWorkerPath(), {
+          resourceLimits: { maxOldGenerationSizeMb: opts.maxOldGenerationSizeMb ?? snapshotFoldWorkerHeapMb() },
+        }),
+        releaseSlot,
+      );
+    } catch (e) {
+      releaseSlot();
+      throw e;
+    }
     try {
       await client.request({ kind: 'init', excludeTables: [...init.excludeTables] });
     } catch (e) {
@@ -156,7 +240,11 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     if (this.closed) return;
     this.closed = true;
     this.failAll(new Error('snapshot fold worker closed'));
-    await this.worker.terminate();
+    try {
+      await this.worker.terminate();
+    } finally {
+      this.releaseSlot();
+    }
   }
 
   private request(body: RequestBody, transfer: ArrayBuffer[] = []): Promise<SnapshotFoldResponse> {

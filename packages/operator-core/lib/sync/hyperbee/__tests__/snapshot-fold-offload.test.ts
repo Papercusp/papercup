@@ -11,14 +11,19 @@
  *  - a worker that cannot start fails the compaction (no silent inline fallback);
  *  - the worker's state machine refuses out-of-order use and releases its fold on finish.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type OwnLog, type PeerLogOp } from '../peer-log';
-import { produceLogSnapshot, SNAPSHOT_READ_CONCURRENCY } from '../log-snapshot';
-import { SnapshotFoldWorker } from '../snapshot-fold-offload';
+import { produceLogSnapshot, SnapshotAbortedError, SNAPSHOT_READ_CONCURRENCY } from '../log-snapshot';
+import {
+  acquireSnapshotFoldSlot,
+  SNAPSHOT_FOLD_MAX_CONCURRENT,
+  SnapshotFoldWorker,
+  snapshotFoldSlotState,
+} from '../snapshot-fold-offload';
 import {
   createSnapshotFoldHandler,
   encodeStoredBlock,
@@ -226,5 +231,95 @@ describe('the worker state machine (createSnapshotFoldHandler)', () => {
     expect(ops[0]!.value).toEqual({ coversUpTo: 7, chunkIdx: 0, chunkCount: 2, excludeTables: ['x'], rows: [] });
     expect(ops[1]).toBeNull();
     expect(ops[2]).not.toHaveProperty('value');
+  });
+});
+
+/**
+ * WI-10002836 — the per-worker heap cap bounds the host only if folds do not stack: one
+ * bg-host boots ~100 pots, many due at the same boot. `SnapshotFoldWorker.open` therefore
+ * takes a process-wide fold slot, held until the worker is gone. A leaked slot would freeze
+ * every other pot's compaction forever, so each release path is pinned here.
+ */
+describe('process-wide fold slots (SNAPSHOT_FOLD_MAX_CONCURRENT)', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it('allows one fold at a time by default', () => {
+    expect(SNAPSHOT_FOLD_MAX_CONCURRENT).toBe(1);
+  });
+
+  it('a second acquire waits for the first release; release is idempotent', async () => {
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+    const release1 = await acquireSnapshotFoldSlot();
+    let granted2 = false;
+    const second = acquireSnapshotFoldSlot().then((r) => {
+      granted2 = true;
+      return r;
+    });
+    await settle();
+    expect(granted2).toBe(false);
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 1 });
+
+    release1();
+    const release2 = await second;
+    expect(granted2).toBe(true);
+    release1(); // a double release must not hand out a second concurrent slot
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 0 });
+    release2();
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it('an abort while queued rejects with SnapshotAbortedError and leaves the queue', async () => {
+    const release1 = await acquireSnapshotFoldSlot();
+    const ac = new AbortController();
+    const queued = acquireSnapshotFoldSlot(ac.signal);
+    await settle();
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 1 });
+    ac.abort();
+    await expect(queued).rejects.toBeInstanceOf(SnapshotAbortedError);
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 0 });
+    release1();
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it('an already-aborted signal is refused without taking a slot', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(acquireSnapshotFoldSlot(ac.signal)).rejects.toBeInstanceOf(SnapshotAbortedError);
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it('a second worker waits while one is open, and close() hands the slot on (real worker)', async () => {
+    const first = await SnapshotFoldWorker.open({ excludeTables: [] });
+    let opened2 = false;
+    const secondOpen = SnapshotFoldWorker.open({ excludeTables: [] }).then((w) => {
+      opened2 = true;
+      return w;
+    });
+    await settle();
+    expect(opened2).toBe(false);
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 1 });
+    await first.close();
+    const second = await secondOpen;
+    expect(snapshotFoldSlotState()).toEqual({ active: 1, waiting: 0 });
+    await second.close();
+    await second.close(); // idempotent
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it('a worker that dies without close() (e.g. a heap-cap OOM) still releases its slot', async () => {
+    const w = await SnapshotFoldWorker.open({ excludeTables: [] });
+    expect(snapshotFoldSlotState().active).toBe(1);
+    await (w as unknown as { worker: { terminate(): Promise<number> } }).worker.terminate();
+    await vi.waitFor(() => expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 }));
+    await expect(w.fold([])).rejects.toThrow(/exited unexpectedly/);
+    await w.close();
+    expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  it('a worker that cannot start releases its slot', async () => {
+    await expect(
+      SnapshotFoldWorker.open({ excludeTables: [] }, { workerPath: join(tmpdir(), 'no-such-snapshot-fold.worker.mjs') }),
+    ).rejects.toBeTruthy();
+    await vi.waitFor(() => expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 }));
   });
 });

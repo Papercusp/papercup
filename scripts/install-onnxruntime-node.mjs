@@ -59,6 +59,27 @@ export function resolveTargetPlatform(
   };
 }
 
+/**
+ * NODE_OPTIONS for the upstream CUDA installer child, with a longer
+ * happy-eyeballs per-attempt timeout.
+ *
+ * Measured 2026-09-24 on the tower (memory-reduction-2026-09-24 P-008): the
+ * installer's download from api.nuget.org failed with IPv6 ENETUNREACH plus an
+ * IPv4 ETIMEDOUT raised by `internalConnectMultipleTimeout`, while
+ * `curl -4` fetched the same URL in 0.4 s. Node's default per-attempt timeout
+ * (250 ms) abandoned the slow-to-connect IPv4 address before it answered, so
+ * the CUDA provider was never installed and every model silently ran on CPU.
+ * The same run with a 5 s attempt timeout installed the provider. An explicit
+ * caller setting wins.
+ */
+export const NETWORK_ATTEMPT_TIMEOUT_MS = 5000;
+export function withNetworkAttemptTimeout(nodeOptions) {
+  const current = typeof nodeOptions === 'string' ? nodeOptions.trim() : '';
+  if (/--network-family-autoselection-attempt-timeout[=\s]/.test(current)) return current;
+  const flag = `--network-family-autoselection-attempt-timeout=${NETWORK_ATTEMPT_TIMEOUT_MS}`;
+  return current ? `${current} ${flag}` : flag;
+}
+
 export function requestedInstallSetting(env = process.env) {
   const raw = firstValue(env, [
     'ONNXRUNTIME_NODE_INSTALL',
@@ -210,6 +231,7 @@ export function installCudaProvider({
     env: {
       ...env,
       ONNXRUNTIME_NODE_INSTALL: 'cuda12',
+      NODE_OPTIONS: withNetworkAttemptTimeout(env.NODE_OPTIONS),
     },
   });
   if (result.error) throw result.error;

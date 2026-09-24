@@ -9,7 +9,7 @@
  */
 import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
-import { createSnapshotFoldHandler, type SnapshotFoldRequest } from './snapshot-fold-protocol';
+import { createSnapshotFoldHandler, type SnapshotFoldRequest } from './snapshot-fold-protocol.ts';
 
 if (!parentPort) throw new Error('snapshot-fold.worker must run as a worker thread');
 const port = parentPort;

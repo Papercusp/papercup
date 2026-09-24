@@ -12,7 +12,48 @@ import {
   isOfflineSafeInstall,
   providerFilePaths,
   resolveTargetPlatform,
+  withNetworkAttemptTimeout,
+  NETWORK_ATTEMPT_TIMEOUT_MS,
 } from './install-onnxruntime-node.mjs';
+
+// memory-reduction-2026-09-24 P-008: the upstream CUDA download died on Node's
+// 250 ms happy-eyeballs attempt timeout while the host itself was reachable,
+// silently leaving every model on CPU. The installer child must get a longer one.
+test('withNetworkAttemptTimeout adds a long attempt timeout and keeps caller options', () => {
+  const flag = `--network-family-autoselection-attempt-timeout=${NETWORK_ATTEMPT_TIMEOUT_MS}`;
+  assert.ok(NETWORK_ATTEMPT_TIMEOUT_MS >= 2000);
+  assert.equal(withNetworkAttemptTimeout(undefined), flag);
+  assert.equal(withNetworkAttemptTimeout(''), flag);
+  assert.equal(withNetworkAttemptTimeout('--max-old-space-size=4096'), `--max-old-space-size=4096 ${flag}`);
+  const explicit = '--network-family-autoselection-attempt-timeout=900';
+  assert.equal(withNetworkAttemptTimeout(explicit), explicit);
+});
+
+test('installCudaProvider passes the attempt timeout to the upstream installer child', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ort-attempt-'));
+  const packageRoot = join(root, 'node_modules', 'onnxruntime-node');
+  mkdirSync(join(packageRoot, 'script'), { recursive: true });
+  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'onnxruntime-node', version: '1.24.3' }));
+  let childEnv = null;
+  try {
+    installCudaProvider({
+      repoRoot: root,
+      env: { NODE_OPTIONS: '--trace-warnings' },
+      host: { platform: 'linux', arch: 'x64' },
+      resolvePackageRoot: () => packageRoot,
+      fileExists: () => false,
+      run: (_cmd, _args, opts) => {
+        childEnv = opts.env;
+        return { status: 0 };
+      },
+    });
+  } catch {
+    // The fake child produces no provider files, so the post-install asset check throws.
+  }
+  assert.ok(childEnv, 'the upstream installer child was spawned');
+  assert.match(childEnv.NODE_OPTIONS, /--trace-warnings/);
+  assert.match(childEnv.NODE_OPTIONS, /--network-family-autoselection-attempt-timeout=\d+/);
+});
 
 function fakeOrtPackage() {
   const packageRoot = mkdtempSync(join(tmpdir(), 'papercusp-ort-'));
