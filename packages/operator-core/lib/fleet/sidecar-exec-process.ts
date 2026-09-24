@@ -274,8 +274,13 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       });
     });
   } catch (e) {
-    await execution.cancel(`sidecar process spawn threw: ${String(e)}`);
-    result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}` };
+    let settlementError = '';
+    try {
+      await execution.cancel(`sidecar process spawn threw: ${String(e)}`);
+    } catch (cancelError) {
+      settlementError = `; admission cancellation failed: ${String(cancelError)}`;
+    }
+    result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}${settlementError}` };
   }
 
   // Size the output BEFORE closing, so the caller can detect a short read.

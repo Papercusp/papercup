@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:net';
@@ -184,7 +184,7 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(h.finished).toHaveBeenCalledOnce();
   });
 
-  it('releases handoff files when cancellation settlement fails before spawn', async () => {
+  it('settles failed admission cancellation before spawn without running the child', async () => {
     const handoffPath = join(dir, 'handoff-output');
     const controller = new AbortController();
     let admit!: (value: GovernedExecution) => void;
@@ -199,6 +199,18 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     admit(receipt());
     expect(await result).toMatchObject({ code: -1 });
     expect(h.cancelled).toHaveBeenCalledOnce();
+    expect(await readFile(handoffPath, 'utf8')).toBe('');
     await rm(handoffPath);
+  });
+
+  it('settles a synchronous spawn failure even when admission cancellation fails', async () => {
+    h.cancelled.mockRejectedValueOnce(new Error('cancellation unavailable'));
+    const result = await execProcess({
+      command: process.execPath, args: ['\0'], timeoutMs: 5000,
+    });
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain('could not spawn process');
+    expect(result.stderr).toContain('admission cancellation failed');
+    expect(h.cancelled).toHaveBeenCalledOnce();
   });
 });
