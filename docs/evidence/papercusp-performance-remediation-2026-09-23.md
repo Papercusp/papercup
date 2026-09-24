@@ -501,3 +501,30 @@ source was mutated and the clock was real. Bindings 11236/11237 attach the run
 and counterexample to PERF-P-005@1. The evaluator passed and emitted card
 EI-24133989725260512; independent grading audit remains pending. This does not
 close P-005 or establish shipment.
+
+### Fresh-client and concurrent SQL verification
+
+Run 19270264 added a separate real-Postgres case to the existing Learning
+integration suite. It captures the current production summary query and restores
+only the legacy unused projection for comparison. Both variants read the same
+50,205-row fixture. Four rounds alternate variant order; each creates a new
+eight-connection pool, measures its first request, then starts eight simultaneous
+requests. Every complete result equals the current-query reference.
+
+| Variant | First request on a fresh pool, range ms | Eight-reader completion, range ms |
+|---|---:|---:|
+| Legacy projection | 215.8–246.3 | 239.5–255.9 |
+| Current projection | 103.4–129.7 | 131.2–151.1 |
+
+The database and OS caches are warmed; only the client pool starts fresh. This
+does not measure a cold database, HTTP transport, production p95 or desktop
+rendering. The focused invocation passed the new case, with the seven unchanged
+cases excluded by `-t`; their earlier proof remains separately recorded above.
+Provenance: stable HEAD `2bf2467436` plus the local test addition, finished
+2026-09-24T09:36:25Z. No application source changed in this verification step.
+
+The warm-count card EI-24133989725260512 now has a passed independent audit,
+EI-24134111853441553, stamped 2026-09-24T09:21:22Z. P-001's separate card
+EI-24123000311780258 failed its independent audit EI-24133643922268786: replay
+changed freshness from pass to fail and reported evaluator-build drift. That
+failure remains unresolved and must not be described as pending or passed.
