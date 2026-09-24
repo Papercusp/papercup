@@ -650,6 +650,16 @@ class PuiPane {
     return vt.text();
   }
 
+  /** The raw PTY stream from `offset` on, escapes included — what a terminal
+   *  receives. P-013 reads its SGR sequences and replays it incrementally. */
+  rawSince(offset = 0): string {
+    return this.raw.slice(offset);
+  }
+
+  get size(): { cols: number; rows: number } {
+    return { cols: this.cols, rows: this.rows };
+  }
+
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
@@ -4475,6 +4485,257 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         }),
       );
       throw error;
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+});
+
+describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibility and responsiveness', () => {
+  // Targets are the plan's Acceptance section (pui-first-party-public-release):
+  // local key feedback p95 <= 100 ms, local send acceptance/busy feedback
+  // <= 250 ms, an initialized application's usable first frame <= 2 s; 80x24,
+  // 120x40 and 200x60 with a resize during streaming; light, dark,
+  // high-contrast and colour-disabled modes; the 80x20 floor from
+  // PUBLIC_RELEASE_UX.md. Latency runs from the PTY write to the chunk that
+  // makes the change visible on an incremental VT, so the harness's own
+  // polling can never inflate a sample.
+  const KEY_FEEDBACK_P95_MS = 100;
+  const SEND_FEEDBACK_MS = 250;
+  const FIRST_FRAME_MS = 2_000;
+
+  function p95(samples: number[]): number {
+    const sorted = [...samples].sort((a, b) => a - b);
+    return sorted[Math.ceil(sorted.length * 0.95) - 1];
+  }
+
+  /** Milliseconds from `act()` until the rendered screen satisfies `ready`. */
+  function renderedAfter(
+    pane: PuiPane,
+    act: () => void,
+    ready: (screen: string) => boolean,
+    timeoutMs = 5_000,
+  ): Promise<number> {
+    const vt = new VtScreen(pane.size.rows, pane.size.cols);
+    vt.feed(pane.rawSince(0));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        subscription.dispose();
+        reject(new Error(`not rendered within ${timeoutMs}ms:\n${vt.text()}`));
+      }, timeoutMs);
+      const subscription = pane.pty.onData((chunk) => {
+        vt.feed(chunk);
+        if (!ready(vt.text())) return;
+        clearTimeout(timer);
+        subscription.dispose();
+        resolve(performance.now() - started);
+      });
+      const started = performance.now();
+      act();
+    });
+  }
+
+  /** Per-key feedback samples: each key's time until the draft shows it. */
+  async function keyFeedback(pane: PuiPane, keys: string): Promise<number[]> {
+    const base = `K${randomUUID().slice(0, 6)} `;
+    pane.write(base);
+    await pane.waitFor(base.trim());
+    let draft = base;
+    const samples: number[] = [];
+    for (const key of keys) {
+      draft += key;
+      const expected = draft;
+      samples.push(await renderedAfter(pane, () => pane.write(key), (screen) => screen.includes(expected)));
+    }
+    return samples;
+  }
+
+  /** Every SGR parameter list (`ESC [ … m`) in a raw PTY stream. */
+  function sgrParams(raw: string): string[] {
+    return [...raw.matchAll(/\u001b\[([0-9;:]*)m/g)].map((match) => match[1]);
+  }
+
+  /** Whether an SGR list sets a colour: basic/bright fg or bg, or an extended
+   *  38/48/58 (256-colour or RGB). 39/49/59 restore the terminal default and
+   *  0–29 are attributes, so neither counts. */
+  function setsColour(params: string): boolean {
+    return params.split(/[;:]/).map(Number).some((n) =>
+      (n >= 30 && n <= 38) || (n >= 40 && n <= 48) || n === 58 || (n >= 90 && n <= 97) || (n >= 100 && n <= 107));
+  }
+
+  /** The PUI process's resident set, in MiB. */
+  function rssMiB(pane: PuiPane): number {
+    const status = readFileSync(`/proc/${pane.pty.pid}/status`, 'utf8');
+    return Number(/VmRSS:\s+(\d+) kB/.exec(status)?.[1]) / 1024;
+  }
+
+  test('P-013: NO_COLOR draws no colour and still marks the selection', { timeout: 120_000 }, async () => {
+    // Calibration: by default the same screen IS coloured, so a parser that
+    // never recognised colour could not pass the colour-disabled half.
+    const coloured = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      await openAgentChat(coloured);
+      expect(sgrParams(coloured.rawSince(0)).some(setsColour)).toBe(true);
+    } finally {
+      await coloured.stop().catch(() => {});
+    }
+    const plain = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40, env: { NO_COLOR: '1' } });
+    try {
+      await openAgentChat(plain);
+      const params = sgrParams(plain.rawSince(0));
+      expect(params.filter(setsColour)).toEqual([]);
+      // The selected tab carried its meaning only by its fill; without colour
+      // it is still marked, as reverse video (SGR 7).
+      expect(params.some((list) => list.split(/[;:]/).includes('7'))).toBe(true);
+      console.info('PUI_P013_COLOR_DISABLED_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, sgrLists: params.length, frame: plain.screen(),
+      }));
+    } finally {
+      await plain.stop().catch(() => {});
+    }
+  });
+
+  test('P-013: below 80x20 a blocking view holds the draft and a resize back resumes it', { timeout: 120_000 }, async () => {
+    const draft = `P13 small ${randomUUID().slice(0, 8)}`;
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      await openComposer(pane, false);
+      pane.write(draft);
+      await pane.waitFor(draft);
+      pane.resize(70, 18);
+      await pane.waitFor('Terminal too small');
+      await pane.waitFor('resize to at least 80×20');
+      expect(pane.screen()).not.toContain(draft);
+      pane.write('zzz'); // held: nothing the owner cannot see changes
+      pane.resize(80, 24);
+      await pane.waitFor(draft);
+      await pane.waitForGone('Terminal too small');
+      expect(pane.screen()).not.toContain(`${draft}zzz`);
+      pane.write('!');
+      await pane.waitFor(`${draft}!`);
+      console.info('PUI_P013_TOO_SMALL_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, frame: pane.screen() }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  test('P-013: 80x24, 120x40 and 200x60 keep a streamed reply whole across resizes', { timeout: 240_000 }, async () => {
+    const prompt = `P13 stream ${randomUUID().slice(0, 8)}`;
+    const reply = scriptedEngine.streamChunks.join('');
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      await openComposer(pane);
+      scriptedEngine.mode = 'stream';
+      pane.write(prompt);
+      pane.enter();
+      // Resize at three points while chunks are still arriving 800 ms apart.
+      await pane.waitFor('STREAM-A1', { timeoutMs: 60_000 });
+      pane.resize(80, 24);
+      await pane.waitFor('STREAM-B2', { timeoutMs: 10_000 });
+      pane.resize(200, 60);
+      await pane.waitFor('STREAM-C3', { timeoutMs: 10_000 });
+      pane.resize(80, 24);
+      await pane.waitFor('STREAM-E5', { timeoutMs: 10_000 });
+      for (const [cols, rows] of [[80, 24], [120, 40], [200, 60]] as const) {
+        pane.resize(cols, rows);
+        await pane.waitForReply(reply.trim());
+        await pane.waitFor('Message — Enter send');
+      }
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      console.info('PUI_P013_RESIZE_STREAM_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, prompt, frame: pane.screen() }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  test('P-013: first frame <= 2 s, key feedback p95 <= 100 ms, send feedback <= 250 ms', { timeout: 240_000 }, async () => {
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      const firstFrameMs = await renderedAfter(pane, () => {}, (screen) => screen.includes('· pui ·'), 10_000);
+      expect(firstFrameMs).toBeLessThanOrEqual(FIRST_FRAME_MS);
+
+      await openComposer(pane, false);
+      const keyMs = await keyFeedback(pane, 'p13keyfeedback0123456789abcdef');
+      expect(p95(keyMs)).toBeLessThanOrEqual(KEY_FEEDBACK_P95_MS);
+
+      // The first message opens the session; the measured send is the second,
+      // held in flight by the streaming fixture so its busy state is on screen.
+      pane.reviewNextNewSession();
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('Message — Enter send');
+      const second = `P13 send ${randomUUID().slice(0, 8)}`;
+      pane.write(second);
+      await pane.waitFor(second);
+      scriptedEngine.mode = 'stream';
+      const sendMs = await renderedAfter(pane, () => pane.enter(), (screen) =>
+        screen.includes('Sending — awaiting acceptance') || screen.includes('Running — Enter queues'));
+      expect(sendMs).toBeLessThanOrEqual(SEND_FEEDBACK_MS);
+      await pane.waitFor('STREAM-E5', { timeoutMs: 30_000 });
+      console.info('PUI_P013_RESPONSIVENESS_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, firstFrameMs, keyFeedbackP95Ms: p95(keyMs),
+        keyFeedbackMaxMs: Math.max(...keyMs), keySamples: keyMs.length, sendFeedbackMs: sendMs,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  test('P-013: a 40-turn session keeps key feedback in budget and memory bounded', { timeout: 600_000 }, async () => {
+    const turns = 40;
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      await openComposer(pane);
+      let rssAfterFirstMiB = 0;
+      for (let turn = 1; turn <= turns; turn += 1) {
+        const prompt = `P13 long ${turn} ${randomUUID().slice(0, 6)}`;
+        pane.write(prompt);
+        await pane.waitFor(prompt);
+        pane.enter();
+        await vi.waitFor(() => expect(scriptedEngine.requests).toHaveLength(turn), { timeout: 60_000, interval: 50 });
+        await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
+        if (turn === 1) rssAfterFirstMiB = rssMiB(pane);
+      }
+      const rssAfterLastMiB = rssMiB(pane);
+      const keyMs = await keyFeedback(pane, 'longsessionkeys0123456789');
+      expect(p95(keyMs)).toBeLessThanOrEqual(KEY_FEEDBACK_P95_MS);
+      // A 40-turn transcript is kilobytes; growth beyond this is a leak.
+      expect(rssAfterLastMiB - rssAfterFirstMiB).toBeLessThan(64);
+      console.info('PUI_P013_LONG_SESSION_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, turns, rssAfterFirstMiB, rssAfterLastMiB, keyFeedbackP95Ms: p95(keyMs),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  // One palette per mode, each named by its own ink and panel slots in theme.rs.
+  test.for([
+    { theme: 'papercusp-light', ink: '26;32;31', panel: '247;249;248' },
+    { theme: 'papercusp-dark', ink: '232;238;232', panel: '9;18;20' },
+    { theme: 'high-contrast', ink: '255;255;255', panel: '0;0;0' },
+  ])('P-013: :theme $theme repaints the workbench in that palette', { timeout: 120_000 }, async ({ theme, ink, panel }) => {
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    try {
+      await openAgentChat(pane);
+      const switchTo = async (name: string) => {
+        pane.write(':');
+        await pane.waitFor('Command (Esc closes)');
+        pane.write(`theme ${name}`);
+        pane.enter();
+        await pane.waitForGone('Command (Esc closes)');
+      };
+      const mark = pane.rawSince(0).length;
+      await switchTo(theme);
+      await vi.waitFor(() => {
+        const params = sgrParams(pane.rawSince(mark));
+        expect(params.some((list) => list.includes(`38;2;${ink}`))).toBe(true);
+        expect(params.some((list) => list.includes(`48;2;${panel}`))).toBe(true);
+      }, { timeout: 10_000, interval: 100 });
+      await pane.waitFor('Agent Chat');
+      console.info('PUI_P013_THEME_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, theme, frame: pane.screen() }));
+      // The active theme persists with the view state; leave the default.
+      await switchTo('frost');
     } finally {
       await pane.stop().catch(() => {});
     }

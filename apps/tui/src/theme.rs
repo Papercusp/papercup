@@ -263,6 +263,32 @@ pub const DRACULA: ThemeSpec = ThemeSpec {
     tab_bar_bg: Color::Rgb(30, 31, 41),
 };
 
+/// High contrast (pui-first-party-public-release P-013): every text slot meets
+/// WCAG AAA (7:1) against its surface and every border 3:1, pinned by
+/// `high_contrast_meets_wcag_aaa`. Surfaces are one black so nothing depends on
+/// telling two dark fills apart; focus rides the yellow border and fill.
+pub const HIGH_CONTRAST: ThemeSpec = ThemeSpec {
+    name: "high-contrast",
+    ink: Color::Rgb(255, 255, 255),
+    muted: Color::Rgb(200, 200, 200),
+    panel: Color::Rgb(0, 0, 0),
+    panel_active: Color::Rgb(0, 0, 0),
+    border: Color::Rgb(170, 170, 170),
+    border_active: Color::Rgb(255, 255, 0),
+    accent: Color::Rgb(0, 255, 255),
+    accent_hot: Color::Rgb(255, 255, 0),
+    on_accent: Color::Rgb(0, 0, 0),
+    sky: Color::Rgb(0, 200, 255),
+    sage: Color::Rgb(0, 255, 0),
+    warn: Color::Rgb(255, 200, 0),
+    danger: Color::Rgb(255, 120, 120),
+    human: Color::Rgb(255, 120, 255),
+    popup: Color::Rgb(0, 0, 0),
+    input: Color::Rgb(0, 0, 0),
+    status: Color::Rgb(0, 0, 0),
+    tab_bar_bg: Color::Rgb(0, 0, 0),
+};
+
 /// Registry of built-in themes. P1 — the `:theme` switcher — adds a
 /// live-selectable, ViewState-persisted active theme.
 pub const THEMES: &[&ThemeSpec] = &[
@@ -274,6 +300,7 @@ pub const THEMES: &[&ThemeSpec] = &[
     &GRUVBOX_DARK,
     &NORD,
     &DRACULA,
+    &HIGH_CONTRAST,
 ];
 
 /// Default active theme id. P1 (the `:theme` switcher) overrides this with the
@@ -830,6 +857,70 @@ mod tests {
         let cell = buf.cell((0, 0)).expect("cell 0,0");
         assert_eq!(cell.symbol(), glyph::status_for("needs-human"));
         assert_eq!(cell.fg, t.human);
+    }
+
+    /// WCAG 2.x contrast ratio between two RGB colours.
+    fn contrast(a: Color, b: Color) -> f64 {
+        fn luminance(c: Color) -> f64 {
+            let Color::Rgb(r, g, b) = c else {
+                panic!("high-contrast slots are RGB: {c:?}")
+            };
+            let lin = |v: u8| {
+                let s = f64::from(v) / 255.0;
+                if s <= 0.03928 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        }
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// P-013 high-contrast mode: every text slot meets WCAG AAA (7:1) on every
+    /// surface it is drawn on, the selected/title fill keeps 7:1, and borders
+    /// meet the 3:1 non-text minimum.
+    #[test]
+    fn high_contrast_meets_wcag_aaa() {
+        let t = theme_by_name("high-contrast").expect("registered");
+        let surfaces = [
+            t.panel,
+            t.panel_active,
+            t.popup,
+            t.input,
+            t.status,
+            t.tab_bar_bg,
+        ];
+        let text = [
+            t.ink,
+            t.muted,
+            t.accent,
+            t.accent_hot,
+            t.sky,
+            t.sage,
+            t.warn,
+            t.danger,
+            t.human,
+        ];
+        for surface in surfaces {
+            for fg in text {
+                let ratio = contrast(fg, surface);
+                assert!(ratio >= 7.0, "{fg:?} on {surface:?} is {ratio:.2}:1");
+            }
+            for border in [t.border, t.border_active] {
+                let ratio = contrast(border, surface);
+                assert!(
+                    ratio >= 3.0,
+                    "border {border:?} on {surface:?} is {ratio:.2}:1"
+                );
+            }
+        }
+        let fill = contrast(t.on_accent, t.accent_hot);
+        assert!(fill >= 7.0, "selected text is {fill:.2}:1");
+        // The instrument itself: black on white is the 21:1 maximum.
+        assert!((contrast(Color::Rgb(0, 0, 0), Color::Rgb(255, 255, 255)) - 21.0).abs() < 0.01);
     }
 
     /// Colour-disabled mode (P-013) follows no-color.org: `NO_COLOR` counts

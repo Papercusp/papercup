@@ -4657,6 +4657,14 @@ impl App {
         self.tab == Tab::Operator || (self.operator_dock_open && self.operator_dock_focused)
     }
 
+    /// Whether the blocking too-small view is showing (PUBLIC_RELEASE_UX.md):
+    /// the standalone app below `ui::MIN_COLS`×`ui::MIN_ROWS`. The draw and the
+    /// input hold both read this, so they cannot disagree. A pinned dock pane
+    /// is sized by its layout, never by the owner, so it never blocks.
+    pub fn too_small(&self) -> bool {
+        self.pinned.is_none() && crate::ui::too_small(self.viewport.0, self.viewport.1)
+    }
+
     /// True when a `v` PTT keypress should be accepted — on the Operator tab or in
     /// a focused operator dock — and never while composing a typed message.
     pub fn voice_key_active(&self) -> bool {
@@ -9223,7 +9231,7 @@ impl App {
         match ev {
             Event::Paste(text) => {
                 // Held like keys while the blocking too-small view shows.
-                if crate::ui::too_small(self.viewport.0, self.viewport.1) {
+                if self.too_small() {
                     return Action::None;
                 }
                 // Text-entry overlays consume the paste as DATA. Newlines are
@@ -11161,7 +11169,7 @@ impl App {
         // (PUBLIC_RELEASE_UX.md): q and Ctrl-C still quit, as they do from
         // navigation, and every other key is held so nothing the owner cannot
         // see (the draft above all) changes underneath it.
-        if crate::ui::too_small(self.viewport.0, self.viewport.1) {
+        if self.too_small() {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if code == KeyCode::Char('q') || ctrl_c {
                 self.should_quit = true;
@@ -19880,6 +19888,17 @@ mod tests {
         a.on_key(KeyCode::Char('!'), KeyModifiers::NONE);
         assert!(a.chat_input.contains('!'), "typing reaches the draft again");
         assert!(a.chat_input.contains("kept draft"));
+    }
+
+    /// A pinned dock pane is sized by its layout, so it never blocks: a narrow
+    /// colony pane keeps rendering and taking keys.
+    #[test]
+    fn a_pinned_dock_pane_is_never_too_small() {
+        let mut a = App::new();
+        a.update(Event::Resize(50, 12));
+        assert!(a.too_small());
+        a.pinned = Some(Tab::Operator);
+        assert!(!a.too_small());
     }
 
     /// q and Ctrl-C still quit from the blocking view, as they do from navigation.

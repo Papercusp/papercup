@@ -60,8 +60,7 @@ pub(crate) fn too_small(cols: u16, rows: u16) -> bool {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = f.area();
-    if too_small(area.width, area.height) {
+    if app.too_small() {
         draw_too_small(f);
     } else {
         draw_frame(f, app);
@@ -5852,6 +5851,30 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    /// PUBLIC_RELEASE_UX.md "Below 80 columns or 20 rows": the whole screen is
+    /// one stable instruction — nothing else, so no clipped control — and the
+    /// normal surface returns at exactly the minimum.
+    #[test]
+    fn below_the_minimum_size_only_the_too_small_view_renders() {
+        let mut app = App::new();
+        let message = "Terminal too small — resize to at least 80×20. \
+                       Your session and draft are safe.";
+        for (w, h) in [(79, 40), (200, 19), (40, 10), (12, 3)] {
+            // main seeds the viewport from the terminal and Event::Resize keeps it.
+            app.viewport = (w, h);
+            let text = render(&app, w, h);
+            let shown = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if h >= 4 && w >= 40 {
+                assert_eq!(shown, message, "{w}x{h}");
+            } else {
+                // Too tiny to hold the whole sentence: still nothing but it.
+                assert!(message.starts_with(&shown), "{w}x{h}: {shown:?}");
+            }
+        }
+        app.viewport = (80, 20);
+        assert!(!render(&app, 80, 20).contains("Terminal too small"));
     }
 
     fn plan(slug: &str, status: &str) -> PlanSummary {
