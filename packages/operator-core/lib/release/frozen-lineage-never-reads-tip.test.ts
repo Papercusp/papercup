@@ -241,7 +241,9 @@ describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', 
   });
 
   it('every queue-clearing write sits on a sanctioned path: promotion, or the WI-2141347 converged-head retest', () => {
-    const sites = [...GATE_SOURCE.matchAll(/writeFrozenRepairQueue!?\??\.?\(\s*null\s*\)/g)];
+    // The CAS writer now passes options after null; the comma is part of each
+    // real clear site and prevents a no-argument lookalike from satisfying this guard.
+    const sites = [...GATE_SOURCE.matchAll(/writeFrozenRepairQueue!?\??\.?\(\s*null\s*,/g)];
     // Exactly the sanctioned shapes. A new one must be argued into this list, not added.
     // 2 (P-013) + 2 (P-008, 2026-09-04: the post-promotion staging bridge and its crash
     // recovery — both run only AFTER `main` has already advanced to the proven lineage).

@@ -34,9 +34,14 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
   getOrgPg: () => ({
     // tagged template: capture interpolated values, return work_items rows
     sql: Object.assign(
-      (_strings: TemplateStringsArray, ...values: unknown[]) => {
-        batchedQueryCalls.push(values);
-        return Promise.resolve(workItemSlugs.map((s) => ({ harness_slug: s })));
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        // Imported modules can also use the org pool. Count only the route's
+        // work-item probe so this assertion still measures its batching.
+        if (strings.join('').includes('FROM harness_shared.work_items')) {
+          batchedQueryCalls.push(values);
+          return Promise.resolve(workItemSlugs.map((s) => ({ harness_slug: s })));
+        }
+        return Promise.resolve([]);
       },
       { begin: vi.fn() },
     ),

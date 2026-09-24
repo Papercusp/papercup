@@ -70,6 +70,10 @@ const ALLOWLIST: Record<string, string> = {
     'ceiling: at most one dispatch per cascade step, over a menu the router already capped at max_agents ' +
     '(≤ 8), each attempt walking the allowlist once (consult/consult-dispatch.ts, covered by ' +
     'consult-dispatch.test.ts).',
+  'events/await/wake-rehome.ts':
+    'Backend re-home resumes the SAME ended session id on another backend after an account wall. ' +
+    'It does not create a new goal agent or consume an additional goal slot; applying a new-launch ' +
+    'headcount ceiling would strand an existing session that already holds its goal place.',
   'endpoint-route/routes/admin/attention-bulk-resolve.ts':
     'The owner-facing Inbox action creates one short-lived resolver for the concrete items the owner ' +
     'submitted. It creates the resolver owner id only inside this request, before any agent session or ' +
