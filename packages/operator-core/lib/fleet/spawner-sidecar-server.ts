@@ -62,6 +62,7 @@ import {
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
 import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
+import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -93,7 +94,7 @@ interface InvokeOnceParams {
  * process lifecycle (SIGTERM/SIGINT → close). Prints PAPERCUSP_SPAWNER_READY once
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
-export function runSpawnerSidecarServer(): net.Server {
+export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProcess } = {}): net.Server {
   // Runtime flag overrides (EI-8867 / WI-3628, corrected WI-6822). `getFlag()` consults the
   // PG override store ONLY in a process that installed it. This is a STANDALONE process (dev:
   // `tsx bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with
@@ -279,7 +280,7 @@ export function runSpawnerSidecarServer(): net.Server {
         controllers.add(controller);
         requests.set(id, controller);
         try {
-          const execution = execProcess(params, {
+          const execution = (deps.executeProcess ?? execProcess)(params, {
             signal: controller.signal,
             onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
@@ -341,6 +342,7 @@ export function runSpawnerSidecarServer(): net.Server {
         if (id !== null) write(rpcResult({
           cancelled: !!controller, processExecCancellation: true,
           processExecFence: { serverGeneration, connectionId },
+          processExecContainment: captureSidecarContainment(process.env[SPAWNER_SCOPE_ENV]),
         }, id));
         return;
       }
