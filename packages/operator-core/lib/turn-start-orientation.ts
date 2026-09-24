@@ -65,6 +65,7 @@ import { projectAgentTurnStartObligationBrief, type AgentObligationBrief } from 
 import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
 import type { GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
 import { trackDetached } from './detached-imports';
+import { withBoundedTimeout } from './bounded-timeout';
 import type { OwnerDirectiveRow } from './owner-directives';
 import {
   deriveDirectiveStatus,
@@ -3231,6 +3232,29 @@ export function composeOrientationBlockWithRows(input: ComposeOrientationBlockIn
 /** Fingerprint only obligation content that survived the final outer budget.
  * A provider receipt describes its inner projection; this check closes the
  * second budget boundary before the shared cursor is staged. */
+/** The exact obligation projection the final outer budget actually delivered.
+ * Both the cursor and identity receipt use this verdict, so a trimmed line
+ * cannot be acknowledged or pinned as though the agent saw it. */
+export function deliveredObligationProjection(
+  state: OrientationState,
+  committed: CursorState | null,
+  epoch: number,
+  block: string,
+  contextTokens: number | null = null,
+): { text: string | null; delivered: boolean } {
+  if (!state.obligations) return { text: null, delivered: false };
+  const obligations = withoutWithheldDirectiveRows(
+    state,
+    planOwnerDirectiveReminder(state, committed, epoch, contextTokens).withheld,
+  ).obligations;
+  if (!obligations) return { text: null, delivered: false };
+  const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
+  const actionsDelivered = projectedLines.every((line) => block.includes(line));
+  const recoveryDelivered = obligations.projection.receipt.entriesOmitted === 0 ||
+    block.includes(obligations.detailRef);
+  return { text: obligations.projection.text, delivered: actionsDelivered && recoveryDelivered };
+}
+
 export function fingerprintDeliveredOrientation(
   state: OrientationState,
   epoch: number,
@@ -3259,19 +3283,10 @@ export function fingerprintDeliveredOrientation(
   const withMark = (fingerprint: CursorState): CursorState =>
     directiveMark ? { ...fingerprint, directiveReminder: directiveMark } : fingerprint;
   if (!state.obligations) return withMark(fingerprintOrientation(deliveredState, epoch, committed));
-  // Judge delivery against what the composer RENDERED: withheld directive rows
-  // (P-006) were never meant to be in the block, so their absence is not a miss.
-  const obligations = withoutWithheldDirectiveRows(
-    state,
-    planOwnerDirectiveReminder(state, committed, epoch, contextTokens).withheld,
-  ).obligations;
-  const projectedLines = obligations ? obligations.projection.text.split('\n').filter(Boolean) : [];
-  const actionsDelivered = projectedLines.every((line) => block.includes(line));
-  const recoveryDelivered =
-    !obligations || obligations.projection.receipt.entriesOmitted === 0 || block.includes(obligations.detailRef);
+  const obligationDelivery = deliveredObligationProjection(state, committed, epoch, block, contextTokens);
   return withMark(
     fingerprintOrientation(
-      actionsDelivered && recoveryDelivered ? deliveredState : { ...deliveredState, obligations: undefined },
+      obligationDelivery.delivered ? deliveredState : { ...deliveredState, obligations: undefined },
       epoch,
       committed,
     ),
@@ -4479,6 +4494,62 @@ export function defaultOrientationDeps(): OrientationDeps {
   };
 }
 
+export const TURN_START_IDENTITY_DELIVERY_KEY = 'identityComponentDeliveryV1';
+
+/** Bind only values the existing turn-start producers already computed. This
+ * candidate rides the existing proof cursor; the next confirmed token promotes
+ * it with the same ACK that proves the block was printed. */
+export async function bindTurnStartIdentityOutputs(input: {
+  ownerId: string;
+  workspaceId: string;
+  state: OrientationState;
+  committed: CursorState | null;
+  epoch: number;
+  contextTokens: number | null;
+  block: string;
+  deliveryToken: string | null;
+}, binder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs) {
+  const bind = binder ?? (await import('./agent-identities/source')).bindSelectedIdentityOutputs;
+  const observedAt = new Date().toISOString();
+  const failure = (identityId: string, errorRef: string, error: unknown) => ({
+    identityId, status: 'unavailable', errorRef,
+    detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+  });
+  const practicePromise = bind({
+    identityId: 'su.practice', sourceTier: 'builtin',
+    outputs: [{ contributionId: 'turn-start-orientation', value: input.block }],
+    scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
+    observedAt,
+  }).catch((error) => failure('su.practice', 'turn-start:practice-binding-failed', error));
+  const goalMode = input.state.modes?.some((mode) => mode.mode === 'goal');
+  const obligation = deliveredObligationProjection(
+    input.state, input.committed, input.epoch, input.block, input.contextTokens,
+  );
+  const goalPromise = input.state.modes === null
+    ? Promise.resolve({ identityId: 'su.mode-goal', status: 'unavailable',
+        errorRef: 'turn-start:mode-state-unavailable' })
+    : goalMode
+      ? bind({
+          identityId: 'su.mode-goal', sourceTier: 'selected',
+          outputs: [
+            { contributionId: 'current-mode-state', value: input.state.modes },
+            { contributionId: 'goal-kickoff', omission: { reason: 'not-requested' } },
+            { contributionId: 'goal-portfolio', omission: { reason: 'not-requested' } },
+            obligation.delivered && obligation.text
+              ? { contributionId: 'goal-obligations', value: obligation.text }
+              : { contributionId: 'goal-obligations', omission: input.state.obligations
+                  ? { reason: 'unavailable', errorRef: 'turn-start:obligation-budget-trimmed' }
+                  : { reason: 'not-requested' } },
+          ],
+          scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
+          observedAt,
+        }).catch((error) => failure('su.mode-goal', 'turn-start:goal-binding-failed', error))
+      : Promise.resolve(null);
+  const [practice, goal] = await Promise.all([practicePromise, goalPromise]);
+  return { version: 1, offeredAt: observedAt, token: input.deliveryToken,
+    proofMode: input.deliveryToken ? 'token' : 'arrival', practice, goal };
+}
+
 /** What one turn-start orientation call delivered. */
 export interface TurnStartOrientationDelivery {
   /** The rendered block; '' on every failure and every silence case. */
@@ -4518,6 +4589,8 @@ export async function buildTurnStartOrientationBlock(input: {
   deps?: Partial<OrientationDeps>;
   /** Test seam only; production always uses the receipt module's real writers. */
   progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
+  /** Test seam only; production uses the selected identity compiler. */
+  identityBinder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs;
 }): Promise<TurnStartOrientationDelivery> {
   try {
     const { ownerId, workspaceId } = input;
@@ -4596,10 +4669,13 @@ export async function buildTurnStartOrientationBlock(input: {
     // reproduce the exact stale suppression this change removes.
     const deliveryToken = proof ? randomUUID() : undefined;
     const deliveredFingerprint = fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens);
+    const identityPromise = bindTurnStartIdentityOutputs({
+      ownerId, workspaceId, state, committed: ack?.committed ?? null, epoch, contextTokens,
+      block, deliveryToken: deliveryToken ?? null,
+    }, input.identityBinder);
     if (progressReceipts && deliveryToken) {
       const rows = progressReceipts.deliveredGoalPlacementRows({ ownerId, workspaceId, brief: state.obligations, block });
       if (rows.length) {
-        const { withBoundedTimeout } = await import('./bounded-timeout');
         const measured = await withBoundedTimeout(
           progressReceipts.prepareGoalPlacementDelivery({ ownerId, workspaceId, token: deliveryToken,
             brief: state.obligations, block }, input.progressReceiptDeps),
@@ -4611,6 +4687,13 @@ export async function buildTurnStartOrientationBlock(input: {
         };
       }
     }
+    const identity = await withBoundedTimeout<Record<string, unknown>>(identityPromise, {
+      fallback: { version: 1, token: deliveryToken ?? null, status: 'unavailable',
+        reason: 'identity-binding-timeout' },
+      timeoutMs: 200,
+      label: 'turn-start:identity-binding',
+    });
+    deliveredFingerprint[TURN_START_IDENTITY_DELIVERY_KEY] = identity.value;
     const staged = await stage(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
