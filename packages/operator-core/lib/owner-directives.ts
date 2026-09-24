@@ -407,10 +407,26 @@ export async function listOwnerDirectives(
                END IN ${s(states)}`
            : s``
        }
-     ORDER BY created_at ASC, id ASC
+     ORDER BY ${ownFirstOrderSql(s, opts.viewerOwnerId)} created_at ASC, id ASC
      LIMIT ${limit}
   `;
   return rows.map(rowOf);
+}
+
+/**
+ * WI-10002888: a render point asks for the open set FOR one session, capped at a
+ * small LIMIT, oldest first. Ordered purely by age, that window is workspace-wide:
+ * with 12+ older open directives from other sessions, the viewer's OWN newest
+ * directive falls outside it and is never fetched. The banner then shows only
+ * other sessions' [FYI] rows and a "+N more", which hides the only row that
+ * asks this session to act. That was measured live on 2026-09-24 (directive
+ * #470). The "own first" ordering at render time cannot recover a row that was
+ * never fetched, so the viewer's own rows are ordered first HERE, before LIMIT.
+ * Without a viewer (the orders:list ledger view) the order stays oldest-first.
+ */
+function ownFirstOrderSql(s: Sql, viewerOwnerId: string | null | undefined) {
+  if (!viewerOwnerId) return s``;
+  return s`(recorded_by = ${viewerOwnerId}) DESC,`;
 }
 
 /**
@@ -608,7 +624,14 @@ export function renderOwnerDirectivesBlock(
   const lines: string[] = [OWNER_DIRECTIVES_BLOCK_HEADER];
   let used = OWNER_DIRECTIVES_BLOCK_HEADER.length;
   let shown = 0;
-  for (const row of rows) {
+  // WI-10002888: the viewer's own rows are its only action obligations, so they
+  // render before any [FYI] row and are never the ones the char cap folds into
+  // "+N more". Stable within each group, so the given (oldest-first) order holds.
+  const viewer = opts.viewerOwnerId ?? null;
+  const ordered = viewer
+    ? [...rows.filter((r) => r.recordedBy === viewer), ...rows.filter((r) => r.recordedBy !== viewer)]
+    : rows;
+  for (const row of ordered) {
     const line = renderOwnerDirectiveRow(row, nowMs, opts.viewerOwnerId);
     if (used + line.length + 1 > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) break;
     lines.push(line);
