@@ -724,6 +724,123 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
+  it.each(['ok', 'failover', 'http-error', 'incomplete-stream'] as const)(
+    'joins native turns to gateway HTTP write observations without provider inference (%s)', async mode => {
+    const { createInferenceGateway } = await import('./inference-gateway/gateway');
+    const { createFailoverPool } = await import('./inference-gateway/account-failover');
+    const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
+    resetGovernorRegistry();
+    const task = createCarryTrialRecipe().tasks.find(task => task.id === 'T1')!;
+    const expectedResponse = JSON.stringify(task.expected);
+    const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
+    const requests: Array<{ body: Record<string, unknown>; account: string }> = [];
+    const fixtureErrors: string[] = [];
+    const upstream = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+        const account = req.headers.authorization === 'Bearer PRIVATE_NATIVE_A' ? 'fixture-a'
+          : req.headers.authorization === 'Bearer PRIVATE_NATIVE_B' ? 'fixture-b' : 'unexpected';
+        requests.push({ body, account });
+        if (mode === 'http-error' || (mode === 'failover' && account === 'fixture-a')) {
+          res.writeHead(mode === 'http-error' ? 503 : 429, { 'content-type': 'application/json', 'retry-after': '3600' });
+          res.end(JSON.stringify({ error: { message: 'local native-gateway fixture refusal' } }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (mode === 'incomplete-stream') {
+          // HTTP can end normally while the native turn fails because no
+          // response.completed arrived. Keep both observations in the join.
+          res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"fixture-incomplete"}}\n\n');
+        } else {
+          res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+            text: expectedResponse, inputTokens: 0, outputTokens: 0 })));
+        }
+      } catch { fixtureErrors.push('local upstream fixture failed'); res.destroy(); }
+    });
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    const gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      upstreamBase: `http://127.0.0.1:${address.port}`, openaiUpstreamBase: `http://127.0.0.1:${address.port}`,
+      codexPool: createFailoverPool([{ accountId: 'fixture-a', token: async () => 'PRIVATE_NATIVE_A' },
+        { accountId: 'fixture-b', token: async () => 'PRIVATE_NATIVE_B' }]),
+      concurrency: 2, maxQueueWaitMs: 2_000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+    let p: SuStdioPeer | undefined;
+    try {
+      const port = await gateway.listen(0), owner = 'su-native-gateway-fixture';
+      const config = stringifyToml({ model_provider: 'cache_protocol_probe', model_reasoning_effort: 'medium',
+        model_providers: { cache_protocol_probe: { name: 'Local native-gateway fixture',
+          base_url: `http://127.0.0.1:${port}/v1`, wire_api: 'responses', requires_openai_auth: false,
+          http_headers: { 'x-papercusp-owner': owner }, supports_websockets: false,
+          request_max_retries: 0, stream_max_retries: 0 } },
+        features: { apps: false, shell_tool: false }, web_search: 'disabled',
+      } as Parameters<typeof stringifyToml>[0]);
+      p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config, receipt => receipts.push(receipt));
+      await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_native_gateway_fixture', version: '1' } } });
+      p.send({ method: 'initialized', params: {} });
+      const start = await p.request({ method: 'thread/start', params: { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
+        cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
+      const threadId = String((start.thread as RpcFrame).id);
+      const response = await p.request({ method: 'turn/start', params: { threadId,
+        input: [{ type: 'text', text: task.prompt }] } });
+      const turnId = String((response.turn as RpcFrame).id);
+      const nativeStatus = mode === 'ok' || mode === 'failover' ? 'completed' : 'failed';
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ method: 'turn/completed',
+        params: expect.objectContaining({ threadId, turn: expect.objectContaining({ id: turnId, status: nativeStatus }) }),
+      })), { timeout: 20_000 });
+      const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+      const trace = inspectCarryNativeTurn({ threadId, turnId, events, threadRead,
+        allowedMcpCalls: [], expectedInputText: task.prompt });
+      if (nativeStatus === 'completed') {
+        expect(trace).toMatchObject({ status: 'verified', finalResponse: expectedResponse });
+        expect(inspectCarryTaskResponse({ taskId: task.id, response: trace.finalResponse! }).matches).toBe(true);
+      } else {
+        expect(trace.status).not.toBe('verified');
+        expect(trace.finalResponse).toBeNull();
+      }
+      await vi.waitFor(() => expect(gateway.stats().requestStages!.recent).toHaveLength(1));
+      const stages = gateway.stats().requestStages!, timeline = stages.recent[0];
+      expect(stages.requests).toMatchObject({ active: 0, reconciled: true });
+      expect(timeline).toMatchObject({ ownerId: owner, protocol: 'openai-responses', transport: 'bearer-http',
+        nativeCorrelation: { status: 'observed', threadId, turnId } });
+      const accounts = mode === 'failover' ? ['fixture-a', 'fixture-b'] : ['fixture-a'];
+      expect(requests.map(request => request.account)).toEqual(accounts);
+      expect(timeline.upstreamWrites.calls.map(call => call.accountId)).toEqual(accounts);
+      expect(timeline.upstreamWrites.calls.map(call => call.responseStatus)).toEqual(
+        mode === 'failover' ? [429, 200] : mode === 'http-error' ? [503] : [200]);
+      expect(timeline.upstreamWrites.droppedCalls).toBe(0);
+      for (const call of timeline.upstreamWrites.calls) {
+        expect(call).toMatchObject({ matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
+        expect(call.events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
+      }
+      for (const request of requests) {
+        const metadata = JSON.parse((request.body.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
+        expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
+        expect(request.body).toMatchObject({ model: 'gpt-6-sol', reasoning: { effort: 'medium' } });
+      }
+      // A gateway failover creates two upstream sends for ONE native request;
+      // never count the local request id as a unique charged-request identity.
+      const writes = receipts.filter(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start');
+      expect(writes).toHaveLength(1);
+      expect(timeline.upstreamWrites.calls.every(call => call.clockId !== writes[0].clockId)).toBe(true);
+      expect(JSON.stringify(timeline)).not.toMatch(/PRIVATE_NATIVE|From the inherited task state/);
+      expect(fixtureErrors).toEqual([]);
+      console.log('CARRY_NATIVE_GATEWAY_RECEIPT', JSON.stringify({ mode, threadId, turnId, nativeStatus,
+        gatewayRequestId: timeline.requestId, upstreamAttempts: timeline.upstreamWrites.calls.length,
+        selectedAccounts: accounts, gatewayOutcome: timeline.outcome, providerInference: false,
+        canonicalChargeJoin: false, clockDomainsBound: false }));
+    } finally {
+      try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
+      finally {
+        await gateway.close();
+        await new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); });
+        resetGovernorRegistry();
+      }
+    }
+  }, 90_000);
+
   it.each(['invalid-request', 'retryable-http', 'incomplete-stream'] as const)(
     'Codex preserves native turn metadata and disables retries for %s without provider inference', async (failure) => {
     const requests: Array<Record<string, unknown>> = [];
