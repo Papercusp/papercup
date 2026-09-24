@@ -503,7 +503,7 @@ export async function reconcileComposedRoot(rootId: number, expireIfDue = false)
       eventSource = leaf.fired_by ?? null;
       let nodeId: number | null = Number(leaf.node_id);
       while (nodeId != null) {
-        const bumped = await tx`
+        const bumped: Array<{ id: number; parent_id: number | null; fired_at: Date | string | null }> = await tx`
           UPDATE harness_shared.event_await_nodes
              SET fired_count = fired_count + 1,
                  fired_at = CASE WHEN fired_count + 1 >= required_count THEN now() ELSE fired_at END
@@ -615,12 +615,28 @@ export async function reconcileComposedRoots(limit = 100): Promise<{ roots: numb
             JOIN harness_shared.event_awaits a ON a.id = d.await_id
             WHERE a.workspace_id = n.workspace_id AND a.root_id = n.id AND a.node_id IS NULL
          )
+      UNION
+      SELECT n.id FROM harness_shared.event_await_nodes n
+       WHERE n.workspace_id = ${ws} AND n.parent_id IS NULL AND n.fired_at IS NOT NULL
+         AND n.cancelled_at IS NULL AND n.timeout_behavior = 'expire'
+         AND n.fired_count < n.required_count
+         AND EXISTS (
+           SELECT 1 FROM harness_shared.event_awaits a
+            WHERE a.workspace_id = n.workspace_id AND a.root_id = n.id
+              AND a.node_id IS NOT NULL AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+         )
     ) candidates ORDER BY id LIMIT ${limit}
   `;
   let deliveries = 0;
   for (const row of rows) {
-    const result = await reconcileComposedRoot(Number(row.id), true);
-    if (result.delivered) deliveries++;
+    try {
+      const result = await reconcileComposedRoot(Number(row.id), true);
+      if (result.delivered) deliveries++;
+    } catch (error) {
+      // One damaged tree must not prevent the shared sweeper from pumping
+      // unrelated wakes. Keep its durable rows for the next retry and log it.
+      console.warn(`[await-event] composed root ${row.id} reconciliation failed: ${error instanceof Error ? error.message : error}`);
+    }
   }
   return { roots: rows.length, deliveries };
 }
