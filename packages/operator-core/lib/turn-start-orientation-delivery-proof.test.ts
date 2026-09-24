@@ -13,6 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const progressWiring = vi.hoisted(() => ({
   read: vi.fn(), record: vi.fn(async () => 0),
 }));
+const identityBindMock = vi.hoisted(() => vi.fn(async (input: {
+  identityId: string; outputs: Array<{ contributionId: string; value?: unknown; omission?: unknown }>;
+}) => ({ identityId: input.identityId, contributions: input.outputs })));
 vi.mock('./agent-obligation-reader', async (original) => ({
   ...(await original<typeof import('./agent-obligation-reader')>()),
   readAgentObligationAgenda: progressWiring.read,
@@ -38,7 +41,10 @@ import {
   InMemoryReadCursorStore,
   resetReadCursorStore,
 } from './agent-tools/coordination/read-cursors';
-import { buildTurnStartOrientationBlock, defaultOrientationDeps, type OrientationDeps } from './turn-start-orientation';
+import {
+  buildTurnStartOrientationBlock, defaultOrientationDeps, TURN_START_IDENTITY_DELIVERY_KEY,
+  type OrientationDeps,
+} from './turn-start-orientation';
 import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
 import { PLAN_CONTEXT_MAX, projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { GOAL_PLACEMENT_DELIVERY_KEY, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
@@ -88,6 +94,7 @@ const turn = (confirmedDeliveryToken?: string | null) =>
     ownerId: 'su-proof',
     workspaceId: 'ws-proof',
     deps,
+    identityBinder: identityBindMock as never,
     ...(confirmedDeliveryToken === undefined ? {} : { confirmedDeliveryToken }),
   });
 
@@ -95,6 +102,7 @@ let store: RecordingStore;
 beforeEach(() => {
   progressWiring.read.mockReset();
   progressWiring.record.mockClear();
+  identityBindMock.mockClear();
   store = new RecordingStore();
   configureReadCursorStore(store);
 });
@@ -138,6 +146,38 @@ describe('turn-start orientation — ack-on-proof', () => {
     const proven = await turn(retry.deliveryToken);
     expect(store.acks[2]?.result.committed).not.toBeNull();
     expect(proven.block).not.toContain(HISTORY_LINE);
+  });
+
+  it('pins the exact rendered block only under the existing confirmed delivery token', async () => {
+    const first = await turn(null);
+    expect(identityBindMock).toHaveBeenCalledTimes(1);
+    expect(identityBindMock.mock.calls[0]![0].outputs).toEqual([
+      { contributionId: 'turn-start-orientation', value: first.block },
+    ]);
+    const retry = await turn('wrong-token');
+    expect(store.acks[1]?.result.committed).toBeNull();
+    await turn(retry.deliveryToken);
+    expect(store.acks[2]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+      token: retry.deliveryToken,
+      proofMode: 'token',
+      practice: { identityId: 'su.practice' },
+    });
+  });
+
+  it('keeps the block and ACK live when identity binding exceeds its short budget', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = await buildTurnStartOrientationBlock({
+      ownerId: 'su-proof', workspaceId: 'ws-proof', deps, confirmedDeliveryToken: null,
+      identityBinder: (() => new Promise<never>(() => {})) as never,
+    });
+    expect(first.block).toContain(HISTORY_LINE);
+    expect(first.deliveryToken).toEqual(expect.any(String));
+    await turn(first.deliveryToken);
+    expect(store.acks[1]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+      token: first.deliveryToken,
+      status: 'unavailable',
+      reason: 'identity-binding-timeout',
+    });
   });
 
   it('a caller that sends no confirmation keeps ack-on-arrival and is handed no token', async () => {
@@ -186,6 +226,7 @@ describe('goal placement receipts through the real orientation ACK path', () => 
       turn: (token: string | null | undefined, overrides: Partial<OrientationDeps> = {}, budgetChars?: number) =>
         buildTurnStartOrientationBlock({ ownerId: 'su-proof', workspaceId: 'ws-proof',
           deps: { ...goalDeps, ...overrides }, progressReceiptDeps: receiptDeps,
+          identityBinder: identityBindMock as never,
           ...(token === undefined ? {} : { confirmedDeliveryToken: token }),
           ...(budgetChars === undefined ? {} : { budgetChars }),
         }),
@@ -207,6 +248,18 @@ describe('goal placement receipts through the real orientation ACK path', () => 
       goalPlacementTurn: expect.objectContaining({ obligationId: f.row.id, deliveryToken: first.deliveryToken,
         completedTurnRef: 'codex:native-proof:current', atConfirmation: null }),
     } }));
+  });
+
+  it('pins the already projected GOAL obligation only when the final block includes it', async () => {
+    const f = fixture();
+    const goalMode = { axisKey: 'goal', mode: 'goal', reason: 'owns goal', setBy: 'owner',
+      setBySelf: false, ownerDirected: true, impliedBy: null };
+    const first = await f.turn(null, { modes: async () => [goalMode] });
+    expect(first.block).toContain(f.brief.projection.text);
+    const goalCall = identityBindMock.mock.calls.find(([input]) => input.identityId === 'su.mode-goal');
+    expect(goalCall?.[0].outputs).toContainEqual({
+      contributionId: 'goal-obligations', value: f.brief.projection.text,
+    });
   });
 
   it('a wrong token does not prove the first exposure; only a subsequently emitted retry can be recorded', async () => {
