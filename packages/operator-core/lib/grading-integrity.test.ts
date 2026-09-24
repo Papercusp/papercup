@@ -402,6 +402,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.listScorecards).toHaveBeenNthCalledWith(1, {
       includeSuperseded: true,
       includeRetracted: true,
+      issueIds: ['EI-audit-1'],
       limit: GRADING_AUDIT_DISPATCH_LIMIT,
     });
     expect(d.launch).toHaveBeenNthCalledWith(
@@ -887,6 +888,29 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('finds an explicit pending target outside the newest scorecard page', async () => {
+    const d = deps();
+    const oldTarget = card('EI-old-target', { createdAt: '2026-08-01T00:00:00.000Z' });
+    d.listScorecards.mockImplementation(async (filter) =>
+      filter?.issueIds?.includes(oldTarget.issueId)
+        ? [oldTarget]
+        : Array.from({ length: GRADING_AUDIT_DISPATCH_LIMIT }, (_, i) => card(`EI-new-${i}`)),
+    );
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [oldTarget.issueId], ctx }, d);
+
+    expect(d.listScorecards).toHaveBeenCalledWith({
+      includeSuperseded: true,
+      includeRetracted: true,
+      issueIds: [oldTarget.issueId],
+      limit: GRADING_AUDIT_DISPATCH_LIMIT,
+    });
+    expect(result.receipts).toEqual([
+      expect.objectContaining({ issueId: oldTarget.issueId, state: 'launched' }),
+    ]);
+    expect(d.launch).toHaveBeenCalledOnce();
+  });
+
   it('skips superseded, retracted, meta-rubric, missing-rubric, and nonstandard targets', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([
@@ -949,6 +973,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.listScorecards).toHaveBeenCalledWith({
       includeSuperseded: true,
       includeRetracted: true,
+      issueIds: targetIds.slice(0, GRADING_AUDIT_DISPATCH_LIMIT),
       limit: GRADING_AUDIT_DISPATCH_LIMIT,
     });
     expect(d.launch).toHaveBeenCalledTimes(GRADING_AUDIT_DISPATCH_LIMIT);

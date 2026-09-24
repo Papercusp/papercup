@@ -808,6 +808,7 @@ export async function dispatchPendingGradingAudits(
   const cards = await readCards({
     includeSuperseded: true,
     includeRetracted: true,
+    ...(explicitTargetIds.length > 0 ? { issueIds: explicitTargetIds } : {}),
     limit: explicitTargetIds.length > 0 ? GRADING_AUDIT_DISPATCH_LIMIT : GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   });
   const pendingCards = cards.filter(currentPendingScorecard);
