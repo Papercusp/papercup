@@ -71,6 +71,23 @@ describe('identity authoring through blueprint views', () => {
     expect(result.layers.map((layer: { id: string }) => layer.id)).toEqual(['zz-parent', source.id]);
   });
 
+  it('discovers the named SU composition and GOAL/GRADE/TEST built-ins through the existing catalog', async () => {
+    const su = await run(getTool, { id: 'su' });
+    expect(su).toMatchObject({ ok: true, sourceKind: 'identity', runnable: false });
+    expect(su.layers.map((layer: { id: string }) => layer.id)).toEqual(expect.arrayContaining([
+      'papercusp-engineer', 'su-collaborator', 'su.practice', 'su',
+    ]));
+    for (const id of ['su.mode-goal', 'su.mode-grade', 'su.mode-test']) {
+      const result = await run(getTool, { id });
+      expect(result).toMatchObject({ ok: true, sourceKind: 'identity', runnable: false });
+      expect(result.identity.mode.policyRef).toBe(id.slice('su.mode-'.length));
+    }
+    const page = await run(listTool, { after: 'su.mode-drain', limit: 15 });
+    for (const id of ['su.mode-goal', 'su.mode-grade', 'su.mode-test']) {
+      expect(page.identities.map((entry: { id: string }) => entry.id)).toContain(id);
+    }
+  });
+
   it('honors local shadowing and never reveals an installed identity behind a plain local source', async () => {
     await write(source.id, { ...source, attestation: { contentHash: layerContentHash(source), signedBy: 'publisher' } }, 'installed');
     expect((await run(getTool, { id: source.id })).ok).toBe(true);
