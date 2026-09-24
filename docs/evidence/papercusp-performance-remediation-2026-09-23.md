@@ -370,3 +370,63 @@ Verification at HEAD `431b0e2a22` plus local source/test edits:
 
 Learning/roster stage measurements and complete current-build acceptance remain
 open on WI-10002827.
+
+## P-005 Learning observations
+
+Historical `sync-slow` logs identify `learning.observations.summary` with empty
+query/filters (2177–2951ms examples on 2026-09-23) and paged observations.
+The writer `sync-resolver/resolve-observability.ts` logs elapsed resolver wall
+time above 2000ms, with a per-query 60-second suppression window. These selected
+warnings are neither complete traffic counts nor latency percentiles.
+
+The shared `observationScopedCte` materialized every scoped observation's body,
+title, id, timestamp and expanded refs, even when the summary consumed only
+kind/scope/role/confidence facets. Default page reads also materialized the whole
+corpus before sorting/limiting their display rows. The existing CTE now projects
+only fields required by a summary predicate, retaining text and refs for search
+and refs for plan filters. Pages allow CTE inlining so the database can push down
+filters/cursors and defer display projection until after the limit. Summary
+facet scans still share one materialization. No cache, schema or flag was added.
+
+Read-only live EXPLAIN observations on 2026-09-24:
+
+| Query | Existing | Revised | Temporary blocks written |
+|---|---:|---:|---|
+| Default summary, interleaved probes | 1783.348 / 2200.304ms | 683.561 / 447.872ms | 8557 → 0 |
+| Default 201-row page | 1413.162ms | 384.441ms | 8556 → 0 |
+
+The summary probes each scoped 138,260 rows. A single-statement `EXCEPT ALL`
+comparison returned 35 summary rows per version with zero differences; a
+separate snapshot returned 201 page rows per version with zero differences.
+These changing-live-data probes isolate the projection cost, not production
+percentiles. An initial exploratory query used `id` instead of the view's
+`issue_id` and failed; the table above includes only corrected successful runs.
+
+Permanent real-Postgres guards in
+`learning-observations-query.integration.test.ts` capture the production query
+and inspect its executed plan. The summary guard failed before the fix with
+50,205 unnecessary reference expansions; it now observes zero for an unfiltered
+summary while confirming reference search still expands refs. The page guard
+bounds expansion to the 200 display rows plus the next-page sentinel. Other
+cases preserve body/ref/plan search, cross-facet predicates, exact totals, zero
+matches and cursor termination; eight simultaneous summaries return equal data.
+
+The same test reintroduces only the legacy unused columns into the captured
+default-summary query and alternates 100 calls per version on the same 50,205-row
+fixture. Every complete result equals the reference. Final warm SQL measurements
+at stable HEAD `bb78d46e51`, 2026-09-24T08:42–08:43Z:
+
+| Variant | p50 ms | p95 ms |
+|---|---:|---:|
+| Legacy projection | 215.711 | 335.447 |
+| Revised projection | 95.487 | 104.106 |
+
+This is a warm, isolated SQL fixture benchmark. Cold route latency, transport,
+queue recovery and sustained production workload are not measured by it.
+
+Final three-suite run: 23 passed, zero skipped, clean named paths and stable
+HEAD `bb78d46e51`, completed 08:43:30Z. An earlier passing run crossed an
+auto-commit and was repeated to obtain this stable provenance. Scoped typecheck
+reported zero diagnostics in the two changed files and 23 elsewhere in their
+import graph. Roster source-stage profiling and complete current-build acceptance
+remain open; this is not a shipment claim.
