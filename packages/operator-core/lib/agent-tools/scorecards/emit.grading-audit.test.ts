@@ -108,6 +108,12 @@ const FAIL_RATINGS: ObservationRatings = { c1: { rating: 'fail', evidence: 'prob
 const RE_RUN_FAIL_RATINGS: ObservationRatings = {
   're-runnable-evidence': { rating: 'fail', evidence: 'probe not re-runnable' },
 };
+const RE_RUN_PASS_RATINGS: ObservationRatings = {
+  're-runnable-evidence': { rating: 'pass', evidence: 'probe replayed on the available evaluator' },
+};
+const RE_RUN_UNKNOWN_RATINGS: ObservationRatings = {
+  're-runnable-evidence': { rating: 'unknown', evidence: 'available evaluator returned unknown' },
+};
 const REPLAY_SPLIT_RATINGS: ObservationRatings = {
   're-runnable-evidence': { rating: 'pass', evidence: 'exact target recipe executed' },
   'degenerate-distribution': { rating: 'fail', evidence: 'spot replay contradicted the uniform target card' },
@@ -630,6 +636,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('allows the same audit split when the exact server replay really contradicts a target rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
     const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail'));
 
     const res = await emitScorecard(
@@ -712,6 +719,32 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
       expect(readRunningGeneration).toHaveBeenCalledOnce();
       expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['pass', RE_RUN_PASS_RATINGS],
+    ['unknown', RE_RUN_UNKNOWN_RATINGS],
+  ] as const)(
+    'fails closed when a stale auditor records re-runnable-evidence=%s',
+    async (_rating, ratings) => {
+      const gradedSha = 'a'.repeat(40);
+      const auditorSha = 'b'.repeat(40);
+      getRubric.mockResolvedValue(replayAuditRubric());
+      getIssue.mockResolvedValue(replayableGradedCard(gradedSha));
+      readRunningGeneration.mockResolvedValue(runningGeneration(auditorSha));
+      const generationAncestry = vi.fn().mockReturnValue(false);
+
+      const res = await emitScorecard(
+        { ...auditArgs, ratings },
+        { createdBy: 'su-auditor', ctxHarness: 'papercusp', checkRoot: '/test/root' },
+        { generationAncestry },
+      );
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
+      expect((res as { error?: string }).error).toContain('auditor-build-older-than-graded-build');
+      expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
       expect(recordGradingAudit).not.toHaveBeenCalled();
     },
   );
