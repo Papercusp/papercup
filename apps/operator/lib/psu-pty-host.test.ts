@@ -18,6 +18,8 @@ import {
   coldResetModeForAgent,
   respawnTerminalHandoffBytes,
   makeScrollbackGuard,
+  headlessCodexModelChoiceEnabled,
+  makeHeadlessCodexModelChoiceStateMachine,
   headlessClaudeOnboardingEnabled,
   headlessClaudeOnboardingStartupMs,
   HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
@@ -999,6 +1001,47 @@ describe('makeScrollbackGuard (WI-41386 child → terminal scrollback guard)', (
   });
 });
 
+describe('headless Codex model choice (EI-24125798951755231)', () => {
+  it('is scoped to fresh headless Codex hosts', () => {
+    expect(headlessCodexModelChoiceEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'codex' })).toBe(true);
+    expect(headlessCodexModelChoiceEnabled({ PAPERCUSP_PSU_HEADLESS: '0', PAPERCUSP_AGENT: 'codex' })).toBe(false);
+    expect(headlessCodexModelChoiceEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'claude' })).toBe(false);
+  });
+
+  it('waits for both menu choices across ANSI chunks and selects the configured model only once', () => {
+    let now = 1_000;
+    const machine = makeHeadlessCodexModelChoiceStateMachine({ now: () => now, startupMs: 5_000 });
+    expect(machine.observe('OpenAI Codex (v0.156.1) model: loading  › Ask Codex to do anything')).toMatchObject({
+      action: 'none', phase: 'watching',
+    });
+    expect(machine.observe('\x1b[2;3HMeet\x1b[2;8HGPT-6\x1b[2;14HSol\x1b[8;1H› 1. Try new')).toMatchObject({
+      action: 'none', phase: 'watching',
+    });
+    expect(machine.observe(' model\x1b[9;3H2. Use existing model')).toMatchObject({
+      action: 'select-existing', phase: 'complete', active: false,
+    });
+    expect(machine.observe('› 1. Try new model 2. Use existing model')).toMatchObject({ action: 'none' });
+    now += 10_000;
+    expect(machine.status()).toMatchObject({ phase: 'complete', active: false });
+  });
+
+  it('confirms an already-selected existing model and expires before any later turn', () => {
+    const selected = makeHeadlessCodexModelChoiceStateMachine({ now: () => 1_000 });
+    expect(selected.observe('Meet GPT-6 Sol\n1. Try new model\n› 2. Use existing model')).toMatchObject({
+      action: 'confirm-existing', phase: 'complete',
+    });
+    let now = 1_000;
+    const expired = makeHeadlessCodexModelChoiceStateMachine({ now: () => now, startupMs: 100 });
+    now = 1_100;
+    expect(expired.observe('Meet GPT-6 Sol\n› 1. Try new model\n2. Use existing model')).toMatchObject({
+      action: 'expired', phase: 'expired',
+    });
+    expect(expired.observe('Meet GPT-6 Sol\n› 1. Try new model\n2. Use existing model')).toMatchObject({
+      action: 'none', phase: 'expired',
+    });
+  });
+});
+
 describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () => {
   it('enables only for the explicit headless Claude launch', () => {
     expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'claude' })).toBe(true);
@@ -1086,6 +1129,25 @@ describe('fresh headless Claude kickoff composer gate', () => {
     })).toBe('composer-ready');
     expect(freshChildPromptReady('claude', '❯ 1. Resume from summary')).toBe(false);
     expect(freshChildPromptReady('claude', '❯ Try again')).toBe(false);
+  });
+
+  it('recognizes the captured Claude placeholder with cursor-positioned spacing', () => {
+    // WI-10002904: real v2.1.280 output uses HPA rather than space bytes. ANSI
+    // stripping leaves Try"howdoestooldefwork?", not the hand-written fixture above.
+    const frame = '\x1b[38;5;244m────────────────\x1b[39m\n\n' +
+      '❯\u00a0\x1b[2mTry\x1b[7G"how\x1b[12Gdoes\x1b[17Gtooldef\x1b[25Gwork?"\x1b[22m\n\n' +
+      '\x1b[38;5;244m────────────────\x1b[39m\n\n' +
+      '\x1b[3G\x1b[38;5;211m⏵⏵\x1b[6Gbypass\x1b[13Gpermissions\x1b[25Gon';
+    expect(freshChildPromptReady('claude', frame)).toBe(true);
+    expect(startupOutputReady('claude', frame)).toBe(true);
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: true,
+      promptReady: freshChildPromptReady('claude', frame),
+    })).toBe('composer-ready');
+    const onboarding = makeHeadlessClaudeOnboardingStateMachine();
+    expect(onboarding.observe(frame)).toMatchObject({ action: 'ready', complete: true });
+    expect(freshChildPromptReady('claude', '❯ Try"incomplete')).toBe(false);
+    expect(freshChildPromptReady('claude', '❯ Try"a choice" then press Enter')).toBe(false);
   });
 
   it('waits for the composer during a fresh headless launch and keeps the ordinary gate elsewhere', () => {

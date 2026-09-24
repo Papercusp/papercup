@@ -71,6 +71,69 @@ describe('managed-pty integration evidence isolation', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
+  it('passes the Codex model offer by keeping the configured model before seeding the first turn', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-codex-model-choice-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeFile = join(codexHome, 'sessions', '2026', '09', '24', 'rollout.jsonl');
+    const choiceFile = join(root, 'model-choice.txt');
+    const proofPath = join(root, 'kickoff-proof.json');
+    const proofToken = 'c'.repeat(48);
+    writeFileSync(proofPath, '', { mode: 0o600 });
+    chmodSync(proofPath, 0o600);
+    const ownerId = `su-codex-model-choice-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',chosen=false,echoed=false,submitted=false,ticksStarted=false;",
+      "process.stdout.write('\\x1b[6nOpenAI Codex (v0.156.1)\\nmodel: loading\\nMeet GPT-6 Sol\\n› 1. Try new model\\n2. Use existing model\\n');",
+      "process.stdin.on('data',d=>{input+=d;if(!chosen){const at=input.indexOf('\\x1b[B\\r');if(at<0)return;chosen=true;fs.writeFileSync(process.env.CHOICE_FILE,'existing');input=input.slice(at+4);process.stdout.write('model: GPT-5.6-Sol high\\nReady · gpt-5.6-sol high · Context 100% left\\n');}",
+      "if(!echoed&&input.includes('BEGIN_MODEL_CHOICE')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
+      "if(echoed&&!submitted&&d.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();const rows=[{type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:ts,payload:{type:'task_started',turn_id:'choice-1'}},{type:'response_item',timestamp:ts,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:ts,payload:{type:'task_complete',turn_id:'choice-1'}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('KICKOFF_COUNT_1\\n'),75);}else if(submitted&&d.includes('\\r')){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);}if(input.includes('QUIT'))process.exit(0);});",
+      "process.stdin.on('data',()=>{if(!submitted||ticksStarted)return;ticksStarted=true;let n=0;const timer=setInterval(()=>{process.stdout.write('MODEL_TICK_'+(++n)+'\\n');if(n===15)clearInterval(timer);},50);});",
+      'setTimeout(()=>process.exit(0),7000);',
+    ].join('');
+    let done;
+    try {
+      done = hostThroughPty({
+        command: execPath, args: ['-e', childCode], cwd: root,
+        env: {
+          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: codexHome,
+          NATIVE_FILE: nativeFile, CHOICE_FILE: choiceFile,
+          [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          TERM: 'xterm-256color',
+        },
+        ownerId, io, bridgeTty: false,
+        kickoff: `${marker}\nBEGIN_MODEL_CHOICE`,
+        nativePersistenceTimeoutMs: 2_000,
+        signalSource: new EventEmitter(), onExit: () => undefined,
+      });
+      const deadline = Date.now() + 8_000;
+      while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
+      expect(readFileSync(choiceFile, 'utf8')).toBe('existing');
+      expect(captured()).toContain('COMPOSER_ECHO:');
+      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
+        token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
+      });
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      await done?.catch(() => undefined);
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 12_000);
+
   it('does not resend a kickoff whose native turn completed before marker proof returned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-fast-kickoff-'));
     const codexHome = join(root, 'codex-home');
@@ -580,6 +643,33 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(freshChildPromptReady('claude', '\x1b[2K\n❯\n')).toBe(true);
     expect(freshChildPromptReady('codex', '\n❯\n')).toBe(false);
   });
+
+  it('delivers a fresh headless Claude kickoff through a real PTY with the captured cursor-spaced placeholder', async () => {
+    const ownerId = `su-claude-hpa-kickoff-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const frame = '\n❯\u00a0\x1b[2mTry\x1b[7G"how\x1b[12Gdoes\x1b[17Gtooldef\x1b[25Gwork?"\x1b[22m\n';
+    const childCode =
+      `process.stdout.write(${JSON.stringify(frame)});` +
+      "process.stdin.setEncoding('utf8');let input='';" +
+      "process.stdin.on('data',d=>{input+=d;if(input.includes('BEGIN_HPA_KICKOFF')&&/[\\r\\n]/.test(input)){process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);}});" +
+      'setTimeout(()=>process.exit(2),5000);';
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: '/tmp',
+      env: {
+        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      },
+      ownerId, io, bridgeTty: false, kickoff: 'BEGIN_HPA_KICKOFF',
+      signalSource: new EventEmitter(), onExit: () => undefined,
+    });
+    expect(await done).toBe(0);
+    expect(captured()).toContain('KICKOFF_RECEIVED');
+    expect(existsSync(sock)).toBe(false);
+  }, 10_000);
 
   it('auto-advances the headless Claude theme and Security notes prompts exactly once', async () => {
     const ownerId = `su-headless-onboarding-itest-${process.pid}-${Math.floor(performance.now())}`;
@@ -1645,8 +1735,10 @@ describe('P-020 carry-respawn drill correlation', () => {
       const sock = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
+      // This fixture models a ready Claude editor. A boot banner alone cannot
+      // establish prompt readiness after a fresh-child respawn.
       const childCode =
-        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
