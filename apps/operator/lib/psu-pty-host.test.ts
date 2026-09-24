@@ -1100,6 +1100,24 @@ describe('headless Codex model choice (EI-24125798951755231)', () => {
       action: 'none', phase: 'expired',
     });
   });
+
+  it('handles a model offer after a slow boot and disarms once the composer is ready', () => {
+    let now = 1_000;
+    const delayed = makeHeadlessCodexModelChoiceStateMachine({ now: () => now });
+    expect(delayed.observe('OpenAI Codex (v0.156.1) model: loading')).toMatchObject({
+      action: 'none', phase: 'watching',
+    });
+    now += 90_000;
+    expect(delayed.observe('Meet GPT-6 Sol\n› 1. Try new model\n2. Use existing model')).toMatchObject({
+      action: 'select-existing', phase: 'complete',
+    });
+
+    const ready = makeHeadlessCodexModelChoiceStateMachine({ now: () => now });
+    ready.complete();
+    expect(ready.observe('Meet GPT-6 Sol\n› 1. Try new model\n2. Use existing model')).toMatchObject({
+      action: 'none', phase: 'complete',
+    });
+  });
 });
 
 describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () => {
