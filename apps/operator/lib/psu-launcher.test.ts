@@ -11053,7 +11053,45 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       exitCode: 0,
       killedBySignal: null,
       endAttemptKey: "end-attempt-17",
+      // WI-10002854: the observation time rides the report so the server can refuse to
+      // end a successor incarnation that started after it.
+      observedAt: expect.any(String),
     });
+  });
+
+  it("a REPLAYED witness reports its ORIGINAL observation time, not the replay time (WI-10002854)", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join: joinPath } = await import("node:path");
+    const home = mkdtempSync(joinPath(tmpdir(), "wi10002854-"));
+    const bodies = [];
+    const fetchImpl = async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      return { ok: true };
+    };
+    const original = "2026-09-24T01:02:05.000Z";
+    await reportSessionEnded("29830", null, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok-1",
+      endAttemptKey: "end-attempt-29830",
+      observedAt: original,
+      now: () => Date.parse("2026-09-24T01:04:40.000Z"),
+      home,
+    });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].observedAt).toBe(original);
+    // A missing/garbled original falls back to the current clock rather than dropping the field.
+    await reportSessionEnded("29830", null, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok-1",
+      endAttemptKey: "end-attempt-29830-b",
+      observedAt: "not-a-date",
+      now: () => Date.parse("2026-09-24T01:04:40.000Z"),
+      home,
+    });
+    expect(bodies[1].observedAt).toBe("2026-09-24T01:04:40.000Z");
   });
 
   it("retries a proxy-shed end transition with the SAME idempotency key", async () => {
@@ -11105,6 +11143,7 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       exitCode: null,
       killedBySignal: null,
       endAttemptKey: "end-undefined-17",
+      observedAt: expect.any(String),
     });
   });
 
@@ -11129,6 +11168,7 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       exitCode: 0,
       killedBySignal: "SIGHUP",
       endAttemptKey: "end-signal-17",
+      observedAt: expect.any(String),
     });
   });
 
@@ -11151,6 +11191,7 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       killedBySignal: null,
       launchFailed: true,
       endAttemptKey: "end-cleanup-17",
+      observedAt: expect.any(String),
     });
   });
 
