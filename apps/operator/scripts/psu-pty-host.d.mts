@@ -1739,6 +1739,11 @@ export function makeScrollbackGuard(): {
     /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
     flush(): string;
 };
+export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, }?: {
+    enabled?: boolean | undefined;
+    requireInitialOutput?: boolean | undefined;
+    promptReady?: boolean | undefined;
+}): "ordinary-gate" | "composer-ready" | "wait-for-composer";
 export function startupOutputReady(agent: any, output: any): boolean;
 /** WI-10002745: the first thing a Codex TUI writes is a burst of terminal
  * capability queries (`ESC[?2004h ESC[>7u ESC[?1004h ESC[6n OSC10? OSC11?
@@ -2527,6 +2532,7 @@ export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
  * window.
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS: 30000;
+export const HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS: 20000;
 /**
  * Scripted Claude resumes can open an interactive recovery choice instead of
  * the composer when the saved transcript is too large for the current context:

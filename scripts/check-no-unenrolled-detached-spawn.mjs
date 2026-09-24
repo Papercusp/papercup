@@ -207,8 +207,14 @@ export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/deployment/frame-vnc.ts', 'VNC frame server bound to a display lease'],
   ['packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts', 'inference bridge bound to a gateway session'],
 
-  // ── wake executor: fires a wake into an EXISTING agent, not a new subtree ─
-  ['packages/operator-core/lib/events/await/wake-executor.ts', 'delivers a wake to an already-enrolled agent session'],
+  // wake-executor.ts USED to sit here as "delivers a wake to an already-enrolled
+  // agent session". That was false for its `resume-headless` channel, which spawns
+  // a NEW `claude/omp/codex … -p` process. The already-enrolled session had died,
+  // which is why the wake resumed it at all. So every headless wake turn ran with
+  // no ledger row, and on 2026-09-24 one of them became an invisible second process
+  // on a live coord identity (WI-10002854). It now enrolls through
+  // enroll-sync, so the guard clears the file on the import and the entry is gone,
+  // same as substrate-sidecar-spawn.ts above.
 ]);
 
 /**

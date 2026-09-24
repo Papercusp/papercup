@@ -34,7 +34,7 @@
  * trigger_config knobs (optional, editable via the routines admin):
  *   - ttl_hours   (default 6, gc-verify-instances.ts's VERIFY_INSTANCE_TTL_HOURS_DEFAULT)
  *   - max_per_run (default 50, VERIFY_INSTANCE_MAX_PER_RUN_DEFAULT)
- *   - tmp_dir     (default /tmp)
+ *   - tmp_dirs    (string array; default /tmp, os.tmpdir() and every checkout's .papercusp/tmp)
  *   - dry_run     (default false)
  */
 

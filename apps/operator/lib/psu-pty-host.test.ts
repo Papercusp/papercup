@@ -20,7 +20,11 @@ import {
   makeScrollbackGuard,
   headlessClaudeOnboardingEnabled,
   headlessClaudeOnboardingStartupMs,
+  HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+  headlessClaudeKickoffReadiness,
   makeHeadlessClaudeOnboardingStateMachine,
+  startupOutputReady,
+  freshChildPromptReady,
   claudeResumeCompactionStartupMs,
   claudeResumeCompactionRecoveryMs,
   makeClaudeResumeCompactionRecoveryStateMachine,
@@ -1034,6 +1038,17 @@ describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () =
     clock += 1_000;
   });
 
+  it('accepts a standalone composer when no onboarding wizard appeared', () => {
+    const machine = makeHeadlessClaudeOnboardingStateMachine({ now: () => 1_000, startupMs: 5_000 });
+    expect(machine.observe('Claude Code startup banner')).toMatchObject({ phase: 'theme', active: true });
+    expect(machine.observe('\n❯\n')).toMatchObject({
+      action: 'ready',
+      phase: 'complete',
+      active: false,
+      complete: true,
+    });
+  });
+
   it('expires the startup actuator and stops answering after the bounded window', () => {
     let clock = 10_000;
     const machine = makeHeadlessClaudeOnboardingStateMachine({ now: () => clock, startupMs: 100 });
@@ -1048,6 +1063,34 @@ describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () =
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '4500' })).toBe(4_500);
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '0' })).toBe(30_000);
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: 'nope' })).toBe(30_000);
+  });
+});
+
+describe('fresh headless Claude kickoff composer gate', () => {
+  it('does not treat generic startup output or an onboarding option row as editor readiness', () => {
+    expect(startupOutputReady('claude', 'Welcome to Claude Code')).toBe(false);
+    expect(startupOutputReady('claude', '❯ 1. Choose a theme')).toBe(false);
+    expect(startupOutputReady('claude', '\n❯\n')).toBe(true);
+    expect(freshChildPromptReady('claude', '❯ 1. Choose a theme')).toBe(false);
+  });
+
+  it('waits for the composer during a fresh headless launch and keeps the ordinary gate elsewhere', () => {
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true,
+      requireInitialOutput: true,
+      promptReady: false,
+    })).toBe('wait-for-composer');
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true,
+      requireInitialOutput: true,
+      promptReady: true,
+    })).toBe('composer-ready');
+    expect(headlessClaudeKickoffReadiness({
+      enabled: false,
+      requireInitialOutput: true,
+      promptReady: false,
+    })).toBe('ordinary-gate');
+    expect(HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS).toBe(20_000);
   });
 });
 
