@@ -31,6 +31,7 @@
  */
 import type { ControlAnchorState, ControlTransition } from './agent-tools/coordination/control-anchor';
 import type { StackMutationActivation, StackActivationContext, StackDocument } from '@papercusp/orchestrator/blueprint';
+import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 
 /**
  * The su posture layer refs. Inlined here (see the lazy-import note above) and PINNED
@@ -52,18 +53,14 @@ export function stackRefsForRoute(route: ControlAnchorState['route']): string[] 
 
 /**
  * P-021 (D-008 as amended): the mode-axis identity a registry mode binds — `agent_modes`
- * rows are the STATE, these are the DEFINITION layers the state projects. Inlined for the
- * same lazy-import reason as `SU_POSTURE_REFS` and PINNED to the orchestrator's
- * `suModeLayer` / `SU_MODE_DOCUMENTS` by `stack-binding-channel.test.ts`. A registry mode
- * with no definition document (goal / grade / test) has no row here and binds nothing.
+ * rows are the STATE, these are the DEFINITION layers the state projects. The
+ * generated catalog is plain data and safe to import without the blueprint loader.
+ * The cold-auto runtime policy shares AUTO's authored document.
  */
-export const SU_MODE_REFS: Readonly<Record<string, string>> = {
-  auto: 'autonomy:su.mode-auto',
+export const SU_MODE_REFS: Readonly<Record<string, string>> = Object.freeze({
+  ...Object.fromEntries(BUILTIN_MODE_COMPONENTS.map((entry) => [entry.id, `${entry.slot}:${entry.sourceId}`])),
   'cold-auto': 'autonomy:su.mode-auto',
-  ideate: 'ideation:su.mode-ideate',
-  drain: 'objective:su.mode-drain',
-  audit: 'audit:su.mode-audit',
-};
+});
 
 /**
  * The bound-layer refs a session's ACTIVE modes imply — one per axis (auto + cold-auto

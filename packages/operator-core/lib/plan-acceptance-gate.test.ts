@@ -1463,6 +1463,38 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v.message).toContain('consult:get_feedback');
   });
 
+  it('names the paused scorecard owner when a pending grade audit blocks plan ship', async () => {
+    const suppression = {
+      reason: 'workspace-wide-loop-standdown' as const,
+      pausedOwnerCount: 7,
+      targetOwnerId: 'su-implementer',
+    };
+    stockScorecards([metaVettingCard({
+      vetting: undefined,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-09-24T03:54:29.339Z',
+      },
+    })]);
+    const readSuppression = vi.fn(async (ownerId?: string | null) =>
+      ownerId === 'su-implementer' ? suppression : null,
+    );
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+      readGradingAuditDispatchSuppression: readSuppression,
+    });
+
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_rubric_unvetted',
+      gradingAuditDispatchSuppressed: suppression,
+    });
+    expect(v.message).toContain("scorecard owner 'su-implementer'");
+    expect(v.message).toContain('workspace-wide loop stand-down');
+    expect(readSuppression).toHaveBeenCalledWith('su-implementer');
+  });
+
   it('names a historical subject-less meta-scorecard as malformed diagnostic evidence', async () => {
     stockScorecards([
       metaVettingCard({

@@ -68,8 +68,23 @@ export interface SessionBriefReleaseMarker {
   by: string;
 }
 
+/** A terminal verdict for one adv-session incarnation whose Claude transcript
+ * repeatedly replayed an unavailable Papercusp tool reference. The adv-session
+ * id + startedAt pair scopes the stop gate to this incarnation; a later resume
+ * or fresh successor can proceed without deleting durable history. */
+export interface SessionBriefPoisonMarker {
+  advSessionId: number;
+  sessionId: string;
+  startedAt: string;
+  at: string;
+  by: string;
+  reason: string;
+  evidence: string;
+}
+
 export interface SessionBriefLifecycle {
   released?: SessionBriefReleaseMarker;
+  poisoned?: SessionBriefPoisonMarker;
 }
 
 export interface SessionBriefRecord {
@@ -248,26 +263,47 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   const lifecycle = (value as { lifecycle?: unknown }).lifecycle;
   if (!lifecycle || typeof lifecycle !== 'object' || Array.isArray(lifecycle)) return null;
   const released = (lifecycle as { released?: unknown }).released;
-  if (!released || typeof released !== 'object' || Array.isArray(released)) return null;
-  const marker = released as Partial<SessionBriefReleaseMarker>;
-  if (
-    typeof marker.fleet !== 'string' || !marker.fleet ||
-    typeof marker.at !== 'string' || !marker.at ||
-    typeof marker.by !== 'string' || !marker.by
-  ) return null;
-  return {
-    released: {
-      fleet: marker.fleet,
-      at: marker.at,
-      by: marker.by,
-    },
-  };
+  const poisoned = (lifecycle as { poisoned?: unknown }).poisoned;
+  const result: SessionBriefLifecycle = {};
+  if (released && typeof released === 'object' && !Array.isArray(released)) {
+    const marker = released as Partial<SessionBriefReleaseMarker>;
+    if (
+      typeof marker.fleet === 'string' && marker.fleet &&
+      typeof marker.at === 'string' && marker.at &&
+      typeof marker.by === 'string' && marker.by
+    ) {
+      result.released = { fleet: marker.fleet, at: marker.at, by: marker.by };
+    }
+  }
+  if (poisoned && typeof poisoned === 'object' && !Array.isArray(poisoned)) {
+    const marker = poisoned as Partial<SessionBriefPoisonMarker>;
+    if (
+      typeof marker.advSessionId === 'number' && Number.isSafeInteger(marker.advSessionId) && marker.advSessionId > 0 &&
+      typeof marker.sessionId === 'string' && marker.sessionId &&
+      typeof marker.startedAt === 'string' && marker.startedAt &&
+      typeof marker.at === 'string' && marker.at &&
+      typeof marker.by === 'string' && marker.by &&
+      typeof marker.reason === 'string' && marker.reason &&
+      typeof marker.evidence === 'string' && marker.evidence
+    ) {
+      result.poisoned = {
+        advSessionId: Number(marker.advSessionId),
+        sessionId: marker.sessionId,
+        startedAt: marker.startedAt,
+        at: marker.at,
+        by: marker.by,
+        reason: marker.reason,
+        evidence: marker.evidence,
+      };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 /**
- * Read only the release marker used by the wake executor. Fail-soft by design:
- * a temporary brief-store outage must not turn every ordinary wake into a
- * permanent drop; the marker is durable when the store is available.
+ * Read the durable lifecycle markers used by the wake executor. Fail-soft by
+ * design: a temporary brief-store outage must not turn every ordinary wake
+ * into a permanent drop; each marker is durable when the store is available.
  */
 export async function getSessionBriefLifecycle(ownerId: string): Promise<SessionBriefLifecycle | null> {
   try {
@@ -335,6 +371,75 @@ export async function markSessionBriefReleased(
         control_transition = CASE
           WHEN harness_shared.session_briefs.control_state #> '{lifecycle,released}'
                IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,released}'
+            THEN NULL
+          ELSE harness_shared.session_briefs.control_transition
+        END,
+        updated_at = now()
+    `;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record a poison verdict for one exact session incarnation. This shares the
+ * existing session_briefs control_state lifecycle envelope with fleet release,
+ * so queued wakes can stop before they try to reanimate the same transcript.
+ */
+export async function markSessionBriefPoisoned(
+  ownerId: string,
+  workspaceId: string,
+  marker: SessionBriefPoisonMarker,
+): Promise<boolean> {
+  try {
+    if (
+      !ownerId || !workspaceId || typeof marker.advSessionId !== 'number' ||
+      !Number.isSafeInteger(marker.advSessionId) || marker.advSessionId <= 0 ||
+      !marker.sessionId || !marker.startedAt || !marker.at || !marker.by || !marker.reason || !marker.evidence
+    ) return false;
+    const boundedMarker: SessionBriefPoisonMarker = {
+      ...marker,
+      reason: marker.reason.slice(0, 500),
+      evidence: marker.evidence.slice(0, 400),
+    };
+    const markerJson = JSON.stringify(boundedMarker);
+    await getOrgPg().sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id, workspace_id, control_state, control_generation, control_updated_at)
+      VALUES (
+        ${ownerId}, ${workspaceId},
+        jsonb_build_object('lifecycle', jsonb_build_object('poisoned', ${markerJson}::text::jsonb)),
+        1, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        control_state = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,poisoned}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,poisoned}'
+            THEN jsonb_set(
+              COALESCE(harness_shared.session_briefs.control_state, '{}'::jsonb),
+              '{lifecycle,poisoned}',
+              EXCLUDED.control_state #> '{lifecycle,poisoned}',
+              true
+            )
+          ELSE harness_shared.session_briefs.control_state
+        END,
+        control_generation = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,poisoned}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,poisoned}'
+            THEN harness_shared.session_briefs.control_generation + 1
+          ELSE harness_shared.session_briefs.control_generation
+        END,
+        control_updated_at = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,poisoned}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,poisoned}'
+            THEN now()
+          ELSE harness_shared.session_briefs.control_updated_at
+        END,
+        control_transition = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,poisoned}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,poisoned}'
             THEN NULL
           ELSE harness_shared.session_briefs.control_transition
         END,

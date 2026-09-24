@@ -211,6 +211,7 @@ const runGitLocalBounded = (
     let settled = false;
     let terminating = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleCheck: ReturnType<typeof setImmediate> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
     let removeAbortListener = (): void => {};
     const reportProgress = (): void => {
@@ -223,6 +224,8 @@ const runGitLocalBounded = (
     const clearTimers = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);
+      if (idleCheck) clearImmediate(idleCheck);
+      idleCheck = null;
     };
     const finish = (code: number): void => {
       if (settled) return;
@@ -248,7 +251,19 @@ const runGitLocalBounded = (
     const armIdleTimer = (): void => {
       if (!progressAware || settled || terminating) return;
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => terminate(`made no output progress for ${idleTimeoutMs}ms`), idleTimeoutMs);
+      if (idleCheck) clearImmediate(idleCheck);
+      idleCheck = null;
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        // Match the sidecar's pipe-progress contract: after a delayed parent
+        // loop, POLL must see already-written bytes before this idle verdict.
+        // Keep the separate absolute deadline unchanged.
+        idleCheck = setImmediate(() => {
+          idleCheck = null;
+          terminate(`made no output progress for ${idleTimeoutMs}ms`);
+        });
+        idleCheck.unref?.();
+      }, idleTimeoutMs);
       idleTimer.unref?.();
     };
 

@@ -86,7 +86,7 @@ describe('runSessionEndLeaseRelease', () => {
   });
 
   it('protects a carry/resume successor represented by a newer open session row', async () => {
-    h.loadRow.mockResolvedValueOnce({ ...ENDED, ownerHasOpenSession: true });
+    h.loadRow.mockResolvedValueOnce({ ...ENDED, ownerHasOpenSession: true, poisoned: true });
     await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({
       ok: false,
       reason: 'owner-resumed',
@@ -114,6 +114,18 @@ describe('runSessionEndLeaseRelease', () => {
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.releaseWorkItems).not.toHaveBeenCalled();
     expect(h.listTasks).not.toHaveBeenCalled();
+  });
+
+  it('releases leases for an exact poisoned incarnation despite its stale live-host signal', async () => {
+    h.loadRow.mockResolvedValueOnce({ ...ENDED, poisoned: true });
+    h.loadProtectedOwners.mockResolvedValueOnce(new Set(['su-ended']));
+    await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({
+      ok: true,
+      ownerId: 'su-ended',
+      releasedWorkItems: ['EI-1'],
+      claimsCleared: 1,
+    });
+    expect(h.releaseWorkItems).toHaveBeenCalledWith('su-ended');
   });
 
   it.each([

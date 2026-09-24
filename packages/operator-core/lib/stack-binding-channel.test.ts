@@ -38,9 +38,11 @@ describe('stackRefsForRoute (P-012)', () => {
     expect(SU_POSTURE_REFS.leader).toBe(blueprint.bindingRef(blueprint.suPostureLayer('leader')));
   });
 
-  it('P-021: the active modes project one definition layer per axis; the inlined refs are pinned to the orchestrator mode identities', () => {
+  it('P-021: every active mode projects its generated definition layer on the correct axis', () => {
     expect(stackRefsForModes([])).toEqual([]);
-    expect(stackRefsForModes(['goal', 'grade', 'test', 'potato'])).toEqual([]);
+    expect(stackRefsForModes(['goal', 'grade', 'test', 'potato'])).toEqual([
+      'goal:su.mode-goal', 'grade:su.mode-grade', 'test:su.mode-test',
+    ]);
     expect(stackRefsForModes(['auto'])).toEqual(['autonomy:su.mode-auto']);
     expect(stackRefsForModes(['cold-auto'])).toEqual(['autonomy:su.mode-auto']);
     expect(stackRefsForModes(['IDEATE', 'auto'])).toEqual(['ideation:su.mode-ideate', 'autonomy:su.mode-auto']);

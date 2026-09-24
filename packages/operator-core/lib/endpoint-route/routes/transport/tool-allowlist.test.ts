@@ -79,6 +79,18 @@ describe('filterListingsByAllowlist', () => {
     expect(out.map((t) => t.name)).toEqual(['harness:status']);
   });
 
+  it('resolves a legacy Claude MCP reference to its unique current listing', () => {
+    const listings = [{ name: 'plans:audit' }, { name: 'plans:get' }];
+    const allow = parseToolsAllowlist('mcp__papercusp-su__plans_audit');
+    expect(filterListingsByAllowlist(listings, allow)).toEqual([{ name: 'plans:audit' }]);
+  });
+
+  it('does not expose ambiguous normalized aliases', () => {
+    const listings = [{ name: 'plans:foo-bar' }, { name: 'plans:foo_bar' }];
+    const allow = parseToolsAllowlist('mcp__papercusp-su__plans_foo_bar');
+    expect(filterListingsByAllowlist(listings, allow)).toEqual([]);
+  });
+
   it('does not mutate the input listing array', () => {
     const frozen = Object.freeze([...SURFACE]);
     expect(() => filterListingsByAllowlist(frozen, parseToolsAllowlist('harness:list'))).not.toThrow();

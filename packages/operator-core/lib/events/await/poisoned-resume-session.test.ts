@@ -1,0 +1,111 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  quarantineRepeatedClaudeToolReferenceFailures,
+  type PoisonedResumeDeps,
+} from './poisoned-resume-session';
+import type { ResumeTurnContext } from './resume-turn-outcome';
+
+const context = (transcriptPath: string): ResumeTurnContext => ({
+  advSessionId: 77,
+  ownerId: 'su-poisoned',
+  sessionId: 'native-77',
+  startedAt: '2026-09-24T10:00:00.123Z',
+  workspaceId: 'papercusp-workspace',
+  agent: 'claude',
+  transcriptPath,
+});
+
+const failure = (tool = 'mcp__papercusp-su__plans_audit') => JSON.stringify({
+  type: 'assistant',
+  message: {
+    role: 'assistant',
+    content: [{ type: 'text', text: `API Error: 400 Tool reference '${tool}' not found in available tools` }],
+  },
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('quarantineRepeatedClaudeToolReferenceFailures', () => {
+  it('marks the exact adv-session incarnation ended after three trailing failures', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poisoned-resume-'));
+    try {
+      const transcriptPath = join(root, 'session.jsonl');
+      writeFileSync(transcriptPath, [failure(), failure(), failure()].join('\n'));
+      const writes: unknown[][] = [];
+      const deps: PoisonedResumeDeps = {
+        markBrief: vi.fn(async (...args) => { writes.push(args); return true; }),
+        markEnded: vi.fn(async (...args) => { writes.push(args); return true; }),
+        now: () => new Date('2026-09-24T10:05:00.000Z'),
+      };
+
+      const result = await quarantineRepeatedClaudeToolReferenceFailures(
+        context(transcriptPath),
+        `API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools`,
+        deps,
+      );
+
+      expect(result).toMatchObject({ poisoned: true, turns: 3, ended: true });
+      expect(deps.markBrief).toHaveBeenCalledWith('su-poisoned', 'papercusp-workspace', expect.objectContaining({
+        advSessionId: 77,
+        startedAt: '2026-09-24T10:00:00.123Z',
+        by: 'resume-turn-detector',
+      }));
+      expect(deps.markEnded).toHaveBeenCalledWith(77, null, 'reconciler', {
+        observedAt: new Date('2026-09-24T10:05:00.000Z'),
+      });
+      expect(writes[0]?.[0]).toBe('su-poisoned'); // durable wake gate precedes the end write
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not quarantine fewer than three failures or a streak reset by normal assistant work', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poisoned-resume-'));
+    try {
+      const transcriptPath = join(root, 'session.jsonl');
+      writeFileSync(transcriptPath, [
+        failure(),
+        failure(),
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered.' }] } }),
+        failure(),
+      ].join('\n'));
+      const deps: PoisonedResumeDeps = {
+        markBrief: vi.fn(async () => true),
+        markEnded: vi.fn(async () => true),
+      };
+
+      await expect(quarantineRepeatedClaudeToolReferenceFailures(
+        context(transcriptPath),
+        failure(),
+        deps,
+      )).resolves.toMatchObject({ poisoned: false, turns: 1 });
+      expect(deps.markBrief).not.toHaveBeenCalled();
+      expect(deps.markEnded).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the durable poison marker cannot be written', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'poisoned-resume-'));
+    try {
+      const transcriptPath = join(root, 'session.jsonl');
+      writeFileSync(transcriptPath, [failure(), failure(), failure()].join('\n'));
+      const deps: PoisonedResumeDeps = {
+        markBrief: vi.fn(async () => false),
+        markEnded: vi.fn(async () => true),
+      };
+      await expect(quarantineRepeatedClaudeToolReferenceFailures(
+        context(transcriptPath),
+        failure(),
+        deps,
+      )).resolves.toMatchObject({ poisoned: false, reason: expect.stringContaining('marker write failed') });
+      expect(deps.markEnded).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

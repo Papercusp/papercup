@@ -28,6 +28,7 @@ import {
   getSessionBriefAmbientExcludedRefs,
   getSessionBrief,
   getSessionBriefLifecycle,
+  markSessionBriefPoisoned,
   markSessionBriefReleased,
   writeSessionBrief,
 } from './session-brief';
@@ -215,6 +216,38 @@ describe('getSessionBrief (fail-soft read)', () => {
   it('ignores malformed release markers', async () => {
     fakeSql = recordingSql([{ control_state: { lifecycle: { released: { fleet: '' } } } }]).sql;
     await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toBeNull();
+  });
+
+  it('reads release and poison markers from the shared lifecycle envelope', async () => {
+    const released = { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' };
+    const poisoned = {
+      advSessionId: 77,
+      sessionId: 'native-77',
+      startedAt: '2026-09-24T10:00:00.123456Z',
+      at: '2026-09-24T10:04:00.000Z',
+      by: 'resume-turn-detector',
+      reason: 'three consecutive unavailable tool references',
+      evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+    };
+    fakeSql = recordingSql([{ control_state: { lifecycle: { released, poisoned } } }]).sql;
+    await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toEqual({ released, poisoned });
+  });
+
+  it('writes a bounded poison marker for an exact adv-session incarnation', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    const marker = {
+      advSessionId: 77,
+      sessionId: 'native-77',
+      startedAt: '2026-09-24T10:00:00.123456Z',
+      at: '2026-09-24T10:04:00.000Z',
+      by: 'resume-turn-detector',
+      reason: 'three consecutive unavailable tool references',
+      evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+    };
+    await expect(markSessionBriefPoisoned('su-member', 'ws-1', marker)).resolves.toBe(true);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining(['su-member', 'ws-1']));
+    expect(rec.calls[0]).toContain(JSON.stringify(marker));
   });
 });
 

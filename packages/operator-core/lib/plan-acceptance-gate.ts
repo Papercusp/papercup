@@ -38,6 +38,10 @@ import {
 import { listScorecards, ratingVerdict } from './scorecards';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
+import {
+  describeGradingAuditDispatchSuppression,
+  type GradingAuditDispatchSuppression,
+} from './acceptance-rubric-vetting';
 // EI-20249725405239230: the no-claim FACT is single-sourced beside the grader
 // briefs so the author-facing refusal and the grader-facing copy cannot drift
 // into two different statements of what scorecards:emit actually requires.
@@ -205,6 +209,8 @@ export interface PlanAcceptanceGateVerdict {
   repairAction?: PlanAcceptanceRepairAction;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
   message?: string;
+  /** Optional target-owner pause read, used by the ship writer to name a blocked grade audit. */
+  gradingAuditDispatchSuppressed?: GradingAuditDispatchSuppression;
   /** The acceptance rubric involved, when one exists. */
   rubricId?: string;
   /** The independent grader satisfying the gate, when satisfied by a grading. */
@@ -361,6 +367,8 @@ export interface PlanAcceptanceGateOpts {
    * moment the record needs to be permanent.
    */
   probeCitationDeployment?: boolean;
+  /** Read whether a pending meta-scorecard's owner is paused before dispatch can settle it. */
+  readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
 }
 
 /**
@@ -1153,11 +1161,18 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 .map((s) => s.issueId)
                 .join(', ')} do not cover the current revision.`
             : '';
+        const pendingAuditCard = metaCards.find((card) => card.gradingAudit?.state === 'pending');
+        const dispatchSuppression = pendingAuditCard && opts.readGradingAuditDispatchSuppression
+          ? await opts.readGradingAuditDispatchSuppression(pendingAuditCard.createdBy).catch(() => null)
+          : null;
+        const suppressionNote = dispatchSuppression
+          ? ` ${describeGradingAuditDispatchSuppression(dispatchSuppression)}`
+          : '';
         return {
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
           rubricId: rubric.rubricId,
-          message: stale || unknown
+          message: (stale || unknown
             ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
               `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric identity now in force is ` +
               `revision ${currentRevision ?? '(unrecorded)'}, criteriaHash ${rubric.criteriaHash ?? '(unrecorded)'}. ` +
@@ -1174,7 +1189,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
               `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
-              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`,
+              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`) + suppressionNote,
+          ...(dispatchSuppression ? { gradingAuditDispatchSuppressed: dispatchSuppression } : {}),
         };
       }
       // The unanswered waiver exists only on the consult channel (a work-item link

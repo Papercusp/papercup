@@ -107,6 +107,10 @@ import { runPsuConnectionFrontController } from "./psu-connection-front-controll
 // into the affected-run gate, so a stale artifact reds rather than drifts.
 import { TOOL_DELIVERY_BY_AGENT_KIND } from "./tool-delivery.generated.mjs";
 import {
+  analyzeClaudeResumeTranscript,
+  appendClaudeToolReferencesToSeed,
+} from "../../../packages/operator-core/lib/claude-resume-tool-references.mjs";
+import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
   hasRecoveryCliFlag,
   issueRecoveryGrant,
@@ -3753,6 +3757,35 @@ export function sessionTranscriptFile(session, { home = homedir() } = {}) {
     }
   }
   return null;
+}
+
+/**
+ * Restore the Papercusp MCP definitions referenced by a Claude transcript
+ * before `--resume` opens it. A native ToolSearch result is stored as a
+ * client-mangled `tool_reference`; a new CLI process otherwise starts with
+ * only the current trimmed seed, and Claude rejects the replay before it can
+ * call tools:find. Unknown/removed tool names are harmlessly ignored by the
+ * server's allowlist filter and remain eligible for the poison detector.
+ */
+export function addClaudeResumeToolReferencesToEnv(session, env, { home = homedir() } = {}) {
+  if (session?.agent !== "claude" || typeof env?.PAPERCUSP_TOOLS !== "string" || !env.PAPERCUSP_TOOLS.trim()) {
+    return { transcriptPath: null, restored: 0, toolReferences: [] };
+  }
+  const transcriptPath = sessionTranscriptFile(session, { home });
+  if (!transcriptPath) return { transcriptPath: null, restored: 0, toolReferences: [] };
+  let analysis;
+  try {
+    analysis = analyzeClaudeResumeTranscript(readFileSync(transcriptPath, "utf8"));
+  } catch {
+    return { transcriptPath, restored: 0, toolReferences: [] };
+  }
+  if (analysis.toolReferences.length === 0) {
+    return { transcriptPath, restored: 0, toolReferences: [] };
+  }
+  const before = new Set(env.PAPERCUSP_TOOLS.split(",").map((name) => name.trim().toLowerCase()).filter(Boolean));
+  env.PAPERCUSP_TOOLS = appendClaudeToolReferencesToSeed(env.PAPERCUSP_TOOLS, analysis.toolReferences);
+  const restored = analysis.toolReferences.filter((name) => !before.has(name.toLowerCase())).length;
+  return { transcriptPath, restored, toolReferences: analysis.toolReferences };
 }
 
 /** How much of a transcript's tail lastActiveModelFor reads — the model appears
@@ -12175,6 +12208,12 @@ async function launchResume(
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
     const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId });
+    const restoredClaudeToolRefs = addClaudeResumeToolReferencesToEnv(session, env);
+    if (restoredClaudeToolRefs.restored > 0) {
+      console.error(
+        `psu: restored ${restoredClaudeToolRefs.restored} deferred Papercusp tool reference(s) for this Claude resume.`,
+      );
+    }
     if (session.agent === "codex" && modelSource) {
       env.PAPERCUSP_MODEL_SOURCE = modelSource;
     }
