@@ -1545,3 +1545,52 @@ current SPA and a private `PAPERCUSP_HOME` containing the fresh :3170 discovery
 advertisement, preserving the real user's home/preferences. Full GUI validation
 of the discovery fix and P-007's ten-run native acceptance remain open. No
 shipment claim; the discovery work-item remains owned until runtime proof.
+### P-007 fresh release GUI on staging — further evidence
+
+The release binary built from the repaired native source is
+`e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`.
+Its build completed through `pc-heavy` (`/tmp/p007-native-release-build-20260924.log`).
+The complete private test artifact at `/tmp/p007-staging-native-v2-20260924`
+paired that shell with staging UI index
+`1ba14a354070f1d517bbdfe58b281fc750f4e3e58ca4e6de8156a31b3d303611`.
+The private `PAPERCUSP_HOME` contained an operator.json derived from a
+PID/port-verified live :3170 IPC advertisement; that PID answered `/api/health`.
+The existing WDIO runner used private Xvfb, its documented stage report URL,
+and `PAPERCUSP_DEV_API_TARGET=3170` to prevent a persisted environment choice.
+The user's real desktop preference file had the same digest before and after
+both native runs. The release GUI mounted the stage Plans view and rendered a
+real plan, completing runtime verification for the discovery fix
+**EI-24161953656319715** (resolved). Cargo proof above remains its recurrence
+guard; macOS/Windows packaged runtime was not exercised.
+
+The first attempted frozen slug `su-agent-behavior` was not visible in this
+sidebar and correctly produced an **UNMEASURABLE** run with zero candidate
+rows (`/tmp/p007-native-v2-staging-20260924.log`); it is not a speed result.
+Using the same artifact and the visible
+`papercusp/goal-agent-behavior-feedback-2026-09-06` plan:
+
+| run | popup ms | detail mounted | data ready | content ready | renderer ready | preview rendered |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first | 5767 | 1853 | 4994 | 5583 | 5592 | 5760 |
+| repeated, slug pinned | 2457 | 408 | 1722 | 2275 | 2284 | 2450 |
+
+Both runs exceed the unchanged **1500ms** popup budget and were recorded by
+staging as `perfrun-1790269938151-rn3167` and
+`perfrun-1790270296139-s9vrqe`. Logs are
+`/tmp/p007-native-v2-discover-20260924.log` and
+`/tmp/p007-native-v2-pinned-second-20260924.log`. These two valid timings
+falsify acceptance for this build/profile; do not fill a ten-run success card.
+The request/response split and its code-change effect were not present in that
+served UI, so the data-ready interval is not yet attributable to backend,
+transport, or React work. The resource timeline remained empty.
+
+To resolve that attribution, the existing `fetchPlan` path now marks request
+start and parsed response, suppressing a response mark after cancellation.
+`plans-api-result.test.ts` passes **17 tests** including a delayed cancelled
+response; its two changed TypeScript files have a clean scoped typecheck.
+Log `/tmp/p007-request-phase-tests-20260924.log`. Staging source now contains
+these marks and its newer UI bundle index hashes to
+`6a2421698ff114c5da0b20afa4905200065664aca7f56fad0e80d3c472413c58`;
+the maintained staging sync was activating at this write. The next native
+measurement must pin the same visible plan and record that served build identity.
+P-007 and overall shipment remain open.
