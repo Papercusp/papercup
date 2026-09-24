@@ -1192,14 +1192,48 @@ export async function dispatchPendingGradingAudits(
           data?: { deduped?: boolean; launch?: unknown };
         };
         const launchData = result.data?.launch as
-          | { tasks?: Array<{ taskId?: unknown; logPath?: unknown }> }
+          | {
+              tasks?: Array<{
+                taskId?: unknown;
+                logPath?: unknown;
+                kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
+              }>;
+              agentStarted?: boolean | null;
+            }
           | undefined;
         const launchedTask = launchData?.tasks?.[0];
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
         const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
-        let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = logPath
-          ? await detectTerminalFailure(logPath)
-          : null;
+
+        // WI-10002903: the same conclusive-kickoff rule the acceptance grader
+        // applies (WI-10002155). A headless judge whose kickoff was never
+        // submitted sits at an empty composer, writes no terminal text, and
+        // never joins the roster, so the log classifier below cannot see it.
+        // Without this check the dispatcher returned state:'launched' and held
+        // the reservation for the full TTL while nothing graded the card.
+        // Only an explicit `kickoff-not-submitted:*` receipt or observed
+        // silence is conclusive; a late native marker with agentStarted:true
+        // is a working judge and is left alone.
+        const kickoffProof = launchedTask?.kickoffProof;
+        const kickoffNotPersisted = !!kickoffProof && kickoffProof.persisted !== true;
+        const kickoffNotSubmitted =
+          typeof kickoffProof?.reason === 'string' && kickoffProof.reason.startsWith('kickoff-not-submitted:');
+        const kickoffFailureIsConclusive =
+          kickoffNotPersisted &&
+          launchData?.agentStarted !== true &&
+          (launchData?.agentStarted === false || kickoffNotSubmitted);
+
+        let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = kickoffFailureIsConclusive
+          ? {
+              code: 'launch_kickoff_not_persisted',
+              evidence:
+                `launch receipt reported kickoffProof.persisted !== true (` +
+                `${typeof kickoffProof?.reason === 'string' && kickoffProof.reason ? kickoffProof.reason : 'reason not reported'}); ` +
+                `agentStarted=${String(launchData?.agentStarted ?? 'unreported')}`,
+            }
+          : logPath
+            ? await detectTerminalFailure(logPath)
+            : null;
 
         // A stable launch receipt can outlive the task it represented. Log
         // classifiers cover known quota/auth exits, but an operator reaper or
