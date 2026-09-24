@@ -33,7 +33,7 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
-import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse } from './launch-cost/launch-cost-metrics';
+import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse } from './launch-cost/launch-cost-metrics';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
@@ -511,7 +511,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // Existing production SSE serializer, scripted local text only. These
       // zero fixture counters are never recorded as real provider usage.
       const body = codexCliResponsesBody({ model: preparingSource ? 'gpt-6-luna' : 'gpt-6-sol',
-        text: preparingSource ? '{"sourceSentinel":"cedar-48f6e9a2"}' : expectedResponse, inputTokens: 0, outputTokens: 0 });
+        text: preparingSource ? JSON.stringify(recipe.sourcePreparation.expectedAcknowledgement) : expectedResponse, inputTokens: 0, outputTokens: 0 });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(body));
     });
@@ -582,8 +582,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(manifest.dependencyScope!.evidenceKind).toBe('declaration-only');
         expect(manifest.dependencyScope!.missingRoles).toEqual(['launcher', 'native-runtime', 'scripts', 'source', 'pricing']);
         expect(manifest.configuration.threadId).toBe(threadId);
+        const inputText = preparingSource ? recipe.sourcePreparation.prompt : readSource ? 'Offline native receipt fixture.' : task.prompt;
         const response = await p.request({ method: 'turn/start', params: {
-          threadId, input: [{ type: 'text', text: readSource ? 'Offline native receipt fixture.' : task.prompt }],
+          threadId, input: [{ type: 'text', text: inputText }],
         } });
         const turnId = String((response.turn as RpcFrame).id);
         await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
@@ -612,11 +613,17 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
         }
         await recheckCarryArtifactManifest(manifest, p);
-        return { threadId, turnId, threadRead, rpcWrite: writes[0], completed: completed[0] };
+        return { threadId, turnId, threadRead, inputText, rpcWrite: writes[0], completed: completed[0] };
       };
       let sourceCompleted: SuStdioReceipt | undefined;
       if (readSource) {
         const prepared = await nativeTurn();
+        const preparationTrace = inspectCarryNativeTurn({ threadId: prepared.threadId, turnId: prepared.turnId,
+          threadRead: prepared.threadRead, events, allowedMcpCalls: [], expectedInputText: recipe.sourcePreparation.prompt });
+        expect(preparationTrace).toMatchObject({ status: 'verified', inputSha256: recipe.sourcePreparation.promptSha256,
+          mcpItemIds: [], missing: [], violations: [] });
+        expect(inspectCarryPreparationResponse(preparationTrace.finalResponse!)).toMatchObject({
+          evidenceKind: 'response-only', matches: true, recipeSha256: recipe.sha256 });
         sourceCompleted = prepared.completed;
         predecessor = await captureCompletedCarrySource(p!, prepared.threadId, prepared.turnId);
         peers.splice(peers.indexOf(p!), 1); p = undefined;
@@ -626,7 +633,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         await recheckCarrySourceSnapshot(predecessor);
         preparingSource = false; events.length = 0; providerCalls.length = 0;
       }
-      const { threadId, turnId, threadRead, rpcWrite, completed } = await nativeTurn();
+      const { threadId, turnId, threadRead, inputText, rpcWrite, completed } = await nativeTurn();
       if (readSource) {
         // Native Codex received the platform result and returned it to the
         // next local provider request, not just a successful tools/list.
@@ -636,13 +643,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           outputs: (providerCalls.at(-1)?.input as Array<Record<string, unknown>>)?.filter(item => item.type === 'function_call_output') }))
           .toContain(window.toString('base64'));
       }
-      const evidence = { threadId, turnId, events, threadRead, allowedMcpCalls: readSource
+      const evidence = { threadId, turnId, events, threadRead, expectedInputText: inputText, allowedMcpCalls: readSource
         ? [...(platform ? [{ server: serverName, tool: toolName, arguments: identityArgs }] : []),
           { server: serverName, tool: toolName, arguments: sourceArgs() }] : [] };
       const trace = inspectCarryNativeTurn(evidence);
       expect(trace,
         JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
         .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: expectedResponse,
+          inputSha256: createHash('sha256').update(inputText).digest('hex'),
           mcpItemIds: platform ? [expect.any(String), expect.any(String)] : readSource ? [expect.any(String)] : [] });
       if (!readSource) {
         expect(JSON.stringify(providerCalls[0].input)).toContain(JSON.stringify(task.prompt).slice(1, -1));
