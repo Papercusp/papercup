@@ -2187,6 +2187,18 @@ export const MERGE_BATCH_MAX_OPS = 50;
 export const MERGE_BATCH_MAX_MS = 500;
 /** Bound on the COMMIT round trip (ms); past it the batch counts as lost and is replayed. */
 export const MERGE_BATCH_COMMIT_TIMEOUT_MS = 30_000;
+/**
+ * Bound on waiting for a batch's reserved connection (ms). postgres.js queues
+ * `reserve()` with no deadline, and a batch's COMMIT awaits the same open, so a grant
+ * that never comes stalls the op, its lane and the whole snapshot chunk for good.
+ * Measured (P-007 run #6): a lane op waited from 16:40Z on, with every pool
+ * connection idle and no lane transaction open, and the set crossing never resumed.
+ * Past the bound the op writes on the plain handle (autocommit), as the serial path
+ * does, and a connection granted later goes straight back to the pool.
+ */
+export const MERGE_BATCH_RESERVE_TIMEOUT_MS = 5_000;
+/** After a reserve times out, that batch's ops autocommit for this long before it reserves again (ms). */
+export const MERGE_BATCH_RESERVE_BACKOFF_MS = 30_000;
 
 /**
  * P-525 (p2p-join-catchup-speed D-013): a batch opened while its log is at least
@@ -2255,6 +2267,8 @@ export interface MergeBatchOpts {
   maxMs?: number;
   /** Bound on the COMMIT round trip (ms). */
   commitTimeoutMs?: number;
+  /** Bound on waiting for the batch connection (ms). Default {@link MERGE_BATCH_RESERVE_TIMEOUT_MS}; 0 waits forever. */
+  reserveTimeoutMs?: number;
   /** P-527: parallel lanes for one snapshot chunk. Default {@link MERGE_SNAPSHOT_LANES}; 1 applies chunks serially. */
   snapshotLanes?: number;
 }
@@ -2299,6 +2313,8 @@ class FoldBatch {
   private opsInTx = 0;
   private openedAt = 0;
   private failureReason: string | null = null;
+  /** Until this time (ms) ops autocommit instead of reserving: a reserve timed out. */
+  private reserveBackoffUntil = 0;
   /** Log position of the first op whose writes sit in the open transaction; -1 when none do. */
   startPos = -1;
   /**
@@ -2315,6 +2331,7 @@ class FoldBatch {
     private readonly maxOps: number,
     private readonly maxMs: number,
     private readonly commitTimeoutMs: number,
+    private readonly reserveTimeoutMs: number,
     private readonly maxWinnersEntries: number,
     private readonly onWinnersEvicted?: (evictedCount: number, size: number) => void,
     stats?: MergeBatchStats,
@@ -2335,6 +2352,7 @@ class FoldBatch {
           this.maxOps,
           this.maxMs,
           this.commitTimeoutMs,
+          this.reserveTimeoutMs,
           this.maxWinnersEntries,
           this.onWinnersEvicted,
           this.stats,
@@ -2438,7 +2456,7 @@ class FoldBatch {
     this.pipelined = [];
     if (this.failureReason === null) {
       try {
-        await Promise.all(pipelined);
+        await raceMergeDeadline(Promise.all(pipelined), this.commitTimeoutMs, 'batch statements');
         if (this.failureReason !== null) throw new Error(this.failureReason);
         const res = await raceMergeDeadline(reserved.unsafe('COMMIT'), this.commitTimeoutMs, 'batch COMMIT');
         // PG answers COMMIT on an aborted transaction with the ROLLBACK tag, not an error.
@@ -2494,7 +2512,19 @@ class FoldBatch {
 
   private async open(target: postgres.Sql): Promise<void> {
     try {
-      const reserved = await target.reserve();
+      const pending = target.reserve();
+      let reserved: postgres.ReservedSql;
+      try {
+        reserved = await raceMergeDeadline(pending, this.reserveTimeoutMs, 'batch connection reserve');
+      } catch (err) {
+        // A connection granted after the deadline goes straight back to the pool.
+        void pending.then((late) => late.release(), () => {});
+        this.reserveBackoffUntil = Date.now() + MERGE_BATCH_RESERVE_BACKOFF_MS;
+        console.warn(
+          `[read-merge] batch connection not granted (${err instanceof Error ? err.message : String(err)}); ops autocommit for ${MERGE_BATCH_RESERVE_BACKOFF_MS}ms`,
+        );
+        throw err;
+      }
       this.reserved = reserved;
       this.target = target;
       this.txGen++;
@@ -2516,6 +2546,7 @@ class FoldBatch {
     if (opId !== this.currentOp || this.failureReason !== null) return target;
     if (this.reserved && this.target !== target && !(await this.commit())) return target;
     if (!this.reserved) {
+      if (Date.now() < this.reserveBackoffUntil) return target;
       this.opening ??= this.open(target);
       await this.opening;
     }
@@ -3038,6 +3069,7 @@ export async function mergeAdmittedLogsIncremental(
           Math.max(1, batchOpts?.maxOps ?? MERGE_BATCH_MAX_OPS),
           batchOpts?.maxMs ?? MERGE_BATCH_MAX_MS,
           batchOpts?.commitTimeoutMs ?? MERGE_BATCH_COMMIT_TIMEOUT_MS,
+          batchOpts?.reserveTimeoutMs ?? MERGE_BATCH_RESERVE_TIMEOUT_MS,
           opts?.maxWinnersEntries ?? DEFAULT_MAX_WINNERS_ENTRIES,
           opts?.onWinnersEvicted,
         );
