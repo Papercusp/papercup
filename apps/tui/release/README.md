@@ -33,6 +33,11 @@ workspace host, or a remote operator URL. See `COMPATIBILITY.md`. With no
 operator configured, `pui` opens setup; `pui doctor` checks the installation
 and the selected operator.
 
+To use PUI on a remote Papercusp host, run `pui --connect` (a picker) or
+`pui --connect=<name>`. PUI then runs on that host through the remote hosts
+`psu` has saved, so `psu` must be installed here; `pui --connect-list` shows
+them and `pui --connect-login` signs in to Papercusp cloud.
+
 ## Using PUI
 
 Press `F1` for a short tutorial and `?` for every key. The everyday ones:
