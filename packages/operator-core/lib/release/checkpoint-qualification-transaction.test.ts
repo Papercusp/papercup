@@ -578,6 +578,10 @@ describe('logical checkpoint qualification transaction', () => {
   });
 
   it('retries only the explicit pre-suite no-verdict allowlist and makes red/code outcomes terminal', () => {
+    expect(classifyQualificationVerdict({ reason: 'skipped-locked', green: null })).toEqual({
+      kind: 'pre-suite-no-verdict',
+      reason: 'skipped-locked',
+    });
     expect(classifyQualificationVerdict({ reason: 'migrations-pending', green: null })).toEqual({
       kind: 'pre-suite-no-verdict',
       reason: 'migrations-pending',

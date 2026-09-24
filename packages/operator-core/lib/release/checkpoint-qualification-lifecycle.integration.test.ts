@@ -33,6 +33,10 @@ import {
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
 } from './frozen-candidate-repair-queue';
+import {
+  reconcileGateVerdictFreshnessWithRepairQueue,
+  type FrozenRepairConvergenceReading,
+} from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
 
@@ -69,6 +73,45 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it.each(['skipped-locked', 'migrations-pending'])(
+    'persists %s as a pre-suite no-verdict outcome',
+    async (reason) => {
+      await seed();
+      expect((await beginStoredQualification(target, {
+        attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+      })).status).toBe('updated');
+      expect((await recordStoredQualificationVerdict(target, {
+        attemptId: 'attempt-1', candidate: 'candidate-1',
+        reason, green: null, nowMs: 200,
+      })).status).toBe('updated');
+      const stored = await readStoredQualification(target);
+      expect(stored).toMatchObject({ status: 'present', transaction: {
+        outcome: { kind: 'pre-suite-no-verdict', reason },
+        lastStartedAtMs: null, lastTerminalVerdictAtMs: null,
+      } });
+    },
+  );
+
+  it('classifies a persisted converging repair as non-terminal while retaining red uncertainty', async () => {
+    await seed({
+      repair_queue: { phase: 'ready-to-verify' },
+      gate_health: { inconclusive: { status: 'repair-in-progress' } },
+    });
+    const stored = await metadata();
+    const queue = stored.repair_queue as FrozenRepairConvergenceReading;
+    const gateHealth = stored.gate_health as { inconclusive: { status: string } };
+    const freshness = { stale: true, reason: 'no new verdict', reasonCode: 'writer-starved' as const };
+    const result = reconcileGateVerdictFreshnessWithRepairQueue(freshness, {
+      status: gateHealth.inconclusive.status,
+      phase: queue.phase,
+    });
+    expect(result).toMatchObject({ stale: true, reasonCode: 'repair-converging' });
+    expect(result.reason).toMatch(/recorded 'repair-in-progress'/);
+    expect(reconcileGateVerdictFreshnessWithRepairQueue(freshness, {
+      status: null, phase: 'blocked',
+    })).toEqual(freshness);
+  });
+
   it('joins one physical runner, separates clocks, and refuses stale terminal identity', async () => {
     await seed();
     const begun = await beginStoredQualification(target, {
