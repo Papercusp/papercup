@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import {
   BlueprintSchema,
   blueprintHash,
@@ -76,7 +76,7 @@ export interface ProjectBlueprintInput {
  * current-blueprint pointer. Replaying the artifact verifies its hash and
  * closure; an existing revision with different bytes is a hard collision. */
 export async function retainBlueprintSpecificationSnapshot(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   input: { workspaceId: string; harnessSlug: string; specification: CompiledAgentSpecification },
 ): Promise<string> {
   const specification = replayAgentSpecification(input.specification);
@@ -102,7 +102,7 @@ export async function retainBlueprintSpecificationSnapshot(
 
 /** Read the accepted revision, never the mutable current blueprint cache. */
 export async function readBlueprintSpecificationSnapshot(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   workspaceId: string,
   harnessSlug: string,
   specificationRevision: string,
@@ -209,7 +209,7 @@ export async function readBlueprintFromPg(
 
 /** Read just the cached content hash — a cheap drift check (no deserialize). */
 export async function readBlueprintHashFromPg(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   workspaceId: string,
   harnessSlug: string,
 ): Promise<string | null> {
