@@ -753,3 +753,73 @@ CPU fractions were 0.0391 and 0.00808, or about 3.91% and 0.81% of one core.
 The coarser sampler is promising but does not resolve the remaining lifecycle,
 dynamic gate, saturation and long-duration recording-policy questions. It has
 not been integrated. Scoped typechecking of the updated integration test passed.
+
+### Loaded profiler comparison and delayed rotation (11:13Z)
+
+The full isolated profiler suite now passes **5 tests, zero skipped** in
+**19281929** (`befef09f6b` plus the edited integration test). Its additional
+100 Hz fixture runs the same fixed arithmetic workload before, during and
+after recording, verifies identical checksums, and rejects controls whose
+median CPU times differ by more than 15%. The first attempted workload called
+25,000 generated functions and kept optimizing between controls (349.77 ms
+before versus 94.58 ms after); that comparison is **invalid for overhead** and
+is not performance evidence. The stable replacement measured median CPU times
+of 26.42 ms before, 27.93 ms active and 27.17 ms after, about 5.4% higher active
+than the combined control median in this run. This is a controlled observation,
+not a production throughput claim or a confidence interval.
+
+The test deliberately prevents rotation for at least one second. That recording
+grew to 1,134,358 microseconds and 104 samples; rotation is therefore **not a
+hard duration bound while the main thread is blocked**. All 25 anchors ended.
+RSS changed from 81,739,776 bytes before profiling to 101,720,064 bytes at the
+first in-recording observation and stayed there through the remaining checks
+and disconnect. Observed JS heap during recording ranged from 32,777,576 to
+32,831,792 bytes. These short measurements do not establish long-term retention.
+Continuous profiling remains unintegrated pending an acceptable recording
+policy and its dynamic-gate, saturation and retention tests.
+
+### Queued output is progress: idle checks must let the pipe drain (11:31Z)
+
+**EI-24124212290448236** now has a deterministic reproduced mechanism. The
+sidecar and local Git tests wait for a real Node child to report readiness,
+block the parent's CHECK phase for 450 ms, and record timestamped child writes
+every 40 ms during the block. They require at least three writes inside that
+interval. With a 150 ms idle deadline, old source committed its idle verdict
+before the next POLL delivered those already-written bytes. The sidecar returned
+-1; the local runner also appended a false idle-timeout diagnostic. The original
+historical runs 19248786/19248790 lacked the reason text, so those two instances
+cannot individually be attributed from their saved output alone.
+
+Old-source controls: **19283365** failed the real sidecar queued-output case,
+**19285491** failed the corresponding local case, and **19285506** failed the
+action-level pending-progress case. In both real-process files, a separate
+continuously-writing child still hit the absolute hard deadline. The action
+test pins the same pending-progress interval with fake time; the OS-pipe phase
+ordering is established by the real-process cases.
+
+The fix extends the existing idle guards in `sidecar-exec-process.ts`,
+`run-git-sync.ts` and `git-sync-action.ts`. An expired idle timer schedules its
+verdict with `setImmediate`, allowing POLL to deliver pending output first.
+Progress cancels that pending verdict and renews the existing idle timer.
+Termination and settlement clear the pending check. Absolute hard deadlines
+are unchanged. No timeout budget was widened and no periodic timer was added.
+
+Verification: **36 tests, zero skipped**, across sidecar routing/progress
+(19285494), local progress (19285493), and process cancellation/lifecycle
+(19285495), at `edf012976b` plus local source/test changes. The full action and
+signal-routing suites subsequently passed **144 tests, zero skipped**
+(19285510/19285509). The latter runner began at `edf012976b` and its ledger
+recorded `fb6b5c136c` after background git-sync committed during the run; its
+aggregate provenance stamp is unknown, so it is current-tree evidence, not a
+claim of an immutable single-SHA execution. Scoped typechecking of the seven
+changed source/test files found zero requested-file diagnostics and 29 other
+loaded-graph diagnostics. Diff whitespace checks passed.
+
+This review also found a **separate, still-open** P-003 lifetime gap, recorded
+as **EI-24141765530574665** (detail post 1143263): local Git only signals its
+direct child, leaves escalation timers armed, and can force settlement after
+20 seconds; the outer action also starts lease cleanup immediately after abort
+without waiting for child exit. Its existing mock rejects synchronously on
+abort, so it cannot detect that release interval. The next acceptance guard
+must delay actual child settlement and assert repository leases stay held.
+The idle-race repair does not resolve that gap or prove PERF-P-003 complete.
