@@ -539,6 +539,10 @@ export default defineTool({
             probeCitationDeployment: true,
             ...(args.current ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
+            readGradingAuditDispatchSuppression: async (targetOwnerId) => {
+              const { readGradingAuditDispatchSuppression } = await import('../../grading-integrity');
+              return readGradingAuditDispatchSuppression(subjectScope.workspaceId, { targetOwnerId });
+            },
           });
           citationDeployment = gate.citationDeployment;
           if (gate.forcedPast) {
