@@ -28,6 +28,99 @@ import { costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { TranscriptAdapter } from './ingest-adapters';
+import type { Sql } from 'postgres';
+
+export interface HistoricalUsageApproval {
+  filePath: string;
+  byteOffset: number;
+  sourceSha256: string;
+  legacyFingerprint: string;
+  /** Completed backup:snapshot_create receipt, revalidated for this workspace before apply. */
+  backupSnapshotId: number;
+}
+
+/** Exact legacy rows, not a count-only fence. Safe to expose in a dry-run manifest. */
+export async function legacyUsageFingerprint(sql: Sql, workspaceId: string, sessionId: string): Promise<string> {
+  const [row] = await sql<Array<{ fingerprint: string }>>`
+    SELECT md5(COALESCE(jsonb_agg(to_jsonb(s) ORDER BY id)::text, '[]')) AS fingerprint
+    FROM harness_shared.agent_usage_samples s WHERE workspace_id = ${workspaceId}
+      AND source = 'interactive' AND session_id = ${sessionId} AND usage_event_key IS NULL
+  `;
+  return row.fingerprint;
+}
+
+async function requireHistoricalBackup(sql: Sql, workspaceId: string, snapshotId: number): Promise<void> {
+  if (!Number.isSafeInteger(snapshotId) || snapshotId <= 0) throw new Error('Invalid historical backup receipt');
+  const backup = await sql`SELECT id FROM harness_shared.backup_snapshots
+    WHERE workspace_id = ${workspaceId} AND id = ${snapshotId}
+      AND status = 'ok' AND db_dump_ok = true AND kopia_snapshot_id IS NOT NULL
+      AND finished_at IS NOT NULL AND started_at > now() - interval '24 hours'`;
+  if (backup.length !== 1) throw new Error('Historical reconciliation requires a recent completed database backup receipt for this workspace');
+}
+
+/**
+ * A missing source is NOT evidence for a replacement model or count. Preserve
+ * each original row verbatim in provenance, then make the unrecoverable fields
+ * NULL so every ledger consumer sees unknown rather than a plausible old guess.
+ * Only a positively missing (ENOENT) single-source mapping may take this path.
+ */
+export async function markUnavailableTranscriptUsage(
+  approval: Omit<HistoricalUsageApproval, 'sourceSha256'>,
+): Promise<{ markedRows: number; alreadyMarked: boolean }> {
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  await requireHistoricalBackup(sql, ws, approval.backupSnapshotId);
+  if (!/^[a-f0-9]{32}$/.test(approval.legacyFingerprint)) throw new Error('Invalid historical ledger fingerprint');
+  const { codexSessionIdForFile } = await import('./ingest-adapters');
+  const sessionId = codexSessionIdForFile(approval.filePath);
+  const mappings = await sql<Array<{ file_path: string }>>`
+    SELECT file_path FROM harness_shared.interactive_usage_files WHERE workspace_id = ${ws}
+  `;
+  if (mappings.filter(row => codexSessionIdForFile(row.file_path) === sessionId).length !== 1) {
+    throw new Error('Missing-source session has an ambiguous file-to-ledger mapping');
+  }
+  return sql.begin(async tx => {
+    await tx`SET LOCAL lock_timeout = '5s'`;
+    await tx`SET LOCAL statement_timeout = '30s'`;
+    await tx`LOCK TABLE harness_shared.agent_usage_samples IN SHARE ROW EXCLUSIVE MODE`;
+    const [frontier] = await tx<Array<{ byte_offset: string }>>`
+      SELECT byte_offset FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${ws} AND file_path = ${approval.filePath} FOR UPDATE
+    `;
+    if (!frontier || Number(frontier.byte_offset) !== approval.byteOffset) throw new Error('Missing-source frontier changed');
+    try {
+      await fs.stat(approval.filePath);
+      throw new Error('Source exists; replay it instead of declaring its usage unknown');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const [head] = await tx<Array<{ fingerprint: string; count: number; marked: number }>>`
+      SELECT md5(COALESCE(jsonb_agg(to_jsonb(s) ORDER BY id)::text, '[]')) AS fingerprint,
+        count(*)::int AS count,
+        count(*) FILTER (WHERE usage_provenance->'historicalAvailability'->>'status' = 'source-unavailable')::int AS marked
+      FROM harness_shared.agent_usage_samples s WHERE workspace_id = ${ws}
+        AND source = 'interactive' AND session_id = ${sessionId} AND usage_event_key IS NULL
+    `;
+    if (head.count === 0 || head.count === head.marked) return { markedRows: 0, alreadyMarked: true };
+    if (head.count > 2000 || head.fingerprint !== approval.legacyFingerprint) throw new Error('Missing-source ledger changed since inventory');
+    const updated = await tx`
+      UPDATE harness_shared.agent_usage_samples s SET
+        usage_provenance = COALESCE(s.usage_provenance, '{}'::jsonb) || jsonb_build_object(
+          'grain', 'unrecoverable-legacy', 'modelSource', 'unavailable',
+          'historicalAvailability', jsonb_build_object('status', 'source-unavailable',
+            'reason', 'ENOENT', 'sourceFile', ${approval.filePath}::text,
+            'byteOffset', ${approval.byteOffset}::bigint, 'backupSnapshotId', ${approval.backupSnapshotId}::bigint,
+            'originalRow', to_jsonb(s))),
+        model = NULL, model_class = 'default', cost_usd = NULL, cost_source = NULL,
+        input_tokens = NULL, output_tokens = NULL, cache_read_tokens = NULL, cache_creation_tokens = NULL,
+        cache_creation_5m_tokens = NULL, cache_creation_1h_tokens = NULL, turn_count = NULL
+      WHERE workspace_id = ${ws} AND source = 'interactive' AND session_id = ${sessionId}
+        AND usage_event_key IS NULL
+      RETURNING id
+    `;
+    return { markedRows: updated.length, alreadyMarked: false };
+  });
+}
 
 export interface TranscriptDelta {
   /** Assistant turns (API calls) parsed in this delta. */
@@ -246,6 +339,8 @@ export async function readFileDelta(filePath: string, offset: number, capBytes: 
 }
 
 export interface IngestOptions {
+  /** Explicit, snapshot-backed replacement of ONE previously dry-run legacy prefix. Never used by the routine. */
+  historical?: HistoricalUsageApproval;
   /** Claude transcript root override. Default `~/.claude/projects`. (When
    *  `adapters` is supplied this is ignored — pass roots on the adapters.) */
   root?: string;
@@ -320,6 +415,14 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
+  if (opts.historical && (opts.adapters?.length !== 1 || opts.includeIsolationRoots === true ||
+    !Number.isSafeInteger(opts.historical.backupSnapshotId) || opts.historical.backupSnapshotId <= 0 ||
+    !/^[a-f0-9]{64}$/.test(opts.historical.sourceSha256) || !/^[a-f0-9]{32}$/.test(opts.historical.legacyFingerprint))) {
+    throw new Error('Historical reconciliation requires one explicit adapter, a verified backup receipt and dry-run fingerprints');
+  }
+  if (opts.historical) {
+    await requireHistoricalBackup(sql, ws, opts.historical.backupSnapshotId);
+  }
 
   // Lazy import avoids a require cycle (ingest-adapters imports this module's
   // parseTranscriptChunk for the claude adapter).
@@ -420,6 +523,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
   for (const adapter of adapters) {
     let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
     try {
+      if (opts.historical) {
+        const relative = path.relative(adapter.root, opts.historical.filePath);
+        if (relative.startsWith('..') || path.isAbsolute(relative) || !relative.endsWith('.jsonl')) {
+          throw new Error('Historical source must be inside its explicit adapter root');
+        }
+        entries = [{ name: path.basename(opts.historical.filePath), parentPath: path.dirname(opts.historical.filePath), isFile: () => true }];
+      } else {
       // EI-14263 / EI-579: this recursive readdir materialises EVERY entry under
       // `adapter.root` before `maxFiles` (applied at .slice() below) can bind, so the
       // allocation is O(entries-in-root), not O(maxFiles). EI-579 named that its
@@ -440,7 +550,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
       // owner/home dir. Per-file reads (DEFAULT_MAX_BYTES_PER_FILE, 32 MiB) dominate
       // this module's memory by ~16x, so profile there first, not here.
       entries = (await fs.readdir(adapter.root, { withFileTypes: true, recursive: true })) as never;
+      }
     } catch {
+      if (opts.historical) throw new Error('Historical source adapter could not be enumerated');
       continue; // no transcript root for this backend on this machine
     }
     const files = entries
@@ -455,13 +567,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
         const stored = watermarks.get(file) ?? { offset: 0, parserState: {} };
         let offset = stored.offset;
         if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
-        if (size === offset) {
+        if (size === offset && !opts.historical) {
           result.skippedUnchanged += 1;
           continue;
         }
         let fileState: TranscriptParserState = size < stored.offset
           ? { fileGeneration: (stored.parserState.fileGeneration ?? 0) + 1 } : stored.parserState;
-        if (adapter.replayStateFromPrefix && offset > 0 && !fileState.initialized &&
+        if (!opts.historical && adapter.replayStateFromPrefix && offset > 0 && !fileState.initialized &&
           (fileState.bootstrapOffset !== undefined || !fileState.model)) {
           // Replay at most the normal per-file byte budget per tick, discarding
           // all historical usage. Persist progress without advancing its paid
@@ -487,17 +599,44 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
           delete fileState.bootstrapOffset;
         }
         fileState = { ...fileState, initialized: true };
-        const chunk = await readFileDelta(file, offset, capBytes);
-        const { perModel, consumedBytes, parserState, events } = adapter.parse(
-          chunk, fileState,
-        );
+        let parsed: ParsedChunk;
+        if (opts.historical) {
+          const approval = opts.historical;
+          if (stored.offset !== approval.byteOffset || size !== stored.offset || (fileState.fileGeneration ?? 0) !== 0) {
+            throw new Error('Historical frontier changed, source has unread bytes, or file generation is ambiguous; repeat dry run');
+          }
+          const { replayTranscriptPrefix } = await import('./replay-transcripts');
+          const replay = await replayTranscriptPrefix({ filePath: file, byteOffset: stored.offset, adapter, chunkBytes: capBytes });
+          if (replay.status !== 'available' || replay.sourceSha256 !== approval.sourceSha256 || replay.events.length === 0) {
+            throw new Error('Historical source unavailable, empty or changed since dry run');
+          }
+          offset = 0;
+          fileState = { initialized: true };
+          parsed = { perModel: new Map(), events: replay.events.map(event => ({ ...event, relativeOffset: event.byteOffset })),
+            consumedBytes: replay.byteOffset, parserState: { ...replay.parserState, initialized: true } };
+        } else {
+          const chunk = await readFileDelta(file, offset, capBytes);
+          parsed = adapter.parse(chunk, fileState);
+        }
+        const { perModel, consumedBytes, parserState, events } = parsed;
         const nextParserState = parserState ?? fileState;
         if (consumedBytes === 0) continue; // no complete line yet — retry next tick
         // The value every spend join keys on (= adv_sessions.session_id); codex
         // rollouts need the adapter's extractor, see TranscriptAdapter.sessionIdForFile.
         const sessionId = adapter.sessionIdForFile ? adapter.sessionIdForFile(file) : path.basename(file, '.jsonl');
+        if (opts.historical && [...watermarks.keys()].filter(candidate =>
+          (adapter.sessionIdForFile ? adapter.sessionIdForFile(candidate) : path.basename(candidate, '.jsonl')) === sessionId).length !== 1) {
+          throw new Error('Historical session has an ambiguous file-to-ledger mapping');
+        }
 
         const committedDeltas = await sql.begin(async (tx) => {
+          if (opts.historical) {
+            // Serialize the rare maintenance transaction with all legacy INSERT writers,
+            // including versions which do not yet lock a watermark before INSERT.
+            await tx`SET LOCAL lock_timeout = '5s'`;
+            await tx`SET LOCAL statement_timeout = '30s'`;
+            await tx`LOCK TABLE harness_shared.agent_usage_samples IN SHARE ROW EXCLUSIVE MODE`;
+          }
           // Two ticks may scan the same old watermark. Serialize only this file
           // and compare the observed offset before writing any usage samples.
           await tx`
@@ -511,12 +650,35 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
              WHERE workspace_id = ${ws} AND file_path = ${file} FOR UPDATE
           `;
           if (Number(head.byte_offset) !== stored.offset || !head.state_matches) return null;
+          let legacyRows: unknown[] = [];
+          if (opts.historical) {
+            const [legacy] = await tx<Array<{ rows: unknown[] | null; fingerprint: string; count: number }>>`
+              SELECT jsonb_agg(to_jsonb(s) ORDER BY id) AS rows,
+                md5(COALESCE(jsonb_agg(to_jsonb(s) ORDER BY id)::text, '[]')) AS fingerprint, count(*)::int AS count
+              FROM harness_shared.agent_usage_samples s WHERE workspace_id = ${ws}
+                AND source = 'interactive' AND session_id = ${sessionId} AND usage_event_key IS NULL
+            `;
+            if (legacy.count === 0) return null; // already reconciled; never duplicate requests
+            if (legacy.count > 2000 || legacy.fingerprint !== opts.historical.legacyFingerprint) {
+              throw new Error('Historical ledger changed since dry run or exceeds bounded row limit');
+            }
+            // Ensure the source is still the selected prefix while the ledger fence is held.
+            const verify = await import('./replay-transcripts').then(module => module.replayTranscriptPrefix({
+              filePath: file, byteOffset: stored.offset, adapter, chunkBytes: capBytes,
+            }));
+            if (verify.status !== 'available' || verify.sourceSha256 !== opts.historical.sourceSha256) {
+              throw new Error('Historical source changed before commit');
+            }
+            legacyRows = legacy.rows ?? [];
+            await tx`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${ws}
+              AND source = 'interactive' AND session_id = ${sessionId} AND usage_event_key IS NULL`;
+          }
           const deltas: TranscriptDelta[] = [];
           // Keep custom adapters compatible, but label their coarser grain explicitly.
           const observations: TranscriptUsageEvent[] = events ?? [...perModel].map(([model, usage]) => ({
             model, usage, sourceId: `aggregate:${offset}:${model}`, relativeOffset: 0, eventTime: null,
           } satisfies TranscriptUsageEvent));
-          for (const event of observations) {
+          for (const [eventIndex, event] of observations.entries()) {
             const { model } = event;
             const sourceId = event.sourceId.startsWith('line:') ? `line:${offset + event.relativeOffset}` : event.sourceId;
             const eventKey = createHash('sha256').update(JSON.stringify([file, fileState.fileGeneration ?? 0, model, sourceId])).digest('hex');
@@ -545,7 +707,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             const change = emptyDelta();
             for (const key of ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) change[key] = d[key] - before[key];
             if (!inputKnown) change.inputTokens = 0;
-            if (previous && Object.values(change).every((n) => n === 0) &&
+            if (!opts.historical && previous && Object.values(change).every((n) => n === 0) &&
               inputKnown === (previous.input_tokens !== null) &&
               Boolean(d.cacheCreationUnreported) === Boolean(before.cacheCreationUnreported) &&
               d.cacheCreation5mTokens === before.cacheCreation5mTokens && d.cacheCreation1hTokens === before.cacheCreation1hTokens &&
@@ -565,7 +727,11 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
               inputTotalTokens: event.inputTotalTokens ?? null,
               accountSource: 'unavailable', triggerSource: 'unavailable',
-              predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null };
+              predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
+              ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
+                byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
+                legacyFingerprint: opts.historical.legacyFingerprint,
+                ...(eventIndex === 0 ? { originalRows: legacyRows } : {}) } } : {}) };
             // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
             // as their strongest key. harness_slug: migration 1120 (WI-2144763).
             // goal_id: migration 1121 (WI-2145149) — the 3-arg overload, same defect,
@@ -602,7 +768,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 cache_creation_5m_tokens = EXCLUDED.cache_creation_5m_tokens, cache_creation_1h_tokens = EXCLUDED.cache_creation_1h_tokens,
                 cost_usd = EXCLUDED.cost_usd, cost_source = EXCLUDED.cost_source, turn_count = EXCLUDED.turn_count,
                 event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
-                ingested_at = EXCLUDED.ingested_at, usage_provenance = EXCLUDED.usage_provenance
+                ingested_at = EXCLUDED.ingested_at,
+                usage_provenance = COALESCE(agent_usage_samples.usage_provenance, '{}'::jsonb) || EXCLUDED.usage_provenance
             `;
             if (d.cacheCreationUnreported) change.cacheCreationUnreported = true;
             deltas.push(change);

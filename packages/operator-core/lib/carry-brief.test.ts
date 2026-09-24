@@ -8,7 +8,9 @@
  *   - the focus renderer is HARD-capped and pointer-styled (ids, not copies);
  *   - the cold-extras renderer skips empty sections and caps per-entry bytes.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { getWorkItem, type WorkItem } from './work-items';
+import { bodyRefWorkItemResolver } from './agent-tools/coordination/ref-hydrate-resolve';
 import {
   buildCarryBrief,
   assessHeldItemOwnership,
@@ -46,6 +48,16 @@ import {
   type BuildCarryBriefOpts,
 } from './carry-brief';
 import { shortCarryHash } from './carry-note';
+
+vi.mock('./work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./work-items')>();
+  return { ...actual, getWorkItem: vi.fn() };
+});
+vi.mock('./work-item-checkpoint', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./work-item-checkpoint')>();
+  return { ...actual, getWorkItemCheckpoint: vi.fn().mockResolvedValue(null) };
+});
+const mockedGetWorkItem = vi.mocked(getWorkItem);
 
 /** Minimal tagged-template `sql` stub returning fixed `engineer_issues` rows. */
 function fakeIssuesSql(
@@ -604,6 +616,60 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
     expect(text).not.toContain('STALE-NOTE CONTRADICTION');
     expect(text).not.toContain('⚠ TERMINAL');
     expect(text).toContain('↪ WI-5391 [bug/open');
+  });
+});
+
+describe('scorecard cited-ref audit lifecycle', () => {
+  const id = 'EI-24058248122493506';
+
+  const renderWithAuditState = async (auditState: string): Promise<string> => {
+    mockedGetWorkItem.mockReset();
+    mockedGetWorkItem.mockResolvedValue({
+      id,
+      kind: 'change',
+      state: 'done',
+      title: 'Terminal acceptance card',
+      summary: 'The card was filed before its grading audit settled.',
+      assignee: null,
+      closedAt: '2026-09-23T13:15:30.000Z',
+      payload: { observation: { gradingAudit: { state: auditState } } },
+    } as unknown as WorkItem);
+
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\nIf the grading audit passed, complete ' + id,
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        readHeldWorkItemsFn: async () => [],
+        // Exercise the production detect → hydrate → render path.
+        hydrateNoteRefsFn: undefined,
+      }),
+    );
+    return renderCarryBriefText(brief);
+  };
+
+  it('keeps a done-status card non-terminal while its grading audit is pending, then flags settled audits', async () => {
+    const pending = await renderWithAuditState('pending');
+    expect(pending).toContain(id + ' [change/audit-pending');
+    expect(pending).toContain('card filed, audit pending');
+    expect(pending).not.toContain('STALE-NOTE CONTRADICTION');
+    expect(pending).not.toContain('⚠ TERMINAL ↪ ' + id);
+
+    const pendingBodyRef = await bodyRefWorkItemResolver(
+      { kind: 'work-item', id },
+      { snippetChars: 200, maxRefs: 3 },
+    );
+    expect(pendingBodyRef?.label).toContain(id + ' [change/audit-pending');
+    expect(pendingBodyRef?.snippet).toContain('card filed, audit pending');
+    expect(pendingBodyRef?.terminalSubject).toBeUndefined();
+
+    for (const state of ['passed', 'failed']) {
+      const settled = await renderWithAuditState(state);
+      expect(settled).toContain('⚠ TERMINAL ↪ ' + id + ' [change/done');
+      expect(settled).toContain('card filed, audit ' + state);
+    }
   });
 });
 

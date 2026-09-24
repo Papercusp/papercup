@@ -557,3 +557,61 @@ export async function collectPerfRegressionSnapshot(
 
   return { signals: emitted, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }
+
+/**
+ * Keep the existing performance history alive from the active system-health
+ * sweep when the improvement-watchdog routine is paused. The latter remains
+ * owner-paused; sampling here never files its improvement signals. Reading the
+ * last persisted row makes restarts and either producer's future resumption
+ * converge on the same 15-minute cadence without a second routine or flag.
+ */
+export const PERF_REGRESSION_SAMPLE_INTERVAL_MS = 15 * 60_000;
+
+export interface PerfRegressionCadenceDeps {
+  nowMs: () => number;
+  latestCapturedAt: (workspaceId: string) => Promise<Date | string | null>;
+  collect: (workspaceId: string) => Promise<CollectorResult>;
+}
+
+const defaultCadenceDeps: PerfRegressionCadenceDeps = {
+  nowMs: Date.now,
+  latestCapturedAt: async (workspaceId) => {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ captured_at: Date | string }>>`
+      SELECT captured_at
+        FROM harness_shared.perf_regression_snapshots
+       WHERE workspace_id = ${workspaceId}
+       ORDER BY captured_at DESC
+       LIMIT 1`;
+    return rows[0]?.captured_at ?? null;
+  },
+  collect: collectPerfRegressionSnapshot,
+};
+
+export async function collectPerfRegressionWhenDue(
+  workspaceId: string,
+  deps: PerfRegressionCadenceDeps = defaultCadenceDeps,
+): Promise<{ attempted: boolean; persisted: boolean; overdue: boolean; lastCapturedAt: string | null; note?: string }> {
+  const now = deps.nowMs();
+  const before = await deps.latestCapturedAt(workspaceId);
+  const beforeMs = before == null ? null : new Date(before).getTime();
+  const knownBeforeMs = beforeMs != null && Number.isFinite(beforeMs) ? beforeMs : null;
+  const lastCapturedAt = knownBeforeMs == null ? null : new Date(knownBeforeMs).toISOString();
+  if (knownBeforeMs != null && now - knownBeforeMs >= 0 && now - knownBeforeMs < PERF_REGRESSION_SAMPLE_INTERVAL_MS) {
+    return { attempted: false, persisted: true, overdue: false, lastCapturedAt };
+  }
+
+  const result = await deps.collect(workspaceId);
+  const after = await deps.latestCapturedAt(workspaceId);
+  const afterMs = after == null ? null : new Date(after).getTime();
+  const persisted = afterMs != null && Number.isFinite(afterMs) && (knownBeforeMs == null || afterMs > knownBeforeMs);
+  const overdue = !persisted && result.note !== PERF_REGRESSION_DISABLED_NOTE &&
+    (knownBeforeMs == null || now - knownBeforeMs >= 2 * PERF_REGRESSION_SAMPLE_INTERVAL_MS);
+  return {
+    attempted: true,
+    persisted,
+    overdue,
+    lastCapturedAt,
+    ...(result.note ? { note: result.note } : {}),
+  };
+}

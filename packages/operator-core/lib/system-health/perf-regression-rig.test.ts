@@ -16,6 +16,8 @@ import {
   type PerfRegressionMetrics,
   type DispatchOrphanRow,
   collectPerfRegressionSnapshot,
+  collectPerfRegressionWhenDue,
+  PERF_REGRESSION_SAMPLE_INTERVAL_MS,
   dispatchOrphanAggregateFromRows,
   dispatchOrphanRateFromAggregate,
   evaluatePerfRegression,
@@ -23,6 +25,55 @@ import {
 } from './perf-regression-rig';
 
 const B = PERF_REGRESSION_BUDGETS;
+
+describe('performance history on the active health cadence', () => {
+  const now = Date.parse('2026-09-23T12:00:00.000Z');
+
+  it('reuses a fresh row without collecting or writing another snapshot', async () => {
+    const collect = vi.fn(async () => ({ signals: [] }));
+    const result = await collectPerfRegressionWhenDue('ws', {
+      nowMs: () => now,
+      latestCapturedAt: async () => new Date(now - 60_000),
+      collect,
+    });
+    expect(result).toEqual({ attempted: false, persisted: true, overdue: false, lastCapturedAt: new Date(now - 60_000).toISOString() });
+    expect(collect).not.toHaveBeenCalled();
+  });
+
+  it('restores the series after a paused watchdog and verifies the actual persisted row', async () => {
+    let latest = new Date(now - 31 * 60_000);
+    const collect = vi.fn(async () => {
+      latest = new Date(now);
+      return { signals: [] };
+    });
+    const result = await collectPerfRegressionWhenDue('ws', {
+      nowMs: () => now,
+      latestCapturedAt: async () => latest,
+      collect,
+    });
+    expect(result).toEqual({ attempted: true, persisted: true, overdue: false, lastCapturedAt: new Date(now - 31 * 60_000).toISOString() });
+    expect(collect).toHaveBeenCalledOnce();
+  });
+
+  it('reports two missed cadences when collection returns without persisting', async () => {
+    const latest = new Date(now - 2 * PERF_REGRESSION_SAMPLE_INTERVAL_MS);
+    const result = await collectPerfRegressionWhenDue('ws', {
+      nowMs: () => now,
+      latestCapturedAt: async () => latest,
+      collect: async () => ({ signals: [], note: 'snapshot insert failed' }),
+    });
+    expect(result).toEqual({ attempted: true, persisted: false, overdue: true, lastCapturedAt: latest.toISOString(), note: 'snapshot insert failed' });
+  });
+
+  it('respects an explicitly disabled performance-rig flag without a false overdue alarm', async () => {
+    const result = await collectPerfRegressionWhenDue('ws', {
+      nowMs: () => now,
+      latestCapturedAt: async () => null,
+      collect: async () => ({ signals: [], note: PERF_REGRESSION_DISABLED_NOTE }),
+    });
+    expect(result).toEqual({ attempted: true, persisted: false, overdue: false, lastCapturedAt: null, note: PERF_REGRESSION_DISABLED_NOTE });
+  });
+});
 
 const healthy: PerfRegressionMetrics = {
   loopLagP95Ms: 50,

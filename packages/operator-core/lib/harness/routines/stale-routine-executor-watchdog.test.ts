@@ -12,12 +12,18 @@ import { describe, expect, it } from 'vitest';
 import {
   RESTART_SAFETY_NOTE,
   ROUTINE_DRIFT_NAME_CAP,
+  STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
+  STALE_EXECUTOR_RESTART_COOLDOWN_MS,
+  restartStaleBgHostExecutor,
   evaluateExecutorStaleness,
   executorAlarmContext,
   executorIdentity,
   refreshedEscalationPayload,
   routineDriftSentence,
+  staleRoutineExecutorSweep,
   staleExecutorThresholdSec,
+  waitForStaleExecutorRestartGeneration,
+  type ExecutorStalenessVerdict,
 } from './stale-routine-executor-watchdog';
 import {
   captureProcessBootIdentity,
@@ -281,6 +287,144 @@ describe('executorIdentity — a stable per-process key that never conflates two
     } finally {
       if (savedHono !== undefined) process.env.PAPERCUSP_HONO_PORT = savedHono;
       if (savedPort !== undefined) process.env.PORT = savedPort;
+    }
+  });
+});
+
+describe('stale bg-host remediation — guarded, injectable, and generation-verified', () => {
+  const staleVerdict = (): ExecutorStalenessVerdict => ({
+    stale: true,
+    reason: 'test stale bg-host executor',
+    ageMs: 7 * 3_600_000,
+    commitsBehind: 3,
+    routineDrift: null,
+  });
+
+  it('verifies that the sanctioned restart replaced the bg-host generation', async () => {
+    const verification = await waitForStaleExecutorRestartGeneration(101, {
+      run: async () => ({ stdout: '202\n' }),
+      now: () => 1_000,
+      sleep: async () => undefined,
+      waitMs: 0,
+      pollMs: 0,
+    });
+
+    expect(verification).toEqual({
+      verified: true,
+      beforePid: 101,
+      observedPid: 202,
+      code: 'generation_changed',
+    });
+  });
+
+  it('only remediates the stale bg-host identity and keeps the safety rails on the ptool call', async () => {
+    let nowMs = 1_000_000_000;
+    const calls: Array<{ command: string; args: string[]; stdin: string; timeout: number }> = [];
+    const run = async (command: string, args: string[], options: { stdin: string; timeout: number }) => {
+      calls.push({ command, args, stdin: options.stdin, timeout: options.timeout });
+      if (command === 'systemctl') return { stdout: '101\n' };
+      return { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+    };
+
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      verifyGeneration: async (beforePid) => ({
+        verified: true,
+        beforePid: Number(beforePid),
+        observedPid: 202,
+        code: 'generation_changed',
+      }),
+    });
+
+    expect(result).toMatchObject({
+      attempted: true,
+      restarted: true,
+      coalesced: false,
+      verified: true,
+      code: 'restarted',
+    });
+    const ptool = calls.find((call) => call.command === process.execPath);
+    expect(ptool).toBeDefined();
+    expect(ptool?.args).toEqual(['/tmp/ptool.mjs', 'dev:restart', '--json', '-']);
+    const payload = JSON.parse(ptool?.stdin ?? '{}') as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      target: 'bg-host',
+      confirm: true,
+      authorize: true,
+      max_drain_sec: 0,
+      git_sync_drain_sec: STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
+    });
+    expect(String(payload.reason)).toContain('port-3271');
+    expect(payload).not.toHaveProperty('override_git_sync_collision');
+    expect(payload).not.toHaveProperty('force');
+    expect(ptool?.timeout).toBeGreaterThan(STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC * 1_000);
+
+    const cooldown = await restartStaleBgHostExecutor('port-3271', staleVerdict(), { now: () => nowMs, run });
+    expect(cooldown).toMatchObject({ attempted: false, code: 'restart_cooldown' });
+    expect(calls).toHaveLength(2); // baseline PID read + the one ptool invocation
+    nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS + 1;
+  });
+
+  it('does not invoke the restart command for another identity or a healthy verdict', async () => {
+    let calls = 0;
+    const run = async () => {
+      calls += 1;
+      return { stdout: '' };
+    };
+
+    await expect(restartStaleBgHostExecutor('port-3170', staleVerdict(), { run })).resolves.toMatchObject({
+      attempted: false,
+      code: 'identity_not_bg_host',
+    });
+    await expect(
+      restartStaleBgHostExecutor('port-3271', { ...staleVerdict(), stale: false }, { run }),
+    ).resolves.toMatchObject({ attempted: false, code: 'not_stale' });
+    expect(calls).toBe(0);
+  });
+});
+
+describe('staleRoutineExecutorSweep — remediation runs before alert debounce', () => {
+  it('invokes stale remediation even when the alert episode is already debounced', async () => {
+    const savedPort = process.env.PAPERCUSP_HONO_PORT;
+    const savedRoutines = process.env.PAPERCUSP_DBOS_ROUTINES;
+    const savedThreshold = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    process.env.PAPERCUSP_HONO_PORT = '3271';
+    process.env.PAPERCUSP_DBOS_ROUTINES = '1';
+    process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '1';
+    const order: string[] = [];
+    try {
+      const result = await staleRoutineExecutorSweep(
+        { now: 100_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+        {
+          bootCommit: 'a'.repeat(40),
+          currentCommit: 'b'.repeat(40),
+          bootTimeMs: 0,
+          commitsBehind: 3,
+          routineDrift: { changed: [], addedSinceBoot: [] },
+          restart: async () => {
+            order.push('restart');
+            return { attempted: true, restarted: false, coalesced: true, verified: true, code: 'coalesced' };
+          },
+          recentWatchdogFires: async () => {
+            order.push('debounce');
+            return 1;
+          },
+        },
+      );
+
+      expect(result.outcome).toBe('skipped');
+      expect(result.reason).toBe('debounced');
+      expect(result.restart).toMatchObject({ attempted: true, coalesced: true, code: 'coalesced' });
+      expect(order).toEqual(['restart', 'debounce']);
+    } finally {
+      if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = savedPort;
+      if (savedRoutines === undefined) delete process.env.PAPERCUSP_DBOS_ROUTINES;
+      else process.env.PAPERCUSP_DBOS_ROUTINES = savedRoutines;
+      if (savedThreshold === undefined) delete process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = savedThreshold;
     }
   });
 });

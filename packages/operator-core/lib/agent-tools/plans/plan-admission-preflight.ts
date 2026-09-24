@@ -13,6 +13,7 @@ import {
 } from '../../work-items';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
 const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_KINDS);
 
@@ -537,12 +538,40 @@ export async function preflightExactPlanAdmission(args: {
     });
     return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
   }
-  const workItems = await listWorkItems({
+  // listWorkItems derives its workspace from ALS, while the plan and lane
+  // readers below accept this explicit workspaceId. Bind the same scope for
+  // the promoted-row census or a cross-workspace caller sees false promotion
+  // lag even when this exact plan has a real promoted row.
+  const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
     harness: args.harnessSlug,
     sourcePlanSlug: args.planSlug,
     includeChildren: true,
     limit: WORK_ITEMS_MAX_LIMIT,
+  }));
+  const planItems = planItemsForRow(row);
+  const sourceCapExhausted = workItems.length >= WORK_ITEMS_MAX_LIMIT;
+  // These structural refusals are definitive before the scheduler lane is read.
+  // The lane oracle can be comparatively slow and cannot turn an unpromoted,
+  // duplicate-covered, or non-actionable plan into a launchable one. Returning
+  // here keeps a bounded agenda read able to name the real repair instead of
+  // timing out and replacing a known promotion gap with an unknown verdict.
+  const structural = evaluateExactPlanAdmission({
+    planSlug: args.planSlug,
+    planItems,
+    workItems,
+    laneHealth: null,
+    sourceCapExhausted,
+    requestedSeats: args.requestedSeats,
+    assignee: args.claimant,
+    allowCallerHeld: args.allowCallerHeld,
+    claimKinds: args.claimKinds,
   });
+  if (
+    structural.reason === 'no-actionable-plan-items' ||
+    structural.reason === 'promotion-lag' ||
+    structural.reason === 'duplicate-coverage' ||
+    (sourceCapExhausted && structural.reason === 'lane-unknown')
+  ) return structural;
   const effectiveClaimKinds = args.claimKinds?.length
     ? [...args.claimKinds]
     : deriveExactPlanClaimKinds(workItems);
@@ -571,10 +600,10 @@ export async function preflightExactPlanAdmission(args: {
   });
   return evaluateExactPlanAdmission({
     planSlug: args.planSlug,
-    planItems: planItemsForRow(row),
+    planItems,
     workItems,
     laneHealth,
-    sourceCapExhausted: workItems.length >= WORK_ITEMS_MAX_LIMIT,
+    sourceCapExhausted,
     requestedSeats: args.requestedSeats,
     assignee: args.claimant,
     allowCallerHeld: args.allowCallerHeld,

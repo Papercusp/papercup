@@ -2273,6 +2273,34 @@ export function fleetOscFromEnv(env?: EnvironmentMap): string | null;
  */
 export function injectTurn(sock: string, text: string, ownerId?: string): Promise<any>;
 /**
+ * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ *
+ * The in-place respawn below re-spawns the CLI with THIS host's env, so whatever
+ * PAPERCUSP_OPERATOR_URL the session was launched with rides into every successor
+ * unexamined. The launcher heals a dead pin only when one of ITS OWN requests fails
+ * (fetchWithResilience); an in-place respawn makes no launcher request, so nothing
+ * ever re-checks the pin. Measured 2026-09-23: a session launched from a staging
+ * console carried http://localhost:3170 through every carry-respawn, and each staging
+ * restart took its MCP tools and its owner-directive capture down with it.
+ *
+ * The pin is replaced only when it REFUSES the connection — a port with nothing
+ * listening. A slow or erroring operator is alive and stays authoritative, so a live
+ * staging pin is never silently moved to green (the rule resolveOmpOperatorUrl in the
+ * launcher also follows). The replacement is the local MCP proxy, and only when it
+ * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
+ * healed, otherwise null. Never throws.
+ *
+ * @param {EnvironmentMap} env
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
+ */
+export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs }?: {
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+}): Promise<{
+    from: string;
+    to: string;
+} | null>;
+/**
  * Host `command args` through a managed pty, bridging the user's TTY and
  * exposing the control socket. Returns a Promise that resolves with the child's
  * exit code (the caller maps that to its own exit). The pty + socket live in

@@ -19,7 +19,7 @@ describe('cache reporting coverage', () => {
     in_t: '100', out_t: '100', cr_t: '800', cw_t: null, usd: null,
     incomplete_tokens: '10', unpriced: '10', estimated_usd: null, reported_usd: null,
     comparable_read: '800', comparable_input: '1000', comparable_samples: '10',
-    request_observations: '10', request_hits: '9', ...changes });
+    request_observations: '10', request_hits: '9', unrecoverable_samples: '0', ...changes });
   it('separates token reuse, request hits and unknown write/pricing coverage', () => {
     const text = renderDim('source', [row()], new Map());
     expect(text).toContain('Token reuse 80.00% (10/10 comparable samples)');
@@ -41,6 +41,10 @@ describe('cache reporting coverage', () => {
   it('suppresses misleading change percentages when either population has incomplete counts', () => {
     const text = renderDim('source', [row({ in_t: '1000000' })], new Map([[row().dim, row({ in_t: '1000' })]]));
     expect(text).not.toMatch(/\([+-]\d+%\)/);
+  });
+  it('discloses the unavailable-source population separately from merely unpriced samples', () => {
+    expect(renderDim('source', [row({ unrecoverable_samples: '3' })], new Map()))
+      .toContain('10/10 unpriced samples; 3/10 source-unavailable');
   });
 });
 

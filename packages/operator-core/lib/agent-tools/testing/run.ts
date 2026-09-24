@@ -134,6 +134,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   prepareTestEvidence,
   finishTestEvidence,
+  deferredTestEvidenceRecoveryBundle,
   recoverTestEvidence,
   testEvidenceSchema,
   recoverTestEvidenceSchema,
@@ -1343,6 +1344,14 @@ export function emptyDistilledRunRefusal(opts: {
  */
 export function shouldResolveHarnessTestRunIds(result: Pick<TestFilesCoreResult, 'ok' | 'error'>): boolean {
   return !(result.ok === false && result.error === 'timeout');
+}
+
+/** Preserve the detached run handle in every recovery response, including fail-soft bundles. */
+export function testEvidenceRecoveryRunId(
+  originRunId: string,
+  result: { error?: string; detachedRunId?: string },
+): string {
+  return result.error === 'timeout' && result.detachedRunId ? result.detachedRunId : originRunId;
 }
 
 /**
@@ -3256,6 +3265,7 @@ export default defineTool({
       result.error === undefined && args.testNamePattern !== undefined
         ? { ...result, testNamePattern: args.testNamePattern }
         : result;
+    const evidenceRunId = testEvidenceRecoveryRunId(runId, result);
     const surfacedResult = {
       ...result,
       ...(testRunIdsReadback?.ids === null ? {} : { testRunIds: testRunIdsReadback?.ids }),
@@ -3285,29 +3295,31 @@ export default defineTool({
       rootSource: rootSelection.source,
       ...(prepared
         ? {
-            evidenceBundle: await finishTestEvidence(
-              prepared,
-              runId,
-              result.error === 'timeout' && result.detachedRunId ? result.detachedRunId : runId,
-              evidenceScope!,
-              evidenceResult,
-            ).catch((error) => ({
-              status: 'incomplete',
-              acceptance: 'requires-review',
-              message: String(error),
-              recovery: {
-                tool: 'testing:run',
-                args: {
-                  harness: harnessSlug,
-                  recoverEvidence: {
-                    workItemId: evidenceRequest!.workItemId,
-                    planSlug: evidenceRequest!.planSlug,
-                    originRunId: runId,
-                    runId,
+            evidenceBundle: result.error === 'timeout'
+              ? deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, evidenceRunId, evidenceScope!.harnessSlug)
+              : await finishTestEvidence(
+                  prepared,
+                  runId,
+                  evidenceRunId,
+                  evidenceScope!,
+                  evidenceResult,
+                ).catch((error) => ({
+                  status: 'incomplete',
+                  acceptance: 'requires-review',
+                  message: String(error),
+                  recovery: {
+                    tool: 'testing:run',
+                    args: {
+                      harness: harnessSlug,
+                      recoverEvidence: {
+                        workItemId: evidenceRequest!.workItemId,
+                        planSlug: evidenceRequest!.planSlug,
+                        originRunId: runId,
+                        runId: evidenceRunId,
+                      },
+                    },
                   },
-                },
-              },
-            })),
+                })),
           }
         : {}),
     };

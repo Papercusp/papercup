@@ -13,6 +13,21 @@ beforeAll(async () => {
 afterAll(async () => { await org?.cleanup(); });
 
 describe('token report source coverage (real PostgreSQL)', () => {
+  it('includes unavailable-source rows in coverage but not token or price estimates', async () => {
+    const sql = org.adminSql;
+    const workspace = 'cache-unrecoverable-report';
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id,ts,source,provider,bucket_key,model_class,usage_provenance)
+      VALUES (${workspace},100,'interactive','openai','openai:gpt','default',
+        ${JSON.stringify({ grain: 'unrecoverable-legacy', historicalAvailability: { status: 'source-unavailable' } })}::jsonb)`;
+    const [row] = await readTokenReportAggregation(sql, workspace, 'source', 0, 101);
+    expect(Number(row.unrecoverable_samples)).toBe(1);
+    expect(Number(row.unpriced)).toBe(1);
+    expect(Number(row.comparable_samples)).toBe(0);
+    expect(Number(row.request_observations)).toBe(0);
+    expect(row.in_t).toBeNull();
+    expect(row.usd).toBeNull();
+  });
   it('pairs comparable populations, separates legacy time and reports costs from the actual writer labels', async () => {
     const sql = org.adminSql;
     for (const [ws, event, input, read, write, total, cost, costSource, grain] of [

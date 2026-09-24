@@ -3920,17 +3920,41 @@ impl App {
                     descriptor.backend_extension = extension;
                 }
             }
-            crate::su_session::SuSessionEvent::Error { message, .. } => {
+            crate::su_session::SuSessionEvent::Error {
+                message,
+                recoverable,
+                ..
+            } => {
                 state.error = Some(message.clone());
-                state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
+                // `recoverable` is the host's verdict on the RUNTIME. An
+                // interrupted or refused turn ends with a recoverable error
+                // while the same native session keeps taking turns; orphaning
+                // it would reopen the conversation with a second launch.
+                // Runtime death also arrives as lifecycle `failed`/`ended`.
+                if !recoverable {
+                    state.reconciliation =
+                        crate::su_session::SuSessionReconciliation::FailedOrphaned;
+                }
                 // A replayed error is a prior runtime's failure, shown on
                 // reattach; the turn being sent now never reached that runtime.
                 if !replayed {
-                    let uncertain = self
-                        .su_pending_turn
-                        .as_ref()
-                        .is_some_and(|p| p.command.is_some());
-                    self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
+                    if recoverable && self.su_pending_turn.is_none() {
+                        // The failed turn was already accepted: nothing to
+                        // retry, and the next message goes to this session.
+                        self.finish_chat_turn();
+                        self.su_active_command_id = None;
+                        self.last_error = Some(format!("SU-session: {message}"));
+                        self.session_note = Some(
+                            "Turn ended without a reply — the session is still attached and takes your next message."
+                                .into(),
+                        );
+                    } else {
+                        let uncertain = self
+                            .su_pending_turn
+                            .as_ref()
+                            .is_some_and(|p| p.command.is_some());
+                        self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
+                    }
                 }
             }
             crate::su_session::SuSessionEvent::Card {
@@ -15698,6 +15722,60 @@ mod tests {
             app.su_pending_turn.as_ref().and_then(|p| p.error.as_deref()),
             Some("SU-session: recovered engine failed")
         );
+    }
+
+    /// REGRESSION (P-012 diag10). An interrupted Claude turn ends with two
+    /// RECOVERABLE errors after the runtime is back at waiting-for-owner. They
+    /// must not orphan the binding: the follow-up goes to the same attached
+    /// session, never through a second launch.
+    #[test]
+    fn su_recoverable_turn_error_keeps_the_runtime_attached() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let mut idle = su_event_base("lifecycle", 1);
+        idle["previousState"] = json!("running");
+        idle["state"] = json!("waiting-for-owner");
+        idle["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(idle));
+        let error_at = |sequence: u64, scope: &str, recoverable: bool| {
+            let mut event = su_event_base("error", sequence);
+            event["scope"] = json!(scope);
+            event["code"] = json!("claude_turn_failed");
+            event["message"] =
+                json!("Claude ended this turn without a usable reply (error_during_execution)");
+            event["recoverable"] = json!(recoverable);
+            su_event(event)
+        };
+
+        app.apply_su_session_event(error_at(2, "turn", true));
+        app.apply_su_session_event(error_at(3, "transport", true));
+        let state = app.su_session.as_ref().unwrap();
+        assert!(
+            state.is_live(),
+            "a recoverable turn error leaves the runtime live"
+        );
+        assert_ne!(
+            state.reconciliation,
+            crate::su_session::SuSessionReconciliation::FailedOrphaned
+        );
+        assert_eq!(
+            app.su_dispatch_decision().target,
+            crate::su_session::SuDispatchTarget::AttachedSuSession
+        );
+        assert!(!app.chat_streaming);
+        assert!(app
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("error_during_execution")));
+
+        // An unrecoverable error still orphans, and the next turn reopens.
+        app.apply_su_session_event(error_at(4, "session", false));
+        assert!(!app.su_session.as_ref().unwrap().is_live());
+        assert!(matches!(
+            app.su_dispatch_decision().target,
+            crate::su_session::SuDispatchTarget::OpenSuSession(_)
+        ));
     }
 
     /// REGRESSION (P-010). The snapshot cursor must be the FLOOR of the host's

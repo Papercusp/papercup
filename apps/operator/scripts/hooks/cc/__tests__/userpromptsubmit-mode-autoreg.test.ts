@@ -420,6 +420,9 @@ describe('owner-granted mode auto-registration', () => {
   it('fails open when the operator is unreachable, and tells the agent to self-register', async () => {
     const r = await submit('go into auto mode', {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      // A refused pin now falls back to the MCP proxy (EI-24091823697677465). Point
+      // that at the same dead port so this case never reaches the real :9071.
+      PAPERCUSP_MCP_PROXY_PORT: '1',
     });
     expect(r.status).toBe(0); // cardinal cc/ contract: never block a turn
     expect(r.context).toContain('OWNER (interactive)'); // provenance still stamped

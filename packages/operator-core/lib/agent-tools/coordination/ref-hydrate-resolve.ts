@@ -66,7 +66,50 @@ function msgLabel(env: CoordEnvelope): string {
   return `msg ${env.msg_id} (${shortHandle(env.from)} → ${to}, ${shortTs(env.ts)})`;
 }
 
-function terminalSubjectFor(wi: { state: string; closedAt: string | null }): TerminalSubject | undefined {
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function gradingAuditState(payload: unknown): string | null {
+  const observation = recordOf(recordOf(payload)?.observation);
+  const gradingAudit = recordOf(observation?.gradingAudit);
+  const state = gradingAudit?.state;
+  return typeof state === 'string' && ['pending', 'passed', 'failed', 'cancelled'].includes(state)
+    ? state
+    : null;
+}
+
+function doneScorecardAuditPending(wi: { state: string; payload?: unknown }): boolean {
+  return wi.state === 'done' && gradingAuditState(wi.payload) === 'pending';
+}
+
+function workItemDisplayState(wi: { state: string; payload?: unknown }): string {
+  return doneScorecardAuditPending(wi) ? 'audit-pending' : wi.state;
+}
+
+function workItemSnippet(
+  wi: { title: string; summary: string; payload?: unknown },
+  snippetChars: number,
+): string {
+  const auditState = gradingAuditState(wi.payload);
+  const prefix = auditState ? 'card filed, audit ' + auditState : null;
+  const content = [prefix, wi.title, wi.summary]
+    .filter((part): part is string => typeof part === 'string' && part.length > 0)
+    .join(' — ');
+  return clampSnippet(content, snippetChars);
+}
+
+function terminalSubjectFor(wi: {
+  state: string;
+  closedAt: string | null;
+  payload?: unknown;
+}): TerminalSubject | undefined {
+  // WI-10002743: scorecards:emit files the card with state=done before its
+  // independent gradingAudit settles. A pending audit is live card work, not a
+  // terminal subject; once it settles, preserve the ordinary item verdict.
+  if (doneScorecardAuditPending(wi)) return undefined;
   return isSettledWorkItemState(wi.state)
     ? { state: wi.state, closedAt: wi.closedAt }
     : undefined;
@@ -87,8 +130,8 @@ const defaultWorkItemResolver: RefResolver = async (ref, budget) => {
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
   const terminalSubject = terminalSubjectFor(wi);
   return {
-    label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`,
-    snippet: clampSnippet([wi.title, wi.summary].filter(Boolean).join(' — '), budget.snippetChars),
+    label: wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + assignee + ']',
+    snippet: workItemSnippet(wi, budget.snippetChars),
     ...(terminalSubject ? { terminalSubject } : {}),
   };
 };
@@ -119,6 +162,7 @@ export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
   if (!wi) return null;
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
   const terminalSubject = terminalSubjectFor(wi);
+  const label = wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + assignee + ']';
   let tail = '';
   try {
     const [{ getWorkItemCheckpoint }, { activeWorkspaceId }] = await Promise.all([
@@ -134,12 +178,9 @@ export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
   } catch {
     /* fail-soft: no tail */
   }
-  const head = clampSnippet(
-    [wi.title, wi.summary].filter(Boolean).join(' — '),
-    Math.max(0, budget.snippetChars - tail.length),
-  );
+  const head = workItemSnippet(wi, Math.max(0, budget.snippetChars - tail.length));
   return {
-    label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`,
+    label,
     snippet: `${head}${tail}`,
     ...(terminalSubject ? { terminalSubject } : {}),
   };

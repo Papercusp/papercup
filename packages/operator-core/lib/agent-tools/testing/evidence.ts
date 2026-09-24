@@ -315,6 +315,38 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
   };
 }
 
+/** Return a bounded pending bundle; defer ledger reconciliation until the detached run can settle. */
+export function deferredTestEvidenceRecoveryBundle(
+  request: Pick<Request, 'workItemId' | 'planSlug' | 'bindings'>,
+  originRunId: string,
+  runId: string,
+  harnessSlug: string,
+) {
+  const evidenceRefs = request.bindings.map((_, index) => refFor(originRunId, index));
+  return {
+    status: 'incomplete' as const,
+    verificationFingerprint: null,
+    acceptance: 'requires-review' as const,
+    message: 'The foreground test run timed out. Evidence remains pending until recovery reconciles the detached run with the test ledger.',
+    rows: request.bindings.slice(0, 6).map((binding, index) => ({
+      specId: binding.specId,
+      specRevision: binding.specRevision,
+      evidenceRef: evidenceRefs[index],
+      testRunId: null,
+      phase: 'pending' as const,
+      outcome: 'unknown' as const,
+    })),
+    total: request.bindings.length,
+    omitted: Math.max(0, request.bindings.length - 6),
+    readRef: { tool: 'plans:get-spec-evidence', args: { harness: harnessSlug,
+      slug: request.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
+      workItemIds: [request.workItemId], evidenceRefs } },
+    recovery: { tool: 'testing:run', args: { harness: harnessSlug, recoverEvidence: {
+      workItemId: request.workItemId, planSlug: request.planSlug, originRunId, runId,
+    } } },
+  };
+}
+
 /**
  * P-018 / P-011: re-measure ONLY the test proofs whose measured source or test files
  * moved, in one call, from the recipes the bindings already persisted.
@@ -534,9 +566,25 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   const latest = new Map<string, (typeof evidence)[number]>();
   for (const row of [...evidence].sort((a, b) => b.id - a.id)) if (!latest.has(row.evidenceRef)) latest.set(row.evidenceRef, row);
   const prepared: Prepared[] = [];
+  const recoveredRunIds = new Set<string>();
+  // When the outer MCP request itself expires, its response may hide the
+  // detachedRunId. In that case the caller only has the origin run-group id;
+  // use the persisted, origin-matched execution record to recover the detached
+  // handle rather than requiring the caller to reconstruct it from memory.
+  const originOnlyRecovery = recovery.runId === recovery.originRunId;
   for (const row of latest.values()) {
     const execution = row.details.testExecution as { schemaVersion?: number; runId?: string; originRunId?: string; binding?: unknown } | undefined;
-    if (execution?.schemaVersion !== 1 || execution.originRunId !== recovery.originRunId || execution.runId !== recovery.runId) continue;
+    if (execution?.schemaVersion !== 1 || execution.originRunId !== recovery.originRunId
+      || typeof execution.runId !== 'string'
+      || (!originOnlyRecovery && execution.runId !== recovery.runId && execution.runId !== recovery.originRunId)) continue;
+    // An origin-only retry can discover a prior detached handle in the row. If
+    // the caller already has that detached handle but the row still contains
+    // its pre-timeout origin id, trust the caller's handle and let exact ledger
+    // scope/file/run checks decide whether it has a measured result.
+    const recoveredRunId = originOnlyRecovery || execution.runId === recovery.runId
+      ? execution.runId
+      : recovery.runId;
+    recoveredRunIds.add(recoveredRunId);
     const binding = bindingSchema.parse(execution.binding);
     const measurement = repoFilesEvidenceMeasurementSchema.parse(row.details.currentMeasurement);
     prepared.push({ binding, measurement, input: {
@@ -549,5 +597,6 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
     } });
   }
   if (prepared.length === 0) throw new Error('evidence_recovery_not_found');
-  return finishTestEvidence(prepared, recovery.originRunId, recovery.runId, scope, undefined, deps);
+  if (recoveredRunIds.size !== 1) throw new Error('evidence_recovery_ambiguous_run_id');
+  return finishTestEvidence(prepared, recovery.originRunId, [...recoveredRunIds][0]!, scope, undefined, deps);
 }

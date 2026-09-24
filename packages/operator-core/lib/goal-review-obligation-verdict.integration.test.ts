@@ -20,6 +20,9 @@ import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pas
 import { recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
 import { readVerbatimTail } from './turn-journal';
 import { createPgTelemetryStore } from './activity-pg-store';
+import { preflightExactPlanAdmission, type ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
+import { createWorkItem } from './work-items';
+import { runWithWorkspaceIfConcrete } from './workspace-als';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -28,7 +31,10 @@ const GOAL = `review-verdict-${RUN}`;
 const HARNESS = `zzz-review-verdict-${RUN}`;
 const SLUG = `checkout-retry-${RUN}`;
 const PLAN = `plan:${HARNESS}/${SLUG}`;
+const READY_SLUG = `checkout-ready-${RUN}`;
+const READY_PLAN = `plan:${HARNESS}/${READY_SLUG}`;
 let fx: BaselineCoordFixture;
+let readyWorkItemId: string | null = null;
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
@@ -58,6 +64,7 @@ afterEach(async () => {
 });
 afterAll(async () => {
   if (!fx) return;
+  if (readyWorkItemId) await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${readyWorkItemId}`;
   await fx.admin`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
@@ -82,13 +89,18 @@ async function record(disposition: 'existing-plans-sufficient' | 'plan-needed') 
   expect('isError' in result && result.isError === true).toBe(false);
 }
 
-async function readAgenda(refusal: GoalLaunchRefusal | null = null) {
+async function readAgenda(refusal: GoalLaunchRefusal | null = null, admission: 'controlled-ready' | 'canonical' = 'controlled-ready') {
   return readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Real mode/goal/portfolio/tick/authority/obligation reads. Unrelated admission
-    // and final acceptance are controlled, so this is not launch or closure proof.
+    // and final acceptance are controlled for review/budget cases. The canonical
+    // admission cases below opt into the production preflight explicitly.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
+      ...(admission === 'controlled-ready' ? { planAdmission: async () => ({
+        ready: true, status: 'ready', reason: 'ready', message: 'controlled admission for non-admission test',
+        requestedSeats: 1, executableWidth: 1,
+      } as ExactPlanAdmission) } : {}),
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },
         budget: null, refusal, degraded: false, degradedReasons: [] }),
@@ -97,6 +109,17 @@ async function readAgenda(refusal: GoalLaunchRefusal | null = null) {
   });
 }
 async function agenda(refusal: GoalLaunchRefusal | null = null) { return (await readAgenda(refusal)).agenda; }
+
+describe('P005 canonical exact-plan admission', () => {
+  it('reports real promotion lag as a plan repair without offering a launch', async () => {
+    const result = (await readAgenda(null, 'canonical')).agenda;
+    const row = result.evaluations.find((entry) => entry.family === 'plan-placement');
+    expect(row).toMatchObject({ status: 'blocked', scope: { planSlug: SLUG },
+      action: { kind: 'repair', targetRef: PLAN, summary: expect.stringContaining('plans:start') } });
+    expect(row?.reason).toContain('Actionable plan items lack a promoted row: P-001.');
+    expect(row?.action?.tool).toBeUndefined();
+  }, 90_000);
+});
 
 describe('native turn-end policy observation from canonical goal sources', () => {
   it('stores the real goal/plan policy with native completion, without calling a later read eligibility', async () => {
@@ -203,5 +226,38 @@ describe('P005 formed launch refusal through the canonical PG agenda', () => {
     expect(row?.action?.summary).toMatch(repair);
     expect(row?.action?.tool).toBeUndefined();
     expect(result.primary[0]?.id).toBe(row?.id);
+  }, 90_000);
+});
+
+describe('P005 real PG independent-lane selection', () => {
+  it('advances the later promoted plan without treating the earlier promotion gap as a prerequisite', async () => {
+    const content = `---\ntitle: Ready checkout plan\nslug: ${READY_SLUG}\nstatus: ready\n---\n\n## Build\n\n- **P-001** \`todo\` Document ready checkout behavior\n`;
+    await seedPlan(fx.admin, WS, HARNESS, READY_SLUG, content);
+    const index = deriveIndexFromContent(content);
+    await fx.admin.begin(async (tx) => {
+      await tx`UPDATE harness_shared.harness_plans SET title = ${index.title}, status = ${index.status}
+        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${READY_SLUG}`;
+      await writePlanIndexRows(tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+        { workspaceId: WS, harnessSlug: HARNESS, planSlug: READY_SLUG }, index);
+      expect((await applyGoalPropertyWrite(tx as unknown as typeof fx.admin, {
+        workspaceId: WS, goalId: GOAL, property: 'worklist', value: [PLAN, READY_PLAN], expectedVersion: 1,
+        actorId: OWNER, provenance: 'agent-edit',
+      })).ok).toBe(true);
+    });
+    const work = await runWithWorkspaceIfConcrete(WS, () => createWorkItem({
+      workspaceId: WS, harness: HARNESS, kind: 'task', title: 'Ready checkout verification',
+      summary: 'Promoted work on the later independent plan', createdBy: OWNER,
+      sourcePlanSlug: READY_SLUG, sourcePlanItemIds: ['P-001'],
+    }));
+    readyWorkItemId = work.id;
+    const admission = await preflightExactPlanAdmission({ workspaceId: WS, harnessSlug: HARNESS,
+      planSlug: READY_SLUG, actor: OWNER, specId: `goal-obligation-${HARNESS}-${READY_SLUG}-plan-fleet-plan`,
+      fleetSlug: `${HARNESS}-${READY_SLUG}-plan-fleet`, requestedSeats: 1 });
+    expect(admission).toMatchObject({ ready: true, reason: 'ready', requestedSeats: 1 });
+    const result = (await readAgenda(null, 'canonical')).agenda;
+    const row = result.evaluations.find((entry) => entry.family === 'plan-placement');
+    expect(row).toMatchObject({ status: 'due', scope: { planSlug: READY_SLUG },
+      action: { kind: 'delegate', targetRef: READY_PLAN, args: { plan: READY_SLUG } } });
+    expect(row?.action?.tool).toBe('fleet:launch-on-plan');
   }, 90_000);
 });

@@ -207,6 +207,35 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-answer-1', timeoutMs: DISPATCH_VERIFY_TIMEOUT_MS });
   });
 
+  it('publishes the fork responder before startup verification can admit a first reply', async () => {
+    const { deps, calls } = makeFakes();
+    const order: string[] = [];
+    let rowResponder = 'su-expert';
+
+    deps.verifyResumeStarted = async (ownerId) => {
+      order.push('verify');
+      expect(rowResponder).toBe(ownerId);
+      expect(calls.spawn[0]!.coordOwnerId).toBe(ownerId);
+      expect(calls.spawn[0]!.envelope.greetingCmd).toContain(`--owner-id=${ownerId}`);
+      return { started: true, waitedMs: 900 };
+    };
+
+    const r = await dispatchConsultResponder(
+      {
+        ...OPTS,
+        onAnsweringOwner: async (ownerId) => {
+          rowResponder = ownerId;
+          order.push('stamped');
+        },
+      },
+      CTX,
+      deps,
+    );
+
+    expect(order).toEqual(['stamped', 'verify']);
+    expect(r).toMatchObject({ dispatched: true, operation: 'fork', answeringOwnerId: 'su-answer-1' });
+  });
+
   it.each([
     { agent: 'codex' as const, model: 'sol', account: 'auto' },
     { agent: 'omp' as const, model: 'sonnet', account: 'default' },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import runTool, { emptyDistilledRunRefusal, nameFilterNoMatchRefusal } from './run';
+import runTool, { emptyDistilledRunRefusal, nameFilterNoMatchRefusal, testEvidenceRecoveryRunId } from './run';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -60,6 +60,14 @@ describe('testing:run selector arbitration', () => {
     expect(runTool.args.safeParse({ recoverEvidence }).success).toBe(true);
     const data = await callHandler({ files: ['a.test.ts'], recoverEvidence });
     expect(data.error).toBe('mutually_exclusive_selectors');
+  });
+
+  it('uses the detached handle for evidence recovery when a run times out', () => {
+    const originRunId = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
+    const detachedRunId = 'ca5fce52-7c67-4d38-8c26-96a952f6a2a2';
+    expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout', detachedRunId })).toBe(detachedRunId);
+    expect(testEvidenceRecoveryRunId(originRunId, { error: 'timeout' })).toBe(originRunId);
+    expect(testEvidenceRecoveryRunId(originRunId, { error: undefined, detachedRunId })).toBe(originRunId);
   });
 
   it('does not claim evidence from an affected-test plan that runs nothing', async () => {

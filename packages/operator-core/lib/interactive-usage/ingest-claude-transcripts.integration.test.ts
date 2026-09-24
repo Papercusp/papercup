@@ -14,11 +14,13 @@ vi.mock('../workspace-registry', async (original) => ({
   ...(await original<typeof import('../workspace-registry')>()), activeWorkspaceId: () => WS,
 }));
 
-const { ingestInteractiveUsage, parseTranscriptChunk } = await import('./ingest-claude-transcripts');
+const { ingestInteractiveUsage, parseTranscriptChunk, legacyUsageFingerprint, markUnavailableTranscriptUsage } = await import('./ingest-claude-transcripts');
+const { replayTranscriptPrefix } = await import('./replay-transcripts');
 const { parseCodexChunk, parseOmpChunk, codexSessionIdForFile } = await import('./ingest-adapters');
 let org: OrgTestDb;
 let sql: Sql;
 let root: string;
+let backupId: number;
 const roots: string[] = [];
 const line = (value: unknown) => JSON.stringify(value) + '\n';
 const context = (model: string) => line({ type: 'turn_context', payload: { model } });
@@ -34,6 +36,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
+  await sql`ALTER TABLE harness_shared.backup_snapshots ADD COLUMN IF NOT EXISTS db_dump_ok boolean`;
   const migration = new URL('../../../../libs/papercusp/libs/db/sql/1204-interactive-usage-parser-state-cache-tiers.sql', import.meta.url);
   const body = await fs.readFile(migration, 'utf8').catch(() => fs.readFile(new URL(migration.href + '.DRAFT'), 'utf8'));
   await sql.unsafe(body); // real additive migration, also before the draft is armed
@@ -41,6 +44,10 @@ beforeAll(async () => {
   await sql.unsafe(await fs.readFile(provenanceMigration, 'utf8').catch(() => fs.readFile(new URL(provenanceMigration.href + '.DRAFT'), 'utf8')));
 });
 beforeEach(async () => {
+  const [backup] = await sql`INSERT INTO harness_shared.backup_snapshots
+    (workspace_id,status,trigger_reason,db_dump_ok,kopia_snapshot_id,finished_at)
+    VALUES (${WS},'ok','pre_destructive',true,'test-backup',now()) RETURNING id`;
+  backupId = Number(backup.id);
   await sql`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.interactive_usage_files WHERE workspace_id = ${WS}`;
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cache-ingest-state-'));
@@ -52,6 +59,99 @@ afterAll(async () => {
 });
 
 describe('persistent transcript accounting', () => {
+  it('marks a confirmed missing source unknown, preserves original evidence, and is idempotent', async () => {
+    const file = path.join(root, 'missing-history.jsonl');
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${file},500)`;
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,input_tokens,cache_read_tokens,cache_creation_tokens,output_tokens,cost_usd)
+      VALUES (${WS},123,'interactive','openai','openai:gpt','gpt','missing-history','gpt-5.5',800,1200,0,80,123)`;
+    const approval = { filePath: file, byteOffset: 500, backupSnapshotId: backupId,
+      legacyFingerprint: await legacyUsageFingerprint(sql, WS, 'missing-history') };
+    await expect(markUnavailableTranscriptUsage({ ...approval, legacyFingerprint: '0'.repeat(32) })).rejects.toThrow('ledger changed');
+    // Existence is a positive control; no unknown marker may hide a recoverable source.
+    await fs.writeFile(file, 'available');
+    await expect(markUnavailableTranscriptUsage(approval)).rejects.toThrow('Source exists');
+    await fs.unlink(file);
+    expect(await markUnavailableTranscriptUsage(approval)).toEqual({ markedRows: 1, alreadyMarked: false });
+    const [row] = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(row.model).toBeNull();
+    expect(row.cost_usd).toBeNull();
+    expect(row.input_tokens).toBeNull();
+    expect(row.cache_creation_tokens).toBeNull();
+    expect(row.usage_provenance.historicalAvailability.originalRow).toMatchObject({
+      model: 'gpt-5.5', input_tokens: 800, cache_read_tokens: 1200, cost_usd: 123, ts: 123,
+    });
+    expect(await markUnavailableTranscriptUsage(approval)).toEqual({ markedRows: 0, alreadyMarked: true });
+    expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual([row]);
+  });
+
+  it('reconciles an approved legacy prefix atomically, retaining originals and replay idempotency', async () => {
+    const file = path.join(root, 'legacy-reconcile.jsonl');
+    const source = context('gpt-6-luna') + usage(1000) + usage(1000) + usage(2000);
+    await fs.writeFile(file, source);
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+    const [old] = await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,input_tokens,cache_read_tokens,cache_creation_tokens,output_tokens,cost_usd)
+      VALUES (${WS},123,'interactive','openai','openai:gpt','gpt','legacy-reconcile','gpt-5.5',800,1200,0,80,123)
+      RETURNING id`;
+    const replay = await replayTranscriptPrefix({ filePath: file, byteOffset: Buffer.byteLength(source), adapter: adapter()[0] });
+    if (replay.status !== 'available') throw new Error(replay.reason);
+    const historical = { filePath: file, byteOffset: replay.byteOffset, sourceSha256: replay.sourceSha256,
+      legacyFingerprint: await legacyUsageFingerprint(sql, WS, 'legacy-reconcile'), backupSnapshotId: backupId };
+    // The source and ledger fences fail before deleting anything.
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical: { ...historical, sourceSha256: '0'.repeat(64) } })).errors).toHaveLength(1);
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical: { ...historical, legacyFingerprint: '0'.repeat(32) } })).errors).toHaveLength(1);
+    expect((await sql`SELECT id FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).map(r => r.id)).toEqual([old.id]);
+    // Force failure AFTER the legacy DELETE and assert rollback restores it.
+    await sql`ALTER TABLE harness_shared.agent_usage_samples ADD CONSTRAINT test_replay_failure
+      CHECK (model <> 'gpt-6-luna') NOT VALID`;
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).errors).toHaveLength(1);
+    expect((await sql`SELECT id FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).map(r => r.id)).toEqual([old.id]);
+    await sql`ALTER TABLE harness_shared.agent_usage_samples DROP CONSTRAINT test_replay_failure`;
+    const first = await ingestInteractiveUsage({ adapters: adapter(), historical });
+    expect(first.errors).toEqual([]);
+    const rows = await sql`SELECT model,input_tokens,cache_creation_tokens,usage_provenance
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS} ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.model)).toEqual(['gpt-6-luna', 'gpt-6-luna']);
+    expect(rows.map(r => Number(r.input_tokens))).toEqual([150, 150]);
+    expect(rows[0].usage_provenance.reconciliation.originalRows).toHaveLength(1);
+    expect(rows[0].usage_provenance.reconciliation.originalRows[0]).toMatchObject({ model: 'gpt-5.5', cost_usd: 123 });
+    expect(rows[0].usage_provenance.reconciliation.backupSnapshotId).toBe(backupId);
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).samples).toBe(0);
+    // A normal ingestion tick after backfill uses the restored parser state and
+    // cannot count the terminal cumulative notification twice.
+    await fs.appendFile(file, usage(2000) + usage(3000));
+    expect((await ingestInteractiveUsage({ adapters: adapter() })).errors).toEqual([]);
+    expect((await sql`SELECT id FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`)).toHaveLength(3);
+  });
+
+  it('refuses historical replacement without a backup receipt, with unread bytes, or with ambiguous source mapping', async () => {
+    const file = path.join(root, 'refuse.jsonl');
+    const source = context('gpt-6-luna') + usage(1000);
+    await fs.writeFile(file, source);
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+    const replay = await replayTranscriptPrefix({ filePath: file, byteOffset: Buffer.byteLength(source), adapter: adapter()[0] });
+    if (replay.status !== 'available') throw new Error(replay.reason);
+    const historical = { filePath: file, byteOffset: replay.byteOffset, sourceSha256: replay.sourceSha256,
+      legacyFingerprint: '0'.repeat(32), backupSnapshotId: 0 };
+    await expect(ingestInteractiveUsage({ adapters: adapter(), historical })).rejects.toThrow('backup receipt');
+    await sql`UPDATE harness_shared.backup_snapshots SET db_dump_ok = false WHERE id = ${backupId}`;
+    await expect(ingestInteractiveUsage({ adapters: adapter(), historical: { ...historical, backupSnapshotId: backupId } }))
+      .rejects.toThrow('completed database backup');
+    await sql`UPDATE harness_shared.backup_snapshots SET db_dump_ok = true WHERE id = ${backupId}`;
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${path.join(root, 'copy', 'refuse.jsonl')},${Buffer.byteLength(source)})`;
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical: { ...historical, backupSnapshotId: backupId } })).errors[0].error)
+      .toContain('ambiguous file-to-ledger mapping');
+    await fs.appendFile(file, usage(2000));
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical: { ...historical, backupSnapshotId: backupId } })).errors[0].error)
+      .toContain('frontier changed');
+  });
+
   it('replays a legacy prefix within the byte budget without recounting its usage', async () => {
     const file = path.join(root, 'legacy.jsonl');
     const past = context('gpt-6-luna') + usage(1000) + context('gpt-6-sol') + usage(2000);

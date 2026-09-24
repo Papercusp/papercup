@@ -474,8 +474,17 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // Planning is not running, which is why `tests.affected` stays not-a-substitute.
       // Evidence/harness bind the selected run to its ledger; recheckReason
       // explains a repeat. recoverEvidence only reads an existing bundle.
-      // None executes a derived selection or exposes reporter/config/root.
-      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'testNamePattern', 'timeoutMs'],
+      // `remeasureEvidence` is the ONE arg that does derive a file list and RUN it:
+      // run.ts derives both the files and the evidence mapping from a work-item's
+      // persisted stale bindings, then goes through the ordinary evidence path. It
+      // still disturbs NEITHER verdict, which is why it is pinned here rather than
+      // forcing a re-derivation. (1) It selects from `{workItemId, planSlug, specIds}`
+      // and never from changed/edited paths, so it cannot express a test:affected-
+      // shaped corpus command and `tests.affected` stays not-a-substitute. (2) Routing
+      // through the ordinary evidence path keeps the reporter fixed at json and the
+      // config derived per owning workspace, so the reporter/config/root exclusions
+      // below stay accurate. Nothing else here executes a derived selection.
+      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'testNamePattern', 'timeoutMs'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +

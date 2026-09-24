@@ -307,13 +307,17 @@ pub fn stamp_json() -> Value {
 /// Run an executable that was written moments ago. A fork on another thread
 /// can briefly inherit the writer's descriptor, and exec then fails ETXTBSY
 /// until that child execs; retry for a moment rather than refuse a good release.
+/// The bound is wall-clock, not an attempt count: on a loaded machine a forked
+/// child can sit between fork and exec for far longer than a few retries.
 fn output_of_fresh_executable(command: &mut Command) -> std::io::Result<std::process::Output> {
     const ETXTBSY: i32 = 26; // the same errno on Linux and macOS
-    let mut attempts = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         match command.output() {
-            Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempts < 20 => {
-                attempts += 1;
+            Err(error)
+                if error.raw_os_error() == Some(ETXTBSY)
+                    && std::time::Instant::now() < deadline =>
+            {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             result => return result,

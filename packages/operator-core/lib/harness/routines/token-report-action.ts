@@ -43,6 +43,7 @@ export interface AggRow {
   comparable_samples: string;
   request_observations: string;
   request_hits: string;
+  unrecoverable_samples: string;
 }
 
 const mtok = (v: string | null): number => Number(v ?? 0) / 1e6;
@@ -65,7 +66,7 @@ export function renderDim(label: string, cur: AggRow[], prev: Map<string, AggRow
         `${r.cw_t === null ? 'unknown' : fmtM(mtok(r.cw_t)) + 'M known'} cache-write, ` +
         `${r.out_t === null ? 'unknown' : fmtM(mtok(r.out_t)) + 'M known'} out; ` +
         `${fmtUsd(r.estimated_usd)} list-price estimate + ${fmtUsd(r.reported_usd)} provider-reported, ` +
-        `${r.unpriced}/${r.calls} unpriced samples. ` +
+        `${r.unpriced}/${r.calls} unpriced samples; ${r.unrecoverable_samples}/${r.calls} source-unavailable. ` +
         `Token reuse ${rate(Number(r.comparable_read), Number(r.comparable_input))} ` +
         `(${r.comparable_samples}/${r.calls} comparable samples); ` +
         `requests with any cache read ${rate(Number(r.request_hits), Number(r.request_observations))} ` +
@@ -164,7 +165,8 @@ export async function readTokenReportAggregation(
            SUM(total_input) FILTER (WHERE total_input IS NOT NULL AND cache_read_tokens IS NOT NULL) AS comparable_input,
            COUNT(*) FILTER (WHERE total_input IS NOT NULL AND cache_read_tokens IS NOT NULL) AS comparable_samples,
            COUNT(*) FILTER (WHERE usage_provenance->>'grain' = 'request' AND cache_read_tokens IS NOT NULL) AS request_observations,
-           COUNT(*) FILTER (WHERE usage_provenance->>'grain' = 'request' AND cache_read_tokens > 0) AS request_hits
+           COUNT(*) FILTER (WHERE usage_provenance->>'grain' = 'request' AND cache_read_tokens > 0) AS request_hits,
+           COUNT(*) FILTER (WHERE usage_provenance->'historicalAvailability'->>'status' = 'source-unavailable') AS unrecoverable_samples
       FROM observations
      GROUP BY 1 ORDER BY SUM(COALESCE(cache_read_tokens,0)+COALESCE(cache_creation_tokens,0)+COALESCE(input_tokens,0)) DESC
   `;

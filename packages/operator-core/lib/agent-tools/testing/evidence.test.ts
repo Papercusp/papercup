@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { prepareTestEvidence, finishTestEvidence, recoverTestEvidence, testEvidenceOutcome, testEvidenceSchema } from './evidence';
+import {
+  deferredTestEvidenceRecoveryBundle,
+  prepareTestEvidence,
+  finishTestEvidence,
+  recoverTestEvidence,
+  testEvidenceOutcome,
+  testEvidenceSchema,
+} from './evidence';
 import type { TestFilesCoreResult } from './run';
 import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
 
@@ -30,6 +37,20 @@ const deps = () => ({
 });
 
 describe('test-time evidence continuity', () => {
+  it('returns a bounded pending recovery bundle for foreground timeouts', () => {
+    const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
+    const bundle = deferredTestEvidenceRecoveryBundle(request, runId, detached, scope.harnessSlug);
+    expect(bundle).toMatchObject({
+      status: 'incomplete',
+      acceptance: 'requires-review',
+      rows: [{ specId: 'R-1', evidenceRef: `test-run-group:${runId}:0`, testRunId: null,
+        phase: 'pending', outcome: 'unknown' }],
+      total: 1,
+      recovery: { args: { recoverEvidence: { workItemId: 'WI-1', originRunId: runId, runId: detached } } },
+    });
+    expect(bundle.readRef.args.evidenceRefs).toEqual([`test-run-group:${runId}:0`]);
+  });
+
   it('persists exact requirement/correction links before execution and adds measured ledger proof afterward', async () => {
     const d = deps();
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
@@ -181,6 +202,35 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
     expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
       runId: detached, ledgerRunGroupId: runId, ledgerAttribution: 'attributed' });
+
+    const originOnly = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId }, scope, d);
+    expect(originOnly.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
+      runId: detached, ledgerRunGroupId: runId, ledgerAttribution: 'attributed' });
+  });
+
+  it('recovers with the detached handle while the initial evidence row still stores the origin id', async () => {
+    const d = deps();
+    const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const stored = d.bind.mock.calls[0]![0];
+    d.list.mockResolvedValue([{ ...stored, id: 2, fingerprints: {
+      sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
+    d.ledger.mockResolvedValue([{
+      id: 42, file_path: binding.testPath, status: 'pass', finished_at: '2026-09-09T00:00:00Z',
+      execution_details: { schemaVersion: 1, root: scope.root, filePath: binding.testPath,
+        workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: detached,
+        testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        mutationPhase: null, commitSha: null, worktreeDirty: false },
+    }]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached }, scope, d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
+      runId: detached, originRunId: runId, ledgerRunGroupId: detached, ledgerAttribution: 'attributed' });
+    expect(prepared).toHaveLength(1);
   });
 
   it.each([{ id: 42, status: 'fail' }, { id: 43, status: 'pass' }])(
