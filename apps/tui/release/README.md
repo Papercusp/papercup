@@ -33,6 +33,49 @@ workspace host, or a remote operator URL. See `COMPATIBILITY.md`. With no
 operator configured, `pui` opens setup; `pui doctor` checks the installation
 and the selected operator.
 
+## Using PUI
+
+Press `F1` for a short tutorial and `?` for every key. The everyday ones:
+
+| Key | What it does |
+| --- | --- |
+| `o` | open the chat and put the cursor in the message box |
+| `Enter` | send the message (`Esc` leaves the box without sending) |
+| `j` / `k`, `↑` / `↓` | move the selection, or scroll the chat |
+| `Ctrl+X` | stop the agent's current turn |
+| `l` | your conversations: pick one to reopen it |
+| `m` / `e` / `a` / `u` | model · effort · account · mode for a new session |
+| `Ctrl+T` | the conversation's task list (`Esc` returns to the chat) |
+| `:` | command palette |
+| `q` | quit |
+
+Messages you send while the agent is working wait their turn and go out when
+it finishes; `Ctrl+X` stops the turn and drops the waiting messages. If a
+session has stopped, your next message reopens the same conversation.
+
+**Questions and approvals.** When the agent asks something or needs permission
+to use a tool, a card opens over the chat. Choose with `↑`/`↓` (or type the
+option's number), confirm with `Enter`, or press `Esc` to decline.
+
+**Task list.** Both you and the agent edit the same list. With it open: `a` add,
+`e` edit, `x` mark done, `s` start, `b` blocked (with a reason), `u` unblock,
+`r` reopen, `d` drop, `K`/`J` move up or down, `P` turn the task into a
+tracked work item linked to it, `g` refresh.
+
+**Colour.** PUI follows [`NO_COLOR`](https://no-color.org): set it to any value
+and PUI draws without colour, marking the selection and the focused pane with
+reverse video and a heavier border instead.
+
+## Getting help
+
+- `pui doctor` checks this installation and the connection to your operator.
+- `pui self diagnostics` prints a support report; the palette's `:diagnostics`
+  saves the same report to `~/.papercusp/pui-diagnostics-<time>.txt`. The
+  report leaves out conversation content, prompts, tokens and credentials, but
+  read it before you share it.
+- `:about` in the palette shows the version, the installed release and the
+  release a rollback would return to.
+
 ## Update, roll back, uninstall
 
 ```sh
