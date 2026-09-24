@@ -1259,6 +1259,37 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
+  it('leaves fixture calibration not-applicable for a tree-only spec despite an explicit flag on non-fixture evidence', () => {
+    const row = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:tree-only-spec',
+      fingerprints: {
+        ...evidence().fingerprints,
+        fixtureFingerprint: null,
+      },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        behaviorClass: 'observability',
+        requiredEvidence: ['tree'],
+        requiredTestLayers: ['integration', 'unit'],
+      }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('No fixture binding or fixture fingerprint is present');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('fixtureCalibrated=true');
+  });
+
   it('does not report exact fixture or mutation bindings as spec-scoped absence when current grading narrows the cohort', () => {
     const currentTest = evidence({
       evidenceKind: 'test',

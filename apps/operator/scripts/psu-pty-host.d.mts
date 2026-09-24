@@ -1153,6 +1153,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {(data: string) => void} [opts.writeCr]
  * @param {() => number} [opts.lastInputAt]
  * @param {() => boolean} [opts.isQuotaBlocked]
+ * @param {() => boolean} [opts.isSubmitted] exact native-transcript proof of this turn
  * @param {number} [opts.quietMs]
  * @param {number} [opts.pollMs]
  * @param {number} [opts.polls]
@@ -1162,11 +1163,12 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {(resubmits: number) => void} [opts.onResubmit]
  * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
     lastOutputAt?: (() => number) | undefined;
     writeCr?: ((data: string) => void) | undefined;
     lastInputAt?: (() => number) | undefined;
     isQuotaBlocked?: (() => boolean) | undefined;
+    isSubmitted?: (() => boolean) | undefined;
     quietMs?: number | undefined;
     pollMs?: number | undefined;
     polls?: number | undefined;
@@ -1193,11 +1195,19 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
         resubmits: number;
         aborted: string;
         exhausted?: undefined;
+        confirmed?: undefined;
     } | {
         polls: number;
         resubmits: number;
         aborted: null;
         exhausted: boolean;
+        confirmed: string;
+    } | {
+        polls: number;
+        resubmits: number;
+        aborted: null;
+        exhausted: boolean;
+        confirmed?: undefined;
     }>;
 };
 /** WI-1378748: may a verifier exhaustion for THIS submit label kill the host?

@@ -75,6 +75,7 @@ describe('selected identity producer output binding', () => {
     expect(receipt.contributions).toContainEqual(expect.objectContaining({
       contributionId: 'current-mode-state', status: 'omitted:not-requested',
     }));
+    expect(receipt).not.toHaveProperty('artifact');
   });
 
   it('pins the already-rendered turn-start prompt with the fixed SU practice prompt', async () => {

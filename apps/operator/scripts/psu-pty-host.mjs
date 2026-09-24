@@ -3235,6 +3235,7 @@ export function makeCarryRearmController({
  * @param {(data: string) => void} [opts.writeCr]
  * @param {() => number} [opts.lastInputAt]
  * @param {() => boolean} [opts.isQuotaBlocked]
+ * @param {() => boolean} [opts.isSubmitted] exact native-transcript proof of this turn
  * @param {number} [opts.quietMs]
  * @param {number} [opts.pollMs]
  * @param {number} [opts.polls]
@@ -3249,6 +3250,7 @@ export function makeSubmitVerifier({
   writeCr,
   lastInputAt = () => 0,
   isQuotaBlocked = () => false,
+  isSubmitted = () => false,
   quietMs = SUBMIT_VERIFY_QUIET_MS,
   pollMs = SUBMIT_VERIFY_POLL_MS,
   polls = SUBMIT_VERIFY_POLLS,
@@ -3310,6 +3312,14 @@ export function makeSubmitVerifier({
           outputObservedAfterResubmit = true;
         }
         if ((getIn() || 0) > inputAtStart) return { polls: i + 1, resubmits, aborted: 'human-input' };
+        // PTY silence is not submission failure. A model may already be in a
+        // long silent turn, or back at an idle prompt after a short one. For a
+        // provenance-tagged turn the isolated native transcript is the stronger
+        // proof: once its exact marker persists, another CR is unnecessary and
+        // can submit unrelated staged input.
+        if (isSubmitted()) {
+          return { polls: i + 1, resubmits, aborted: null, exhausted: false, confirmed: 'native' };
+        }
         const quietFor = now() - outputAtPoll;
         if (quietFor < quietMs) continue; // output flowing — a turn is running
         if (resubmits >= maxResubmits) {
@@ -3374,7 +3384,7 @@ export function submitExhaustionTerminatesHost(label) {
   const normalized = String(label ?? '')
     .trim()
     .toLowerCase();
-  return !(normalized === 'turn inject' || normalized === 'reset inject');
+  return !(normalized === 'turn inject' || normalized === 'turn re-arm' || normalized === 'reset inject');
 }
 
 /** Translate the submit verifier's semantic negative outcomes into the stable
@@ -6786,12 +6796,25 @@ export function hostThroughPty(o) {
     label,
     // WI-1378748: default by LABEL, not a blanket `true` — a wake inject
     // (turn/reset) must never be host-fatal. See submitExhaustionTerminatesHost.
-    { terminateOnExhaustion = submitExhaustionTerminatesHost(label) } = {},
+    {
+      terminateOnExhaustion = submitExhaustionTerminatesHost(label),
+      text = '',
+      submittedAtMs = Date.now(),
+    } = {},
   ) => {
+    const marker = leadingTurnOriginMarker(text);
+    const nativeProofAvailable = Boolean(marker) &&
+      nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
       isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
+      isSubmitted: () => nativeProofAvailable && Boolean(findNativeTranscriptMarker({
+        agent: env.PAPERCUSP_AGENT,
+        env,
+        marker,
+        sinceMs: submittedAtMs,
+      })),
       writeCr: () => child.write('\r'),
       // WI-2975: NOT OUTPUT_QUIET_MS (that's the busy-gate's short "back at an
       // idle prompt" threshold) — the verifier's own, deliberately-larger quiet
@@ -6805,13 +6828,13 @@ export function hostThroughPty(o) {
         SUBMIT_VERIFY_MAX_RESUBMITS,
       ),
       onResubmit: (n) => {
-        try {
-          process.stderr.write(
-            `psu-pty-host: ${label} submit not confirmed for ${ownerId} — resubmit CR #${n} (WI-2930)\n`,
-          );
-        } catch {
-          /* never let a diagnostic write break the session */
-        }
+        // A retry is not a terminal failure. Its eventual result is persisted
+        // as turn-delivered or submit-verify-unconfirmed; painting each retry
+        // into an interactive agent's TUI made normal recovery look like a new
+        // error and could interfere with the composer being verified.
+        writeHostDiagnostic(
+          `psu-pty-host: ${label} submit not confirmed for ${ownerId} — resubmit CR #${n} (WI-2930)\n`,
+        );
       },
       // A managed session-port kickoff has a stronger, independent proof:
       // waitForNativeTranscriptMarker below. Its target can persist the marker
@@ -6892,6 +6915,7 @@ export function hostThroughPty(o) {
         label,
         polls: result.polls,
         resubmits: result.resubmits,
+        ...(result.confirmed ? { confirmed: result.confirmed } : {}),
       });
     }
     return result;
@@ -6922,7 +6946,9 @@ export function hostThroughPty(o) {
     onDrop = () => {},
     requireInitialOutput = false,
     verifyKickoffMarkerEcho = false,
-    terminateOnSubmitVerifyExhaustion = true,
+    terminateOnSubmitVerifyExhaustion = submitExhaustionTerminatesHost(label),
+    submitVerificationRequired = terminateOnSubmitVerifyExhaustion,
+    promptAlreadyVerified = false,
     freshChildOwnerInputGeneration = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
@@ -7045,7 +7071,14 @@ export function hostThroughPty(o) {
             ? childBackendFirstFrameAt > 0
             : childPromptReady ||
               (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' && childStartupReady));
-        const atPrompt = freshPromptReady
+        // A re-armed wake has just passed the outer busy gate under the same
+        // inject mutex. Repeating that gate here can burn a second, much longer
+        // budget against an idle TUI repaint and drop the wake as never-settled.
+        // The ordinary first-attempt and fresh-child paths still prove their
+        // own boundary here.
+        const atPrompt = promptAlreadyVerified
+          ? { deferred: false, boundary: 'preverified' }
+          : freshPromptReady
           ? { deferred: false }
           : claudeKickoffReadiness === 'composer-ready'
             ? { deferred: false }
@@ -7066,6 +7099,10 @@ export function hostThroughPty(o) {
             break;
           }
           if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          if (promptAlreadyVerified && ownerComposerGate.hasPending()) {
+            dropReason = 'owner-input';
+            break;
+          }
           if (freshChildWasInterrupted()) {
             dropReason = 'fresh-child-owner-input';
             break;
@@ -7180,6 +7217,8 @@ export function hostThroughPty(o) {
           }
           let submitVerification = await verifySubmitted(label, {
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
+            text,
+            submittedAtMs: turnWriteStartedAt,
           });
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
@@ -7228,6 +7267,8 @@ export function hostThroughPty(o) {
             }
             submitVerification = await verifySubmitted(label, {
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
+              text,
+              submittedAtMs: turnWriteStartedAt,
             });
           }
           if (child !== injectChild) {
@@ -7240,7 +7281,7 @@ export function hostThroughPty(o) {
           // deliberately disable generic fatal exhaustion and own the verdict
           // themselves. Only callers that opt into this verifier as authority
           // may turn its negative/unknown result into a delivery drop.
-          const verificationFailure = terminateOnSubmitVerifyExhaustion || submitVerification.aborted === 'quota-blocked'
+          const verificationFailure = submitVerificationRequired || submitVerification.aborted === 'quota-blocked'
             ? submitVerificationFailureReason(submitVerification)
             : null;
           if (verificationFailure) {
@@ -7684,7 +7725,13 @@ export function hostThroughPty(o) {
         // would kill the child and destroy the very turn being delivered.
         const text = String(message?.data ?? '');
         if (!text) return { delivered: false, reason: 'no-text' };
-        return injectTurnAtPrompt({ text, label: 'turn re-arm' });
+        return injectTurnAtPrompt({
+          text,
+          label: 'turn re-arm',
+          promptAlreadyVerified: true,
+          terminateOnSubmitVerifyExhaustion: false,
+          submitVerificationRequired: true,
+        });
       }
       return recycleChild(message?.data, {
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
@@ -8566,6 +8613,7 @@ export function hostThroughPty(o) {
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
         let machineTurnSubmitted = false;
+        const turnWriteStartedAt = Date.now();
         try {
           for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env, {
             bracketedPaste: childBracketedPaste,
@@ -8617,7 +8665,10 @@ export function hostThroughPty(o) {
           // -> pty write -> submit verify" one-at-a-time invariant.
           deferMutexRelease = true;
           const releaseAfterVerify = releaseInject;
-          void verifySubmitted(`${msg.mode} inject`)
+          void verifySubmitted(`${msg.mode} inject`, {
+            text: deliver.data,
+            submittedAtMs: turnWriteStartedAt,
+          })
             .catch(() => {})
             .finally(() => {
               if (releaseAfterVerify) releaseAfterVerify();

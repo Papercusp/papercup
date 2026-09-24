@@ -2267,6 +2267,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     output,
     input,
     quotaBlocked,
+    submitted,
     pollMs = 100,
     polls = 4,
     maxResubmits = 3,
@@ -2277,6 +2278,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     output: (t: number) => number;
     input?: (t: number) => number;
     quotaBlocked?: (t: number) => boolean;
+    submitted?: (t: number) => boolean;
     pollMs?: number;
     polls?: number;
     maxResubmits?: number;
@@ -2300,6 +2302,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       lastOutputAt: () => output(t),
       lastInputAt: input ? () => input(t) : undefined,
       isQuotaBlocked: quotaBlocked ? () => quotaBlocked(t) : undefined,
+      isSubmitted: submitted ? () => submitted(t) : undefined,
       writeCr: writeCr ?? (() => crs.push(t)),
       quietMs,
       pollMs,
@@ -2334,6 +2337,29 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     expect(r.aborted).toBeNull();
     expect(crs).toHaveLength(3);
     expect(resubmitCalls).toEqual([1, 2, 3]);
+  });
+
+  it('a native-recorded turn is not resubmitted merely because PTY output stays quiet', async () => {
+    const { v, crs, resubmitCalls, exhaustedCalls } = rig({
+      output: () => 0,
+      submitted: (t) => t >= 100,
+    });
+    expect(await v.verify()).toEqual({
+      polls: 1, resubmits: 0, aborted: null, exhausted: false, confirmed: 'native',
+    });
+    expect(crs).toEqual([]);
+    expect(resubmitCalls).toEqual([]);
+    expect(exhaustedCalls).toEqual([]);
+  });
+
+  it('stops further CRs when native proof appears after a necessary retry', async () => {
+    const { v, crs, exhaustedCalls } = rig({
+      output: () => 0,
+      submitted: (t) => t >= 200,
+    });
+    expect(await v.verify()).toMatchObject({ resubmits: 1, confirmed: 'native', exhausted: false });
+    expect(crs).toEqual([100]);
+    expect(exhaustedCalls).toEqual([]);
   });
 
   it('reports exhaustion once when the bounded CR window ends without output', async () => {
@@ -2458,6 +2484,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
   it('WI-1378748: a wake inject exhaustion is never host-fatal, a startup submit still is', () => {
     // The two labels the control socket emits for a coord wake (`${msg.mode} inject`).
     expect(submitExhaustionTerminatesHost('turn inject')).toBe(false);
+    expect(submitExhaustionTerminatesHost('turn re-arm')).toBe(false);
     expect(submitExhaustionTerminatesHost('reset inject')).toBe(false);
 
     // The startup submits WI-41044 was actually written for: a session that
