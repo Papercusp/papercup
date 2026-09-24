@@ -1,10 +1,22 @@
-import { mkdtemp, mkdir, rm, writeFile, symlink, readFile, appendFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, symlink, readFile, appendFile, rename } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import type { RpcFrame, SuStdioReceipt } from '../su-session-stdio-peer';
+import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
+
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const original = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...original, open: vi.fn(original.open), readdir: vi.fn(original.readdir), readlink: vi.fn(original.readlink), stat: vi.fn(original.stat) };
+});
 
 import {
   collectTranscriptFiles,
@@ -13,7 +25,154 @@ import {
   scanLaunchTranscripts,
   captureCompletedCarrySource,
   recheckCarrySourceSnapshot,
+  captureCarryNativeConfiguration,
+  recheckCarryNativeConfiguration,
+  captureCarryArtifactManifest,
+  recheckCarryArtifactManifest,
+  captureCarryRuntimeSnapshot,
+  recheckCarryRuntimeSnapshot,
+  captureCarryRequestEvidence,
+  type CarryDependencyScope,
 } from './scan-launch-transcripts';
+import { createCarryTrialRecipe } from './launch-cost-metrics';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+
+describe('carry request evidence controller', () => {
+  function fixture(suffix = '') {
+    const threadId = `thread${suffix}`, peerId = `peer${suffix}`, armId = `arm${suffix}`, path = `/native/rollout${suffix}`;
+    const receipts: SuStdioReceipt[] = [];
+    const emit = (phase: SuStdioReceipt['phase'], frame: RpcFrame) => receipts.push({ phase, frame,
+      peerId, clockId: 'clock', sequence: receipts.length + 1, atMs: receipts.length });
+    const rpc = (id: string, method: string, params: RpcFrame, result: RpcFrame) => {
+      emit('write-started', { id, method, params }); emit('write-completed', { id, method, params }); emit('received', { id, result });
+    };
+    rpc('open', 'thread/fork', { threadId: 'predecessor' }, { thread: { id: threadId, path,
+      turns: [{ id: 'old', status: 'completed' }] } });
+    rpc('turn', 'turn/start', { threadId }, { turn: { id: 'new' } });
+    emit('received', { method: 'turn/started', params: { threadId, turn: { id: 'new', status: 'inProgress' } } });
+    emit('received', { method: 'turn/completed', params: { threadId, turn: { id: 'new', status: 'completed' } } });
+    rpc('read', 'thread/read', { threadId, includeTurns: true }, { thread: { id: threadId, path,
+      turns: [{ id: 'old', status: 'completed' }, { id: 'new', status: 'completed' }] } });
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ ownerId: 'owner', provider: 'codex', protocol: 'openai-responses', transport: 'bearer-http' });
+    span.recordAttempt(); span.finish('ok', 200);
+    const gateway = telemetry.snapshot(), row = gateway.recent[0];
+    row.nativeCorrelation = { status: 'observed', sessionId: threadId, threadId, turnId: 'new', windowId: null };
+    row.upstreamWrites.calls = [{ ordinal: 1, accountId: 'local-routing-label', clockId: 'clock', clock: 'performance.now',
+      outcome: 'returned', responseStatus: 200, matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0,
+      droppedEvents: 0, events: [{ phase: 'created', requestOrdinal: 1, atMs: 1 }] }];
+    const input = { workspaceId: 'workspace', ownerId: 'owner', gateway, native: { receipts,
+      state: { peerId, clockId: 'clock', emitted: receipts.length, enabled: true, sinkFailed: false, exited: true, pendingWrites: 0 },
+      arms: [{ threadId, armId }] } };
+    const rows = [
+      { session_id: threadId, usage_event_key: createHash('sha256').update(`old${suffix}`).digest('hex'), usage_provenance: { turnId: 'old' }, population_count: '2' },
+      { session_id: threadId, usage_event_key: createHash('sha256').update(`new${suffix}`).digest('hex'), usage_provenance: { turnId: 'new' }, population_count: '2' },
+    ];
+    const query = vi.fn(async () => rows), array = vi.fn((values: string[]) => values);
+    const sql = Object.assign(query, { array }) as unknown as Sql;
+    return { input, rows, query, array, sql };
+  }
+
+  it('queries derived scope and retains inherited usage outside the new-turn join', async () => {
+    const { input, sql, query, array, rows } = fixture(), before = structuredClone(input);
+    const evidence = await captureCarryRequestEvidence(sql, input);
+    expect(evidence).toMatchObject({ status: 'observations-linked', missing: [], violations: [],
+      admission: 'not-established', accountingComplete: false,
+      native: { status: 'closed-peer-reconciled' }, canonical: { coverage: 'complete-selected-snapshot', ingestionCoverage: 'not-established' },
+      inheritedUsage: [{ usage_event_key: rows[0].usage_event_key }],
+      population: { turns: [{ usageEventKeys: [rows[1].usage_event_key] }], nativePopulationCoverage: 'not-established', chargeJoin: 'unavailable' } });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(array.mock.calls).toEqual([[['thread']], [['thread']], [['/native/rollout']]]);
+    expect(input).toEqual(before);
+    expect(evidence.captureSha256).toBe(createHash('sha256').update(canonicalJson(input)).digest('hex'));
+    expect(evidence).not.toHaveProperty('costUsd');
+    expect(evidence).not.toHaveProperty('receipts');
+  });
+
+  it('does not query an incomplete or unassigned native population', async () => {
+    const { input, sql, query } = fixture(); input.native.receipts.pop();
+    const evidence = await captureCarryRequestEvidence(sql, input);
+    expect(evidence.status).not.toBe('observations-linked');
+    expect(evidence).toMatchObject({ canonical: null, population: null, accountingComplete: false });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('joins separate closed peers against one complete gateway and SQL population', async () => {
+    const first = fixture(), second = fixture('-second');
+    const gateway = first.input.gateway;
+    gateway.recent.push({ ...second.input.gateway.recent[0], requestId: 2 });
+    gateway.requests = { ...gateway.requests, started: 2, finalized: 2, sampled: 2 };
+    gateway.outcomes.ok = 2;
+    first.rows.push(...second.rows);
+    first.rows.forEach(row => { row.population_count = '4'; });
+    const input = { ...first.input, native: [first.input.native, second.input.native] };
+    const result = await captureCarryRequestEvidence(first.sql, input);
+    expect(result).toMatchObject({ status: 'observations-linked', accountingComplete: false,
+      native: { turns: [{ armId: 'arm' }, { armId: 'arm-second' }] },
+      population: { unmatchedGatewayRequestIds: [], unmatchedUsageRows: [] } });
+    expect(result.inheritedUsage).toHaveLength(2);
+    expect(first.query).toHaveBeenCalledTimes(1);
+    expect(first.array.mock.calls[0][0]).toEqual(['thread', 'thread-second']);
+    // Dropping a whole peer must leave its gateway request visibly unmatched.
+    await expect(captureCarryRequestEvidence(first.sql, { ...input, native: [first.input.native] }))
+      .resolves.toMatchObject({ population: { unmatchedGatewayRequestIds: [2] } });
+  });
+
+  it.each(['peer', 'arm', 'thread', 'source', 'truncated', 'live'] as const)(
+    'rejects invalid peer sets before SQL (%s)', async kind => {
+      const first = fixture(), second = fixture(kind === 'thread' ? '' : '-second');
+      if (kind === 'peer') {
+        second.input.native.state.peerId = first.input.native.state.peerId;
+        second.input.native.receipts.forEach(receipt => { receipt.peerId = first.input.native.state.peerId; });
+      }
+      if (kind === 'arm') second.input.native.arms[0].armId = first.input.native.arms[0].armId;
+      if (kind === 'source') for (const receipt of second.input.native.receipts) {
+        const thread = (receipt.frame.result as RpcFrame | undefined)?.thread as RpcFrame | undefined;
+        if (thread) thread.path = '/native/rollout';
+      }
+      if (kind === 'truncated') second.input.native.receipts.pop();
+      if (kind === 'live') second.input.native.state.exited = false;
+      const result = await captureCarryRequestEvidence(first.sql, { ...first.input, native: [first.input.native, second.input.native] });
+      expect(result.status).not.toBe('observations-linked');
+      expect(first.query).not.toHaveBeenCalled();
+    });
+
+  it.each([0, 129])('rejects a peer count outside the bound (%s)', async count => {
+    const { input, sql, query } = fixture();
+    expect((await captureCarryRequestEvidence(sql, { ...input, native: Array(count).fill(input.native) })).violations)
+      .toContain('native-capture-set-bound');
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it.each(['duplicate-inherited', 'duplicate-across-partitions', 'malformed-inherited', 'unknown-turn', 'wrong-session'] as const)(
+    'does not discard inconsistent canonical evidence (%s)', async kind => {
+      const { input, sql, rows } = fixture();
+      if (kind === 'duplicate-inherited') { rows.push(structuredClone(rows[0])); rows.forEach(row => { row.population_count = '3'; }); }
+      if (kind === 'duplicate-across-partitions') rows[1].usage_event_key = rows[0].usage_event_key;
+      if (kind === 'malformed-inherited') rows[0].usage_event_key = 'bad';
+      if (kind === 'unknown-turn') rows[0].usage_provenance.turnId = 'unobserved';
+      if (kind === 'wrong-session') rows[0].session_id = 'different';
+      const evidence = await captureCarryRequestEvidence(sql, input);
+      expect(evidence.status).not.toBe('observations-linked');
+      expect(evidence.canonical?.rows).toHaveLength(rows.length);
+    });
+
+  it('retains an unknown canonical query outcome as a rejection, not empty or zero usage', async () => {
+    const { input, sql, query } = fixture(); query.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(captureCarryRequestEvidence(sql, input)).rejects.toThrow('database unavailable');
+  });
+
+  it('freezes native and gateway captures before awaiting SQL', async () => {
+    const { input, sql, query, rows } = fixture();
+    let finish!: (result: typeof rows) => void;
+    query.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const hash = createHash('sha256').update(canonicalJson(input)).digest('hex');
+    const pending = captureCarryRequestEvidence(sql, input);
+    input.native.receipts.length = 0; input.gateway.recent.length = 0; input.ownerId = 'changed';
+    finish(rows);
+    expect(await pending).toMatchObject({ status: 'observations-linked', captureSha256: hash });
+  });
+});
 
 let root: string;
 
@@ -60,6 +219,530 @@ function usageEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe.skipIf(process.platform !== 'linux')('observed carry runtime artifacts', () => {
+  const boot = '00000000-0000-0000-0000-000000000001';
+  const procStat = (pid: number, parent: number, ticks = '7') => {
+    const fields = Array(20).fill('0'); fields[0] = 'S'; fields[1] = String(parent); fields[19] = ticks;
+    return `${pid} (name with ) spaces) ${fields.join(' ')}\n`;
+  };
+  afterEach(async () => {
+    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    vi.mocked(fsPromises.open).mockImplementation(original.open);
+    vi.mocked(fsPromises.readdir).mockImplementation(original.readdir);
+    vi.mocked(fsPromises.readlink).mockImplementation(original.readlink);
+    vi.mocked(fsPromises.stat).mockImplementation(original.stat);
+  });
+  async function fixture() {
+    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const proc = join(root, 'proc');
+    const put = async (path: string, value: string) => {
+      const target = join(proc, path); await mkdir(join(target, '..'), { recursive: true }); await writeFile(target, value);
+    };
+    const files = [join(root, 'wrapper'), join(root, 'native child'), join(root, 'libshared.so')];
+    for (const path of files) await writeFile(path, `fixture bytes ${path}`);
+    const mapping = async (path: string, index: number) => {
+      const s = await original.stat(path, { bigint: true });
+      const major = ((s.dev >> 8n) & 0xfffn) | ((s.dev >> 32n) & 0xfffff000n);
+      const minor = (s.dev & 0xffn) | ((s.dev >> 12n) & 0xffffff00n);
+      return `${index}000-${index}fff r-xp 0000 ${major.toString(16)}:${minor.toString(16)} ${s.ino} ${path}\n`;
+    };
+    await put('sys/kernel/random/boot_id', boot);
+    for (const [pid, parent, exe] of [[100, 1, 0], [200, 100, 1]]) {
+      await put(`${pid}/stat`, procStat(pid, parent));
+      await symlink(files[exe], join(proc, String(pid), 'exe'));
+      await put(`${pid}/maps`, await mapping(files[exe], 1) + await mapping(files[2], 2) +
+        '3000-3fff rw-p 0000 00:00 0 [heap]\n4000-4fff rw-s 0000 00:10 17 anon_inode:[io_uring]\n');
+      await put(`${pid}/task/${pid}/children`, '');
+      await mkdir(join(proc, String(pid), 'fd'), { recursive: true });
+    }
+    // The main thread has no children; only a worker thread knows the native child.
+    await put('100/task/101/children', '200 ');
+    const redirect = (path: Parameters<typeof original.open>[0]) => typeof path === 'string' && path.startsWith('/proc/')
+      ? join(proc, path.slice('/proc/'.length)) : path;
+    vi.mocked(fsPromises.open).mockImplementation((path, ...args) => original.open(redirect(path), ...args));
+    // The runtime reader uses the string-returning overloads without options.
+    vi.mocked(fsPromises.readdir).mockImplementation(((path: string) => original.readdir(redirect(path))) as typeof original.readdir);
+    vi.mocked(fsPromises.readlink).mockImplementation(((path: string) => original.readlink(redirect(path))) as typeof original.readlink);
+    vi.mocked(fsPromises.stat).mockImplementation(((path: string, options: unknown) => original.stat(redirect(path), options as never)) as typeof original.stat);
+    return { files, put, proc, mapping };
+  }
+
+  it('binds the wrapper, non-main-thread child and shared mappings into the existing artifact manifest', async () => {
+    const { files } = await fixture();
+    const runtime = await captureCarryRuntimeSnapshot(100);
+    expect(runtime.processes.map(p => [p.pid, p.parentPid, p.executable])).toEqual([[100, 1, files[0]], [200, 100, files[1]]]);
+    expect(runtime.processes.every(p => p.identity === `linux:${boot}:7`)).toBe(true);
+    expect(runtime.artifacts.map(a => a.filePath).sort()).toEqual([...files].sort());
+    await expect(recheckCarryRuntimeSnapshot(runtime)).resolves.toBeUndefined();
+    const peer = { request: vi.fn(async (frame: Record<string, unknown>) => frame.method === 'config/read'
+      ? { config: {}, layers: [] } : { data: [], nextCursor: null }), send: vi.fn(), close: vi.fn(async () => {}),
+      done: Promise.resolve(), pid: () => 100 };
+    const configuration = await captureCarryNativeConfiguration(peer, { threadId: 'fixture', cwd: root, servers: [] });
+    const input = { protocolRef: 'fixture-only', artifacts: runtime.artifacts, configuration };
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.artifacts.map(a => a.filePath).sort()).toEqual([...files].sort());
+    await expect(recheckCarryArtifactManifest(manifest, peer)).resolves.toBeUndefined();
+    const serialized = JSON.stringify(manifest);
+    expect(serialized).not.toContain('fixture bytes');
+    expect(serialized).not.toContain('cmdline');
+    expect(manifest.evidenceKind).toBe('observation-only');
+  });
+
+  it('retains writable shared files explicitly, including mixed mappings and permission drift', async () => {
+    const { files, put, mapping } = await fixture();
+    const executable = await mapping(files[1], 1), library = await mapping(files[2], 2);
+    // Private writable mappings are not shared on-disk writes. A second
+    // writable-shared mapping of the same file must survive deduplication.
+    await put('200/maps', executable + library.replace('r-xp', 'rw-p'));
+    expect((await captureCarryRuntimeSnapshot(100)).writableSharedFiles).toEqual([]);
+    await put('200/maps', executable + library + (await mapping(files[2], 3)).replace('r-xp', 'rw-s'));
+    const snapshot = await captureCarryRuntimeSnapshot(100);
+    expect(snapshot.writableSharedFiles).toEqual([files[2]]);
+    expect(snapshot.artifacts.map(a => a.filePath)).toContain(files[2]);
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).resolves.toBeUndefined();
+    await put('200/maps', executable + library);
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).rejects.toThrow('changed after capture');
+  });
+
+  it('retains regular open storage absent from maps, write access and duplicate descriptors', async () => {
+    const { files, put, proc } = await fixture();
+    const database = join(root, 'state.sqlite'), wal = database + '-wal';
+    await writeFile(database, 'database'); await writeFile(wal, 'wal');
+    for (const [fd, path, flags] of [[7, database, '0100000'], [8, database, '0100002'], [9, wal, '0102001']] as const) {
+      await symlink(path, join(proc, '200/fd', String(fd)));
+      await put(`200/fdinfo/${fd}`, `pos:\t0\nflags:\t${flags}\n`);
+    }
+    // Kernel objects are not regular on-disk dependencies.
+    await symlink('socket:[123]', join(proc, '200/fd/10'));
+    await symlink('anon_inode:[eventpoll]', join(proc, '200/fd/11'));
+    await symlink('anon_inode:inotify', join(proc, '200/fd/12'));
+    const snapshot = await captureCarryRuntimeSnapshot(100);
+    expect(snapshot.artifacts.map(a => a.filePath).sort()).toEqual([...files, database, wal].sort());
+    expect(snapshot.writableOpenFiles).toEqual([database, wal]);
+    expect(snapshot.processes[1].openFiles).toEqual([
+      expect.objectContaining({ fd: 7, filePath: database, access: 'read' }),
+      expect.objectContaining({ fd: 8, filePath: database, access: 'read-write' }),
+      expect.objectContaining({ fd: 9, filePath: wal, access: 'write' }),
+    ]);
+    expect(snapshot.writableSharedFiles).toEqual([]);
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).resolves.toBeUndefined();
+    await put('200/fdinfo/7', 'pos:\t20\nflags:\t0100000\n');
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).resolves.toBeUndefined();
+    await put('200/fdinfo/8', 'pos:\t0\nflags:\t0100000\n');
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).rejects.toThrow('changed after capture');
+  });
+
+  it.each(['missing-flags', 'invalid-flags', 'deleted', 'replaced', 'missing-table', 'bad-fd', 'too-many-fds', 'closed']) (
+    'refuses incomplete or changing descriptor observation: %s', async fault => {
+      const { files, put, proc } = await fixture();
+      await symlink(files[2], join(proc, '200/fd/7'));
+      await put('200/fdinfo/7', 'pos:\t0\nflags:\t0100000\n');
+      if (fault === 'missing-flags') await put('200/fdinfo/7', 'pos:\t0\n');
+      if (fault === 'invalid-flags') await put('200/fdinfo/7', 'flags:\t8\n');
+      if (fault === 'deleted') {
+        await rm(join(proc, '200/fd/7')); await symlink(files[2] + ' (deleted)', join(proc, '200/fd/7'));
+      }
+      if (fault === 'replaced') {
+        // The descriptor keeps the old inode even when its name resolves anew.
+        const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        const old = await original.stat(files[2], { bigint: true });
+        const delegated = vi.mocked(fsPromises.stat).getMockImplementation()!;
+        vi.mocked(fsPromises.stat).mockImplementation(((path: string, options: unknown) =>
+          path === '/proc/200/fd/7' ? Promise.resolve({ ...old, ino: old.ino + 1n, isFile: () => true }) : delegated(path, options as never)) as typeof original.stat);
+      }
+      if (fault === 'missing-table') await rm(join(proc, '200/fd'), { recursive: true });
+      if (fault === 'bad-fd' || fault === 'too-many-fds') {
+        const delegated = vi.mocked(fsPromises.readdir).getMockImplementation()!;
+        vi.mocked(fsPromises.readdir).mockImplementation(((path: string) => path === '/proc/200/fd'
+          ? Promise.resolve(fault === 'bad-fd' ? ['x'] : Array.from({ length: 4097 }, (_, i) => String(i)))
+          : delegated(path, undefined as never)) as typeof fsPromises.readdir);
+      }
+      if (fault === 'closed') {
+        const snapshot = await captureCarryRuntimeSnapshot(100);
+        await rm(join(proc, '200/fd/7'));
+        await expect(recheckCarryRuntimeSnapshot(snapshot)).rejects.toThrow('changed after capture');
+      } else await expect(captureCarryRuntimeSnapshot(100)).rejects.toThrow();
+    });
+
+  it.each(['bad-parent', 'missing-child', 'cycle', 'deleted', 'replaced-file', 'partial-maps', 'malformed-maps',
+    'empty-maps', 'bad-boot', 'oversized-record', 'no-threads', 'escaped-path', 'missing-executable',
+    'duplicate-path-inode', 'too-many-children', 'bad-child'])('refuses %s runtime observations', async fault => {
+    const { files, put, proc, mapping } = await fixture();
+    if (fault === 'bad-parent') await put('200/stat', procStat(200, 9));
+    if (fault === 'missing-child') await rm(join(proc, '200'), { recursive: true });
+    if (fault === 'cycle') await put('200/task/200/children', '100');
+    if (fault === 'deleted') await put('200/maps', (await mapping(files[1], 1)).trimEnd() + ' (deleted)\n');
+    if (fault === 'replaced-file') { await rename(files[1], files[1] + '.old'); await writeFile(files[1], 'replacement'); }
+    if (fault === 'partial-maps') await put('200/maps', (await mapping(files[1], 1)).trimEnd());
+    if (fault === 'malformed-maps') await put('200/maps', 'not a mapping\n');
+    if (fault === 'empty-maps') await put('200/maps', '');
+    if (fault === 'bad-boot') await put('sys/kernel/random/boot_id', 'unknown');
+    if (fault === 'oversized-record') await put('200/maps', 'x'.repeat(2 * 1024 * 1024 + 1));
+    if (fault === 'no-threads') await rm(join(proc, '200/task/200'), { recursive: true });
+    if (fault === 'escaped-path') await put('200/maps', '1000-1fff r-xp 0000 00:00 1 /ambiguous\\012name\n');
+    if (fault === 'missing-executable') await put('200/maps', await mapping(files[2], 1));
+    if (fault === 'duplicate-path-inode') await put('200/maps', await mapping(files[1], 1) + `2000-2fff r-xp 0000 00:00 0 ${files[1]}\n`);
+    if (fault === 'too-many-children') await put('200/task/200/children', Array.from({ length: 65 }, (_, i) => i + 300).join(' '));
+    if (fault === 'bad-child') await put('200/task/200/children', 'not-a-pid');
+    await expect(captureCarryRuntimeSnapshot(100)).rejects.toThrow();
+  });
+
+  it('rejects PID reuse and a new child at recheck without replacing the frozen observation', async () => {
+    const { put } = await fixture();
+    const snapshot = await captureCarryRuntimeSnapshot(100);
+    await put('200/stat', procStat(200, 100, '8'));
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).rejects.toThrow('changed after capture');
+    expect(snapshot.processes[1].identity).toBe(`linux:${boot}:7`);
+    await put('200/stat', procStat(200, 100));
+    await put('200/task/200/children', '300');
+    await expect(recheckCarryRuntimeSnapshot(snapshot)).rejects.toThrow();
+  });
+
+  it('detects a process changing between the two inventory passes', async () => {
+    const { put } = await fixture();
+    const open = vi.mocked(fsPromises.open).getMockImplementation()!;
+    let statReads = 0;
+    vi.mocked(fsPromises.open).mockImplementation(async (path, ...args) => {
+      if (path === '/proc/200/stat' && ++statReads === 3) await put('200/stat', procStat(200, 100, '8'));
+      return open(path, ...args);
+    });
+    await expect(captureCarryRuntimeSnapshot(100)).rejects.toThrow('changed during observation');
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])('refuses an invalid root pid %s', async pid => {
+    await expect(captureCarryRuntimeSnapshot(pid)).rejects.toThrow('live Linux peer PID');
+  });
+});
+
+describe('frozen carry artifact bindings', () => {
+  async function fixture() {
+    const filePath = join(root, 'task.json');
+    await writeFile(filePath, '{"task":"offline fixture"}');
+    const config = { config: { model: 'fixture' }, layers: [] };
+    const peer = { request: vi.fn(async (frame: Record<string, unknown>) => frame.method === 'config/read'
+      ? config : { data: [], nextCursor: null }), send: vi.fn(), close: vi.fn(async () => {}),
+    done: Promise.resolve(), pid: () => 1 };
+    const configuration = await captureCarryNativeConfiguration(peer, { threadId: 'fixture-thread', cwd: root, servers: [] });
+    return { peer, config, input: { protocolRef: 'fixture-only:no-inference', configuration,
+      artifacts: [{ id: 'task', filePath, maxBytes: 200_000 }] } };
+  }
+
+  it('hashes complete binary/text bytes, binds roles and config, and roundtrips without returning contents', async () => {
+    const { input, peer } = await fixture();
+    const bytes = Buffer.alloc(131_079, 0xf0); bytes[131_078] = 0x17;
+    await writeFile(input.artifacts[0].filePath, bytes);
+    input.artifacts.push({ id: 'runtime', filePath: process.execPath, maxBytes: 512 * 1024 * 1024 });
+    const manifest = await captureCarryArtifactManifest(input);
+    const task = manifest.artifacts.find(a => a.id === 'task')!;
+    expect(task.bytes).toBe(bytes.length);
+    expect(task.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(manifest.artifacts.find(a => a.id === 'runtime')!.sha256).toBe(
+      createHash('sha256').update(await readFile(process.execPath)).digest('hex'));
+    expect(manifest.evidenceKind).toBe('observation-only');
+    expect(task).not.toHaveProperty('contents');
+    await expect(recheckCarryArtifactManifest(JSON.parse(JSON.stringify(manifest)), peer)).resolves.toBeUndefined();
+    input.artifacts.reverse();
+    expect((await captureCarryArtifactManifest(input)).sha256).toBe(manifest.sha256);
+    input.protocolRef = 'different-protocol';
+    expect((await captureCarryArtifactManifest(input)).sha256).not.toBe(manifest.sha256);
+    expect(peer.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['content', 'append', 'truncate', 'replace', 'missing', 'config', 'binding'])('rejects %s drift', async change => {
+    const { input, peer, config } = await fixture();
+    const manifest = await captureCarryArtifactManifest(input), path = input.artifacts[0].filePath;
+    if (change === 'content') await writeFile(path, '{"task":"CHANGED fixture"}');
+    if (change === 'append') await appendFile(path, '\nchanged');
+    if (change === 'truncate') await writeFile(path, 'x');
+    if (change === 'replace') {
+      await writeFile(path + '.replacement', await readFile(path));
+      await rename(path + '.replacement', path);
+    }
+    if (change === 'missing') await rm(path);
+    if (change === 'config') config.config.model = 'different-model';
+    if (change === 'binding') manifest.artifacts[0].sha256 = '0'.repeat(64);
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow();
+  });
+
+  it('rejects a link retarget even when both files have the same bytes', async () => {
+    const { input, peer } = await fixture();
+    const original = input.artifacts[0].filePath, link = join(root, 'linked-task');
+    await symlink(original, link);
+    input.artifacts[0].filePath = link;
+    const manifest = await captureCarryArtifactManifest(input);
+    await writeFile(original + '.twin', await readFile(original));
+    await rm(link); await symlink(original + '.twin', link);
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('changed after manifest freeze');
+  });
+
+  it('does not serialize caller-added raw config or artifact content', async () => {
+    const { input } = await fixture();
+    Object.assign(input.configuration, { rawConfig: 'private-bearer-marker' });
+    Object.assign(input.artifacts[0], { contents: 'private-artifact-marker' });
+    const json = JSON.stringify(await captureCarryArtifactManifest(input));
+    expect(json).not.toContain('private-bearer-marker');
+    expect(json).not.toContain('private-artifact-marker');
+  });
+
+  it('pins the caller inputs before its first asynchronous read', async () => {
+    const { input, peer } = await fixture();
+    const pending = captureCarryArtifactManifest(input);
+    input.protocolRef = 'mutated'; input.artifacts.length = 0; input.configuration.threadId = 'mutated';
+    const manifest = await pending;
+    expect(manifest.protocolRef).toBe('fixture-only:no-inference');
+    expect(manifest.configuration.threadId).toBe('fixture-thread');
+    expect(manifest.artifacts).toHaveLength(1);
+    const recheck = recheckCarryArtifactManifest(manifest, peer);
+    manifest.artifacts.length = 0;
+    await expect(recheck).resolves.toBeUndefined();
+  });
+
+  it.each(['empty', 'directory', 'missing', 'oversized', 'duplicate', 'relative', 'zero-cap', 'fractional-cap',
+    'unbounded-cap', 'empty-set', 'empty-protocol', 'missing-config'])('refuses %s artifacts before accepting a binding', async fault => {
+    const { input } = await fixture();
+    const artifact = input.artifacts[0];
+    if (fault === 'empty') await writeFile(artifact.filePath, '');
+    if (fault === 'directory') artifact.filePath = root;
+    if (fault === 'missing') artifact.filePath += '.missing';
+    if (fault === 'oversized') artifact.maxBytes = 1;
+    if (fault === 'duplicate') input.artifacts.push({ ...artifact });
+    if (fault === 'relative') artifact.filePath = 'relative';
+    if (fault === 'zero-cap') artifact.maxBytes = 0;
+    if (fault === 'fractional-cap') artifact.maxBytes = 1.5;
+    if (fault === 'unbounded-cap') artifact.maxBytes = Infinity;
+    if (fault === 'empty-set') input.artifacts.length = 0;
+    if (fault === 'empty-protocol') input.protocolRef = ' ';
+    if (fault === 'missing-config') input.configuration.configSha256 = '';
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow();
+  });
+
+  it('detects a write during a descriptor read and closes the descriptor', async () => {
+    const { input } = await fixture();
+    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const closed = vi.fn();
+    vi.mocked(fsPromises.open).mockImplementationOnce(async (...args) => {
+      const fh = await original.open(...args), read = fh.read.bind(fh), close = fh.close.bind(fh);
+      vi.spyOn(fh, 'close').mockImplementation(async () => { closed(); await close(); });
+      vi.spyOn(fh, 'read').mockImplementationOnce((async (...readArgs: Parameters<typeof read>) => {
+        const result = await read(...readArgs);
+        await appendFile(input.artifacts[0].filePath, 'changed during read');
+        return result;
+      }) as typeof fh.read);
+      return fh;
+    });
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow('changed during capture');
+    expect(closed).toHaveBeenCalledOnce();
+  });
+
+  async function dependencyFixture() {
+    const fixtureResult = await fixture();
+    for (const id of ['launcher', 'checker', 'shared']) {
+      const filePath = join(root, id); await writeFile(filePath, `offline ${id}`);
+      fixtureResult.input.artifacts.push({ id, filePath, maxBytes: 200_000 });
+    }
+    const dependencyScope: CarryDependencyScope = { recipeSha256: createCarryTrialRecipe().sha256,
+      roots: [{ role: 'launcher', artifactIds: ['launcher'] }, { role: 'task', artifactIds: ['task'] }],
+      nodes: [{ artifactId: 'launcher', dependsOn: ['checker', 'shared'] },
+        { artifactId: 'checker', dependsOn: ['shared'] }, { artifactId: 'shared', dependsOn: ['checker'] },
+        { artifactId: 'task', dependsOn: [] }],
+      unresolved: ['default-run plugin and shell dependencies', 'transient and unloaded native dependencies'] };
+    return { ...fixtureResult, input: { ...fixtureResult.input, dependencyScope } };
+  }
+
+  it('binds the recipe, cyclic dependency declarations and explicit missing scope without asserting completeness', async () => {
+    const { input, peer } = await dependencyFixture();
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.dependencyScope).toMatchObject({ evidenceKind: 'declaration-only',
+      recipeSha256: createCarryTrialRecipe().sha256, unresolved: input.dependencyScope.unresolved,
+      missingRoles: ['native-runtime', 'scripts', 'seed', 'source', 'pricing', 'checker', 'instrument'] });
+    expect(manifest.dependencyScope!.nodes.find(node => node.artifactId === 'checker')!.dependsOn).toEqual(['shared']);
+    await expect(recheckCarryArtifactManifest(JSON.parse(JSON.stringify(manifest)), peer)).resolves.toBeUndefined();
+    expect(peer.send).not.toHaveBeenCalled();
+    input.artifacts.reverse(); input.dependencyScope.roots.reverse(); input.dependencyScope.nodes.reverse();
+    input.dependencyScope.nodes.forEach(node => node.dependsOn.reverse()); input.dependencyScope.unresolved.reverse();
+    expect((await captureCarryArtifactManifest(input)).sha256).toBe(manifest.sha256);
+    input.dependencyScope.unresolved.push('additional unmeasured input');
+    expect((await captureCarryArtifactManifest(input)).sha256).not.toBe(manifest.sha256);
+  });
+
+  it.each(['recipe', 'missing-node', 'duplicate-node', 'unknown-node', 'dangling-edge', 'duplicate-edge',
+    'unreachable', 'unknown-root', 'duplicate-root', 'missing-roots', 'empty-root', 'duplicate-root-artifact',
+    'invalid-role', 'empty-residue', 'duplicate-residue', 'oversized-residue'])('rejects %s dependency declarations before file reads', async fault => {
+    const { input } = await dependencyFixture();
+    const scope = input.dependencyScope;
+    if (fault === 'recipe') scope.recipeSha256 = '0'.repeat(64);
+    if (fault === 'missing-node') scope.nodes.pop();
+    if (fault === 'duplicate-node') scope.nodes[3] = scope.nodes[0];
+    if (fault === 'unknown-node') scope.nodes[3].artifactId = 'missing';
+    if (fault === 'dangling-edge') scope.nodes[0].dependsOn.push('missing');
+    if (fault === 'duplicate-edge') scope.nodes[0].dependsOn.push('checker');
+    if (fault === 'unreachable') scope.nodes[0].dependsOn = [];
+    if (fault === 'unknown-root') scope.roots[0].artifactIds = ['missing'];
+    if (fault === 'duplicate-root') scope.roots.push(scope.roots[0]);
+    if (fault === 'missing-roots') scope.roots = [];
+    if (fault === 'empty-root') scope.roots[0].artifactIds = [];
+    if (fault === 'duplicate-root-artifact') scope.roots[0].artifactIds.push('launcher');
+    if (fault === 'invalid-role') Object.assign(scope.roots[0], { role: 'invented' });
+    if (fault === 'empty-residue') scope.unresolved.push(' ');
+    if (fault === 'duplicate-residue') scope.unresolved.push(scope.unresolved[0]);
+    if (fault === 'oversized-residue') scope.unresolved.push('x'.repeat(2001));
+    vi.mocked(fsPromises.open).mockClear();
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow('carry dependency scope');
+    expect(fsPromises.open).not.toHaveBeenCalled();
+  });
+
+  it('pins graph inputs and strips caller-added raw fields', async () => {
+    const { input, peer } = await dependencyFixture();
+    Object.assign(input.dependencyScope, { privateConfig: 'private-graph-marker' });
+    Object.assign(input.dependencyScope.nodes[0], { sourceText: 'private-node-marker' });
+    Object.assign(input.dependencyScope.roots[0], { rawConfig: 'private-root-marker' });
+    const pending = captureCarryArtifactManifest(input);
+    input.dependencyScope.nodes[0].dependsOn.length = 0; input.dependencyScope.unresolved.length = 0;
+    const manifest = await pending;
+    expect(manifest.dependencyScope!.unresolved).toHaveLength(2);
+    expect(JSON.stringify(manifest)).not.toContain('private-');
+    const recheck = recheckCarryArtifactManifest(manifest, peer);
+    manifest.dependencyScope!.nodes.length = 0;
+    await expect(recheck).resolves.toBeUndefined();
+  });
+
+  it('recomputes missing roles instead of trusting even a rehashed declaration', async () => {
+    const { input, peer } = await dependencyFixture();
+    const manifest = await captureCarryArtifactManifest(input);
+    manifest.dependencyScope!.missingRoles = [];
+    const { sha256: _oldHash, ...body } = manifest;
+    manifest.sha256 = createHash('sha256').update(canonicalJson(body)).digest('hex');
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('changed after manifest freeze');
+  });
+
+  it('keeps a declaration-only boundary when the caller assigns every role and reports no residue', async () => {
+    const { input, peer } = await dependencyFixture();
+    const partial = await captureCarryArtifactManifest(input);
+    for (const role of partial.dependencyScope!.missingRoles) {
+      input.dependencyScope.roots.push({ role, artifactIds: ['launcher'] });
+    }
+    input.dependencyScope.unresolved = [];
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.dependencyScope).toMatchObject({ evidenceKind: 'declaration-only', missingRoles: [], unresolved: [] });
+    expect(manifest).not.toHaveProperty('admitted');
+    expect(manifest).not.toHaveProperty('complete');
+    await expect(recheckCarryArtifactManifest(manifest, peer)).resolves.toBeUndefined();
+    expect(peer.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['edge', 'residue', 'role', 'recipe'])('rejects changed %s in a serialized dependency binding', async change => {
+    const { input, peer } = await dependencyFixture();
+    const manifest = await captureCarryArtifactManifest(input);
+    if (change === 'edge') manifest.dependencyScope!.nodes[0].dependsOn = [];
+    if (change === 'residue') manifest.dependencyScope!.unresolved = [];
+    if (change === 'role') manifest.dependencyScope!.missingRoles = [];
+    if (change === 'recipe') manifest.dependencyScope!.recipeSha256 = '0'.repeat(64);
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('binding is invalid');
+  });
+});
+
+describe('native carry configuration manifest component', () => {
+  const fixture = () => {
+    const config = { config: { model: 'fixture', secret: NEVER_EMIT_MARKER }, layers: [{ name: 'fixture-layer' }] };
+    const server = (name: string) => ({ name, authStatus: 'bearerToken', runtimeStatus: 'connected', toolsError: null,
+      tools: { read: { name: 'read', inputSchema: { type: 'object' }, description: 'read-only fixture' } } });
+    const pages: Record<string, unknown>[] = [{ data: [server('a')], nextCursor: 'page-2' }, { data: [server('b')], nextCursor: null }];
+    let page = 0;
+    const peer = { request: vi.fn(async (frame: Record<string, unknown>) => {
+      if (frame.method === 'config/read') { page = 0; return config; }
+      return pages[page++] ?? pages.at(-1)!;
+    }), send: vi.fn(), close: vi.fn(async () => {}), done: Promise.resolve(), pid: () => 1 };
+    const scope = { threadId: 'native-thread', cwd: '/fixture',
+      servers: ['a', 'b'].map(name => ({ name, authStatus: 'bearerToken', tools: ['read'] })) };
+    return { config, pages, peer, scope };
+  };
+
+  it('reads every inventory page, hashes full configuration, and returns no credential', async () => {
+    const { peer, scope } = fixture();
+    const result = await captureCarryNativeConfiguration(peer, scope);
+    expect(result.servers).toEqual(scope.servers);
+    expect(result.configSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.toolInventorySha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(result)).not.toContain(NEVER_EMIT_MARKER);
+    expect(peer.request).toHaveBeenNthCalledWith(3, { method: 'mcpServerStatus/list', params: {
+      threadId: 'native-thread', detail: 'toolsAndAuthOnly', cursor: 'page-2',
+    } });
+    await expect(recheckCarryNativeConfiguration(peer, result)).resolves.toBeUndefined();
+    expect(peer.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['credential', 'layer', 'schema', 'description'])('detects %s drift even when names remain identical', async change => {
+    const { peer, scope, config, pages } = fixture();
+    const before = await captureCarryNativeConfiguration(peer, scope);
+    if (change === 'credential') config.config.secret = 'rotated';
+    if (change === 'layer') config.layers[0].name = 'changed-layer';
+    const server = (pages[0].data as Array<{ tools: { read: { inputSchema: { type: string }; description: string } } }>)[0];
+    if (change === 'schema') server.tools.read.inputSchema.type = 'string';
+    if (change === 'description') server.tools.read.description = 'different contract';
+    await expect(recheckCarryNativeConfiguration(peer, before)).rejects.toThrow('configuration changed');
+  });
+
+  it('ignores object key and server page order but retains array semantics', async () => {
+    const { peer, scope, config, pages } = fixture();
+    const before = await captureCarryNativeConfiguration(peer, scope);
+    config.config = { secret: config.config.secret, model: config.config.model };
+    [pages[0].data, pages[1].data] = [pages[1].data, pages[0].data];
+    await expect(recheckCarryNativeConfiguration(peer, before)).resolves.toBeUndefined();
+    config.layers.push({ name: 'second' });
+    const twoLayers = await captureCarryNativeConfiguration(peer, scope);
+    config.layers.reverse();
+    await expect(recheckCarryNativeConfiguration(peer, twoLayers)).rejects.toThrow('configuration changed');
+  });
+
+  it.each(['missing-config', 'missing-layers', 'missing-cursor', 'repeated-cursor', 'invalid-cursor', 'missing-server',
+    'duplicate-server', 'unexpected-server', 'disconnected', 'tools-error', 'wrong-auth', 'missing-tool', 'extra-tool',
+    'missing-schema', 'wrong-tool-name', 'bad-scope'])('refuses %s as incomplete or mismatched evidence', async fault => {
+    const { peer, scope, config, pages } = fixture();
+    const server = (pages[0].data as Array<Record<string, unknown>>)[0];
+    const tools = server.tools as Record<string, Record<string, unknown>>;
+    if (fault === 'missing-config') (config as Record<string, unknown>).config = null;
+    if (fault === 'missing-layers') (config as Record<string, unknown>).layers = null;
+    if (fault === 'missing-cursor') delete pages[0].nextCursor;
+    if (fault === 'repeated-cursor') { pages[1].data = []; pages[1].nextCursor = 'page-2'; }
+    if (fault === 'invalid-cursor') pages[0].nextCursor = '';
+    if (fault === 'missing-server') pages[1].data = [];
+    if (fault === 'duplicate-server') pages[1].data = [server];
+    if (fault === 'unexpected-server') server.name = 'unlisted';
+    if (fault === 'disconnected') server.runtimeStatus = 'starting';
+    if (fault === 'tools-error') server.toolsError = 'unavailable';
+    if (fault === 'wrong-auth') server.authStatus = 'notLoggedIn';
+    if (fault === 'missing-tool') delete tools.read;
+    if (fault === 'extra-tool') tools.write = { name: 'write', inputSchema: {} };
+    if (fault === 'missing-schema') delete tools.read.inputSchema;
+    if (fault === 'wrong-tool-name') tools.read.name = 'write';
+    if (fault === 'bad-scope') scope.servers.push(scope.servers[0]);
+    await expect(captureCarryNativeConfiguration(peer, scope)).rejects.toThrow(/carry/);
+  });
+
+  it('bounds an endless inventory without accepting a partial manifest', async () => {
+    const { peer, scope } = fixture();
+    let page = 0;
+    peer.request.mockImplementation(async frame => frame.method === 'config/read'
+      ? { config: {}, layers: [] } as never : { data: [], nextCursor: `page-${++page}` });
+    await expect(captureCarryNativeConfiguration(peer, scope)).rejects.toThrow('page bound');
+    expect(page).toBe(64);
+  });
+
+  it('accepts a measured empty inventory only when no servers are required', async () => {
+    const { peer, scope, pages } = fixture();
+    scope.servers = []; pages[0] = { data: [], nextCursor: null };
+    expect((await captureCarryNativeConfiguration(peer, scope)).servers).toEqual([]);
+  });
+
+  it('pins the allowlist before awaiting native reads', async () => {
+    const { peer, scope, pages } = fixture();
+    const pending = captureCarryNativeConfiguration(peer, scope);
+    scope.servers[0].name = 'new-server';
+    (pages[0].data as Array<Record<string, unknown>>)[0].name = 'new-server';
+    await expect(pending).rejects.toThrow('frozen allowlist');
+  });
+});
+
 describe('completed native carry source capture', () => {
   const setup = async () => {
     const entries = [
@@ -70,12 +753,100 @@ describe('completed native carry source capture', () => {
     const path = join(root, 'native.jsonl');
     const body = () => entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
     await writeFile(path, body());
-    const thread = { id: 'native-thread', path, status: { type: 'idle' },
+    const thread = { id: 'native-thread', path, forkedFromId: null as string | null, status: { type: 'idle' },
       turns: [{ id: 'native-turn', status: 'completed', error: null, itemsView: 'full', items: [] }] };
-    const peer = { request: vi.fn(async () => ({ thread })), send: vi.fn(), close: vi.fn(async () => {}),
+    const peer = { request: vi.fn(async (_request: RpcFrame) => ({ thread })), send: vi.fn(), close: vi.fn(async () => {}),
       done: Promise.resolve(), pid: () => 1 };
     return { entries, path, body, peer, thread };
   };
+  const forkSetup = async () => {
+    const fixture = await setup();
+    const parentPath = join(root, 'parent.jsonl');
+    const parentBody = [
+      { type: 'session_meta', payload: { id: 'parent-thread' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'parent-turn' } },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n';
+    await writeFile(parentPath, parentBody);
+    Object.assign(fixture.entries[0].payload, { forked_from_id: 'parent-thread' });
+    fixture.thread.forkedFromId = 'parent-thread';
+    fixture.thread.turns.unshift({ ...fixture.thread.turns[0], id: 'parent-turn' });
+    await writeFile(fixture.path, fixture.body());
+    const parent = { ...fixture.thread, id: 'parent-thread', path: parentPath, forkedFromId: null as string | null,
+      turns: [{ ...fixture.thread.turns[0], id: 'parent-turn' }] };
+    fixture.peer.request.mockImplementation(async request => ({
+      thread: (request.params as RpcFrame).threadId === 'parent-thread' ? parent : fixture.thread,
+    }));
+    return { ...fixture, parent, parentPath, parentBody };
+  };
+  it('binds the native parent chain as well as the child bytes', async () => {
+    const { peer, parentPath, parentBody } = await forkSetup();
+    const source = await captureCompletedCarrySource(peer, 'native-thread', 'native-turn');
+    expect(source).toMatchObject({ forkedFromId: 'parent-thread', ancestors: [
+      { threadId: 'parent-thread', turnId: 'parent-turn', filePath: parentPath, forkedFromId: null },
+    ] });
+    expect(source.ancestors[0].snapshot.bytes.toString()).toBe(parentBody);
+    await expect(recheckCarrySourceSnapshot(source)).resolves.toBeUndefined();
+  });
+  it.each(['append', 'rewrite-same-length', 'delete'])('rejects parent %s even when child bytes did not change', async change => {
+    const { peer, parentPath, parentBody } = await forkSetup();
+    const source = await captureCompletedCarrySource(peer, 'native-thread', 'native-turn');
+    if (change === 'append') await appendFile(parentPath, '{}\n');
+    if (change === 'rewrite-same-length') await writeFile(parentPath, parentBody.replace('parent-turn', 'parent-burn'));
+    if (change === 'delete') await rm(parentPath);
+    await expect(recheckCarrySourceSnapshot(source)).rejects.toThrow();
+  });
+  it.each(['cycle', 'same-path', 'wrong-id', 'busy', 'failed'])('rejects a %s parent before stopping the peer', async fault => {
+    const { peer, path, parent } = await forkSetup();
+    if (fault === 'cycle') parent.forkedFromId = 'native-thread';
+    if (fault === 'same-path') parent.path = path;
+    if (fault === 'wrong-id') parent.id = 'wrong-parent';
+    if (fault === 'busy') parent.status = { type: 'active' };
+    if (fault === 'failed') parent.turns[0].status = 'failed';
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow(/carry source/);
+    expect(peer.close).not.toHaveBeenCalled();
+  });
+  it('rejects a parent link present only on disk, instead of certifying a child-only cut', async () => {
+    const { peer, thread } = await forkSetup();
+    thread.forkedFromId = null;
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow(/parent/);
+  });
+  it('applies one aggregate byte cap to the child and parent chain', async () => {
+    const { peer, body, parentBody } = await forkSetup();
+    const cap = Buffer.byteLength(body() + parentBody) - 1;
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn', cap)).rejects.toThrow(/byte cap/);
+  });
+  it('captures the grandparent and rejects a shortened frozen chain', async () => {
+    const { peer, thread, parent, parentPath, parentBody } = await forkSetup();
+    const grandPath = join(root, 'grand.jsonl');
+    await writeFile(grandPath, parentBody.replaceAll('parent-thread', 'grand-thread').replaceAll('parent-turn', 'grand-turn'));
+    parent.forkedFromId = 'grand-thread';
+    await writeFile(parentPath, parentBody.replace('"id":"parent-thread"', '"id":"parent-thread","forked_from_id":"grand-thread"'));
+    const grand = { ...parent, id: 'grand-thread', path: grandPath, forkedFromId: null,
+      turns: [{ ...parent.turns[0], id: 'grand-turn' }] };
+    peer.request.mockImplementation(async request => ({ thread: (request.params as RpcFrame).threadId === thread.id ? thread
+      : (request.params as RpcFrame).threadId === parent.id ? parent : grand }));
+    const source = await captureCompletedCarrySource(peer, 'native-thread', 'native-turn');
+    expect(source.ancestors.map(member => member.threadId)).toEqual(['parent-thread', 'grand-thread']);
+    await expect(recheckCarrySourceSnapshot(source)).resolves.toBeUndefined();
+    await expect(recheckCarrySourceSnapshot({ ...source, ancestors: source.ancestors.slice(0, 1) })).rejects.toThrow('parent chain');
+    await appendFile(grandPath, '{}\n');
+    await expect(recheckCarrySourceSnapshot(source)).rejects.toThrow();
+  });
+  it('bounds native ancestor discovery before opening any file', async () => {
+    const { peer, thread } = await setup();
+    let reads = 0;
+    peer.request.mockImplementation(async request => ({ thread: { ...thread,
+      id: String((request.params as RpcFrame).threadId), path: join(root, `missing-${reads}.jsonl`),
+      forkedFromId: `ancestor-${++reads}` } }));
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow('depth bound');
+    expect(peer.request).toHaveBeenCalledTimes(32);
+    expect(peer.close).not.toHaveBeenCalled();
+  });
+  it('rejects a symlinked parent as well as a symlinked child', async () => {
+    const { peer, parentPath, parent } = await forkSetup();
+    const link = join(root, 'parent-link.jsonl'); await symlink(parentPath, link); parent.path = link;
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow();
+  });
   it('waits for native teardown and captures exact bytes, without editing the source', async () => {
     const { peer, path } = await setup();
     const bytes = await readFile(path);

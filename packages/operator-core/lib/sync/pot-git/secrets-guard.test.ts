@@ -80,6 +80,23 @@ describe('secrets-guard rules', () => {
     expect(hasSecrets([{ path: 'math.ts', content: clean }])).toBe(false);
   });
 
+  it('keeps quarantine-prone test fixtures clean under the commit scanner', () => {
+    const files = [
+      {
+        path: 'packages/operator-core/lib/inference-gateway/gateway-stage-telemetry.test.ts',
+        relative: '../../inference-gateway/gateway-stage-telemetry.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/launch-cost/scan-launch-transcripts.test.ts',
+        relative: '../../launch-cost/scan-launch-transcripts.test.ts',
+      },
+    ];
+    for (const file of files) {
+      const content = readFileSync(join(__dirname, file.relative), 'utf8');
+      expect(scanForSecrets([{ path: file.path, content }])).toEqual([]);
+    }
+  });
+
   it('skips absurdly long (minified) lines', () => {
     const minified = `x=${'a'.repeat(5000)}${AKIA}`;
     // The AKIA is embedded in a >4096-char line → skipped (no per-line secrets there).

@@ -70,6 +70,54 @@ describe('workspace-host controller forwarding', () => {
     );
   });
 
+  it('uses the registered bg-host when the old HTTP discovery probe would time out after 1.8s', async () => {
+    const collectControllers = vi.fn(async () => [row({
+      label: 'operator:3271',
+      process: null,
+      ok: false,
+      elapsedMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS + 2,
+      probeFailure: 'timeout',
+    })]);
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ status: 'accepted' }, { status: 202 }));
+
+    const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'snapshot', workspaceId: 'host-1' }, {
+      isRequestOnly: () => true,
+      listControllerRegistrations: async () => [{ port: 3271, pid: 4271, startedAt: 1, processRole: 'bg-host' }],
+      collectControllers,
+      fetchImpl,
+    });
+
+    expect(response?.status).toBe(202);
+    expect(collectControllers).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://127.0.0.1:3271/api/workspace-hosts/action',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('keeps authoritative operator-only registration as no-controller without probing', async () => {
+    const collectControllers = vi.fn(async () => [row()]);
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    const response = await forwardWorkspaceHostRequest('/api/workspace-hosts/action', { action: 'snapshot', workspaceId: 'host-1' }, {
+      isRequestOnly: () => true,
+      listControllerRegistrations: async () => [{ port: 3271, pid: 4271, startedAt: 1, processRole: 'operator' }],
+      collectControllers,
+      fetchImpl,
+    });
+
+    expect(response?.status).toBe(503);
+    await expect(response?.json()).resolves.toMatchObject({
+      outcome: 'not-dispatched',
+      controllerDiscovery: {
+        reason: 'no-controller',
+        candidates: [{ port: 3271, pid: 4271, role: 'operator', reachable: true, direct: true }],
+      },
+    });
+    expect(collectControllers).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('does not select a relayed primary row or any non-controller sibling', async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const response = await forwardWorkspaceHostRequest(

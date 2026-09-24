@@ -44,7 +44,7 @@ import {
 // is: registry.ts has ZERO imports (pure data + pure functions), so reading it
 // here drags no node/server subtree into the renderer bundle.
 import { launchableModes } from '@papercusp/operator-core/lib/modes/registry';
-import { useSuLaunchOptions } from './use-su-launch-options';
+import { useIdentityLaunchCatalog, useSuLaunchOptions, type IdentityLaunchCatalog } from './use-su-launch-options';
 import {
   ACCOUNT_SELECT_DEFAULT,
   EFFORT_OPTIONS,
@@ -99,6 +99,32 @@ export const FLEET_SELECT_NONE = '__no_fleet__';
 export const FLEET_SELECT_NEW = '__new_fleet__';
 export const CONTEXT_SELECT_NATIVE = '__native_context__';
 export const MODE_SELECT_NONE = '__no_mode__';
+export const IDENTITY_SELECT_DEFAULT = 'su';
+const IDENTITY_SELECT_MORE = '__more_identities__';
+
+export function buildIdentityLaunchOptions(catalog: Pick<IdentityLaunchCatalog,
+  'identities' | 'unreadable' | 'nextAfter'>): ComboboxOption[] {
+  const options: ComboboxOption[] = [{ value: IDENTITY_SELECT_DEFAULT, label: 'SU',
+    detail: 'Default identity composition' }];
+  for (const identity of catalog.identities) {
+    for (const slot of identity.slots) {
+      options.push({ value: `${slot.slot}:${identity.id}`, label: identity.id,
+        detail: identity.launchCompatibility?.eligible === false
+          ? `${slot.slot} · unavailable: ${identity.launchCompatibility.reason}`
+          : `${slot.slot} · ${identity.tier} · ${identity.version || 'unversioned'}`,
+        keywords: [identity.id, identity.tier, slot.slot],
+        disabled: identity.launchCompatibility?.eligible === false ||
+          !slot.cardinality || !/^[a-f0-9]{64}$/.test(identity.sourceRevision) });
+    }
+  }
+  for (const entry of catalog.unreadable) {
+    options.push({ value: `invalid:${entry.id}`, label: entry.id,
+      detail: `Invalid: ${entry.error}`, disabled: true });
+  }
+  if (catalog.nextAfter) options.push({ value: IDENTITY_SELECT_MORE,
+    label: 'Load more identities…' });
+  return options;
+}
 /**
  * New-session launches are always headless (WI-37871), so an unbound session
  * needs an actionable posture instead of opening an inert terminal-less agent.
@@ -323,6 +349,7 @@ export default function NewSessionLauncher({
   // owned by any one tab).
   const [activeHarnessSlug] = useQueryState('slug', parseAsString);
   const [planSlug, setPlanSlug] = useState<string | null>(null);
+  const [identityRef, setIdentityRef] = useState(IDENTITY_SELECT_DEFAULT);
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [launching, setLaunching] = useState(false);
@@ -346,6 +373,11 @@ export default function NewSessionLauncher({
   // psu's OWN option source — see use-su-launch-options' header. Keyed to the
   // backend the picked model implies, because pool pinning is per-backend.
   const launchOptions = useSuLaunchOptions(null, modelBackend(model) ?? 'claude');
+  const identityCatalog = useIdentityLaunchCatalog();
+  const identityOptions = useMemo(() => buildIdentityLaunchOptions(identityCatalog),
+    [identityCatalog.identities, identityCatalog.unreadable, identityCatalog.nextAfter]);
+  const selectedIdentity = identityCatalog.identities.find((identity) =>
+    identity.slots.some((slot) => `${slot.slot}:${identity.id}` === identityRef)) ?? null;
   const modelOptions = useMemo(
     () => buildModelOptions(launchOptions.ompCatalog.models),
     [launchOptions.ompCatalog.models],
@@ -398,6 +430,11 @@ export default function NewSessionLauncher({
     // CONTEXT, never a requirement, and `launchAgent` already accepts a null
     // planSlug (it takes a null `slug` on this path too).
     if (launching) return;
+    if (identityRef !== IDENTITY_SELECT_DEFAULT &&
+        (!selectedIdentity || selectedIdentity.launchCompatibility?.eligible === false)) {
+      toast.error('The selected identity is no longer available. Choose an identity again.');
+      return;
+    }
     // WI-6321: creating a fleet needs a name. Caught before the spawn so the
     // human fixes it here rather than getting a terminal that opens and dies.
     if (creatingFleet && !newFleetName.trim()) {
@@ -419,7 +456,7 @@ export default function NewSessionLauncher({
     try {
       const label = selectedPlan
         ? selectedPlan.title?.trim() || selectedPlan.slug
-        : 'su session';
+        : selectedIdentity ? `${selectedIdentity.id} session` : 'su session';
       // WI-6321 (owner ask 2026-07-27): the toast used to read `Agent launched for
       // <label>`, and with a plan selected `label` is the plan TITLE — so it rendered as
       // "Agent launched for Arrow-format sync reads, then an mmap'd Arrow read cache."
@@ -430,6 +467,8 @@ export default function NewSessionLauncher({
       const result = await launchAgent({
         slug: null,
         planSlug: selectedPlan?.slug ?? null,
+        stack: selectedIdentity ? [identityRef] : null,
+        selectedIdentityRevision: selectedIdentity?.sourceRevision ?? null,
         label,
         model: chosenModel,
         // The model picker offers the WHOLE CLOUD_MODEL_MENU, which spans backends — it
@@ -514,6 +553,8 @@ export default function NewSessionLauncher({
     effort,
     launching,
     selectedPlan,
+    identityRef,
+    selectedIdentity,
     onLaunched,
     fleet,
     creatingFleet,
@@ -533,6 +574,19 @@ export default function NewSessionLauncher({
           2026-07-26), which is what `emptyValue` buys: while the value is the
           sentinel, the field renders empty with the prompt showing rather than
           echoing the sentinel row's label back as if it were typed. */}
+      <Combobox
+        triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--identity"
+        value={identityRef}
+        onChange={(value) => {
+          if (value === IDENTITY_SELECT_MORE) identityCatalog.loadMore();
+          else setIdentityRef(value);
+        }}
+        ariaLabel="Identity for new session"
+        placeholder="SU"
+        emptyLabel="No identities match"
+        options={identityOptions}
+      />
+      {identityCatalog.error && <span role="alert">Installed identities unavailable: {identityCatalog.error}</span>}
       <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
         value={planSlug ?? PLAN_SELECT_PLACEHOLDER}

@@ -214,6 +214,19 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(headlessOneliner()).toContain('--headless');
   });
 
+  it('carries the selected identity source pin into psu and refuses malformed selections before spawn', async () => {
+    const revision = 'a'.repeat(64);
+    const invalid = await launch({ stack: ['domain:research-steward'], selected_identity_revision: 'stale' });
+    expect(invalid.status).toBe(400);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    const exact = await launch({ headless: true, stack: ['domain:research-steward'],
+      selected_identity_revision: revision });
+    expect(exact.status).toBe(200);
+    expect(headlessOneliner()).toContain('--stack=domain:research-steward');
+    expect(headlessOneliner()).toContain(`--identity-revision=${revision}`);
+  });
+
   it('headless:false spawns a TERMINAL and passes no --headless flag', async () => {
     const { status, json } = await launch({ headless: false });
     expect(status).toBe(200);

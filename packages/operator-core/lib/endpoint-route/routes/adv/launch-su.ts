@@ -72,6 +72,8 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     agent?: string;
     harness_slug?: string | null;
     plan_slug?: string | null;
+    stack?: string[] | null;
+    selected_identity_revision?: string | null;
     // P-032: omp-parity passthroughs (the features the retired
     // buildEngineerOmpLaunchCommand used to provide).
     model?: string | null;
@@ -153,6 +155,15 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     if (text.trim()) body = JSON.parse(text);
   } catch {
     return json({ status: 'error', error: 'invalid JSON body' }, 400);
+  }
+
+  if (body.stack != null && (!Array.isArray(body.stack) || body.stack.length > 40 ||
+      body.stack.some((ref) => typeof ref !== 'string' || !/^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$/.test(ref)))) {
+    return json({ status: 'error', error: 'stack must contain valid slot:id refs' }, 400);
+  }
+  if (body.selected_identity_revision != null &&
+      (!/^[a-f0-9]{64}$/.test(body.selected_identity_revision) || body.stack?.length !== 1)) {
+    return json({ status: 'error', error: 'selected_identity_revision requires one selected stack ref and sha256 revision' }, 400);
   }
 
   const attachAdvSessionId = body.attach_adv_session_id ?? null;
@@ -476,6 +487,8 @@ async function handleLaunchSu(req: Request): Promise<Response> {
   const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`];
   if (ownerId) psuArgs.push(`--owner-id=${ownerId}`);
   if (harness) psuArgs.push(`--harness=${harness}`);
+  for (const ref of body.stack ?? []) psuArgs.push(`--stack=${ref}`);
+  if (body.selected_identity_revision) psuArgs.push(`--identity-revision=${body.selected_identity_revision}`);
   psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
   if (model) psuArgs.push(`--model=${model}`);
   psuArgs.push(`--context-size=${contextSize}`);

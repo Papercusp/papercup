@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   collectSiblingManagedTimers,
   DEFAULT_SIBLING_FANOUT_BUDGET_MS,
+  listSiblingOperators,
   type SiblingManagedTimers,
+  type SiblingOperator,
 } from '../schedule-federation';
 import { requestOnlyHost } from '../background-workers';
 import { WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS } from './admission-window';
@@ -22,6 +24,7 @@ export type WorkspaceHostRequestForwarder = (
 export interface WorkspaceHostControllerForwardingOptions {
   isRequestOnly?: () => boolean;
   collectControllers?: (options: { timeoutMs: number; budgetMs: number }) => Promise<readonly SiblingManagedTimers[]>;
+  listControllerRegistrations?: () => Promise<readonly SiblingOperator[]>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
@@ -69,9 +72,9 @@ function controllerUnavailable(
 
 /**
  * Request-only operator hosts (:3170 and clustered request workers) do not launch
- * DBOS. Discover the live background host through the existing per-port IPC
- * registry and its loopback process-role probe, then relay the typed route
- * request with a bounded transport deadline.
+ * DBOS. Prefer the process role already published in the per-port IPC registry so
+ * a busy bg-host event loop cannot make a live controller look absent. Legacy
+ * registrations still use the bounded loopback role probe before forwarding.
  */
 export async function forwardWorkspaceHostRequest(
   path: WorkspaceHostRequestPath,
@@ -81,26 +84,54 @@ export async function forwardWorkspaceHostRequest(
   const isRequestOnly = options.isRequestOnly ?? (() => requestOnlyHost());
   if (!isRequestOnly()) return null;
 
-  const collectControllers =
-    options.collectControllers ??
-    collectSiblingManagedTimers;
-  let rows: readonly SiblingManagedTimers[];
+  const listControllerRegistrations = options.listControllerRegistrations ??
+    (options.collectControllers ? async () => [] : listSiblingOperators);
+  let registrations: readonly SiblingOperator[] = [];
   try {
-    rows = await collectControllers({
-      timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
-      budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
-    });
+    registrations = await listControllerRegistrations();
   } catch {
-    // Exceptions and probe error strings may carry private paths or credentials. Retain the
-    // closed reason and public candidate metadata, never raw exception/provider bodies.
-    return controllerUnavailable('discovery-failed');
+    // Keep the bounded legacy discovery path available if local registration lookup fails.
   }
-  const controller = selectController(rows);
-  if (!controller) {
-    const reason = rows.some((row) => row.probeFailure === 'timeout')
-      ? 'controller-probe-timeout'
-      : 'no-controller';
-    return controllerUnavailable(reason, rows);
+  const registeredController = registrations
+    .filter((row) => row.processRole === 'bg-host')
+    .sort((a, b) => a.port - b.port)[0] ?? null;
+  let controllerPort = registeredController?.port;
+
+  if (controllerPort === undefined && registrations.length > 0 && registrations.every((row) => row.processRole)) {
+    return controllerUnavailable('no-controller', registrations.map((row) => ({
+      port: row.port,
+      pid: row.pid,
+      label: `${row.processRole}:${row.port}`,
+      process: row.processRole ?? null,
+      ok: true,
+      timers: [],
+      dbosSchedules: [],
+      stallWaker: null,
+      elapsedMs: 0,
+    })));
+  }
+
+  if (controllerPort === undefined) {
+    const collectControllers = options.collectControllers ?? collectSiblingManagedTimers;
+    let rows: readonly SiblingManagedTimers[];
+    try {
+      rows = await collectControllers({
+        timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_DISCOVERY_TIMEOUT_MS,
+        budgetMs: DEFAULT_SIBLING_FANOUT_BUDGET_MS,
+      });
+    } catch {
+      // Exceptions and probe error strings may carry private paths or credentials. Retain the
+      // closed reason and public candidate metadata, never raw exception/provider bodies.
+      return controllerUnavailable('discovery-failed');
+    }
+    const controller = selectController(rows);
+    if (!controller) {
+      const reason = rows.some((row) => row.probeFailure === 'timeout')
+        ? 'controller-probe-timeout'
+        : 'no-controller';
+      return controllerUnavailable(reason, rows);
+    }
+    controllerPort = controller.port;
   }
 
   // Both callers validate an object before forwarding. Choose the operation ID
@@ -114,7 +145,7 @@ export async function forwardWorkspaceHostRequest(
   const forwardedBody = { ...body, operationId };
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   try {
-    const response = await fetchImpl(`http://127.0.0.1:${controller.port}${path}`, {
+    const response = await fetchImpl(`http://127.0.0.1:${controllerPort}${path}`, {
       method: 'POST',
       signal: AbortSignal.timeout(
         options.timeoutMs ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS,

@@ -34,6 +34,67 @@ import {
 } from "../../../libs/generic/gui-readiness/src/document-mount";
 
 /**
+ * WebdriverIO's `waitUntil` retries rejected predicates until its timeout.
+ * That's useful for transient DOM/protocol errors, but an invalid session or a
+ * crashed WebKit page cannot recover through another poll. Detect those terminal
+ * responses before they are mistaken for ordinary precondition failures.
+ */
+export function isTerminalWebDriverSessionError(error: unknown): boolean {
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  const messages: string[] = [];
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      messages.push(current);
+      continue;
+    }
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+
+    const record = current as Record<string, unknown>;
+    for (const key of ["name", "message", "error", "stack"]) {
+      if (typeof record[key] === "string") messages.push(record[key] as string);
+    }
+    for (const key of ["cause", "response", "body", "data"]) {
+      if (record[key] !== undefined) pending.push(record[key]);
+    }
+  }
+
+  const compact = messages.join(" ").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return /invalidsessionid|pagecrashorhang|sessionterminatedwithoutreply/.test(compact);
+}
+
+/**
+ * Run a WDIO wait while turning terminal session errors into an immediate
+ * failure. A truthy sentinel ends WDIO's internal Timer; the original error is
+ * rethrown after the Timer has stopped, so it cannot issue another dead-session
+ * command on the next interval.
+ */
+export async function waitUntilOrFailOnTerminalSession(
+  browser: Browser,
+  condition: () => boolean | Promise<boolean>,
+  options: Parameters<Browser["waitUntil"]>[1] = {},
+): Promise<void> {
+  let terminalSessionError: unknown;
+  let sawTerminalSessionError = false;
+
+  await browser.waitUntil(async () => {
+    try {
+      return await condition();
+    } catch (error) {
+      if (!isTerminalWebDriverSessionError(error)) throw error;
+      terminalSessionError = error;
+      sawTerminalSessionError = true;
+      return true;
+    }
+  }, options);
+
+  if (sawTerminalSessionError) throw terminalSessionError;
+}
+
+/**
  * How long to wait for real app content.
  *
  * DERIVED, not guessed — and deliberately larger than it "looks like it should
@@ -371,7 +432,8 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
   let terminal: MountVerdict | null = null;
 
   try {
-    await browser.waitUntil(
+    await waitUntilOrFailOnTerminalSession(
+      browser,
       async () => {
         last = await readDocument(browser);
         const step = classifyMountObservation(
@@ -390,7 +452,12 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
       },
       { timeout: APP_MOUNT_TIMEOUT_MS, interval: 500, timeoutMsg: "app mount timed out" },
     );
-  } catch {
+  } catch (error) {
+    if (isTerminalWebDriverSessionError(error)) {
+      throw new Error(
+        `WebDriver session terminated while waiting for the operator UI to mount: ${String(error)}`,
+      );
+    }
     throw new Error(await mountTimeoutDiagnosis(browser, last));
   }
 

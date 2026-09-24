@@ -214,16 +214,50 @@ describe('per-port discovery (EI-190)', () => {
 
   it('writes BOTH the per-port file and the legacy singleton, identical payloads with the port', async () => {
     process.env.PAPERCUSP_HONO_PORT = '3170';
-    await writeEndpointIpcDiscovery('/tmp/sockets/eipc-test.sock');
+    const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    const savedVitest = process.env.VITEST;
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+    delete process.env.VITEST;
+    try {
+      await writeEndpointIpcDiscovery('/tmp/sockets/eipc-test.sock');
 
-    const perPort = JSON.parse(await readFile(endpointIpcDiscoveryPathForPort(3170), 'utf8'));
-    const singleton = JSON.parse(await readFile(endpointIpcDiscoveryPath(), 'utf8'));
-    expect(perPort).toEqual(singleton);
-    expect(perPort).toMatchObject({
-      socketPath: '/tmp/sockets/eipc-test.sock',
-      pid: process.pid,
-      port: 3170,
-    });
+      const perPort = JSON.parse(await readFile(endpointIpcDiscoveryPathForPort(3170), 'utf8'));
+      const singleton = JSON.parse(await readFile(endpointIpcDiscoveryPath(), 'utf8'));
+      expect(perPort).toEqual(singleton);
+      expect(perPort).toMatchObject({
+        socketPath: '/tmp/sockets/eipc-test.sock',
+        pid: process.pid,
+        port: 3170,
+        processRole: 'bg-host',
+      });
+      expect((await readEndpointIpcDiscovery())?.processRole).toBe('bg-host');
+    } finally {
+      if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+    }
+  });
+
+  it('records the request-only staging role when background-worker mode is implicit', async () => {
+    const savedPort = process.env.PAPERCUSP_HONO_PORT;
+    const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    const savedVitest = process.env.VITEST;
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    delete process.env.VITEST;
+    try {
+      await writeEndpointIpcDiscovery('/tmp/sockets/request-only.sock');
+      const perPort = JSON.parse(await readFile(endpointIpcDiscoveryPathForPort(3170), 'utf8'));
+      expect(perPort.processRole).toBe('operator');
+    } finally {
+      if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = savedPort;
+      if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+    }
   });
 
   it('defaults the port to 3070 when PAPERCUSP_HONO_PORT is unset', async () => {

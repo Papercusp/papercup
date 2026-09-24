@@ -65,6 +65,14 @@ const h = vi.hoisted(() => ({
     },
   },
   optionsRefresh: vi.fn(),
+  identityCatalog: {
+    identities: [] as Array<{ id: string; tier: string; version: string; sourceRevision: string;
+      slots: Array<{ slot: string; cardinality: 'exclusive' }>;
+      launchCompatibility?: { eligible: boolean; reason: string | null } }>,
+    unreadable: [] as Array<{ id: string; error: string }>,
+    nextAfter: null as string | null,
+  },
+  identityLoadMore: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
@@ -99,6 +107,8 @@ vi.mock('./use-su-launch-options', () => ({
     error: null,
     refresh: h.optionsRefresh,
   }),
+  useIdentityLaunchCatalog: () => ({ ...h.identityCatalog, loading: false, error: null,
+    loadMore: h.identityLoadMore }),
 }));
 // The pickers became searchable Comboboxes under
 // `hud-session-launcher-and-board-tabs-2026-07-26` P-003. Stubbed to a native
@@ -196,6 +206,37 @@ beforeEach(() => {
   h.toastSuccess.mockReset();
   h.toastError.mockReset();
   h.toastWarning.mockReset();
+  h.identityCatalog.identities = [];
+  h.identityCatalog.unreadable = [];
+  h.identityCatalog.nextAfter = null;
+  h.identityLoadMore.mockReset();
+});
+
+describe('selected identity launch', () => {
+  it('offers SU by default, shows invalid entries, and forwards a selected source pin', async () => {
+    const revision = 'a'.repeat(64);
+    h.identityCatalog.identities = [{ id: 'research-steward', tier: 'installed', version: '1.2.0',
+      sourceRevision: revision, slots: [{ slot: 'domain', cardinality: 'exclusive' }] }];
+    h.identityCatalog.unreadable = [{ id: 'broken', error: 'attestation-missing' }];
+    const { buildIdentityLaunchOptions } = await import('./NewSessionLauncher');
+    expect(buildIdentityLaunchOptions(h.identityCatalog)).toContainEqual(expect.objectContaining({
+      value: 'invalid:broken', disabled: true,
+      detail: 'Invalid: attestation-missing',
+    }));
+    expect(buildIdentityLaunchOptions({ ...h.identityCatalog, identities: [{
+      id: 'needs-producer', tier: 'installed', version: '1.0.0', sourceRevision: revision,
+      slots: [{ slot: 'domain', cardinality: 'exclusive' }],
+      launchCompatibility: { eligible: false, reason: 'Needs live producer binding' },
+    }] })).toContainEqual(expect.objectContaining({ value: 'domain:needs-producer', disabled: true }));
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    const identity = screen.getByRole('combobox', { name: 'Identity for new session' });
+    expect((identity as HTMLSelectElement).value).toBe('su');
+    fireEvent.change(identity, { target: { value: 'domain:research-steward' } });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({
+      stack: ['domain:research-steward'], selectedIdentityRevision: revision,
+    })));
+  });
 });
 afterEach(() => cleanup());
 

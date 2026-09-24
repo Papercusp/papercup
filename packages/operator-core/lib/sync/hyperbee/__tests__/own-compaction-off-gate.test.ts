@@ -305,6 +305,60 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     expect(event.message).toContain('droppedGovernorReceipts=1 liveGovernorReceiptKeys=1');
   });
 
+  it('a requested compaction runs before the cadence is due and drops a receipt carried in the PRIOR set (D-023)', async () => {
+    // The tower's case: the dead receipts sit in the newest set, not in the tail, and the
+    // proportional cadence will not compact again for ~1.9M ops. A requested run must seed
+    // from that set and still drop them (seeded rows carry their chunk's log index, which
+    // is below the census boundary).
+    const slug = 'd023-requested-compaction';
+    let live = ['papercusp/WI-DEAD', 'papercusp/WI-LIVE'];
+    const { handle } = await boot(slug, { loadOwnCompactionGovernorReceiptKeys: async () => live });
+    const receipt = (hbKey: string): PeerLogOp => ({
+      type: 'put',
+      table: 'engineer-issues',
+      hbKey,
+      value: { payload: { resource_governor: { schemaVersion: 1, state: 'completed' } } },
+      ts: 2_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: '',
+    });
+    await handle.append(receipt('papercusp/WI-DEAD'));
+    await handle.append(receipt('papercusp/WI-LIVE'));
+    await appendOps(handle, 0, SNAPSHOT_COMPACT_EVERY_OPS - 2);
+    await handle.mergeNow();
+    const first = await waitFor(() => findLatestCompleteSnapshot(handle.ownLog));
+    await waitFor(() => compactionEvents(slug).find((e) => /^own log compaction: /.test(e.message ?? '')));
+
+    // PG loses the receipt; the log grows far less than the next threshold.
+    live = ['papercusp/WI-LIVE'];
+    await appendOps(handle, SNAPSHOT_COMPACT_EVERY_OPS, 5);
+    const outcome = await handle.compactOwnLogNow();
+
+    expect(outcome).toMatchObject({ ok: true, appended: true, droppedGovernorReceipts: 1, liveGovernorReceiptKeys: 1 });
+    const second = await waitFor(() => {
+      const s = findLatestCompleteSnapshot(handle.ownLog);
+      return s && s.seedIndex > first.seedIndex ? s : null;
+    });
+    const rows = [] as SnapshotPayload['rows'];
+    for (let i = 0; i < second.chunkCount; i++) {
+      const op = await handle.ownLog.get(second.seedIndex + i);
+      rows.push(...((op?.value as SnapshotPayload | undefined)?.rows ?? []));
+    }
+    expect(rows.some((row) => row.hbKey === 'papercusp/WI-DEAD')).toBe(false);
+    expect(rows.some((row) => row.hbKey === 'papercusp/WI-LIVE')).toBe(true);
+    const started = listBootHistory({ workspaceId: WS, harnessSlug: slug, kinds: ['own_log_compaction'] }).filter((e) =>
+      /^own log compaction started: .* seeded=yes trigger=requested$/.test(e.message ?? ''),
+    );
+    expect(started).toHaveLength(1);
+  });
+
+  it('a requested compaction refuses once the engine is closed (D-023)', async () => {
+    const { handle, markClosed } = await boot('d023-requested-closed');
+    await handle.close();
+    markClosed();
+    await expect(handle.compactOwnLogNow()).rejects.toThrow(/stopped\/closing/);
+  });
+
   it('reports the fold position while a compaction is running, not only when it ends (WI-10002836)', async () => {
     // The failure this pins: the tower's first papercusp compaction folded 7.76M ops for
     // 30+ minutes, and nothing between its start row and its outcome row showed whether

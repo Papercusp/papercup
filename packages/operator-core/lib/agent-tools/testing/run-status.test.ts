@@ -12,12 +12,20 @@ vi.mock('../../testing-run-store', async (orig) => ({
   ...(await orig<typeof import('../../testing-run-store')>()),
   getRun: vi.fn(),
   getRunAsync: vi.fn(),
+  getTestRunLedgerRecoveryAsync: vi.fn(),
 }));
 
-import { getRunAsync, TestingRunSnapshotUnavailableError, type RunSnapshot } from '../../testing-run-store';
+import {
+  getRunAsync,
+  getTestRunLedgerRecoveryAsync,
+  TestingRunSnapshotUnavailableError,
+  type DetachedRunLedgerRecovery,
+  type RunSnapshot,
+} from '../../testing-run-store';
 import { detachedRecoveryHint, detachedTestTimeoutHint } from './run';
 
 const getRunMock = vi.mocked(getRunAsync);
+const ledgerRecoveryMock = vi.mocked(getTestRunLedgerRecoveryAsync);
 const tool = (await import('./run-status')).default;
 
 type Output = { data: Record<string, unknown> };
@@ -26,6 +34,8 @@ const call = (runId: string) => tool.handler({ runId } as never, {} as never) as
 
 beforeEach(() => {
   getRunMock.mockReset();
+  ledgerRecoveryMock.mockReset();
+  ledgerRecoveryMock.mockResolvedValue(null);
 });
 
 describe('testing:run-status handler', () => {
@@ -73,8 +83,49 @@ describe('testing:run-status handler', () => {
     });
   });
 
+  it('recovers a terminal verdict from per-file ledger rows when the lifecycle snapshot is unavailable', async () => {
+    const ledgerRecovery: DetachedRunLedgerRecovery = {
+      runId: 'run-ledger',
+      status: 'pass',
+      exitCode: 0,
+      finishedAt: 1_700_000_005_000,
+      fileCount: 2,
+      files: [
+        { filePath: 'lib/one.test.ts', status: 'pass', finishedAt: 1_700_000_004_000 },
+        { filePath: 'lib/two.test.ts', status: 'pass', finishedAt: 1_700_000_005_000 },
+      ],
+      message: 'Recovered pass from 2 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
+    };
+    getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
+    ledgerRecoveryMock.mockResolvedValue(ledgerRecovery);
+
+    const out = await call(ledgerRecovery.runId);
+
+    expect(out.data).toEqual({ ok: true, ledgerRecovery });
+    expect(ledgerRecoveryMock).toHaveBeenCalledWith(ledgerRecovery.runId);
+  });
+
+  it('also checks the per-file ledger when no lifecycle snapshot row exists', async () => {
+    const ledgerRecovery: DetachedRunLedgerRecovery = {
+      runId: 'run-ledger-missing-snapshot',
+      status: 'fail',
+      exitCode: 1,
+      finishedAt: 1_700_000_005_000,
+      fileCount: 1,
+      files: [{ filePath: 'lib/failing.test.ts', status: 'fail', finishedAt: 1_700_000_005_000 }],
+      message: 'Recovered fail from 1 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
+    };
+    getRunMock.mockResolvedValue(null);
+    ledgerRecoveryMock.mockResolvedValue(ledgerRecovery);
+
+    const out = await call(ledgerRecovery.runId);
+
+    expect(out.data).toEqual({ ok: true, ledgerRecovery });
+  });
+
   it('documents the callable timeout recovery poll surface', () => {
     expect(tool.description).toContain('testing:run-status { runId }');
+    expect(tool.description).toContain('ledgerRecovery');
     expect(tool.guidance?.chaining).toContain('testing:run-status { runId }');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('testing:run-status { runId }');
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.integration.test.ts'])).toContain(

@@ -14,6 +14,7 @@ import {
   RunnableBlueprintSchema,
   SU_MODE_DOCUMENTS,
   type ModeCatalogSnapshot,
+  type BlueprintSourceDocument,
   type ResolvedAgentInput,
   slotSpec,
 } from '@papercusp/orchestrator/blueprint';
@@ -31,6 +32,22 @@ import {
 export interface IdentitySourceOptions {
   repoDir?: string;
   sourcePath?: string;
+}
+
+/** A plain picker can only launch sources whose live producer outputs are
+ * already handled by its launch path. Mode identities use validated mode:set. */
+export function identityLaunchCompatibility(
+  document: BlueprintSourceDocument,
+  selectableSlots: readonly unknown[] = document.slots ?? [],
+) {
+  if (selectableSlots.length === 0) {
+    return { eligible: false, reason: 'This named composition needs a launch selection before it can start.' };
+  }
+  if (document.mode) return { eligible: false, reason: 'Activate this mode through the validated mode control.' };
+  if (document.contributions?.some((entry) => entry.source === 'provider')) {
+    return { eligible: false, reason: 'This identity needs a live producer binding at launch.' };
+  }
+  return { eligible: true, reason: null };
 }
 
 let selectedModeCatalogCache: { fingerprint: string; value: ModeCatalogSnapshot } | null = null;
@@ -543,6 +560,9 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
             error: details || ('error' in selected ? String(selected.error) : 'identity source changed'),
           } };
         }
+        const effectiveSource = resolveBlueprintSource(raw, { sourcePath: entry.file,
+          resolve: operatorResolveExtends({ localDirs: localDirs(opts.repoDir) }) });
+        const effective = BlueprintSourceDocumentSchema.parse(effectiveSource.merged);
         return {
           kind: 'identity' as const,
           value: {
@@ -551,6 +571,7 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
             tier: entry.tier,
             version: doc.version,
             sourceRevision: selected.contentHash,
+            launchCompatibility: identityLaunchCompatibility(effective, doc.slots),
             description: doc.description,
             // The slot registry is authoritative for cardinality. Identity files
             // may omit the optional restatement, but the UI still has to choose

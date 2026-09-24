@@ -8601,8 +8601,10 @@ export function identityPickerChoices(page) {
       choices.push({
         name: `${identity.id}  ·  ${slot.slot}  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}`,
         value: ref,
-        ...(slot.cardinality && /^[a-f0-9]{64}$/.test(identity.sourceRevision || "")
-          ? {} : { disabled: "unsupported slot or source revision unavailable" }),
+        ...(identity.launchCompatibility?.eligible === false
+          ? { disabled: identity.launchCompatibility.reason || "not launchable" }
+          : slot.cardinality && /^[a-f0-9]{64}$/.test(identity.sourceRevision || "")
+            ? {} : { disabled: "unsupported slot or source revision unavailable" }),
       });
     }
   }
@@ -8632,7 +8634,8 @@ export async function pickIdentity(workspace, harness) {
     }
     const identity = (page.identities || []).find((entry) =>
       entry.slots?.some((slot) => `${slot.slot}:${entry.id}` === choice));
-    if (!identity || !/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")) {
+    if (!identity || identity.launchCompatibility?.eligible === false ||
+        !/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")) {
       throw new Error("selected identity has no validated source revision");
     }
     return { stack: [choice], selectedIdentityRevision: identity.sourceRevision };

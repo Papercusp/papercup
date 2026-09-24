@@ -682,6 +682,60 @@ describe('durable detached snapshot lifecycle', () => {
     await expect(store.getRunAsync('missing-run', missingSql)).resolves.toBeNull();
   });
 
+  it('recovers a terminal detached verdict from test_runs when its snapshot read is unavailable', async () => {
+    const runId = 'ledger-recovery-run';
+    const ledgerRows = Array.from({ length: 5 }, (_, index) => ({
+      file_path: `lib/file-${index + 1}.test.ts`,
+      status: 'pass',
+      finished_at: new Date(1_700_000_001_000 + index * 1_000),
+      output_tail: null,
+    }));
+    const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) throw new Error('snapshot table unavailable');
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync(runId, sql)).rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
+    await expect(store.getTestRunLedgerRecoveryAsync(runId, sql)).resolves.toMatchObject({
+      runId,
+      status: 'pass',
+      exitCode: 0,
+      finishedAt: 1_700_000_005_000,
+      fileCount: 5,
+      files: ledgerRows.map((row) => ({
+        filePath: row.file_path,
+        status: row.status,
+        finishedAt: row.finished_at.getTime(),
+      })),
+    });
+    expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'))).toBe(true);
+  });
+
+  it('does not recover a detached verdict from a partial or unreadable test_runs group', async () => {
+    const partialSql = vi.fn(async (strings: TemplateStringsArray) => {
+      if (strings.join(' ').includes('FROM harness_shared.test_runs')) {
+        return [
+          {
+            file_path: 'lib/finished.test.ts',
+            status: 'pass',
+            finished_at: new Date(1_700_000_001_000),
+            output_tail: null,
+          },
+          { file_path: 'lib/active.test.ts', status: 'running', finished_at: null, output_tail: null },
+        ];
+      }
+      return [];
+    }) as unknown as Sql;
+    const unavailableSql = vi.fn(async () => {
+      throw new Error('test_runs unavailable');
+    }) as unknown as Sql;
+
+    await expect(store.getTestRunLedgerRecoveryAsync('partial-run', partialSql)).resolves.toBeNull();
+    await expect(store.getTestRunLedgerRecoveryAsync('unreadable-ledger-run', unavailableSql)).resolves.toBeNull();
+  });
+
   it('reconciles a persisted running snapshot when its linked task is terminal', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {

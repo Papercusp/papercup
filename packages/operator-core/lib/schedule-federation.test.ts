@@ -27,12 +27,14 @@ describe('describeProcessRole', () => {
   it('reports bg-host only when background workers are actually enabled', () => {
     expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: '1' })).toBe('bg-host');
     expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: 'true' })).toBe('bg-host');
-    // The falsy spellings must NOT read as bg-host — a mislabelled row would send a
-    // reader to the wrong process to explain a stalled timer.
+    // The runtime's explicit disable value is `0`; unset ports other than :3170 use
+    // the background-host default. A mislabelled row would send a reader to the wrong
+    // process when explaining a stalled timer.
     expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: '0' })).toBe('operator');
-    expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: 'false' })).toBe('operator');
-    expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: '' })).toBe('operator');
-    expect(describeProcessRole({})).toBe('operator');
+    expect(describeProcessRole({ PAPERCUSP_HONO_PORT: '3170' })).toBe('operator');
+    expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: 'false' })).toBe('bg-host');
+    expect(describeProcessRole({ PAPERCUSP_BACKGROUND_WORKERS: '' })).toBe('bg-host');
+    expect(describeProcessRole({})).toBe('bg-host');
   });
 });
 
@@ -56,7 +58,7 @@ describe('listSiblingOperators', () => {
       writeFile(join(dir, name), JSON.stringify(body), 'utf8');
 
     await write('endpoint-ipc.3070.json', { socketPath: '/s/a', pid: 111, startedAt: 1, port: 3070 });
-    await write('endpoint-ipc.3271.json', { socketPath: '/s/b', pid: 222, startedAt: 2, port: 3271 });
+    await write('endpoint-ipc.3271.json', { socketPath: '/s/b', pid: 222, startedAt: 2, port: 3271, processRole: 'bg-host' });
     await write('endpoint-ipc.3170.json', { socketPath: '/s/c', pid: 999, startedAt: 3, port: 3170 });
     // The legacy singleton is last-writer-wins across every operator on the box —
     // including it would duplicate a per-port sibling or point at a different process
@@ -72,7 +74,7 @@ describe('listSiblingOperators', () => {
     });
 
     expect(found.map((s) => s.port)).toEqual([3271]);
-    expect(found[0]).toMatchObject({ pid: 222, startedAt: 2 });
+    expect(found[0]).toMatchObject({ pid: 222, startedAt: 2, processRole: 'bg-host' });
   });
 
   it('returns [] when the discovery dir does not exist', async () => {

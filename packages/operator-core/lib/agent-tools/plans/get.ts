@@ -746,6 +746,16 @@ export default defineTool({
           stagesMs[name] = Math.max(0, now - stageStarted);
           stageStarted = now;
         };
+        // Parallel enrichments need their own clocks: intervals overlap and
+        // must not be interpreted as an additive breakdown of total waitMs.
+        const timeStage = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
+          const started = performance.now();
+          try {
+            return await read();
+          } finally {
+            stagesMs[name] = Math.max(0, performance.now() - started);
+          }
+        };
         return cachedRead(
           ctx as CachedReadCtx,
           {
@@ -840,8 +850,123 @@ export default defineTool({
             // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
             // (the closing of the issue unblocks every target atomically). The pure
             // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
-            const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(slug, resolved.items);
-            markStage('issueBlocks');
+            const issueBlocksRead = timeStage('issueBlocks', () => overlayIssueBlocksForPlan(slug, resolved.items));
+
+            // P-006: Build a map of plan-item-id → { featureId, status } so the UI
+            // can show live feature status badges next to each P-NNN item.
+            const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+            const linkedFeaturesRead = timeStage('linkedFeatures', async () => {
+              let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+              // P-003: the newest transition across work-items linked to this
+              // plan — one of the two measurable freshness sources. Taken from
+              // the query below rather than a second one: it already selects
+              // exactly this plan's linked rows, so the signal costs one more
+              // column instead of a round-trip.
+              let linkedWorkItemUpdatedAt: string | null = null;
+              try {
+                const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+                  return tx<
+                    {
+                      feature_id: string;
+                      status: string;
+                      source_plan_slug: string | null;
+                      source_plan_item_ids: string[] | null;
+                      stamped_plan_slug: string | null;
+                      stamped_item_id: string | null;
+                      harness_slug: string;
+                      updated_ts: string | number | null;
+                    }[]
+                  >`
+                SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
+                       payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+                       payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
+                       harness_slug, updated_ts
+                  FROM harness_shared.harness_features_consolidated
+                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+                   AND (source_plan_slug = ${slug}
+                        OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
+              `;
+                });
+                for (const row of rows) {
+                  // P-003 freshness: newest linked work-item write. Taken over
+                  // ALL linked rows, including ones whose plan-item provenance
+                  // does not resolve to a P-NNN below — a linked work-item that
+                  // moved is evidence of activity on this plan whether or not it
+                  // can be attributed to a specific item.
+                  const at = normalizeActivityTimestamp(row.updated_ts);
+                  if (at && (linkedWorkItemUpdatedAt === null || Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))) {
+                    linkedWorkItemUpdatedAt = at;
+                  }
+                  // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
+                  // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
+                  // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
+                  // nothing and this badge map was always empty. Resolve via the shared
+                  // precedence rule instead.
+                  for (const itemId of planItemProvenanceFromRow(row).itemIds) {
+                    linkedFeatures[itemId] = {
+                      featureId: row.feature_id,
+                      status: row.status,
+                      harnessSlug: row.harness_slug,
+                    };
+                  }
+                }
+              } catch {
+                // Non-fatal — UI degrades to no badges.
+              }
+              return { linkedFeatures, linkedWorkItemUpdatedAt };
+            });
+            // P-083: per-plan-item test coverage (the plan↔test rollup, through the
+            // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
+            // side by decoratePlanItemTestBadges. Skips the tests query when the plan
+            // has no inline-VAL assertions. Non-fatal.
+            const testCoverageRead = timeStage('testCoverage', async () => {
+              let planItemTests: Record<string, PlanItemTestStatus> = {};
+              try {
+                planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+                  const assertions = await tx<
+                    {
+                      val_id: string;
+                      item_id: string;
+                      requires_test: boolean;
+                    }[]
+                  >`
+                SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
+              `;
+                  if (assertions.length === 0) return {};
+                  const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+                SELECT status, payload FROM harness_shared.harness_tests
+                 WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
+              `;
+                  return computePlanItemTestStatus(
+                    assertions,
+                    testRows.map((r) => ({
+                      status: r.status,
+                      coversVALs: Array.isArray(r.payload?.coversVALs)
+                        ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+                        : [],
+                    })),
+                  );
+                });
+              } catch {
+                // Non-fatal — UI degrades to no coverage badges.
+              }
+              return planItemTests;
+            });
+            const sections = splitSections(parsed.prose);
+            // WI-1442 fix (a): read-time liveness decoration — annotate any
+            // su-* agent-id mention in the ## Now prose with its CURRENT
+            // coord:presence session state, so a stale "actively worked by
+            // su-X" claim self-discloses instead of silently outliving the
+            // agent it names. Best-effort; never mutates the stored plan.
+            const nowRead = timeStage('nowDecoration', () => decoratePlanNowBlock(parsed.now));
+            const [
+              { items: resolvedItems, blockingIssues },
+              { linkedFeatures, linkedWorkItemUpdatedAt },
+              planItemTests,
+              decoratedNow,
+            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead]);
+            stageStarted = performance.now();
             const responseItems = requestedItemIdSet
               ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
               : resolvedItems;
@@ -857,114 +982,6 @@ export default defineTool({
               requestedItemIdSet
                 ? Object.fromEntries(Object.entries(value).filter(([id]) => responseItemIds.has(id)))
                 : value;
-
-            // P-006: Build a map of plan-item-id → { featureId, status } so the UI
-            // can show live feature status badges next to each P-NNN item.
-            const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-            let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
-            // P-003: the newest transition across work-items linked to this
-            // plan — one of the two measurable freshness sources. Taken from
-            // the query below rather than a second one: it already selects
-            // exactly this plan's linked rows, so the signal costs one more
-            // column instead of a round-trip.
-            let linkedWorkItemUpdatedAt: string | null = null;
-            try {
-              const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-                return tx<
-                  {
-                    feature_id: string;
-                    status: string;
-                    source_plan_slug: string | null;
-                    source_plan_item_ids: string[] | null;
-                    stamped_plan_slug: string | null;
-                    stamped_item_id: string | null;
-                    harness_slug: string;
-                    updated_ts: string | number | null;
-                  }[]
-                >`
-              SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
-                     payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
-                     payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
-                     harness_slug, updated_ts
-                FROM harness_shared.harness_features_consolidated
-               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
-                 AND (source_plan_slug = ${slug}
-                      OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
-            `;
-              });
-              for (const row of rows) {
-                // P-003 freshness: newest linked work-item write. Taken over
-                // ALL linked rows, including ones whose plan-item provenance
-                // does not resolve to a P-NNN below — a linked work-item that
-                // moved is evidence of activity on this plan whether or not it
-                // can be attributed to a specific item.
-                const at = normalizeActivityTimestamp(row.updated_ts);
-                if (at && (linkedWorkItemUpdatedAt === null || Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))) {
-                  linkedWorkItemUpdatedAt = at;
-                }
-                // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
-                // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
-                // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
-                // nothing and this badge map was always empty. Resolve via the shared
-                // precedence rule instead.
-                for (const itemId of planItemProvenanceFromRow(row).itemIds) {
-                  linkedFeatures[itemId] = {
-                    featureId: row.feature_id,
-                    status: row.status,
-                    harnessSlug: row.harness_slug,
-                  };
-                }
-              }
-            } catch {
-              // Non-fatal — UI degrades to no badges.
-            }
-
-            markStage('linkedFeatures');
-            // P-083: per-plan-item test coverage (the plan↔test rollup, through the
-            // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
-            // side by decoratePlanItemTestBadges. Skips the tests query when the plan
-            // has no inline-VAL assertions. Non-fatal.
-            let planItemTests: Record<string, PlanItemTestStatus> = {};
-            try {
-              planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-                const assertions = await tx<
-                  {
-                    val_id: string;
-                    item_id: string;
-                    requires_test: boolean;
-                  }[]
-                >`
-              SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
-            `;
-                if (assertions.length === 0) return {};
-                const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
-              SELECT status, payload FROM harness_shared.harness_tests
-               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
-            `;
-                return computePlanItemTestStatus(
-                  assertions,
-                  testRows.map((r) => ({
-                    status: r.status,
-                    coversVALs: Array.isArray(r.payload?.coversVALs)
-                      ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                      : [],
-                  })),
-                );
-              });
-            } catch {
-              // Non-fatal — UI degrades to no coverage badges.
-            }
-
-            markStage('testCoverage');
-            const sections = splitSections(parsed.prose);
-            // WI-1442 fix (a): read-time liveness decoration — annotate any
-            // su-* agent-id mention in the ## Now prose with its CURRENT
-            // coord:presence session state, so a stale "actively worked by
-            // su-X" claim self-discloses instead of silently outliving the
-            // agent it names. Best-effort; never mutates the stored plan.
-            const decoratedNow = await decoratePlanNowBlock(parsed.now);
-            markStage('nowDecoration');
             // deterministic-plan-state-derivation-2026-08-31 P-002 / D-002:
             // the `next:` pointer is a SECOND COPY of a fact the item graph
             // already owns, and nothing recomputed it when an item flipped
@@ -1165,7 +1182,7 @@ export default defineTool({
             // acceptance rubric (its definition-of-done) so completion state is
             // discoverable from the plan itself. Absent = not yet authored (it is
             // authored POST-implementation, D-007; the ship gate names the recipe).
-            const [acceptanceRubric, latestAudit] = await Promise.all([
+            const rubricAndAuditRead = timeStage('rubricAndAudit', () => Promise.all([
               getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
                 .then((r) =>
                   r
@@ -1198,8 +1215,7 @@ export default defineTool({
               getLatestPlanAudit(row.planSlug, {
                 workspaceId: row.workspaceId,
               }),
-            ]);
-            markStage('rubricAndAudit');
+            ]));
             // EI-20049758099997696: plan-item prose is the source of truth for many
             // promoted work-items, but promotion intentionally keeps those citations in
             // `summary` rather than `payload.paths`. Decorate the structured read with
@@ -1207,13 +1223,16 @@ export default defineTool({
             // repo-relative citation before it starts work. This is report-only: a plan
             // item may quite legitimately describe a file it intends to create, and a
             // resolvable path says nothing about semantic freshness.
-            const stalePathRefsByItem = await getStalePathRefsForSubjects(
+            const stalePathsRead = timeStage('stalePaths', () => getStalePathRefsForSubjects(
               responseItems.map((item) => ({
                 id: item.id,
                 summary: typeof item.text === 'string' ? item.text : null,
               })),
-            ).catch(() => ({}));
-            markStage('stalePaths');
+            ).catch(() => ({})));
+            const [[acceptanceRubric, latestAudit], stalePathRefsByItem] = await Promise.all([
+              rubricAndAuditRead, stalePathsRead,
+            ]);
+            stageStarted = performance.now();
             const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
               decoratePlanItemStalePathRefs(item, stalePathRefsByItem);
             const structured = {
@@ -1459,7 +1478,7 @@ export default defineTool({
         result.harnessMismatch = mismatch;
       }
     }
-    ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-between-stages', reads: readTimings } });
+    ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-per-stage-overlapping', reads: readTimings } });
     return bulkContent(env);
   },
 });

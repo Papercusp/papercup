@@ -49,6 +49,10 @@ import type { SuAgent, SuContextSize } from './su-agents';
 export const OWNER_LAUNCH_HEADLESS = true;
 
 export interface LaunchAgentOpts extends LaunchOpts {
+  /** Selected identity layers from the existing blueprint stack. */
+  stack?: readonly string[] | null;
+  /** Exact source hash shown in the GUI picker; bootstrap rechecks it. */
+  selectedIdentityRevision?: string | null;
   /** Existing agent-chat id to bind when PUI creates a durable SU session. */
   agentChatId?: string | null;
   /** Which backend to launch. Omitted → the configured backend
@@ -319,6 +323,8 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     agent,
     harness_slug: opts.slug ?? null,
     plan_slug: opts.planSlug ?? null,
+    stack: opts.stack ?? null,
+    selected_identity_revision: opts.selectedIdentityRevision ?? null,
     model: opts.model ?? null,
     context_size: opts.contextSize ?? null,
     compaction_limit: opts.compactionLimit ?? null,

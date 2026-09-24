@@ -70,6 +70,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import type { ManagedEntry } from '@papercusp/scheduled-registry';
 import type { RegisteredSchedule } from './dbos/dbos-schedule-introspect';
 import type { StallWakerStatus } from './inference-gateway/stall-waker-loop';
+import type { EndpointIpcProcessRole } from './endpoint-ipc-discovery';
+import { backgroundWorkersEnabled } from './background-workers';
 
 /** Loopback path each operator-shaped process serves its managed registry on. */
 export const SIBLING_PROBE_PATH = '/api/internal/managed-timers';
@@ -86,6 +88,8 @@ export interface SiblingOperator {
   pid: number;
   /** epoch ms the sibling published its discovery file (its boot time). */
   startedAt: number;
+  /** Absent on legacy discovery files; new writers publish this to avoid HTTP role probes. */
+  processRole?: EndpointIpcProcessRole;
 }
 
 /** One sibling's schedule slices, or the reason they could not be read. */
@@ -154,9 +158,7 @@ interface PrimaryManagedTimersWireShape {
  * staging operator) without a port→name map that could drift.
  */
 export function describeProcessRole(env: NodeJS.ProcessEnv = process.env): string {
-  const bg = (env.PAPERCUSP_BACKGROUND_WORKERS ?? '').trim().toLowerCase();
-  if (bg && bg !== '0' && bg !== 'false') return 'bg-host';
-  return 'operator';
+  return backgroundWorkersEnabled(env) ? 'bg-host' : 'operator';
 }
 
 /**
@@ -220,11 +222,20 @@ export async function listSiblingOperators(
       const parsed = JSON.parse(await readFile(join(dir, name), 'utf8')) as {
         pid?: unknown;
         startedAt?: unknown;
+        processRole?: unknown;
       };
       const pid = Number(parsed?.pid);
       if (!Number.isFinite(pid) || pid <= 0) continue;
       if (!alive(pid)) continue; // stale advertisement from a dead process
-      out.push({ port, pid, startedAt: Number(parsed?.startedAt) || 0 });
+      const processRole = parsed.processRole === 'operator' || parsed.processRole === 'bg-host'
+        ? parsed.processRole
+        : undefined;
+      out.push({
+        port,
+        pid,
+        startedAt: Number(parsed?.startedAt) || 0,
+        ...(processRole ? { processRole } : {}),
+      });
     } catch {
       /* unreadable / corrupt / raced away — skip, never throw */
     }

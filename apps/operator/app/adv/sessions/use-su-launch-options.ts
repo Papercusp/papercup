@@ -110,6 +110,66 @@ export interface SuLaunchOptions {
   refresh: () => void;
 }
 
+export interface IdentityLaunchChoice {
+  id: string;
+  tier: string;
+  version?: string | null;
+  sourceRevision: string;
+  launchCompatibility?: { eligible: boolean; reason: string | null };
+  slots: Array<{ slot: string; cardinality: 'exclusive' | 'additive' | null }>;
+}
+
+export interface IdentityLaunchCatalog {
+  identities: IdentityLaunchChoice[];
+  unreadable: Array<{ id: string; error: string }>;
+  nextAfter: string | null;
+  loading: boolean;
+  error: string | null;
+  loadMore: () => void;
+}
+
+/** The GUI and psu consume the same paged bootstrap options endpoint. A failed
+ * read keeps the SU default available and never invents an installed choice. */
+export function useIdentityLaunchCatalog(workspaceId?: string | null): IdentityLaunchCatalog {
+  const [catalog, setCatalog] = useState<Pick<IdentityLaunchCatalog,
+    'identities' | 'unreadable' | 'nextAfter'>>({ identities: [], unreadable: [], nextAfter: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const readPage = useCallback(async (after: string | null) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ identities: '1', limit: '30' });
+      if (workspaceId) params.set('workspace', workspaceId);
+      if (after) params.set('after', after);
+      const response = await fetch(`/api/agent-mcp/console/bootstrap-su/options?${params}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const page = await response.json() as Partial<IdentityLaunchCatalog> & { status?: string };
+      if (page.status !== 'ok' || !Array.isArray(page.identities) || !Array.isArray(page.unreadable)) {
+        throw new Error('Invalid identity catalog response');
+      }
+      if (after && page.nextAfter === after) throw new Error('Identity catalog cursor did not advance');
+      setCatalog((previous) => ({
+        identities: after ? [...previous.identities, ...page.identities!] : page.identities!,
+        unreadable: after ? [...previous.unreadable, ...page.unreadable!] : page.unreadable!,
+        nextAfter: typeof page.nextAfter === 'string' ? page.nextAfter : null,
+      }));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+  useEffect(() => {
+    setCatalog({ identities: [], unreadable: [], nextAfter: null });
+    void readPage(null);
+  }, [readPage]);
+  const loadMore = useCallback(() => {
+    if (!loading && catalog.nextAfter) void readPage(catalog.nextAfter);
+  }, [loading, catalog.nextAfter, readPage]);
+  return { ...catalog, loading, error, loadMore };
+}
+
 const EMPTY_OMP_CATALOG: Extract<OmpLaunchCatalog, { status: 'unavailable' }> = {
   status: 'unavailable',
   availability: 'unknown',

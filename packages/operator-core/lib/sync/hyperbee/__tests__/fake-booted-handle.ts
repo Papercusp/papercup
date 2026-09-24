@@ -86,6 +86,18 @@ export function makeFakeBootedHandle(opts: {
       rowCount: 0,
       chunkCount: 0,
     })),
+    // D-023: same stance as produceHeadSnapshotNow — reports nothing appended. The real
+    // run is covered against a booted substrate in own-compaction-off-gate.test.ts.
+    compactOwnLogNow: vi.fn(async () => ({
+      ok: true as const,
+      appended: false,
+      coversUpTo: 0,
+      chunkCount: 0,
+      rowCount: 0,
+      droppedGovernorReceipts: 0,
+      liveGovernorReceiptKeys: 0,
+      elapsedMs: 0,
+    })),
     onAnnounce: vi.fn(
       async (_frame: SignedAnnounce): Promise<AdmissionResult> => ({
         admit: false,

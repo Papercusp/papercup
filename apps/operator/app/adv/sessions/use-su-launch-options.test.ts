@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * use-su-launch-options — WI-6321.
  *
@@ -6,8 +7,32 @@
  * `normalizeAccountChoices` is pure, so it is tested directly rather than through
  * a rendered component.
  */
-import { describe, expect, it } from 'vitest';
-import { normalizeAccountChoices, normalizeOmpCatalog } from './use-su-launch-options';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { normalizeAccountChoices, normalizeOmpCatalog, useIdentityLaunchCatalog } from './use-su-launch-options';
+
+const originalFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = originalFetch; cleanup(); });
+
+describe('identity launch catalog', () => {
+  it('loads successive source pages without losing earlier installed choices', async () => {
+    const first = { status: 'ok', identities: [{ id: 'one', tier: 'installed', version: '1.0.0',
+      sourceRevision: 'a'.repeat(64), slots: [{ slot: 'domain', cardinality: 'exclusive' }] }],
+      unreadable: [], nextAfter: 'one' };
+    const second = { status: 'ok', identities: [{ id: 'two', tier: 'installed', version: '2.0.0',
+      sourceRevision: 'b'.repeat(64), slots: [{ slot: 'domain', cardinality: 'exclusive' }] }],
+      unreadable: [{ id: 'broken', error: 'attestation-missing' }], nextAfter: null };
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json(first)).mockResolvedValueOnce(Response.json(second));
+    globalThis.fetch = fetch as typeof globalThis.fetch;
+    const { result } = renderHook(() => useIdentityLaunchCatalog());
+    await waitFor(() => expect(result.current.identities.map((entry) => entry.id)).toEqual(['one']));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.identities.map((entry) => entry.id)).toEqual(['one', 'two']));
+    expect(result.current.unreadable).toEqual([{ id: 'broken', error: 'attestation-missing' }]);
+    expect(result.current.nextAfter).toBeNull();
+    expect(String(fetch.mock.calls[1]?.[0])).toContain('after=one');
+  });
+});
 
 describe('normalizeAccountChoices (WI-6321)', () => {
   it('accepts the bare-array shape', () => {

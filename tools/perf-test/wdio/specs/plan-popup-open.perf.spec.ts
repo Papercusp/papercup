@@ -310,6 +310,39 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
       if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
         await browser.execute(() => {
+          type Gap = { from: number; to: number; delayMs: number };
+          const previous = (window as unknown as { __perfEventLoopProbe?: { stop(): unknown } }).__perfEventLoopProbe;
+          previous?.stop();
+          const gaps: Gap[] = [];
+          let lastTick = performance.now();
+          const timer = window.setInterval(() => {
+            const now = performance.now();
+            const delayMs = Math.max(0, now - lastTick - 20);
+            if (delayMs >= 30) gaps.push({ from: lastTick, to: now, delayMs });
+            lastTick = now;
+          }, 20);
+          const longTasks: Array<{ at: number; durationMs: number; name: string }> = [];
+          const supportsLongTasks = PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false;
+          let observer: PerformanceObserver | null = null;
+          if (supportsLongTasks) {
+            try {
+              observer = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                  longTasks.push({ at: entry.startTime, durationMs: entry.duration, name: entry.name });
+                }
+              });
+              observer.observe({ entryTypes: ['longtask'] });
+            } catch { observer = null; }
+          }
+          (window as unknown as { __perfEventLoopProbe: { stop(): {
+            gaps: Gap[]; longTasks: typeof longTasks; supportsLongTasks: boolean;
+          } } }).__perfEventLoopProbe = {
+            stop: () => {
+              window.clearInterval(timer);
+              observer?.disconnect();
+              return { gaps, longTasks, supportsLongTasks: observer !== null };
+            },
+          };
           const records: Array<{ api: string; ms: number; at: number; stack?: string }> = [];
           const restores: Array<() => void> = [];
           const observe = (proto: object, key: string) => {
@@ -384,6 +417,7 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         );
         if (!trigger) return false;
         trigger.click();
+        performance.mark(`${name}:trigger-return`);
         return true;
       }, INTERACTION_NAME);
       triggerFound ||= clicked;
@@ -439,6 +473,13 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         };
       }, INTERACTION_NAME);
       console.log('[perf] plan-popup unfinished', JSON.stringify({ outcome, ...unfinished }));
+
+      if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
+        await browser.execute(() => {
+          (window as unknown as { __perfLayoutProbe?: { restore(): void } }).__perfLayoutProbe?.restore();
+          (window as unknown as { __perfEventLoopProbe?: { stop(): unknown } }).__perfEventLoopProbe?.stop();
+        }).catch(() => undefined);
+      }
 
       lastFailure = String(outcome);
       attempts.push(
@@ -605,12 +646,57 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       console.log('[perf] React effects', JSON.stringify(effects));
     }
     if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
-      const layout = await browser.execute(() => {
+      const diagnostics = await browser.execute((name) => {
         const probe = (window as unknown as { __perfLayoutProbe?: { records: unknown[]; restore(): void } }).__perfLayoutProbe;
         probe?.restore();
-        return probe?.records ?? [];
-      });
-      console.log('[perf] layout operations', JSON.stringify(layout));
+        const interaction = performance.getEntriesByName(name, 'measure').at(-1);
+        const triggerReturn = performance.getEntriesByName(`${name}:trigger-return`, 'mark').at(-1);
+        const probeResult = (window as unknown as {
+          __perfEventLoopProbe?: { stop(): {
+            gaps: Array<{ from: number; to: number; delayMs: number }>;
+            longTasks: Array<{ at: number; durationMs: number; name: string }>;
+            supportsLongTasks: boolean;
+          } };
+        }).__perfEventLoopProbe?.stop();
+        return {
+          layout: probe?.records ?? [],
+          supportsLongTasks: probeResult?.supportsLongTasks ?? false,
+          visibility: document.visibilityState,
+          triggerReturnMs: interaction && triggerReturn
+            ? Math.round(triggerReturn.startTime - interaction.startTime)
+            : null,
+          idleGaps: interaction
+            ? (probeResult?.gaps ?? [])
+              .filter((gap) => gap.to < interaction.startTime)
+              .slice(-5)
+              .map((gap) => Math.round(gap.delayMs))
+            : [],
+          gaps: interaction
+            ? (probeResult?.gaps ?? [])
+              .filter((gap) => gap.to >= interaction.startTime && gap.from <= interaction.startTime + interaction.duration)
+              .map((gap) => ({
+                fromMs: Math.round(gap.from - interaction.startTime),
+                toMs: Math.round(gap.to - interaction.startTime),
+                delayMs: Math.round(gap.delayMs),
+              }))
+            : [],
+          longTasks: interaction
+            ? (probeResult?.longTasks ?? [])
+              .filter((task) => task.at <= interaction.startTime + interaction.duration &&
+                task.at + task.durationMs >= interaction.startTime)
+              .map((task) => ({ atMs: Math.round(task.at - interaction.startTime),
+                durationMs: Math.round(task.durationMs), name: task.name }))
+            : [],
+        };
+      }, INTERACTION_NAME);
+      console.log('[perf] layout operations', JSON.stringify(diagnostics.layout));
+      console.log('[perf] event loop gaps', JSON.stringify({
+        gaps: diagnostics.gaps, longTasks: diagnostics.longTasks,
+        supportsLongTasks: diagnostics.supportsLongTasks,
+        triggerReturnMs: diagnostics.triggerReturnMs,
+        idleGaps: diagnostics.idleGaps,
+        visibility: diagnostics.visibility,
+      }));
     }
     for (const phase of (process.env.PAPERCUSP_PERF_REQUIRED_PHASES ?? '').split(',').filter(Boolean)) {
       if (!phases.some((entry) => entry.key === `${INTERACTION_NAME}:phase:${phase}`)) {

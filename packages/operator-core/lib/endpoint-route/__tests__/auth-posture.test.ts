@@ -127,6 +127,9 @@ const RULES: ReadonlyArray<{
       // loosening. See the route's own doc-comment
       // (misc/substrate-head-snapshot.ts).
       { method: 'POST', path: '/internal/substrate/head-snapshot', auth: 'loopback' },
+      // Requested own-log compaction (p2p-join-catchup-speed D-023): same holder
+      // fan-out contract and same same-box-only caller as head-snapshot above.
+      { method: 'POST', path: '/internal/substrate/own-compaction', auth: 'loopback' },
     ],
   },
   // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by

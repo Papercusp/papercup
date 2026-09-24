@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/promises';
+import { backgroundWorkersEnabled } from './background-workers';
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
@@ -68,9 +69,13 @@ export interface EndpointIpcDiscovery {
   startedAt: number;
   /** The hono port this operator serves (EI-190; absent in legacy files). */
   port?: number;
+  /** Coarse process role, persisted so request-only hosts can find a bg-host without probing its HTTP event loop. */
+  processRole?: EndpointIpcProcessRole;
   /** Optional agent endpoint. Legacy UI readers keep using socketPath above. */
   agentMcp?: AgentMcpEndpoint;
 }
+
+export type EndpointIpcProcessRole = 'operator' | 'bg-host';
 
 export interface AgentMcpEndpoint {
   version: 1;
@@ -128,6 +133,7 @@ export async function writeEndpointIpcDiscovery(
     pid: process.pid,
     startedAt: Date.now(),
     port,
+    processRole: backgroundWorkersEnabled() ? 'bg-host' : 'operator',
     ...(options.agentMcp ? { agentMcp: publicAgentEndpoint(options.agentMcp) } : {}),
   };
   const body = JSON.stringify(payload, null, 2);
@@ -228,6 +234,7 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
         pid: Number(j.pid) || 0,
         startedAt: Number(j.startedAt) || 0,
         ...(Number.isFinite(j.port) ? { port: Number(j.port) } : {}),
+        ...(j.processRole === 'operator' || j.processRole === 'bg-host' ? { processRole: j.processRole } : {}),
         ...(validAgentEndpoint(j.agentMcp) ? { agentMcp: publicAgentEndpoint(j.agentMcp) } : {}),
       };
     }

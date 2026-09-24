@@ -1,9 +1,16 @@
 import http from 'node:http';
+import net from 'node:net';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { Agent } from 'undici';
 import { afterEach, expect, it } from 'vitest';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats } from './gateway';
 import { CACHE_POLICY_VERSION } from './cache-policy';
+
+const NEVER_EMIT_MARKER = 'never-emit-me';
 
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 let upstream: http.Server | undefined;
@@ -183,6 +190,156 @@ async function recentTimeline(port: number) {
   const stages = stats.requestStages!;
   return { stages, timeline: stages.recent[0]! };
 }
+
+it.each([false, true])('retains native request correlation and the served CLI account (oversized fingerprint body %s)', async large => {
+  const port = await bootCliBridge(async () => ({ text: 'BRIDGED', inputTokens: 7, outputTokens: 3 }));
+  const native = { thread_id: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc', turn_id: '01a0cf6d-a2ba-7b43-b095-f73f45732d30' };
+  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-native-correlation' },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: large ? 'private-input'.repeat(200_000) : 'private-input', stream: true,
+      client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ ...native, secret: NEVER_EMIT_MARKER }) } }),
+  });
+  expect(response.status).toBe(200); await response.text();
+  const { timeline } = await recentTimeline(port);
+  expect(timeline).toMatchObject({ ownerId: 'su-native-correlation', nativeCorrelation: {
+    status: 'observed', threadId: native.thread_id, turnId: native.turn_id, sessionId: null, windowId: null,
+  }, cache: { servingAccountId: 'chatgpt-sub' } });
+  const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=su-native-correlation`)).json();
+  expect(report.stageTelemetry.recent[0].nativeCorrelation).toEqual(timeline.nativeCorrelation);
+  expect(JSON.stringify(report)).not.toMatch(/PRIVATE_METADATA|private-input/);
+  expect(JSON.stringify(report)).not.toContain(NEVER_EMIT_MARKER);
+});
+
+it('keeps native correlation separate from bearer routing and from each HTTP request identity', async () => {
+  const seen: Record<string, unknown>[] = [];
+  upstream = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    seen.push(JSON.parse(Buffer.concat(chunks).toString()));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: `resp_fixture_${seen.length}`, output: [],
+      usage: { input_tokens: 12, output_tokens: 2, input_tokens_details: { cached_tokens: 2 } } }));
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ accountId: 'unused-claude', token: async () => 'unused-token',
+    upstreamBase: `http://127.0.0.1:${upstreamPort}`, openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    codexPool: createFailoverPool([{ accountId: 'observed-bearer', token: async () => 'PRIVATE_BEARER' }]),
+    concurrency: 2, maxQueueWaitMs: 2_000, requestAbsorbMs: 0 });
+  const port = await gateway.listen(0);
+  const metadata = { 'x-codex-turn-metadata': JSON.stringify({
+    thread_id: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc', turn_id: '01a0cf6d-a2ba-7b43-b095-f73f45732d30',
+    servingAccountId: 'forged-account', ownerId: 'forged-owner',
+  }) };
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-native-bearer' },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'private-prompt', client_metadata: metadata }) });
+    expect(response.status).toBe(200); await response.text();
+  }
+  const { stages } = await recentTimeline(port);
+  expect(stages.recent).toHaveLength(2);
+  expect(stages.recent[0].requestId).not.toBe(stages.recent[1].requestId);
+  expect(stages.recent[0].nativeCorrelation).toEqual(stages.recent[1].nativeCorrelation);
+  for (const row of stages.recent) {
+    expect(row).toMatchObject({ ownerId: 'su-native-bearer',
+      nativeCorrelation: { status: 'observed' }, cache: { servingAccountId: 'observed-bearer' } });
+    expect(row.upstreamWrites.droppedCalls).toBe(0);
+    expect(row.upstreamWrites.calls).toHaveLength(1);
+    expect(row.upstreamWrites.calls[0]).toMatchObject({ accountId: 'observed-bearer', outcome: 'returned',
+      matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
+    expect(row.upstreamWrites.calls[0].events.map(event => event.phase))
+      .toEqual(['created', 'headers-write-start', 'body-write-complete']);
+    const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=su-native-bearer`)).json();
+    const reported = report.stageTelemetry.recent.find((entry: { requestId: number }) => entry.requestId === row.requestId);
+    expect(reported.upstreamWrites).toEqual(row.upstreamWrites);
+  }
+  expect(seen.map(body => body.client_metadata)).toEqual([metadata, metadata]);
+  expect(JSON.stringify(stages)).not.toMatch(/forged-|PRIVATE_BEARER|private-prompt/);
+});
+
+it.each([429, 503])('retains the rejected bearer write and existing failover policy for HTTP %s', async rejectedStatus => {
+  const received: string[] = [];
+  upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* consume the buffered request */ }
+    const auth = String(req.headers.authorization); received.push(auth);
+    const failed = auth.includes('token-a');
+    res.writeHead(failed ? rejectedStatus : 200, { 'content-type': 'application/json', ...(failed ? { 'retry-after': '3600' } : {}) });
+    res.end(JSON.stringify(failed ? { error: { message: 'fixture unavailable' } }
+      : { id: 'resp_retry', output: [], usage: { input_tokens: 5, output_tokens: 1 } }));
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    upstreamBase: `http://127.0.0.1:${upstreamPort}`, openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    codexPool: createFailoverPool([{ accountId: 'account-a', token: async () => 'token-a' },
+      { accountId: 'account-b', token: async () => 'token-b' }]),
+    concurrency: 2, maxQueueWaitMs: 2_000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-write-retry' },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture' }) });
+  expect(response.status).toBe(rejectedStatus === 429 ? 200 : 503); await response.text();
+  const accounts = rejectedStatus === 429 ? ['account-a', 'account-b'] : ['account-a'];
+  expect(received).toEqual(accounts.map(account => `Bearer token-${account.at(-1)}`));
+  const { timeline } = await recentTimeline(port);
+  expect(timeline.cache.servingAccountId).toBe(accounts.at(-1));
+  expect(timeline.upstreamWrites.calls.map(call => call.accountId)).toEqual(accounts);
+  expect(timeline.upstreamWrites.calls.map(call => call.responseStatus)).toEqual(rejectedStatus === 429 ? [429, 200] : [503]);
+  for (const call of timeline.upstreamWrites.calls) {
+    expect(call.events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
+    expect(call.matchedRequests).toBe(1);
+  }
+});
+
+it('observes actual OAuth transport writes through a loopback-only test dispatcher', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'gateway-write-oauth-'));
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const jwt = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+  await writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+    access_token: jwt, refresh_token: 'PRIVATE_REFRESH', account_id: 'oauth-account',
+  } }));
+  let received = 0;
+  upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* no provider connection; local fixture only */ }
+    received++;
+    expect(req.headers['chatgpt-account-id']).toBe('oauth-account');
+    expect(req.headers.diagnosticaccountid).toBeUndefined();
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_oauth_writes', output: [] } })}\n\ndata: [DONE]\n\n`);
+  });
+  const upstreamPort = await listen(upstream);
+  // Preserve Undici's real target identity and lifecycle while directing its
+  // socket strictly to our local HTTP fixture, never the provider host.
+  const dispatcher = new Agent({ connect: (_options, callback) => {
+    const socket = net.connect(upstreamPort, '127.0.0.1');
+    const failed = (error: Error) => callback(error, null);
+    socket.once('error', failed);
+    socket.once('connect', () => { socket.off('error', failed); callback(null, socket); });
+  } });
+  try {
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      codexCliAccounts: () => [{ accountId: 'oauth-account', home }], codexOAuthProxy: true,
+      fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch,
+      concurrency: 2, maxQueueWaitMs: 2_000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-write-oauth' },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'private-prompt', stream: true }) });
+    expect(response.status).toBe(200); expect(await response.text()).toContain('resp_oauth_writes');
+    expect(received).toBe(1);
+    const { timeline } = await recentTimeline(port);
+    expect(timeline.transport).toBe('oauth-http');
+    expect(timeline.upstreamWrites.calls).toHaveLength(1);
+    expect(timeline.upstreamWrites.calls[0]).toMatchObject({ accountId: 'oauth-account', matchedRequests: 1,
+      unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0, outcome: 'returned' });
+    expect(timeline.upstreamWrites.calls[0].events.map(event => event.phase))
+      .toEqual(['created', 'headers-write-start', 'body-write-complete']);
+    expect(JSON.stringify(timeline)).not.toMatch(/PRIVATE_|private-prompt|chatgpt\.com/);
+  } finally {
+    await gateway?.close(); gateway = undefined;
+    await dispatcher.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 it('records a stream:true cli-exec request as STREAMING, with a real stream stage', async () => {
   resetGovernorRegistry();

@@ -384,9 +384,14 @@ describe("interactive role picker", () => {
 
   it("keeps invalid catalog rows visible and pins a choice from the next page", async () => {
     const revision = "a".repeat(64);
-    const choices = identityPickerChoices({ identities: [], unreadable: [
+    const choices = identityPickerChoices({ identities: [{ id: 'needs-producer', tier: 'installed',
+      version: '1.0.0', sourceRevision: 'a'.repeat(64),
+      slots: [{ slot: 'domain', cardinality: 'exclusive' }],
+      launchCompatibility: { eligible: false, reason: 'Needs live producer binding' } }], unreadable: [
       { id: "broken", error: "attestation-missing" },
     ], nextAfter: "first" });
+    expect(choices).toContainEqual(expect.objectContaining({ value: 'domain:needs-producer',
+      disabled: 'Needs live producer binding' }));
     expect(choices).toContainEqual(expect.objectContaining({
       name: expect.stringContaining("broken  ·  invalid: attestation-missing"),
       disabled: "attestation-missing",

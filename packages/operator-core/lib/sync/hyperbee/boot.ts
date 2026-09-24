@@ -783,6 +783,22 @@ export type BootedAnnounceIdentity = Pick<
   'devicePubkeyBase64' | 'githubUserId' | 'githubLogin' | 'keychainId'
 >;
 
+/** What one own-log compaction did (`BootedHarnessHandle.compactOwnLogNow`). */
+export type OwnCompactionOutcome =
+  | {
+      ok: true;
+      appended: boolean;
+      coversUpTo: number;
+      chunkCount: number;
+      rowCount: number;
+      /** P-530: absent legacy governor receipts left out of the set. */
+      droppedGovernorReceipts: number;
+      /** P-530: size of the PG census the drop was checked against. */
+      liveGovernorReceiptKeys: number;
+      elapsedMs: number;
+    }
+  | { ok: false; error: string; elapsedMs: number };
+
 export interface BootedHarnessHandle {
   workspaceId: string;
   harnessSlug: string;
@@ -835,6 +851,18 @@ export interface BootedHarnessHandle {
    * the DEADLINE belongs to the caller.
    */
   produceHeadSnapshotNow(): Promise<ProduceSnapshotResult>;
+  /**
+   * p2p-join-catchup-speed D-023 — run ONE own-log compaction now, whether or not the
+   * proportional cadence says it is due, and resolve with its outcome. It is the
+   * periodic compaction (worker-thread fold, P-530 receipt census, off the merge gate),
+   * started on request, so a fold-time policy change reaches the next joiner without
+   * waiting for the log to grow by a whole live-state again.
+   *
+   * Waits for an in-flight compaction, then runs its own; concurrent callers COALESCE.
+   * Rejects when the engine is stopped, the producer flag is off, or the cadence anchor
+   * is still unknown (WI-10002836). A compaction that fails resolves `ok: false`.
+   */
+  compactOwnLogNow(): Promise<OwnCompactionOutcome>;
   /**
    * Handle an inbound signed announce from a peer (called by the swarm
    * connection handler in 4b). Verifies the sig, runs the admission
@@ -2355,6 +2383,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // next-pass reset livelocked a joiner: P-007 run #1 reset log 5b00878b to 0 about
   // every 2 min, before the fold could reach the epoch-key rows near the tail.
   const evictionReFold = new DeferralEvictionReFold();
+  // P-528 / P-002: ops each pass skipped in memory. The pass result counts them but
+  // nothing reported them, so P-007 run #8 could judge P-528 only by tail ops/s.
+  // Logged at most once a minute, and only while skips accrue.
+  const foldSkips = { superseded: 0, storedOrder: 0, sinceLog: 0, loggedAt: Date.now() };
   const deferralBuffersHold = (): boolean => (rekeyDeps?.pending.size() ?? 0) > 0 || pendingMemberContent.size() > 0;
 
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED.
@@ -2381,8 +2413,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let lastSnapshotCoversUpTo = 0;
   let lastSnapshotRowCount = 0;
   let lastOwnCompactionSet: { coversUpTo: number; chunkCount: number } | null = null;
-  /** The off-gate periodic compaction, when one is running (`runOwnCompaction`). */
-  let ownCompactionInFlight: Promise<void> | null = null;
+  /** The off-gate own compaction (periodic or requested), when one is running (`runOwnCompaction`). */
+  let ownCompactionInFlight: Promise<unknown> | null = null;
   /**
    * WI-10002836 — whether the cadence anchor above is KNOWN: the latest set was found, or
    * the scan genuinely reached index 0 without one. Until then the own compaction does not
@@ -3427,7 +3459,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
-  async function runOwnCompaction(): Promise<void> {
+  async function runOwnCompaction(trigger: 'cadence' | 'requested' = 'cadence'): Promise<OwnCompactionOutcome> {
     const startedAt = Date.now();
     const previousCoversUpTo = lastSnapshotCoversUpTo;
     try {
@@ -3436,7 +3468,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         opts.harnessSlug,
         'own_log_compaction',
         `own log compaction started: ownLogLength=${ownLog.length} lastCoversUpTo=${previousCoversUpTo} ` +
-          `threshold=${snapshotCompactThreshold(lastSnapshotRowCount)} seeded=${lastOwnCompactionSet ? 'yes' : 'no'}`,
+          `threshold=${snapshotCompactThreshold(lastSnapshotRowCount)} seeded=${lastOwnCompactionSet ? 'yes' : 'no'}` +
+          (trigger === 'requested' ? ' trigger=requested' : ''),
       );
     } catch {
       // observability must never fail the compaction
@@ -3488,7 +3521,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       });
       ownCompactionFailures = 0;
       ownCompactionRetryAt = 0;
-      if (!snap.appended) return;
+      const outcome: OwnCompactionOutcome = {
+        ok: true,
+        appended: snap.appended,
+        coversUpTo: snap.coversUpTo,
+        chunkCount: snap.chunkCount,
+        rowCount: snap.rowCount,
+        droppedGovernorReceipts: snap.droppedGovernorReceipts ?? 0,
+        liveGovernorReceiptKeys: liveGovernorReceiptKeys.length,
+        elapsedMs: Date.now() - startedAt,
+      };
+      if (!snap.appended) return outcome;
       lastSnapshotCoversUpTo = snap.coversUpTo;
       lastSnapshotRowCount = snap.rowCount;
       lastOwnCompactionSet = { coversUpTo: snap.coversUpTo, chunkCount: snap.chunkCount };
@@ -3506,8 +3549,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       } catch {
         // observability must never fail the compaction
       }
+      return outcome;
     } catch (e) {
-      if (stopped || e instanceof SnapshotAbortedError) return;
+      const error = e instanceof Error ? e.message : String(e);
+      if (stopped || e instanceof SnapshotAbortedError) {
+        return { ok: false, error: `aborted: ${error}`, elapsedMs: Date.now() - startedAt };
+      }
       ownCompactionFailures += 1;
       const backoffMs = ownCompactionBackoffMs(
         ownCompactionFailures,
@@ -3519,13 +3566,49 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           opts.workspaceId,
           opts.harnessSlug,
           'own_log_compaction',
-          `log compaction failed after elapsedMs=${Date.now() - startedAt}: ${e instanceof Error ? e.message : String(e)} ` +
+          `log compaction failed after elapsedMs=${Date.now() - startedAt}: ${error} ` +
             `(failures=${ownCompactionFailures} nextAttemptInMs=${backoffMs})`,
         );
       } catch {
         // observability must never fail the compaction
       }
+      return { ok: false, error, elapsedMs: Date.now() - startedAt };
     }
+  }
+
+  // p2p-join-catchup-speed D-023 — ONE own compaction on request, outside the
+  // proportional cadence. The cadence spaces sets by the prior set's row count
+  // (1.9M ops on the tower's papercusp pot), so a fold-time policy change such as
+  // P-530's receipt drop reaches no joiner until the log has grown that far again.
+  // Same slot, same fold worker and same census as the periodic run: it waits for an
+  // in-flight compaction instead of racing it (two producers appending at once lose an
+  // anchor race), and concurrent requests COALESCE onto one run.
+  let inFlightRequestedCompaction: Promise<OwnCompactionOutcome> | null = null;
+  function compactOwnLogNow(): Promise<OwnCompactionOutcome> {
+    if (inFlightRequestedCompaction) return inFlightRequestedCompaction;
+    const refuse = (why: string) =>
+      Promise.reject(
+        new Error(`[substrate] cannot compact the own log of ${opts.workspaceId}::${opts.harnessSlug} now: ${why}`),
+      );
+    if (stopped) return refuse('this harness engine is stopped/closing.');
+    if (!snapshotProducerEnabled) return refuse('the snapshot producer flag (SUBSTRATE_LOG_SNAPSHOT) is off.');
+    const p = (async (): Promise<OwnCompactionOutcome> => {
+      while (ownCompactionInFlight) await ownCompactionInFlight;
+      if (stopped) throw new Error('engine stopped while waiting for the in-flight compaction');
+      // WI-10002836: never from an UNKNOWN anchor. The merge pass retries the discovery.
+      if (!ownCompactionAnchorKnown) {
+        throw new Error('the compaction anchor is not known yet (discovery is retried by the merge pass); try again');
+      }
+      const run = runOwnCompaction('requested');
+      ownCompactionInFlight = run.finally(() => {
+        ownCompactionInFlight = null;
+      });
+      return run;
+    })().finally(() => {
+      inFlightRequestedCompaction = null;
+    });
+    inFlightRequestedCompaction = p;
+    return p;
   }
 
   async function servicePendingHeadSnapshot(): Promise<void> {
@@ -4304,6 +4387,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // P-522: whether this pass left every log unable to advance further (the re-fold gate).
       evictionReFold.noteFold(logs, mergeCursor, positionsBeforeFold);
       let { applied } = result;
+      const passSkips = (result.supersededSkips ?? 0) + (result.storedOrderSkips ?? 0);
+      if (passSkips > 0) {
+        foldSkips.superseded += result.supersededSkips ?? 0;
+        foldSkips.storedOrder += result.storedOrderSkips ?? 0;
+        foldSkips.sinceLog += passSkips;
+        const sinceMs = Date.now() - foldSkips.loggedAt;
+        if (sinceMs >= 60_000) {
+          console.log(
+            `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] fold skips: ${foldSkips.sinceLog} op(s) ` +
+              `in the last ${Math.round(sinceMs / 1000)}s; totals superseded=${foldSkips.superseded} (P-528), ` +
+              `storedOrder=${foldSkips.storedOrder} (P-002)`,
+          );
+          foldSkips.sinceLog = 0;
+          foldSkips.loggedAt = Date.now();
+        }
+      }
 
       // WI-3985 LIVE OFF→ON repair. Run the ordinary main merge first, then
       // incrementally re-read admitted history with a separate cursor. Only the
@@ -6053,6 +6152,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     admitted,
     mergeNow,
     produceHeadSnapshotNow,
+    compactOwnLogNow,
     onAnnounce: onAnnounceWithConnection,
     async ensureScopeParticipation(scopes: readonly ScopeId[]): Promise<void> {
       for (const s of scopes) participatingScopes.set(formatScopeId(s), s);

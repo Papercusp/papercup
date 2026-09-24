@@ -42,6 +42,8 @@ describe('launchAgent', () => {
       agent: 'omp',
       harness_slug: 'papercup',
       plan_slug: null,
+      stack: null,
+      selected_identity_revision: null,
       model: 'opus',
       resume_session_id: 's-42',
       kickoff: { kind: 'new-plan' },
@@ -80,6 +82,14 @@ describe('launchAgent', () => {
   it('headless:true rides the wire so a GUI launch can open a windowless member (WI-6505)', async () => {
     await launchAgent({ agent: 'claude', slug: 'papercup', headless: true });
     expect(firstBody().headless).toBe(true);
+  });
+
+  it('forwards an exact selected identity source pin into the shared launch route', async () => {
+    const revision = 'a'.repeat(64);
+    await launchAgent({ slug: null, stack: ['domain:research-steward'],
+      selectedIdentityRevision: revision });
+    expect(firstBody()).toMatchObject({ stack: ['domain:research-steward'],
+      selected_identity_revision: revision });
   });
 
   it('mode rides the wire so a GUI launch can start in DRAIN (P-042)', async () => {

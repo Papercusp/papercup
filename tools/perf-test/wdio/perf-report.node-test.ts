@@ -4,8 +4,61 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
+import type { Browser } from "webdriverio";
 
 import { assertPrivateIpcFixture, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
+import {
+  isTerminalWebDriverSessionError,
+  waitUntilOrFailOnTerminalSession,
+} from "./app-mount";
+
+function retryingBrowser(): Browser {
+  return {
+    async waitUntil(condition: () => boolean | Promise<boolean>) {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          if (await condition()) return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError ?? new Error("fake waitUntil timed out");
+    },
+  } as unknown as Browser;
+}
+
+test("terminal WebDriver session failures are recognized from protocol messages", () => {
+  assert.equal(isTerminalWebDriverSessionError(new Error("WebDriverError: invalid session id")), true);
+  assert.equal(isTerminalWebDriverSessionError({ error: "pagecrashorhang" }), true);
+  assert.equal(isTerminalWebDriverSessionError({ cause: new Error("session terminated without reply") }), true);
+  assert.equal(isTerminalWebDriverSessionError(new Error("temporary connection reset")), false);
+});
+
+test("a terminal session error ends a WDIO wait on its first failed probe", async () => {
+  let probes = 0;
+  const browser = retryingBrowser();
+
+  await assert.rejects(
+    waitUntilOrFailOnTerminalSession(browser, () => {
+      probes += 1;
+      throw new Error("WebDriverError: invalid session id");
+    }, { timeout: 180_000, interval: 500 }),
+    /invalid session id/i,
+  );
+  assert.equal(probes, 1);
+});
+
+test("ordinary transient wait errors still retry until the condition succeeds", async () => {
+  let probes = 0;
+
+  await waitUntilOrFailOnTerminalSession(retryingBrowser(), () => {
+    probes += 1;
+    if (probes === 1) throw new Error("temporary connection reset");
+    return true;
+  });
+  assert.equal(probes, 2);
+});
 
 test('private IPC fixture rejects a stale default even with a fresh per-port record', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'native-ipc-preflight-'));

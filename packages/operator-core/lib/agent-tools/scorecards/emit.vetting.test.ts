@@ -82,9 +82,13 @@ vi.mock('../../consult/get-feedback-core', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../consult/get-feedback-core')>();
   return { ...real, readVettingConsultCritique: (...a: unknown[]) => readVettingConsultCritique(...a) };
 });
-vi.mock('../../work-items', () => ({
-  readVettingWorkItemCritique: (...a: unknown[]) => readVettingWorkItemCritique(...a),
-}));
+vi.mock('../../work-items', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../work-items')>();
+  return {
+    ...real,
+    readVettingWorkItemCritique: (...a: unknown[]) => readVettingWorkItemCritique(...a),
+  };
+});
 vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
   return { ...real, activeWorkspaceId: () => 'ws-test' };

@@ -30,7 +30,7 @@
 import * as net from 'node:net';
 import { Duplex } from 'node:stream';
 import type Corestore from 'corestore';
-import type { BootedAnnounceIdentity, BootedHarnessHandle, LocalWriteOp } from './boot';
+import type { BootedAnnounceIdentity, BootedHarnessHandle, LocalWriteOp, OwnCompactionOutcome } from './boot';
 import type { OwnLog, PeerLogOp } from './peer-log';
 import type { ProduceSnapshotResult } from './log-snapshot';
 import type { AdmittedLog } from './read-merge';
@@ -292,6 +292,18 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
         'in the substrate sidecar (file-lock relocation), and no substrate:produceHeadSnapshot RPC ' +
         'verb exists yet — so a no-outage sparse cut cannot be taken against a relocated store. ' +
         'Quiesce and cut writable, or drop --sparse. See P-019 / D-012.',
+    );
+  }
+
+  /**
+   * p2p-join-catchup-speed D-023 — a requested own compaction. Not implemented over the
+   * sidecar transport for the same reason as `produceHeadSnapshotNow`: the fold and the
+   * append belong to whichever process holds the own log.
+   */
+  compactOwnLogNow(): Promise<OwnCompactionOutcome> {
+    throw new Error(
+      `RemoteBootedHarnessHandle.compactOwnLogNow: the own log for ${this.harnessSlug} lives in the ` +
+        'substrate sidecar (file-lock relocation), and no substrate:compactOwnLog RPC verb exists yet.',
     );
   }
 

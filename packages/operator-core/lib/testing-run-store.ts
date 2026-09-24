@@ -450,6 +450,109 @@ interface PersistedTestRunRow {
   output_tail: string | null;
 }
 
+type TestRunLedgerFileStatus = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error';
+
+export interface DetachedRunLedgerRecovery {
+  runId: string;
+  status: Exclude<RunStatus, 'running'>;
+  exitCode: number | null;
+  finishedAt: number;
+  fileCount: number;
+  files: Array<{
+    filePath: string;
+    status: TestRunLedgerFileStatus;
+    finishedAt: number;
+  }>;
+  message: string;
+}
+
+const MAX_DETACHED_RUN_LEDGER_FILES = 200;
+
+async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Promise<PersistedTestRunRow[] | null> {
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail
+        FROM harness_shared.test_runs
+       WHERE run_group_id = ${runId}
+       ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+       LIMIT ${MAX_DETACHED_RUN_LEDGER_FILES + 1}
+    `;
+  } catch {
+    return null;
+  }
+  return boundedSnapshotQuery<PersistedTestRunRow[]>(query);
+}
+
+function deriveDetachedRunLedgerRecovery(
+  runId: string,
+  rows: PersistedTestRunRow[],
+): DetachedRunLedgerRecovery | null {
+  if (rows.length === 0 || rows.length > MAX_DETACHED_RUN_LEDGER_FILES) return null;
+
+  const validStatuses = new Set<TestRunLedgerFileStatus>(['pass', 'fail', 'skip', 'cancelled', 'error']);
+  const files: DetachedRunLedgerRecovery['files'] = [];
+  for (const row of rows) {
+    if (!row) return null;
+    const finishedAt = epochMs(row.finished_at);
+    if (
+      typeof row.file_path !== 'string' ||
+      row.file_path.length === 0 ||
+      !validStatuses.has(row.status as TestRunLedgerFileStatus) ||
+      finishedAt === null
+    ) {
+      // A running row, an unknown status, or a missing finish timestamp means the
+      // reporter has not supplied a terminal per-file outcome yet.
+      return null;
+    }
+    files.push({
+      filePath: row.file_path,
+      status: row.status as TestRunLedgerFileStatus,
+      finishedAt,
+    });
+  }
+
+  if (new Set(files.map((file) => file.filePath)).size !== files.length) return null;
+
+  const statuses = new Set(files.map((file) => file.status));
+  const status: Exclude<RunStatus, 'running'> = statuses.has('error')
+    ? 'error'
+    : statuses.has('fail')
+      ? 'fail'
+      : statuses.has('cancelled')
+        ? 'cancelled'
+        : statuses.has('pass')
+          ? 'pass'
+          : 'error';
+  const exitCode = status === 'pass' ? 0 : status === 'fail' ? 1 : null;
+  const finishedAt = Math.max(...files.map((file) => file.finishedAt));
+  return {
+    runId,
+    status,
+    exitCode,
+    finishedAt,
+    fileCount: files.length,
+    files,
+    message: `Recovered ${status} from ${files.length} latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.`,
+  };
+}
+
+/**
+ * Last-resort detached status recovery when the lifecycle snapshot is missing
+ * or unreadable. The same exact run_group_id and terminal-row rules used to
+ * reconcile a readable running snapshot apply here; partial/active groups stay
+ * unavailable rather than being promoted to a test verdict.
+ */
+export async function getTestRunLedgerRecoveryAsync(
+  runId: string,
+  sqlOverride?: SqlLike,
+): Promise<DetachedRunLedgerRecovery | null> {
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return null;
+  const rows = await readPersistedTestRunLedgerRows(runId, sql);
+  return rows ? deriveDetachedRunLedgerRecovery(runId, rows) : null;
+}
+
 /**
  * Recover a detached run whose process worker disappeared after the Vitest
  * reporter flushed its per-file rows. The snapshot table is the process
@@ -464,54 +567,18 @@ interface PersistedTestRunRow {
 async function reconcilePersistedTestRun(snapshot: RunSnapshot, sql: SqlLike): Promise<RunSnapshot> {
   if (snapshot.status !== 'running') return snapshot;
 
-  let query: PromiseLike<unknown>;
-  try {
-    query = sql`
-      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail
-        FROM harness_shared.test_runs
-       WHERE run_group_id = ${snapshot.runId}
-       ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
-       LIMIT 200
-    `;
-  } catch {
-    return snapshot;
-  }
-  const rows = await boundedSnapshotQuery<PersistedTestRunRow[]>(query);
-  if (!rows || rows.length === 0) return snapshot;
+  const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+  if (!rows) return snapshot;
+  const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
+  if (!recovery) return snapshot;
 
-  const validStatuses = new Set(['pass', 'fail', 'skip', 'cancelled', 'error']);
-  if (
-    rows.some(
-      (row) =>
-        !row ||
-        typeof row.status !== 'string' ||
-        !validStatuses.has(row.status) ||
-        epochMs(row.finished_at) === null,
-    )
-  ) {
-    // A running row, an unknown status, or a missing finish timestamp means the
-    // reporter has not supplied a complete terminal verdict yet.
-    return snapshot;
-  }
-
-  const statuses = new Set(rows.map((row) => row.status));
-  const status: RunStatus = statuses.has('error')
-    ? 'error'
-    : statuses.has('fail')
-      ? 'fail'
-      : statuses.has('cancelled')
-        ? 'cancelled'
-        : statuses.has('pass')
-          ? 'pass'
-          : 'error';
-  const exitCode = status === 'pass' ? 0 : status === 'fail' ? 1 : null;
-  const finishedAt = Math.max(...rows.map((row) => epochMs(row.finished_at)!));
+  const { status, exitCode, finishedAt } = recovery;
   const ledgerOutput = rows
     .map((row) => row.output_tail)
     .filter((output): output is string => typeof output === 'string' && output.length > 0)
     .join('\n');
   const note =
-    status === 'error' && statuses.has('skip') && !statuses.has('pass') && !statuses.has('fail') && !statuses.has('error')
+    status === 'error' && recovery.files.every((file) => file.status === 'skip')
       ? `\n[detached-recovery] test_runs ledger has ${rows.length} file row(s), but all tests were skipped; no verdict was observed.\n`
       : `\n[detached-recovery] recovered ${status} verdict from ${rows.length} test_runs file row(s).\n`;
   const combinedOutput = [snapshot.output, ledgerOutput, note].filter(Boolean).join('\n');

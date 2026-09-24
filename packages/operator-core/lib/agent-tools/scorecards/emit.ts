@@ -1496,6 +1496,8 @@ export async function emitScorecard(
         const suppressionWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
         const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, {
           listScorecards,
+          getRubric,
+          getRubricPlanRevision,
           // EI-24121421744054354: name an owner stand-down when it is what strands a pending audit.
           ...(suppressionWorkspace
             ? { readGradingAuditDispatchSuppression: () => readGradingAuditDispatchSuppression(suppressionWorkspace) }

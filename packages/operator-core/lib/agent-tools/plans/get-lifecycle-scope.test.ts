@@ -56,6 +56,10 @@ const M = vi.hoisted(() => {
     getAcceptanceRubricForPlan: vi.fn(async () => null),
     getLatestPlanAudit: vi.fn(async () => null),
     derivePlanLifecycleForRead: vi.fn(async () => null),
+    overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({ items, blockingIssues: {} })),
+    withWorkspace: vi.fn(async (_workspace: string, _read: (tx: unknown) => Promise<unknown>): Promise<unknown> => {
+      throw new Error("no-db-in-unit-test");
+    }),
   };
 });
 
@@ -76,19 +80,14 @@ vi.mock("../../issue-blocks-merge", async (orig) => {
   const actual = await orig<typeof import("../../issue-blocks-merge")>();
   return {
     ...actual,
-    overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
-      items,
-      blockingIssues: {},
-    })),
+    overlayIssueBlocksForPlan: M.overlayIssueBlocksForPlan,
   };
 });
 vi.mock("@papercusp/db-org", async (orig) => {
   const actual = await orig<typeof import("@papercusp/db-org")>();
   return {
     ...actual,
-    withWorkspace: vi.fn(async () => {
-      throw new Error("no-db-in-unit-test");
-    }),
+    withWorkspace: M.withWorkspace,
   };
 });
 vi.mock("../../rubrics", () => ({
@@ -142,6 +141,10 @@ beforeEach(async () => {
   M.derivePlanLifecycleForRead.mockClear();
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
+  M.overlayIssueBlocksForPlan.mockReset();
+  M.overlayIssueBlocksForPlan.mockImplementation(async (_slug, items) => ({ items, blockingIssues: {} }));
+  M.withWorkspace.mockReset();
+  M.withWorkspace.mockRejectedValue(new Error("no-db-in-unit-test"));
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -155,6 +158,55 @@ afterEach(async () => {
 });
 
 describe("plans:get — lifecycle signals are scoped to the plan row's workspace", () => {
+  it("starts independent reads while issue blocks are pending and joins their results before lifecycle", async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    M.overlayIssueBlocksForPlan.mockImplementationOnce(async (_slug, items) => {
+      started.push("issues");
+      await gate;
+      return { items, blockingIssues: { "P-001": ["EI-1"] } };
+    });
+    M.withWorkspace.mockImplementation(async (_workspace, read) => read(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      if (sql.includes("harness_features_consolidated")) {
+        started.push("features");
+        await gate;
+        return [{ feature_id: "WI-1", status: "wip", source_plan_slug: "overlap",
+          source_plan_item_ids: ["P-001"], harness_slug: "papercup", updated_ts: "2026-09-24T12:00:00Z" }];
+      }
+      if (sql.includes("harness_plan_assertions")) {
+        started.push("coverage");
+        await gate;
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    }));
+    const pending = run({ slug: "overlap", includeHistory: false });
+    try {
+      // A serialized implementation cannot start features/coverage until this
+      // test releases issue blocks, so this rendezvous detects the regression.
+      await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining(["issues", "features", "coverage"])));
+      expect(M.derivePlanLifecycleForRead).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+    const result = (await pending).results[0];
+    expect(result).toMatchObject({ slug: "overlap", blockingIssues: { "P-001": ["EI-1"] },
+      linkedFeatures: { "P-001": { featureId: "WI-1", status: "wip", harnessSlug: "papercup" } }, planItemTests: {} });
+    expect(signalsOfLastCall()).toMatchObject({ linkedWorkItemUpdatedAt: "2026-09-24T12:00:00.000Z" });
+  });
+
+  it("retains the plan and issue blocks when parallel badge reads fail", async () => {
+    M.overlayIssueBlocksForPlan.mockImplementationOnce(async (_slug, items) => ({
+      items, blockingIssues: { "P-001": ["EI-1"] },
+    }));
+    const result = await run({ slug: "failed-badges", includeHistory: false });
+    expect(result.results[0]).toMatchObject({ slug: "failed-badges", blockingIssues: { "P-001": ["EI-1"] },
+      linkedFeatures: {}, planItemTests: {} });
+    expect(signalsOfLastCall()).toMatchObject({ linkedWorkItemUpdatedAt: null });
+  });
+
   it.each(["acceptance-alpha", null])("reuses the source snapshot's measured acceptance ref %s", async (ref) => {
     M.readPlanBySlug.mockImplementationOnce(async (slug: string) => {
       const fixture = M.planFixture(slug);
