@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
+  classifyScheduledQualificationJoin,
   cancelQualificationTransaction,
   classifyQualificationVerdict,
   describeQualificationSettleConflict,
   parseCheckpointQualificationTransaction,
   projectCheckpointQualificationState,
+  recordQualificationScheduledFire,
   qualificationIntentMatches,
   reserveQualificationRunner,
   settleQualificationTransaction,
@@ -33,6 +35,47 @@ const begin = () =>
   }).transaction;
 
 describe('logical checkpoint qualification transaction', () => {
+  it('keeps scheduler fires separate from suite progress and a terminal verdict', () => {
+    const ready = begin();
+    const scheduled = recordQualificationScheduledFire(ready, 200);
+    expect(scheduled).toMatchObject({ status: 'updated', transaction: { lastScheduledAtMs: 200, updatedAtMs: 100 } });
+    const joined = recordQualificationScheduledFire(scheduled.transaction, 300);
+    expect(joined).toMatchObject({ status: 'updated', transaction: { lastScheduledAtMs: 300, updatedAtMs: 100 } });
+    expect(projectCheckpointQualificationState(joined.transaction, 400).agesMs).toEqual({
+      attempt: 300,
+      scheduled: 100,
+      started: null,
+      progress: null,
+      terminal: null,
+    });
+
+    const running = reserveQualificationRunner(joined.transaction, {
+      attemptId: 'attempt-1', runnerId: 'runner-1', candidate: 'candidate-1',
+      leaseDurationMs: 1_000, nowMs: 500,
+    }).transaction;
+    const fireDuringRun = recordQualificationScheduledFire(running, 600).transaction;
+    expect(projectCheckpointQualificationState(fireDuringRun, 700).agesMs).toMatchObject({
+      scheduled: 100, started: 200, progress: 200, terminal: null,
+    });
+    const terminal = settleQualificationTransaction(fireDuringRun, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', reason: 'not-green', green: false, nowMs: 800,
+    }).transaction;
+    expect(projectCheckpointQualificationState(terminal, 900).agesMs).toMatchObject({
+      scheduled: 300, started: 400, progress: 400, terminal: 100,
+    });
+    expect(recordQualificationScheduledFire(terminal, 1_000).status).toBe('terminal');
+  });
+  it('joins a live physical runner even past its lease and fails closed on unknown liveness', () => {
+    const ready = begin();
+    expect(classifyScheduledQualificationJoin(ready, 'unknown')).toBe('launch');
+    const running = reserveQualificationRunner(ready, {
+      attemptId: 'attempt-1', runnerId: 'runner-1', candidate: 'candidate-1',
+      leaseDurationMs: 1, nowMs: 200,
+    }).transaction;
+    expect(classifyScheduledQualificationJoin(running, 'live')).toBe('join');
+    expect(classifyScheduledQualificationJoin(running, 'unknown')).toBe('unknown-liveness');
+    expect(classifyScheduledQualificationJoin(running, 'dead')).toBe('launch');
+  });
   it('creates one normalized durable identity and reuses the same attempt idempotently', () => {
     const current = begin();
     expect(current).toMatchObject({

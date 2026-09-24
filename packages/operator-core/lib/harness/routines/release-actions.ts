@@ -95,8 +95,12 @@ import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
 import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  beginStoredQualification,
+  classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
+  probeRunnerLiveness,
   readStoredQualification,
+  recordStoredQualificationScheduledFire,
   recordStoredQualificationVerdict,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
@@ -2231,17 +2235,68 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
   // bound that is silently failing open, which is exactly the failure mode this guard risks.
   console.log(`${orchestratorStdoutTag()} ${ctx.installSlug}: ${memoryAdmission.detail}`);
-  // Snapshot the exact logical attempt before launch. A scheduled process used to settle
-  // whichever global attempt happened to be current hours later; transporting this id gives
-  // both the CLI recorder and the out-of-process terminal marker a CAS identity.
+  // Join the existing logical attempt, or create its successor before spawning a physical run.
+  // A scheduled tick is not suite progress: record its own clock while retaining the exact
+  // attempt identity that the CLI and terminal marker will later settle.
   const qualificationAtLaunch = await readStoredQualification(ctx).catch(() => ({
     status: 'unreadable' as const,
     error: 'qualification read failed before launch',
   }));
-  const qualificationAttemptId =
+  if (qualificationAtLaunch.status === 'unreadable') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-qualification-unreadable',
+      detail: withGateFireId({ reason: qualificationAtLaunch.error ?? 'qualification read failed' }),
+    });
+    return;
+  }
+  const activeAttempt =
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
-      ? qualificationAtLaunch.transaction.attemptId
-      : undefined;
+      ? qualificationAtLaunch.transaction
+      : null;
+  const qualificationBegin = activeAttempt
+    ? { status: 'idempotent' as const, transaction: activeAttempt }
+    : await beginStoredQualification(
+        ctx,
+        { attemptId: gateFireId, evidenceRefs: [`gate-fire:${gateFireId}`] },
+        { reconcileTerminalRepairQueueForSuccessor: true },
+      );
+  if (qualificationBegin.status !== 'updated' && qualificationBegin.status !== 'idempotent') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-qualification-conflict',
+      detail: withGateFireId({ reason: qualificationBegin.status }),
+    });
+    return;
+  }
+  const scheduled = await recordStoredQualificationScheduledFire(ctx, qualificationBegin.transaction.attemptId);
+  if (scheduled.status !== 'updated' && scheduled.status !== 'idempotent') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-qualification-conflict',
+      detail: withGateFireId({ reason: scheduled.status, attemptId: qualificationBegin.transaction.attemptId }),
+    });
+    return;
+  }
+  const qualificationAttemptId = scheduled.transaction.attemptId;
+  const runner = scheduled.transaction.currentPhysicalRunner;
+  const runnerLiveness = probeRunnerLiveness(runner);
+  const join = classifyScheduledQualificationJoin(scheduled.transaction, runnerLiveness);
+  if (join !== 'launch') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: join === 'join' ? 'skipped-joined-attempt' : 'skipped-runner-liveness-unknown',
+      detail: withGateFireId({
+        attemptId: qualificationAttemptId,
+        candidate: scheduled.transaction.candidate,
+        repairHead: scheduled.transaction.repairHead,
+        runId: scheduled.transaction.runId,
+        runnerId: runner?.id ?? null,
+        runnerLiveness,
+      }),
+    });
+    return;
+  }
   const r = await runScript(
     root,
     'apps/operator/lib/release/green-checkpoint.ts',

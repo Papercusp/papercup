@@ -173,6 +173,19 @@ export interface CheckpointQualificationState {
   } | null;
   blockers: QualificationBlocker[];
   phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
+  clocks: {
+    lastScheduledAtMs: number | null;
+    lastStartedAtMs: number | null;
+    lastProgressAtMs: number | null;
+    lastTerminalVerdictAtMs: number | null;
+  };
+  agesMs: {
+    attempt: number | null;
+    scheduled: number | null;
+    started: number | null;
+    progress: number | null;
+    terminal: number | null;
+  };
   consumedPhysicalRuns: QualificationPhysicalRun[];
   eligibilitySnapshot: CheckpointEligibilitySnapshot | null;
   safeNextAction: QualificationSafeNextAction;
@@ -184,6 +197,11 @@ export interface CheckpointQualificationTransaction {
   attemptId: string;
   createdAtMs: number;
   updatedAtMs: number;
+  /** A scheduler tick is not evidence that a suite started or progressed. */
+  lastScheduledAtMs?: number;
+  lastStartedAtMs?: number;
+  lastProgressAtMs?: number;
+  lastTerminalVerdictAtMs?: number;
   requiredAncestorSha: string | null;
   candidatePolicy: {
     kind: 'quiet-cut';
@@ -376,6 +394,13 @@ export function qualificationPhaseDurations(
 
 export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.now()): CheckpointQualificationState {
   const owner = { kind: 'routine' as const, id: 'system:green-checkpoint' as const };
+  const emptyClocks = {
+    lastScheduledAtMs: null,
+    lastStartedAtMs: null,
+    lastProgressAtMs: null,
+    lastTerminalVerdictAtMs: null,
+  };
+  const emptyAges = { attempt: null, scheduled: null, started: null, progress: null, terminal: null };
   if (raw == null) {
     return {
       status: 'none',
@@ -387,6 +412,8 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       lease: null,
       blockers: [],
       phaseDurationsMs: {},
+      clocks: emptyClocks,
+      agesMs: emptyAges,
       consumedPhysicalRuns: [],
       unknown: null,
       eligibilitySnapshot: null,
@@ -410,6 +437,8 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       lease: null,
       blockers: [],
       phaseDurationsMs: {},
+      clocks: emptyClocks,
+      agesMs: emptyAges,
       consumedPhysicalRuns: [],
       eligibilitySnapshot: null,
       safeNextAction: {
@@ -421,6 +450,8 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
     };
   }
   const runner = transaction.currentPhysicalRunner;
+  const age = (at: number | undefined): number | null =>
+    at === undefined ? null : Math.max(0, nowMs - at);
   const lease = runner
     ? {
         holder: runner.id,
@@ -485,6 +516,19 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
     lease,
     blockers: transaction.blockers,
     phaseDurationsMs: qualificationPhaseDurations(transaction, nowMs),
+    clocks: {
+      lastScheduledAtMs: transaction.lastScheduledAtMs ?? null,
+      lastStartedAtMs: transaction.lastStartedAtMs ?? null,
+      lastProgressAtMs: transaction.lastProgressAtMs ?? null,
+      lastTerminalVerdictAtMs: transaction.lastTerminalVerdictAtMs ?? null,
+    },
+    agesMs: {
+      attempt: age(transaction.createdAtMs),
+      scheduled: age(transaction.lastScheduledAtMs),
+      started: age(transaction.lastStartedAtMs),
+      progress: age(transaction.lastProgressAtMs),
+      terminal: age(transaction.lastTerminalVerdictAtMs),
+    },
     consumedPhysicalRuns: transaction.consumedPhysicalRuns ?? [],
     eligibilitySnapshot: transaction.eligibilitySnapshot ?? null,
     safeNextAction,
@@ -554,6 +598,9 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     !Array.isArray(row.evidenceRefs) ||
     (row.repairHead != null && (typeof row.repairHead !== 'string' || !row.repairHead.trim())) ||
     (row.runId != null && (typeof row.runId !== 'string' || !row.runId.trim())) ||
+    [row.lastScheduledAtMs, row.lastStartedAtMs, row.lastProgressAtMs, row.lastTerminalVerdictAtMs].some(
+      (at) => at != null && (!Number.isFinite(at) || at < 0),
+    ) ||
     (row.phaseEnteredAtMs != null && !Number.isFinite(row.phaseEnteredAtMs)) ||
     (row.phaseDurationsMs != null &&
       (typeof row.phaseDurationsMs !== 'object' ||
@@ -700,6 +747,34 @@ export function beginQualificationTransaction(
     eligibilitySnapshot: null,
   };
   return { status: 'updated', transaction };
+}
+
+/** A colliding scheduler fire joins the active attempt without manufacturing progress. */
+export function recordQualificationScheduledFire(
+  current: CheckpointQualificationTransaction,
+  nowMs = Date.now(),
+): QualificationTransition {
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (current.lastScheduledAtMs !== undefined && current.lastScheduledAtMs >= nowMs) {
+    return { status: 'idempotent', transaction: current };
+  }
+  return {
+    status: 'updated',
+    transaction: { ...current, lastScheduledAtMs: nowMs },
+  };
+}
+
+/** A scheduler collision is not another run. Unknown owner life fails closed. */
+export function classifyScheduledQualificationJoin(
+  current: CheckpointQualificationTransaction,
+  runnerLiveness: RunnerLiveness,
+): 'launch' | 'join' | 'unknown-liveness' {
+  if (current.phase !== 'running' || !current.currentPhysicalRunner || isTerminalQualificationOutcome(current.outcome)) {
+    return 'launch';
+  }
+  if (runnerLiveness === 'live') return 'join';
+  if (runnerLiveness === 'unknown') return 'unknown-liveness';
+  return 'launch';
 }
 
 export function recordQualificationEligibilitySnapshot(
@@ -850,6 +925,8 @@ export function reserveQualificationRunner(
       repairHead: input.repairHead?.trim() || current.repairHead,
       runId: input.runId?.trim() || current.runId,
       phase: 'running',
+      lastStartedAtMs: nowMs,
+      lastProgressAtMs: nowMs,
       phaseEnteredAtMs:
         current.phase === 'running' && !current.currentPhysicalRunner
           ? (current.phaseEnteredAtMs ?? current.updatedAtMs)
@@ -925,6 +1002,7 @@ export function settleQualificationTransaction(
       ...current,
       updatedAtMs: nowMs,
       phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
       phaseEnteredAtMs: nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
@@ -994,6 +1072,7 @@ export function cancelQualificationTransaction(
       ...current,
       updatedAtMs: nowMs,
       phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
       phaseEnteredAtMs: nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
@@ -1338,6 +1417,20 @@ export function beginStoredQualification(
           }),
         }
       : {},
+  );
+}
+
+export function recordStoredQualificationScheduledFire(
+  target: GateVerdictTarget,
+  attemptId: string,
+  nowMs = Date.now(),
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current && current.attemptId === attemptId
+      ? recordQualificationScheduledFire(current, nowMs)
+      : current
+        ? { status: 'conflict', transaction: current }
+        : { status: 'unreadable', error: 'missing attempt' },
   );
 }
 
