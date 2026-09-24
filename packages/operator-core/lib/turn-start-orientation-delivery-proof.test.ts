@@ -150,11 +150,13 @@ describe('turn-start orientation — ack-on-proof', () => {
 
   it('pins the exact rendered block only under the existing confirmed delivery token', async () => {
     const first = await turn(null);
+    await drainDetached();
     expect(identityBindMock).toHaveBeenCalledTimes(1);
     expect(identityBindMock.mock.calls[0]![0].outputs).toEqual([
       { contributionId: 'turn-start-orientation', value: first.block },
     ]);
     const retry = await turn('wrong-token');
+    await drainDetached();
     expect(store.acks[1]?.result.committed).toBeNull();
     await turn(retry.deliveryToken);
     expect(store.acks[2]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
@@ -166,17 +168,24 @@ describe('turn-start orientation — ack-on-proof', () => {
 
   it('keeps the block and ACK live when identity binding exceeds its short budget', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const first = await buildTurnStartOrientationBlock({
-      ownerId: 'su-proof', workspaceId: 'ws-proof', deps, confirmedDeliveryToken: null,
-      identityBinder: (() => new Promise<never>(() => {})) as never,
-    });
+    const first = await Promise.race([
+      buildTurnStartOrientationBlock({
+        ownerId: 'su-proof', workspaceId: 'ws-proof', deps, confirmedDeliveryToken: null,
+        identityBinder: (() => new Promise<never>(() => {})) as never,
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('hook waited for optional identity binding')), 1_000)),
+    ]);
     expect(first.block).toContain(HISTORY_LINE);
     expect(first.deliveryToken).toEqual(expect.any(String));
     await turn(first.deliveryToken);
     expect(store.acks[1]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
       token: first.deliveryToken,
-      status: 'unavailable',
-      reason: 'identity-binding-timeout',
+      status: 'pending',
+    });
+    await drainDetached();
+    await turn(null);
+    expect(store.acks[2]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+      token: first.deliveryToken, status: 'unavailable', reason: 'timeout',
     });
   });
 
@@ -255,6 +264,7 @@ describe('goal placement receipts through the real orientation ACK path', () => 
     const goalMode = { axisKey: 'goal', mode: 'goal', reason: 'owns goal', setBy: 'owner',
       setBySelf: false, ownerDirected: true, impliedBy: null };
     const first = await f.turn(null, { modes: async () => [goalMode] });
+    await drainDetached();
     expect(first.block).toContain(f.brief.projection.text);
     const goalCall = identityBindMock.mock.calls.find(([input]) => input.identityId === 'su.mode-goal');
     expect(goalCall?.[0].outputs).toContainEqual({
