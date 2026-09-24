@@ -23,6 +23,8 @@
  */
 
 import type { OwnLog, PeerLogOp } from './peer-log';
+// Dependency-free constants module, so this file stays safe to bundle into the fold worker.
+import { SELF_REGENERATING_TABLES } from './seed-excluded-tables';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
@@ -716,7 +718,9 @@ function conflictingSnapshotExclusion(
     const recorded = (chunk.value as SnapshotPayload | undefined)?.excludeTables;
     if (!recorded) continue;
     for (const table of recorded) {
-      if (!callerExcluded.has(table)) return table;
+      // WI-10002836: a table whose rows regenerate on their own (`presence`) is not
+      // lost by seeding from a set that dropped it; the fold's tail re-supplies it.
+      if (!callerExcluded.has(table) && !SELF_REGENERATING_TABLES.has(table)) return table;
     }
   }
   return null;
