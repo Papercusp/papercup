@@ -639,7 +639,7 @@ function finishReport(
  *                                                                  // no auth/workspace ctx
  *   rest-query:96   delta negotiation is gated on `?delta=` being PRESENT — the audit
  *                   never sends it, so the FULL branch runs every time
- *   rest-query:140  responseValue = { rows, version: String(Date.now()) }
+ *   rest-query      responseValue = { rows, version: String(Date.now()), timing }
  *   rest-query:143  body = await serializeJsonResponse(responseValue, itemCount)
  *   rest-query:94   the response is NOT compressed (loopback desktop sidecar)
  *
@@ -683,7 +683,8 @@ export async function measureSyncReadPayloadsInProcess(opts: {
     const started = Date.now();
     try {
       const resolved = await resolveNamedQueryV2(name, fixture as Record<string, unknown>);
-      const ms = Date.now() - started;
+      const resolverCompletedAtMs = Date.now();
+      const ms = resolverCompletedAtMs - started;
       if (resolved === NAME_NOT_FOUND) {
         // The REST path answers this with a 400, and an errored fetch is never
         // judged over-budget there. Mirror that exactly rather than letting an
@@ -703,7 +704,16 @@ export async function measureSyncReadPayloadsInProcess(opts: {
         continue;
       }
       const rowCount = Array.isArray(resolved) ? resolved.length : 1;
-      const body = await serializeJsonResponse({ rows: resolved, version: String(Date.now()) }, rowCount);
+      const body = await serializeJsonResponse({
+        rows: resolved,
+        version: String(Date.now()),
+        timing: {
+          unit: 'ms',
+          resolverStartedAtMs: started,
+          resolverCompletedAtMs,
+          resolverMs: Math.max(0, ms),
+        },
+      }, rowCount);
       const bytes = Buffer.byteLength(body, 'utf8');
       measured.push({
         name,
@@ -740,9 +750,9 @@ export async function measureSyncReadPayloadsInProcess(opts: {
  * shape of finding this repo keeps having to retract.
  *
  * `bytesDelta` is inProcess − rest. Expect 0 on the no-delta full path. A NONZERO
- * delta is the interesting output: it means rest-query does something to the body
- * that this file does not reproduce, and the in-process numbers must not be
- * trusted until it is explained.
+ * delta needs explanation: live rows can change between reads, and the number
+ * of digits in timing.resolverMs can differ between processes. The route test
+ * fixes the clock and rows to guard exact envelope/encoding parity separately.
  *
  * Deliberately NOT a unit test: it needs a live, populated operator, same as the
  * REST harness it calibrates against.
