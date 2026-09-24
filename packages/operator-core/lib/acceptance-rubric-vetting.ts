@@ -92,6 +92,28 @@ export interface AcceptanceRubricVettingStatus {
    */
   diagnosis: string | null;
   vettedUnderWaiver?: { consultId: string; reason?: string };
+  /**
+   * Set only on an UNVETTED verdict where some candidate is stranded on a pending
+   * grade-the-grader audit AND new audit dispatch is suppressed right now — the
+   * machine-readable form of the note appended to that candidate's `detail`.
+   */
+  gradingAuditDispatchSuppressed?: GradingAuditDispatchSuppression;
+}
+
+/**
+ * Why NEW grade-the-grader audits are not being dispatched right now (EI-24121421744054354).
+ *
+ * A meta-rubric card whose audit is `pending` settles only when an auditor is
+ * launched and files its verdict. While a workspace-wide loop stand-down is in
+ * force, `dispatchPendingGradingAudits` launches nobody, so `pending` cannot move
+ * until the stand-down expires or is lifted. Without this, the vetting read said
+ * only "audit is 'pending'", which reads as "wait a bit" — the true blocker was
+ * visible solely on a `scorecards:repair` receipt.
+ */
+export interface GradingAuditDispatchSuppression {
+  reason: 'workspace-wide-loop-standdown';
+  /** Loop owners currently held by an unexpired workspace-wide stand-down. */
+  pausedOwnerCount: number;
 }
 
 export interface AcceptanceRubricVettingDeps {
@@ -105,6 +127,23 @@ export interface AcceptanceRubricVettingDeps {
   getRubricPlanRevision?: typeof defaultGetRubricPlanRevision;
   vettingGateEnabled?: boolean;
   readVettingGateEnabled?: () => Promise<boolean>;
+  /**
+   * Optional: is grade-the-grader dispatch suppressed right now? Consulted only
+   * when a candidate was rejected for a `pending` audit. Omitted ⇒ never
+   * consulted (no behavior change). A throw is treated as "not suppressed" —
+   * this read only ANNOTATES a refusal, it never decides one.
+   */
+  readGradingAuditDispatchSuppression?: () => Promise<GradingAuditDispatchSuppression | null>;
+}
+
+/** Text appended to a pending-audit rejection while dispatch is suppressed. */
+export function describeGradingAuditDispatchSuppression(s: GradingAuditDispatchSuppression): string {
+  return (
+    `NO auditor will be launched while an active workspace-wide loop stand-down holds ` +
+    `${s.pausedOwnerCount} loop owner(s) — grade-the-grader dispatch is suppressed, so this pending audit ` +
+    `cannot settle until the stand-down expires or its owner lifts it (scorecards:repair returns ` +
+    `'skipped: dispatch suppressed'). Waiting or re-emitting will not help; this is an owner-pause blocker.`
+  );
 }
 
 function notRequired(
@@ -260,6 +299,7 @@ export async function getAcceptanceRubricVettingStatus(
   // independent reviewer's comments land on.
   const candidates: AcceptanceRubricVettingCandidate[] = [];
   const vettedCards: ScorecardRow[] = [];
+  const pendingAuditCandidates: AcceptanceRubricVettingCandidate[] = [];
   let current: ScorecardRow | undefined;
   for (const card of [...metaCards].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
     const { rejectedBy, detail } = classifyVettingCandidate(card, {
@@ -267,16 +307,32 @@ export async function getAcceptanceRubricVettingStatus(
       criteriaHash: rubric.criteriaHash,
       meaningRevision: rubric.barContract?.meaningRevision,
     });
-    candidates.push({
+    const candidate: AcceptanceRubricVettingCandidate = {
       issueId: card.issueId,
       createdAt: card.createdAt,
       rejectedBy,
       detail,
       attestedRevision: card.vetting?.rubricRevision ?? null,
       attestedCriteriaHash: card.vetting?.criteriaHash ?? null,
-    });
+    };
+    candidates.push(candidate);
+    if (rejectedBy === 'grading-audit-unsettled' && card.gradingAudit?.state === 'pending') {
+      pendingAuditCandidates.push(candidate);
+    }
     if (rejectedBy === null || rejectedBy === 'stale-revision') vettedCards.push(card);
     if (rejectedBy === null && !current) current = card;
+  }
+  // EI-24121421744054354: a pending audit settles only when an auditor is launched.
+  // If dispatch is suppressed, say so ON the card it strands — otherwise the refusal
+  // reads as "wait a bit" while nothing can move until an owner pause lifts.
+  let gradingAuditDispatchSuppressed: GradingAuditDispatchSuppression | undefined;
+  if (!current && pendingAuditCandidates.length > 0 && deps.readGradingAuditDispatchSuppression) {
+    const suppression = await deps.readGradingAuditDispatchSuppression().catch(() => null);
+    if (suppression) {
+      gradingAuditDispatchSuppressed = suppression;
+      const note = describeGradingAuditDispatchSuppression(suppression);
+      for (const candidate of pendingAuditCandidates) candidate.detail = `${candidate.detail}. ${note}`;
+    }
   }
   const attestedRevisions = [
     ...new Set(vettedCards.map((card) => card.vetting?.rubricRevision).filter((v): v is number => v != null)),
@@ -309,6 +365,7 @@ export async function getAcceptanceRubricVettingStatus(
       workItemId: vettedCards[0]?.vetting?.workItemId ?? null,
       candidates,
       diagnosis,
+      ...(gradingAuditDispatchSuppressed ? { gradingAuditDispatchSuppressed } : {}),
     };
   }
 
