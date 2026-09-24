@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { readTokenReportAggregation } from './token-report-action';
+import { readTokenReportAggregation, readUsageHealth, evaluateUsageHealth } from './token-report-action';
 
 let org: OrgTestDb;
 const WS = 'cache-report-coverage';
@@ -13,6 +13,26 @@ beforeAll(async () => {
 afterAll(async () => { await org?.cleanup(); });
 
 describe('token report source coverage (real PostgreSQL)', () => {
+  it('detects tier and model-provenance contradictions from the scoped ledger', async () => {
+    const sql = org.adminSql;
+    const workspace = 'cache-accounting-health';
+    for (const ws of [workspace, 'unrelated-health-workspace']) {
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id,ts,event_ts,source,provider,bucket_key,model_class,model,
+         cache_creation_tokens,cache_creation_5m_tokens,cache_creation_1h_tokens,usage_provenance)
+        VALUES (${ws},100,100,'interactive','anthropic','anthropic:test','default',NULL,100,20,30,
+          ${JSON.stringify({ grain: 'request', modelSource: 'transcript' })}::jsonb)`;
+    }
+    const rows = await readUsageHealth(sql, workspace, 0, 101);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].samples)).toBe(1);
+    expect(Number(rows[0].timed_requests)).toBe(1);
+    expect(Number(rows[0].tier_mismatches)).toBe(1);
+    expect(Number(rows[0].model_provenance_mismatches)).toBe(1);
+    expect(evaluateUsageHealth(rows[0], 101).signals).toHaveLength(2);
+    expect(await readUsageHealth(sql, workspace, 101, 200)).toEqual([]);
+  });
+
   it('includes unavailable-source rows in coverage but not token or price estimates', async () => {
     const sql = org.adminSql;
     const workspace = 'cache-unrecoverable-report';

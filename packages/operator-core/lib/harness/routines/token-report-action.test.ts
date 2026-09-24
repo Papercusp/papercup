@@ -10,9 +10,33 @@
  * levers.
  */
 import { describe, it, expect } from 'vitest';
-import { renderPresenceVolume, renderDim, type AggRow } from './token-report-action';
+import { renderPresenceVolume, renderDim, evaluateUsageHealth, renderUsageHealth, type UsageHealthRow, type AggRow } from './token-report-action';
 
 type Vol = { tool: string; calls: string; bytes: string | null; avg_bytes: string | null };
+
+describe('usage accounting health detectors', () => {
+  const row: UsageHealthRow = { cohort: 'anthropic:model:interactive', samples: '30', timed_requests: '30',
+    unknown_model: '0', unknown_writes: '0', unknown_tiers: '0', tier_mismatches: '0',
+    model_provenance_mismatches: '0', newest_event: '1000000' };
+  it('stays healthy independently of hit rate when accounting is complete and recent', () => {
+    expect(evaluateUsageHealth(row, 1000001)).toMatchObject({ state: 'ok', coverage: 1, signals: [] });
+  });
+  it('marks stale, thin and unknown populations as unknown, never as zero-cost healthy traffic', () => {
+    const result = evaluateUsageHealth({ ...row, samples: '2', timed_requests: '0', newest_event: null,
+      unknown_writes: '2', unknown_model: '1', unknown_tiers: '1' }, 1000001);
+    expect(result.state).toBe('unknown');
+    expect(result.unknown).toHaveLength(6);
+    expect(result.signals).toEqual([]);
+    expect(evaluateUsageHealth(row, 1000000 + 3 * 86_400_000).unknown).toContain('stale-or-unknown-telemetry');
+    expect(renderUsageHealth([], 1)).toContain('unknown');
+  });
+  it('detects injected write-tier and parser/model contradictions even at low volume', () => {
+    const result = evaluateUsageHealth({ ...row, samples: '1', timed_requests: '1',
+      tier_mismatches: '1', model_provenance_mismatches: '1' }, 1000001);
+    expect(result.state).toBe('regression');
+    expect(result.signals).toEqual(['write-tier-reconciliation-failed', 'parser-model-provenance-inconsistent']);
+  });
+});
 
 describe('cache reporting coverage', () => {
   const row = (changes: Partial<AggRow> = {}): AggRow => ({ dim: 'interactive [request-time]', calls: '10',

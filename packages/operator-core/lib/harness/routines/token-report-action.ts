@@ -172,6 +172,71 @@ export async function readTokenReportAggregation(
   `;
 }
 
+export interface UsageHealthRow {
+  cohort: string;
+  samples: string;
+  timed_requests: string;
+  unknown_model: string;
+  unknown_writes: string;
+  unknown_tiers: string;
+  tier_mismatches: string;
+  model_provenance_mismatches: string;
+  newest_event: string | null;
+}
+
+/** Same ledger and schedule as the token report; aggregate counters only, no prompt payloads. */
+export async function readUsageHealth(sql: Sql, workspaceId: string, from: number, to: number): Promise<UsageHealthRow[]> {
+  return sql<UsageHealthRow[]>`
+    SELECT provider || ':' || COALESCE(model, '(unknown)') || ':' || source AS cohort,
+      COUNT(*) AS samples,
+      COUNT(*) FILTER (WHERE usage_provenance->>'grain' = 'request' AND event_ts IS NOT NULL) AS timed_requests,
+      COUNT(*) FILTER (WHERE model IS NULL OR model = 'unknown-openai') AS unknown_model,
+      COUNT(*) FILTER (WHERE cache_creation_tokens IS NULL) AS unknown_writes,
+      COUNT(*) FILTER (WHERE provider = 'anthropic' AND cache_creation_tokens > 0 AND
+        (cache_creation_5m_tokens IS NULL OR cache_creation_1h_tokens IS NULL)) AS unknown_tiers,
+      COUNT(*) FILTER (WHERE provider = 'anthropic' AND cache_creation_tokens IS NOT NULL AND
+        cache_creation_5m_tokens IS NOT NULL AND cache_creation_1h_tokens IS NOT NULL AND
+        (cache_creation_5m_tokens < 0 OR cache_creation_1h_tokens < 0 OR
+         cache_creation_5m_tokens + cache_creation_1h_tokens <> cache_creation_tokens)) AS tier_mismatches,
+      COUNT(*) FILTER (WHERE usage_provenance->>'modelSource' = 'transcript' AND
+        (model IS NULL OR model = 'unknown-openai')) AS model_provenance_mismatches,
+      MAX(event_ts) AS newest_event
+    FROM harness_shared.agent_usage_samples
+    WHERE workspace_id = ${workspaceId} AND ts >= ${from} AND ts < ${to}
+    GROUP BY 1 ORDER BY 1
+  `;
+}
+
+export function evaluateUsageHealth(row: UsageHealthRow, now: number) {
+  const unknown: string[] = [];
+  const signals: string[] = [];
+  const count = Number(row.samples);
+  const coverage = count > 0 ? Number(row.timed_requests) / count : null;
+  if (count < 20) unknown.push('insufficient-volume');
+  if (coverage === null || coverage < 0.8) unknown.push('incomplete-request-time-coverage');
+  const newest = row.newest_event === null ? null : Number(row.newest_event);
+  if (newest === null || !Number.isFinite(newest) || newest > now || now - newest > 2 * 86_400_000) unknown.push('stale-or-unknown-telemetry');
+  if (Number(row.unknown_model) > 0) unknown.push('unknown-model');
+  if (Number(row.unknown_writes) > 0) unknown.push('unknown-cache-write-counts');
+  if (Number(row.unknown_tiers) > 0) unknown.push('unknown-write-tiers');
+  // Deterministic accounting contradictions are actionable even in a small cohort.
+  if (Number(row.tier_mismatches) > 0) signals.push('write-tier-reconciliation-failed');
+  if (Number(row.model_provenance_mismatches) > 0) signals.push('parser-model-provenance-inconsistent');
+  return { state: signals.length ? 'regression' : unknown.length ? 'unknown' : 'ok', coverage, unknown, signals };
+}
+
+export function renderUsageHealth(rows: UsageHealthRow[], now: number): string {
+  if (!rows.length) return '**Usage accounting health:** unknown — no observations.';
+  return ['**Usage accounting health** (per provider/model/source; no aggregate hit-rate alarm):',
+    ...rows.map(row => {
+      const result = evaluateUsageHealth(row, now);
+      return `- ${row.cohort}: ${result.state}; ${row.timed_requests}/${row.samples} timed requests; ` +
+        `tier mismatches ${row.tier_mismatches}, parser/model mismatches ${row.model_provenance_mismatches}` +
+        (result.unknown.length ? `; ${result.unknown.join(', ')}` : '');
+    }),
+  ].join('\n');
+}
+
 registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const windowDays = Number.isFinite(Number(cfg.window_days)) && Number(cfg.window_days) > 0 ? Number(cfg.window_days) : 7;
@@ -195,7 +260,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
      GROUP BY 1
   `;
 
-  const [curSrc, prevSrc, curModel, prevModel, curRole, prevRole, curVol, prevVol] = await Promise.all([
+  const [curSrc, prevSrc, curModel, prevModel, curRole, prevRole, curVol, prevVol, usageHealth] = await Promise.all([
     agg('source', now - windowMs, now),
     agg('source', now - 2 * windowMs, now - windowMs),
     agg('model_class', now - windowMs, now),
@@ -204,6 +269,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
     agg('role', now - 2 * windowMs, now - windowMs),
     presenceVol(now - windowMs, now),
     presenceVol(now - 2 * windowMs, now - windowMs),
+    readUsageHealth(sql, ctx.workspaceId, now - windowMs, now),
   ]);
 
   const tot = (rows: AggRow[]): { tok: number; usd: number } => ({
@@ -225,6 +291,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
     renderDim('model class', curModel, byKey(prevModel)),
     renderDim('role', curRole, byKey(prevRole)),
     renderPresenceVolume(curVol, prevVol),
+    renderUsageHealth(usageHealth, now),
     `Acceptance tracking (token-usage-reduction-audit-2026-06-09 P-013): target ≥40% weekly cache-read+write reduction vs the 2026-06-09 baseline (235 MTok read + 170 MTok write interactive; ~122 MTok fleet).`,
   ].join('\n\n');
 
