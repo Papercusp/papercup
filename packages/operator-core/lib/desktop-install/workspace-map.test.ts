@@ -6,7 +6,7 @@
  * (work in the integration tree; never touch the release/checkpoint trees;
  * the green pin is automation-only).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWorkspaceMapSection, resolveWorkspaceMapConfig } from './workspace-map';
 
 // EI-8794: the fallback-detection tests below stub `execFileSync` itself (rather
@@ -74,7 +74,21 @@ describe('renderWorkspaceMapSection', () => {
 });
 
 describe('resolveWorkspaceMapConfig', () => {
+  beforeEach(() => vi.stubEnv('PAPERCUSP_CANONICAL_TREE', ''));
   afterEach(() => vi.unstubAllEnvs());
+
+  it('uses the canonical edit tree instead of the staging serving mirror', () => {
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '/ws/papercusp');
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/ws/papercusp-staging');
+    vi.stubEnv('PAPERCUSP_RELEASE_ROOT', '/ws/papercup-release');
+    vi.stubEnv('PAPERCUSP_CHECKPOINT_ROOT', '/ws/papercusp-checkpoint');
+
+    const cfg = resolveWorkspaceMapConfig();
+    expect(cfg.integrationRoot).toBe('/ws/papercusp');
+    const rendered = renderWorkspaceMapSection(cfg);
+    expect(rendered).toContain('✅ `/ws/papercusp`');
+    expect(rendered).not.toContain('✅ `/ws/papercusp-staging`');
+  });
 
   it('honours the release-gate env seams', () => {
     vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/x/integ');

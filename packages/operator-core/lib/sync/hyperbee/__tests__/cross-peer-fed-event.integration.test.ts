@@ -85,8 +85,9 @@ const EVENT_AWAITS_DDL = `
     timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
     expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
     fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
+    fired_by text, fired_payload jsonb, fired_delivery_intent_at timestamptz,
     once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
-    payload_filter jsonb, root_id bigint, producer_health jsonb, superseded_at timestamptz
+    payload_filter jsonb, node_id bigint, root_id bigint, producer_health jsonb, superseded_at timestamptz
   );
   CREATE TABLE IF NOT EXISTS harness_shared.event_wake_deliveries (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

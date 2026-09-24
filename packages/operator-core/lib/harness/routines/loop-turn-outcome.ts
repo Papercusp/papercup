@@ -641,6 +641,11 @@ export async function handleLoopResumeTurnExit(
                   `a credential-construction error, not a provider usage cap; do not wait for a reset. ` +
                   `Inspect the bearer construction for text accidentally placed in the credential and ` +
                   `relaunch with a valid credential/session.`
+                : authWall
+                ? `The loop was PAUSED by an auth-wall terminal guard, so it is NOT re-firing on a ` +
+                  `cadence. The owner needs new credentials or a relaunch on a different account before ` +
+                  `resuming it. Check this owner's claims and fleet-leader state; if no claims remain and ` +
+                  `no fleet is leaderless, close the item as already resolved.`
                 : `This loop wakes its owner session on a fixed cadence — while wedged ` +
                   `(rate-limited/capped/auth-locked), every wake risks re-firing into the same wall. The ` +
                   `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but ` +
@@ -659,6 +664,8 @@ export async function handleLoopResumeTurnExit(
                 ? ' [stale-tool-reference terminal guard: the provider rejected a saved tool reference absent from the current tool surface; the loop was paused instead of replaying the same transcript.]'
                 : malformedAuthorization
                 ? ` [malformed-authorization terminal guard: the header value could not be encoded; do not wait for a provider reset. Inspect the credential-construction path and relaunch with a valid credential.]`
+                : authWall
+                ? ` [auth-wall terminal guard: the loop was paused; new credentials or a relaunch on a different account are required before resuming.]`
                 : staleResumeTarget
                 ? ` [stale-resume-target terminal guard: the loop was paused instead of re-arming a ` +
                   `missing native session; relaunch or rebind the owner before resuming the loop.]`

@@ -562,13 +562,15 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const autoPause = vi.fn(async () => {});
     const res = await handleLoopResumeTurnExit(
       loopDelivery(),
-      // A CLEAN exit whose stdout carries the auth wall — the exact shape observed live, and the
-      // path classifyWedgeText scans before a zero exit is trusted as success.
+      // A detached resume's exact 401 error; the classifier scans both streams
+      // before an exit can be trusted as success.
       deathRaw({
-        exitCode: 0,
+        exitCode: 1,
         signal: null,
-        stdoutTail: 'Your organization has disabled Claude Code. Please ask your admin to enable it.',
-        stderrTail: '',
+        stdoutTail: '',
+        stderrTail:
+          '2026-09-24T06:54:20.399557Z ERROR codex_api::endpoint::responses_websocket: ' +
+          'failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses',
       }),
       { sql: sql as never, recordFire, autoPause },
     );
@@ -587,6 +589,12 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(captureImprovement).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'bug', title: expect.stringContaining('LOOP WEDGED') }),
     );
+    const body = vi.mocked(captureImprovement).mock.calls.at(-1)?.[0]?.body as string;
+    expect(body).toContain('PAUSED by an auth-wall terminal guard');
+    expect(body).toContain('NOT re-firing on a cadence');
+    expect(body).toContain('new credentials');
+    expect(body).not.toContain('every wake risks re-firing');
+    expect(body).not.toContain('429-aware re-arm');
   });
 
   // NEGATIVE CONTROL for the test above, kept permanently in-file. Without it, a fix that simply

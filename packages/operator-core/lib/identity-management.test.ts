@@ -8,7 +8,7 @@ import { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, r
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { buildBlueprintReleaseArchive, commitBlueprintRelease } from './cupboard/blueprint-release';
 import { diffIdentitySpecifications, resolveIdentityStackMutation } from './identity-management';
-import { getIdentitySource, getSelectedModeCatalog, listIdentitySources } from './agent-identities/source';
+import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog, listIdentitySources } from './agent-identities/source';
 import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
@@ -49,6 +49,27 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  it('pins an already-produced structured fleet brief without changing its value or prompt sink', async () => {
+    const data = { ok: true, summary: { fleet: 'alpha', members: 2 } };
+    const before = JSON.stringify(data);
+    const bound = await bindSelectedIdentitySetting({
+      identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', sourceTier: 'builtin', value: data,
+      scope: { fleet: 'alpha' }, observedAt: '2026-09-24T00:00:00.000Z',
+    });
+    expect(JSON.stringify(data)).toBe(before);
+    expect(bound).toMatchObject({ identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief',
+      producerRef: 'agent-tools/fleet/leader-brief:buildLeaderBrief', status: 'bound',
+      scope: { fleet: 'alpha' } });
+    expect(bound.outputRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(bound.specificationRevision).toMatch(/^[0-9a-f]{64}$/);
+    const omitted = await bindSelectedIdentitySetting({
+      identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', sourceTier: 'builtin',
+      omission: { reason: 'ineligible' }, scope: { fleet: null }, observedAt: '2026-09-24T00:00:00.000Z',
+    });
+    expect(omitted).toMatchObject({ status: 'omitted:ineligible', outputRevision: null });
+    expect(omitted.specificationRevision).not.toBe(bound.specificationRevision);
+  });
+
   it('selects exactly one approved installed mode revision over its built-in definition', async () => {
     const root = await mkdtemp(join(tmpdir(), 'installed-mode-selection-'));
     const priorHome = process.env.PAPERCUSP_HOME;

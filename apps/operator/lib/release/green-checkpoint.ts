@@ -2222,6 +2222,9 @@ export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
  *  itself + every runCmd-spawned vitest/tsx worker in one shot) — no orphan can
  *  outlive it.
  *
+ *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in packages/operator-core/lib/release/green-checkpoint-schedule.ts — 115m.
+ *  timeout 115m < self-watchdog 180m < stale-reclaim 190m.
+ *
  *  INVARIANT: strictly greater than the parent's full kill window (115m SIGTERM
  *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
  *  this watchdog is a pure backstop, never a competing timeout. Keep it at or

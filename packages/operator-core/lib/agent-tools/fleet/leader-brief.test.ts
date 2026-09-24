@@ -52,6 +52,7 @@ import {
   resolveComposedParkedOn,
   runBoundedLeaderBriefReads,
   runLeaderBriefWithinDeadline,
+  bindLeaderBriefResult,
   runLeaderBriefReads,
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
@@ -70,6 +71,25 @@ import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-
 import type { AgentObligationAgenda } from '../../agent-obligations';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('P-004 identity binding at the existing fleet brief sink', () => {
+  it('uses the one producer result unchanged and records its compiled contribution in existing metadata', async () => {
+    const data = { ok: true, summary: { fleet: 'alpha', members: 2 } };
+    const producer = vi.fn(async () => ({ data }));
+    const metadata = vi.fn();
+    const binder = vi.fn(async () => ({ identityId: 'su.fleet-leader', status: 'bound',
+      specificationRevision: 'a'.repeat(64) })) as never;
+    const produced = await runLeaderBriefWithinDeadline(producer, { data: {
+      ok: false, summary: { fleet: 'alpha', members: 0 },
+    } });
+    const delivered = await bindLeaderBriefResult(produced, { fleet: 'alpha', workspace: 'ws' }, metadata, binder);
+    expect(producer).toHaveBeenCalledTimes(1);
+    expect(delivered).toBe(produced);
+    expect(delivered.data).toBe(data);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith({ identityContribution: expect.objectContaining({ status: 'bound' }) });
+  });
+});
 
 describe('P-026 owner-directive leader projection', () => {
   it('keeps owner directives distinct from member actuation and exposes recoveryRef, never targetRef', () => {

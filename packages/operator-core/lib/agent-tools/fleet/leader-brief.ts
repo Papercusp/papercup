@@ -349,6 +349,46 @@ export async function runLeaderBriefWithinDeadline<T>(
   return result.value;
 }
 
+/** Consume the one canonical producer result at its existing tool sink. The
+ * component pin goes to the invocation ledger's metadata callback; the public
+ * structured brief remains the same object and is never rendered a second time. */
+export async function bindLeaderBriefResult<T extends { data: Record<string, unknown> }>(
+  result: T,
+  scope: { fleet?: string; harness?: string; workspace?: string | null },
+  metadata?: (data: Record<string, unknown>) => void,
+  binder?: typeof import('../../agent-identities/source').bindSelectedIdentitySetting,
+): Promise<T> {
+  try {
+    const bind = binder ?? (await import('../../agent-identities/source')).bindSelectedIdentitySetting;
+    const data = result.data;
+    const error = typeof data.error === 'string' ? data.error : null;
+    const ineligible = Boolean(data.notLeader) || error === 'no_fleet' || error === 'ambiguous_fleet';
+    const omission = data.ok === false || Boolean(data.notLeader)
+      ? ineligible
+        ? { reason: 'ineligible' as const }
+        : { reason: 'unavailable' as const, errorRef: `fleet:leader-brief:${error ?? 'unknown'}` }
+      : undefined;
+    const summary = data.summary && typeof data.summary === 'object' ? data.summary as { fleet?: unknown } : null;
+    const receipt = await bind({
+      identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', sourceTier: 'builtin',
+      ...(omission ? { omission } : { value: data }),
+      scope: { workspace: scope.workspace ?? null, harness: scope.harness ?? null,
+        fleet: typeof summary?.fleet === 'string' ? summary.fleet : scope.fleet ?? null },
+      observedAt: new Date().toISOString(),
+    });
+    metadata?.({ identityContribution: receipt });
+  } catch (error) {
+    // The current public brief remains available even when its provenance
+    // binding fails. Record the failure instead of fabricating a pinned value.
+    metadata?.({ identityContribution: {
+      identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief',
+      status: 'unavailable', errorRef: 'fleet:leader-brief:identity-binding-failed',
+      detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    } });
+  }
+  return result;
+}
+
 type LeaderBriefReadResult<T> = T extends () => Promise<infer R> ? R : never;
 
 /** Run independent leader-brief reads with stable result order and bounded width. */
@@ -3711,7 +3751,7 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    return runLeaderBriefWithinDeadline(
+    const brief = await runLeaderBriefWithinDeadline(
       () =>
         buildLeaderBrief(args, {
           agentIdentity,
@@ -3734,6 +3774,8 @@ export default defineTool({
         },
       },
     );
+    return bindLeaderBriefResult(brief, { fleet: args.fleet, harness: args.harness,
+      workspace: args.workspace ?? actorWorkspace }, ctx.metadata);
   },
 });
 

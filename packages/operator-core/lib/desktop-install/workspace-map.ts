@@ -7,13 +7,15 @@
  * shared tree lives on. Those facts are CONFIG, not prose — they changed on
  * 2026-06-06 (main→staging) and hand-written playbook text drifted. So the
  * playbook carries a `<!-- PAPERCUSP-SU:WORKSPACE-MAP -->` marker and this
- * renderer derives the section from the same env seams `release-config.ts`
- * (apps/operator) and `dev-deploy-state.ts` use — change the config and every
- * freshly-rendered psu prompt follows.
+ * renderer derives release/checkpoint paths and branches from the same config
+ * seams as `release-config.ts` and `dev-deploy-state.ts`; when a serving host
+ * differs from the edit tree, `PAPERCUSP_CANONICAL_TREE` names the tree agents
+ * should use. Every freshly-rendered psu prompt follows those settings.
  *
- * Resolution mirrors `dev-deploy-state.ts` (operator-core must not import the
- * apps/operator release lib): explicit env > git-toplevel fallback > cwd, with
- * sibling-dir defaults for the release/checkpoint roots.
+ * The canonical edit-tree env wins over the serving integration root: on :3170,
+ * `PAPERCUSP_INTEGRATION_ROOT` names the isolated mirror while
+ * `PAPERCUSP_CANONICAL_TREE` names the shared checkout agents edit. Then use the
+ * git-toplevel fallback > cwd, with sibling-dir defaults for release/checkpoint.
  */
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
@@ -37,9 +39,10 @@ export interface WorkspaceMapConfig {
   gitDetected?: boolean;
 }
 
-/** Resolve the release-gate paths/branches exactly like release-config.ts. */
+/** Resolve the canonical edit tree plus the release-gate paths/branches. */
 export function resolveWorkspaceMapConfig(): WorkspaceMapConfig {
-  let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
+  let integrationRoot =
+    process.env.PAPERCUSP_CANONICAL_TREE?.trim() || process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() || '';
   let gitDetected: boolean | undefined;
   if (!integrationRoot) {
     try {

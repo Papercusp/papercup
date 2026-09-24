@@ -1,32 +1,32 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "name": "Fired await delivery recovery mutation probe",
+  "name": "Fired await delivery-intent cutover mutation probe",
   "framework": "shell",
   "command": [
     "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
     "MUTATION_PROBE_WINDOW_MAX_SEC=180",
     "scripts/mutation-probe.sh",
     "--file packages/operator-core/lib/events/await/store.ts",
-    "--mutate 's|export async function reconcileFiredWakeDeliveries.*|export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number> { return 0;|'",
-    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/events/await/store.integration.test.ts -t \"recovers a consumed wake after a producer dies before delivery insertion\" --reporter=dot'",
+    "--mutate 's|AND a.fired_delivery_intent_at IS NOT NULL|AND TRUE|'",
+    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/events/await/store.integration.test.ts -t \"does NOT resurrect a historical fired await without a delivery-intent marker\" --reporter=dot'",
     "--expect caught",
     "--in-tree --sweep-lock-held --fake-destructive"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-24T12:18:32Z",
-  "finishedAt": "2026-09-24T12:19:39Z",
-  "summary": "The focused real-PostgreSQL recovery test passed on the current source. Disabling reconcileFiredWakeDeliveries made its missing-delivery assertion fail, so the probe reported MUTANT CAUGHT. The probe verified byte-for-byte restoration of store.ts.",
+  "startedAt": "2026-09-24T13:07:12Z",
+  "finishedAt": "2026-09-24T13:08:30Z",
+  "summary": "The real-PostgreSQL historical-row guard passed with the explicit delivery-intent marker. Removing its marker predicate made the reconciler resurrect an old row, so the probe reported MUTANT CAUGHT. The source was restored byte for byte.",
   "assertions": [
     {
       "id": "baseline-passed",
       "passed": true,
-      "evidence": "Focused Vitest baseline: 1 passed, 73 skipped, exit 0."
+      "evidence": "Focused Vitest baseline: 1 passed, 76 skipped, exit 0."
     },
     {
-      "id": "recovery-mutant-killed",
+      "id": "historical-row-mutant-killed",
       "passed": true,
-      "evidence": "Replacing reconcileFiredWakeDeliveries with an immediate return 0 caused the real-PG test to fail at store.integration.test.ts:385: expected one recovered delivery, received zero. Guard exit 1."
+      "evidence": "Removing the fired_delivery_intent_at predicate caused the real-PG test to fail at store.integration.test.ts:425: expected only one recent marked delivery, received two including the unmarked historical row. Guard exit 1."
     },
     {
       "id": "source-restored",
