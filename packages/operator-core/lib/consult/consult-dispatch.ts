@@ -652,9 +652,16 @@ async function launchAnsweringSession(
     // it. Recording WHAT this session answers lets the task reaper end it the
     // moment that consult is settled for it (`consult-settled`), keyed on this
     // exact ledger row — never on the owner id, which a conversion shares with
-    // the expert's own, possibly live, session.
+    // the expert's own, possibly live, session. `sourceOwnerId` is the expert this
+    // session answers for — the reaper locates its cascade slot by it, because the
+    // `answeringOwnerId` stamp on the selection is absent on most consults.
     ledgerDetail: {
-      consultAnswer: { conversationId: opts.conversationId, operation, answeringOwnerId },
+      consultAnswer: {
+        conversationId: opts.conversationId,
+        operation,
+        answeringOwnerId,
+        sourceOwnerId: opts.sourceOwnerId,
+      },
     },
     kickoffProof: true,
   });

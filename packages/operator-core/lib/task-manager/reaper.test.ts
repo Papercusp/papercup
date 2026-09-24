@@ -102,17 +102,35 @@ function decide(
 }
 
 /** A consult answering session's ledger row, as consult-dispatch writes it. */
-function consultRow(taskId: string, conversationId: string | null, owner: string, operation = 'fork'): TaskRow {
+function consultRow(
+  taskId: string,
+  conversationId: string | null,
+  owner: string,
+  operation = 'fork',
+  sourceOwnerId?: string,
+): TaskRow {
   return row({
     taskId,
     detail: {
       headless: true,
       label: `consult-${operation} · ${owner.slice(0, 16)}`,
       coordOwnerId: owner,
-      ...(conversationId ? { consultAnswer: { conversationId, operation, answeringOwnerId: owner } } : {}),
+      ...(conversationId
+        ? {
+            consultAnswer: {
+              conversationId,
+              operation,
+              answeringOwnerId: owner,
+              ...(sourceOwnerId ? { sourceOwnerId } : {}),
+            },
+          }
+        : {}),
     },
   });
 }
+
+/** The expert a fork answers for — `selection.selected[].ownerId`. */
+const EXPERT = 'su-eeeeeeee-0000-0000-0000-00000000000e';
 
 function consultState(partial: Partial<ConsultStateRow> & { conversationId: string }): ConsultStateRow {
   return {
@@ -335,11 +353,16 @@ describe('consultSettlement / consultAnswerFacts (pure)', () => {
       conversationId: 'conv-a',
       answeringOwnerId: OWNER,
       operation: 'fork',
+      sourceOwnerId: null,
+    });
+    expect(consultAnswerFacts(consultRow('f1s', 'conv-a', OWNER, 'fork', EXPERT))).toMatchObject({
+      sourceOwnerId: EXPERT,
     });
     expect(consultAnswerFacts(consultRow('f2', null, OWNER, 'convert'))).toEqual({
       conversationId: null,
       answeringOwnerId: OWNER,
       operation: 'convert',
+      sourceOwnerId: null,
     });
     expect(consultAnswerFacts(row({ taskId: 'f3', detail: { label: 'headless-member', coordOwnerId: OWNER } }))).toBeNull();
   });
@@ -348,8 +371,8 @@ describe('consultSettlement / consultAnswerFacts (pure)', () => {
     const consults = [
       consultState({ conversationId: 'conv-x', state: 'expired', closedAt: new Date(NOW - HOUR).toISOString(), selected: [{ answeringOwnerId: OWNER }] }),
     ];
-    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork' }, consults)?.why).toMatch(/conv-x is expired/);
-    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'convert' }, consults)).toBeNull();
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork', sourceOwnerId: null }, consults)?.why).toMatch(/conv-x is expired/);
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'convert', sourceOwnerId: null }, consults)).toBeNull();
   });
 
   it('refuses an ambiguous legacy match and an unknown conversation (null = not this class’s call)', () => {
@@ -357,16 +380,111 @@ describe('consultSettlement / consultAnswerFacts (pure)', () => {
       consultState({ conversationId: 'conv-1', state: 'expired', selected: [{ answeringOwnerId: OWNER }] }),
       consultState({ conversationId: 'conv-2', state: 'expired', selected: [{ answeringOwnerId: OWNER }] }),
     ];
-    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork' }, twice)).toBeNull();
-    expect(consultSettlement({ conversationId: 'conv-missing', answeringOwnerId: OWNER, operation: 'fork' }, twice)).toBeNull();
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork', sourceOwnerId: null }, twice)).toBeNull();
+    expect(consultSettlement({ conversationId: 'conv-missing', answeringOwnerId: OWNER, operation: 'fork', sourceOwnerId: null }, twice)).toBeNull();
   });
 
   it('treats an unstamped terminal state as settled, and tolerates a non-array selection', () => {
     const s = consultSettlement(
-      { conversationId: 'conv-n', answeringOwnerId: OWNER, operation: 'fork' },
+      { conversationId: 'conv-n', answeringOwnerId: OWNER, operation: 'fork', sourceOwnerId: null },
       [consultState({ conversationId: 'conv-n', state: 'no_qualified_responder', selected: { not: 'an array' } })],
     );
     expect(s?.why).toMatch(/no_qualified_responder/);
+  });
+});
+
+describe('consult settlement without the answeringOwnerId stamp (EI-24106882795589775, live 2026-09-24)', () => {
+  // The live shape that made consult-settled dead code: every
+  // selected[].answeringOwnerId null, the fork's answer posted under the EXPERT's
+  // id, the consult left `active`. Before the fix all of these returned null.
+  const FORK = 'su-ffffffff-0000-0000-0000-00000000000f';
+  const OTHER = 'su-99999999-0000-0000-0000-000000000009';
+  const unstamped = [{ ownerId: EXPERT }, { ownerId: OTHER }, { ownerId: 'su-third' }];
+  const facts = (source: string | null) =>
+    ({ conversationId: 'conv-s', answeringOwnerId: FORK, operation: 'fork', sourceOwnerId: source });
+  const answeredAt = new Date(NOW - 10 * 60_000).toISOString();
+
+  it('CAUGHT: locates the slot by the expert id when unstamped, and settles once the cascade moved past it', () => {
+    const s = consultSettlement(facts(EXPERT), [
+      consultState({ conversationId: 'conv-s', cascadeCursor: 2, selected: unstamped }),
+    ]);
+    expect(s?.why).toMatch(/cascade advanced past this responder \(slot 0 → cursor 2\)/);
+  });
+
+  it('CAUGHT: an answer posted under the EXPERT id settles the fork, timed from the answer', () => {
+    const s = consultSettlement(facts(EXPERT), [
+      consultState({
+        conversationId: 'conv-s',
+        state: 'active',
+        cascadeCursor: 0,
+        selected: unstamped,
+        responses: [{ authorId: EXPERT, kind: 'answer', at: answeredAt }],
+      }),
+    ]);
+    expect(s?.why).toMatch(/posted its answer as su-eeeeeeee/);
+    expect(s?.settledAtMs).toBe(Date.parse(answeredAt));
+  });
+
+  it('CAUGHT: a decline under the fork’s own id settles it even with no slot information', () => {
+    const s = consultSettlement(facts(null), [
+      consultState({
+        conversationId: 'conv-s',
+        state: 'active',
+        selected: unstamped,
+        responses: [{ authorId: FORK, kind: 'decline', at: answeredAt }],
+      }),
+    ]);
+    expect(s?.why).toMatch(/posted its decline/);
+  });
+
+  it('CONTROL: a follow-up that re-awaits THIS slot keeps the answered session alive', () => {
+    const s = consultSettlement(facts(EXPERT), [
+      consultState({
+        conversationId: 'conv-s',
+        state: 'awaiting_responder',
+        cascadeCursor: 0,
+        selected: unstamped,
+        responses: [{ authorId: EXPERT, kind: 'answer', at: answeredAt }],
+      }),
+    ]);
+    expect(s).toBeNull();
+  });
+
+  it('CONTROL: awaiting with an unknown slot, another responder’s answer, or no answer yet ⇒ not settled', () => {
+    const awaitingUnknown = consultState({
+      conversationId: 'conv-s',
+      state: 'awaiting_responder',
+      selected: unstamped,
+      responses: [{ authorId: FORK, kind: 'answer', at: answeredAt }],
+    });
+    expect(consultSettlement(facts(null), [awaitingUnknown])).toBeNull();
+    const othersAnswer = consultState({
+      conversationId: 'conv-s',
+      state: 'active',
+      selected: unstamped,
+      responses: [{ authorId: OTHER, kind: 'answer', at: answeredAt }],
+    });
+    expect(consultSettlement(facts(EXPERT), [othersAnswer])).toBeNull();
+    const stillAnswering = consultState({ conversationId: 'conv-s', cascadeCursor: 0, selected: unstamped });
+    expect(consultSettlement(facts(EXPERT), [stillAnswering])).toBeNull();
+  });
+
+  it('end-to-end decision: an answered fork is reaped past the grace and spared inside it', () => {
+    const r = consultRow('s1', 'conv-s', FORK, 'fork', EXPERT);
+    const state = (at: string) => [
+      consultState({
+        conversationId: 'conv-s',
+        state: 'active',
+        selected: unstamped,
+        responses: [{ authorId: EXPERT, kind: 'answer', at }],
+      }),
+    ];
+    const fresh = NOW - 60_000;
+    const past = decide([r], { mtimes: { '/logs/s1.log': fresh }, pids: { s1: 5 }, consults: state(answeredAt) });
+    expect(past.reap.map((x) => [x.taskId, x.kind])).toEqual([['s1', 'consult-settled']]);
+    const inGrace = new Date(NOW - 60_000).toISOString();
+    const early = decide([r], { mtimes: { '/logs/s1.log': fresh }, pids: { s1: 5 }, consults: state(inGrace) });
+    expect(early.reap).toHaveLength(0);
   });
 });
 

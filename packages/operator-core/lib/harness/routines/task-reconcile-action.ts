@@ -468,10 +468,18 @@ async function readConsultStatesForReaper(
         updated_at: Date | null;
         cascade_cursor: number | null;
         selected: unknown;
+        responses: { authorId: string; kind: string; at: string | null }[] | null;
       }[]
     >`
       SELECT cs.workspace_id, cs.conversation_id, cs.state, cs.closed_at, cs.updated_at,
-             cs.cascade_cursor, cs.routing #> '{selection,selected}' AS selected
+             cs.cascade_cursor, cs.routing #> '{selection,selected}' AS selected,
+             (SELECT jsonb_agg(
+                       jsonb_build_object('authorId', pm.author_id, 'kind', pm.kind, 'at', pm.created_at)
+                       ORDER BY pm.created_at, pm.post_id)
+                FROM harness_shared.consult_post_meta pm
+               WHERE pm.workspace_id = cs.workspace_id
+                 AND pm.conversation_id = cs.conversation_id
+                 AND pm.kind IN ('answer', 'decline')) AS responses
         FROM harness_shared.consult_state cs
        WHERE cs.workspace_id = ANY(${workspaceIds}::text[])
          AND (
@@ -499,6 +507,11 @@ async function readConsultStatesForReaper(
       updatedAt: iso(r.updated_at),
       cascadeCursor: r.cascade_cursor,
       selected: r.selected,
+      responses: (r.responses ?? []).flatMap((p) =>
+        typeof p?.authorId === 'string' && p.authorId
+          ? [{ authorId: p.authorId, kind: String(p.kind), at: p.at == null ? null : String(p.at) }]
+          : [],
+      ),
     }));
   } catch (err) {
     console.warn(

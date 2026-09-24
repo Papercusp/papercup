@@ -368,7 +368,11 @@ describe('dispatchConsultResponder — the walk', () => {
       conversationId: OPTS.conversationId,
       operation: 'fork',
       answeringOwnerId: 'su-answer-1',
+      // The expert this fork answers for — the reaper locates the fork's cascade
+      // slot by it, since the answeringOwnerId stamp is usually absent.
+      sourceOwnerId: OPTS.sourceOwnerId,
     });
+    expect(OPTS.sourceOwnerId).toEqual(expect.any(String));
   });
 
   it('a CRITICAL-context source blocks the FORK ranks only — a conversion re-renders into the target budget', async () => {

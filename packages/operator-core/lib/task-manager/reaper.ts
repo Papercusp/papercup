@@ -119,6 +119,14 @@ export interface ConsultAnswerFacts {
   conversationId: string | null;
   answeringOwnerId: string | null;
   operation: string | null;
+  /**
+   * The expert whose knowledge this session answers with — `selection.selected[]
+   * .ownerId` of the slot it was launched for. Unlike the `answeringOwnerId`
+   * stamp (absent on most consults, measured 2026-09-24), the selected entry's
+   * `ownerId` is always written, so this is what locates the session's slot.
+   * Null on rows tagged before it was recorded.
+   */
+  sourceOwnerId: string | null;
 }
 
 // consult-dispatch's label shape (`consult-<operation> · <owner16>`), for rows
@@ -136,11 +144,17 @@ export function consultAnswerFacts(row: Pick<TaskRow, 'detail'>): ConsultAnswerF
       conversationId: str(t.conversationId),
       answeringOwnerId: str(t.answeringOwnerId) ?? rowOwnerId(row),
       operation: str(t.operation),
+      sourceOwnerId: str(t.sourceOwnerId),
     };
   }
   const legacy = LEGACY_CONSULT_LABEL_RE.exec(str(d.label) ?? '');
   if (!legacy) return null;
-  return { conversationId: null, answeringOwnerId: rowOwnerId(row), operation: legacy[1] ?? null };
+  return {
+    conversationId: null,
+    answeringOwnerId: rowOwnerId(row),
+    operation: legacy[1] ?? null,
+    sourceOwnerId: null,
+  };
 }
 
 /** The slice of `harness_shared.consult_state` the settlement rule reads. */
@@ -152,6 +166,18 @@ export interface ConsultStateRow {
   cascadeCursor: number | null;
   /** `routing.selection.selected` — per-cursor responder entries. */
   selected: unknown;
+  /**
+   * The consult's `answer` / `decline` posts (`consult_post_meta`), oldest first.
+   * Missing ⇒ not read; the answered rule is then off for this consult.
+   */
+  responses?: readonly ConsultResponsePost[];
+}
+
+/** One `answer` / `decline` post on a consult thread. */
+export interface ConsultResponsePost {
+  authorId: string;
+  kind: string;
+  at: string | null;
 }
 
 export interface ConsultSettlement {
@@ -173,6 +199,15 @@ function selectedAnsweringOwners(selected: unknown): (string | null)[] {
   if (!Array.isArray(selected)) return [];
   return selected.map((entry) => {
     const v = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).answeringOwnerId : null;
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  });
+}
+
+/** Per-slot expert (`selected[].ownerId`) — always written by the router. */
+function selectedSourceOwners(selected: unknown): (string | null)[] {
+  if (!Array.isArray(selected)) return [];
+  return selected.map((entry) => {
+    const v = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).ownerId : null;
     return typeof v === 'string' && v.length > 0 ? v : null;
   });
 }
@@ -218,17 +253,45 @@ export function consultSettlement(
     };
   }
 
-  // Still open. It is settled for THIS session only if the cascade has moved on
-  // to a different responder — this session answered, declined or expired.
-  if (facts.answeringOwnerId && consult.cascadeCursor != null) {
-    const owners = selectedAnsweringOwners(consult.selected);
-    const idx = owners.indexOf(facts.answeringOwnerId);
-    if (idx >= 0 && idx < consult.cascadeCursor) {
-      return {
-        why: `consult ${consult.conversationId} cascade advanced past this responder (slot ${idx} → cursor ${consult.cascadeCursor})`,
-        settledAtMs: parseMs(consult.updatedAt),
-      };
-    }
+  // Still open. Locate this session's cascade slot: the `answeringOwnerId` stamp
+  // when present, else the slot whose expert (`ownerId`) this session answers for.
+  // The stamp alone was not enough — it is absent on most consults, so a rule keyed
+  // only on it never fired and answered forks idled to the quiet-zombie window.
+  const stamped = facts.answeringOwnerId
+    ? selectedAnsweringOwners(consult.selected).indexOf(facts.answeringOwnerId)
+    : -1;
+  const slot =
+    stamped >= 0
+      ? stamped
+      : facts.sourceOwnerId
+        ? selectedSourceOwners(consult.selected).indexOf(facts.sourceOwnerId)
+        : -1;
+
+  // Settled for THIS session once the cascade has moved on to a different
+  // responder — this session answered, declined or expired.
+  if (slot >= 0 && consult.cascadeCursor != null && slot < consult.cascadeCursor) {
+    return {
+      why: `consult ${consult.conversationId} cascade advanced past this responder (slot ${slot} → cursor ${consult.cascadeCursor})`,
+      settledAtMs: parseMs(consult.updatedAt),
+    };
+  }
+
+  // …or once this session has posted its answer/decline and the consult is not
+  // waiting on this slot again (a requester follow-up re-awaits the same slot, and
+  // that session must stay up to take it). A fork can post under the expert's id,
+  // so both identities count. Unknown slot + awaiting ⇒ not settled.
+  const authors = new Set(
+    [facts.answeringOwnerId, facts.sourceOwnerId].filter((v): v is string => !!v),
+  );
+  let response: ConsultResponsePost | undefined;
+  for (const post of consult.responses ?? []) if (authors.has(post.authorId)) response = post;
+  const awaitingThisSlot =
+    consult.state === 'awaiting_responder' && (slot < 0 || slot === consult.cascadeCursor);
+  if (response && !awaitingThisSlot) {
+    return {
+      why: `consult ${consult.conversationId}: this responder posted its ${response.kind} as ${response.authorId}`,
+      settledAtMs: parseMs(response.at) ?? parseMs(consult.updatedAt),
+    };
   }
   return null;
 }
