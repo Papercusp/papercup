@@ -1856,7 +1856,19 @@ skipped; shared-library typecheck passes. Logs:
 `/tmp/p007-theme-control-tests-20260924.log`,
 `/tmp/p007-theme-final-tests-20260924.log`, and
 `/tmp/p007-markdown-theme-tests-20260924.log`.
-Native impact of this source fix is still pending its private Vite build.
+After the owner lifted the pause, the private source build was verified as
+SPA index `938a51916940a30806f1947fc96b4331bf005496d9d9099df67d77e28b6e8f9a`,
+theme bundle `src-7b77f707.js`, with the same native shell and pinned plan.
+API source had advanced to `0c6826c5e6`, PID2690831. The native run at20:36Z
+completed: content-ready1804ms, queued microtask1814ms, styles1814ms,
+renderer1815ms and preview1977ms. The former roughly600ms theme delay is
+now10ms in this sample. Total **1983ms** still fails1500ms; request-start286ms
+to response1783ms is now the largest measured interval (1497ms). This is
+phase-level source-fix verification, not whole-P007 acceptance or a controlled
+distributional comparison of total latency across API builds.
+Log `/tmp/p007-native-theme-resume-20260924.log`. Its report upload returned
+HTTP408 (`route exceeded 30s`), so there is no accepted publish receipt.
+The local timing remains evidence; persistence requires separate reconciliation.
 
 The staging sync incident is separately fixed under `EI-24170757950252845`:
 launcher stderr no longer contaminates its JSON receipt, and scheduled but
