@@ -208,11 +208,28 @@ describe('selectCloudResourceObligationsToEscalate — in-use suppression', () =
     expect(out).toEqual([]);
   });
 
+  it('suppresses a resource bound to an active customer workspace even before a fresh host-health attestation', () => {
+    const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      activeCustomerWorkspaceHostKeys: new Set([cloudResourceObligationHostKey(row.workspaceId, row.hostId)]),
+    });
+    expect(out).toEqual([]);
+  });
+
   it('does not let a same-named host in another workspace suppress a real leak', () => {
     const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
     const foreign = cloudResourceObligationHostKey('some-other-workspace', row.hostId);
     const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
       freshHealthyActiveHostKeys: new Set([foreign]),
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it('does not let an active customer workspace in another workspace suppress a real leak', () => {
+    const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
+    const foreign = cloudResourceObligationHostKey('some-other-workspace', row.hostId);
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      activeCustomerWorkspaceHostKeys: new Set([foreign]),
     });
     expect(out).toHaveLength(1);
   });
@@ -384,11 +401,14 @@ function makeSweepFakeSql(
   opts: {
     failSourceRead?: boolean;
     failActiveHostRead?: boolean;
+    failCustomerWorkspaceRead?: boolean;
     activeHosts?: Array<{ workspaceId: string; hostId: string }>;
+    activeCustomerWorkspaceHosts?: Array<{ workspaceId: string; hostId: string }>;
   } = {},
 ) {
   const markCalls: Array<{ id: number; workItemId: string }> = [];
   const activeHostProbeCalls: Array<{ text: string; values: unknown[] }> = [];
+  const customerWorkspaceProbeCalls: Array<{ text: string; values: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
@@ -407,6 +427,13 @@ function makeSweepFakeSql(
         (opts.activeHosts ?? []).map((host) => ({ workspace_id: host.workspaceId, host_id: host.hostId })),
       );
     }
+    if (text.includes('FROM harness_shared.customer_workspaces')) {
+      customerWorkspaceProbeCalls.push({ text, values });
+      if (opts.failCustomerWorkspaceRead) return Promise.reject(new Error('customer_workspaces probe exploded'));
+      return Promise.resolve(
+        (opts.activeCustomerWorkspaceHosts ?? []).map((host) => ({ workspace_id: host.workspaceId, host_id: host.hostId })),
+      );
+    }
     if (text.includes('SET last_escalated_at')) {
       // Template layout: UPDATE ... SET last_escalated_at = now(), escalation_work_item_id =
       // ${workItemId} ... WHERE id = ${id} — id is the LAST interpolated value.
@@ -415,7 +442,7 @@ function makeSweepFakeSql(
     }
     throw new Error(`unexpected query in sweep fake sql: ${text}`);
   }) as unknown as postgres.Sql;
-  return { sql, markCalls, activeHostProbeCalls };
+  return { sql, markCalls, activeHostProbeCalls, customerWorkspaceProbeCalls };
 }
 
 describe('runCloudResourceObligationSweepOnce', () => {
@@ -474,6 +501,61 @@ describe('runCloudResourceObligationSweepOnce', () => {
     expect(activeHostProbeCalls[0]!.values).toContain(
       new Date(evaluatedAtMs - CLOUD_RESOURCE_ACTIVE_HOST_HEALTH_FRESHNESS_MS).toISOString(),
     );
+  });
+
+  it('suppresses escalation for a host still bound to an active customer workspace', async () => {
+    const row = makeRow({ sourceWorkItemId: '', createdAtMs: 0 });
+    const { sql, markCalls, customerWorkspaceProbeCalls } = makeSweepFakeSql([row], [], {
+      activeCustomerWorkspaceHosts: [{ workspaceId: row.workspaceId, hostId: row.hostId }],
+    });
+    const capture: CloudResourceObligationCaptureDep = async () => {
+      throw new Error('capture must not run for an active customer workspace host');
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
+    expect(markCalls).toEqual([]);
+    expect(customerWorkspaceProbeCalls).toHaveLength(1);
+    expect(customerWorkspaceProbeCalls[0]!.text).toContain('harness_shared.customer_workspaces');
+    expect(customerWorkspaceProbeCalls[0]!.text).toMatch(/state\s*=\s*'active'/);
+    expect(customerWorkspaceProbeCalls[0]!.values).toEqual(expect.arrayContaining([[row.workspaceId], [row.hostId]]));
+  });
+
+  it('does not accept a same-named customer host returned for a different workspace', async () => {
+    const row = makeRow({ workspaceId: 'workspace-a', hostId: 'host-shared-name', sourceWorkItemId: '', createdAtMs: 0 });
+    const { sql, markCalls } = makeSweepFakeSql([row], [], {
+      activeCustomerWorkspaceHosts: [{ workspaceId: 'workspace-b', hostId: row.hostId }],
+    });
+    const capture: CloudResourceObligationCaptureDep = async () => ({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-foreign-customer-workspace' },
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result.escalated).toBe(1);
+    expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-foreign-customer-workspace' }]);
+  });
+
+  it('fails toward escalation when the active customer-workspace probe cannot be established', async () => {
+    const row = makeRow({ sourceWorkItemId: '', createdAtMs: 0 });
+    const { sql, markCalls } = makeSweepFakeSql([row], [], { failCustomerWorkspaceRead: true });
+    const capture: CloudResourceObligationCaptureDep = async () => ({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-probe-failed' },
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result).toEqual({
+      candidates: 1,
+      escalated: 1,
+      errors: [{ id: 0, error: 'active customer-workspace binding read failed: customer_workspaces probe exploded' }],
+    });
+    expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-probe-failed' }]);
   });
 
   it('does not suppress a no-source obligation with a same-named host from another workspace', async () => {

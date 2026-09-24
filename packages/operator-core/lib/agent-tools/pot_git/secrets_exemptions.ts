@@ -21,13 +21,13 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Owner: the RUNTIME (no-restart) escape hatch for the pot-git secrets scanner (WI-5591) — clears a false positive that would otherwise permanently freeze git egress for the hive. Covers BOTH the own-head publish guard and the GitHub-bridge EGRESS guard (WI-5738). Actions: list {} | add {path, reason} — exempt from the scan starting the NEXT git-sync tick | remove {path} — re-arm.",
+    "Owner: the no-restart escape hatch for the pot-git secrets scanner (own-head publish + GitHub egress guards) — clears a false positive that would otherwise freeze git egress for the hive. Actions: list {} | add {path, reason, pot?} — exempt from the next git-sync tick; on the pot-owner Swarm also signs it into the pot policy so every member honours it | remove {path} — re-arm + unsign | share {pot?, path?} — sign existing local rows into the pot policy.",
   capability: 'audit:write',
   guidance: {
     when:
       "own_head_publish.refused === 'secrets' (harness_shared.routines.metadata->'own_head_publish'->>'refused') AND you have ADJUDICATED the flagged finding as a false positive (a detector fixture, a documented example credential, a placeholder — never a REAL live secret) — {action:'add', path, reason}.",
     notWhen:
-      "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident. Never hand-edit secrets-guard.ts's FIXTURE_FILES for one path — that needs a restart; this table does not.",
+      "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident.",
     chaining:
       "{action:'list'} (don't duplicate a row) → ADJUDICATE: `npx tsx scripts/adjudicate-publish-refusal.mts --commit <own_head_publish.blockedAtCommit> --exemptions` replays the guard and prints every finding it saw, so 'false positive' is MEASURED, not assumed — exit 2 means the scanner is UNUSABLE, never read that as clean → {action:'add', path, reason} → the next git-sync tick (or dev:restart) retries the publish.",
     seeAlso: ['pot_git:integration_requests (a different G-10-adjacent queue — below-tier member heads, not secrets)'],
@@ -36,7 +36,11 @@ export default defineTool({
   agentRoles: ['operator'],
   args: z
     .object({
-      action: z.enum(['list', 'add', 'remove']),
+      action: z.enum(['list', 'add', 'remove', 'share']),
+      pot: z
+        .string()
+        .optional()
+        .describe("Pot home slug whose owner-signed policy should carry the waiver. Omit when this Swarm owns exactly one pot; required when it owns several."),
       workspaceId: z
         .string()
         .optional()
@@ -62,6 +66,10 @@ export default defineTool({
       listSecretsGuardPathExemptions,
       addSecretsGuardPathExemption,
       removeSecretsGuardPathExemption,
+      listOwnedPotHomes,
+      localRowsAsWaiverEntries,
+      shareSecretsGuardPathExemptions,
+      unshareSecretsGuardPathExemptions,
     } = await import('../../sync/pot-git/secrets-guard-exemptions');
     // SELF-CONFINEMENT (WI-6641). `crossWorkspace: true` above exists ONLY so an
     // UNSCOPED psu gets the getOrgPg admin handle (this table is not RLS-scoped) —
@@ -85,16 +93,56 @@ export default defineTool({
     }
     const ws = scopedWs ?? args.workspaceId ?? activeWorkspaceId();
     const createdBy = ctx?.principal?.slug ?? ctx?.principal?.workspaceId ?? 'agent';
+    // WI-10002785: which pot's signed policy should carry a waiver. An explicit `pot` wins;
+    // otherwise the ONE pot this Swarm owns. Zero owned (a member) or several (ambiguous)
+    // leaves the waiver local and SAYS so — never a guessed pot.
+    const resolvePot = async (): Promise<{ pot: string } | { replicated: false; reason: string; ownedPots?: string[] }> => {
+      if (args.pot) return { pot: args.pot };
+      const owned = await listOwnedPotHomes(ws);
+      if (owned.length === 1) return { pot: owned[0]! };
+      return owned.length === 0
+        ? { replicated: false, reason: 'no_owned_pot: this Swarm holds no pot key, so the waiver stays local to this host' }
+        : { replicated: false, reason: 'ambiguous_pot: pass `pot`', ownedPots: owned };
+    };
     let payload: Record<string, unknown>;
     if (args.action === 'list') {
       const exemptions = await listSecretsGuardPathExemptions(ws);
       payload = { ok: true, workspaceId: ws, count: exemptions.length, exemptions };
     } else if (args.action === 'add') {
       await addSecretsGuardPathExemption({ workspaceId: ws, path: args.path!, reason: args.reason!, createdBy: String(createdBy) });
-      payload = { ok: true, workspaceId: ws, added: args.path };
+      const target = await resolvePot();
+      const replication = 'pot' in target
+        ? await shareSecretsGuardPathExemptions({
+            workspaceId: ws,
+            potHomeSlug: target.pot,
+            entries: [{ path: args.path!, reason: args.reason!, createdBy: String(createdBy), createdAt: new Date().toISOString() }],
+          })
+        : target;
+      payload = { ok: true, workspaceId: ws, added: args.path, replication };
+    } else if (args.action === 'share') {
+      const target = await resolvePot();
+      if (!('pot' in target)) {
+        payload = { ok: false, workspaceId: ws, replication: target };
+      } else {
+        const entries = (await localRowsAsWaiverEntries(ws)).filter((e) => !args.path || e.path === args.path);
+        const replication = await shareSecretsGuardPathExemptions({ workspaceId: ws, potHomeSlug: target.pot, entries });
+        payload = { ok: replication.outcome === 'signed' || replication.outcome === 'unchanged', workspaceId: ws, shared: entries.length, replication };
+      }
     } else {
       await removeSecretsGuardPathExemption(ws, args.path!);
-      payload = { ok: true, workspaceId: ws, removed: args.path };
+      // Unsign from every pot whose signed policy still carries this path — otherwise the
+      // "re-armed" path stays waived via the union. A pot this Swarm cannot sign for is
+      // reported (not_owner_swarm): the path stays waived until that pot's owner removes it.
+      const carriers = [...new Set(
+        (await listSecretsGuardPathExemptions(ws))
+          .filter((e) => e.source === 'pot-policy' && e.path === args.path)
+          .map((e) => e.potHomeSlug!),
+      )];
+      const unsigned = [];
+      for (const pot of carriers) {
+        unsigned.push(await unshareSecretsGuardPathExemptions({ workspaceId: ws, potHomeSlug: pot, paths: [args.path!] }));
+      }
+      payload = { ok: true, workspaceId: ws, removed: args.path, unsigned };
     }
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },

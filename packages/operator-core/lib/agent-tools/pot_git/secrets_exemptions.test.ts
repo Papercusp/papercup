@@ -27,6 +27,10 @@ let activeWorkspaceId: ReturnType<typeof vi.fn>;
 let listSecretsGuardPathExemptions: ReturnType<typeof vi.fn>;
 let addSecretsGuardPathExemption: ReturnType<typeof vi.fn>;
 let removeSecretsGuardPathExemption: ReturnType<typeof vi.fn>;
+let listOwnedPotHomes: ReturnType<typeof vi.fn>;
+let localRowsAsWaiverEntries: ReturnType<typeof vi.fn>;
+let shareSecretsGuardPathExemptions: ReturnType<typeof vi.fn>;
+let unshareSecretsGuardPathExemptions: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -34,11 +38,28 @@ beforeEach(() => {
   listSecretsGuardPathExemptions = vi.fn(async () => []);
   addSecretsGuardPathExemption = vi.fn(async () => {});
   removeSecretsGuardPathExemption = vi.fn(async () => {});
+  // Default: a MEMBER Swarm (owns no pot) — waivers stay local.
+  listOwnedPotHomes = vi.fn(async () => []);
+  localRowsAsWaiverEntries = vi.fn(async () => []);
+  shareSecretsGuardPathExemptions = vi.fn(async (i: { potHomeSlug: string }) => ({
+    potHomeSlug: i.potHomeSlug,
+    outcome: 'signed',
+    policyVersion: 2,
+  }));
+  unshareSecretsGuardPathExemptions = vi.fn(async (i: { potHomeSlug: string }) => ({
+    potHomeSlug: i.potHomeSlug,
+    outcome: 'signed',
+    policyVersion: 3,
+  }));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId }));
   vi.doMock('../../sync/pot-git/secrets-guard-exemptions', () => ({
     listSecretsGuardPathExemptions,
     addSecretsGuardPathExemption,
     removeSecretsGuardPathExemption,
+    listOwnedPotHomes,
+    localRowsAsWaiverEntries,
+    shareSecretsGuardPathExemptions,
+    unshareSecretsGuardPathExemptions,
   }));
 });
 
@@ -143,6 +164,77 @@ describe('pot_git:secrets_exemptions — self-confinement (the price of the scop
       createdBy: 'su-abc',
     });
     expect(b).toMatchObject({ ok: true, workspaceId: 'ws-mine', added: 'pkg/lib/redactor.test.ts' });
+  });
+});
+
+/**
+ * WI-10002785. A local row reaches only this host, so the owner's adjudication used to
+ * re-refuse on every joined peer. `add` on the pot-owner Swarm now also signs the waiver
+ * into the pot policy; a member (no pot key) or an ambiguous owner keeps it LOCAL and
+ * says so — never a guessed pot.
+ */
+describe('pot_git:secrets_exemptions — replication through the signed pot policy (WI-10002785)', () => {
+  const add = { action: 'add', path: 'libs/x/pem.test.ts', reason: 'PEM fixture' };
+
+  it('owner of exactly one pot: add signs the waiver into that pot', async () => {
+    listOwnedPotHomes.mockResolvedValueOnce(['papercusp']);
+    const t = await tool();
+    const b = body(await t.handler(add, ctxWith({ workspaceId: 'ws-mine', slug: 'su-abc' })));
+    expect(addSecretsGuardPathExemption).toHaveBeenCalledTimes(1);
+    expect(shareSecretsGuardPathExemptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-mine',
+        potHomeSlug: 'papercusp',
+        entries: [expect.objectContaining({ path: add.path, reason: add.reason, createdBy: 'su-abc' })],
+      }),
+    );
+    expect(b).toMatchObject({ ok: true, replication: { potHomeSlug: 'papercusp', outcome: 'signed' } });
+  });
+
+  it('a member (owns no pot) keeps the waiver local and reports it', async () => {
+    const t = await tool();
+    const b = body(await t.handler(add, ctxWith({ workspaceId: 'ws-mine' })));
+    expect(addSecretsGuardPathExemption).toHaveBeenCalledTimes(1);
+    expect(shareSecretsGuardPathExemptions).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, replication: { replicated: false } });
+    expect(String((b.replication as { reason: string }).reason)).toContain('no_owned_pot');
+  });
+
+  it('owner of several pots and no `pot` arg: does NOT guess — local only, lists the candidates', async () => {
+    listOwnedPotHomes.mockResolvedValueOnce(['papercusp', 'other-pot']);
+    const t = await tool();
+    const b = body(await t.handler(add, ctxWith({ workspaceId: 'ws-mine' })));
+    expect(shareSecretsGuardPathExemptions).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ replication: { replicated: false, ownedPots: ['papercusp', 'other-pot'] } });
+  });
+
+  it('share signs the existing LOCAL rows (optionally one path) into the named pot', async () => {
+    localRowsAsWaiverEntries.mockResolvedValueOnce([
+      { path: 'a.ts', reason: 'r1' },
+      { path: 'b.ts', reason: 'r2' },
+    ]);
+    const t = await tool();
+    const b = body(await t.handler({ action: 'share', pot: 'papercusp', path: 'b.ts' }, ctxWith({ workspaceId: 'ws-mine' })));
+    expect(listOwnedPotHomes).not.toHaveBeenCalled(); // an explicit pot wins
+    expect(shareSecretsGuardPathExemptions).toHaveBeenCalledWith({
+      workspaceId: 'ws-mine',
+      potHomeSlug: 'papercusp',
+      entries: [{ path: 'b.ts', reason: 'r2' }],
+    });
+    expect(b).toMatchObject({ ok: true, shared: 1 });
+  });
+
+  it('remove re-arms locally AND unsigns from every pot policy still carrying the path', async () => {
+    listSecretsGuardPathExemptions.mockResolvedValueOnce([
+      { path: 'a.ts', source: 'pot-policy', potHomeSlug: 'papercusp' },
+      { path: 'other.ts', source: 'pot-policy', potHomeSlug: 'papercusp' },
+    ]);
+    const t = await tool();
+    const b = body(await t.handler({ action: 'remove', path: 'a.ts' }, ctxWith({ workspaceId: 'ws-mine' })));
+    expect(removeSecretsGuardPathExemption).toHaveBeenCalledWith('ws-mine', 'a.ts');
+    expect(unshareSecretsGuardPathExemptions).toHaveBeenCalledTimes(1);
+    expect(unshareSecretsGuardPathExemptions).toHaveBeenCalledWith({ workspaceId: 'ws-mine', potHomeSlug: 'papercusp', paths: ['a.ts'] });
+    expect(b).toMatchObject({ ok: true, removed: 'a.ts', unsigned: [{ outcome: 'signed' }] });
   });
 });
 

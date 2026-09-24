@@ -476,6 +476,8 @@ export interface CloudResourceObligationEscalationOptions {
    * attestation is fresh. Omitted means the probe was not established, so suppress nothing.
    */
   freshHealthyActiveHostKeys?: ReadonlySet<string>;
+  /** Composite keys for hosts bound to an active customer workspace. */
+  activeCustomerWorkspaceHostKeys?: ReadonlySet<string>;
   /** Override the in-use suppression ceiling (measured from obligation creation). */
   inUseSuppressionCeilingMs?: number;
 }
@@ -487,8 +489,9 @@ export interface CloudResourceObligationEscalationOptions {
  *   - never escalated before, OR the last escalation is older than escalateCooldownMs
  *     (so a live escalation work-item is re-nudged rather than silently going stale,
  *     but not re-filed every single tick), AND
-   *   - NOT still in use — no fresh healthy active-host attestation, and its originating
-   *     work-item is terminal, unknown, or the in-use suppression ceiling has elapsed.
+ *   - NOT still in use — no fresh healthy active-host attestation or active customer
+ *     workspace binding, and its originating work-item is terminal, unknown, or the
+ *     in-use suppression ceiling has elapsed.
  *
  * The in-use gate exists because "teardown owed 23.1h" carries NO information about
  * whether the originating work finished: this sweep is owner-independent by design, so
@@ -531,10 +534,14 @@ export function selectCloudResourceObligationsToEscalate(
       options.freshHealthyActiveHostKeys !== undefined &&
       row.hostId !== '' &&
       options.freshHealthyActiveHostKeys.has(cloudResourceObligationHostKey(row.workspaceId, row.hostId));
+    const activeCustomerWorkspaceIsInUse =
+      options.activeCustomerWorkspaceHostKeys !== undefined &&
+      row.hostId !== '' &&
+      options.activeCustomerWorkspaceHostKeys.has(cloudResourceObligationHostKey(row.workspaceId, row.hostId));
     // Open source work is suppressed only within its age ceiling; active-host proof has its own freshness bound.
     if (sourceStillOpen && ageMs < ceilingMs) continue;
-    // A currently healthy host owns its resources even when no source work-item was attached.
-    if (freshHealthyHostIsActive) continue;
+    // A healthy host or active customer binding owns its resources without source work.
+    if (freshHealthyHostIsActive || activeCustomerWorkspaceIsInUse) continue;
     out.push({
       id: row.id,
       workspaceId: row.workspaceId,
@@ -623,6 +630,43 @@ export async function readFreshHealthyActiveHostKeys(
        AND health_status = 'healthy'
        AND health_attested_at >= ${freshAfter}::timestamptz
        AND health_attested_at <= ${evaluatedAt}::timestamptz
+  `) as unknown as Array<Record<string, unknown>>;
+  const out = new Set<string>();
+  for (const raw of found) {
+    const key = cloudResourceObligationHostKey(String(raw.workspace_id ?? ''), String(raw.host_id ?? ''));
+    if (requestedKeys.has(key)) out.add(key);
+  }
+  return out;
+}
+
+/**
+ * Which obligations belong to hosts still bound to an active customer workspace.
+ * Health may be unknown during an upgrade, but an active customer binding means the
+ * resources are still in use. Leave ledger rows open for the provider-destroy observer
+ * to close when teardown actually occurs.
+ */
+export async function readActiveCustomerWorkspaceHostKeys(
+  sql: postgres.Sql,
+  rows: readonly CloudResourceObligationRow[],
+): Promise<Set<string>> {
+  const hostPairs = [
+    ...new Map(
+      rows
+        .filter((row) => row.workspaceId !== '' && row.hostId !== '')
+        .map((row) => [cloudResourceObligationHostKey(row.workspaceId, row.hostId), row] as const),
+    ).values(),
+  ];
+  if (hostPairs.length === 0) return new Set();
+  const workspaceIds = hostPairs.map((row) => row.workspaceId);
+  const hostIds = hostPairs.map((row) => row.hostId);
+  const requestedKeys = new Set(hostPairs.map((row) => cloudResourceObligationHostKey(row.workspaceId, row.hostId)));
+  const found = (await sql<Array<Record<string, unknown>>>`
+    SELECT workspace_id, workspace_host_id AS host_id
+      FROM harness_shared.customer_workspaces
+     WHERE (workspace_id, workspace_host_id) IN (
+       SELECT * FROM unnest(${workspaceIds as string[]}::text[], ${hostIds as string[]}::text[])
+     )
+       AND state = 'active'
   `) as unknown as Array<Record<string, unknown>>;
   const out = new Set<string>();
   for (const raw of found) {
@@ -935,9 +979,9 @@ export async function runCloudResourceObligationSweepOnce(
   const evaluatedAtMs = opts.evaluatedAtMs ?? Date.now();
   const open = await listOpenCloudResourceObligations(sql);
   const errors: Array<{ id: number; error: string }> = [];
-  // Which of these are still in ACTIVE USE? An open source work-item or a fresh healthy
-  // workspace-host attestation can establish use. A failed probe falls back to escalation,
-  // never to suppression.
+  // Which of these are still in ACTIVE USE? An open source work-item, a fresh healthy
+  // host attestation, or an active customer-workspace binding can establish use. A failed
+  // probe falls back to escalation, never to suppression.
   let openSourceWorkItemKeys: ReadonlySet<string> | undefined;
   try {
     openSourceWorkItemKeys = await readOpenSourceWorkItemKeys(sql, open);
@@ -952,9 +996,17 @@ export async function runCloudResourceObligationSweepOnce(
     errors.push({ id: 0, error: 'active workspace-host state read failed: ' + (err as Error).message });
     freshHealthyActiveHostKeys = undefined;
   }
+  let activeCustomerWorkspaceHostKeys: ReadonlySet<string> | undefined;
+  try {
+    activeCustomerWorkspaceHostKeys = await readActiveCustomerWorkspaceHostKeys(sql, open);
+  } catch (err) {
+    errors.push({ id: 0, error: 'active customer-workspace binding read failed: ' + (err as Error).message });
+    activeCustomerWorkspaceHostKeys = undefined;
+  }
   const candidates = selectCloudResourceObligationsToEscalate(open, evaluatedAtMs, opts.escalateCooldownMs, {
     openSourceWorkItemKeys,
     freshHealthyActiveHostKeys,
+    activeCustomerWorkspaceHostKeys,
     inUseSuppressionCeilingMs: opts.inUseSuppressionCeilingMs,
   });
   let escalated = 0;
