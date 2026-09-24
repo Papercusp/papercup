@@ -459,24 +459,31 @@ describe('resolveDeployedSqlDir', () => {
 
 /**
  * EI-18757486483124756: `resolveCanonicalStagingSqlDir` resolves the CANONICAL
- * tree agents author migrations in (`PAPERCUSP_INTEGRATION_ROOT`) directly —
- * unlike `resolveDeployedSqlDir`, it does NOT derive from whatever tree is
- * currently running, so it still finds the canonical tree even when the
- * current process IS the release checkout (db:next-migration already solved
- * this identical problem, EI-353, the same way).
+ * edit tree from `PAPERCUSP_CANONICAL_TREE`, with
+ * `PAPERCUSP_INTEGRATION_ROOT` as a legacy fallback — unlike
+ * `resolveDeployedSqlDir`, it does NOT derive from whichever tree is serving.
  */
 describe('resolveCanonicalStagingSqlDir', () => {
   const tmpRoots: string[] = [];
   const savedEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  const savedCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+
+  beforeEach(() => {
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
+  });
 
   afterEach(() => {
     for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
     if (savedEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     else process.env.PAPERCUSP_INTEGRATION_ROOT = savedEnv;
+    if (savedCanonicalTree === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = savedCanonicalTree;
   });
 
-  it('returns null when PAPERCUSP_INTEGRATION_ROOT is unset', () => {
+  it('returns null when neither canonical-root environment variable is set', () => {
     delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
     expect(resolveCanonicalStagingSqlDir()).toBeNull();
   });
 
@@ -487,6 +494,31 @@ describe('resolveCanonicalStagingSqlDir', () => {
     fs.mkdirSync(sqlDir, { recursive: true });
     process.env.PAPERCUSP_INTEGRATION_ROOT = root;
     expect(resolveCanonicalStagingSqlDir()).toBe(sqlDir);
+  });
+
+  it('prefers PAPERCUSP_CANONICAL_TREE over a serving mirror in PAPERCUSP_INTEGRATION_ROOT', () => {
+    const canonicalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-edit-tree-'));
+    const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-serving-mirror-'));
+    tmpRoots.push(canonicalRoot, mirrorRoot);
+    const canonicalSqlDir = path.join(canonicalRoot, 'libs/papercusp/libs/db/sql');
+    const mirrorSqlDir = path.join(mirrorRoot, 'libs/papercusp/libs/db/sql');
+    fs.mkdirSync(canonicalSqlDir, { recursive: true });
+    fs.mkdirSync(mirrorSqlDir, { recursive: true });
+    process.env.PAPERCUSP_CANONICAL_TREE = canonicalRoot;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = mirrorRoot;
+
+    expect(resolveCanonicalStagingSqlDir()).toBe(canonicalSqlDir);
+  });
+
+  it('does not fall back to a serving mirror when the canonical edit tree has no sql dir', () => {
+    const canonicalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-canonical-empty-'));
+    const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-serving-mirror-'));
+    tmpRoots.push(canonicalRoot, mirrorRoot);
+    fs.mkdirSync(path.join(mirrorRoot, 'libs/papercusp/libs/db/sql'), { recursive: true });
+    process.env.PAPERCUSP_CANONICAL_TREE = canonicalRoot;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = mirrorRoot;
+
+    expect(resolveCanonicalStagingSqlDir()).toBeNull();
   });
 
   it('returns null when PAPERCUSP_INTEGRATION_ROOT is set but has no sql dir', () => {

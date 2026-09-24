@@ -54,8 +54,9 @@ const DEFAULT_DRAIN_SEC = 60;
  * worker ran from — `:3070` is a reuseport cluster, so a dry-run could resolve
  * (ok:true) and the immediately-following confirm ENOENT on the SAME canonical
  * relative path. Relative paths now resolve against the CANONICAL staging tree
- * (`PAPERCUSP_INTEGRATION_ROOT` — the same source db:migrations/db:check_drift
- * scan): first as repo-root-relative, then (bare filenames only) under the
+ * (`PAPERCUSP_CANONICAL_TREE`, falling back to `PAPERCUSP_INTEGRATION_ROOT` —
+ * the same source db:migrations/db:check_drift scan): first as repo-root-relative,
+ * then (bare filenames only) under the
  * canonical sql dir. Absolute paths pass through untouched, and when the
  * canonical root cannot be resolved the raw path is kept (legacy behavior).
  * `attempted` lists every location tried, for the unreadable-file report.
@@ -514,7 +515,8 @@ export default defineTool({
       .min(1)
       .describe(
         'Path to the .sql migration file to apply. Absolute paths are used as-is; a relative path (or bare ' +
-          'filename) resolves against the CANONICAL staging tree (PAPERCUSP_INTEGRATION_ROOT — the same tree ' +
+          'filename) resolves against the CANONICAL staging tree (PAPERCUSP_CANONICAL_TREE, falling back to ' +
+          'PAPERCUSP_INTEGRATION_ROOT — the same tree ' +
           'db:migrations/db:check_drift scan), never against the serving process cwd, so dry run and confirmed ' +
           'apply provably resolve the same file (EI-21413636618986324).',
       ),

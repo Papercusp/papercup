@@ -26,7 +26,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { resolveSqlDir } from '../../migration-drift';
+import { resolveSqlDir, resolveCanonicalStagingSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
   ALLOC_ADVISORY_KEY,
@@ -53,12 +53,13 @@ const json = (payload: unknown) => ({
 /**
  * Sql dirs to scan for the filesystem max. The serving checkout's dir alone is
  * not enough (EI-353): on the deployed :3070 host the serving tree is the
- * release checkout, which lags the canonical staging tree, so a migration just
- * written there is invisible to a cwd-relative scan. PAPERCUSP_INTEGRATION_ROOT
- * (exported into the operator's unit env — see release-config.ts) names the
- * canonical tree; fold its sql dir in when present.
+ * release checkout, which lags staging, so a migration just written there is
+ * invisible to a cwd-relative scan. Include the configured integration tree
+ * and the canonical edit tree; `PAPERCUSP_CANONICAL_TREE` takes precedence
+ * over `PAPERCUSP_INTEGRATION_ROOT` for that canonical path.
  */
-function candidateSqlDirs(): string[] {
+/** Internal test seam for the three migration trees the allocator scans. */
+export function candidateSqlDirs(): string[] {
   const dirs = new Set<string>();
   const serving = resolveSqlDir();
   if (serving) dirs.add(serving);
@@ -67,6 +68,8 @@ function candidateSqlDirs(): string[] {
     const canonical = path.resolve(integrationRoot, 'libs/papercusp/libs/db/sql');
     if (fs.existsSync(canonical)) dirs.add(canonical);
   }
+  const canonicalSqlDir = resolveCanonicalStagingSqlDir();
+  if (canonicalSqlDir) dirs.add(canonicalSqlDir);
   return [...dirs];
 }
 

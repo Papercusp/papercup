@@ -107,13 +107,11 @@ export function resolveDeployedSqlDir(currentSqlDir: string | null): string | nu
 
 /**
  * EI-18757486483124756: the CANONICAL tree agents actually author migrations
- * in (per CLAUDE.md — "the canonical staging tree… the tree every agent
- * edits") independent of whichever tree THIS process happens to be serving
- * from. `db:next-migration` already solved the identical problem (EI-353) by
- * folding `PAPERCUSP_INTEGRATION_ROOT` (exported into the operator's unit env
- * — see release-config.ts) into its filesystem scan; this mirrors that same
- * env var so `db:check_drift` can no longer read `in_sync: true` while a
- * just-authored migration sits unapplied in the tree every agent edits.
+ * in, independent of whichever tree THIS process happens to be serving from.
+ * `PAPERCUSP_CANONICAL_TREE` is the explicit edit-tree path and takes
+ * precedence; `PAPERCUSP_INTEGRATION_ROOT` remains the legacy fallback. A
+ * staging serving mirror can therefore no longer hide a migration in the
+ * canonical checkout from `db:migrations`, `db:check_drift`, or `db:migrate`.
  *
  * Distinct from `resolveDeployedSqlDir`: that one recovers a SIBLING
  * (`papercup-release`) of whatever tree is current, so when the CURRENT
@@ -137,13 +135,16 @@ export function resolveCanonicalStagingSqlDir(): string | null {
  * checkout that worker happens to run from (`:3070` release vs `:3170` staging,
  * and a reuseport cluster can even answer two consecutive calls from workers
  * with different cwds — measured as dry-run ok then confirm ENOENT for the
- * SAME relative path). Null when `PAPERCUSP_INTEGRATION_ROOT` is unset or does
- * not exist — callers must fall back to their legacy behavior, not throw.
+ * SAME relative path). Null when neither `PAPERCUSP_CANONICAL_TREE` nor
+ * `PAPERCUSP_INTEGRATION_ROOT` resolves to an existing directory — callers
+ * must fall back to their legacy behavior, not throw.
  */
 export function resolveCanonicalStagingRoot(): string | null {
-  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
-  if (!integrationRoot) return null;
-  const root = path.resolve(integrationRoot);
+  const configuredRoot =
+    process.env.PAPERCUSP_CANONICAL_TREE?.trim() ||
+    process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  if (!configuredRoot) return null;
+  const root = path.resolve(configuredRoot);
   return fs.existsSync(root) ? root : null;
 }
 
@@ -211,10 +212,9 @@ export interface MigrationDrift {
    *  self-healing on the next deploy; never a runtime hazard on its own. */
   missingPendingDeploy: string[];
   /** EI-18757486483124756: the CANONICAL tree every agent authors migrations
-   *  in (`PAPERCUSP_INTEGRATION_ROOT`), resolved independent of whichever tree
-   *  THIS process happens to be serving from. Null when unresolvable (env
-   *  unset, or unset AND process.cwd() genuinely doesn't have it — e.g. a
-   *  packaged/headless install with no canonical tree on this host at all). */
+   *  in (`PAPERCUSP_CANONICAL_TREE`, with legacy
+   *  `PAPERCUSP_INTEGRATION_ROOT` fallback), resolved independently of the
+   *  serving tree. Null when neither configured root resolves on this host. */
   canonicalStagingSqlDir: string | null;
   /** Runner-eligible files on disk in the canonical tree but NOT YET applied
    *  to the live DB — THE field a "did my just-written migration land"

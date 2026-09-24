@@ -30,7 +30,12 @@ vi.mock('node:fs', async (importOriginal) => {
 const fs = await import('node:fs');
 const { checkMigrationDrift } = await import('./migration-drift');
 
-const ENV_KEYS = ['PAPERCUSP_PG_SQL_DIR', 'PAPERCUSP_INTEGRATION_ROOT', 'PAPERCUSP_RELEASE_ROOT'] as const;
+const ENV_KEYS = [
+  'PAPERCUSP_PG_SQL_DIR',
+  'PAPERCUSP_CANONICAL_TREE',
+  'PAPERCUSP_INTEGRATION_ROOT',
+  'PAPERCUSP_RELEASE_ROOT',
+] as const;
 const savedEnv = new Map<string, string | undefined>();
 let root = '';
 let sqlDir = '';
@@ -58,6 +63,7 @@ beforeEach(() => {
     { filename: '003-c.sql', sha256: createHash('sha256').update(files['003-c.sql']).digest('hex') },
   );
   process.env.PAPERCUSP_PG_SQL_DIR = sqlDir;
+  delete process.env.PAPERCUSP_CANONICAL_TREE;
   delete process.env.PAPERCUSP_INTEGRATION_ROOT; // canonical tree unresolved -> compare sqlDir
   process.env.PAPERCUSP_RELEASE_ROOT = path.join(root, 'no-release-tree');
   vi.mocked(fs.readFileSync).mockClear();
