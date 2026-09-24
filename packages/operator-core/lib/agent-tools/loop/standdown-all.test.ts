@@ -7,7 +7,8 @@
  *
  * Asserts: role gate · workspace-wide scope by default, fleet-scoped when `fleetSlug` is
  * given (never both in the same WHERE) · every stand-down pause is stamped with the
- * standdownAll marker + a FINITE expiresAtMs (default TTL, or the caller's pauseTtlHours) ·
+ * standdownAll marker, generation id, and a FINITE expiresAtMs · resume clears only matching
+ * stand-down markers and releases the grading hold ·
  * the loud "captured zero active candidates" warning fires on a real, zero-touched apply
  * (and ONLY then — never on dryRun, never when something was actually paused) · dryRun does
  * not apply · a partial verify surfaces ok:false.
@@ -15,7 +16,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/loop/standdown-all.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_RELEASE_PAUSE_TTL_MS, LOOP_STANDDOWN_MARKER } from '../../harness/routines/release-pause-ttl';
+import { DEFAULT_RELEASE_PAUSE_TTL_MS, LOOP_STANDDOWN_MARKER, listLoopStanddownOwners } from '../../harness/routines/release-pause-ttl';
 
 const { sqlMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
@@ -44,9 +45,53 @@ const body = (o: unknown) => (o as Out).data;
 const NOW = Date.UTC(2026, 8, 2, 12, 0, 0);
 
 const ACTIVE_ROWS = [
-  { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', pause: null },
-  { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', pause: null },
+  { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: true, pause: null, last_pause: null },
+  { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: true, pause: null, last_pause: null },
 ];
+
+const STANDDOWN_GENERATION = 'generation-1';
+const PAUSED_ROWS = [
+  {
+    install_slug: 'papercusp',
+    name: 'loop-su-alice',
+    target_owner_id: 'su-alice',
+    active: false,
+    pause: {
+      reason: 'coordinated host restart',
+      pausedBy: 'role:operator',
+      pausedAtMs: NOW - 1000,
+      [LOOP_STANDDOWN_MARKER]: true,
+      standdownGeneration: STANDDOWN_GENERATION,
+      expiresAtMs: NOW + DEFAULT_RELEASE_PAUSE_TTL_MS,
+    },
+    last_pause: null,
+  },
+  {
+    install_slug: 'papercusp',
+    name: 'loop-su-bob',
+    target_owner_id: 'su-bob',
+    active: false,
+    pause: {
+      reason: 'coordinated host restart',
+      pausedBy: 'role:operator',
+      pausedAtMs: NOW - 1000,
+      [LOOP_STANDDOWN_MARKER]: true,
+      standdownGeneration: STANDDOWN_GENERATION,
+      expiresAtMs: NOW + DEFAULT_RELEASE_PAUSE_TTL_MS,
+    },
+    last_pause: { reason: 'previous single-loop pause', pausedAtMs: NOW - 5000 },
+  },
+];
+
+function withCurrentStanddownGeneration(rows: Array<Record<string, unknown>>) {
+  const updateCall = sqlMock.mock.calls.find((call) =>
+    call.some((arg) => typeof arg === 'string' && arg.includes('"standdownGeneration"')),
+  );
+  const stampJson = updateCall?.find((arg) => typeof arg === 'string' && arg.includes('"standdownGeneration"'));
+  const stampText = typeof stampJson === 'string' ? stampJson : null;
+  const generation = stampText ? (JSON.parse(stampText) as { standdownGeneration: string }).standdownGeneration : null;
+  return rows.map((row) => ({ ...row, standdown_generation: generation }));
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -65,10 +110,10 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS) // capturePrev
       .mockResolvedValueOnce(ACTIVE_ROWS) // apply's re-read
       .mockResolvedValueOnce([]) // the bulk pause UPDATE
-      .mockResolvedValueOnce([
+      .mockImplementationOnce(async () => withCurrentStanddownGeneration([
         { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
         { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: false, standdown: true },
-      ]); // verify SELECT
+      ])); // verify SELECT
 
     const b = body(
       await standdownAllTool.handler({ reason: 'coordinated host restart' } as never, { role: 'operator' } as never),
@@ -91,6 +136,68 @@ describe('loop:standdown-all', () => {
     expect(update).toContain(`"${LOOP_STANDDOWN_MARKER}":true`);
     expect(update).toContain(`"expiresAtMs":${NOW + DEFAULT_RELEASE_PAUSE_TTL_MS}`);
     expect(update).toContain('"reason":"coordinated host restart"');
+    expect(b.standdownGeneration).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(update).toContain(`"standdownGeneration":"${String(b.standdownGeneration)}"`);
+  });
+
+  it('workspace-wide resume clears only standdownAll markers and releases the grading hold', async () => {
+    sqlMock
+      .mockResolvedValueOnce(PAUSED_ROWS) // capturePrev
+      .mockResolvedValueOnce(PAUSED_ROWS) // apply's re-read
+      .mockResolvedValueOnce(PAUSED_ROWS.map(({ install_slug, name }) => ({ install_slug, name }))) // exact-marker resume UPDATE
+      .mockResolvedValueOnce([
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: true, standdown: null },
+        { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: true, standdown: null },
+      ]); // verify SELECT
+
+    const b = body(await standdownAllTool.handler({ action: 'resume', reason: 'owner-directed resume' } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: true, action: 'resume', applied: true, pausedCount: 0, resumedCount: 2, verify: { ok: true } });
+
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    const read = calls.find((c) => c.includes('FROM harness_shared.routines r') && c.includes(LOOP_STANDDOWN_MARKER));
+    expect(read).toContain("r.metadata -> 'pause' ->> 'fleetSlug' IS NULL");
+    const updateCall = sqlMock.mock.calls.find((call) =>
+      Array.isArray(call[0]) && (call[0] as string[]).join('').includes('UPDATE harness_shared.routines AS routine'),
+    );
+    const updateSql = (updateCall?.[0] as string[] | undefined)?.join('') ?? '';
+    const updateArgs = updateCall?.slice(1) ?? [];
+    const update = calls.find((c) => c.includes('UPDATE harness_shared.routines AS routine'));
+    expect(update).toContain('SET active = true');
+    expect(update).toContain('jsonb_to_recordset');
+    expect(update).toContain("routine.metadata -> 'pause' = targets.pause");
+    expect(updateSql).toContain("routine.metadata -> 'pause' ->> ");
+    expect(updateSql).toContain("= 'true'");
+    expect(updateArgs).toContain(LOOP_STANDDOWN_MARKER);
+    expect(update).toContain("'{lastPause}'");
+
+    const heldOwners = await listLoopStanddownOwners(sqlMock as never, {
+      workspaceId: 'default',
+      nowMs: NOW,
+      workspaceWideOnly: true,
+    });
+    expect(heldOwners).toEqual(new Set());
+  });
+
+  it('resumes only the requested standdown generation when one is supplied', async () => {
+    sqlMock
+      .mockResolvedValueOnce([PAUSED_ROWS[0]]) // capturePrev
+      .mockResolvedValueOnce([PAUSED_ROWS[0]]) // apply's re-read
+      .mockResolvedValueOnce([{ install_slug: 'papercusp', name: 'loop-su-alice' }]) // update
+      .mockResolvedValueOnce([
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: true, standdown: null },
+      ]); // verify SELECT
+
+    const b = body(
+      await standdownAllTool.handler(
+        { action: 'resume', reason: 'resume one generation', standdownGeneration: STANDDOWN_GENERATION } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ action: 'resume', resumedCount: 1, verify: { ok: true } });
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    const read = calls.find((c) => c.includes('FROM harness_shared.routines r') && c.includes(LOOP_STANDDOWN_MARKER));
+    expect(read).toContain("r.metadata -> 'pause' ->> 'standdownGeneration' =");
+    expect(read).toContain(STANDDOWN_GENERATION);
   });
 
   it('fleetSlug: scopes both capture and apply to that fleet\'s CURRENT members (coord_presence), never the whole workspace', async () => {
@@ -98,7 +205,9 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // capturePrev, fleet-scoped
       .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // apply's re-read
       .mockResolvedValueOnce([]) // UPDATE
-      .mockResolvedValueOnce([{ install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true }]); // verify
+      .mockImplementationOnce(async () => withCurrentStanddownGeneration([
+        { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
+      ])); // verify
 
     const b = body(
       await standdownAllTool.handler(
@@ -123,10 +232,10 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
+      .mockImplementationOnce(async () => withCurrentStanddownGeneration([
         { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', active: false, standdown: true },
         { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', active: false, standdown: true },
-      ]);
+      ]));
     await standdownAllTool.handler({ reason: 'short hold', pauseTtlHours: 0.5 } as never, { role: 'operator' } as never);
     const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
     const update = calls.find((c) => c.includes('UPDATE harness_shared.routines') && c.includes('SET active = false'));
@@ -172,10 +281,10 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
+      .mockImplementationOnce(async () => withCurrentStanddownGeneration([
         { install_slug: "papercusp", name: "loop-su-alice", target_owner_id: "su-alice", active: false, standdown: true },
         { install_slug: "papercusp", name: "loop-su-bob", target_owner_id: "su-bob", active: false, standdown: true },
-      ]);
+      ]));
     const b = body(await standdownAllTool.handler({ reason: "scope check" } as never, { role: "operator" } as never));
     expect(b).toMatchObject({ ok: true, applied: true, pausedCount: 2 });
     const calls = sqlMock.mock.calls.map((c) => c.flat().join(" "));
@@ -194,14 +303,13 @@ describe('loop:standdown-all', () => {
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce(ACTIVE_ROWS)
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
+      .mockImplementationOnce(async () => withCurrentStanddownGeneration([
         { install_slug: "papercusp", name: "loop-su-alice", target_owner_id: "su-alice", active: false, standdown: true },
         // a stale sibling row for the same owner, NOT a target — an owner-keyed verify would pick this one up and revert
         { install_slug: "papercusp", name: "loop-su-alice-old", target_owner_id: "su-alice", active: true, standdown: null },
         { install_slug: "papercusp", name: "loop-su-bob", target_owner_id: "su-bob", active: false, standdown: true },
-      ]);
+      ]));
     const b = body(await standdownAllTool.handler({ reason: "row-key check" } as never, { role: "operator" } as never));
     expect(b).toMatchObject({ ok: true, applied: true, pausedCount: 2, verify: { ok: true } });
   });
 });
-

@@ -27,6 +27,7 @@
  * routine group.
  */
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -42,11 +43,10 @@ interface LoopTargetSnap {
   installSlug: string;
   name: string;
   targetOwnerId: string;
-  /** The routine's `metadata.pause` at capture time, for an exact revert. Active
-   *  loops (the only rows this tool ever captures) are essentially always null,
-   *  but a row can carry a stale `lastPause` sibling key — captured verbatim so
-   *  revert restores the EXACT pre-mutation metadata.pause, not an assumption. */
+  active: boolean;
+  /** The routine's `metadata.pause` and `lastPause` at capture time, for an exact revert. */
   pause: Record<string, unknown> | null;
+  lastPause: Record<string, unknown> | null;
 }
 
 const MAX_TARGETS_FOR_REVERT_CAPTURE = 5000;
@@ -55,15 +55,15 @@ export default defineTool({
   name: 'loop:standdown-all',
   profile: 'engineer',
   description:
-    "Bulk-pause EVERY active per-session engine loop (loop-su-% routines) workspace-wide, or scoped to one fleet's CURRENT members with `fleetSlug` — the fleet-wide-stand-down primitive routines:group-set cannot reach (loops are never group members). Requires `reason`. ALWAYS stamps a finite auto-resume expiry (default 4h, override with `pauseTtlHours`) — there is no open-ended stand-down — so a broadcast can never strand every loop the way an ad-hoc hand-called routines:set stand-down twice did. Returns the ACTUAL {pausedCount, targets} touched, a checkable number instead of an assertion. Audited + one-call-revertible.",
+    "Bulk-pause active per-session engine loops (loop-su-% routines), or resume loops held by a prior stand-down. Scope to the workspace or one fleet's CURRENT members with `fleetSlug`. `action` defaults to `pause`; both actions require a reason. Pause always stamps a finite auto-resume expiry and returns its `standdownGeneration`. Resume clears only rows carrying the `standdownAll` marker in the requested scope (and optional exact generation), preserving unrelated per-agent pauses. Both operations return the actual targets, are audited, and are one-call-revertible.",
   capability: 'operator:write',
   guidance: {
     when:
-      "Pausing EVERY (or one fleet's) active engine loop at once for a coordinated stand-down (a delicate host restart, a shared-tree operation that must not race concurrent loop wakes) — instead of hand-calling routines:set once per loop, which is how a stand-down silently misses most of the fleet and how it drifts into an unbounded hold with no attributed resume.",
+      "Pausing every (or one fleet's) active engine loop at once for a coordinated stand-down, or resuming loops paused by this tool. A resume clears only the stand-down markers in scope; ordinary per-agent pauses stay in place.",
     notWhen:
-      'To pause your OWN loop, use loop:end (permanent, no TTL — by design). To pause one specific OTHER loop, routines:set { name, active:false }. To pause a routine GROUP (not engine loops), routines:group-set.',
+      'To stop your OWN loop permanently, use loop:end. To pause or resume one specific routine, use routines:set. To pause or resume a routine GROUP (not engine loops), use routines:group-set.',
     chaining:
-      "loop:status / fleet:assignments before, to see which loops are active. After `pauseTtlHours` lapses (or an early routines:set { active:true } per routine), a stood-down loop auto-resumes via the SAME routines-engine sweep release-pause-ttl.ts uses — loop:status renders the stand-down banner while it is held.",
+      "loop:status / fleet:assignments before, to see which loops are active. After `pauseTtlHours` lapses, the routines engine auto-resumes a stand-down. Use `action:'resume'` for an earlier bulk resume; pass the returned `standdownGeneration` to resume exactly one pause generation, or omit it to clear every stand-down marker in scope.",
     seeAlso: [
       'loop:end (stop your own loop, permanently)',
       'routines:set (one routine)',
@@ -75,12 +75,16 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 5 } },
   args: z.object({
+    action: z
+      .enum(['pause', 'resume'])
+      .default('pause')
+      .describe('pause creates a stand-down generation; resume clears matching stand-down markers.'),
     reason: z
       .string()
       .min(1)
       .max(500)
       .describe(
-        'REQUIRED — why every engine loop is being paused fleet-wide (e.g. "coordinated host restart"). Persisted on each stamped routine as metadata.pause { reason, pausedBy, pausedAtMs, standdownAll: true, expiresAtMs }.',
+        'Required for every bulk action. Pause stores it on each loop marker; resume records it in the control audit.',
       ),
     fleetSlug: z
       .string()
@@ -98,23 +102,43 @@ export default defineTool({
       .describe(
         `How long this stand-down may last, in hours — stamped on every paused loop as metadata.pause.expiresAtMs, after which the routines engine AUTO-RESUMES it and records a notice (same TTL mechanism as a release-group pause). Omit for the ${DEFAULT_RELEASE_PAUSE_TTL_HOURS}h default. A stand-down pause is ALWAYS finite — there is no open-ended option.`,
       ),
+    standdownGeneration: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('For action=resume, limit the resume to this exact generation returned by action=pause. Omit to resume every stand-down marker in the selected scope, including legacy markers without a generation.'),
     dryRun: z.boolean().optional(),
+  }).superRefine((args, refinement) => {
+    if (args.action === 'resume' && args.pauseTtlHours !== undefined) {
+      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['pauseTtlHours'], message: 'pauseTtlHours is only valid when action=pause' });
+    }
+    if (args.action === 'pause' && args.standdownGeneration !== undefined) {
+      refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['standdownGeneration'], message: 'standdownGeneration is returned by action=pause and only used by action=resume' });
+    }
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('loop:standdown-all requires operator, architect, or mug role');
     }
 
+    // Endpoint dispatch applies the Zod default; direct handler callers may not.
+    const action = args.action ?? 'pause';
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
-    const scopeLabel = args.fleetSlug ? `fleet:${args.fleetSlug}` : 'workspace';
+    const scopeLabel = args.fleetSlug
+      ? `fleet:${args.fleetSlug}`
+      : args.standdownGeneration
+        ? `generation:${args.standdownGeneration}`
+        : 'workspace';
 
     const readActiveTargets = async (): Promise<LoopTargetSnap[]> => {
       const rows = args.fleetSlug
         ? await sql<
-            Array<{ install_slug: string; name: string; target_owner_id: string; pause: Record<string, unknown> | null }>
+            Array<{ install_slug: string; name: string; target_owner_id: string; active: boolean | null; pause: Record<string, unknown> | null; last_pause: Record<string, unknown> | null }>
           >`
-            SELECT r.install_slug, r.name, r.target_owner_id, r.metadata -> 'pause' AS pause
+            SELECT r.install_slug, r.name, r.target_owner_id, r.active,
+                   r.metadata -> 'pause' AS pause, r.metadata -> 'lastPause' AS last_pause
               FROM harness_shared.routines r
              WHERE r.workspace_id = ${ws}
                AND r.reschedule_interval_sec IS NOT NULL
@@ -127,9 +151,10 @@ export default defineTool({
                    )
              LIMIT ${MAX_TARGETS_FOR_REVERT_CAPTURE}`
         : await sql<
-            Array<{ install_slug: string; name: string; target_owner_id: string; pause: Record<string, unknown> | null }>
+            Array<{ install_slug: string; name: string; target_owner_id: string; active: boolean | null; pause: Record<string, unknown> | null; last_pause: Record<string, unknown> | null }>
           >`
-            SELECT r.install_slug, r.name, r.target_owner_id, r.metadata -> 'pause' AS pause
+            SELECT r.install_slug, r.name, r.target_owner_id, r.active,
+                   r.metadata -> 'pause' AS pause, r.metadata -> 'lastPause' AS last_pause
               FROM harness_shared.routines r
              WHERE r.workspace_id = ${ws}
                AND r.reschedule_interval_sec IS NOT NULL
@@ -147,55 +172,129 @@ export default defineTool({
         installSlug: r.install_slug,
         name: r.name,
         targetOwnerId: r.target_owner_id,
+        active: Boolean(r.active),
         pause: r.pause ?? null,
+        lastPause: r.last_pause ?? null,
       }));
     };
 
+    const readStanddownTargets = async (): Promise<LoopTargetSnap[]> => {
+      const generation = args.standdownGeneration ?? null;
+      const fleetSlug = args.fleetSlug ?? null;
+      const rows = await sql<
+        Array<{ install_slug: string; name: string; target_owner_id: string; active: boolean | null; pause: Record<string, unknown> | null; last_pause: Record<string, unknown> | null }>
+      >`
+        SELECT r.install_slug, r.name, r.target_owner_id, r.active,
+               r.metadata -> 'pause' AS pause, r.metadata -> 'lastPause' AS last_pause
+          FROM harness_shared.routines r
+         WHERE r.workspace_id = ${ws}
+           AND r.reschedule_interval_sec IS NOT NULL
+           AND r.name LIKE 'loop-su-%'
+           AND r.target_owner_id IS NOT NULL
+           AND r.metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER} = 'true'
+           AND (
+             (
+               ${fleetSlug}::text IS NULL
+               AND (${generation}::text IS NOT NULL OR r.metadata -> 'pause' ->> 'fleetSlug' IS NULL)
+             )
+             OR r.metadata -> 'pause' ->> 'fleetSlug' = ${fleetSlug}::text
+           )
+           AND (
+             ${generation}::text IS NULL
+             OR r.metadata -> 'pause' ->> 'standdownGeneration' = ${generation}::text
+           )
+         LIMIT ${MAX_TARGETS_FOR_REVERT_CAPTURE}`;
+      return rows.map((r) => ({
+        installSlug: r.install_slug,
+        name: r.name,
+        targetOwnerId: r.target_owner_id,
+        active: Boolean(r.active),
+        pause: r.pause ?? null,
+        lastPause: r.last_pause ?? null,
+      }));
+    };
+
+    let createdStanddownGeneration: string | undefined;
+    let expectedResumeCount = 0;
+    const readTargets = action === 'pause' ? readActiveTargets : readStanddownTargets;
     const outcome = await runControlMutation<LoopTargetSnap[]>(
       {
-        action: 'loop:standdown-all',
+        action: action === 'pause' ? 'loop:standdown-all' : 'loop:resume-standdown-all',
         subject: scopeLabel,
         actor: `role:${ctx.role}`,
-        capturePrev: readActiveTargets,
+        capturePrev: readTargets,
         apply: async () => {
           // Re-read at apply time (not the dryRun-shared capturePrev instance) so a
           // caller who dryRun-previewed first and applied moments later is scoped to
           // what is ACTUALLY active now, same discipline as routines:group-set.
-          const prev = await readActiveTargets();
+          const prev = await readTargets();
           if (prev.length === 0) return prev;
-          const pausedAtMs = Date.now();
-          const expiresAtMs = resolveLoopStanddownExpiryMs({ pausedAtMs, ttlHours: args.pauseTtlHours ?? null });
-          const stamp: Record<string, unknown> = {
-            reason: args.reason,
-            pausedBy: pausedByFrom(ctx, ctx.role),
-            pausedAtMs,
-            [LOOP_STANDDOWN_MARKER]: true,
-            expiresAtMs,
-          };
-          if (args.fleetSlug) stamp.fleetSlug = args.fleetSlug;
-          const ownerIds = prev.map((t) => t.targetOwnerId);
-          // Re-guarded on active=true here too: a row that flipped inactive between the
-          // read above and this write (another agent's own routines:set, a race) is
-          // naturally excluded rather than double-stamped.
-          await sql`
-            UPDATE harness_shared.routines
-               SET active = false,
-                   -- jsonb bound as explicit stringify + cast: sql.json() throws on the
-                   -- getOrgPg client (EI-607) and a bare object does not bind.
-                   metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pause}', ${JSON.stringify(stamp)}::jsonb),
-                   updated_at = now()
-             WHERE workspace_id = ${ws}
-               AND reschedule_interval_sec IS NOT NULL
-               AND active = true
-               AND name LIKE 'loop-su-%'
-               AND target_owner_id = ANY(${ownerIds}::text[])`;
+          if (action === 'pause') {
+            const pausedAtMs = Date.now();
+            const expiresAtMs = resolveLoopStanddownExpiryMs({ pausedAtMs, ttlHours: args.pauseTtlHours ?? null });
+            createdStanddownGeneration = randomUUID();
+            const stamp: Record<string, unknown> = {
+              reason: args.reason,
+              pausedBy: pausedByFrom(ctx, ctx.role),
+              pausedAtMs,
+              [LOOP_STANDDOWN_MARKER]: true,
+              standdownGeneration: createdStanddownGeneration,
+              expiresAtMs,
+            };
+            if (args.fleetSlug) stamp.fleetSlug = args.fleetSlug;
+            const ownerIds = prev.map((t) => t.targetOwnerId);
+            // Re-guarded on active=true here too: a row that flipped inactive between the
+            // read above and this write (another agent's own routines:set, a race) is
+            // naturally excluded rather than double-stamped.
+            await sql`
+              UPDATE harness_shared.routines
+                 SET active = false,
+                     -- jsonb bound as explicit stringify + cast: sql.json() throws on the
+                     -- getOrgPg client (EI-607) and a bare object does not bind.
+                     metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pause}', ${JSON.stringify(stamp)}::jsonb),
+                     updated_at = now()
+               WHERE workspace_id = ${ws}
+                 AND reschedule_interval_sec IS NOT NULL
+                 AND active = true
+                 AND name LIKE 'loop-su-%'
+                 AND target_owner_id = ANY(${ownerIds}::text[])`;
+          } else {
+            const resumedAtMs = Date.now();
+            expectedResumeCount = prev.length;
+            const exactTargets = JSON.stringify(
+              prev.map((target) => ({ install_slug: target.installSlug, name: target.name, pause: target.pause })),
+            );
+            const updated = await sql<Array<{ install_slug: string; name: string }>>`
+              UPDATE harness_shared.routines AS routine
+                 SET active = true,
+                     metadata = jsonb_set(
+                       COALESCE(routine.metadata, '{}'::jsonb) - 'pause',
+                       '{lastPause}',
+                       targets.pause || jsonb_build_object('resumedAtMs', ${resumedAtMs}::bigint),
+                       true
+                     ),
+                     updated_at = now()
+                FROM jsonb_to_recordset(${exactTargets}::jsonb)
+                     AS targets(install_slug text, name text, pause jsonb)
+               WHERE routine.workspace_id = ${ws}
+                 AND routine.reschedule_interval_sec IS NOT NULL
+                 AND routine.name LIKE 'loop-su-%'
+                 AND routine.target_owner_id IS NOT NULL
+                 AND routine.install_slug = targets.install_slug
+                 AND routine.name = targets.name
+                 AND routine.metadata -> 'pause' = targets.pause
+                 AND routine.metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER} = 'true'
+              RETURNING routine.install_slug, routine.name`;
+            const updatedKeys = new Set(updated.map((row) => `${row.install_slug}/${row.name}`));
+            return prev.filter((target) => updatedKeys.has(`${target.installSlug}/${target.name}`));
+          }
           return prev;
         },
         revertTo: async (prev) => {
           for (const t of prev) {
             await sql`
               UPDATE harness_shared.routines
-                 SET active = true,
+                 SET active = ${t.active},
                      metadata = CASE
                        WHEN ${t.pause === null}
                          THEN COALESCE(metadata, '{}'::jsonb) - 'pause'
@@ -203,6 +302,17 @@ export default defineTool({
                      END,
                      updated_at = now()
                WHERE workspace_id = ${ws} AND install_slug = ${t.installSlug} AND name = ${t.name}`;
+            if (action === 'resume') {
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = CASE
+                     WHEN ${t.lastPause === null}
+                       THEN COALESCE(metadata, '{}'::jsonb) - 'lastPause'
+                     ELSE jsonb_set(COALESCE(metadata, '{}'::jsonb), '{lastPause}', ${JSON.stringify(t.lastPause ?? {})}::jsonb, true)
+                   END,
+                       updated_at = now()
+                 WHERE workspace_id = ${ws} AND install_slug = ${t.installSlug} AND name = ${t.name}`;
+            }
           }
         },
         verify: async (touched) => {
@@ -212,10 +322,18 @@ export default defineTool({
           // in an owner-keyed map (EI-22818006456104074).
           const ownerIds = touched.map((t) => t.targetOwnerId);
           const cur = await sql<
-            Array<{ install_slug: string; name: string; target_owner_id: string; active: boolean; standdown: boolean | null }>
+            Array<{
+              install_slug: string;
+              name: string;
+              target_owner_id: string;
+              active: boolean;
+              standdown: boolean | null;
+              standdown_generation: string | null;
+            }>
           >`
             SELECT install_slug, name, target_owner_id, active,
-                   (metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER})::boolean AS standdown
+                   (metadata -> 'pause' ->> ${LOOP_STANDDOWN_MARKER})::boolean AS standdown,
+                   metadata -> 'pause' ->> 'standdownGeneration' AS standdown_generation
               FROM harness_shared.routines
              WHERE workspace_id = ${ws}
                AND reschedule_interval_sec IS NOT NULL
@@ -223,28 +341,40 @@ export default defineTool({
                AND target_owner_id = ANY(${ownerIds}::text[])`;
           const rowKey = (installSlug: string, name: string) => `${installSlug}/${name}`;
           const byRow = new Map(cur.map((r) => [rowKey(r.install_slug, r.name), r]));
+          if (action === 'resume' && touched.length !== expectedResumeCount) {
+            return { ok: false, detail: 'not every captured stand-down marker still matched during resume' };
+          }
           const ok = touched.every((t) => {
             const row = byRow.get(rowKey(t.installSlug, t.name));
-            return row?.active === false && row?.standdown === true;
+            return action === 'pause'
+              ? row?.active === false && row?.standdown === true && row?.standdown_generation === createdStanddownGeneration
+              : row?.active === true && row?.standdown !== true;
           });
-          return { ok, detail: ok ? undefined : 'not every targeted loop is paused + stamped standdownAll' };
+          return { ok, detail: ok ? undefined : action === 'pause' ? 'not every targeted loop is paused + stamped standdownAll' : 'not every targeted stand-down loop was resumed and cleared' };
         },
-        describe: (prev) => ({
-          scope: scopeLabel,
-          current: { activeCount: prev.length },
-          proposed: { activeCount: 0, pausedCount: prev.length },
-        }),
+        describe: (prev) => action === 'pause'
+          ? {
+              scope: scopeLabel,
+              current: { activeCount: prev.length },
+              proposed: { activeCount: 0, pausedCount: prev.length },
+            }
+          : {
+              scope: scopeLabel,
+              current: { standdownCount: prev.length },
+              proposed: { activeCount: prev.length, resumedCount: prev.length, reason: args.reason },
+            },
       },
       { dryRun: args.dryRun },
     );
 
     const touched = outcome.applied ? (outcome.next ?? []) : [];
-    const pausedCount = touched.length;
+    const pausedCount = action === 'pause' ? touched.length : 0;
+    const resumedCount = action === 'resume' ? touched.length : 0;
     const targets = touched.map((t) => ({ ownerId: t.targetOwnerId, routineName: t.name, harness: t.installSlug }));
 
     // Keep the owner's automation panes live after a bulk pause — same contract as
     // routines:set / routines:group-set. Never fails the mutation.
-    if (outcome.applied && !outcome.dryRun && pausedCount > 0) {
+    if (outcome.applied && !outcome.dryRun && touched.length > 0) {
       try {
         const { notifySyncInvalidate } = await import('../../sync-sse');
         notifySyncInvalidate('automation.catalog');
@@ -261,19 +391,23 @@ export default defineTool({
     // trusted. Not a throw: a genuinely quiet moment (no active loops at all, or a
     // fleet between members) is a legitimate — if rare — true reading, and a caller
     // must be able to dryRun-probe it without an exception in the way.
-    const warning =
-      !outcome.dryRun && outcome.applied && pausedCount === 0
+    const warning = !outcome.dryRun && outcome.applied && touched.length === 0
+      ? action === 'pause'
         ? `No active loop-su-% routines were found in scope (${scopeLabel}) — NOTHING was paused. If you expected active loops, check fleetSlug / workspace before treating this as "stood down".`
-        : undefined;
+        : `No stand-down markers were found in scope (${scopeLabel}) — NOTHING was resumed.`
+      : undefined;
 
     return {
       data: {
         ok: true,
+        action,
         scope: scopeLabel,
         dryRun: outcome.dryRun,
         applied: outcome.applied,
         reverted: outcome.reverted,
         pausedCount,
+        resumedCount,
+        ...(createdStanddownGeneration ? { standdownGeneration: createdStanddownGeneration } : {}),
         targets,
         ...(warning ? { warning } : {}),
         preview: outcome.preview,
