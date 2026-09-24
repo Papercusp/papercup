@@ -127,6 +127,8 @@ import {
   recoverSessionOwner,
   recoverResumeSessionIdentity,
   recoverResumeSessionOwner,
+  exactTrackedResumePath,
+  rehydrateOutOfWindowTrackedSession,
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
   mintCarryRespawnArgs,
@@ -8384,6 +8386,59 @@ describe("findUntrackedSession (resume a non-psu session by searching the agent 
       '{"cwd":"/x"}\n',
     );
     expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull();
+  });
+});
+
+describe("out-of-window tracked-session recovery (WI-10002877)", () => {
+  const diskHit = {
+    agent: "claude",
+    sessionId: "0123abcd-1234-5678-9abc-def012345678",
+    cwd: "/repo/from-transcript",
+    untracked: true,
+    psuTracked: true,
+    id: 29676,
+    configDir: "/home/u/.papercusp/session-claude/su-source",
+  };
+  const durableRow = {
+    id: 29676,
+    agent: "claude",
+    sessionId: "older-recorded-native-id",
+    cwd: "/repo/from-row",
+    workspaceId: "papercusp-workspace",
+    planSlug: "source-plan",
+    coordOwnerId: "su-source",
+  };
+
+  it("asks the existing resumable surface for the one durable row by id", () => {
+    expect(exactTrackedResumePath(diskHit)).toBe(
+      "/api/adv/sessions/resumable?id=29676",
+    );
+    expect(
+      exactTrackedResumePath({ ...diskHit, psuTracked: false }),
+    ).toBeNull();
+    expect(exactTrackedResumePath({ ...diskHit, id: null })).toBeNull();
+  });
+
+  it("restores managed scope while preserving the exact transcript/config hit", () => {
+    expect(
+      rehydrateOutOfWindowTrackedSession(diskHit, { sessions: [durableRow] }),
+    ).toEqual({
+      ...durableRow,
+      sessionId: diskHit.sessionId,
+      cwd: diskHit.cwd,
+      configDir: diskHit.configDir,
+    });
+  });
+
+  it("does not bless a different or missing durable row as tracked", () => {
+    expect(
+      rehydrateOutOfWindowTrackedSession(diskHit, { sessions: [] }),
+    ).toBeNull();
+    expect(
+      rehydrateOutOfWindowTrackedSession(diskHit, {
+        sessions: [{ ...durableRow, id: 99 }],
+      }),
+    ).toBeNull();
   });
 });
 
