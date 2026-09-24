@@ -29,6 +29,8 @@ import {
   resolveNativeMcpAssets,
   nativeOmpExtensionArgs,
   pickRole,
+  pickIdentity,
+  identityPickerChoices,
   PSU_HELP_TEXT,
   planValue,
   parkRoleScopedMcpJson,
@@ -364,7 +366,7 @@ import {
 } from "../scripts/tool-delivery.generated.mjs";
 
 describe("interactive role picker", () => {
-  it("shows the fixed SU role without waiting for an unavailable operator", async () => {
+  it("selects the SU execution tier without an extra prompt or operator fetch", async () => {
     const select = vi.fn().mockResolvedValue("su");
     vi.doMock("@inquirer/prompts", () => ({ select }));
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(
@@ -372,13 +374,39 @@ describe("interactive role picker", () => {
     );
     try {
       await expect(pickRole()).resolves.toEqual({ role: "su", roles: [] });
-      expect(select).toHaveBeenCalledWith({
-        message: "Role",
-        choices: [
-          { name: "su  — engineer collaborator (full SU catalog)", value: "su" },
-        ],
-      });
+      expect(select).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+      vi.doUnmock("@inquirer/prompts");
+    }
+  });
+
+  it("keeps invalid catalog rows visible and pins a choice from the next page", async () => {
+    const revision = "a".repeat(64);
+    const choices = identityPickerChoices({ identities: [], unreadable: [
+      { id: "broken", error: "attestation-missing" },
+    ], nextAfter: "first" });
+    expect(choices).toContainEqual(expect.objectContaining({
+      name: expect.stringContaining("broken  ·  invalid: attestation-missing"),
+      disabled: "attestation-missing",
+    }));
+    const select = vi.fn().mockResolvedValueOnce("__next__")
+      .mockResolvedValueOnce("domain:research-steward");
+    vi.doMock("@inquirer/prompts", () => ({ select }));
+    const fetch = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", identities: [],
+        unreadable: [], nextAfter: "first" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", identities: [{
+        id: "research-steward", tier: "installed", version: "1.2.0",
+        sourceRevision: revision, slots: [{ slot: "domain", cardinality: "exclusive" }],
+      }], unreadable: [], nextAfter: null }), { status: 200 }));
+    try {
+      await expect(pickIdentity("default", "papercusp")).resolves.toEqual({
+        stack: ["domain:research-steward"], selectedIdentityRevision: revision,
+      });
+      expect(select).toHaveBeenCalledTimes(2);
+      expect(String(fetch.mock.calls[1]?.[0])).toContain("after=first");
     } finally {
       fetch.mockRestore();
       vi.doUnmock("@inquirer/prompts");
@@ -4294,6 +4322,19 @@ describe("psu-launcher arg parsing", () => {
       "--harness=h1",
       "--plan=p1",
     ]);
+  });
+
+  it("round-trips a selected identity source revision into bootstrap and launch argv", () => {
+    const revision = "a".repeat(64);
+    const args = parseArgs(["--no-picker", "--agent=claude", "--stack=domain:research-steward",
+      `--identity-revision=${revision}`, "--no-plan"]);
+    const body = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: null }, args,
+    );
+    expect(body.stack).toEqual(["domain:research-steward"]);
+    expect(body.selected_identity_revision).toBe(revision);
+    expect(body.launch_argv).toContain(`--identity-revision=${revision}`);
+    expect(parseArgs(body.launch_argv.slice(1)).selectedIdentityRevision).toBe(revision);
   });
 
   it("freshSuBootstrapBody sets auto:true for a --fleet launch, and threads --fleet into launch_argv (WI-1343/WI-1356)", () => {
@@ -15700,6 +15741,7 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
         codexHome,
         advSessionId,
         {
+          model: "gpt-5.6-sol:xhigh",
           env: { PAPERCUSP_HONO_PORT: "3271" },
           probe: async (candidate: string) => {
             probed.push(candidate);
@@ -15728,6 +15770,7 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
         owner: "su-codex-stale-port",
         advSessionId,
         requireGatewayProvider: false,
+        model: "gpt-5.6-sol:xhigh",
       });
     } finally {
       rmSync(codexHome, { recursive: true, force: true });

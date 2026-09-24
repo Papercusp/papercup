@@ -1316,8 +1316,35 @@ const optionsGet = defineTool({
     const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
     const harness = url.searchParams.get('harness')?.trim() || null;
     const wantFeatures = url.searchParams.get('features') === '1';
+    const wantIdentities = url.searchParams.get('identities') === '1';
     const accountAgentRaw = url.searchParams.get('agent')?.trim();
     const accountAgent = isSuAgent(accountAgentRaw) ? accountAgentRaw : 'claude';
+
+    // The launcher and Settings page share the existing source catalog. Page
+    // by source candidates so an invalid entry stays visible with its reason.
+    if (wantIdentities) {
+      try {
+        const [{ listIdentitySources }, { resolveProjectDir }] = await Promise.all([
+          import('../../../agent-identities/source'),
+          import('../../../spawn-config'),
+        ]);
+        const repoDir = harness ? await resolveProjectDir(harness, workspace) : null;
+        if (harness && !repoDir) return jsonRes({ status: 'error', error: 'harness not registered in workspace' }, 404);
+        const requestedLimit = Number(url.searchParams.get('limit'));
+        const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
+          ? Math.min(requestedLimit, 100) : 30;
+        const catalog = await listIdentitySources({
+          ...(repoDir ? { repoDir } : {}),
+          after: url.searchParams.get('after')?.trim() || undefined,
+          limit,
+        });
+        return jsonRes({ status: 'ok', workspace, harness,
+          identities: catalog.identities, unreadable: catalog.unreadable,
+          scanned: catalog.scanned, nextAfter: catalog.nextAfter });
+      } catch (error) {
+        return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 400);
+      }
+    }
 
     // ?harness=X&features=1 → feature list (for the psu --role feature picker).
     if (harness && wantFeatures) {
@@ -1496,6 +1523,8 @@ export const bootstrapSu = defineTool({
       /** Explicit launch-time identity binding, using repeatable `slot:id` refs.
        * Omitted lets the selected blueprint role's `roles[].stack` default apply. */
       stack?: string[] | null;
+      /** Exact source revision chosen by the interactive identity picker. */
+      selected_identity_revision?: string;
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
@@ -1685,6 +1714,10 @@ export const bootstrapSu = defineTool({
         body.stack.some((ref) => typeof ref !== 'string' || !ref.trim()))
     ) {
       return jsonRes({ status: 'error', error: 'stack must be an array of 1-40 non-empty slot:id refs' }, 400);
+    }
+    if (body.selected_identity_revision !== undefined &&
+        (!/^[a-f0-9]{64}$/.test(body.selected_identity_revision) || body.stack?.length !== 1)) {
+      return jsonRes({ status: 'error', error: 'selected_identity_revision requires one selected stack ref and a sha256 revision' }, 400);
     }
 
     // Trimmed is the only effective launch mode. `full` remains a compatibility
@@ -2739,6 +2772,14 @@ export const bootstrapSu = defineTool({
           instructionPrecedence: precedence,
         },
       });
+      if (body.selected_identity_revision) {
+        const selectedId = body.stack![0]!.split(':').slice(1).join(':');
+        if (!selectedId || !launchArtifact.specificationArtifact.inputs.some((entry) =>
+          entry.kind === 'blueprint-layer' && entry.ref === selectedId &&
+          entry.contentHash === body.selected_identity_revision)) {
+          throw new Error('selected identity source revision changed after picker selection');
+        }
+      }
       if (launchArtifact.resourceArtifacts.length > 0) {
         await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql);
       }
