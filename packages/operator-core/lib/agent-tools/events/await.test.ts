@@ -1278,6 +1278,17 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
     expect(liveSettledProbe).toHaveBeenCalledWith('WI-5075');
   });
 
+  it('reconciles a completion that races the await registration', async () => {
+    vi.mocked(liveSettledProbe)
+      .mockResolvedValueOnce({ verdict: 'live', itemState: 'wip' })
+      .mockResolvedValueOnce({ verdict: 'settled', itemState: 'resolved' });
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+    const out = await call({ event: 'work-item:done:WI-race' });
+    expect(out).toMatchObject({ ok: true, already_done: true, event: 'work-item:done:WI-race' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+  });
+
   it('a LIVE item registers exactly as before (the latch only answers on settled)', async () => {
     const out = await call({ event: 'work-item:done:WI-42' });
     expect(out.already_done).toBeUndefined();
@@ -1365,6 +1376,14 @@ describe('the plan-item-done registration LATCH (EI-18734910825871393 — the 76
     expect(out.advice).toContain('Do not wait');
     expect(registerAwait).not.toHaveBeenCalled();
     expect(planItemEffectiveStatus).toHaveBeenCalledWith('papercup', 'retire-work-item-mail-surface-2026-07-26', 'P-008');
+  });
+
+  it('reconciles a plan item done edge that races its registration', async () => {
+    vi.mocked(planItemEffectiveStatus).mockResolvedValueOnce('wip').mockResolvedValueOnce('done');
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+    const out = await call({ event: 'plan-item:done:my-plan:P-3' });
+    expect(out).toMatchObject({ ok: true, already_done: true, event: 'plan-item:done:my-plan:P-3' });
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
   });
 
   it('a TODO/WIP item registers exactly as before (the latch only answers on done)', async () => {

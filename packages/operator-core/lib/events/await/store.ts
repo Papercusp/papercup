@@ -1763,6 +1763,10 @@ export async function fireAwaitsForKey(input: {
 }): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  // A fired one-shot row is itself the durable delivery intent. Keep the
+  // event payload on that same committed row so the sweeper can reconstruct a
+  // wake after a crash between this claim and insertDeliveries.
+  const firePayloadJson = input.payload === undefined ? null : JSON.stringify(input.payload);
   // The rescue wake is a synthetic liveness signal, not directed mail. Exclude
   // it only from one-shot inbox-wake rows: the always-armed standing row is the
   // rescue path and must continue to fire, while ordinary coord:send wakes must
@@ -1774,7 +1778,8 @@ export async function fireAwaitsForKey(input: {
   // unchanged (D-002) — the overwhelmingly common case pays zero extra cost for EI-8998.
   const onceRows = await sql`
     UPDATE harness_shared.event_awaits
-       SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
+       SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+           fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
        AND payload_filter IS NULL
@@ -1803,7 +1808,8 @@ export async function fireAwaitsForKey(input: {
     onceFilterMatchedIds.length > 0
       ? await sql`
           UPDATE harness_shared.event_awaits
-             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
+             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+                 fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${onceFilterMatchedIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
           RETURNING *
@@ -1860,7 +1866,8 @@ export async function fireAwaitsForKey(input: {
     matchedOnceIds.length > 0
       ? await sql`
           UPDATE harness_shared.event_awaits
-             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
+             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+                 fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${matchedOnceIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
           RETURNING *
@@ -1922,13 +1929,27 @@ export async function insertDeliveries(input: {
     const urgent = (input.urgent ?? false) || a.urgency;
     const deliveryPayload = withLifecycleBindingProvenance(input.payload, a.boundTo);
     const payloadJson = deliveryPayload === undefined ? null : JSON.stringify(deliveryPayload);
-    const inserted = await sql<Array<{ id: number }>>`
+    const write = (tx: typeof sql) => tx<Array<{ id: number }>>`
       INSERT INTO harness_shared.event_wake_deliveries
         (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::text::jsonb,
               ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
       RETURNING id
     `;
+    // A standing watch may deliver many times. A consumed one-shot may deliver
+    // only once, including when its original emitter races the recovery sweep.
+    // Both writers take the same transaction lock before the existence check.
+    const inserted = a.once
+      ? await boundedOrgTxn(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`event-delivery:${ws}:${a.id}`}, 0))`;
+          const existing = await tx`
+            SELECT id FROM harness_shared.event_wake_deliveries
+             WHERE workspace_id = ${ws} AND await_id = ${a.id} LIMIT 1
+          `;
+          return existing.length > 0 ? [] : write(tx as typeof sql);
+        })
+      : await write(sql);
+    if (inserted.length === 0) continue;
     const deliveryId = Number(inserted[0]?.id);
 
     // EI-21303383797798186: a loop fire supersedes every older undelivered fire
@@ -1953,6 +1974,44 @@ export async function insertDeliveries(input: {
     n++;
   }
   return n;
+}
+
+/** Recover a consumed one-shot whose producer died after firing it but before
+ * creating its wake row. The await row carries its recipient and fired payload;
+ * insertDeliveries serializes against a still-running original producer. */
+export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT a.* FROM harness_shared.event_awaits a
+     WHERE a.workspace_id = ${ws}
+       AND a.once = true AND a.policy = 'wake'
+       AND a.node_id IS NULL AND a.root_id IS NULL
+       AND a.fired_at IS NOT NULL AND a.fired_at < now() - interval '2 seconds'
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.event_wake_deliveries d
+          WHERE d.workspace_id = a.workspace_id AND d.await_id = a.id
+       )
+     ORDER BY a.fired_at, a.id LIMIT ${limit}
+  `;
+  let recovered = 0;
+  for (const raw of rows) {
+    const awaited = mapAwait(raw);
+    const timeout = awaited.firedReason === 'timeout';
+    recovered += await insertDeliveries({
+      awaits: [awaited],
+      payload: awaited.firedPayload ?? {
+        recoveredDelivery: true,
+        eventKey: awaited.eventKey,
+        ...(timeout ? { timeout: true } : {}),
+      },
+      summary: timeout
+        ? `The timeout for ${awaited.eventKey} fired; inspect the producer and current state.`
+        : `${awaited.eventKey} fired; inspect current state before continuing.`,
+      source: awaited.firedBy ?? 'await-delivery-reconciler',
+    });
+  }
+  return recovered;
 }
 
 /**

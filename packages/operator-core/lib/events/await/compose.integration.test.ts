@@ -46,6 +46,7 @@ vi.mock('../../workspace-registry', () => ({
 const store = await import('./store');
 const engine = await import('./engine');
 const compose = await import('./compose');
+const composeStore = await import('./compose-store');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 import type { ComposedSpec } from './compose-spec';
 
@@ -393,5 +394,46 @@ describe('composed threshold-tree awaits — store+engine end-to-end (real PG)',
     expect(await stillLive(peers.rootId)).toBe(1); // another subscriber's tree is untouched
     expect(await stillLive(unrelated.rootId)).toBe(1); // my differently-shaped tree survives
     expect(await stillLive(before.rootId)).toBe(0); // …and only the identical one was retired
+  });
+
+  // ── P-021: crash recovery at the claim → composed delivery boundary ───────────
+
+  it('recovers a claimed leaf after producer death before propagation, once across concurrent sweeps', async () => {
+    const r = await reg({ any: [{ event: 'crash:leaf' }] });
+    if (!r.registered) throw new Error('expected registration');
+
+    // fireAwaitsForKey commits the ordinary await claim, then the simulated
+    // producer dies before the composed propagation call.
+    const claimed = await store.fireAwaitsForKey({ eventKey: 'crash:leaf', payload: { sequence: 7 }, source: 'integration-test' });
+    expect(claimed.filter((row) => row.rootId === r.rootId)).toHaveLength(1);
+    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(0);
+
+    await Promise.all([composeStore.reconcileComposedRoots(), composeStore.reconcileComposedRoots()]);
+    const deliveries = await anchorDeliveries(r.anchorAwaitId);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].payload).toMatchObject({
+      composed: true, satisfied: true, reason: 'event',
+      fired: [{ event: 'crash:leaf', payload: { sequence: 7 } }],
+    });
+    expect(await composeStore.reconcileComposedRoot(r.rootId)).toMatchObject({ delivered: false, settled: true });
+    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(1);
+  });
+
+  it('replays multiple claimed leaves through a nested threshold tree without counting a leaf twice', async () => {
+    const r = await reg({ all: [{ event: 'crash:nested:a' }, { any: [{ event: 'crash:nested:b' }, { event: 'crash:nested:c' }] }] });
+    if (!r.registered) throw new Error('expected registration');
+    await store.fireAwaitsForKey({ eventKey: 'crash:nested:a', payload: { member: 'a' } });
+    await store.fireAwaitsForKey({ eventKey: 'crash:nested:b', payload: { member: 'b' } });
+
+    await Promise.all([composeStore.reconcileComposedRoot(r.rootId), composeStore.reconcileComposedRoot(r.rootId)]);
+    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(1);
+    const nodes = await sql`
+      SELECT parent_id, fired_count, required_count FROM harness_shared.event_await_nodes
+       WHERE root_id = ${r.rootId} ORDER BY id
+    `;
+    expect(Number(nodes[0].fired_count)).toBe(2);
+    expect(nodes.filter((node: any) => node.parent_id != null).map((node: any) => Number(node.fired_count))).toEqual([1]);
+    await composeStore.reconcileComposedRoot(r.rootId);
+    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(1);
   });
 });

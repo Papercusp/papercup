@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveBuiltinExtends, pinPackageInput, validateAgentInputClosure } from '@papercusp/orchestrator/blueprint';
+import { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends, pinPackageInput, validateAgentInputClosure } from '@papercusp/orchestrator/blueprint';
 import { resolvePromptFile } from '@papercusp/orchestrator';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import {
@@ -18,7 +18,7 @@ import {
   InstallBlueprintError,
   type InstallBlueprintCoreDeps,
 } from './install-blueprint-core';
-import { snapshotBlueprintReleaseSource } from './blueprint-release';
+import { buildBlueprintReleaseArchive, readBlueprintLifecycle, snapshotBlueprintReleaseSource } from './blueprint-release';
 import type { CapabilityProviderCandidate } from './capability-grant-resolver';
 
 let root: string;        // scratch root for fixtures + install target
@@ -121,6 +121,44 @@ afterEach(async () => {
 });
 
 describe('installBlueprintFromCupboardCore', () => {
+  it('refuses a direct URL mode identity before copying any bytes', async () => {
+    await writeBlueprint(fixtureRepo, [
+      'id: su.mode-auto-custom',
+      'version: 1.0.0',
+      'slots: [{ slot: autonomy }]',
+      'mode: { id: auto, policyRef: auto, title: AUTO, oneLiner: Act, definitionContributionId: definition }',
+    ].join('\n'));
+    await expect(installBlueprintFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/mode' }, makeDeps(),
+    )).rejects.toThrow(/approved Cupboard listing pinned to its exact release/);
+    expect(existsSync(join(installedDir, 'su.mode-auto-custom'))).toBe(false);
+  });
+
+  it('installs a mode only with a moderated listing receipt for the exact source closure', async () => {
+    const builtin = builtinBlueprintPath('su.mode-auto');
+    await fs.cp(join(builtin, '..'), fixtureRepo, { recursive: true });
+    const yaml = await fs.readFile(join(fixtureRepo, 'blueprint.yaml'), 'utf8');
+    const source = resolveBlueprintSource((await import('yaml')).parse(yaml), {
+      sourcePath: join(fixtureRepo, 'blueprint.yaml'),
+      resolve: makeDeps().resolveExtends,
+      lint: { approvedModePolicyRefs: ['auto'] },
+    });
+    expect(source.validation.ok).toBe(true);
+    const pins = blueprintPackageInputs(source, []);
+    const artifactHash = buildBlueprintReleaseArchive(pins, 'su.mode-auto').package.rootHash;
+    const input = {
+      githubUrl: 'https://github.com/acme/mode',
+      expectedRelease: { contentHash: artifactHash },
+      modeApproval: { listingId: 'moderated-listing', approvedArtifactContentHash: artifactHash },
+    };
+    const installed = await installBlueprintFromCupboardCore(input, makeDeps());
+    expect((await readBlueprintLifecycle(installedDir, installed.id)).active?.modePolicyApproval)
+      .toEqual({ listingId: 'moderated-listing', policyRef: 'auto', artifactContentHash: artifactHash });
+    await expect(installBlueprintFromCupboardCore({ ...input, modeApproval: {
+      ...input.modeApproval, approvedArtifactContentHash: 'publisher-claimed-only',
+    } }, makeDeps())).rejects.toThrow(/approved Cupboard listing pinned to its exact release/);
+  });
+
   it('installs a root-level blueprint (validates, copies, excludes .git)', async () => {
     await writeBlueprint(fixtureRepo, RUNNABLE_YAML);
     await fs.mkdir(join(fixtureRepo, 'prompts'), { recursive: true });

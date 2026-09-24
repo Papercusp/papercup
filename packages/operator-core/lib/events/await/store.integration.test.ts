@@ -47,6 +47,7 @@ const {
   listActiveAnnouncements,
   listFiredAnnouncements,
   insertDeliveries,
+  reconcileFiredWakeDeliveries,
   retireLifecycleBoundWatches,
   retireWatchesForReapedOwners,
   listActiveAwaits,
@@ -366,6 +367,50 @@ describe('await-event store (PG)', () => {
     expect(second.map((a) => a.subscriberId)).toEqual(['standing']); // one-shot NOT re-fired; standing still matches
     // listActiveAwaitsForKey now sees only the standing one (the one-shot has fired_at)
     expect((await listActiveAwaitsForKey('k:fire')).map((a) => a.subscriberId)).toEqual(['standing']);
+  });
+
+  it('recovers a consumed wake after a producer dies before delivery insertion, once only', async () => {
+    const pending = await registerAwait({ subscriberId: 'crash-waiter', eventKey: 'work-item:done:WI-crash' });
+    const [fired] = await fireAwaitsForKey({
+      eventKey: pending.eventKey,
+      payload: { itemId: 'WI-crash', completionIntentId: 'intent-1' },
+      source: 'work-items:complete',
+    });
+    expect(fired?.firedPayload).toEqual({ itemId: 'WI-crash', completionIntentId: 'intent-1' });
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(0);
+
+    // This is the crash window: the fired row committed, but the producer never
+    // called insertDeliveries. Age it past the sweep grace without sleeping.
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '3 seconds' WHERE id = ${pending.id}`;
+    expect(await reconcileFiredWakeDeliveries()).toBe(1);
+    const delivery = await rootSql`
+      SELECT subscriber_id, event_key, payload, source FROM harness_shared.event_wake_deliveries
+       WHERE await_id = ${pending.id}
+    `;
+    expect(delivery).toHaveLength(1);
+    expect(delivery[0]).toMatchObject({
+      subscriber_id: 'crash-waiter',
+      event_key: 'work-item:done:WI-crash',
+      payload: { itemId: 'WI-crash', completionIntentId: 'intent-1' },
+      source: 'work-items:complete',
+    });
+
+    // A resumed producer and another sweep cannot create a second wake.
+    expect(await insertDeliveries({ awaits: [fired!], payload: { itemId: 'WI-crash' } })).toBe(0);
+    expect(await reconcileFiredWakeDeliveries()).toBe(0);
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(1);
+  });
+
+  it('serializes a recovery sweep against the original one-shot delivery writer', async () => {
+    const pending = await registerAwait({ subscriberId: 'race-waiter', eventKey: 'work-item:done:WI-race' });
+    const [fired] = await fireAwaitsForKey({ eventKey: pending.eventKey, payload: { result: 'settled' } });
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '3 seconds' WHERE id = ${pending.id}`;
+    const [normal, recovered] = await Promise.all([
+      insertDeliveries({ awaits: [fired!], payload: { result: 'settled' } }),
+      reconcileFiredWakeDeliveries(),
+    ]);
+    expect(normal + recovered).toBe(1);
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(1);
   });
 
   it('serializes announcement latching behind the per-key generation lock', async () => {
@@ -940,7 +985,10 @@ describe('await-event store (PG)', () => {
         FROM harness_shared.event_awaits
        WHERE id = ${awaitRow.id}
     `;
-    expect(persisted[0]).toMatchObject({ fired_reason: 'event', fired_payload: null });
+    expect(persisted[0]).toMatchObject({
+      fired_reason: 'event',
+      fired_payload: { issueId: 'EI-22439061823369551', rubricRef: 'grading-integrity', subjectRef },
+    });
   });
 
   it('a filter-less once row on the SAME key is unaffected by a sibling filtered row (fast path untouched)', async () => {

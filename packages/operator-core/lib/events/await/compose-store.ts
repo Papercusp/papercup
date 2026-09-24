@@ -19,6 +19,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { WakeHandle, TimeoutBehavior } from './types';
+import { composedWakeSummary } from './compose-spec';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -461,4 +462,165 @@ export async function listActiveComposedRoots(subscriberId: string): Promise<Com
      LIMIT 100
   `;
   return rows.map(mapNode);
+}
+
+/**
+ * Finish a composed tree from its durable fired leaves. The plain await claim is
+ * committed before this transaction, but every subsequent mutation (member
+ * stamp, counter chain, root delivery and descendant void) commits together.
+ * Replaying after a crash therefore sees either an unstamped leaf to process or
+ * the fully settled tree; it cannot increment the same leaf twice.
+ */
+export async function reconcileComposedRoot(rootId: number, expireIfDue = false): Promise<{ delivered: boolean; settled: boolean }> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`composed-root:${ws}:${rootId}`}, 0))`;
+    const roots = await tx`
+      SELECT * FROM harness_shared.event_await_nodes
+       WHERE workspace_id = ${ws} AND id = ${rootId} AND parent_id IS NULL
+    `;
+    if (roots.length === 0 || roots[0].cancelled_at != null) return { delivered: false, settled: false };
+
+    let root = roots[0] as any;
+    let eventSource: string | null = null;
+    const unfollowed = await tx`
+      SELECT id, node_id, fired_by FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND root_id = ${rootId} AND node_id IS NOT NULL
+         AND fired_at IS NOT NULL AND member_fired_at IS NULL
+       ORDER BY fired_at, id
+    `;
+    for (const leaf of unfollowed) {
+      if (root.fired_at != null) break;
+      const stamped = await tx`
+        UPDATE harness_shared.event_awaits
+           SET member_fired_at = fired_at, member_payload = fired_payload
+         WHERE workspace_id = ${ws} AND id = ${Number(leaf.id)}
+           AND fired_at IS NOT NULL AND member_fired_at IS NULL
+        RETURNING id
+      `;
+      if (stamped.length === 0) continue;
+      eventSource = leaf.fired_by ?? null;
+      let nodeId: number | null = Number(leaf.node_id);
+      while (nodeId != null) {
+        const bumped = await tx`
+          UPDATE harness_shared.event_await_nodes
+             SET fired_count = fired_count + 1,
+                 fired_at = CASE WHEN fired_count + 1 >= required_count THEN now() ELSE fired_at END
+           WHERE workspace_id = ${ws} AND id = ${nodeId}
+             AND fired_at IS NULL AND cancelled_at IS NULL
+          RETURNING id, parent_id, fired_at
+        `;
+        if (bumped.length === 0 || bumped[0].fired_at == null) break;
+        nodeId = bumped[0].parent_id == null ? null : Number(bumped[0].parent_id);
+      }
+      const current = await tx`
+        SELECT * FROM harness_shared.event_await_nodes WHERE workspace_id = ${ws} AND id = ${rootId}
+      `;
+      root = current[0] as any;
+    }
+
+    if (root.fired_at == null && expireIfDue) {
+      const due = await tx`
+        UPDATE harness_shared.event_await_nodes SET fired_at = now()
+         WHERE workspace_id = ${ws} AND id = ${rootId} AND parent_id IS NULL
+           AND fired_at IS NULL AND cancelled_at IS NULL
+           AND expires_ts IS NOT NULL AND expires_ts <= now()
+        RETURNING *
+      `;
+      if (due.length > 0) root = due[0] as any;
+    }
+    if (root.fired_at == null) return { delivered: false, settled: false };
+
+    const satisfied = Number(root.fired_count) >= Number(root.required_count);
+    const reason = satisfied ? 'event' : 'timeout';
+    const deliver = satisfied || root.timeout_behavior === 'wake';
+    const anchors = await tx`
+      SELECT id, subscriber_id FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND root_id = ${rootId} AND node_id IS NULL
+       ORDER BY id LIMIT 1
+    `;
+    // A registration interrupted before its anchor exists is retried by the
+    // sweeper after registration or its own cleanup; never consume it silently.
+    if (deliver && anchors.length === 0) return { delivered: false, settled: false };
+
+    let delivered = false;
+    if (deliver) {
+      const anchor = anchors[0] as any;
+      const existing = await tx`
+        SELECT id FROM harness_shared.event_wake_deliveries
+         WHERE workspace_id = ${ws} AND await_id = ${Number(anchor.id)} LIMIT 1
+      `;
+      if (existing.length === 0) {
+        const leaves = await tx`
+          SELECT event_key, member_fired_at, member_payload
+            FROM harness_shared.event_awaits
+           WHERE workspace_id = ${ws} AND root_id = ${rootId} AND node_id IS NOT NULL
+           ORDER BY id
+        `;
+        const fired = leaves.filter((leaf: any) => leaf.member_fired_at != null);
+        const payload = {
+          composed: true, consumed: true, satisfied, reason,
+          fired: fired.map((leaf: any) => ({ event: leaf.event_key, payload: parseJsonb(leaf.member_payload), at: new Date(leaf.member_fired_at).toISOString() })),
+          pending: leaves.filter((leaf: any) => leaf.member_fired_at == null).map((leaf: any) => leaf.event_key),
+        };
+        await tx`
+          INSERT INTO harness_shared.event_wake_deliveries
+            (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
+          VALUES (${ws}, ${Number(anchor.id)}, ${anchor.subscriber_id}, ${`composed-root:${rootId}`},
+                  ${jsonbParam(payload)}::text::jsonb,
+                  ${composedWakeSummary({ satisfied, firedCount: fired.length, leafCount: leaves.length })},
+                  false, NULL, ${eventSource ?? 'composed-reconciler'})
+        `;
+        delivered = true;
+      }
+    }
+    await tx`
+      UPDATE harness_shared.event_awaits SET cancelled_at = now()
+       WHERE workspace_id = ${ws} AND root_id = ${rootId} AND node_id IS NOT NULL
+         AND fired_at IS NULL AND cancelled_at IS NULL
+    `;
+    await tx`
+      UPDATE harness_shared.event_await_nodes SET cancelled_at = now()
+       WHERE workspace_id = ${ws} AND root_id = ${rootId} AND parent_id IS NOT NULL
+         AND fired_at IS NULL AND cancelled_at IS NULL
+    `;
+    return { delivered, settled: true };
+  });
+}
+
+/** Bounded sweep of crash residue and due roots, using the same transaction as live emits. */
+export async function reconcileComposedRoots(limit = 100): Promise<{ roots: number; deliveries: number }> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT DISTINCT id FROM (
+      SELECT a.root_id AS id FROM harness_shared.event_awaits a
+       JOIN harness_shared.event_await_nodes n ON n.id = a.root_id AND n.workspace_id = a.workspace_id
+       WHERE a.workspace_id = ${ws} AND a.node_id IS NOT NULL
+         AND a.fired_at IS NOT NULL AND a.member_fired_at IS NULL
+         AND n.fired_at IS NULL AND n.cancelled_at IS NULL
+      UNION
+      SELECT id FROM harness_shared.event_await_nodes
+       WHERE workspace_id = ${ws} AND parent_id IS NULL
+         AND fired_at IS NULL AND cancelled_at IS NULL
+         AND expires_ts IS NOT NULL AND expires_ts <= now()
+      UNION
+      SELECT n.id FROM harness_shared.event_await_nodes n
+       WHERE n.workspace_id = ${ws} AND n.parent_id IS NULL AND n.fired_at IS NOT NULL
+         AND n.cancelled_at IS NULL
+         AND (n.fired_count >= n.required_count OR n.timeout_behavior = 'wake')
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.event_wake_deliveries d
+            JOIN harness_shared.event_awaits a ON a.id = d.await_id
+            WHERE a.workspace_id = n.workspace_id AND a.root_id = n.id AND a.node_id IS NULL
+         )
+    ) candidates ORDER BY id LIMIT ${limit}
+  `;
+  let deliveries = 0;
+  for (const row of rows) {
+    const result = await reconcileComposedRoot(Number(row.id), true);
+    if (result.delivered) deliveries++;
+  }
+  return { roots: rows.length, deliveries };
 }

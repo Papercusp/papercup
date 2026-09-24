@@ -27,6 +27,7 @@ import {
   type TurnProvider,
 } from '@papercusp/papercusp-shared/agent';
 import { classifyWedgeText } from '../../search/session-end-reason';
+import { missingClaudeToolReferenceEvidence } from '../../claude-resume-tool-references.mjs';
 
 /**
  * The raw exit observation of a detached `resume-headless` turn — the exit code +
@@ -50,6 +51,20 @@ export interface ResumeTurnExitRaw {
   outputProtocol?: 'codex-jsonl';
 }
 
+/** Identity and transcript evidence for the detached resume that just exited. */
+export interface ResumeTurnContext {
+  advSessionId: number;
+  ownerId: string | null;
+  sessionId: string | null;
+  startedAt: string | null;
+  workspaceId: string | null;
+  agent: string | null;
+  transcriptPath: string | null;
+  /** Set by the executor when the transcript detector quarantined this incarnation. */
+  poisoned?: boolean;
+  poisonReason?: string;
+}
+
 /** Survived (the turn ran to completion) vs died (with the classified failure). */
 export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 
@@ -70,9 +85,6 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 const STALE_RESUME_TARGET_RE =
   /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bno conversation found with session id\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b|\bno rollout found for thread\b/i;
 
-const MISSING_TOOL_REFERENCE_RE =
-  /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
-
 export function isStaleResumeTargetMessage(message: string): boolean {
   return STALE_RESUME_TARGET_RE.test(message);
 }
@@ -83,14 +95,15 @@ export function isStaleResumeTargetError(outcome: ResumeTurnOutcome): boolean {
 
 function missingToolReferenceEvidence(stderr: string, stdout: string): string | null {
   for (const stream of [stderr, stdout]) {
-    const match = MISSING_TOOL_REFERENCE_RE.exec(stream);
-    if (match) return match[0].trim().slice(0, 200);
+    const evidence = missingClaudeToolReferenceEvidence(stream);
+    if (evidence) return evidence;
   }
   return null;
 }
 
 export function isUnavailableToolReferenceError(outcome: ResumeTurnOutcome): boolean {
-  return !outcome.ok && outcome.error.class === 'permanent' && MISSING_TOOL_REFERENCE_RE.test(outcome.error.message);
+  return !outcome.ok && outcome.error.class === 'permanent' &&
+    missingClaudeToolReferenceEvidence(outcome.error.message) !== null;
 }
 
 /**

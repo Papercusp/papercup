@@ -1349,6 +1349,48 @@ export default defineTool({
       }
     }
 
+    // A work item or plan item can settle between the pre-registration state
+    // read and the await insert. Re-read the CURRENT business state after the
+    // row is durable; a concurrent emitter wins cancelAwait's pending guard
+    // and keeps its queued wake. A reopened item remains pending for its next
+    // terminal transition rather than trusting an old fire latch.
+    if (doneTarget || planItemDoneMatch) {
+      const settled = await withBoundedTimeout(
+        doneTarget
+          ? liveSettledProbe(doneTarget).then((result) => result.verdict === 'settled')
+          : (async () => {
+              const [, planSlug, planItemId] = planItemDoneMatch!;
+              const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+              const { harnessSlug } = await resolvePlanScope({
+                harnessSlug: typeof harnessRaw === 'string' ? harnessRaw : undefined,
+              });
+              return (await planItemEffectiveStatus(harnessSlug, planSlug, planItemId)) === 'done';
+            })(),
+        { fallback: false, timeoutMs: 1_500, label: 'events-await:terminalStateAfterRegister' },
+      );
+      if (settled.value) {
+        let retired = false;
+        try {
+          retired = await cancelAwait({ awaitId: row.id, subscriberId: identity.ownerId });
+        } catch {
+          // An unreadable cancellation leaves the durable await in place.
+        }
+        if (retired) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_done: true,
+                event: eventKey,
+                advice: 'The current item reached terminal state during registration. Inspect its result and continue now.',
+              }),
+            }],
+          };
+        }
+      }
+    }
+
     // ── EI-21565976517547834: close the recurring claimable-key registration
     // race. `work-item:claimable` is an EDGE signal, but the condition it announces
     // is level-triggered: a matching row may still be claimable after its release /

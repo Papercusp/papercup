@@ -103,6 +103,7 @@ async function resolveBlueprintListing(
   releaseVersion?: string;
   releaseContentHash?: string;
   releaseManifest?: CupboardReleaseManifest;
+  moderationApproved: boolean;
 } | { error: string; status: number }> {
   const base = resolveCupboardBaseUrl();
   let row: Record<string, unknown> | null = null;
@@ -150,7 +151,10 @@ async function resolveBlueprintListing(
     const verdict = parsed == null ? null : validateListingManifest(parsed);
     if (verdict?.ok) releaseManifest = verdict.manifest;
   }
-  return { githubUrl, listingRef, releaseVersion, releaseContentHash, releaseManifest };
+  // This is the Cupboard row's moderation status, not the publisher-authored
+  // reviewStatus inside the signed release manifest.
+  return { githubUrl, listingRef, releaseVersion, releaseContentHash, releaseManifest,
+    moderationApproved: row.review_status === 'approved' };
 }
 
 function activationLayers(ids: readonly string[] | undefined): BlueprintActivationLayer[] {
@@ -377,6 +381,7 @@ export async function installBlueprintFromCupboard(
   let expectedRelease:
     | { version?: string; contentHash?: string; manifest?: CupboardReleaseManifest }
     | undefined;
+  let modeApproval: { listingId: string; approvedArtifactContentHash: string } | undefined;
 
   if (!githubUrl && input.listingId) {
     const resolved = await resolveBlueprintListing(String(input.listingId));
@@ -388,6 +393,9 @@ export async function installBlueprintFromCupboard(
       ...(resolved.releaseContentHash ? { contentHash: resolved.releaseContentHash } : {}),
       ...(resolved.releaseManifest ? { manifest: resolved.releaseManifest } : {}),
     };
+    if (resolved.moderationApproved && resolved.releaseContentHash) {
+      modeApproval = { listingId: String(input.listingId), approvedArtifactContentHash: resolved.releaseContentHash };
+    }
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
@@ -422,6 +430,7 @@ export async function installBlueprintFromCupboard(
       listingRef,
       activationStack: activationLayers(input.activationStack),
       expectedRelease,
+      modeApproval,
       ...(capabilityContext ? { capabilityContext } : {}),
     }, makeInstallCoreDeps(capabilityScope));
 

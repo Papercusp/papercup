@@ -77,6 +77,9 @@ export interface InstallBlueprintCoreInput {
      *  signature is verified before any bytes land; absent installs unsigned. */
     manifest?: CupboardReleaseManifest | null;
   };
+  /** Trusted Cupboard moderation receipt for this exact listed artifact. Direct
+   * GitHub URL installs cannot supply one through the public install door. */
+  modeApproval?: { listingId: string; approvedArtifactContentHash: string };
   capabilityContext?: {
     workspaceId: string;
     potSlug: string;
@@ -303,6 +306,14 @@ export async function installBlueprintFromCupboardCore(
     if (!SAFE_BLUEPRINT_ID_RE.test(id)) {
       throw new InstallBlueprintError(`unsafe blueprint id ${JSON.stringify(raw.id)} — must be a single-segment slug`, 400);
     }
+    const modePolicyRef = (raw.mode as { policyRef?: unknown } | undefined)?.policyRef;
+    if (typeof modePolicyRef === 'string' &&
+        (!input.modeApproval || !input.expectedRelease?.contentHash ||
+         input.modeApproval.approvedArtifactContentHash.toLowerCase() !== input.expectedRelease.contentHash.toLowerCase())) {
+      throw new InstallBlueprintError(
+        `mode identity "${id}" needs an approved Cupboard listing pinned to its exact release`, 422,
+      );
+    }
 
     // Abstract parent-only blueprint (no workItem/spine — `base`): skip the
     // full semantic validation (it requires a runnable shape); it only ever
@@ -352,7 +363,11 @@ export async function installBlueprintFromCupboardCore(
     // every consumed parent, prompt file and bundle even after the clone is removed.
     let closure: NonNullable<Parameters<typeof validateBlueprintDependencies>[2]>;
     try {
-      const source = resolveBlueprintSource(raw, { resolve: resolveExtends, sourcePath: join(bpDir, 'blueprint.yaml') });
+      const source = resolveBlueprintSource(raw, {
+        resolve: resolveExtends,
+        sourcePath: join(bpDir, 'blueprint.yaml'),
+        lint: { approvedModePolicyRefs: typeof modePolicyRef === 'string' ? [modePolicyRef] : [] },
+      });
       if (!source.validation.ok) throw new Error(source.validation.errors.map((error) => error.message).join('; '));
       const resolved = BlueprintSourceDocumentSchema.parse(source.merged);
       // Identities are frequently abstract source fragments. Authority
@@ -563,6 +578,11 @@ export async function installBlueprintFromCupboardCore(
         pins: depCheck.pins ?? [],
         activationStack: input.activationStack,
         expectedRelease: input.expectedRelease,
+        modeApproval: typeof modePolicyRef === 'string' ? {
+          listingId: input.modeApproval!.listingId,
+          policyRef: modePolicyRef,
+          approvedArtifactContentHash: input.modeApproval!.approvedArtifactContentHash,
+        } : undefined,
       });
     } catch (error) {
       let rollbackFailure: unknown;
