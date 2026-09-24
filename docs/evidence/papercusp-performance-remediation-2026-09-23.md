@@ -528,3 +528,28 @@ EI-24134111853441553, stamped 2026-09-24T09:21:22Z. P-001's separate card
 EI-24123000311780258 failed its independent audit EI-24133643922268786: replay
 changed freshness from pass to fail and reported evaluator-build drift. That
 failure remains unresolved and must not be described as pending or passed.
+
+### P-001 evidence-scope correction
+
+The failed audit correctly detected two stale bindings. Their measured moved
+path was this whole-plan report; the implementation and test hashes had not
+changed. Bindings 11264/11265 replace the counterexample/census bindings with
+the complete implementation set already tracked by test binding 10747. The
+six-outcome census is preserved in the immutable binding details. Run 19210434
+remains the executed proof; it was not rerun. The old failure stays in history.
+
+The corrected unscoped evaluator passes PERF-P-001, and certification under
+the plan's governing `plan-class-bugfix` filed EI-24135395646362393. Its fresh
+independent audit reservation is pending, reserved at 09:41:48.055Z. This
+supersedes the earlier card, not its historical failed audit.
+
+A fresh bounded read of the existing shared Health row returned snapshot
+`computed_at=1790242945921`, `evaluatedAt=1790242938485`, producer version 1,
+and performance history `{status:'ok', lastCapturedAt:'2026-09-24T09:38:26.971Z',
+ageMs:233293}`. The operational binding persists these values and its query
+directly, with implementation-only source dependencies, replacing binding
+11011. This is current-build shared-snapshot evidence, not final shipment.
+
+The new Learning concurrency test also passed the scoped TypeScript gate
+(`LINT_TSC_RESULT`, exit 0, HEAD `2bf2467436`). The full compiler reported
+diagnostics elsewhere; this does not claim a clean whole-project typecheck.
