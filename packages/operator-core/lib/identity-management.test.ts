@@ -173,6 +173,11 @@ describe('identity management service', () => {
         ok: false,
         errors: [expect.objectContaining({ code: 'attestation-missing' })],
       });
+      const catalog = await listIdentitySources({ after: 'zy', limit: 10 });
+      expect(catalog.identities.some((entry) => entry.id === identityId)).toBe(false);
+      expect(catalog.unreadable).toContainEqual(expect.objectContaining({
+        id: identityId, error: expect.stringContaining('attestation-missing'),
+      }));
       await expect(resolveIdentityStackMutation({
         workspaceId: 'papercusp-workspace', ownerId: 'su-test', action: 'preview',
         identityId, slot: 'domain', operatorBaseUrl: 'http://127.0.0.1:3170', modeSection: '',
