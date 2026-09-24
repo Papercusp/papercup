@@ -176,7 +176,7 @@ import { lintInstructionText, type InstructionLintReport } from './instruction-l
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
-import type { CompiledAgentSpecification, LoadedBlueprint, StackDocument } from '@papercusp/orchestrator/blueprint';
+import type { BlueprintSourceDocument, CompiledAgentSpecification, CompositionPromptFileInput, LoadedBlueprint, ResolveExtendsPath, StackDocument } from '@papercusp/orchestrator/blueprint';
 import type { Sql } from 'postgres';
 
 export interface BuildRoleLaunchSpecInput {
@@ -450,18 +450,31 @@ async function roleStackDocuments(input: {
  * This keeps authored grants and model defaults in the final configuration,
  * where the existing host consumers read them, with loader validation and
  * per-layer provenance intact. An unselected launch keeps its original source. */
+type EffectiveLaunchSource = {
+  source: LoadedBlueprint | Record<string, unknown>;
+  configuration: LoadedBlueprint['blueprint'] | BlueprintSourceDocument;
+  resolve?: ResolveExtendsPath;
+  pinnedFixedPromptFiles: CompositionPromptFileInput[];
+};
+
 async function selectedLaunchCompositionSource(
   source: Awaited<ReturnType<typeof launchCompositionSource>>,
   stack: readonly string[],
   cwd: string,
-) {
-  if (stack.length === 0) return source.source;
-  const [{ resolveBlueprint, stackBindingFromRefs }, { getIdentitySource }, { operatorResolveExtends }] =
+) : Promise<EffectiveLaunchSource> {
+  const [{ BlueprintSourceDocumentSchema, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
+    { getIdentitySource }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./agent-identities/source'),
       import('./blueprint/installed-blueprints'),
     ]);
+  const original = (): EffectiveLaunchSource => ({
+    source: source.source,
+    configuration: source.loaded?.blueprint ?? BlueprintSourceDocumentSchema.parse(source.source),
+    pinnedFixedPromptFiles: [],
+  });
+  if (stack.length === 0) return original();
   const paths = new Map<string, string>();
   const parents: string[] = [];
   if (source.loaded?.sourcePath) {
@@ -469,28 +482,61 @@ async function selectedLaunchCompositionSource(
     parents.push('__launch_root__');
   }
   const selected = [] as Array<{ id: string; path: string; hash: string }>;
+  const pinnedFixedPromptFiles: CompositionPromptFileInput[] = [];
   for (const [index, layer] of stackBindingFromRefs(stack).layers.entries()) {
     const identity = await getIdentitySource(layer.id, { repoDir: cwd });
     if (!identity.ok || !identity.sourcePath ||
         !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
       throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is unavailable for ${layer.slot} composition`);
     }
+    // Fixed and provider-rendered prompt/turn contributions are bound by their
+    // existing SU producer sinks. They have no launch configuration to merge;
+    // putting their declarations into this resource artifact would require a
+    // second delivery of the same live values and fail the compiler's input
+    // closure. A document mixing those declarations with launch configuration
+    // must get a producer binding before it can be admitted here.
+    const configurationKeys = Object.keys(identity.identity).filter((key) =>
+      !['id', 'extends', 'version', 'description', 'slots', 'contributions', 'mode',
+        'publisher', 'attestation', 'visibility'].includes(key));
+    const contributions = identity.identity.contributions ?? [];
+    if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider')) continue;
+    if (contributions.some((entry) => entry.source !== 'fixed' || entry.inputKind !== 'prompt-file')) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} mixes configuration with producer contributions that need binding`);
+    }
+    for (const entry of contributions) {
+      const fileName = entry.ref.split(':').at(-1);
+      if (!fileName) throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has no fixed prompt source for ${entry.ref}`);
+      pinnedFixedPromptFiles.push({ ref: entry.ref,
+        path: path.join(path.dirname(identity.sourcePath), 'prompts', `${fileName}.md`) });
+    }
     const alias = `__launch_identity_${index}__`;
     paths.set(alias, identity.sourcePath);
     parents.push(alias);
     selected.push({ id: layer.id, path: identity.sourcePath, hash: identity.contentHash });
   }
+  if (selected.length === 0) return original();
   const fallback = operatorResolveExtends({ localDirs: [path.join(cwd, '.papercusp', 'blueprints')] });
-  const own = source.loaded ? {} : source.source;
-  const composed = resolveBlueprint({ ...own, id: `effective-launch-${source.loaded?.blueprint.id ?? 'compatibility'}`,
-    extends: parents }, { resolve: (id) => paths.get(id) ?? fallback(id) });
+  const resolve: ResolveExtendsPath = (id) => paths.get(id) ?? fallback(id);
+  // A standalone identity is an abstract source. The role launcher supplies
+  // its native execution session; a synthetic work item or fleet would leak
+  // SU-specific fields into unrelated identities. A real harness blueprint
+  // remains runnable and receives the same selected peer layers.
+  const raw = { id: `effective-launch-${source.loaded?.blueprint.id ?? 'identity'}`, extends: parents };
+  const resolved = source.loaded
+    ? resolveBlueprint(raw, { resolve })
+    : resolveBlueprintSource(raw, { resolve });
+  if (!resolved.validation.ok) {
+    throw new Error('selected launch identity composition has validation errors');
+  }
   for (const entry of selected) {
-    if (!composed.layers.some((layer) => layer.id === entry.id && layer.sourcePath === entry.path &&
+    if (!resolved.layers.some((layer) => layer.id === entry.id && layer.sourcePath === entry.path &&
         layer.contentHash === entry.hash)) {
       throw new Error(`launch stack identity ${JSON.stringify(entry.id)} changed during composition`);
     }
   }
-  return composed;
+  return 'merged' in resolved
+    ? { source: raw, resolve, configuration: BlueprintSourceDocumentSchema.parse(resolved.merged), pinnedFixedPromptFiles }
+    : { source: resolved, configuration: resolved.blueprint, pinnedFixedPromptFiles };
 }
 
 /** Compile the exact final launch bytes through the one P-038 artifact boundary. */
@@ -504,36 +550,37 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
   const { compileAgentSpecification, specificationPrompt } =
     await import('@papercusp/orchestrator/blueprint');
   const resourceArtifacts: CompiledAgentSpecification[] = [];
-  const compositionSource = await selectedLaunchCompositionSource(source, stack, input.cwd);
+  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd);
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
   const compileInput = {
     prompt,
+    pinnedFixedPromptFiles: composition.pinnedFixedPromptFiles,
     mutableState: { ref: 'launch-state-v1', revision: stateRevision, value: state },
   };
   const { resolveSeedPackKey } = await import('./knowledge-packs/seed-pack-key');
-  const effectiveBlueprint = stack.length > 0
-    ? (compositionSource as LoadedBlueprint).blueprint
-    : source.loaded?.blueprint;
-  const harnessResources = effectiveBlueprint && (
-    effectiveBlueprint.bundles.length > 0 ||
-    (effectiveBlueprint.grants?.requires.length ?? 0) > 0 ||
-    (effectiveBlueprint.grants?.optional.length ?? 0) > 0 ||
+  const effectiveBlueprint = composition.configuration;
+  const harnessResources = (
+    (effectiveBlueprint.bundles?.length ?? 0) > 0 ||
+    (effectiveBlueprint.grants?.requires?.length ?? 0) > 0 ||
+    (effectiveBlueprint.grants?.optional?.length ?? 0) > 0 ||
     Boolean(resolveSeedPackKey(effectiveBlueprint).packId)
   );
   let specificationArtifact: CompiledAgentSpecification;
-  if (harnessResources && effectiveBlueprint) {
+  if (harnessResources) {
     if (!input.workspaceId?.trim() || !input.harnessSlug?.trim()) {
       throw new Error('harness resource bundles need an explicit workspace and harness scope');
     }
     const { compileBlueprintWithPackages } = await import('./blueprint/compile-packages');
-    specificationArtifact = await compileBlueprintWithPackages(compositionSource, {
-      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, input: compileInput,
+    specificationArtifact = await compileBlueprintWithPackages(composition.source, {
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+      ...(composition.resolve ? { resolve: composition.resolve } : {}), input: compileInput,
     });
     resourceArtifacts.push(specificationArtifact);
   } else {
-    specificationArtifact = compileAgentSpecification({ source: compositionSource, ...compileInput });
+    specificationArtifact = compileAgentSpecification({ source: composition.source,
+      ...(composition.resolve ? { resolve: composition.resolve } : {}), ...compileInput });
   }
   return {
     promptText: specificationPrompt(specificationArtifact),
