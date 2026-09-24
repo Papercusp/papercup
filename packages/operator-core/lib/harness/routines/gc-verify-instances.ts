@@ -63,10 +63,30 @@
  *     defaults to 6h so even a long interactive --boot-only session is safe.
  *   - BOUND every run, and support dryRun that names what it WOULD reap (a bare count
  *     hides destruction — see the gen-gallery.py lesson).
+ *
+ * ── SCAN A ROOT SET, NOT JUST /tmp (WI-10002867, owner #443) ────────────────────
+ *
+ * The verifier writes TWO kinds of `verify-tauri-headless.*` dir, and they need not
+ * share a filesystem:
+ *
+ *   - `$WORK`                 — `${TMPDIR:-/tmp}`; carries stop.sh.
+ *   - `$OPERATOR_SOURCE_WORK` — the operator source + hardlinked dependency snapshot.
+ *     Hardlinks cannot cross devices, so when /tmp is on another device than the repo
+ *     (true on the dev box: /tmp is its own 7.3T disk, the repo is on the 1.9T root)
+ *     `select_verifier_snapshot_root` puts it under `<repo>/.papercusp/tmp`. It holds a
+ *     `.papercusp-run` owner marker but NO stop.sh; the WORK dir's stop.sh removes it.
+ *
+ * This sweep used to scan only /tmp, so whenever a snapshot outlived its WORK dir (run
+ * SIGKILLed before stop.sh existed, WORK removed by another cleaner) nothing ever
+ * looked at it again. Measured 2026-09-23: three such snapshots, 20GB, dated Sep 7-9,
+ * sat in `papercusp/.papercusp/tmp` while the root FS went to 100%. Hence
+ * {@link defaultVerifyScanRoots} and the live-owner refusal below.
  */
 import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, rm, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
@@ -109,9 +129,107 @@ export const VERIFY_INSTANCE_MAX_PER_RUN_DEFAULT = 50;
  */
 export const PROTECTED_DISPLAYS = new Set([':0', ':1', ':2']);
 
+/** Where discovery looks for checkouts, each of which may own a `.papercusp/tmp`. */
+export interface VerifyScanRootEnv {
+  /** Always-scanned bases (default: /tmp and os.tmpdir()). */
+  baseDirs?: string[];
+  /** Parent of the sibling checkouts (default $PAPERCUSP_WORKSPACE_ROOT or ~/papercupai-workspace). */
+  workspaceRoot?: string;
+  /** Parent of the pot hives, some of which a workspace entry symlinks into (default ~/.papercusp/hives). */
+  hivesRoot?: string;
+}
+
+async function isDir(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The root SET this sweep scans: the base temp dirs plus every checkout's
+ * `.papercusp/tmp` (where the verifier's cross-device source snapshot lands — see the
+ * header). Deduplicated by realpath, because /tmp is usually os.tmpdir() and several
+ * workspace entries are symlinks into the hives. Missing dirs are simply absent.
+ */
+export async function defaultVerifyScanRoots(env: VerifyScanRootEnv = {}): Promise<string[]> {
+  const workspaceRoot =
+    env.workspaceRoot ??
+    (process.env.PAPERCUSP_WORKSPACE_ROOT?.trim() || join(homedir(), 'papercupai-workspace'));
+  const hivesRoot = env.hivesRoot ?? join(homedir(), '.papercusp', 'hives');
+  const candidates = [...(env.baseDirs ?? ['/tmp', tmpdir()])];
+  for (const parent of [workspaceRoot, hivesRoot]) {
+    let names: string[];
+    try {
+      names = await readdir(parent);
+    } catch {
+      continue;
+    }
+    for (const name of names) candidates.push(join(parent, name, '.papercusp', 'tmp'));
+  }
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!(await isDir(candidate))) continue;
+    let real: string;
+    try {
+      real = await realpath(candidate);
+    } catch {
+      continue;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    roots.push(real);
+  }
+  return roots;
+}
+
+/** Field 22 (starttime) of /proc/<pid>/stat, parsed after the `comm` field's closing paren. */
+async function processStartTicks(pid: number): Promise<string | null> {
+  try {
+    const raw = await readFile(`/proc/${pid}/stat`, 'utf8');
+    return raw.slice(raw.lastIndexOf(')') + 2).trim().split(/\s+/)[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a dir's `.papercusp-run` marker (written by the verifier: `pid=` plus
+ * `start_ticks=`) names a process that is still alive. The start-ticks comparison
+ * means a recycled pid cannot keep an abandoned dir alive, the same rule as
+ * `scripts/lib/cargo-result.mjs` `activeRunMarker`. No marker, or an unreadable one,
+ * is not live.
+ */
+export async function runMarkerIsLive(dir: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(join(dir, '.papercusp-run'), 'utf8');
+  } catch {
+    return false;
+  }
+  const values = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq > 0) values.set(line.slice(0, eq), line.slice(eq + 1).trim());
+  }
+  const pid = Number(values.get('pid'));
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    // EPERM = alive but not ours to signal; anything else (ESRCH) = gone.
+    if ((err as NodeJS.ErrnoException).code !== 'EPERM') return false;
+  }
+  const expected = values.get('start_ticks');
+  if (!expected) return true;
+  return (await processStartTicks(pid)) === expected;
+}
+
 export interface GcVerifyInstancesOptions {
-  /** Root to scan (default /tmp). Injected by the tests. */
-  tmpDir?: string;
+  /** Roots to scan (default {@link defaultVerifyScanRoots}). Injected by the tests. */
+  roots?: string[];
   ttlHours?: number;
   maxPerRun?: number;
   /** Report what WOULD be reaped without killing or deleting anything. */
@@ -142,6 +260,8 @@ export interface GcVerifyInstancesResult {
   skipped: number;
   dryRun: boolean;
   ttlHours: number;
+  /** The roots actually scanned, so a run can be audited for what it could NOT see. */
+  roots: string[];
 }
 
 /**
@@ -187,7 +307,7 @@ async function defaultRunStopScript(stopScriptPath: string): Promise<void> {
 export async function gcVerifyInstances(
   opts: GcVerifyInstancesOptions = {},
 ): Promise<GcVerifyInstancesResult> {
-  const tmpDir = opts.tmpDir ?? '/tmp';
+  const roots = opts.roots ?? (await defaultVerifyScanRoots());
   const ttlHours =
     Number.isFinite(opts.ttlHours) && (opts.ttlHours as number) > 0
       ? (opts.ttlHours as number)
@@ -206,26 +326,27 @@ export async function gcVerifyInstances(
   let bytesFreed = 0;
   let scanned = 0;
 
-  // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
-  // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
-  // `.startsWith` did not exist on it.
-  let entries: Dirent[];
-  try {
-    entries = await readdir(tmpDir, { withFileTypes: true });
-  } catch {
-    return { scanned: 0, reaped: 0, bytesFreed: 0, instances: [], skipped: 0, dryRun, ttlHours };
-  }
-
-  // Oldest first, so a capped run always makes progress on the worst offenders
-  // rather than nibbling whichever dirs readdir happened to return first.
+  // Oldest first ACROSS every root, so a capped run always makes progress on the worst
+  // offenders rather than nibbling whichever dirs readdir happened to return first.
   const candidates: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const e of entries) {
-    if (!e.isDirectory() || !e.name.startsWith(VERIFY_WORK_DIR_PREFIX)) continue;
-    const dir = `${tmpDir}/${e.name}`;
+  for (const root of roots) {
+    // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
+    // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
+    // `.startsWith` did not exist on it.
+    let entries: Dirent[];
     try {
-      candidates.push({ dir, mtimeMs: (await stat(dir)).mtimeMs });
+      entries = await readdir(root, { withFileTypes: true });
     } catch {
-      /* vanished between readdir and stat */
+      continue; // a missing root must never throw into the routine tick
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || !e.name.startsWith(VERIFY_WORK_DIR_PREFIX)) continue;
+      const dir = join(root, e.name);
+      try {
+        candidates.push({ dir, mtimeMs: (await stat(dir)).mtimeMs });
+      } catch {
+        /* vanished between readdir and stat */
+      }
     }
   }
   candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -255,8 +376,21 @@ export async function gcVerifyInstances(
     try {
       stopScript = await readFile(stopScriptPath, 'utf8');
     } catch {
-      // No stop.sh — a partially-created dir (the harness died mid-boot). There is
-      // nothing to tear down, so the dir alone is safe to remove.
+      // No stop.sh: a partially-created dir (the harness died mid-boot), or an operator
+      // source snapshot whose teardown lives in a WORK dir elsewhere. There is nothing
+      // to tear down, so the dir alone is safe to remove — UNLESS its owner still runs.
+      //
+      // ── REFUSAL 4: a live owner. Only this branch checks, and deliberately so: a
+      // snapshot of a still-running rig would otherwise be deleted out from under its
+      // sidecar. A dir WITH stop.sh keeps the TTL-only rule, because a forgotten
+      // --boot-only rig's marker names its port-lock keeper, which stays alive for as
+      // long as the rig does — honouring it there would make those rigs immortal. When
+      // that rig IS reaped, its stop.sh removes this snapshot too.
+      if (await runMarkerIsLive(dir)) {
+        skipped += 1;
+        instances.push(record({ skipped: 'owner run still alive (.papercusp-run)' }));
+        continue;
+      }
       const bytes = await dirBytes(dir);
       if (!dryRun) {
         try {
@@ -314,5 +448,5 @@ export async function gcVerifyInstances(
     instances.push(record({ display, bytes }));
   }
 
-  return { scanned, reaped, bytesFreed, instances, skipped, dryRun, ttlHours };
+  return { scanned, reaped, bytesFreed, instances, skipped, dryRun, ttlHours, roots };
 }

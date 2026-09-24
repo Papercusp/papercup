@@ -7,12 +7,15 @@
  * Config (routine `trigger_config`, all optional):
  *   - `ttl_hours`   — override VERIFY_INSTANCE_TTL_HOURS_DEFAULT (6).
  *   - `max_per_run` — override VERIFY_INSTANCE_MAX_PER_RUN_DEFAULT (50).
- *   - `tmp_dir`     — override the scan root (default /tmp).
+ *   - `tmp_dirs`    — override the scan ROOT SET (string array). Default
+ *                     `defaultVerifyScanRoots()`: /tmp, os.tmpdir() and every checkout's
+ *                     `.papercusp/tmp`. Scanning /tmp alone missed 20GB of cross-device
+ *                     source snapshots on 2026-09-23 (WI-10002867).
  *   - `dry_run`     — report matches without killing or deleting.
  *
  * HOST-LOCAL, not workspace-scoped: it reaps files and processes on the machine the
- * tick runs on. `ctx.workspaceId` is deliberately unused — there is nothing
- * multi-tenant about /tmp.
+ * tick runs on. `ctx.workspaceId` is deliberately unused — nothing here is
+ * multi-tenant.
  *
  * The log line names the freed bytes and a sample of dirs rather than a bare count:
  * an unattended sweep that deletes 300GB should say what it deleted.
@@ -28,9 +31,12 @@ registerSystemAction('gc-verify-instances', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const ttlHours = Number(cfg.ttl_hours);
   const maxPerRun = Number(cfg.max_per_run);
+  const roots = Array.isArray(cfg.tmp_dirs)
+    ? cfg.tmp_dirs.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
+    : [];
   const result = await gcVerifyInstances({
     dryRun: cfg.dry_run === true,
-    ...(typeof cfg.tmp_dir === 'string' && cfg.tmp_dir ? { tmpDir: cfg.tmp_dir } : {}),
+    ...(roots.length > 0 ? { roots } : {}),
     ...(Number.isFinite(ttlHours) && ttlHours > 0 ? { ttlHours } : {}),
     ...(Number.isFinite(maxPerRun) && maxPerRun > 0 ? { maxPerRun } : {}),
   });
@@ -38,11 +44,12 @@ registerSystemAction('gc-verify-instances', async (ctx: SystemActionCtx) => {
     const sample = result.instances
       .filter((i) => !i.skipped)
       .slice(0, 5)
-      .map((i) => `${i.dir.split('/').pop()} (${Math.round(i.ageHours)}h)`)
+      .map((i) => `${i.dir} (${Math.round(i.ageHours)}h)`)
       .join(', ');
     console.log(
       `[gc-verify-instances] ${result.dryRun ? 'would reap' : 'reaped'} ${result.reaped} abandoned ` +
-        `verify instance(s) older than ${result.ttlHours}h, freeing ${gib(result.bytesFreed)} — ${sample}`,
+        `verify instance(s) older than ${result.ttlHours}h across ${result.roots.length} root(s), ` +
+        `freeing ${gib(result.bytesFreed)} — ${sample}`,
     );
   }
   // A refusal is worth a line of its own: it is the guard doing its job, and silence
