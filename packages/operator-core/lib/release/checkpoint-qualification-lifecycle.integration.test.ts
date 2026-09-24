@@ -86,9 +86,14 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       })).status).toBe('updated');
       const stored = await readStoredQualification(target);
       expect(stored).toMatchObject({ status: 'present', transaction: {
+        phase: 'waiting',
         outcome: { kind: 'pre-suite-no-verdict', reason },
-        lastStartedAtMs: null, lastTerminalVerdictAtMs: null,
       } });
+      if (stored.status === 'present') {
+        expect(projectCheckpointQualificationState(stored.transaction, 300).clocks).toMatchObject({
+          lastStartedAtMs: null, lastTerminalVerdictAtMs: null,
+        });
+      }
     },
   );
 
