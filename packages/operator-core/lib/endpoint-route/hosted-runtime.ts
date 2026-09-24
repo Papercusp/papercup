@@ -42,6 +42,7 @@ import type { HostedPrincipal } from '../auth/hosted-principal';
 import {
   HostedProviderDelegationManager,
   PostgresHostedProviderDelegationStore,
+  type HostedDelegationOrganization,
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
@@ -231,6 +232,8 @@ export interface HostedRuntimeDependencies {
   /** Injectable hosted SPA route leaves for hermetic composition tests. */
   readonly hostedBrowser?: HostedBrowserRouteDependencies;
   readonly providerDelegationAdapters?: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
+  /** Default: the organization's own account in the GCP identity project (D-397). */
+  readonly delegationOrganization?: (organizationId: string) => HostedDelegationOrganization;
 }
 
 function requiredConfiguration(value: unknown, name: string): string {
@@ -370,6 +373,7 @@ export async function createHostedRuntime(
   };
   const connectorGateway = new HostedWorkspaceConnectorGateway(new PostgresHostedWorkspaceConnectorStore(runService));
   const delegationAdapters = dependencies.providerDelegationAdapters ?? productionProviderDelegationAdapters();
+  const delegationOrganization = dependencies.delegationOrganization ?? gcpDelegationOrganization;
   const providerDelegationManager = (principal: HostedPrincipal) =>
     new HostedProviderDelegationManager(
       new PostgresHostedProviderDelegationStore(
@@ -378,7 +382,7 @@ export async function createHostedRuntime(
       ),
       delegationAdapters,
       // The session's organization, never the request body's (D-397).
-      gcpDelegationOrganization(principal.activeOrganizationId),
+      delegationOrganization(principal.activeOrganizationId),
     );
 
   const provider = createWorkOSHostedIdentityProvider({
@@ -411,6 +415,7 @@ export async function createHostedRuntime(
       controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
       runService,
       delegationAdapters,
+      delegationOrganization,
       enabledOrganizations: configuration.firstWorkspaceOrganizations ?? new Set(),
       ...(configuration.provisioningDbosAppVersion
         ? {

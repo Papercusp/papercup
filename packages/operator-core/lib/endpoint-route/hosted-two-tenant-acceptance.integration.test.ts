@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
   deriveTenantContext,
@@ -22,8 +22,10 @@ import { HOSTED_SESSION_COOKIE, type HostedSession } from '../auth/hosted-sessio
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters';
 import type { SyncEvent } from '../sync-sse';
-import { HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV } from '../workspace-host/hosted-gcp-auth';
-import type { HostedProviderDelegationAdapter } from '../workspace-host/hosted-provider-delegation';
+import type {
+  HostedDelegationOrganization,
+  HostedProviderDelegationAdapter,
+} from '../workspace-host/hosted-provider-delegation';
 import {
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
@@ -210,6 +212,17 @@ function delegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedPr
   return { gcp: adapter, aws: adapter, azure: adapter };
 }
 
+// Stands in for the organization's GCP identity account (D-397), which production creates
+// through the IAM API on first use.
+function delegationOrganization(organizationId: string): HostedDelegationOrganization {
+  const email = `pco-${organizationId}@papercusp-org-identities.iam.gserviceaccount.com`;
+  return {
+    organizationId,
+    gcpTrustedPrincipal: async () => `serviceAccount:${email}`,
+    gcpPapercuspHosting: async () => ({ projectId: 'papercusp-hosting', serviceAccountEmail: email }),
+  };
+}
+
 function fakeSecrets(reference: string): Promise<string> {
   const values: Record<string, string> = {
     'test:hosted-cookie': 'p030-hosted-cookie-secret-is-longer-than-thirty-two-bytes',
@@ -333,6 +346,7 @@ function runtimeDependencies(): HostedRuntimeDependencies {
     runService,
     runTenant,
     providerDelegationAdapters: delegationAdapters(),
+    delegationOrganization,
     hostedBrowser: {
       runTenant,
       backfillSince: () => backfillEvents,
@@ -342,8 +356,6 @@ function runtimeDependencies(): HostedRuntimeDependencies {
 }
 
 beforeAll(async () => {
-  // GCP delegation onboarding names the organization's Papercusp identity (D-397).
-  vi.stubEnv(HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV, 'papercusp-org-identities');
   db = await createFreshTestDb({ prefix: 'hostedtwotenant' });
   sql = postgres(db.url, { max: 8, onnotice: () => {} });
   await provisionDatabase(sql);
@@ -356,7 +368,6 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  vi.unstubAllEnvs();
   await sql?.end({ timeout: 5 }).catch(() => {});
   await db?.drop().catch(() => {});
 });
