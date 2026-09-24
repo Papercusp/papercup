@@ -45,6 +45,7 @@ mod notify;
 mod operator_voice_bus;
 mod plans_board;
 mod reap;
+mod remote_connect;
 mod self_install;
 mod semantic_tool_cards;
 mod session_config;
@@ -108,6 +109,12 @@ Options:
   --seat=<ref>               Consume that fleet's delegated seat (requires --fleet)
   -h, --help                 Print this help text
   -V, --version              Print version information
+
+Remote hosts (the same saved connections psu uses):
+  --connect[=<name>[/<workspace>]]  Run pui on a saved remote host; no name opens a picker
+  --connect-login[=<portal>]        Sign in to Papercusp cloud to reach its workspaces
+  --connect-list                    List saved remote hosts
+  Other --connect-* options are psu's; see `psu --help`.
 ";
 
 const PUI_FLEET_ENV: &str = "PUI_FLEET";
@@ -264,10 +271,18 @@ async fn main() -> Result<()> {
     //   pui           → the workbench from a plain terminal, but just the HUD when
     //                   already inside zellij (so the HUD pane can't recursively
     //                   nest another workbench — `$ZELLIJ` is set by zellij).
+    // `pui --connect…` runs pui on a remote host through psu's saved
+    // connections (P-017 / D-025). Checked before any other parsing: psu owns
+    // every `--connect*` cell, which PUI's own parser would misread as a
+    // subcommand.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if remote_connect::requests_connection(&raw_args) {
+        std::process::exit(remote_connect::hand_off(&raw_args)?);
+    }
     let inherited_fleet = std::env::var(PUI_FLEET_ENV).ok();
     let inherited_seat = std::env::var(PUI_SEAT_ENV).ok();
     let cli = CliInvocation::parse(
-        std::env::args().skip(1),
+        raw_args,
         inherited_fleet.as_deref(),
         inherited_seat.as_deref(),
     )?;
@@ -638,6 +653,8 @@ mod cli_help_tests {
     fn help_documents_remote_seat_consumption() {
         assert!(CLI_HELP.contains("--fleet=<slug>"));
         assert!(CLI_HELP.contains("--seat=<ref>"));
+        assert!(CLI_HELP.contains("--connect[=<name>[/<workspace>]]"));
+        assert!(CLI_HELP.contains("--connect-login"));
         assert!(CLI_HELP.contains("requires --fleet"));
     }
 }
