@@ -21,12 +21,20 @@ import {
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
 import { getRubric } from './rubrics';
-import { listScorecards, type ScorecardGradingAuditCurrentness, type ScorecardRow } from './scorecards';
+import {
+  listScorecards,
+  parseGradedGeneration,
+  type ScorecardGradingAuditCurrentness,
+  type ScorecardRow,
+} from './scorecards';
 import { killTask } from './task-manager/control';
 import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
+import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { realGitProbe } from './release/judged-sha-containment';
+import { readRunningGeneration } from './scout/generation-watermark';
 import {
   describeGradingAuditDispatchSuppression,
   type GradingAuditDispatchSuppression,
@@ -37,6 +45,44 @@ import { isTerminalState } from './task-manager/types';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
+
+export type GenerationAncestryProbe = (root: string, ancestor: string, descendant: string) => boolean | null;
+
+const GENERATION_SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
+
+/**
+ * Require a grading auditor to run on the same or a descendant source-card
+ * generation. Missing identities and failed ancestry probes are unknown, so
+ * they fail closed instead of sending a brief to an auditor that cannot emit a
+ * valid verdict.
+ */
+export function assessGenerationAncestry(
+  gradedSha: unknown,
+  auditorSha: unknown,
+  root: string,
+  probe: GenerationAncestryProbe,
+): { ok: true } | { ok: false; reason: string } {
+  if (
+    typeof gradedSha !== 'string' ||
+    !GENERATION_SHA_PATTERN.test(gradedSha.trim()) ||
+    typeof auditorSha !== 'string' ||
+    !GENERATION_SHA_PATTERN.test(auditorSha.trim())
+  ) {
+    return { ok: false, reason: 'generation-sha-missing-or-invalid' };
+  }
+  const graded = gradedSha.trim().toLowerCase();
+  const auditor = auditorSha.trim().toLowerCase();
+  // A short SHA is a valid identity when it is a prefix of the full form emitted by
+  // another process. Treat that as equality without asking git to resolve an ambiguous
+  // object; the ancestry probe remains reserved for distinct identities.
+  if (graded === auditor || graded.startsWith(auditor) || auditor.startsWith(graded)) return { ok: true };
+  const isAncestor = probe(root, gradedSha.trim(), auditorSha.trim());
+  if (isAncestor === true) return { ok: true };
+  return {
+    ok: false,
+    reason: isAncestor === false ? 'auditor-build-older-than-graded-build' : 'generation-ancestry-unknown',
+  };
+}
 
 /**
  * Keep every trigger bounded. A pending card is already a durable queue entry;
@@ -235,6 +281,10 @@ export interface DispatchPendingGradingAuditsDeps {
    * never routed to a pool the launcher will refuse at boot. Fails open.
    */
   providerCanServe?: (provider: string) => Promise<boolean>;
+  /** Running server generation used to pin audits of generation-bound cards to a fresh launch. */
+  readCurrentGeneration?: typeof readRunningGeneration;
+  /** Shared tri-state ancestry check used by both dispatch and scorecards:emit. */
+  generationAncestry?: GenerationAncestryProbe;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
 }
@@ -713,7 +763,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. If either differs or is absent, report the current state and stop without grading or emitting.`,
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
-    `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
+    `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'grading-audit:${card.issueId}', reservedAt:'${reservationReservedAt}' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly.`,
     `Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state (and its superseded/retracted status): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is not 'pending' (including 'passed', 'failed', or 'cancelled'), or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
   ].join('\n\n');
@@ -1038,6 +1088,33 @@ export async function dispatchPendingGradingAudits(
       if (!(await confirmOwnedPendingReservation())) {
         return receipt!;
       }
+      const generationBound = card.gradedGeneration != null;
+      if (generationBound) {
+        const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
+        const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
+        const generationCheck = assessGenerationAncestry(
+          gradedGeneration?.deployedSha,
+          currentGeneration.deployedSha,
+          resolveAgentWorkspaceRoot({}),
+          deps.generationAncestry ??
+            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+        );
+        if (!generationCheck.ok) {
+          const reason =
+            `grading auditor dispatch for '${issueId}' refused: dispatcher build ` +
+            `'${currentGeneration.deployedSha ?? 'unknown'}' is not proven to be the same as or a descendant of ` +
+            `graded build '${gradedGeneration?.deployedSha ?? 'unknown'}' (${generationCheck.reason}); ` +
+            'no auditor was routed or launched';
+          await releaseReservation(
+            resolveGradingAuditFailureBackoff({
+              code: 'generation_incompatible',
+              reason,
+              ...(deps.now ? { nowMs: deps.now() } : {}),
+            }),
+          );
+          return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, reason };
+        }
+      }
       /**
        * The reservation is a bounded dispatch lease, not the auditor's
        * identity. Once its TTL expires, a still-running task from the prior
@@ -1141,20 +1218,28 @@ export async function dispatchPendingGradingAudits(
         };
         return receipt;
       }
-      const routed = await (deps.route ?? routeSourceGradingAudit)({
-        card,
-        reservationKey: idempotencyKey,
-        reservationReservedAt,
-        brief: gradingAuditBrief(card, reservationReservedAt),
-        ctx: input.ctx,
-        ...(harnessResolved ? { harness } : {}),
-      }, {
-        confirmReservation: () =>
-          confirmReservation(issueId, idempotencyKey, {
-            workspaceId: input.ctx.workspaceId,
-            reservedAt: reservationReservedAt,
-          }),
-      });
+      const routed = generationBound
+        ? {
+            state: 'fallback' as const,
+            reason: 'generation-bound card requires a fresh judge launched from this compatible dispatcher build',
+          }
+        : await (deps.route ?? routeSourceGradingAudit)(
+            {
+              card,
+              reservationKey: idempotencyKey,
+              reservationReservedAt,
+              brief: gradingAuditBrief(card, reservationReservedAt),
+              ctx: input.ctx,
+              ...(harnessResolved ? { harness } : {}),
+            },
+            {
+              confirmReservation: () =>
+                confirmReservation(issueId, idempotencyKey, {
+                  workspaceId: input.ctx.workspaceId,
+                  reservedAt: reservationReservedAt,
+                }),
+            },
+          );
       if (routed.state === 'reservation-lost') {
         await releaseReservation();
         return {

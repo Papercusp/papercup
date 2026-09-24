@@ -29,6 +29,8 @@ type GetTask = NonNullable<DispatchPendingGradingAuditsDeps['getTask']>;
 type ConfirmReservation = NonNullable<DispatchPendingGradingAuditsDeps['confirmReservation']>;
 type ListTasks = NonNullable<DispatchPendingGradingAuditsDeps['listTasks']>;
 type LaunchResult = Awaited<ReturnType<Launch>>;
+type ReadCurrentGeneration = NonNullable<DispatchPendingGradingAuditsDeps['readCurrentGeneration']>;
+type GenerationAncestry = NonNullable<DispatchPendingGradingAuditsDeps['generationAncestry']>;
 
 // Keep the mock result shape explicit without using `as never` at a mock call;
 // the cast is isolated here so the escape guard still typechecks every install site.
@@ -122,6 +124,14 @@ function deps() {
   const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
   const listTasks = vi.fn<ListTasks>().mockResolvedValue([]);
   const getTask = vi.fn<GetTask>().mockResolvedValue({ state: 'running' } as Awaited<ReturnType<GetTask>>);
+  const readCurrentGeneration = vi.fn<ReadCurrentGeneration>().mockResolvedValue({
+    deployedSha: '2222222',
+    hostStartedAt: null,
+    bootHeadSha: null,
+    scoutCodeHash: null,
+    staleHost: false,
+  });
+  const generationAncestry = vi.fn<GenerationAncestry>().mockReturnValue(true);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
   return {
     listScorecards,
@@ -133,6 +143,8 @@ function deps() {
     release,
     listTasks,
     getTask,
+    readCurrentGeneration,
+    generationAncestry,
     listWorkspaceWideLoopStanddownOwners,
   };
 }
@@ -168,6 +180,95 @@ describe('dispatchPendingGradingAudits', () => {
     d.route.mockResolvedValue({ state: 'deduped', conversationId: 'existing-consult' });
     const result = await reconcilePendingGradingAudits({ ctx }, d);
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', conversationId: 'existing-consult' });
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('fresh-launches generation-bound cards only from a compatible dispatcher build', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-generation-bound', {
+        gradedGeneration: {
+          deployedSha: '1111111',
+          hostStartedAt: '2026-09-24T11:38:02.124Z',
+          bootHeadSha: null,
+          scoutCodeHash: null,
+          staleHost: false,
+        },
+      }),
+    ]);
+    d.generationAncestry.mockReturnValue(true);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-generation-bound'], ctx }, d);
+
+    expect(d.generationAncestry).toHaveBeenCalledWith(expect.any(String), '1111111', '2222222');
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      routingFallback: 'generation-bound card requires a fresh judge launched from this compatible dispatcher build',
+    });
+  });
+
+  it.each([
+    [false, 'auditor-build-older-than-graded-build'],
+    [null, 'generation-ancestry-unknown'],
+  ] as const)(
+    'refuses to route or launch a generation-bound card when host ancestry is %s',
+    async (isAncestor, reasonCode) => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([
+        card('EI-incompatible-generation', {
+          gradedGeneration: {
+            deployedSha: '1111111',
+            hostStartedAt: '2026-09-24T11:38:02.124Z',
+            bootHeadSha: null,
+            scoutCodeHash: null,
+            staleHost: false,
+          },
+        }),
+      ]);
+      d.generationAncestry.mockReturnValue(isAncestor);
+
+      const result = await dispatchPendingGradingAudits({ targetIds: ['EI-incompatible-generation'], ctx }, d);
+
+      expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining(reasonCode) });
+      expect(d.route).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(d.release).toHaveBeenCalledWith(
+        'EI-incompatible-generation',
+        'grading-audit:EI-incompatible-generation',
+        expect.objectContaining({
+          backoff: expect.objectContaining({ code: 'generation_incompatible', source: 'retry-window' }),
+        }),
+      );
+    },
+  );
+
+  it('does not redispatch a target whose evaluator change requires the source card to be re-emitted', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-awaiting-reemit', {
+        gradingAudit: {
+          state: 'awaiting-reemit',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-09-24T11:38:02.124Z',
+          reemitRequired: {
+            code: 'grading_audit_evaluator_changed',
+            at: '2026-09-24T11:39:02.124Z',
+            reason: 'evaluator revision changed the recorded falsifiability rating',
+          },
+        },
+      }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-awaiting-reemit'], ctx }, d);
+
+    expect(result.receipts[0]).toMatchObject({
+      state: 'skipped',
+      reason: 'target is no longer a current pending standard-rubric scorecard',
+    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
   });
 
@@ -671,6 +772,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');
     expect(brief).toContain("Dispatch lease: key 'grading-audit:EI-state-recheck', reservedAt '2026-09-08T00:00:00.000Z'");
+    expect(brief).toContain("gradingAuditReservation:{ key:'grading-audit:EI-state-recheck', reservedAt:'2026-09-08T00:00:00.000Z' }");
     expect(brief).toContain('Before reading criterion evidence');
   });
 

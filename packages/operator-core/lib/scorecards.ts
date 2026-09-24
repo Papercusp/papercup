@@ -1465,14 +1465,20 @@ export function ratingVerdict(rating: string): 'pass' | 'fail' | 'unknown' | nul
   return expectedInstrumentVerdict(rating);
 }
 
-/** P-013: an audit FAILS iff any rating maps to 'fail' (severe/broken/etc. included);
- *  unknown/custom ratings never fail an audit silently — they leave it passing only
- *  when nothing failed, which errs toward auditing again, never toward muting. */
-export function auditVerdictFromRatings(ratings: Record<string, { rating: string }>): 'passed' | 'failed' {
-  for (const entry of Object.values(ratings)) {
-    if (expectedInstrumentVerdict(entry.rating) === 'fail') return 'failed';
+/** P-013: failures dominate, but a pass requires every nonempty rating to be
+ * explicitly pass-like. Unknown/custom ratings cannot settle the source card. */
+export function auditVerdictFromRatings(
+  ratings: Record<string, { rating: string }>,
+): 'passed' | 'failed' | null {
+  const entries = Object.values(ratings);
+  if (entries.length === 0) return null;
+  let unresolved = false;
+  for (const entry of entries) {
+    const verdict = expectedInstrumentVerdict(entry.rating);
+    if (verdict === 'fail') return 'failed';
+    if (verdict !== 'pass') unresolved = true;
   }
-  return 'passed';
+  return unresolved ? null : 'passed';
 }
 
 export interface GradingAuditRecordResult {
@@ -1629,6 +1635,46 @@ export async function settlePendingGradingAuditAtomically(
 }
 
 /**
+ * Stop dispatching an audit whose exact evaluator replay proved the source card
+ * must be re-emitted. This compare-and-set uses the exact pending lease, so a
+ * refusal from an old auditor cannot block a newer reservation or settlement.
+ */
+export async function markGradingAuditAwaitingReemit(
+  issueId: string,
+  expected: ScorecardGradingAudit,
+  input: { reason: string; at?: string },
+  deps: ScorecardAtomicWriteDeps & {
+    notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend') => void;
+  } = {},
+): Promise<boolean> {
+  if (expected.state !== 'pending') return false;
+  const awaitingReemit: ScorecardGradingAudit = {
+    ...expected,
+    state: 'awaiting-reemit',
+    reemitRequired: {
+      code: 'grading_audit_evaluator_changed',
+      at: input.at ?? new Date().toISOString(),
+      reason: input.reason.trim().slice(0, 1000) || 'The source card must be re-emitted under the current evaluator.',
+    },
+  };
+  delete awaitingReemit.dispatchReservation;
+  const updated = await settlePendingGradingAuditAtomically(issueId, expected, awaitingReemit, deps);
+  if (!updated) return false;
+  if (deps.notifySyncInvalidate) {
+    deps.notifySyncInvalidate('scorecards.list');
+    deps.notifySyncInvalidate('rubrics.trend');
+  } else {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
+/**
  * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
  * The pending path is a compare-and-set write against the exact stamp read above;
  * it cannot restore a stale observation over a concurrent retraction. Idempotent
@@ -1656,6 +1702,7 @@ export async function recordGradingAudit(
   deps: {
     getIssue?: typeof getIssue;
     replaceSettledGradingAudit?: ReplaceSettledGradingAudit;
+    notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend' | 'learning.releaseReadiness') => void;
   } = {},
 ): Promise<GradingAuditRecordResult> {
   const issue = await (deps.getIssue ?? getIssue)(issueId);
@@ -1760,12 +1807,19 @@ export async function recordGradingAudit(
   if (!updated) {
     return { ok: false, issueId, error: `failed to record grading audit on '${issueId}'` };
   }
-  void trackDetached(import('./sync-sse'))
-    .then((m) => {
-      m.notifySyncInvalidate('scorecards.list');
-      m.notifySyncInvalidate('rubrics.trend');
-    })
-    .catch(() => {});
+  if (deps.notifySyncInvalidate) {
+    deps.notifySyncInvalidate('scorecards.list');
+    deps.notifySyncInvalidate('rubrics.trend');
+    deps.notifySyncInvalidate('learning.releaseReadiness');
+  } else {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
   return { ok: true, issueId, gradingAudit: settled };
 }
 
