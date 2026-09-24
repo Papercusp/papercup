@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -239,6 +239,53 @@ describe('activeWorkspaceId — P-021 in-request global-fallback diagnostic', ()
     call();
     call();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('activeWorkspaceId — P-525 registry memo (p2p-join-catchup-speed D-013)', () => {
+  const ROOT_KEY = 'PAPERCUSP_WORKSPACES_ROOT';
+  const PIN_KEY = 'PAPERCUSP_WORKSPACE_ID';
+  let prevRoot: string | undefined;
+  let prevPin: string | undefined;
+  let root: string;
+  beforeEach(() => {
+    prevRoot = process.env[ROOT_KEY];
+    prevPin = process.env[PIN_KEY];
+    root = mkdtempSync(join(tmpdir(), 'ws-memo-'));
+    process.env[ROOT_KEY] = root;
+    delete process.env[PIN_KEY];
+  });
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env[ROOT_KEY];
+    else process.env[ROOT_KEY] = prevRoot;
+    if (prevPin === undefined) delete process.env[PIN_KEY];
+    else process.env[PIN_KEY] = prevPin;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const reg = (id: string) => ({ current: id, workspaces: [{ id, name: id, createdAt: 1 }] });
+
+  it('follows every writeRegistry and every in-place write that changes the file', () => {
+    writeRegistry(reg('ws-a'));
+    expect(activeWorkspaceId()).toBe('ws-a');
+    writeRegistry(reg('ws-b'));
+    expect(activeWorkspaceId()).toBe('ws-b');
+    const p = join(root, 'registry.json');
+    writeFileSync(p, JSON.stringify(reg('ws-c'), null, 2));
+    utimesSync(p, 2_000_000, 2_000_000); // a distinct mtime, whatever the filesystem granularity
+    expect(activeWorkspaceId()).toBe('ws-c');
+    rmSync(p);
+    expect(activeWorkspaceId()).toBe(DEFAULT_WORKSPACE_ID);
+  });
+
+  it('does not re-read a file whose inode, size and mtime are unchanged', () => {
+    writeRegistry(reg('ws-a'));
+    const p = join(root, 'registry.json');
+    utimesSync(p, 3_000_000, 3_000_000);
+    expect(activeWorkspaceId()).toBe('ws-a');
+    // Same inode, same size, mtime restored: the memo answers without reading.
+    writeFileSync(p, JSON.stringify(reg('ws-z'), null, 2));
+    utimesSync(p, 3_000_000, 3_000_000);
+    expect(activeWorkspaceId()).toBe('ws-a');
   });
 });
 

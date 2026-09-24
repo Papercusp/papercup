@@ -15,6 +15,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   writeSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -263,6 +264,36 @@ function isMalformedWorkspaceId(id: string): boolean {
   return false;
 }
 
+/**
+ * P-525 (p2p-join-catchup-speed D-013): the registry's global default, memoized on the
+ * file's identity. activeWorkspaceId() runs once per sync trigger event on a hot fold,
+ * and re-reading plus re-parsing the file on every call was ~3% of the main thread
+ * (measured on the P-007 VM). writeRegistry publishes by rename, so every write is a
+ * new inode; size and mtime cover an in-place write. Only the derived id is kept, never
+ * the registry object, which callers may mutate.
+ */
+let registryGlobalMemo: { key: string; global: string } | null = null;
+
+function registryGlobalWorkspaceId(): string {
+  const p = registryPath();
+  let key: string;
+  try {
+    const s = statSync(p);
+    key = `${p}|${s.ino}|${s.size}|${s.mtimeMs}`;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') {
+      const reg = readRegistry();
+      return reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+    }
+    key = `${p}|absent`;
+  }
+  if (registryGlobalMemo?.key === key) return registryGlobalMemo.global;
+  const reg = readRegistry();
+  const global = reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+  registryGlobalMemo = { key, global };
+  return global;
+}
+
 export function activeWorkspaceId(): string {
   // Precedence (per-window-workspace-context-2026-05-31, D-002/D-005):
   // 1. The request-scoped workspace — a browser window stamped its workspace on
@@ -281,8 +312,7 @@ export function activeWorkspaceId(): string {
   if (env && env.trim() && !isMalformedWorkspaceId(env)) return env.trim();
   // 3. Global default — the workspace a new window opens into / background work
   //    uses when not told otherwise. No longer authoritative for request work.
-  const reg = readRegistry();
-  const global = reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+  const global = registryGlobalWorkspaceId();
   if (!global || isMalformedWorkspaceId(global)) return DEFAULT_WORKSPACE_ID;
   // P-021: if we landed here while INSIDE a request/tool scope, the request
   // failed to carry its workspace. Surface it when developing (NODE_ENV
