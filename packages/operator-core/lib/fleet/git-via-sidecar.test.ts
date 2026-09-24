@@ -160,7 +160,7 @@ describe('spawner-sidecar process progress guard', () => {
       executionDeps,
     );
     expect(Date.now() - started).toBeGreaterThanOrEqual(700);
-    expect(res.code).toBe(0);
+    expect(res.code, res.stderr).toBe(0);
     expect(res.stderr).toContain('progress');
   });
 
