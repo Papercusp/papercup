@@ -87,7 +87,7 @@ fi
 # strictly beyond the primary's — the EI-filer always fires first, and this only speaks
 # up if a stale backup somehow went 8h without that EI being acted on.
 MAX_DUMP_AGE_S="${MAX_DUMP_AGE_S:-28800}"   # 8h backstop (primary alarm = repo script @ 6h)
-MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"     # 30m cadence: tolerate one missed cycle plus runtime/jitter
+MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"     # 30m cadence: tolerate one missed cycle plus runtime/jitter; also caps the exact dump source below
 
 # 48h — $HOME is a DAILY source (kopia-home-snapshot.timer), so its bar is
 # "two consecutive missed runs", by the same reasoning MAX_ODDSMITH_DUMP_AGE_S uses for its
@@ -555,6 +555,24 @@ case "$cov_state" in
     fail "the Postgres dump directory $DUMP is NOT a kopia source — it has never been snapshotted, so the dumps are NOT leaving this machine. Local dumps can be fresh and restorable while this is true (checks 1/2/2b all stay green), which is how this hid. snapshot-all.sh now force-includes it via REQUIRED_SOURCES; if this is still failing, that union is not reaching kopia."
     ;;
 esac
+
+# ── 2d. PER-SOURCE RECENCY: the Postgres dump source ─────────────────────────
+# Check 2's newest snapshot can belong to any source. A busy unrelated source can
+# therefore keep that aggregate green while this exact source ages indefinitely.
+# Check 2c proves a COMPLETE dump-source snapshot exists; it does not prove that
+# snapshot is recent. Reuse the same one-hour cadence limit, but measure only rows
+# in the exact dump-source block so another source cannot mask it.
+dump_exact_listing=$(printf '%s\n' "$COV_LISTING" | exact_source_block "$DUMP")
+dump_last=$(printf '%s\n' "$dump_exact_listing" \
+  | awk '/<ERROR>|incomplete/ { next } { print }' \
+  | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
+  | sort -r | head -1)
+if [ -z "$dump_last" ]; then
+  fail "the Postgres dump directory $DUMP has no parseable COMPLETE snapshot timestamp — its Kopia freshness cannot be established"
+fi
+dump_snap_age=$(( now - $(date -d "$dump_last" +%s) ))
+[ "$dump_snap_age" -gt "$MAX_SNAP_AGE_S" ] \
+  && fail "Postgres dump source snapshot is STALE: $(dur "$dump_snap_age") old ($dump_last, limit $(dur "$MAX_SNAP_AGE_S")) — a fresh snapshot from another source cannot establish that $DUMP is current"
 
 # ── 2b. PER-SOURCE RECENCY: the DAILY curated home source ────────────────────
 # Check 2 above takes the newest snapshot across ALL sources (`--all -n 1 | sort -r |
