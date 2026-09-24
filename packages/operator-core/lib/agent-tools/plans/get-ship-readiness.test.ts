@@ -56,7 +56,7 @@ const M = vi.hoisted(() => {
   type PlanRead = ReturnType<typeof planFixture> | null;
   return {
     planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
-    readPlanBySlug: vi.fn(async (slug: string): Promise<PlanRead> => planFixture(slug)),
+    readPlanBySlug: vi.fn(async (slug: string, _opts?: unknown, _timings?: Record<string, number>): Promise<PlanRead> => planFixture(slug)),
     ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
       harnessSlug: ctx.harnessSlug ?? 'papercup',
     })),
@@ -186,8 +186,9 @@ describe('plans:get — shipReadiness', () => {
     const fixture = await M.readPlanBySlug('timing');
     let clock = 0;
     const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
-    M.readPlanBySlug.mockImplementationOnce(async () => {
+    M.readPlanBySlug.mockImplementationOnce(async (_slug, _opts, timings) => {
       clock += 75;
+      if (timings) Object.assign(timings, { 'source.acquireAndSetup': 70, 'source.query': 5 });
       return fixture;
     });
     M.getLatestPlanAudit.mockImplementationOnce(async () => {
@@ -202,11 +203,12 @@ describe('plans:get — shipReadiness', () => {
       const cold = await read();
       const coldTiming = metadata.mock.calls.find(([m]) => m.plansGetRead)?.[0].plansGetRead;
       expect(coldTiming).toMatchObject({ unit: 'ms', reads: [{ slug: 'timing', buildState: 'complete',
-        waitMs: 200, stagesMs: { source: 75, rubricAndAudit: 125 } }] });
+        waitMs: 200, stagesMs: { source: 75, rubricAndAudit: 125 },
+        detailMs: { 'source.acquireAndSetup': 70, 'source.query': 5 } }] });
       metadata.mockClear();
       const warm = await read();
       const warmTiming = metadata.mock.calls.find(([m]) => m.plansGetRead)?.[0].plansGetRead;
-      expect(warmTiming).toMatchObject({ reads: [{ buildState: 'not-started', waitMs: 0, stagesMs: {} }] });
+      expect(warmTiming).toMatchObject({ reads: [{ buildState: 'not-started', waitMs: 0, stagesMs: {}, detailMs: {} }] });
       expect(warm).toEqual(cold);
       expect(JSON.stringify(warm)).not.toContain('plansGetRead');
     } finally {

@@ -739,6 +739,7 @@ export default defineTool({
         const readStarted = performance.now();
         let stageStarted = readStarted;
         const stagesMs: Record<string, number> = {};
+        const detailMs: Record<string, number> = {};
         let buildState: 'not-started' | 'running' | 'complete' = 'not-started';
         const markStage = (name: string) => {
           const now = performance.now();
@@ -769,7 +770,7 @@ export default defineTool({
           async () => {
             buildState = 'running';
             stageStarted = performance.now();
-            const result = await readPlanBySlug(slug, opts);
+            const result = await readPlanBySlug(slug, opts, detailMs);
             markStage('source');
             // cachedRead caches every non-null result, so returning a `{ok:false}`
             // not_found object here would make a transient read miss sticky for
@@ -1035,6 +1036,7 @@ export default defineTool({
                   planSlug: row.planSlug,
                   planUpdatedAt: row.updatedAt,
                   linkedWorkItemUpdatedAt,
+                  timings: detailMs,
                 },
               });
             } catch {
@@ -1260,6 +1262,7 @@ export default defineTool({
             waitMs: Math.max(0, performance.now() - readStarted),
             buildState,
             stagesMs: { ...stagesMs },
+            detailMs: { ...detailMs },
           });
         });
       },
