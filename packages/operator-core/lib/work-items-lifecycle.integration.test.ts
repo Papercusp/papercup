@@ -42,6 +42,9 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 import { getKeyFireLatch } from './events/await/store';
+import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { projectBlueprintToPg } from './blueprint/project-to-pg';
+import { acceptBlueprintDirectWorkItem, readAcceptedBlueprintDirectWorkItem } from './blueprint/operation-admission';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -177,6 +180,19 @@ beforeAll(async () => {
     await db.sql.unsafe(readMigration(migration)).simple();
   }
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.blueprints (
+      workspace_id text NOT NULL, harness_slug text NOT NULL, blueprint_id text NOT NULL,
+      version text NOT NULL, resolved jsonb NOT NULL, content_hash text NOT NULL,
+      source_path text, source_commit text, projected_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug));
+    CREATE TABLE harness_shared.blueprint_specifications (
+      workspace_id text NOT NULL, harness_slug text NOT NULL,
+      specification_revision text NOT NULL, artifact jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug, specification_revision),
+      CHECK (artifact->>'specificationRevision' = specification_revision));
+  `);
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
@@ -206,10 +222,60 @@ beforeEach(async () => {
                        harness_shared.coord_event_log, harness_shared.event_awaits,
                        harness_shared.event_wake_deliveries, harness_shared.predicate_watches,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
-                       harness_shared.watchdog_ticks, harness_shared.work_item_claims RESTART IDENTITY`;
+                       harness_shared.watchdog_ticks, harness_shared.work_item_claims,
+                       harness_shared.blueprints, harness_shared.blueprint_specifications RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   await setLeaseFlag(false);
   fh.spy.mockClear();
+});
+
+describe('blueprint direct-item revision pin', () => {
+  it('keeps the canonical accepted work item on A after the current blueprint moves to B', async () => {
+    const operation = {
+      id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+      execution: { kind: 'agent', role: 'worker' },
+      inputSchema: {
+        type: 'object', required: ['itemId'], additionalProperties: false,
+        properties: { itemId: { type: 'string' } },
+      },
+      acceptance: { resultSchema: { type: 'object' } },
+      policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+    };
+    const source = {
+      id: 'accepted-item-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
+      spine: { edges: { DONE: { to: 'done' } } }, operations: [operation],
+    };
+    const a = compileAgentSpecification({ source });
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', blueprint: BlueprintSchema.parse(source), specification: a,
+    });
+    await expect(acceptBlueprintDirectWorkItem(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', operationId: 'extract',
+      input: { itemId: 42 }, title: 'invalid operation input',
+    })).rejects.toThrow('invalid_data');
+    const accepted = await acceptBlueprintDirectWorkItem(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', operationId: 'extract',
+      input: { itemId: 'example' }, title: 'Extract example',
+    });
+    expect(accepted.id).toMatch(/^WI-/);
+    const bSource = {
+      ...source,
+      operations: [{ ...operation, version: 'B', policy: { model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }],
+    };
+    const b = compileAgentSpecification({ source: bSource });
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', blueprint: BlueprintSchema.parse(bSource), specification: b,
+    });
+    expect(b.specificationRevision).not.toBe(a.specificationRevision);
+    const stored = await wi.getWorkItem(accepted.id, 'papercup');
+    expect(stored).not.toBeNull();
+    const resolved = await readAcceptedBlueprintDirectWorkItem(db.sql, 'default', stored!);
+    expect(resolved.pin).toMatchObject({
+      specificationRevision: a.specificationRevision, operationId: 'extract', input: { itemId: 'example' },
+    });
+    expect(resolved.operation).toMatchObject({ version: 'A', policy: { model: { models: ['gpt-6-sol'] } } });
+    expect(JSON.stringify(stored!.payload)).not.toContain('gpt-6-sol');
+  });
 });
 
 afterEach(async () => {
