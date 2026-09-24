@@ -84,7 +84,7 @@ interface InvokeOnceParams {
  * process lifecycle (SIGTERM/SIGINT → close). Prints PAPERCUSP_SPAWNER_READY once
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
-export function runSpawnerSidecarServer(): void {
+export function runSpawnerSidecarServer(): net.Server {
   // Runtime flag overrides (EI-8867 / WI-3628, corrected WI-6822). `getFlag()` consults the
   // PG override store ONLY in a process that installed it. This is a STANDALONE process (dev:
   // `tsx bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with
@@ -137,9 +137,7 @@ export function runSpawnerSidecarServer(): void {
     console.error('[spawner-sidecar] socket reap threw (non-fatal)', e);
   }
 
-  // requestId → AbortController for the in-flight spawn it owns, so `spawn:cancel`
-  // can stop it. Keyed by the client's per-request JSON-RPC id (single-client v1).
-  const controllers = new Map<number | string, AbortController>();
+  const controllers = new Set<AbortController>();
   // Keep the client sockets so shutdown can destroy a persistent IPC connection
   // before `server.close()`. Without this, net.Server waits forever for the
   // parent-side client to close and the sidecar/socket survive the host exit.
@@ -160,8 +158,15 @@ export function runSpawnerSidecarServer(): void {
 
   const server = net.createServer((socket: net.Socket) => {
     clients.add(socket);
-    socket.once('close', () => clients.delete(socket));
+    // JSON-RPC ids are local to a connection. Two clients can both send id=1;
+    // neither may cancel the other's child or leave it orphaned on disconnect.
+    const requests = new Map<number | string, AbortController>();
+    socket.once('close', () => {
+      clients.delete(socket);
+      for (const controller of requests.values()) controller.abort();
+    });
     const write = (obj: object): void => {
+      if (socket.destroyed) return;
       socket.write(JSON.stringify(obj) + '\n');
     };
 
@@ -186,7 +191,8 @@ export function runSpawnerSidecarServer(): void {
         }
         const p = (req.params ?? {}) as InvokeOnceParams;
         const controller = new AbortController();
-        controllers.set(id, controller);
+        controllers.add(controller);
+        requests.set(id, controller);
         try {
           const result: SpawnInvokeOnceResult = await spawnInvokeOnce(
             p.projectDir,
@@ -208,7 +214,8 @@ export function runSpawnerSidecarServer(): void {
           const err = e as { message?: string };
           write(rpcError(-32603, err.message ?? 'Internal error', id));
         } finally {
-          controllers.delete(id);
+          controllers.delete(controller);
+          requests.delete(id);
         }
         return;
       }
@@ -218,21 +225,33 @@ export function runSpawnerSidecarServer(): void {
           write(rpcError(-32600, 'process:exec requires an id', null));
           return;
         }
+        const controller = new AbortController();
+        controllers.add(controller);
+        requests.set(id, controller);
         try {
-          const result = await execProcess((req.params ?? {}) as ExecParams);
+          const result = await execProcess((req.params ?? {}) as ExecParams, {
+            signal: controller.signal,
+            onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
+            onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
+          });
           write(rpcResult(result, id));
         } catch (e) {
           const err = e as { message?: string };
           write(rpcError(-32603, err.message ?? 'Internal error', id));
+        } finally {
+          controllers.delete(controller);
+          requests.delete(id);
         }
         return;
       }
 
       if (req.method === 'spawn:cancel') {
         const p = (req.params ?? {}) as { requestId?: number | string };
-        const controller = p.requestId != null ? controllers.get(p.requestId) : undefined;
+        const controller = p.requestId != null ? requests.get(p.requestId) : undefined;
         if (controller) controller.abort();
-        if (id !== null) write(rpcResult({ cancelled: !!controller }, id));
+        // cancelled acknowledges the signal, not child exit. The original
+        // process:exec result is sent only after the child closes.
+        if (id !== null) write(rpcResult({ cancelled: !!controller, processExecCancellation: true }, id));
         return;
       }
 
@@ -283,10 +302,19 @@ export function runSpawnerSidecarServer(): void {
       process.exit(0);
     });
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  const onTerm = (): void => shutdown('SIGTERM');
+  const onInterrupt = (): void => shutdown('SIGINT');
+  process.on('SIGTERM', onTerm);
+  process.on('SIGINT', onInterrupt);
+  server.once('close', () => {
+    process.off('exit', unlinkSocket);
+    process.off('SIGTERM', onTerm);
+    process.off('SIGINT', onInterrupt);
+    unlinkSocket();
+  });
 
   armOrphanWatchdog(socketPath, shutdown);
+  return server;
 }
 
 /** How often to ask whether the host we serve is still alive. */

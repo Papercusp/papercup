@@ -80,6 +80,12 @@ export interface ExecResult {
 
 export interface ExecProcessDeps {
   beginExecution?: (params: ExecParams) => Promise<GovernedExecution>;
+  /** Control stays local to the sidecar; AbortSignal is never serialized. */
+  signal?: AbortSignal;
+  onPid?: (pid: number) => void;
+  onOutputActivity?: () => void;
+  /** Injectable grace for real-process cancellation tests. */
+  killGraceMs?: number;
 }
 
 async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
@@ -108,6 +114,8 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
 }
 
 export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}): Promise<ExecResult> {
+  const aborted = (): ExecResult => ({ code: -1, stdout: '', stderr: 'process aborted before spawn' });
+  if (deps.signal?.aborted) return aborted();
   // Open the handoff files BEFORE spawning: a bad path must come back as a
   // normal non-zero result the caller can fall back from, never a thrown RPC
   // error (every caller's contract is degrade-to-local, not fail).
@@ -129,6 +137,15 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     await stdinHandle?.close().catch(() => {});
     await stdoutHandle?.close().catch(() => {});
     return { code: -1, stdout: '', stderr: `spawner sidecar admission failed: ${String(e)}` };
+  }
+
+  // Admission may have waited while the caller cancelled. Do not create a
+  // child after cancellation merely because the admission promise settled.
+  if (deps.signal?.aborted) {
+    await execution.cancel('sidecar process aborted before spawn');
+    await stdinHandle?.close().catch(() => {});
+    await stdoutHandle?.close().catch(() => {});
+    return aborted();
   }
 
   let result: ExecResult;
@@ -157,30 +174,43 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let stdout = '';
       let stderr = '';
       let settled = false;
+      let childClosed = false;
       let terminating = false;
       let spawnFailed = false;
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let killTimer: ReturnType<typeof setTimeout> | null = null;
+      let removeAbortListener = (): void => {};
       const clearTimers = (): void => {
         if (hardTimer) clearTimeout(hardTimer);
         if (idleTimer) clearTimeout(idleTimer);
       };
+      const stopGuards = (): void => {
+        clearTimers();
+        if (killTimer) clearTimeout(killTimer);
+        removeAbortListener();
+      };
+      const reportOutput = (): void => {
+        try { deps.onOutputActivity?.(); } catch { /* observer failure cannot own child lifetime */ }
+      };
       const finish = (code: number): void => {
         if (settled) return;
         settled = true;
-        clearTimers();
-        resolve({ code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
+        stopGuards();
+        resolve({ code: terminating ? -1 : code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
       };
       const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
       const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
       const terminate = (reason: string): void => {
-        if (settled || terminating) return;
+        if (settled || childClosed || terminating) return;
         terminating = true;
         clearTimers();
         stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
         child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
-        setTimeout(() => finish(-1), 20_000).unref?.();
+        killTimer = setTimeout(() => child.kill('SIGKILL'), deps.killGraceMs ?? 10_000);
+        killTimer.unref?.();
+        // A kill signal is not an exit receipt. Only close (or a spawn error)
+        // may settle this call and let the caller release repository locks.
       };
       const armIdleTimer = (): void => {
         if (idleTimeoutMs <= 0 || settled || terminating) return;
@@ -193,13 +223,24 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         hardTimer.unref?.();
       }
       armIdleTimer();
+      const onAbort = (): void => terminate('aborted by caller');
+      if (deps.signal) {
+        removeAbortListener = () => deps.signal?.removeEventListener('abort', onAbort);
+        deps.signal.addEventListener('abort', onAbort, { once: true });
+        if (deps.signal.aborted) onAbort();
+      }
+      child.once('spawn', () => {
+        try { if (child.pid) deps.onPid?.(child.pid); } catch { /* observer only */ }
+      });
       // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
       child.stdout?.on('data', (d: Buffer) => {
         stdout += outDecoder.write(d);
+        reportOutput();
         armIdleTimer();
       });
       child.stderr?.on('data', (d: Buffer) => {
         stderr += errDecoder.write(d);
+        reportOutput();
         armIdleTimer();
       });
       child.on('error', async (e) => {
@@ -209,6 +250,10 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         finish(-1);
       });
       child.on('close', async (code) => {
+        childClosed = true;
+        // Admission settlement can itself wait on IO. Remove kill timers now,
+        // before awaiting it, so an exited child's recycled pid is never hit.
+        stopGuards();
         if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
         finish(code ?? -1);
       });

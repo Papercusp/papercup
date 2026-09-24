@@ -225,3 +225,35 @@ adds runnable checks and pins the existing clause proof layers. The preview
 confirms no transition to manual-only proof. A live, eligible independent
 reviewer was asked to countersign the full method text as well as the hashes;
 the amendment is not yet applied. Source completion is not final certification.
+
+## P-003 cancellation substrate progress
+
+After the desktop-terminal interruption, the predecessor's last calls were
+read-only investigation; no edit or test was in flight. Work resumed on
+WI-10002825. The generic `process:exec` handler now reuses the sidecar's
+`spawn:cancel` channel, scopes request IDs per connection, and aborts a
+connection's processes when it disconnects. Cancellation acknowledgements mean
+the signal was requested; the original execution result waits for child close.
+
+The process runner accepts local control callbacks, prevents spawning after an
+abort during admission, and no longer fabricates completion after a fixed
+20-second timeout. Kill timers are removed at child close before asynchronous
+admission settlement. Observer callback failures cannot own the child lifetime.
+The IPC client's explicit close rejects its pending calls through its existing
+teardown path.
+
+Six real-process/Unix-socket integration cases cover graceful cleanup before
+settlement, two clients sharing a numeric request ID, disconnect cleanup,
+admission cancellation, escalation when SIGTERM is ignored, and observer failure.
+They pass along with the existing IPC and Git-sidecar suites. Durable runs:
+**19218407**, **19218405**, **19218406**, at
+`ce8c9311f7ecd58cb1ba1bf92cf62edfdc6344a3` with local changes. Final scoped semantic
+typechecking of all four changed source/test files passes; 24 diagnostics remain
+outside that requested set. `git diff --check` passes.
+
+**This is preparation, not the P-003 performance result.** Signal-bearing
+`runGitBounded` calls still take the local path. Before routing them through the
+sidecar, transport loss must not cause an unsafe local retry or premature
+repository-lock release while the remote child may still run. Descendant
+termination, profiler overhead and comparable launch/loop benchmarks also remain
+open. No speedup or final P-003 acceptance is claimed.

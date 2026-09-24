@@ -218,7 +218,6 @@ export class SpawnerIpcClient {
     // Hand the id back synchronously so the caller can correlate a later
     // `spawn:cancel` to THIS request before it resolves.
     opts?.onRequestId?.(id);
-
     const request = {
       jsonrpc: '2.0',
       method,
@@ -332,8 +331,9 @@ export class SpawnerIpcClient {
    */
   close(): void {
     if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
+      const socket = this.socket;
+      this.teardown(socket, new Error('Connection closed by caller'));
+      socket.destroy();
     }
     this.connected = false;
     this.connectPromise = null;
