@@ -346,13 +346,22 @@ export interface CarryRuntimeSnapshot {
   schemaVersion: 1;
   evidenceKind: 'observation-only';
   rootPid: number;
-  processes: Array<{ pid: number; parentPid: number; identity: string; executable: string; mappedFiles: string[] }>;
-  /** On-disk files observed through exe/maps, not a complete dependency graph. */
+  processes: Array<{ pid: number; parentPid: number; identity: string; executable: string; mappedFiles: string[];
+    openFiles: Array<{ fd: number; filePath: string; device: string; inode: string; flags: string;
+      access: 'read' | 'write' | 'read-write' | 'path' }> }>;
+  /** Regular files observed through exe/maps/fd, not a complete dependency graph. */
   artifacts: CarryArtifactInput[];
+  /** File-backed writable SHARED mappings (for example SQLite SHM), retained
+   * in artifacts but explicitly unsuitable for a constant-byte run invariant.
+   * Absence here does not prove immutability or exclude external writers. */
+  writableSharedFiles: string[];
+  /** Regular files opened for writing, including unmapped databases/WAL/logs.
+   * This labels observed access, not actual writes or external-writer exclusion. */
+  writableOpenFiles: string[];
 }
 
 /** Observe the live native process tree, including a wrapper's children and
- * file-backed mappings. Reuse the kernel identity parsers; PID alone is not an
+ * file-backed mappings and regular open descriptors. Reuse the kernel identity parsers; PID alone is not an
  * identity. All thread children lists are read because a non-main thread can
  * spawn the native child. Missing/short/oversized proc data fails closed.
  *
@@ -383,7 +392,8 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
   const boot = (await readProc('/proc/sys/kernel/random/boot_id')).trim();
   if (!/^[0-9a-f-]{36}$/i.test(boot)) throw new Error('carry runtime boot identity unavailable');
   const observe = async (): Promise<CarryRuntimeSnapshot> => {
-    const processes: CarryRuntimeSnapshot['processes'] = [], files = new Set<string>();
+    const processes: CarryRuntimeSnapshot['processes'] = [], files = new Set<string>(), writableSharedFiles = new Set<string>();
+    const writableOpenFiles = new Set<string>();
     const queue = [{ pid: rootPid, parent: null as number | null }], seen = new Set<number>();
     while (queue.length) {
       const { pid, parent } = queue.shift()!;
@@ -426,9 +436,38 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
         if (identity.ino !== BigInt(match[6]) || identity.major !== BigInt(`0x${match[4]}`) ||
           identity.minor !== BigInt(`0x${match[5]}`)) throw new Error('carry runtime mapped file replaced');
         mappedFiles.add(path);
+        if (match[3][1] === 'w' && match[3][3] === 's') writableSharedFiles.add(path);
       }
       if (!mappedFiles.has(executable)) throw new Error('carry runtime executable absent from mappings');
       for (const path of mappedFiles) files.add(path);
+      const descriptors = await readdir(`/proc/${pid}/fd`);
+      if (descriptors.length > 4096 || descriptors.some(fd => !/^(0|[1-9]\d*)$/.test(fd) || !Number.isSafeInteger(Number(fd)))) {
+        throw new Error('carry runtime descriptor population invalid or exceeds bound');
+      }
+      const openFiles: CarryRuntimeSnapshot['processes'][number]['openFiles'] = [];
+      for (const fd of descriptors.sort((a, b) => Number(a) - Number(b))) {
+        const fdPath = `/proc/${pid}/fd/${fd}`, path = await readlink(fdPath);
+        if (/^(?:pipe|socket):\[\d+\]$/.test(path) || /^anon_inode:\[[^\]\n]+\]$/.test(path)) continue;
+        if (!isAbsolute(path) || path.endsWith(' (deleted)')) throw new Error('carry runtime open pathname unavailable or ambiguous');
+        const descriptor = await stat(fdPath, { bigint: true });
+        // Directories and devices are not regular-file artifacts. Do not open
+        // or read the descriptor itself: that could advance a live file offset.
+        if (!descriptor.isFile()) continue;
+        const named = await stat(path, { bigint: true });
+        if (!named.isFile() || named.dev !== descriptor.dev || named.ino !== descriptor.ino) {
+          throw new Error('carry runtime open file replaced');
+        }
+        const flagLines = (await readProc(`/proc/${pid}/fdinfo/${fd}`)).split('\n').filter(line => line.startsWith('flags:'));
+        if (flagLines.length !== 1 || !/^flags:\s+[0-7]+$/.test(flagLines[0])) throw new Error('carry runtime descriptor flags unavailable');
+        const flags = BigInt(`0o${flagLines[0].split(/\s+/)[1]}`), mode = flags & 3n;
+        const access = (flags & 0o10000000n) !== 0n ? 'path' : mode === 0n ? 'read' : mode === 1n ? 'write' : mode === 2n ? 'read-write' : null;
+        if (access === null) throw new Error('carry runtime descriptor access invalid');
+        if (await readlink(fdPath) !== path) throw new Error('carry runtime descriptor changed during observation');
+        openFiles.push({ fd: Number(fd), filePath: path, device: descriptor.dev.toString(), inode: descriptor.ino.toString(),
+          flags: flags.toString(8), access });
+        files.add(path);
+        if (access === 'write' || access === 'read-write') writableOpenFiles.add(path);
+      }
       if (files.size > 256) throw new Error('carry runtime artifact population exceeds bound');
       const threads = await readdir(`/proc/${pid}/task`).catch(() => { throw new Error(`carry runtime process disappeared or tasks unreadable: ${processName}`); });
       if (!threads.length || threads.length > 512 || threads.some(tid => !/^[1-9]\d*$/.test(tid))) {
@@ -447,11 +486,13 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
       }
       if (linuxProcessIdentityFromStat(boot, await readProc(`/proc/${pid}/stat`)) !== identity ||
         await readlink(`/proc/${pid}/exe`) !== executable) throw new Error('carry runtime process changed during observation');
-      processes.push({ pid, parentPid, identity, executable, mappedFiles: [...mappedFiles].sort() });
+      processes.push({ pid, parentPid, identity, executable, mappedFiles: [...mappedFiles].sort(), openFiles });
       queue.push(...[...children].sort((a, b) => a - b).map(child => ({ pid: child, parent: pid })));
     }
     return { schemaVersion: 1, evidenceKind: 'observation-only', rootPid,
       processes: processes.sort((a, b) => a.pid - b.pid),
+      writableSharedFiles: [...writableSharedFiles].sort(),
+      writableOpenFiles: [...writableOpenFiles].sort(),
       artifacts: [...files].sort().map(filePath => ({
         id: `runtime:${createHash('sha256').update(filePath).digest('hex')}`, filePath, maxBytes: 512 * 1024 * 1024,
       })) };
@@ -570,7 +611,11 @@ export async function recheckCarryArtifactManifest(
     configuration: manifest.configuration,
     dependencyScope: manifest.dependencyScope,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
-  if (current.sha256 !== sha256) throw new Error('carry artifacts changed after manifest freeze');
+  if (current.sha256 !== sha256) {
+    const changed = current.artifacts.filter((artifact, index) =>
+      canonicalJson(artifact) !== canonicalJson(manifest.artifacts[index])).map(artifact => artifact.id);
+    throw new Error(`carry artifacts changed after manifest freeze (${changed.join(',') || 'manifest metadata'})`);
+  }
 }
 
 /** Capture an owned native preparation peer at its last completed turn. The

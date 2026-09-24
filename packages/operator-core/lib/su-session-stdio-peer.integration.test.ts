@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
@@ -47,7 +47,7 @@ import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inferen
 import sourceReadTool from './agent-tools/capability/read';
 import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
   captureCarryArtifactManifest, recheckCarryArtifactManifest, captureCarryRuntimeSnapshot, recheckCarryRuntimeSnapshot,
-  type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
+  type CarrySourceSnapshot, type CarryArtifactInput, type CarryDependencyScope } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -782,7 +782,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
-  it('composes an unpaid frozen-source control and managed-carry candidate across native processes', async () => {
+  it.each(['ok', 'preparation-drift'] as const)(
+    'composes an unpaid frozen-source control and managed-carry candidate across native processes (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
     const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
@@ -796,6 +797,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const basePath = join(nativeHome, 'AGENTS.md');
     const base = '# Unpaid synthetic fixture\nThe seed grants no platform authority.\n';
     writeFileSync(basePath, base);
+    const recipePath = join(nativeHome, 'frozen-recipe.json');
+    writeFileSync(recipePath, JSON.stringify(recipe));
     let phase: 'preparation' | 'control' | 'carry' | 'candidate' = 'preparation';
     const requests: Array<{ phase: string; body: Record<string, unknown> }> = [];
     const failures: string[] = [];
@@ -839,7 +842,63 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         p.send({ method: 'initialized', params: {} });
         return { p, events, receipts, runtime };
       };
-      const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string) => {
+      const captureManifest = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string,
+        extra: { artifacts: CarryArtifactInput[]; roots: CarryDependencyScope['roots'] } = { artifacts: [], roots: [] }) => {
+        const configuration = await captureCarryNativeConfiguration(live.p, { threadId, cwd: nativeHome, servers: [] });
+        // Capture after thread/config startup as well: databases and rollouts
+        // can open after initialize. Preserve mutable observations as evidence,
+        // without pretending their live bytes are immutable dependencies.
+        const runtime = await captureCarryRuntimeSnapshot(live.p.pid()!);
+        const mutablePaths = [...new Set([...runtime.writableSharedFiles, ...runtime.writableOpenFiles])].sort();
+        const frozenRuntime = runtime.artifacts.filter(a => !mutablePaths.includes(a.filePath));
+        const runtimePath = join(nativeHome, `runtime-${manifests.length}.json`);
+        writeFileSync(runtimePath, JSON.stringify(runtime));
+        // Bind the actual owned wrapper script, not just the Node executable
+        // from /proc/exe. A different wrapper shape needs its own observation.
+        const argv = readFileSync(`/proc/${live.p.pid()}/cmdline`, 'utf8').split('\0').filter(Boolean);
+        expect(argv.slice(2)).toEqual(['app-server']);
+        expect(isAbsolute(argv[1])).toBe(true);
+        const artifacts: CarryArtifactInput[] = [
+          ...frozenRuntime,
+          { id: 'runtime-observation', filePath: runtimePath, maxBytes: 1024 * 1024 },
+          { id: 'wrapper-script', filePath: argv[1], maxBytes: 1024 * 1024 },
+          { id: 'base', filePath: basePath, maxBytes: 1024 * 1024 },
+          { id: 'recipe-data', filePath: recipePath, maxBytes: 1024 * 1024 },
+          ...[
+            ['driver', './su-session-stdio-peer.integration.test.ts'], ['transport', './su-session-stdio-peer.ts'],
+            ['scanner', './launch-cost/scan-launch-transcripts.ts'], ['recipe-checker', './launch-cost/launch-cost-metrics.ts'],
+            ['launcher', '../../../apps/operator/scripts/psu-launcher.mjs'],
+            ['usage-parser', './interactive-usage/ingest-adapters.ts'], ['usage-writer', './interactive-usage/ingest-claude-transcripts.ts'],
+            ['gateway', './inference-gateway/gateway.ts'], ['gateway-observer', './inference-gateway/request-stage-telemetry.ts'],
+            ['clock', './process-monotonic-clock.ts'],
+          ].map(([id, path]) => ({ id, filePath: fileURLToPath(new URL(path, import.meta.url)), maxBytes: 1024 * 1024 })),
+          { id: 'pricing', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing')), maxBytes: 1024 * 1024 },
+          { id: 'pricing-package', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing/package.json')), maxBytes: 1024 * 1024 },
+          ...extra.artifacts,
+        ];
+        const manifest = await captureCarryArtifactManifest({ protocolRef: 'D017:unpaid-local-T1-pair', configuration, artifacts,
+          dependencyScope: { recipeSha256: recipe.sha256,
+            roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'launcher', artifactIds: ['launcher'] },
+              { role: 'native-runtime', artifactIds: frozenRuntime.map(a => a.id) }, { role: 'scripts', artifactIds: ['wrapper-script'] },
+              { role: 'task', artifactIds: ['recipe-data'] }, { role: 'seed', artifactIds: ['recipe-data'] },
+              { role: 'pricing', artifactIds: ['pricing', 'pricing-package'] }, { role: 'checker', artifactIds: ['recipe-checker'] },
+              ...extra.roots],
+            nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
+            unresolved: [...mutablePaths.map(path => `unfrozen writable native file: ${path}`),
+              'selected JS imports only; transitive wrapper/launcher/instrument scripts are not censused',
+              'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
+              'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
+        manifests.push(manifest);
+        expect(manifest.dependencyScope!.unresolved).toEqual(expect.arrayContaining(
+          mutablePaths.map(path => `unfrozen writable native file: ${path}`)));
+        expect(runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path))).toBe(true);
+        expect(JSON.parse(readFileSync(runtimePath, 'utf8'))).toEqual(runtime);
+        return manifest;
+      };
+      const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string,
+        manifest: Awaited<ReturnType<typeof captureManifest>>) => {
+        await recheckCarryArtifactManifest(manifest, live.p);
+        if (source) await recheckCarrySourceSnapshot(source);
         const eventStart = live.events.length;
         const response = await live.p.request({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text }] } });
         const turnId = String((response.turn as RpcFrame).id);
@@ -851,6 +910,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const trace = inspectCarryNativeTurn({ threadId, turnId, events: live.events.slice(eventStart), threadRead,
           allowedMcpCalls: [], expectedInputText: text });
         expect(trace.status).toBe('verified');
+        await recheckCarryArtifactManifest(manifest, live.p);
         return { turnId, threadRead, trace };
       };
       const options = { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: nativeHome,
@@ -858,12 +918,36 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const preparation = await openNative();
       const started = await preparation.p.request({ method: 'thread/start', params: options });
       const sourceId = String((started.thread as RpcFrame).id);
-      const prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt);
+      // Preparation is part of the population: bind its inputs before its first
+      // request, not retroactively after the generated source is visible.
+      const preparationManifest = await captureManifest(preparation, sourceId);
+      expect(preparationManifest.dependencyScope!.missingRoles).toEqual(['source']);
+      if (mode === 'preparation-drift') {
+        writeFileSync(recipePath, JSON.stringify({ altered: true }));
+        await expect(turn(preparation, sourceId, recipe.sourcePreparation.prompt, preparationManifest))
+          .rejects.toThrow('carry artifacts changed after manifest freeze (recipe-data)');
+        expect(requests).toEqual([]);
+        expect(preparation.receipts.some(r => r.phase === 'write-started' && r.frame.method === 'turn/start')).toBe(false);
+        // This stopped run is not retried with a refreshed manifest.
+        return;
+      }
+      const preparationManifestPath = join(nativeHome, 'preparation-manifest.json');
+      writeFileSync(preparationManifestPath, JSON.stringify(preparationManifest));
+      const prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt, preparationManifest);
       expect(inspectCarryPreparationResponse(prepared.trace.finalResponse!).matches).toBe(true);
       source = await captureCompletedCarrySource(preparation.p, sourceId, prepared.turnId);
       captures.push({ receipts: preparation.receipts, state: preparation.p.receiptState?.(),
         arms: [{ threadId: sourceId, armId: 'preparation' }] });
       expect(inspectCarryNativePopulation(captures[0]).status).toBe('closed-peer-reconciled');
+      const preparationCloseoutPath = join(nativeHome, 'preparation-closeout.json');
+      const sourceFiles = [source, ...source.ancestors];
+      const preparationCloseout = { evidenceKind: 'observation-only', manifestSha256: preparationManifest.sha256,
+        recipeSha256: recipe.sha256, inputSha256: prepared.trace.inputSha256,
+        nativeCaptureSha256: createHash('sha256').update(JSON.stringify(captures[0])).digest('hex'),
+        source: sourceFiles.map(s => ({ threadId: s.threadId, turnId: s.turnId, filePath: s.filePath,
+          sha256: s.snapshot.sha256, bytes: s.snapshot.highWaterBytes, forkedFromId: s.forkedFromId })),
+        admission: 'not-established', accountingComplete: false };
+      writeFileSync(preparationCloseoutPath, JSON.stringify(preparationCloseout));
       // Mint from the exact stopped source BEFORE the control creates a newer
       // rollout. Both arms see the same base pointer; only candidate receives
       // the managed carry turn. This is explicit app-server delivery, not host
@@ -882,39 +966,22 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const thread = opened.thread as RpcFrame, threadId = String(thread.id);
         expect(threadId).not.toBe(sourceId);
         expect((thread.turns as RpcFrame[]).map(turn => turn.id)).toEqual(arm === 'control' ? [source.turnId] : []);
-        const configuration = await captureCarryNativeConfiguration(live.p, { threadId, cwd: nativeHome, servers: [] });
-        const sourceFiles = [source, ...source.ancestors];
-        const artifacts = [
-          ...live.runtime.artifacts,
+        const manifest = await captureManifest(live, threadId, { artifacts: [
           ...sourceFiles.map((s, i) => ({ id: `source-${i}`, filePath: s.filePath, maxBytes: s.snapshot.highWaterBytes })),
-          { id: 'base', filePath: basePath, maxBytes: 1024 * 1024 },
           { id: 'carry', filePath: carry.launchContextPath, maxBytes: 1024 * 1024 },
-          ...[
-            ['driver', './su-session-stdio-peer.integration.test.ts'], ['transport', './su-session-stdio-peer.ts'],
-            ['scanner', './launch-cost/scan-launch-transcripts.ts'], ['recipe-checker', './launch-cost/launch-cost-metrics.ts'],
-            ['launcher', '../../../apps/operator/scripts/psu-launcher.mjs'],
-          ].map(([id, path]) => ({ id, filePath: fileURLToPath(new URL(path, import.meta.url)), maxBytes: 1024 * 1024 })),
-        ];
-        const manifest = await captureCarryArtifactManifest({ protocolRef: 'D017:unpaid-local-T1-pair', configuration, artifacts,
-          dependencyScope: { recipeSha256: recipe.sha256,
-            roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'source', artifactIds: sourceFiles.map((_, i) => `source-${i}`) },
-              { role: 'launcher', artifactIds: ['launcher'] }, { role: 'native-runtime', artifactIds: live.runtime.artifacts.map(a => a.id) },
-              { role: 'task', artifactIds: ['recipe-checker'] }, { role: 'seed', artifactIds: ['carry'] },
-              { role: 'checker', artifactIds: ['recipe-checker'] }],
-            nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
-            unresolved: ['selected JS imports only; transitive scripts and pricing are not censused',
-              'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
-              'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
-        manifests.push(manifest);
-        await recheckCarryArtifactManifest(manifest, live.p);
+          { id: 'preparation-manifest', filePath: preparationManifestPath, maxBytes: 1024 * 1024 },
+          { id: 'preparation-closeout', filePath: preparationCloseoutPath, maxBytes: 1024 * 1024 },
+        ], roots: [{ role: 'source', artifactIds: sourceFiles.map((_, i) => `source-${i}`) }] });
+        expect(manifest.dependencyScope!.missingRoles).toEqual([]);
+        expect(JSON.parse(readFileSync(preparationManifestPath, 'utf8'))).toEqual(preparationManifest);
+        expect(JSON.parse(readFileSync(preparationCloseoutPath, 'utf8'))).toEqual(preparationCloseout);
         await recheckCarrySourceSnapshot(source);
         if (arm === 'candidate') {
-          phase = 'carry'; await turn(live, threadId, carry.carryText);
+          phase = 'carry'; await turn(live, threadId, carry.carryText, manifest);
         }
         phase = arm;
-        const result = await turn(live, threadId, task.prompt);
+        const result = await turn(live, threadId, task.prompt, manifest);
         expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! }).matches).toBe(true);
-        await recheckCarryArtifactManifest(manifest, live.p);
         await live.p.close(); await live.p.done;
         captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
         expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
@@ -950,6 +1017,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         }
         console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, sourceSha256: source.snapshot.sha256,
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
+          preparationManifestSha256: preparationManifest.sha256,
           captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
           canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
       } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org.cleanup(); }
