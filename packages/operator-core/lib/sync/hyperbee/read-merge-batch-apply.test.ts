@@ -26,6 +26,8 @@ function put(hbKey: string, ts: number, value: unknown): PeerLogOp {
 
 type Result = { command: string };
 
+const COALESCE_ON = "SELECT set_config('papercusp.sync_notify_coalesce', 'on', true)";
+
 /** A key/value store speaking the statement subset the batch and the test sink use. */
 class FakeDb {
   readonly committed = new Map<string, unknown>();
@@ -96,6 +98,8 @@ class FakeDb {
       case 'ROLLBACK':
         this.stack = null;
         return { command: 'ROLLBACK' };
+      case COALESCE_ON:
+        return { command: 'SELECT' };
     }
     if (verb !== 'WRITE') throw new Error(`unexpected statement ${text}`);
     const key = String(vals[0]);
@@ -181,6 +185,24 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(batchDb.count('COMMIT')).toBe(Math.ceil(writes / 25));
     expect(res.batch).toEqual({ commits: Math.ceil(writes / 25), ops: writes, rewinds: 0 });
     expect(batchDb.releases).toBe(batchDb.reserves);
+  });
+
+  it('P-525: a batch opened 256+ ops behind asks for coalesced change notifications; one opened closer does not', async () => {
+    // mig 1213: under the GUC, emit_change_notify sends one table-scoped notification per
+    // table per transaction, so a far-behind fold does not echo one notification per row.
+    const ops = Array.from({ length: 300 }, (_, i) => put(`k${i}`, 1000 + i, { i }));
+    const db = new FakeDb();
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], createMergeCursor(), {
+      applyImpl: sink(db),
+      getTimeoutMs: 0,
+      batchApply: { maxOps: 50, ...NO_AGE_BOUND },
+    });
+    const begins = db.statements.flatMap((s, i) => (s === 'BEGIN' ? [i] : []));
+    expect(begins).toHaveLength(6);
+    // Opened at #0 (300 behind): coalesced. Opened at #50 (250 behind) and later: per row.
+    expect(begins.map((i) => db.statements[i + 1] === COALESCE_ON)).toEqual([true, false, false, false, false, false]);
+    expect(db.count(COALESCE_ON)).toBe(1);
+    expect(db.committed.size).toBe(300);
   });
 
   it('a lost COMMIT rewinds the cursor to the batch start and records no winner for its ops', async () => {
