@@ -4669,10 +4669,13 @@ export async function buildTurnStartOrientationBlock(input: {
     // reproduce the exact stale suppression this change removes.
     const deliveryToken = proof ? randomUUID() : undefined;
     const deliveredFingerprint = fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block, contextTokens);
-    const identityPromise = bindTurnStartIdentityOutputs({
-      ownerId, workspaceId, state, committed: ack?.committed ?? null, epoch, contextTokens,
-      block, deliveryToken: deliveryToken ?? null,
-    }, input.identityBinder);
+    const identityToken = deliveryToken ?? randomUUID();
+    const pendingIdentity = {
+      version: 1, token: identityToken, deliveryToken: deliveryToken ?? null,
+      status: 'pending', offeredAt: new Date().toISOString(),
+      outputRevision: createHash('sha256').update(block).digest('hex'),
+    };
+    deliveredFingerprint[TURN_START_IDENTITY_DELIVERY_KEY] = pendingIdentity;
     if (progressReceipts && deliveryToken) {
       const rows = progressReceipts.deliveredGoalPlacementRows({ ownerId, workspaceId, brief: state.obligations, block });
       if (rows.length) {
@@ -4687,13 +4690,6 @@ export async function buildTurnStartOrientationBlock(input: {
         };
       }
     }
-    const identity = await withBoundedTimeout<Record<string, unknown>>(identityPromise, {
-      fallback: { version: 1, token: deliveryToken ?? null, status: 'unavailable',
-        reason: 'identity-binding-timeout' },
-      timeoutMs: 200,
-      label: 'turn-start:identity-binding',
-    });
-    deliveredFingerprint[TURN_START_IDENTITY_DELIVERY_KEY] = identity.value;
     const staged = await stage(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
@@ -4703,6 +4699,32 @@ export async function buildTurnStartOrientationBlock(input: {
       () => true,
       () => false,
     );
+    if (staged) {
+      // Optional provenance must never consume the hook's 2.5s response wall.
+      // The token-guarded update works whether native proof has already moved
+      // this candidate from pending to committed or it is still pending.
+      void trackDetached((async () => {
+        const measured = await withBoundedTimeout<Awaited<ReturnType<typeof bindTurnStartIdentityOutputs>> | null>(
+          bindTurnStartIdentityOutputs({
+            ownerId, workspaceId, state, committed: ack?.committed ?? null, epoch, contextTokens,
+            block, deliveryToken: deliveryToken ?? null,
+          }, input.identityBinder),
+          { fallback: null, timeoutMs: 5_000, label: 'turn-start:identity-bind-background' },
+        );
+        const unavailable = (part: unknown) => !!part && typeof part === 'object' &&
+          (part as { status?: unknown }).status === 'unavailable';
+        const receipt = measured.value
+          ? { ...measured.value, token: identityToken, deliveryToken: deliveryToken ?? null,
+              outputRevision: pendingIdentity.outputRevision,
+              status: unavailable(measured.value.practice) ? 'unavailable'
+                : unavailable(measured.value.goal) ? 'partial' : 'bound' }
+          : { ...pendingIdentity, status: 'unavailable', reason: measured.reason ?? 'binding-unavailable' };
+        const { annotateReadCursorByToken } = await import('./agent-tools/coordination/read-cursors');
+        await annotateReadCursorByToken(
+          ownerId, ORIENTATION_CURSOR_SURFACE, TURN_START_IDENTITY_DELIVERY_KEY, identityToken, receipt,
+        );
+      })()).catch(() => {});
+    }
     // A token whose stage failed names no pending, so confirming it could never
     // promote anything; reporting none keeps the caller's ledger honest.
     return { block, deliveryToken: staged && deliveryToken ? deliveryToken : null };
