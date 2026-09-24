@@ -182,6 +182,124 @@ export async function readHostedBringUpBinding(input: {
   });
 }
 
+export async function revokeHostedWorkspaceConnectorsForDestroyedHost(input: {
+  controlPlaneWorkspaceId: string;
+  hostId: string;
+}): Promise<void> {
+  const bindings = await withHostedServiceContext((sql) => sql<Array<{
+    control_workspace_id: string;
+    organization_id: string;
+    customer_workspace_id: string;
+    host_id: string;
+    route_label: string;
+  }>>`
+    SELECT control_workspace_id, organization_id, customer_workspace_id, host_id, route_label
+      FROM papercusp_auth.hosted_workspace_connectors
+     WHERE control_workspace_id = ${input.controlPlaneWorkspaceId}
+       AND host_id = ${input.hostId}
+       AND state <> 'revoked'
+  `);
+  if (bindings.length === 0) return;
+
+  const gateway = new HostedWorkspaceConnectorGateway(
+    new PostgresHostedWorkspaceConnectorStore(withHostedServiceContext),
+  );
+  for (const binding of bindings) {
+    await gateway.revoke({
+      controlPlaneWorkspaceId: binding.control_workspace_id,
+      organizationId: binding.organization_id,
+      customerWorkspaceId: binding.customer_workspace_id,
+      hostId: binding.host_id,
+      routeLabel: binding.route_label,
+    });
+  }
+}
+
+/**
+ * Complete the customer-workspace half of host offboarding after provider destroy has
+ * produced terminal absence evidence. Soft deletion frees the organization's live-workspace
+ * slot while keeping the audit identity. Connector credentials are revoked first; both
+ * operations are replay-safe if the durable workflow retries.
+ */
+export async function retireHostedCustomerWorkspaceAfterDestroy(
+  input: { controlPlaneWorkspaceId: string; hostId: string },
+  dependencies: {
+    revokeConnectors?: (input: { controlPlaneWorkspaceId: string; hostId: string }) => Promise<void>;
+  } = {},
+): Promise<{ customerWorkspaceId: string } | null> {
+  const bindings = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
+    query<Array<{
+      id: string;
+      state: string;
+      desired_state: string;
+      observed_state: string;
+    }>>`
+      SELECT customer.id, customer.state, host.desired_state, host.observed_state
+        FROM harness_shared.customer_workspaces customer
+        JOIN harness_shared.workspace_hosts host
+          ON host.workspace_id = customer.workspace_id
+         AND host.id = customer.workspace_host_id
+       WHERE customer.workspace_id = ${input.controlPlaneWorkspaceId}
+         AND customer.workspace_host_id = ${input.hostId}
+       ORDER BY customer.id
+       LIMIT 2
+    `,
+  );
+  if (bindings.length === 0) return null;
+  if (bindings.length > 1) {
+    throw new Error(`host ${input.hostId} is bound to multiple customer workspaces`);
+  }
+
+  const binding = bindings[0]!;
+  if (binding.desired_state !== 'absent' || binding.observed_state !== 'absent') {
+    throw new Error(
+      `customer workspace ${binding.id} cannot be deleted before host ${input.hostId} is terminally absent ` +
+        `(desired=${binding.desired_state}, observed=${binding.observed_state})`,
+    );
+  }
+
+  await (dependencies.revokeConnectors ?? revokeHostedWorkspaceConnectorsForDestroyedHost)(input);
+
+  const updated = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
+    query<Array<{ id: string }>>`
+      UPDATE harness_shared.customer_workspaces AS customer
+         SET state = 'deleted',
+             deleted_at = COALESCE(customer.deleted_at, now()),
+             updated_at = now()
+        FROM harness_shared.workspace_hosts AS host
+       WHERE customer.workspace_id = ${input.controlPlaneWorkspaceId}
+         AND customer.id = ${binding.id}
+         AND customer.workspace_host_id = ${input.hostId}
+         AND customer.state <> 'deleted'
+         AND host.workspace_id = ${input.controlPlaneWorkspaceId}
+         AND host.id = ${input.hostId}
+         AND host.desired_state = 'absent'
+         AND host.observed_state = 'absent'
+      RETURNING customer.id
+    `,
+  );
+  if (updated[0]) return { customerWorkspaceId: updated[0].id };
+
+  const current = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
+    query<Array<{ id: string; state: string; desired_state: string; observed_state: string }>>`
+      SELECT customer.id, customer.state, host.desired_state, host.observed_state
+        FROM harness_shared.customer_workspaces customer
+        JOIN harness_shared.workspace_hosts host
+          ON host.workspace_id = customer.workspace_id
+         AND host.id = customer.workspace_host_id
+       WHERE customer.workspace_id = ${input.controlPlaneWorkspaceId}
+         AND customer.id = ${binding.id}
+         AND customer.workspace_host_id = ${input.hostId}
+       LIMIT 1
+    `,
+  );
+  const row = current[0];
+  if (row?.state === 'deleted' && row.desired_state === 'absent' && row.observed_state === 'absent') {
+    return { customerWorkspaceId: row.id };
+  }
+  throw new Error(`customer workspace ${binding.id} could not be retired after host ${input.hostId} destroy`);
+}
+
 export interface HostedConnectorEnrollmentDependencies {
   readOrganizationId(input: { controlPlaneWorkspaceId: string; customerWorkspaceId: string; hostId: string }): Promise<string>;
   gateway: Pick<HostedWorkspaceConnectorGateway, 'enroll'>;

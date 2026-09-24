@@ -28,6 +28,7 @@ import {
   hostedBringUpInitialization,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
   readHostedBringUpBinding,
+  retireHostedCustomerWorkspaceAfterDestroy,
   workspaceHostBringUpOperationIds,
   type WorkspaceHostBringUp,
 } from '../workspace-host/hosted-bring-up';
@@ -120,9 +121,28 @@ type WorkspaceHostWorkflowInput =
   | (AdmittedWorkspaceHostInitialization & { action: 'initialize' })
   | WorkspaceHostDesktopPackRequest;
 
-type WorkspaceHostWorkflowResult = WorkspaceHostProvisioningResult | {
-  status: 'succeeded'; operationId: string; hostId: string;
-};
+type WorkspaceHostWorkflowResult =
+  | (WorkspaceHostProvisioningResult & {
+      offboardedCustomerWorkspaceId?: string;
+      alreadyAbsent?: boolean;
+    })
+  | {
+      status: 'succeeded';
+      operationId: string;
+      hostId: string;
+      alreadyAbsent?: boolean;
+      offboardedCustomerWorkspaceId?: string;
+    };
+
+export type WorkspaceHostDestroyWorkflowResult =
+  | (WorkspaceHostDestroyResult & { offboardedCustomerWorkspaceId?: string })
+  | {
+      status: 'succeeded';
+      operationId: string;
+      hostId: string;
+      alreadyAbsent: true;
+      offboardedCustomerWorkspaceId?: string;
+    };
 
 export type WorkspaceHostProvisioningExecutor = (
   input: WorkspaceHostWorkflowInput,
@@ -189,7 +209,25 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
   if (input.action === 'install-desktop-pack') return executeAdmittedWorkspaceHostDesktopPack(input);
   const provider = resolveWorkspaceHostProvider(input.connection);
   if (input.action === 'destroy') {
-    return runWorkspaceHostDestroy({ ...input, provider });
+    try {
+      return await runWorkspaceHostDestroy({ ...input, provider });
+    } catch (error) {
+      // A prior destroy may already have persisted terminal absence while its customer
+      // workspace update was interrupted. Re-enter offboarding from that exact condition;
+      // the following workflow step rechecks host state before changing the customer row.
+      if (
+        error instanceof WorkspaceHostProvisioningRequestError &&
+        error.problems.includes('workspace host is already absent')
+      ) {
+        return {
+          status: 'succeeded',
+          operationId: input.operationId,
+          hostId: input.hostId,
+          alreadyAbsent: true,
+        };
+      }
+      throw error;
+    }
   }
   if (input.action !== 'provision') {
     return runWorkspaceHostLifecycle({ ...input, provider });
@@ -210,7 +248,11 @@ async function workspaceHostProvisioningWorkflowImpl(
   // The lifecycle runner marks successful upgrades, repairs, restores, and completed upgrade
   // rollbacks with this explicit host-readiness signal. A rollback is still a failed upgrade
   // operation, but it has recreated the host and needs the same hosted bring-up as a success.
-  if (isExistingHostLifecycle(input) && result.requiresInitialization === true) {
+  if (
+    isExistingHostLifecycle(input) &&
+    'requiresInitialization' in result &&
+    result.requiresInitialization === true
+  ) {
     await bringUpHostedHostAgain(input);
   }
   return result;
@@ -368,7 +410,7 @@ async function runWorkspaceHostOperation(
     }
 
     for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
-      const result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
+      let result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
         name: `workspace-host-${input.action}-${turn}`,
         retriesAllowed: true,
         ...retry,
@@ -376,6 +418,22 @@ async function runWorkspaceHostOperation(
           !(error instanceof WorkspaceHostProvisioningRequestError) &&
           !(error instanceof WorkspaceHostProvisioningConnectionError),
       });
+      if (input.action === 'destroy' && result.status === 'succeeded') {
+        const retired = await DBOS.runStep(
+          () =>
+            retireHostedCustomerWorkspaceAfterDestroy({
+              controlPlaneWorkspaceId: input.workspaceId,
+              hostId: input.hostId,
+            }),
+          {
+            name: 'workspace-host-customer-workspace-offboarding',
+            retriesAllowed: true,
+            maxAttempts: 3,
+            intervalSeconds: 2,
+          },
+        );
+        if (retired) result = { ...result, offboardedCustomerWorkspaceId: retired.customerWorkspaceId };
+      }
       if (result.status !== 'in-progress') return result;
       const retryAfterMs = Math.max(250, Math.min(30_000, result.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS));
       await DBOS.sleep(retryAfterMs);
@@ -538,7 +596,7 @@ export async function startWorkspaceHostProvisioningWorkflow(
 
 export async function startWorkspaceHostDestroyWorkflow(
   input: StartWorkspaceHostDestroyInput,
-): Promise<WorkspaceHostDestroyResult | WorkspaceHostOperationAcceptance> {
+): Promise<WorkspaceHostDestroyWorkflowResult | WorkspaceHostOperationAcceptance> {
   const operationId = input.operationId ?? randomUUID();
   const workflowInput: WorkspaceHostDestroyWorkflowInput = { ...input, action: 'destroy', operationId };
   const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
@@ -548,7 +606,7 @@ export async function startWorkspaceHostDestroyWorkflow(
       queueName: workspaceHostProvisioningQueue.name,
       enqueueOptions: { deduplicationID: keys.deduplicationId },
     })(workflowInput);
-    return await settleWithinAdmissionWindow<WorkspaceHostDestroyResult>(keys.workflowId, {
+    return await settleWithinAdmissionWindow<WorkspaceHostDestroyWorkflowResult>(keys.workflowId, {
       status: 'accepted',
       operationId,
       hostId: input.hostId,

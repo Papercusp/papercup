@@ -21,6 +21,7 @@ const control = vi.hoisted(() => ({
   runDesktopPack: vi.fn(),
   prepareInitialization: vi.fn(),
   activateCustomerWorkspace: vi.fn(),
+  retireCustomerWorkspace: vi.fn(),
   enrollConnector: vi.fn(),
   readHostedBinding: vi.fn(),
   readDestroyTarget: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock('../workspace-host/initialization-admission', () => ({
 vi.mock('../workspace-host/hosted-bring-up', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../workspace-host/hosted-bring-up')>()),
   activateHostedCustomerWorkspace: control.activateCustomerWorkspace,
+  retireHostedCustomerWorkspaceAfterDestroy: control.retireCustomerWorkspace,
   enrollHostedWorkspaceConnector: control.enrollConnector,
   readHostedBringUpBinding: control.readHostedBinding,
 }));
@@ -186,6 +188,7 @@ beforeEach(() => {
   control.runDesktopPack.mockReset();
   control.prepareInitialization.mockReset();
   control.activateCustomerWorkspace.mockReset();
+  control.retireCustomerWorkspace.mockReset();
   control.readHostedBinding.mockReset();
   control.readDestroyTarget.mockReset();
   control.runLifecycle.mockReset();
@@ -579,6 +582,7 @@ describe('workspace-host provisioning DBOS admission', () => {
   });
 
   it('routes discard destroy through the same host-scoped DBOS admission and composes the provider inside', async () => {
+    control.retireCustomerWorkspace.mockResolvedValueOnce({ customerWorkspaceId: 'customer-ws-1' });
     control.runDestroy.mockResolvedValueOnce({
       status: 'succeeded',
       operationId: 'destroy-1',
@@ -631,6 +635,68 @@ describe('workspace-host provisioning DBOS admission', () => {
     expect(control.runDestroy).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'destroy', provider: control.provider }),
     );
+    expect(control.retireCustomerWorkspace).toHaveBeenCalledWith({
+      controlPlaneWorkspaceId: 'ws-1',
+      hostId: 'host-1',
+    });
+    expect(control.stepOptionsByName['workspace-host-customer-workspace-offboarding']).toMatchObject({
+      retriesAllowed: true,
+      maxAttempts: 3,
+    });
+  });
+
+  it('uses terminal absence to finish offboarding after an earlier destroy without destroying twice', async () => {
+    control.runDestroy.mockRejectedValueOnce(
+      new WorkspaceHostProvisioningRequestError(['workspace host is already absent']),
+    );
+    control.retireCustomerWorkspace.mockResolvedValueOnce({ customerWorkspaceId: 'customer-ws-1' });
+
+    await expect(startWorkspaceHostDestroyWorkflow({
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      connectionId: 'connection-1',
+      connection,
+      disposition: 'discard',
+      confirmation: {
+        expectedHostId: 'host-1',
+        confirmedBy: 'operator:test',
+        confirmedAt: '2026-08-25T00:00:00Z',
+      },
+      operationId: 'destroy-reconcile-1',
+    })).resolves.toMatchObject({
+      status: 'succeeded',
+      alreadyAbsent: true,
+      offboardedCustomerWorkspaceId: 'customer-ws-1',
+    });
+
+    expect(control.runDestroy).toHaveBeenCalledOnce();
+    expect(control.retireCustomerWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it('does not retire a customer workspace when provider destruction is incomplete', async () => {
+    control.runDestroy.mockResolvedValueOnce({
+      status: 'failed',
+      operationId: 'destroy-failed-1',
+      hostId: 'host-1',
+      plan: { ...plan, operationId: 'destroy-failed-1' },
+      checkpoints: [],
+    });
+
+    await expect(startWorkspaceHostDestroyWorkflow({
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      connectionId: 'connection-1',
+      connection,
+      disposition: 'discard',
+      confirmation: {
+        expectedHostId: 'host-1',
+        confirmedBy: 'operator:test',
+        confirmedAt: '2026-08-25T00:00:00Z',
+      },
+      operationId: 'destroy-failed-1',
+    })).resolves.toMatchObject({ status: 'failed' });
+
+    expect(control.retireCustomerWorkspace).not.toHaveBeenCalled();
   });
 
   it('keeps the workflow active across an in-progress runner receipt', async () => {
