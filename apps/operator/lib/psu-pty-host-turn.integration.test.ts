@@ -171,9 +171,12 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
         "process.stdout.write('FRESH-BOOT\\n');",
         scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('100% context left\\n'),150);",
         "setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
-        "let line='';process.stdin.on('data',data=>{for(const c of data.toString()){",
+        // The composer echoes typed text like the real Codex TUI: a fresh launch
+        // kickoff is only submitted once its turn-origin marker is visible.
+        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
         "if(c==='\\u0004')process.exit(0);",
-        "if(c==='\\r'){if(line){fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');line='';process.stdout.write('SUBMITTED\\n');}}else line+=c;}});",
+        "if(c==='\\r'){if(line){fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');line='';process.stdout.write('SUBMITTED\\n');}}else{line+=c;echo+=c;}}",
+        'if(echo)process.stdout.write(echo);});',
         'setTimeout(()=>process.exit(0),4000);',
       ].join('');
       const done = hostThroughPty({
