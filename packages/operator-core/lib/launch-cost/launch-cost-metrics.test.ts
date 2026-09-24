@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { compileJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -16,6 +17,7 @@ import {
   createCarryTrialRecipe,
   inspectCarryTaskResponse,
   inspectCarryPreparationResponse,
+  inspectCarryRequestPopulation,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -27,6 +29,99 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry controller request population', () => {
+  function fixture(): Parameters<typeof inspectCarryRequestPopulation>[0] {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ ownerId: 'su-fixture', provider: 'codex', protocol: 'openai-responses', transport: 'bearer-http' });
+    span.recordAttempt(); span.finish('ok', 200);
+    const gateway = telemetry.snapshot(), row = gateway.recent[0];
+    row.nativeCorrelation = { status: 'observed', sessionId: 'thread', threadId: 'thread', turnId: 'turn', windowId: null };
+    row.upstreamWrites.calls = [{ ordinal: 1, accountId: 'routing-label', clockId: 'fixture', clock: 'performance.now',
+      outcome: 'returned', responseStatus: 200, matchedRequests: 1, unexpectedRequests: 0,
+      droppedRequests: 0, droppedEvents: 0, events: [{ phase: 'created', requestOrdinal: 1, atMs: 1 }] }];
+    return { ownerId: 'su-fixture', turns: [{ armId: 'arm', threadId: 'thread', turnId: 'turn', status: 'completed' }],
+      gateway, usage: [{ session_id: 'thread', usage_event_key: 'a'.repeat(64), usage_provenance: { turnId: 'turn' } }] };
+  }
+
+  it('links exact observations without promoting them to authenticated charges', () => {
+    const input = fixture(), before = structuredClone(input);
+    const result = inspectCarryRequestPopulation(input);
+    expect(result).toMatchObject({ populationStatus: 'linked', missing: [], violations: [],
+      chargeJoin: 'unavailable', accountingComplete: false,
+      nativePopulationCoverage: 'not-established', canonicalQueryCoverage: 'not-established',
+      turns: [{ gatewayRequestIds: [1], usageEventKeys: ['a'.repeat(64)], upstreamAttempts: [
+        { requestId: 1, ordinal: 1, routingAccountId: 'routing-label', responseStatus: 200 } ] }] });
+    result.turns[0].gatewayRequestIds.push(99);
+    expect(input).toEqual(before);
+  });
+
+  it('keeps failure and retry attempts even with fewer or no canonical samples', () => {
+    const input = fixture(), row = input.gateway.recent[0];
+    row.attempts = 2;
+    row.upstreamWrites.calls.push({ ...row.upstreamWrites.calls[0], ordinal: 2 });
+    row.upstreamWrites.calls[0].responseStatus = 429;
+    expect(inspectCarryRequestPopulation(input).turns[0]).toMatchObject({
+      upstreamAttempts: [{ responseStatus: 429 }, { responseStatus: 200 }], usageEventKeys: ['a'.repeat(64)] });
+    input.turns[0].status = 'failed'; input.usage = [];
+    const result = inspectCarryRequestPopulation(input);
+    expect(result).toMatchObject({ populationStatus: 'linked', chargeJoin: 'unavailable', accountingComplete: false,
+      turns: [{ status: 'failed', usageEventKeys: [] }] });
+    expect(result.turns[0].upstreamAttempts).toHaveLength(2);
+    expect(result).not.toHaveProperty('costUsd');
+  });
+
+  it.each(['ring', 'active', 'calls', 'requests', 'events', 'missing-events', 'pending', 'unsupported'] as const)(
+    'refuses an incomplete observation population (%s)', kind => {
+      const input = fixture(), row = input.gateway.recent[0];
+      if (kind === 'ring') { input.gateway.requests.started++; input.gateway.requests.finalized++;
+        input.gateway.requests.sampled++; input.gateway.outcomes.ok++; }
+      if (kind === 'active') { input.gateway.requests.active++; input.gateway.requests.started++; }
+      if (kind === 'calls') row.upstreamWrites.droppedCalls++;
+      if (kind === 'requests') row.upstreamWrites.calls[0].unexpectedRequests++;
+      if (kind === 'events') row.upstreamWrites.calls[0].droppedEvents++;
+      if (kind === 'missing-events') row.upstreamWrites.calls[0].events = [];
+      if (kind === 'pending') row.upstreamWrites.calls[0].outcome = 'pending';
+      if (kind === 'unsupported') row.upstreamWrites.calls = [];
+      expect(inspectCarryRequestPopulation(input)).toMatchObject({ populationStatus: 'incomplete', accountingComplete: false });
+    });
+
+  it.each(['native', 'request', 'call', 'usage', 'counter'] as const)('rejects ambiguous or inconsistent identities (%s)', kind => {
+    const input = fixture(), row = input.gateway.recent[0];
+    if (kind === 'native') input.turns = [...input.turns, { ...input.turns[0], armId: 'other-arm' }];
+    if (kind === 'request') input.gateway.recent.push(structuredClone(row));
+    if (kind === 'call') row.upstreamWrites.calls.push(structuredClone(row.upstreamWrites.calls[0]));
+    if (kind === 'usage') input.usage = [...input.usage, input.usage[0]];
+    if (kind === 'counter') input.gateway.requests.sampled++;
+    expect(inspectCarryRequestPopulation(input)).toMatchObject({ populationStatus: 'invalid', accountingComplete: false });
+  });
+
+  it('does not substitute owner, row count or time proximity for exact native keys', () => {
+    const input = fixture(); input.gateway.recent[0].nativeCorrelation.turnId = 'nearby-turn';
+    input.usage[0].usage_provenance!.turnId = 'nearby-turn';
+    const result = inspectCarryRequestPopulation(input);
+    expect(result).toMatchObject({ populationStatus: 'incomplete', unmatchedGatewayRequestIds: [1], unmatchedUsageRows: [0],
+      turns: [{ gatewayRequestIds: [], usageEventKeys: [] }] });
+    const foreign = fixture(); foreign.gateway.recent[0].ownerId = 'other-owner';
+    expect(inspectCarryRequestPopulation(foreign).unmatchedGatewayRequestIds).toEqual([1]);
+  });
+
+  it('marks missing completed-turn usage incomplete without inventing a zero-cost sample', () => {
+    const input = fixture(); input.usage = [];
+    expect(inspectCarryRequestPopulation(input)).toMatchObject({ populationStatus: 'incomplete', accountingComplete: false,
+      turns: [{ status: 'completed', usageEventKeys: [] }] });
+  });
+
+  it('handles several requests in one turn and projects only its public receipt', () => {
+    const input = fixture(), row = structuredClone(input.gateway.recent[0]); row.requestId = 2;
+    input.gateway.recent.push(row); input.gateway.requests.started++; input.gateway.requests.finalized++;
+    input.gateway.requests.sampled++; input.gateway.outcomes.ok++;
+    Object.assign(input.turns[0], { rawCredential: 'PRIVATE_TOKEN' });
+    expect(inspectCarryRequestPopulation(input)).toMatchObject({ populationStatus: 'linked',
+      turns: [{ gatewayRequestIds: [1, 2], usageEventKeys: ['a'.repeat(64)] }] });
+    expect(JSON.stringify(inspectCarryRequestPopulation(input))).not.toContain('PRIVATE_TOKEN');
+  });
+});
 
 describe('carry preparation and idle clock boundaries', () => {
   const receipt = (atMs: number) => ({ atMs, clockId: 'controller-origin', evidenceRef: `fixture:clock:${atMs}` });

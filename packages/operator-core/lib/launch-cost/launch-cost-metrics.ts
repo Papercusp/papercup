@@ -34,6 +34,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { compileJsonSchema } from '../json-schema-validation';
+import type { GatewayRequestTelemetrySnapshot } from '../inference-gateway/request-stage-telemetry';
 
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
@@ -790,6 +791,113 @@ export function measureCarryArmTiming(input: {
   // Keep out-of-band observations visible; never relabel or discard them.
   return { status: inBand ? 'measured' as const : 'out-of-band' as const, missing,
     violations: inBand ? violations : ['idle-out-of-band'], metrics };
+}
+
+/** The canonical writer supplies these columns. This is a usage observation,
+ * not a provider charge receipt, even when cost_source is 'provider'. */
+export interface CarryCanonicalUsageRow {
+  usage_event_key: string | null;
+  session_id: string | null;
+  usage_provenance: { turnId?: unknown } | null;
+}
+
+/** Controller reconciliation for ONE isolated gateway's lifetime snapshot.
+ * Use exact native session/turn keys only. Neither a complete ring nor a usage
+ * row proves an authenticated serving account or the charges of each attempt.
+ * In particular, retain failed turns and all retry observations when usage is
+ * absent. The caller must independently establish that its native-turn list
+ * and canonical query population are complete; array length is not that proof.
+ * This receipt must never set the budget helper's accountingComplete.
+ */
+export function inspectCarryRequestPopulation(input: {
+  ownerId: string;
+  turns: readonly { armId: string; threadId: string; turnId: string; status: 'completed' | 'failed' | 'interrupted' }[];
+  gateway: GatewayRequestTelemetrySnapshot;
+  usage: readonly CarryCanonicalUsageRow[];
+}) {
+  const missing = new Set<string>(), violations = new Set<string>();
+  const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+  const key = (thread: string, turn: string) => JSON.stringify([thread, turn]);
+  const groups = input.turns.map(turn => ({ armId: turn.armId, threadId: turn.threadId, turnId: turn.turnId,
+    status: turn.status, gatewayRequestIds: [] as number[],
+    upstreamAttempts: [] as Array<{ requestId: number; ordinal: number; routingAccountId: string | null;
+      responseStatus: number | null; outcome: string }>, usageEventKeys: [] as string[] }));
+  const byNativeKey = new Map<string, typeof groups>();
+  if (!nonblank(input.ownerId)) violations.add('missing-owner-identity');
+  if (!groups.length) missing.add('empty-native-population');
+  for (const [index, turn] of groups.entries()) {
+    if (![turn.armId, turn.threadId, turn.turnId].every(nonblank) ||
+      !['completed', 'failed', 'interrupted'].includes(turn.status)) violations.add(`invalid-native-turn:${index}`);
+    const identity = key(turn.threadId, turn.turnId);
+    const matching = byNativeKey.get(identity) ?? [];
+    matching.push(turn); byNativeKey.set(identity, matching);
+    if (matching.length > 1) violations.add(`ambiguous-native-turn:${identity}`);
+  }
+  const snapshot = input.gateway, counters = snapshot.requests;
+  if (![counters.started, counters.finalized, counters.active, counters.sampled].every(count) ||
+    counters.started !== counters.finalized + counters.active || counters.sampled !== counters.finalized ||
+    Object.values(snapshot.outcomes).some(n => !count(n)) ||
+    Object.values(snapshot.outcomes).reduce((sum, n) => sum + n, 0) !== counters.finalized) {
+    violations.add('gateway-counter-mismatch');
+  }
+  if (counters.active !== 0) missing.add('active-gateway-requests');
+  if (snapshot.recent.length !== counters.finalized) missing.add('incomplete-gateway-ring');
+  const requestIds = new Set<number>(), unmatchedGatewayRequestIds: number[] = [];
+  for (const row of snapshot.recent) {
+    if (!count(row.requestId) || row.requestId === 0 || requestIds.has(row.requestId)) {
+      violations.add(`invalid-or-duplicate-gateway-request:${row.requestId}`);
+    }
+    requestIds.add(row.requestId);
+    const native = row.nativeCorrelation;
+    const matches = native.status === 'observed' && nonblank(native.threadId) && nonblank(native.turnId)
+      ? byNativeKey.get(key(native.threadId, native.turnId)) : undefined;
+    const group = row.ownerId === input.ownerId && matches?.length === 1 ? matches[0] : undefined;
+    if (!group) {
+      unmatchedGatewayRequestIds.push(row.requestId);
+      missing.add(`unmatched-gateway-request:${row.requestId}`);
+    } else group.gatewayRequestIds.push(row.requestId);
+    const calls = row.upstreamWrites.calls, ordinals = new Set<number>();
+    if (row.upstreamWrites.droppedCalls !== 0 || row.attempts !== calls.length || calls.length === 0) {
+      missing.add(`incomplete-upstream-observations:${row.requestId}`);
+    }
+    for (const [index, call] of calls.entries()) {
+      if (!count(call.ordinal) || call.ordinal !== index + 1 || ordinals.has(call.ordinal)) {
+        violations.add(`invalid-or-duplicate-upstream-call:${row.requestId}:${call.ordinal}`);
+      }
+      ordinals.add(call.ordinal);
+      if (call.matchedRequests !== 1 || call.unexpectedRequests !== 0 || call.droppedRequests !== 0 ||
+        call.droppedEvents !== 0 || call.outcome === 'pending' ||
+        !call.events.some(event => event.phase === 'created' && event.requestOrdinal === 1)) {
+        missing.add(`incomplete-upstream-call:${row.requestId}:${call.ordinal}`);
+      }
+      group?.upstreamAttempts.push({ requestId: row.requestId, ordinal: call.ordinal,
+        routingAccountId: call.accountId, responseStatus: call.responseStatus, outcome: call.outcome });
+    }
+  }
+  const usageIds = new Set<string>(), unmatchedUsageRows: number[] = [];
+  for (const [index, row] of input.usage.entries()) {
+    const eventKey = row.usage_event_key, turnId = row.usage_provenance?.turnId;
+    if (!eventKey || !/^[a-f0-9]{64}$/.test(eventKey) || usageIds.has(eventKey)) {
+      violations.add(`invalid-or-duplicate-usage-key:${index}`);
+    }
+    if (eventKey) usageIds.add(eventKey);
+    const matches = nonblank(row.session_id) && nonblank(turnId) ? byNativeKey.get(key(row.session_id, turnId)) : undefined;
+    if (matches?.length !== 1 || !eventKey) {
+      unmatchedUsageRows.push(index); missing.add(`unmatched-usage-row:${index}`);
+    } else matches[0].usageEventKeys.push(eventKey);
+  }
+  for (const group of groups) {
+    if (!group.gatewayRequestIds.length) missing.add(`unobserved-native-requests:${key(group.threadId, group.turnId)}`);
+    if (group.status === 'completed' && !group.usageEventKeys.length) missing.add(`unobserved-native-usage:${key(group.threadId, group.turnId)}`);
+  }
+  return { evidenceKind: 'observation-only' as const,
+    populationStatus: violations.size ? 'invalid' as const : missing.size ? 'incomplete' as const : 'linked' as const,
+    missing: [...missing], violations: [...violations], turns: groups,
+    unmatchedGatewayRequestIds, unmatchedUsageRows,
+    nativePopulationCoverage: 'not-established' as const, canonicalQueryCoverage: 'not-established' as const,
+    // No existing sample field carries an authenticated attempt/charge join.
+    chargeJoin: 'unavailable' as const, accountingComplete: false as const };
 }
 
 export interface CarryBudgetCharge {
