@@ -1862,9 +1862,10 @@ export async function launchAcceptanceGrader(
               logPath?: unknown;
               /**
                * WI-10002155: the launcher's structured kickoff receipt. Absent
-               * when no process was spawned (a discovery 'assigned' launch);
-               * present with `persisted:false` when the first turn was never
-               * submitted and the task is a zombie awaiting recovery.
+               * when no process was spawned (a discovery 'assigned' launch).
+               * `persisted:false` means the native marker was not confirmed by
+               * its deadline; only `kickoff-not-submitted:*` is conclusive by
+               * itself. Pair other negative receipts with `agentStarted`.
                */
               kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
             }>;
@@ -1878,27 +1879,35 @@ export async function launchAcceptanceGrader(
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
       const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
 
-      // WI-10002155: prefer the launcher's STRUCTURED verdict over scraping its
-      // log. `capability:launch-agent` reports `kickoffProof.persisted !== true`
-      // when the first turn was never submitted, and retains the task/log
-      // identity precisely so this caller can recover (launch-agent.ts, "retained
-      // for recovery"); `consult/revive-responder` already gates on the same
-      // field. Without this, a judge that parked on an unanswerable interactive
-      // rate-limit picker NEVER exits, so `live` stays true, `overAge` needs the
-      // full 2h ACCEPTANCE_GRADER_STALE_AFTER_MS, and every later ship attempt
-      // dedupes onto the zombie — while a FRESH such launch is reported
-      // `state:'launched'` even though the judge never took a single turn.
+      // WI-10002155: use the launcher's structured kickoff receipt, but do not
+      // mistake an expired native-marker deadline for proof that no turn ran.
+      // `capability:launch-agent` separately returns `agentStarted`: true is an
+      // observed turn, false is observed silence, and null is unconfirmed. A
+      // positive start verdict wins over a late negative receipt; an explicit
+      // `kickoff-not-submitted:*` receipt or observed silence remains terminal.
+      // This keeps WI-10002155's recovery for a genuine dropped kickoff while
+      // keeping a working judge alive when native transcript proof arrives late.
       // Absent `kickoffProof` means no spawn happened (a discovery 'assigned'
-      // launch), which is not a failure — only a PRESENT receipt can be terminal.
+      // launch), which is not a failure.
       const kickoffProof = launchedTask?.kickoffProof;
       const kickoffNotPersisted = !!kickoffProof && kickoffProof.persisted !== true;
       const kickoffDropReason =
         typeof kickoffProof?.reason === 'string' && kickoffProof.reason ? kickoffProof.reason : 'reason not reported';
+      const kickoffNotSubmitted =
+        typeof kickoffProof?.reason === 'string' && kickoffProof.reason.startsWith('kickoff-not-submitted:');
+      const launchObservedSilence = launchData?.agentStarted === false;
+      const launchObservedStarted = launchData?.agentStarted === true;
+      const kickoffFailureIsConclusive =
+        kickoffNotPersisted &&
+        !launchObservedStarted &&
+        (launchObservedSilence || kickoffNotSubmitted);
 
-      const terminalFailure: AcceptanceGraderTerminalFailure | null = kickoffNotPersisted
+      const terminalFailure: AcceptanceGraderTerminalFailure | null = kickoffFailureIsConclusive
         ? {
             code: 'launch_kickoff_not_persisted',
-            evidence: `launch receipt reported kickoffProof.persisted !== true (${kickoffDropReason})`,
+            evidence:
+              `launch receipt reported kickoffProof.persisted !== true (${kickoffDropReason}); ` +
+              `agentStarted=${String(launchData?.agentStarted ?? 'unreported')}`,
           }
         : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
