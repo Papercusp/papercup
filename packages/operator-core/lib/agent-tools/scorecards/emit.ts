@@ -2132,7 +2132,7 @@ export async function emitScorecard(
       // auditor runs on the same or a descendant generation.
       if (
         gradedObservation.rerunRecipe &&
-        args.ratings?.['re-runnable-evidence'] !== undefined
+        ratingVerdict(args.ratings?.['re-runnable-evidence']?.rating ?? '') !== null
       ) {
         const rawGeneration =
           gradedRawObservation && typeof gradedRawObservation === 'object' && !Array.isArray(gradedRawObservation)
