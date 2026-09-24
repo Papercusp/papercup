@@ -9,6 +9,7 @@ import {
   type CarryStartupObservation,
   evaluateCarryTaskPairs,
   evaluateCarryBudgetReservation,
+  measureCarryArmTiming,
   inspectCarryNativeTurn,
   inspectCarrySourceRead,
   type CarryTaskEvaluation,
@@ -22,6 +23,71 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry preparation and idle clock boundaries', () => {
+  const receipt = (atMs: number) => ({ atMs, clockId: 'controller-origin', evidenceRef: `fixture:clock:${atMs}` });
+  const fixture = (): Parameters<typeof measureCarryArmTiming>[0] => ({
+    preparationStarted: receipt(100), predecessorCompleted: receipt(1100), armStarted: receipt(1200),
+    firstRequestDispatched: receipt(1300), firstUsefulResponse: receipt(1500),
+    preparationAllocation: 'this-arm', allocationEvidenceRef: 'fixture:allocation', idleBand: 'under-60s',
+  });
+
+  it('keeps preparation, mandated idle and launch in the assigned elapsed boundary', () => {
+    expect(measureCarryArmTiming(fixture())).toEqual({ status: 'measured', missing: [], violations: [], metrics: {
+      preparationMs: 1000, beforeArmMs: 100, armLaunchMs: 100, afterDispatchMs: 200,
+      observedIdleMs: 200, armElapsedMs: 300, elapsedSincePreparationMs: 1400, allocatedElapsedMs: 1400,
+    } });
+    const input = fixture(); input.preparationAllocation = 'other-arm';
+    expect(measureCarryArmTiming(input).metrics).toMatchObject({ allocatedElapsedMs: 300, elapsedSincePreparationMs: 1400 });
+    expect(measureCarryArmTiming(input)).not.toHaveProperty('accepted');
+  });
+
+  it.each([
+    ['under-60s', 59_999, 'measured'], ['under-60s', 60_000, 'out-of-band'],
+    ['6-10min', 359_999, 'out-of-band'], ['6-10min', 360_000, 'measured'],
+    ['6-10min', 600_000, 'measured'], ['6-10min', 600_001, 'out-of-band'],
+    ['65-75min', 3_899_999, 'out-of-band'], ['65-75min', 3_900_000, 'measured'],
+    ['65-75min', 4_500_000, 'measured'], ['65-75min', 4_500_001, 'out-of-band'],
+  ] as const)('retains observations at %s idle boundary %s', (idleBand, idle, status) => {
+    const input = fixture(); input.idleBand = idleBand;
+    input.armStarted = receipt(1100 + idle - 100);
+    input.firstRequestDispatched = receipt(1100 + idle);
+    input.firstUsefulResponse = receipt(1100 + idle + 200);
+    const result = measureCarryArmTiming(input);
+    expect(result.status).toBe(status);
+    expect(result.metrics).toMatchObject({ observedIdleMs: idle, allocatedElapsedMs: 1000 + idle + 200 });
+  });
+
+  it.each(['preparationStarted', 'predecessorCompleted', 'armStarted', 'firstRequestDispatched', 'firstUsefulResponse'] as const)(
+    'requires a complete comparable receipt for %s', name => {
+      const input = fixture(); input[name].atMs = null;
+      expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+      input[name] = { ...fixture()[name], evidenceRef: '' };
+      expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+      input[name] = { ...fixture()[name], clockId: 'another-process-origin' };
+      expect(measureCarryArmTiming(input)).toMatchObject({ status: 'invalid', metrics: null });
+    });
+
+  it.each([NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1])('refuses invalid monotonic time %s', atMs => {
+    const input = fixture(); input.firstUsefulResponse.atMs = atMs;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'invalid', metrics: null });
+  });
+
+  it('rejects reversed events instead of clamping elapsed time to zero', () => {
+    const input = fixture(); input.armStarted.atMs = 1000;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'invalid', metrics: null,
+      violations: ['clock-order:predecessorCompleted:armStarted'] });
+  });
+
+  it('requires allocation evidence and a known idle band', () => {
+    const input = fixture(); input.preparationAllocation = null;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+    input.preparationAllocation = 'this-arm'; input.allocationEvidenceRef = '';
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+    input.allocationEvidenceRef = 'fixture:allocation'; input.idleBand = 'toString' as never;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+  });
+});
 
 describe('carry conservative request reservation', () => {
   const request = (id = 'next', armId = 'candidate') => ({ id, armId, model: 'gpt-6-sol',

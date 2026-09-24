@@ -55,6 +55,14 @@ async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {},
   peers.push(result); return result;
 }
 
+async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: string) {
+  const terminal = () => events.find(frame => frame.method === 'mcpServer/startupStatus/updated' &&
+    (frame.params as RpcFrame).threadId === threadId && (frame.params as RpcFrame).name === name &&
+    ['ready', 'failed', 'cancelled'].includes(String((frame.params as RpcFrame).status)));
+  await vi.waitFor(() => expect(terminal() !== undefined).toBe(true), { timeout: 15_000 });
+  expect((terminal()!.params as RpcFrame).status).toBe('ready');
+}
+
 describe('native JSON-line pipe transport', () => {
   it('preserves the tracked teardown cause while redacting credentials', async () => {
     const secret = NEVER_EMIT_MARKER;
@@ -128,6 +136,70 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it.each([false, true])('does not mistake accepted output-limit configuration for native enforcement (configured %s)', async configured => {
+    const requests: Array<Record<string, unknown>> = [], events: RpcFrame[] = [];
+    const requestedLimit = 16;
+    // This scripted result intentionally exceeds the proposed bound. Its usage
+    // is fixture data, not a measurement of provider tokens or provider limits.
+    const reply = 'offline unbounded response '.repeat(256);
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+        text: reply, inputTokens: 100, outputTokens: 2048 })));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    let p: SuStdioPeer | undefined;
+    try {
+      const config = stringifyToml({
+        model_provider: 'cache_protocol_probe',
+        model_providers: { cache_protocol_probe: { name: 'Local protocol fixture',
+          base_url: `http://127.0.0.1:${address.port}/v1`, wire_api: 'responses', requires_openai_auth: false,
+          supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } },
+        features: { apps: false, shell_tool: false }, web_search: 'disabled',
+        // Neither spelling is a documented Codex output-limit setting. Test
+        // the tempting assumption explicitly: a readable config is not proof
+        // that the native request contains, or the client enforces, a bound.
+        ...(configured ? { model_max_output_tokens: requestedLimit, max_output_tokens: requestedLimit } : {}),
+      } as Parameters<typeof stringifyToml>[0]);
+      p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config);
+      await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_output_bound_test', version: '1' } } });
+      p.send({ method: 'initialized', params: {} });
+      const start = await p.request({ method: 'thread/start', params: { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
+        cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
+      const threadId = String((start.thread as RpcFrame).id);
+      const turn = await p.request({ method: 'turn/start', params: {
+        threadId, input: [{ type: 'text', text: 'Offline native output-bound counterexample.' }],
+      } });
+      const turnId = String((turn.turn as RpcFrame).id);
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        method: 'turn/completed', params: expect.objectContaining({ threadId,
+          turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
+      })), { timeout: 20_000 });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).not.toHaveProperty('max_output_tokens');
+      expect(requests[0]).not.toHaveProperty('max_completion_tokens');
+      const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+      const trace = inspectCarryNativeTurn({ threadId, turnId, events, threadRead, allowedMcpCalls: [] });
+      expect(trace.status).toBe('verified');
+      const items = ((threadRead.thread as RpcFrame).turns as RpcFrame[])[0].items as RpcFrame[];
+      expect(items.find(item => item.type === 'agentMessage')?.text).toBe(reply);
+      // Exact completed output, not just HTTP receipt, falsifies client-side
+      // clipping for these settings. No output-bound receipt may be minted.
+      expect(reply.length).toBeGreaterThan(requestedLimit * 100);
+    } finally {
+      try {
+        if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
+    }
+  }, 90_000);
+
   it.skipIf(process.env.PUI_NATIVE_PLATFORM_MCP !== '1').each([false, true])(
     'resolves the inherited platform caller through native MCP without provider inference (preauthorized %s)', async preauthorized => {
     // Explicit opt-in uses ONLY this session's existing MCP bearer and client.
@@ -187,6 +259,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const start = await p.request({ method: 'thread/start', params: { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
         cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
       const threadId = String((start.thread as RpcFrame).id);
+      await waitForMcpStartup(events, threadId, 'papercusp-su');
       const before = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
       const inventory = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
       expect(inventory.nextCursor == null).toBe(true);
@@ -324,7 +397,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       // Existing production SSE serializer, scripted local text only. These
       // zero fixture counters are never recorded as real provider usage.
-      const body = codexCliResponsesBody({ model: 'gpt-6-sol',
+      const body = codexCliResponsesBody({ model: preparingSource ? 'gpt-6-luna' : 'gpt-6-sol',
         text: preparingSource ? '{"sourceSentinel":"cedar-48f6e9a2"}' : '{"offline":true}', inputTokens: 0, outputTokens: 0 });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(body));
@@ -336,6 +409,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     try {
       const overrides = {
         model_provider: 'cache_protocol_probe',
+        model_reasoning_effort: 'medium',
         'model_providers.cache_protocol_probe.name': 'Local protocol fixture',
         'model_providers.cache_protocol_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
         'model_providers.cache_protocol_probe.wire_api': 'responses',
@@ -350,21 +424,17 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         } : {}),
       };
       const nativeTurn = async () => {
+        const expectedModel = preparingSource ? 'gpt-6-luna' : 'gpt-6-sol';
         p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
           ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame), privateMcpConfig);
         await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
         p.send({ method: 'initialized', params: {} });
         const start = await p.request({ method: 'thread/start', params: {
-          model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
+          model: expectedModel, modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
         } });
+        expect(start.model).toBe(expectedModel);
         const threadId = String((start.thread as RpcFrame).id);
-        if (readSource) {
-          const startup = () => events.find(frame => frame.method === 'mcpServer/startupStatus/updated' &&
-            (frame.params as RpcFrame).threadId === threadId && (frame.params as RpcFrame).name === serverName &&
-            ['ready', 'failed', 'cancelled'].includes(String((frame.params as RpcFrame).status)));
-          await vi.waitFor(() => expect(startup() !== undefined).toBe(true), { timeout: 15_000 });
-          expect((startup()!.params as RpcFrame).status).toBe('ready');
-        }
+        if (readSource) await waitForMcpStartup(events, threadId, serverName);
         const beforeConfig = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
         const beforeTools = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
         if (readSource) {
@@ -385,6 +455,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
         })), { timeout: 20_000 });
         const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        // Check the actual native requests, including tool continuations, not
+        // a model name in the prompt or scripted assistant self-identification.
+        // This is client-side phase provenance only; the local endpoint has no
+        // serving account and cannot establish real T5 provider correlation.
+        expect(providerCalls.length).toBeGreaterThan(0);
+        for (const call of providerCalls) {
+          expect(call).toMatchObject({ model: expectedModel, reasoning: { effort: 'medium' } });
+          const metadata = JSON.parse((call.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
+          expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
+        }
         expect(isDeepStrictEqual(beforeConfig,
           await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } }))).toBe(true);
         expect(isDeepStrictEqual(beforeTools,

@@ -556,6 +556,76 @@ export function inspectCarrySourceRead(input: CarryNativeTurnEvidence, source: C
     itemId: status === 'verified' ? String(item!.id) : null };
 }
 
+export interface CarryClockReceipt {
+  /** One controller monotonic clock origin; never mix process-local clocks. */
+  clockId: string;
+  atMs: number | null;
+  evidenceRef: string;
+}
+
+/** Clock arithmetic for the proposed D017 preparation protocol, not an
+ * acceptance verdict. The caller must authenticate each event and its exact
+ * arm/allocation. In particular, response receipt time is not dispatch time.
+ * Both elapsed boundaries are published; this function never subtracts idle
+ * or decides which latency definition the independent review should approve.
+ */
+export function measureCarryArmTiming(input: {
+  preparationStarted: CarryClockReceipt;
+  predecessorCompleted: CarryClockReceipt;
+  armStarted: CarryClockReceipt;
+  firstRequestDispatched: CarryClockReceipt;
+  firstUsefulResponse: CarryClockReceipt;
+  preparationAllocation: 'this-arm' | 'other-arm' | null;
+  allocationEvidenceRef: string | null;
+  idleBand: 'under-60s' | '6-10min' | '65-75min';
+}) {
+  const names = ['preparationStarted', 'predecessorCompleted', 'armStarted', 'firstRequestDispatched', 'firstUsefulResponse'] as const;
+  const missing: string[] = [], violations: string[] = [];
+  const nonblank = (s: unknown): s is string => typeof s === 'string' && s.trim().length > 0;
+  const times: number[] = [];
+  let clockId: string | undefined;
+  for (const name of names) {
+    const event = input[name];
+    if (!event || !nonblank(event.clockId) || !nonblank(event.evidenceRef) || event.atMs == null) {
+      missing.push(`missing-clock-receipt:${name}`); continue;
+    }
+    if (!Number.isFinite(event.atMs) || event.atMs < 0 || event.atMs > Number.MAX_SAFE_INTEGER) {
+      violations.push(`invalid-clock-value:${name}`); continue;
+    }
+    if (clockId !== undefined && clockId !== event.clockId) violations.push(`incomparable-clock:${name}`);
+    clockId ??= event.clockId;
+    times.push(event.atMs);
+  }
+  if (!['this-arm', 'other-arm'].includes(String(input.preparationAllocation)) || !nonblank(input.allocationEvidenceRef)) {
+    missing.push('unbound-preparation-allocation');
+  }
+  const bands = { 'under-60s': [0, 60_000], '6-10min': [360_000, 600_000], '65-75min': [3_900_000, 4_500_000] };
+  const band = Object.hasOwn(bands, input.idleBand) ? bands[input.idleBand] : null;
+  if (!band) missing.push('unknown-idle-band');
+  if (times.length === names.length) for (let i = 1; i < times.length; i++) {
+    if (times[i] < times[i - 1]) violations.push(`clock-order:${names[i - 1]}:${names[i]}`);
+  }
+  if (missing.length || violations.length) return { status: violations.length ? 'invalid' as const : 'incomplete' as const,
+    missing, violations, metrics: null };
+  const [preparedAt, predecessorAt, armAt, dispatchAt, usefulAt] = times;
+  const observedIdleMs = dispatchAt - predecessorAt;
+  const inBand = observedIdleMs >= band![0] && (input.idleBand === 'under-60s'
+    ? observedIdleMs < band![1] : observedIdleMs <= band![1]);
+  const metrics = {
+    preparationMs: predecessorAt - preparedAt,
+    beforeArmMs: armAt - predecessorAt,
+    armLaunchMs: dispatchAt - armAt,
+    afterDispatchMs: usefulAt - dispatchAt,
+    observedIdleMs,
+    armElapsedMs: usefulAt - armAt,
+    elapsedSincePreparationMs: usefulAt - preparedAt,
+    allocatedElapsedMs: usefulAt - (input.preparationAllocation === 'this-arm' ? preparedAt : armAt),
+  };
+  // Keep out-of-band observations visible; never relabel or discard them.
+  return { status: inBand ? 'measured' as const : 'out-of-band' as const, missing,
+    violations: inBand ? violations : ['idle-out-of-band'], metrics };
+}
+
 export interface CarryBudgetCharge {
   /** Canonical charged identity, including failed/aborted/preparation requests. */
   id: string;
