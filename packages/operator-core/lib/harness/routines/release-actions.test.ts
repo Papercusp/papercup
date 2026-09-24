@@ -42,7 +42,12 @@ vi.mock('../../events/await/engine', () => ({
 }));
 
 const recordStoredQualificationVerdict = vi.hoisted(() =>
-  vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, never> }> => ({
+  vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, unknown> }> => ({
+    status: 'missing',
+  })),
+);
+const recordStoredQualificationScheduledTerminalRecovery = vi.hoisted(() =>
+  vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, unknown> }> => ({
     status: 'missing',
   })),
 );
@@ -60,6 +65,7 @@ const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
+  recordStoredQualificationScheduledTerminalRecovery: (...a: unknown[]) => recordStoredQualificationScheduledTerminalRecovery(...a),
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
   beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
   recordStoredQualificationScheduledFire: (...a: unknown[]) => recordStoredQualificationScheduledFire(...a),
@@ -1277,6 +1283,8 @@ beforeEach(() => {
   fakeSql.unsafe.mockClear();
   recordStoredQualificationVerdict.mockClear();
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
+  recordStoredQualificationScheduledTerminalRecovery.mockReset();
+  recordStoredQualificationScheduledTerminalRecovery.mockResolvedValue({ status: 'missing' });
   readStoredQualification.mockClear();
   readStoredQualification.mockResolvedValue({ status: 'none' });
   beginStoredQualification.mockReset();
@@ -2476,6 +2484,81 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    it('replays one exact-candidate red wake after parent death without waking twice', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-red-replay-'));
+      const paths = checkpointRunLogPaths(dir, 'red-replay', new Date('2026-09-24T07:20:00.000Z'));
+      const candidate = 'abc123def456789';
+      try {
+        writeFileSync(paths.logPath, `__GREEN_CHECKPOINT_RESULT__ ${JSON.stringify({
+          reason: 'not-green', green: false, candidate, runId: paths.runId,
+        })}\n`);
+        writeFileSync(paths.terminalPath, JSON.stringify({
+          schemaVersion: 1, runId: paths.runId, logPath: paths.logPath,
+          exitCode: 0, killed: false, memoryEvents: null,
+          finishedAt: '2026-09-24T07:21:00Z', workspaceId: 'ws-42', installSlug: 'my-harness',
+          qualificationAttemptId: 'attempt-red', gateFireId: 'fire-red', integrationRoot: REPO_ROOT,
+        }));
+        recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated' });
+        recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'terminal' });
+        const move = async () => { throw new Error('simulated rename interruption'); };
+
+        expect(await reconcileScheduledCheckpointTerminals(ctx, { dir, move }))
+          .toEqual([expect.objectContaining({ status: 'settled', markerRetained: true })]);
+        expect(emitAwaitedEvent.mock.calls.map(([args]) => (args as { payload: { sha: string } }).payload.sha))
+          .toEqual([candidate, candidate]);
+        expect(await reconcileScheduledCheckpointTerminals(ctx, { dir, move }))
+          .toEqual([expect.objectContaining({ status: 'already-settled', markerRetained: true })]);
+        expect(emitAwaitedEvent).toHaveBeenCalledTimes(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('retains a same-attempt candidate-mismatch marker until exact runner recovery, then replays safely', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-mismatch-'));
+      const paths = checkpointRunLogPaths(dir, 'wrapper-run', new Date('2026-09-24T07:12:00.000Z'));
+      try {
+        writeFileSync(paths.logPath, `__GREEN_CHECKPOINT_RESULT__ ${JSON.stringify({
+          reason: 'skipped-locked', candidate: 'candidate-new', runId: 'wrapper-run',
+        })}\n`);
+        writeFileSync(paths.terminalPath, JSON.stringify({
+          schemaVersion: 1, runId: paths.runId, logPath: paths.logPath,
+          exitCode: 0, killed: false, memoryEvents: null,
+          finishedAt: '2026-09-24T07:13:00Z', workspaceId: 'ws-42', installSlug: 'my-harness',
+          qualificationAttemptId: 'attempt-current', gateFireId: 'fire-current',
+        }));
+        recordStoredQualificationVerdict.mockResolvedValue({
+          status: 'conflict', transaction: { attemptId: 'attempt-current', candidate: 'candidate-old' },
+        });
+        recordStoredQualificationScheduledTerminalRecovery.mockResolvedValueOnce({ status: 'conflict' });
+        const refused = await reconcileScheduledCheckpointTerminals(ctx, { dir });
+        expect(refused).toEqual([expect.objectContaining({ status: 'retry', markerRetained: true })]);
+        expect(existsSync(paths.terminalPath)).toBe(true);
+
+        recordStoredQualificationScheduledTerminalRecovery.mockResolvedValueOnce({ status: 'updated' });
+        const recovered = await reconcileScheduledCheckpointTerminals(ctx, {
+          dir, move: async () => { throw new Error('post-CAS rename interruption'); },
+        });
+        expect(recovered).toEqual([expect.objectContaining({ status: 'settled', markerRetained: true })]);
+        expect(recordStoredQualificationScheduledTerminalRecovery).toHaveBeenLastCalledWith(
+          expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+          expect.objectContaining({
+            attemptId: 'attempt-current', runnerId: 'fire-current', runId: 'wrapper-run',
+            reason: 'skipped-locked', evidenceRefs: expect.arrayContaining([
+              'checkpoint-terminal:wrapper-run', 'gate-fire:fire-current',
+            ]),
+          }),
+        );
+        recordStoredQualificationScheduledTerminalRecovery.mockResolvedValueOnce({ status: 'terminal' });
+        const replay = await reconcileScheduledCheckpointTerminals(ctx, { dir });
+        expect(replay).toEqual([expect.objectContaining({ status: 'already-settled', markerRetained: false })]);
+        expect(existsSync(paths.terminalPath)).toBe(false);
+        expect(existsSync(`${paths.terminalPath}.reconciled`)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('the PERIODIC gate launches the suite under systemd-run --scope (own cgroup, stdout marker still parsed)', async () => {
@@ -2486,13 +2569,43 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).toBe('systemd-run');
     expect(args).toContain('--scope');
+    const reservedRunner = reserveStoredQualificationRunner.mock.calls[0]?.[1] as { runnerId?: string; unit?: string };
+    expect(reservedRunner?.unit).toBe(`papercusp-checkpoint-${reservedRunner.runnerId}.scope`);
+    expect(args).toContain(`--unit=${reservedRunner.unit}`);
     expect(args.some((a) => /^--property=MemoryMax=\d+G$/.test(a))).toBe(true);
     expect(args.join(' ')).toContain('green-checkpoint.ts');
     expect(args.at(-1)).toContain('trap _papercusp_write_checkpoint_terminal EXIT');
+    const childEnv = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
+    const sharedRunId = childEnv.env?.PAPERCUSP_CHECKPOINT_SCHEDULED_RUN;
+    expect(sharedRunId).toMatch(/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i);
+    expect(args.at(-1)).toContain(sharedRunId);
     // The verdict still lands as a pipeline event (stdout was piped through the scope).
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
     );
+  });
+
+  it('settles a markerless scheduled child exit instead of leaving a PID-less runner reservation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spawnMock.mockImplementationOnce(() => fakeSpawn('', 1));
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated' });
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    const options = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
+    const runId = options.env?.[CHECKPOINT_SCHEDULED_RUN_ENV];
+    expect(runId).toMatch(/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i);
+    expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+      expect.objectContaining({
+        attemptId: 'scheduled-attempt', runId, reason: 'error',
+        terminalEvent: expect.objectContaining({ status: 'error' }),
+      }),
+    );
+    expect(appendPipelineEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'error',
+    }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exited 1'));
   });
 
   it('EI-22642378999251872: the periodic launcher snapshots one exact logical attempt into env and terminal evidence', async () => {
@@ -2517,7 +2630,8 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       { env?: Record<string, string> },
     ];
     expect(options.env?.[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBe('attempt-transported');
-    expect(options.env?.[CHECKPOINT_SCHEDULED_RUN_ENV]).toBe('1');
+    expect(options.env?.[CHECKPOINT_SCHEDULED_RUN_ENV]).toMatch(/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i);
+    expect(args.at(-1)).toContain(options.env?.[CHECKPOINT_SCHEDULED_RUN_ENV]);
     expect(reserveStoredQualificationRunner).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
       expect.objectContaining({ attemptId: 'attempt-transported', started: false }),
@@ -2626,9 +2740,9 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     await getSystemAction('green-checkpoint')!(ctx);
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const [cmd2, args2] = spawnMock.mock.calls[1] as [string, string[]];
-    expect(cmd2).not.toBe('systemd-run'); // direct tsx payload
-    expect(cmd2).toContain('tsx');
+    expect(cmd2).toBe('/bin/bash'); // direct wrapper, without a systemd scope
     expect(args2.join(' ')).toContain('green-checkpoint.ts');
+    expect(args2.at(-1)).toContain('trap _papercusp_write_checkpoint_terminal EXIT');
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
     );
@@ -2878,6 +2992,30 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         },
       );
       expect(appendPipelineEvent).not.toHaveBeenCalled();
+    } finally {
+      delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+    }
+  });
+
+  it('commits a modern terminal event through qualification once and skips duplicate history on replay', async () => {
+    process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = 'attempt-1';
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    const verdict = { reason: 'up-to-date' as const, green: true, candidate: 'abc123def456789', runId: 'run-1' };
+    try {
+      recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated' });
+      expect(await recordCheckpointVerdict(target, verdict)).toBe(true);
+      expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(target, expect.objectContaining({
+        attemptId: 'attempt-1', runId: 'run-1', terminalEvent: {
+          status: 'up-to-date', detail: expect.objectContaining({ runId: 'run-1', candidate: 'abc123def456' }),
+        },
+      }));
+      expect(appendPipelineEvent).not.toHaveBeenCalled();
+
+      fakeSql.unsafe.mockClear();
+      recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'terminal' });
+      expect(await recordCheckpointVerdict(target, verdict)).toBe(true);
+      expect(appendPipelineEvent).not.toHaveBeenCalled();
+      expect(fakeSql.unsafe).not.toHaveBeenCalled();
     } finally {
       delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
     }
@@ -4265,6 +4403,25 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
         },
       });
     }
+  });
+
+  it('wakes the exact red candidate after the scheduled fallback commits its terminal event', async () => {
+    const candidate = 'abc123def456789';
+    spawnMock.mockImplementationOnce(() => fakeSpawn(`${GREEN_MARKER} ${JSON.stringify({
+      reason: 'not-green', green: false, candidate, runId: 'legacy-run-atomic',
+    })}\n`, 0));
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated' });
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: 'not-green', candidate, terminalEvent: expect.objectContaining({ status: 'not-green' }),
+    }));
+    expect(appendPipelineEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'not-green',
+    }));
+    expect(emitAwaitedEvent.mock.calls.map(([args]) => (args as { payload: { sha: string } }).payload.sha))
+      .toEqual([candidate, candidate]);
   });
 
   it('⭐ hands the CLI the record target — without this env the run cannot know whose gate it judges', async () => {
