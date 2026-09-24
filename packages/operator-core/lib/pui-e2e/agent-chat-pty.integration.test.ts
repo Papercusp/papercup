@@ -2795,6 +2795,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         pane.escape();
         await pane.waitFor('i type · v speak');
         pane.write('i');
+        // Only the current binary shows the New SU session form. Completing it
+        // lets the calibration run reach its launch and fail on the trace
+        // below, not on a launch that never happened.
+        pane.reviewNextNewSession();
         pane.write(prompt);
         pane.enter();
         await vi.waitFor(() => {
