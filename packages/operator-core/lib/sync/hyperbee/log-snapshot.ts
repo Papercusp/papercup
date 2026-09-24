@@ -586,6 +586,42 @@ export function formatSnapshotFoldStall(stall: SnapshotFoldStall): string {
 }
 
 /**
+ * WI-10002836 — rate-limit a fold-progress stream to at most one emission per
+ * `minIntervalMs`, measured from when the throttle is created.
+ *
+ * The first own compaction on a pot folds its WHOLE history: 7.76M ops, taking tens
+ * of minutes, on the tower's papercusp pot. The stall diagnostic only says the cursor
+ * is not stuck, and the outcome row arrives only at the end, so a slow fold and a
+ * hung one used to look identical from outside. A fold that finishes inside one
+ * interval (every small hive) emits nothing, so this adds no rows where there was
+ * nothing to watch. Out-of-order or repeated positions are dropped, which keeps the
+ * reported cursor monotonic across the anchor-convergence re-fold.
+ */
+export function throttleSnapshotFoldProgress(
+  emit: SnapshotFoldProgressCallback,
+  opts: { minIntervalMs: number; now?: () => number },
+): SnapshotFoldProgressCallback {
+  const now = opts.now ?? Date.now;
+  let lastEmittedAt = now();
+  let lastProcessed = -1;
+  return (progress) => {
+    if (progress.processed <= lastProcessed) return;
+    lastProcessed = progress.processed;
+    const at = now();
+    if (at - lastEmittedAt < opts.minIntervalMs) return;
+    lastEmittedAt = at;
+    emit(progress);
+  };
+}
+
+/** One-line, bounded rendering of a fold position (the progress twin of `formatSnapshotFoldStall`). */
+export function formatSnapshotFoldProgress(progress: SnapshotFoldProgress): string {
+  const pct = progress.total <= 0 ? 100 : Math.min(100, Math.floor((progress.processed / progress.total) * 100));
+  return `cursor=${progress.processed}/${progress.total} (${pct}%) sourceStart=${progress.sourceStart} ` +
+    `decodedOps=${progress.decodedOps} decodedBytes=${progress.decodedBytes}`;
+}
+
+/**
  * A single read window may legitimately be slow, so this is only an
  * observability threshold. It is never a total scan timeout and the watchdog
  * never rejects or cancels the underlying read.
@@ -1160,8 +1196,15 @@ export async function produceLogSnapshot(
      * `() => stopped` so a closing engine never appends into a store it is tearing down.
      */
     shouldAbort?: () => boolean;
+    /**
+     * WI-10002855 — run the decode + fold in a worker thread instead of on the caller's
+     * event loop (see `produceLogSnapshotOffloaded`). The own compaction passes the real
+     * worker; every other caller omits it and keeps the inline fold, unchanged.
+     */
+    foldWorker?: SnapshotFoldWorkerFactory;
   },
 ): Promise<ProduceSnapshotResult> {
+  if (opts.foldWorker) return produceLogSnapshotOffloaded(ownLog, opts, opts.foldWorker);
   // Re-anchored after the read by the ANCHOR CONVERGENCE below (WI-37526), so `let`.
   let coversUpTo = ownLog.length;
   if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
@@ -1314,12 +1357,19 @@ export async function produceLogSnapshot(
   // the producer claimed success and the consequence surfaced 40+ minutes later as
   // a misleading "no complete snapshot within the reader scan window". A snapshot
   // that cannot be located is not a snapshot, so this FAILS LOUDLY instead.
-  const anchorOp = await ownLog.get(coversUpTo);
+  assertSnapshotAnchorHeld(await ownLog.get(coversUpTo), coversUpTo, snapshotOps.length);
+
+  const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
+  return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
+}
+
+/** Throw unless `anchorOp` (read back at `coversUpTo`) is chunk 0 of the set just appended. */
+function assertSnapshotAnchorHeld(anchorOp: PeerLogOp | null, coversUpTo: number, chunkCount: number): void {
   const anchorIsSnapshot = anchorOp != null && isSnapshotOp(anchorOp);
   const anchorCovers = anchorIsSnapshot ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo : undefined;
   if (anchorCovers !== coversUpTo) {
     throw new Error(
-      `[snapshot] anchor race: appended a ${snapshotOps.length}-chunk set for coversUpTo=${coversUpTo}, ` +
+      `[snapshot] anchor race: appended a ${chunkCount}-chunk set for coversUpTo=${coversUpTo}, ` +
         `but index ${coversUpTo} does not hold chunk 0 of that set (found ` +
         `${anchorIsSnapshot ? `a snapshot for coversUpTo=${String(anchorCovers)}` : anchorOp == null ? `no readable op` : `a non-snapshot op`}). ` +
         `A concurrent append displaced the set, and the reader locates a set only at ` +
@@ -1327,9 +1377,212 @@ export async function produceLogSnapshot(
         `success; retry the snapshot when the own log is quieter (WI-37526).`,
     );
   }
+}
 
-  const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
-  return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
+/**
+ * WI-10002855 — the fold, run somewhere other than the caller's event loop. Implemented
+ * by `SnapshotFoldWorker` (snapshot-fold-offload.ts, a worker thread). Declared here, not
+ * imported, so this module stays pure: the worker bundle imports THIS file.
+ */
+export interface SnapshotFoldWorkerLike {
+  /** Decode + fold stored blocks, in ascending log order. Counts are for THIS call. */
+  fold(blocks: ReadonlyArray<Uint8Array | null>): Promise<{ decodedOps: number; decodedBytes: number }>;
+  /** Decode stored blocks WITHOUT their bulk (a snapshot op keeps its metadata, not its rows). */
+  inspect(blocks: ReadonlyArray<Uint8Array | null>): Promise<Array<PeerLogOp | null>>;
+  /** Emit the set as stored blocks, byte-identical to what `appendBatch(buildSnapshotOpsFromRows(...))` writes. */
+  finish(args: {
+    now: number;
+    coversUpTo: number;
+    author_pubkey: string;
+    ts: number;
+    schema_version: number;
+    maxChunkBytes?: number;
+    excludeTables: readonly string[];
+  }): Promise<{ blocks: Uint8Array[]; rowCount: number }>;
+  close(): Promise<void>;
+}
+
+export type SnapshotFoldWorkerFactory = (init: { excludeTables: readonly string[] }) => Promise<SnapshotFoldWorkerLike>;
+
+type ProduceLogSnapshotOptions = Parameters<typeof produceLogSnapshot>[1];
+
+/**
+ * WI-10002855 — `produceLogSnapshot` with the fold OFF the event loop.
+ *
+ * MEASURED 2026-09-24 on the tower: the inline fold of the papercusp pot's first
+ * compaction (7.76M ops from index 0) held bg-host's main thread for 30+ minutes —
+ * event-loop lag p50 2.8s, every PG connect timed out, DBOS queues stalled, git-sync and
+ * the green-checkpoint fire stalled. Here the main thread does only I/O: raw block reads
+ * (no JSON.parse), a buffer copy, and one raw batch append. Decode, fold, chunking and
+ * encoding happen in the worker, so the live-key Map is on the WORKER's heap.
+ *
+ * Same contract as the inline path, step for step — seek, seed, fold, anchor
+ * convergence, abort check, contiguous append, anchor verification — and the appended
+ * bytes are identical (pinned by snapshot-fold-offload.test.ts). Two deliberate
+ * differences, both about not touching bulk data on the main thread:
+ *  - the seek and the anchor check read SUMMARIES (`inspect`): snapshot metadata
+ *    without rows. The seed is then folded from the prior set's own chunk range inside
+ *    the worker, which expands exactly the rows the inline path adds from the decoded
+ *    chunks it holds;
+ *  - `shouldAbort` is also honored between windows, so a closing engine stops a long
+ *    fold promptly instead of reading on to the end.
+ */
+async function produceLogSnapshotOffloaded(
+  ownLog: OwnLog,
+  opts: ProduceLogSnapshotOptions,
+  openWorker: SnapshotFoldWorkerFactory,
+): Promise<ProduceSnapshotResult> {
+  const getRaw = ownLog.getRaw?.bind(ownLog);
+  const appendRawBatch = ownLog.appendRawBatch?.bind(ownLog);
+  if (!getRaw || !appendRawBatch) {
+    throw new Error('[snapshot] offloaded own compaction needs OwnLog.getRaw and appendRawBatch (WI-10002855)');
+  }
+  let coversUpTo = ownLog.length;
+  if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
+
+  const excludeTables = [...new Set(opts.excludeTables ?? [])];
+  const worker = await openWorker({ excludeTables });
+  try {
+    const inspectAt = async (index: number): Promise<PeerLogOp | null> => {
+      const raw = await getRaw(index);
+      if (!raw) return null;
+      const [op] = await worker.inspect([raw]);
+      return op ?? null;
+    };
+    const summaries = {
+      get length(): number {
+        return ownLog.length;
+      },
+      get: inspectAt,
+    };
+
+    const foldRange = (from: number, to: number): Promise<void> =>
+      foldLogRangeViaWorker(getRaw, worker, from, to, {
+        phase: 'own-compaction',
+        coreKey: ownLog.keyHex,
+        onProgress: opts.onProgress,
+        onStall: opts.onStall ?? ((stall) => {
+          console.error(
+            `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
+              `the scan remains live and will not be aborted by this diagnostic`,
+          );
+        }),
+        stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+        shouldAbort: opts.shouldAbort,
+      });
+
+    const priorSnapshot = await findLatestProducerSnapshot(summaries, {
+      readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
+      describe: 'own compaction',
+      ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
+    });
+    let foldedUpTo = 0;
+    if (priorSnapshot) {
+      const conflict = conflictingSnapshotExclusion(priorSnapshot, new Set(excludeTables));
+      if (conflict) {
+        console.error(
+          `[snapshot] own compaction: prior snapshot at ${priorSnapshot.coversUpTo} excluded ` +
+            `table '${conflict}' which this fold keeps; folding from 0 instead of seeding ` +
+            `(correct, but O(history) — see conflictingSnapshotExclusion)`,
+        );
+      } else {
+        const seedEnd = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
+        await foldRange(priorSnapshot.coversUpTo, seedEnd);
+        foldedUpTo = seedEnd;
+      }
+    }
+
+    await foldRange(foldedUpTo, coversUpTo);
+    foldedUpTo = Math.max(foldedUpTo, coversUpTo);
+    // ANCHOR CONVERGENCE (WI-37526) — see produceLogSnapshot.
+    const MAX_CONVERGE_PASSES = 8;
+    for (let pass = 0; pass < MAX_CONVERGE_PASSES && ownLog.length > foldedUpTo; pass++) {
+      const target = ownLog.length;
+      await foldRange(foldedUpTo, target);
+      foldedUpTo = target;
+    }
+    coversUpTo = foldedUpTo;
+
+    const { blocks, rowCount } = await worker.finish({
+      now: opts.now,
+      coversUpTo,
+      author_pubkey: ownLog.keyHex,
+      ts: opts.now,
+      schema_version: opts.schemaVersion,
+      maxChunkBytes: opts.maxChunkBytes,
+      excludeTables,
+    });
+    if (opts.shouldAbort?.()) {
+      throw new SnapshotAbortedError(
+        `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
+          `${blocks.length} chunk(s) discarded): the caller is stopping`,
+      );
+    }
+    await appendRawBatch(blocks);
+    assertSnapshotAnchorHeld(await inspectAt(coversUpTo), coversUpTo, blocks.length);
+    return { appended: true, coversUpTo, rowCount, chunkCount: blocks.length };
+  } finally {
+    await worker.close().catch(() => {});
+  }
+}
+
+/**
+ * `foldLogRangeInto` with the decode + fold in the worker. The next window's reads are
+ * issued before the current window's fold is awaited, so I/O and folding overlap.
+ */
+async function foldLogRangeViaWorker(
+  getRaw: (index: number) => Promise<Uint8Array | null>,
+  worker: SnapshotFoldWorkerLike,
+  from: number,
+  to: number,
+  opts: FoldLogRangeOptions & { shouldAbort?: () => boolean },
+): Promise<void> {
+  const watchdog =
+    opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
+      ? watchFoldCursor(from, to, {
+        phase: opts.phase ?? 'source-scan',
+        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+        onStall: opts.onStall,
+        stallMs: opts.stallMs,
+      })
+      : undefined;
+  const readWindow = (start: number): Promise<Array<Uint8Array | null>> => {
+    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
+    const read = Promise.all(Array.from({ length: end - start }, (_, k) => getRaw(start + k)));
+    read.catch(() => {}); // awaited below; never an unhandled rejection if we throw first
+    return read;
+  };
+  let decodedOps = 0;
+  let decodedBytes = 0;
+  try {
+    let next: Promise<Array<Uint8Array | null>> | null = from < to ? readWindow(from) : null;
+    for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
+      const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
+      const blocks = await next!;
+      next = end < to ? readWindow(end) : null;
+      if (opts.shouldAbort?.()) {
+        throw new SnapshotAbortedError(
+          `[snapshot] own compaction aborted mid-fold at ${start}/${to}: the caller is stopping`,
+        );
+      }
+      const counts = await worker.fold(blocks);
+      decodedOps += counts.decodedOps;
+      decodedBytes += counts.decodedBytes;
+      watchdog?.advance(end, decodedOps, decodedBytes);
+      opts.onProgress?.({
+        phase: opts.phase ?? 'source-scan',
+        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+        sourceStart: from,
+        sourceEnd: to,
+        processed: end,
+        total: to,
+        decodedOps,
+        decodedBytes,
+      });
+    }
+  } finally {
+    watchdog?.stop();
+  }
 }
 
 /**

@@ -563,6 +563,22 @@ else
   echo "WARNING: sentinel worker not found at $SENTINEL_WORKER_SRC — the host will run with NO blocked-loop detection"
 fi
 
+# Snapshot-fold worker (WI-10002855). TypeScript like the sentinel, so esbuild it beside
+# the entry. The own-log compaction folds its whole history in this thread; without the
+# .mjs the worker cannot start and every compaction FAILS (recorded as a boot row) —
+# by design, since the inline fold it replaced froze the host for 30+ minutes.
+FOLD_WORKER_SRC="../../packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts"
+if [[ -f "$FOLD_WORKER_SRC" ]]; then
+  npx --yes esbuild@0.25.0 "$FOLD_WORKER_SRC" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$OUTDIR/snapshot-fold.worker.mjs" \
+    --log-limit=5 \
+    && echo "    ✓ bundled snapshot-fold worker beside the entry" \
+    || echo "WARNING: snapshot-fold worker bundle FAILED — own-log compactions will fail until it is rebuilt"
+else
+  echo "WARNING: snapshot-fold worker not found at $FOLD_WORKER_SRC — own-log compactions will fail"
+fi
+
 # Stamp only after the bundle AND every runtime sibling/asset has published.
 # The helper refuses a dirty tree, a changed HEAD, a missing output, or an
 # incoherent dist-host tree. A stamp failure never makes an otherwise-good

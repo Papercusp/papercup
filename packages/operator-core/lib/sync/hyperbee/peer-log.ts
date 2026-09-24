@@ -106,6 +106,19 @@ export interface OwnLog {
   appendBatch(ops: PeerLogOp[]): Promise<void>;
   /** Read the op at index `i` (decoded), or `null` if out of range. */
   get(i: number): Promise<PeerLogOp | null>;
+  /**
+   * WI-10002855 — read block `i` as its STORED bytes (the UTF-8 JSON the json session
+   * wrote), without decoding, or `null` if out of range. A bulk fold ships these bytes
+   * to a worker thread instead of paying `JSON.parse` for every block on the event loop.
+   * Optional: test fakes omit it, and callers that need it must feature-detect.
+   */
+  getRaw?(i: number): Promise<Uint8Array | null>;
+  /**
+   * WI-10002855 — append pre-encoded blocks in ONE batch. Each block must be exactly the
+   * UTF-8 JSON of one `PeerLogOp`, which is byte-for-byte what `appendBatch` would write
+   * for the decoded op, so the log's content is identical whichever form wrote it.
+   */
+  appendRawBatch?(blocks: Uint8Array[]): Promise<void>;
   /** Number of ops appended so far. */
   readonly length: number;
   /** 64-char lowercase hex hypercore key — the `log_core_key` to replicate. */
@@ -254,6 +267,8 @@ export async function openNamedLog(
       });
   }
 
+  let rawSessionPromise: Promise<CoreLike> | undefined;
+
   return {
     async append(op: PeerLogOp): Promise<void> {
       await core.append(op);
@@ -273,6 +288,15 @@ export async function openNamedLog(
       const v = await core.get(i, { wait: false });
       return (v as PeerLogOp | null) ?? null;
     },
+    async getRaw(i: number): Promise<Uint8Array | null> {
+      if (i < 0 || i >= core.length) return null;
+      const raw = await (await rawSession()).get(i, { wait: false });
+      return (raw as Uint8Array | null) ?? null;
+    },
+    async appendRawBatch(blocks: Uint8Array[]): Promise<void> {
+      if (blocks.length === 0) return;
+      await (await rawSession()).append(blocks);
+    },
     get length(): number {
       return core.length;
     },
@@ -280,6 +304,26 @@ export async function openNamedLog(
       return keyHex;
     },
   };
+
+  /**
+   * WI-10002855 — a second session on the SAME writable core with `binary` encoding.
+   * Hypercore applies the session's valueEncoding on both read and append
+   * (hypercore 11: `get` resolves `opts.valueEncoding || this.valueEncoding`, `append`
+   * encodes each block with `this.valueEncoding`), so this session moves the exact
+   * bytes the json session reads and writes, with no decode on the event loop. Opened
+   * lazily, because only the snapshot producer ever needs it.
+   */
+  function rawSession(): Promise<CoreLike> {
+    rawSessionPromise ??= (async () => {
+      const raw = (store as unknown as { get(o: Record<string, unknown>): CoreLike }).get({
+        name,
+        valueEncoding: 'binary',
+      });
+      await raw.ready();
+      return raw;
+    })();
+    return rawSessionPromise;
+  }
 }
 
 /**

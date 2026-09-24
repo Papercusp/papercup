@@ -84,12 +84,22 @@ import {
 } from './read-merge';
 import {
   describeSnapshotSet,
+  formatSnapshotFoldProgress,
   produceLogSnapshot,
   shouldCompactOwnLog,
   snapshotCompactThreshold,
   SnapshotAbortedError,
+  throttleSnapshotFoldProgress,
   type ProduceSnapshotResult,
 } from './log-snapshot';
+import { SnapshotFoldWorker } from './snapshot-fold-offload';
+
+/**
+ * WI-10002836 — how often a long own-log compaction reports its fold position. One
+ * row per minute keeps a 30-minute full-history fold legible, both in boot history
+ * and in the journal, without flooding PG. A fold shorter than this emits nothing.
+ */
+export const OWN_COMPACTION_PROGRESS_INTERVAL_MS = 60_000;
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps, type HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
@@ -399,6 +409,11 @@ export interface BootHarnessOpts {
    * timer and drive `mergeNow()` by hand. Default 1000.
    */
   mergePollMs?: number;
+  /**
+   * WI-10002836 test seam: minimum spacing (ms) between own-compaction progress rows.
+   * Default `OWN_COMPACTION_PROGRESS_INTERVAL_MS`. Tests pass 0 to record every window.
+   */
+  ownCompactionProgressIntervalMs?: number;
   /**
    * WI-6324 test seam: managed recurring timers are inert under Vitest by
    * default. The zombie-socket integration repro opts in ONLY the independent
@@ -3386,6 +3401,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         schemaVersion: CURRENT_SCHEMA_VERSION,
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
         shouldAbort: () => stopped,
+        // WI-10002855: the fold runs in a worker thread. Inline, the first full-history
+        // fold held this host's event loop for 30+ min (lag p50 2.8s, PG connects timed
+        // out, routines and git-sync stalled). No inline fallback: a worker failure
+        // fails this compaction (recorded below) instead of freezing the host.
+        foldWorker: (init) => SnapshotFoldWorker.open(init),
+        // WI-10002836: without a position the first full-history fold (7.76M ops on the
+        // tower) was indistinguishable from a hang for its whole 30-minute run.
+        onProgress: throttleSnapshotFoldProgress(
+          (progress) => {
+            try {
+              recordBootEvent(
+                opts.workspaceId,
+                opts.harnessSlug,
+                'own_log_compaction',
+                `own log compaction progress: ${formatSnapshotFoldProgress(progress)} ` +
+                  `heapUsedMb=${Math.round(process.memoryUsage().heapUsed / 1_048_576)} ` +
+                  `elapsedMs=${Date.now() - startedAt}`,
+              );
+            } catch {
+              // observability must never fail the compaction
+            }
+          },
+          { minIntervalMs: opts.ownCompactionProgressIntervalMs ?? OWN_COMPACTION_PROGRESS_INTERVAL_MS },
+        ),
       });
       if (!snap.appended) return;
       lastSnapshotCoversUpTo = snap.coversUpTo;

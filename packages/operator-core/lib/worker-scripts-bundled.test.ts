@@ -60,6 +60,10 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/event-loop-sentinel.worker.ts',
     output: 'event-loop-sentinel.worker.mjs',
   },
+  {
+    source: 'packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts',
+    output: 'snapshot-fold.worker.mjs',
+  },
 ];
 
 /**
