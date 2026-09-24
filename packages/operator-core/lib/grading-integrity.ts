@@ -964,6 +964,7 @@ export async function dispatchPendingGradingAudits(
         // whole reservation. The brief carries only the scorecard identity and
         // fingerprint, so it cannot quote the host receipt.
         allowLauncherKickoffDrop: true,
+        allowToolSurfaceRefusal: true,
         detectStartupStall: false,
       });
     /**

@@ -1141,6 +1141,20 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
       ),
     ).toBeNull();
   });
+
+  it('recognizes a completed grading-audit tool-surface refusal only for controlled briefs', () => {
+    const refusal =
+      "●I didn't grade scorecard EI-24161221398746479 and didn't emit a\n" +
+      'grading-integrity audit, because this session has no way to reach the\nplatform.\n' +
+      "The platform tools aren't loaded. This session has no Bash tool.\n" +
+      '✻Worked for 25s · done 12:33 PM\n❯';
+    expect(classifyAcceptanceGraderTerminalFailure(refusal)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(refusal.replace('✻Worked for 25s · done', 'still working'), {
+      allowToolSurfaceRefusal: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(refusal, { allowToolSurfaceRefusal: true }))
+      .toMatchObject({ code: 'tool_surface_unavailable' });
+  });
 });
 
 describe('classifyAcceptanceGraderStartupStall', () => {

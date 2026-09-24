@@ -361,7 +361,9 @@ export type AcceptanceGraderTerminalFailureCode =
    * stays kernel-live and a live-task guard would dedupe to it forever. Log
    * derived, so it is opt-in (`allowLauncherKickoffDrop`) like its siblings.
    */
-  | 'launch_kickoff_dropped';
+  | 'launch_kickoff_dropped'
+  /** A completed grading auditor turn explicitly says it could not reach platform tools. */
+  | 'tool_surface_unavailable';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -394,6 +396,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
     allowLauncherKickoffDrop = false,
+    allowToolSurfaceRefusal = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -441,6 +444,8 @@ export async function detectAcceptanceGraderTerminalFailure(
      * verbatim to the classifier; opt-in for the same frozen-evidence reason.
      */
     allowLauncherKickoffDrop?: boolean;
+    /** Controlled grading-audit briefs may classify an explicit completed-turn tool-surface refusal. */
+    allowToolSurfaceRefusal?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -459,6 +464,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
+      allowToolSurfaceRefusal,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -481,6 +487,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
+      allowToolSurfaceRefusal,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -516,6 +523,7 @@ export function classifyAcceptanceGraderTerminalFailure(
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
     allowLauncherKickoffDrop = false,
+    allowToolSurfaceRefusal = false,
   }: {
     allowStandaloneWeeklyLimit?: boolean;
     allowInferenceGatewayError?: boolean;
@@ -539,6 +547,7 @@ export function classifyAcceptanceGraderTerminalFailure(
      * never retired. Opt-in: frozen evidence may quote launcher diagnostics.
      */
     allowLauncherKickoffDrop?: boolean;
+    allowToolSurfaceRefusal?: boolean;
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
@@ -644,6 +653,24 @@ export function classifyAcceptanceGraderTerminalFailure(
     return {
       code: 'inference_gateway_error',
       evidence: gatewayError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
+  // EI-24166843217052865: a headless grading auditor can finish its turn by
+  // explicitly declining the mission because its platform tools are absent,
+  // then sit at a live manual prompt. That task must not suppress every later
+  // repair. Require the refusal, its concrete tool-surface cause, and the
+  // completed-turn footer. Only controlled grading-audit briefs opt in: a
+  // general grader may quote the same prose in frozen evidence.
+  const toolSurfaceRefusal = allowToolSurfaceRefusal
+    ? normalized.match(
+        /(?:didn't|did not)\s+grade scorecard\s+EI-[A-Za-z0-9-]+[\s\S]{0,300}?(?:didn't|did not)\s+emit a\s+grading-integrity audit[\s\S]{0,1800}?(?:platform tools (?:aren't|are not) loaded|no way to reach the\s+platform)[\s\S]{0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
+      )
+    : null;
+  if (toolSurfaceRefusal) {
+    return {
+      code: 'tool_surface_unavailable',
+      evidence: toolSurfaceRefusal[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }
   return null;

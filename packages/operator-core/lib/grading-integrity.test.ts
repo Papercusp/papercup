@@ -505,6 +505,44 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('retires a live auditor that explicitly finished without platform tools and launches a bounded fallback', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-tool-refusal')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-idle-refusal',
+      state: 'running',
+      detail: { label: 'grading-audit:EI-tool-refusal' },
+      logPath: '/tmp/idle-refusal.log',
+    } as unknown as TaskRow]);
+    const readLogTail = vi.fn(() =>
+      "●I didn't grade scorecard EI-tool-refusal and didn't emit a\n" +
+      'grading-integrity audit, because this session has no way to reach the platform.\n' +
+      "The platform tools aren't loaded.\n✻Worked for 25s · done 12:33 PM\n❯",
+    );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp', targetIds: ['EI-tool-refusal'] },
+      { ...d, readLogTail, killTask, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-idle-refusal', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'codex', account: 'auto' }),
+      auditorCtx,
+    );
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-idle-refusal'],
+        codes: ['tool_surface_unavailable'],
+      },
+    });
+  });
+
   it('retires a ledger-live auditor with a delayed terminal log and launches the bounded Codex fallback', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-live-terminal-auditor')]);
