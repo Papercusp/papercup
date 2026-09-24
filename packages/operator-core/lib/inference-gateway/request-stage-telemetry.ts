@@ -6,7 +6,76 @@
  * only enumerated dimensions plus bounded owner/model/account identifiers. Request bodies, prompt text,
  * credentials, headers, URLs, and raw error strings are deliberately absent from the contract.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { channel } from 'node:diagnostics_channel';
+import { performance } from 'node:perf_hooks';
+
+export interface GatewayUpstreamWriteObservation {
+  /** Local fetch invocation, not a provider request id or charged identity. */
+  ordinal: number;
+  accountId: string | null;
+  /** Separate monotonic clock domain; never subtract these from Date.now or
+   * a native controller's receipts without an explicit clock binding. */
+  clockId: string;
+  clock: 'performance.now';
+  outcome: 'pending' | 'returned' | 'threw';
+  /** HTTP status at fetch settlement; null if no response was available. */
+  responseStatus: number | null;
+  matchedRequests: number;
+  unexpectedRequests: number;
+  droppedRequests: number;
+  droppedEvents: number;
+  events: Array<{ requestOrdinal: number; phase: 'created' | 'headers-write-start' | 'body-write-complete' | 'error'; atMs: number }>;
+}
+
+interface UpstreamWriteScope {
+  active: boolean;
+  origin: string | null;
+  path: string | null;
+  method: string;
+  observation: GatewayUpstreamWriteObservation;
+}
+const upstreamWriteClockId = `gateway-upstream:${randomUUID()}`;
+const upstreamWriteScope = new AsyncLocalStorage<UpstreamWriteScope>();
+const upstreamWriteRequests = new WeakMap<object, { scope: UpstreamWriteScope; ordinal: number }>();
+let upstreamWriteObservers = 0;
+const recordWriteEvent = (scope: UpstreamWriteScope, requestOrdinal: number, phase: GatewayUpstreamWriteObservation['events'][number]['phase']) => {
+  if (!scope.active) return;
+  if (scope.observation.events.length >= 32) { scope.observation.droppedEvents++; return; }
+  scope.observation.events.push({ requestOrdinal, phase, atMs: performance.now() });
+};
+const upstreamWriteChannels = [
+  ['undici:request:create', 'created'], ['undici:client:sendHeaders', 'headers-write-start'],
+  ['undici:request:bodySent', 'body-write-complete'], ['undici:request:error', 'error'],
+] as const;
+const upstreamWriteListeners = upstreamWriteChannels.map(([name, phase]) => ({
+  channel: channel(name), listener: (message: unknown) => {
+    const request = (message as { request?: unknown } | null)?.request;
+    if (!request || typeof request !== 'object') return;
+    if (phase === 'created') {
+      const scope = upstreamWriteScope.getStore();
+      if (!scope?.active) return;
+      const outgoing = request as { origin?: unknown; path?: unknown; method?: unknown };
+      if (String(outgoing.origin) !== scope.origin || outgoing.path !== scope.path || outgoing.method !== scope.method) {
+        scope.observation.unexpectedRequests++;
+        return;
+      }
+      const ordinal = ++scope.observation.matchedRequests;
+      // Bound both retained events and the number of tracked request objects.
+      if (ordinal > 8) { scope.observation.droppedRequests++; return; }
+      upstreamWriteRequests.set(request, { scope, ordinal });
+    }
+    // Socket callbacks can run under another async context on a reused pool.
+    // Join by the actual Undici request object, never URL/time proximity.
+    const tracked = upstreamWriteRequests.get(request);
+    if (tracked) recordWriteEvent(tracked.scope, tracked.ordinal, phase);
+  },
+}));
+const cloneUpstreamWrites = (value: { calls: GatewayUpstreamWriteObservation[]; droppedCalls: number }) => ({
+  droppedCalls: value.droppedCalls,
+  calls: value.calls.map(call => ({ ...call, events: call.events.map(event => ({ ...event })) })),
+});
 
 export interface GatewayCacheFingerprint {
   sha256: string;
@@ -221,6 +290,9 @@ export interface GatewayRequestTimeline {
   cacheRouting: GatewayCacheRoutingDecision;
   cache: GatewayCacheObservation;
   nativeCorrelation: GatewayNativeCorrelation;
+  /** Opted-in HTTP lanes only. Empty calls do not prove no provider request.
+   * Undici write observations are not remote receipt, billing or admission. */
+  upstreamWrites: { calls: GatewayUpstreamWriteObservation[]; droppedCalls: number };
   /** Gap to this owner's prior completed request in the bounded process-local ring; null is unknown. */
   previousObservedRequestGapMs: number | null;
   cacheObservationMs: number;
@@ -412,6 +484,7 @@ export class GatewayRequestSpan {
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
   private nativeCorrelation = emptyNativeCorrelation();
+  private readonly upstreamWrites: GatewayRequestTimeline['upstreamWrites'] = { calls: [], droppedCalls: 0 };
   private readonly previousObservedRequestGapMs: number | null;
   private cacheObservationMs = 0;
   private attempts = 0;
@@ -582,6 +655,41 @@ export class GatewayRequestSpan {
     if (!this.finished) this.cache.servingAccountId = boundedIdentifier(accountId, 120);
   }
 
+  /** Observe the actual HTTP client's write lifecycle around one upstream
+   * fetch. Buffered gateway requests finish writing before response headers;
+   * absent/late/unsupported diagnostics stay absent, never inferred from a
+   * fetch promise or kernel stage. Retains no headers, body or target URL.
+   * Hooks exist only while an observed fetch is active. Routing and fetch
+   * rejection identity are unchanged, and redirects/extra sends stay visible.
+   */
+  async observeUpstreamFetch<T>(target: string, method: string, accountId: string | undefined, fetch: () => Promise<T>): Promise<T> {
+    if (this.finished) return upstreamWriteScope.exit(fetch);
+    if (this.upstreamWrites.calls.length >= 32) { this.upstreamWrites.droppedCalls++; return upstreamWriteScope.exit(fetch); }
+    const observation: GatewayUpstreamWriteObservation = { ordinal: this.upstreamWrites.calls.length + 1,
+      accountId: typeof accountId === 'string' && /^[A-Za-z0-9._:@/+\-]{1,120}$/.test(accountId) ? accountId : null,
+      clockId: upstreamWriteClockId, clock: 'performance.now', outcome: 'pending', responseStatus: null,
+      matchedRequests: 0, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0, events: [] };
+    const scope: UpstreamWriteScope = { active: true, origin: null, path: null, method: method.toUpperCase(), observation };
+    try { const url = new URL(target); scope.origin = url.origin; scope.path = url.pathname + url.search; }
+    catch { /* An invalid fetch target remains unobserved; fetch owns its error. */ }
+    this.upstreamWrites.calls.push(observation);
+    if (upstreamWriteObservers++ === 0) for (const entry of upstreamWriteListeners) entry.channel.subscribe(entry.listener);
+    try {
+      const result = await upstreamWriteScope.run(scope, fetch);
+      observation.outcome = 'returned';
+      const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined;
+      if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) observation.responseStatus = status;
+      return result;
+    } catch (error) {
+      observation.outcome = 'threw';
+      throw error;
+    } finally {
+      scope.active = false;
+      scope.origin = null; scope.path = null;
+      if (--upstreamWriteObservers === 0) for (const entry of upstreamWriteListeners) entry.channel.unsubscribe(entry.listener);
+    }
+  }
+
   recordCacheUsage(input: number | null, read: number, write: number | undefined, requestId?: string): void {
     if (this.finished || [...(input === null ? [] : [input]), read, ...(write === undefined ? [] : [write])].some((n) => !Number.isFinite(n) || n < 0)) return;
     this.cache.inputTokens = input;
@@ -646,6 +754,7 @@ export class GatewayRequestSpan {
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
       nativeCorrelation: { ...this.nativeCorrelation },
+      upstreamWrites: cloneUpstreamWrites(this.upstreamWrites),
       previousObservedRequestGapMs: this.previousObservedRequestGapMs,
       cacheObservationMs: this.cacheObservationMs,
       startedAt: this.startedAt,
@@ -774,6 +883,7 @@ export class GatewayRequestTelemetry {
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
         nativeCorrelation: { ...timeline.nativeCorrelation },
+        upstreamWrites: cloneUpstreamWrites(timeline.upstreamWrites),
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
@@ -808,6 +918,7 @@ export class GatewayRequestTelemetry {
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
         nativeCorrelation: { ...timeline.nativeCorrelation },
+        upstreamWrites: cloneUpstreamWrites(timeline.upstreamWrites),
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),

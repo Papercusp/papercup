@@ -7361,7 +7361,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-          const upstream = await doFetch(target, fetchInit as RequestInit);
+          const send = () => doFetch(target, fetchInit as RequestInit);
+          const upstream = stageSpan
+            ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
+            : await send();
           return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
         },
       });
@@ -8318,7 +8321,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // rather than the per-attempt re-copy the widening would otherwise force.
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-        const upstream = await doFetch(target, fetchInit as RequestInit);
+        const send = () => doFetch(target, fetchInit as RequestInit);
+        const upstream = stageSpan
+          ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
+          : await send();
         return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
       },
     });

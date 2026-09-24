@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { channel } from 'node:diagnostics_channel';
+import http from 'node:http';
 import {
   GatewayRequestTelemetry,
   MAX_CACHE_FINGERPRINT_BYTES,
@@ -7,6 +9,153 @@ import {
   assessStartupCacheSharing,
   type StartupCacheEvidence,
 } from './request-stage-telemetry';
+
+describe('bounded upstream HTTP write observations', () => {
+  const target = 'http://127.0.0.1:12345/private-path?secret=PRIVATE_QUERY';
+  const request = () => ({ origin: 'http://127.0.0.1:12345', path: '/private-path?secret=PRIVATE_QUERY', method: 'POST' });
+  const emit = (phase: 'create' | 'bodySent' | 'error' | 'sendHeaders', outgoing: object) =>
+    channel(`undici:${phase === 'sendHeaders' ? 'client' : 'request'}:${phase}`).publish({ request: outgoing,
+      headers: 'PRIVATE_HEADER', error: new Error('PRIVATE_ERROR') });
+  const fixture = () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ ownerId: 'su-writes', provider: 'codex', protocol: 'openai-responses', transport: 'bearer-http' });
+    return { telemetry, span };
+  };
+
+  it('observes real global-fetch socket writes without storing the target, request body or credentials', async () => {
+    const { telemetry, span } = fixture();
+    let received = '';
+    const server = http.createServer(async (req, res) => {
+      for await (const chunk of req) received += String(chunk);
+      res.end('ok');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/PRIVATE_PATH`;
+    try {
+      const response = await span.observeUpstreamFetch(url, 'POST', 'prepared-account', () => fetch(url,
+        { method: 'POST', body: 'PRIVATE_BODY', headers: { authorization: 'PRIVATE_AUTH' } }));
+      expect(await response.text()).toBe('ok');
+      expect(received).toBe('PRIVATE_BODY');
+      span.finish('ok', 200);
+      const snapshot = telemetry.snapshot(), call = snapshot.recent[0].upstreamWrites.calls[0];
+      expect(call).toMatchObject({ accountId: 'prepared-account', clock: 'performance.now', outcome: 'returned',
+        responseStatus: 200, matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
+      expect(call.events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
+      expect(call.events.map(event => event.requestOrdinal)).toEqual([1, 1, 1]);
+      expect(call.clockId).toMatch(/^gateway-upstream:/);
+      for (let i = 1; i < call.events.length; i++) expect(call.events[i].atMs).toBeGreaterThanOrEqual(call.events[i - 1].atMs);
+      expect(JSON.stringify(snapshot)).not.toMatch(/PRIVATE_|127\.0\.0\.1/);
+      call.events[0].atMs = -1;
+      const owner = telemetry.snapshotForOwner('su-writes');
+      expect(owner.recent[0].upstreamWrites.calls[0].events[0].atMs).toBeGreaterThan(0);
+      owner.recent[0].upstreamWrites.calls[0].accountId = 'tampered';
+      expect(telemetry.snapshot().recent[0].upstreamWrites.calls[0].accountId).toBe('prepared-account');
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it('keeps unsupported fetches unobserved and preserves errors and listener cleanup', async () => {
+    const before = channel('undici:request:create').hasSubscribers;
+    const { telemetry, span } = fixture(), sentinel = new Error('PRIVATE_FAILURE');
+    expect(await span.observeUpstreamFetch(target, 'POST', 'account', async () => 7)).toBe(7);
+    await expect(span.observeUpstreamFetch(target, 'POST', 'account', async () => { throw sentinel; })).rejects.toBe(sentinel);
+    expect(channel('undici:request:create').hasSubscribers).toBe(before);
+    span.finish('upstream-error', 502);
+    const calls = telemetry.snapshot().recent[0].upstreamWrites.calls;
+    expect(calls.map(call => call.outcome)).toEqual(['returned', 'threw']);
+    expect(calls.every(call => call.matchedRequests === 0 && call.events.length === 0)).toBe(true);
+  });
+
+  it('joins pooled-socket events by request object across overlapping foreign async contexts', async () => {
+    const { telemetry, span } = fixture();
+    const a = request(), b = request();
+    await span.observeUpstreamFetch(target, 'POST', 'account-a', async () => {
+      emit('create', a);
+      await span.observeUpstreamFetch(target, 'POST', 'account-b', async () => {
+        emit('create', b); emit('sendHeaders', a); emit('sendHeaders', b); emit('bodySent', a); emit('error', b);
+      });
+    });
+    span.finish('ok', 200);
+    const calls = telemetry.snapshot().recent[0].upstreamWrites.calls;
+    expect(calls.map(call => call.accountId)).toEqual(['account-a', 'account-b']);
+    expect(calls[0].events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
+    expect(calls[1].events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'error']);
+    expect(JSON.stringify(calls)).not.toMatch(/PRIVATE_/);
+  });
+
+  it('retains pre-send failures and repeated transport writes without collapsing attempts', async () => {
+    const { telemetry, span } = fixture();
+    await span.observeUpstreamFetch(target, 'POST', 'failed-account', async () => {
+      const outgoing = request(); emit('create', outgoing); emit('error', outgoing);
+    });
+    await span.observeUpstreamFetch(target, 'POST', 'next-account', async () => {
+      const outgoing = request(); emit('create', outgoing); emit('sendHeaders', outgoing); emit('error', outgoing);
+      emit('sendHeaders', outgoing); emit('bodySent', outgoing);
+    });
+    span.finish('ok', 200);
+    const calls = telemetry.snapshot().recent[0].upstreamWrites.calls;
+    expect(calls.map(call => call.ordinal)).toEqual([1, 2]);
+    expect(calls[0].events.map(event => event.phase)).toEqual(['created', 'error']);
+    expect(calls[1].events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'error', 'headers-write-start', 'body-write-complete']);
+  });
+
+  it('exposes unexpected targets and ignores late events after the fetch has settled', async () => {
+    const { telemetry, span } = fixture(), outgoing = request();
+    await span.observeUpstreamFetch(target, 'POST', 'account-a', async () => {
+      emit('create', outgoing); emit('create', { ...request(), path: '/unexpected' });
+    });
+    await span.observeUpstreamFetch(target, 'POST', 'account-b', async () => {
+      emit('bodySent', outgoing); // old request must not attach to B or mutate A
+    });
+    span.finish('ok', 200);
+    const calls = telemetry.snapshot().recent[0].upstreamWrites.calls;
+    expect(calls[0]).toMatchObject({ matchedRequests: 1, unexpectedRequests: 1 });
+    expect(calls[0].events.map(event => event.phase)).toEqual(['created']);
+    expect(calls[1].events).toEqual([]);
+  });
+
+  it('bounds requests, events and calls with explicit overflow, without suppressing fetches', async () => {
+    const { telemetry, span } = fixture(); let invoked = 0;
+    for (let i = 0; i < 34; i++) await span.observeUpstreamFetch(target, 'POST', 'account', async () => {
+      invoked++;
+      for (let j = 0; j < 10; j++) {
+        const outgoing = request(); emit('create', outgoing);
+        for (let k = 0; k < 6; k++) emit('sendHeaders', outgoing);
+      }
+    });
+    span.finish('ok', 200);
+    const writes = telemetry.snapshot().recent[0].upstreamWrites;
+    expect(invoked).toBe(34); expect(writes.droppedCalls).toBe(2); expect(writes.calls).toHaveLength(32);
+    expect(writes.calls[0]).toMatchObject({ matchedRequests: 10, droppedRequests: 2, droppedEvents: 24 });
+    expect(writes.calls.every(call => call.events.length === 32)).toBe(true);
+  });
+
+  it('does not manufacture a matching account by truncation or track after span finalization', async () => {
+    const { telemetry, span } = fixture();
+    await span.observeUpstreamFetch(target, 'POST', 'x'.repeat(121), async () => undefined);
+    span.finish('ok', 200);
+    let ran = false;
+    await span.observeUpstreamFetch(target, 'POST', 'later-account', async () => { ran = true; });
+    expect(ran).toBe(true);
+    const writes = telemetry.snapshot().recent[0].upstreamWrites;
+    expect(writes.calls).toHaveLength(1); expect(writes.calls[0].accountId).toBeNull();
+  });
+
+  it('does not attribute an unobserved nested fetch to its parent observation', async () => {
+    const { telemetry, span } = fixture();
+    const ended = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+    ended.finish('ok', 200);
+    await span.observeUpstreamFetch(target, 'POST', 'parent', async () => {
+      emit('create', request());
+      await ended.observeUpstreamFetch(target, 'POST', 'unobserved', async () => {
+        const child = request(); emit('create', child); emit('bodySent', child);
+      });
+    });
+    span.finish('ok', 200);
+    const writes = telemetry.snapshotForOwner('su-writes').recent[0].upstreamWrites;
+    expect(writes.calls[0].matchedRequests).toBe(1);
+    expect(writes.calls[0].events.map(event => event.phase)).toEqual(['created']);
+  });
+});
 
 describe('ten-agent startup sharing evidence (R-10)', () => {
   const fingerprint = { sha256: 'a'.repeat(64), bytes: 1000, hashedBytes: 1000 };
