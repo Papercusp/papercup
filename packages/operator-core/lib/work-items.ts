@@ -1190,9 +1190,16 @@ export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
  * datatype is visible without necessarily auto-placing a bee per instance (placement is opt-in).
  */
 function featureFamilyKindClause(sql: OrgSql, workspaceId: string, opts: { includeDeprecatedChunk?: boolean } = {}) {
-  const builtIn = opts.includeDeprecatedChunk ? sql`item_kind IN ('feature', 'chunk')` : sql`item_kind = 'feature'`;
-  return sql`(${builtIn}
-       OR item_kind IN (
+  // Compute the visible kinds once so PG can use hfc_item_kind_idx's item_kind
+  // key. A builtin OR a hashed registry subplan instead scans the whole table
+  // (EI-24109951788640754), even though only a small feature-family slice matches.
+  // UNION preserves set semantics when a registered kind repeats a builtin.
+  const builtIn = opts.includeDeprecatedChunk
+    ? sql`SELECT 'feature'::text UNION SELECT 'chunk'::text`
+    : sql`SELECT 'feature'::text`;
+  return sql`item_kind = ANY(ARRAY(
+         ${builtIn}
+         UNION
          SELECT work_item_kind FROM harness_shared.datatype_registry
           WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'
             AND work_item_kind IS NOT NULL
