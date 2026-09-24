@@ -33,8 +33,14 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
+import { processMonotonicClock } from './process-monotonic-clock';
 import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse } from './launch-cost/launch-cost-metrics';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
+import * as dbOrg from '@papercusp/db-org';
+import * as workspaceRegistry from './workspace-registry';
+import { createOrgTestDb } from '../test/_org-test-db';
+import { ingestInteractiveUsage } from './interactive-usage/ingest-claude-transcripts';
+import { parseCodexChunk, codexSessionIdForFile } from './interactive-usage/ingest-adapters';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
 import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
@@ -69,6 +75,27 @@ async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: str
 }
 
 describe('native JSON-line pipe transport', () => {
+  it('shares an immutable process clock locally while refusing a subprocess clock as the same domain', async () => {
+    expect(Object.isFrozen(processMonotonicClock)).toBe(true);
+    const receipts: SuStdioReceipt[] = [];
+    const clockUrl = new URL('./process-monotonic-clock.ts', import.meta.url).href;
+    const child = await peer(process.execPath, ['--input-type=module', '-e', `
+      import { processMonotonicClock } from ${JSON.stringify(clockUrl)};
+      import { createInterface } from 'node:readline';
+      createInterface({input:process.stdin}).on('line', line => {
+        const request = JSON.parse(line);
+        process.stdout.write(JSON.stringify({id:request.id,result:{
+          clockId:processMonotonicClock.id,atMs:processMonotonicClock.now()
+        }}) + String.fromCharCode(10));
+      });
+    `], {}, undefined, undefined, receipt => receipts.push(receipt));
+    const observation = await child.request({ method: 'clock' });
+    expect(observation.clockId).toMatch(/^process-monotonic:/);
+    expect(observation.clockId).not.toBe(processMonotonicClock.id);
+    expect(Number.isFinite(observation.atMs)).toBe(true);
+    expect(receipts.every(receipt => receipt.clockId === processMonotonicClock.id)).toBe(true);
+  });
+
   it('captures immutable wire values before consumers mutate them, with one clock across peers', async () => {
     const receipts: SuStdioReceipt[] = [];
     const onReceipt = (value: SuStdioReceipt) => receipts.push(value);
@@ -560,10 +587,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
               { role: 'seed', artifactIds: ['recipe-and-response-oracle'] },
               { role: 'checker', artifactIds: ['task-and-checker', 'recipe-and-response-oracle'] }],
             nodes: [
-              { artifactId: 'task-and-checker', dependsOn: ['peer-executable', 'transport', 'capture', 'recipe-and-response-oracle'] },
-              { artifactId: 'peer-executable', dependsOn: [] }, { artifactId: 'transport', dependsOn: [] },
+              { artifactId: 'task-and-checker', dependsOn: ['peer-executable', 'transport', 'capture', 'recipe-and-response-oracle', 'observation-clock'] },
+              { artifactId: 'peer-executable', dependsOn: [] }, { artifactId: 'transport', dependsOn: ['observation-clock'] },
               { artifactId: 'capture', dependsOn: ['recipe-and-response-oracle'] },
               { artifactId: 'recipe-and-response-oracle', dependsOn: [] },
+              { artifactId: 'observation-clock', dependsOn: [] },
             ],
             unresolved: ['fixture declares selected imports only; transitive JS and native dependencies are not censused',
               'default-run shell/plugin and transient/unloaded runtime scope remains unmeasured'],
@@ -574,6 +602,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             { id: 'peer-executable', filePath: `/proc/${p.pid()}/exe`, maxBytes: 512 * 1024 * 1024 },
             { id: 'task-and-checker', filePath: fileURLToPath(import.meta.url), maxBytes: 1024 * 1024 },
             { id: 'transport', filePath: fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url)), maxBytes: 1024 * 1024 },
+            { id: 'observation-clock', filePath: fileURLToPath(new URL('./process-monotonic-clock.ts', import.meta.url)), maxBytes: 1024 * 1024 },
             { id: 'capture', filePath: fileURLToPath(new URL('./launch-cost/scan-launch-transcripts.ts', import.meta.url)), maxBytes: 1024 * 1024 },
             { id: 'recipe-and-response-oracle', filePath: fileURLToPath(new URL('./launch-cost/launch-cost-metrics.ts', import.meta.url)), maxBytes: 1024 * 1024 },
           ],
@@ -755,7 +784,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"fixture-incomplete"}}\n\n');
         } else {
           res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
-            text: expectedResponse, inputTokens: 0, outputTokens: 0 })));
+            text: expectedResponse, inputTokens: 1200, outputTokens: 40 })));
         }
       } catch { fixtureErrors.push('local upstream fixture failed'); res.destroy(); }
     });
@@ -824,13 +853,81 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // never count the local request id as a unique charged-request identity.
       const writes = receipts.filter(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start');
       expect(writes).toHaveLength(1);
-      expect(timeline.upstreamWrites.calls.every(call => call.clockId !== writes[0].clockId)).toBe(true);
+      const terminal = receipts.filter(receipt => receipt.phase === 'received' && receipt.frame.method === 'turn/completed' &&
+        (receipt.frame.params as RpcFrame).threadId === threadId &&
+        ((receipt.frame.params as RpcFrame).turn as RpcFrame).id === turnId);
+      expect(terminal).toHaveLength(1);
+      for (const call of timeline.upstreamWrites.calls) {
+        expect(call.clockId).toBe(writes[0].clockId);
+        expect(call.clockId).toBe(processMonotonicClock.id);
+        expect(call.events[0].atMs).toBeGreaterThanOrEqual(writes[0].atMs);
+        expect(call.events.at(-1)!.atMs).toBeLessThanOrEqual(terminal[0].atMs);
+      }
+      if (nativeStatus === 'completed') {
+        const useful = receipts.filter(receipt => receipt.phase === 'received' && receipt.frame.method === 'item/completed' &&
+          (receipt.frame.params as RpcFrame).threadId === threadId && (receipt.frame.params as RpcFrame).turnId === turnId &&
+          ((receipt.frame.params as RpcFrame).item as RpcFrame).type === 'agentMessage' &&
+          ((receipt.frame.params as RpcFrame).item as RpcFrame).text === expectedResponse);
+        expect(useful).toHaveLength(1);
+        expect(timeline.upstreamWrites.calls.at(-1)!.events.at(-1)!.atMs).toBeLessThanOrEqual(useful[0].atMs);
+        expect(useful[0].atMs).toBeLessThanOrEqual(terminal[0].atMs);
+      }
       expect(JSON.stringify(timeline)).not.toMatch(/PRIVATE_NATIVE|From the inherited task state/);
       expect(fixtureErrors).toEqual([]);
+      // Flush only this test's native process and ingest only its isolated home.
+      // This exercises the real canonical writer, not a fabricated billing row.
+      const nativeHome = homes.at(-1)!;
+      await p.close(); peers.splice(peers.indexOf(p), 1); p = undefined;
+      const transcriptPath = String((threadRead.thread as RpcFrame).path);
+      const parsed = parseCodexChunk(readFileSync(transcriptPath, 'utf8'));
+      const usageEvents = parsed.events ?? [];
+      expect(usageEvents).toHaveLength(nativeStatus === 'completed' ? 1 : 0);
+      if (nativeStatus === 'completed') {
+        expect(usageEvents[0]).toMatchObject({ turnId, inputTotalTokens: 1200,
+          usage: { outputTokens: 40 }, requestOrdinal: 1 });
+      }
+      const org = await createOrgTestDb();
+      const sql = org.adminSql, workspace = `native-carry-${randomUUID()}`;
+      const dbSpy = vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql } as ReturnType<typeof dbOrg.getOrgPg>);
+      const workspaceSpy = vi.spyOn(workspaceRegistry, 'activeWorkspaceId').mockReturnValue(workspace);
+      let canonicalSamples = 0;
+      try {
+        const adapters = [{ name: 'codex', root: join(nativeHome, 'sessions'), parse: parseCodexChunk,
+          replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+        const first = await ingestInteractiveUsage({ adapters, includeIsolationRoots: false });
+        expect(first.errors).toEqual([]);
+        const rows = await sql`SELECT session_id, usage_event_key, account_id, cost_usd, cost_source,
+          output_tokens, usage_provenance FROM harness_shared.agent_usage_samples
+          WHERE workspace_id = ${workspace}`;
+        canonicalSamples = rows.length;
+        expect(rows).toHaveLength(usageEvents.length);
+        if (nativeStatus === 'completed') {
+          const row = rows[0], event = usageEvents[0];
+          expect(row).toMatchObject({ session_id: threadId, account_id: null, cost_source: 'estimated',
+            output_tokens: 40, usage_provenance: { turnId, sourceId: event.sourceId,
+              inputTotalTokens: 1200, accountSource: 'unavailable', grain: 'request' } });
+          expect(Number(row.cost_usd)).toBeGreaterThan(0);
+          expect(row.usage_event_key).toBe(createHash('sha256')
+            .update(JSON.stringify([transcriptPath, 0, event.model, event.sourceId])).digest('hex'));
+        }
+        const again = await ingestInteractiveUsage({ adapters, includeIsolationRoots: false });
+        expect(again).toMatchObject({ errors: [], samples: 0 });
+        const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.agent_usage_samples
+          WHERE workspace_id = ${workspace}`;
+        expect(count).toBe(canonicalSamples);
+        // A failed attempt is retained by the gateway even when the native
+        // transcript contains no usage. No sample means unknown charge, not zero.
+        expect(timeline.upstreamWrites.calls.length).toBeGreaterThanOrEqual(canonicalSamples);
+        if (mode === 'failover') expect(timeline.upstreamWrites.calls.length).toBe(canonicalSamples + 1);
+        if (nativeStatus === 'failed') expect(timeline.upstreamWrites.calls.length).toBeGreaterThan(0);
+      } finally {
+        dbSpy.mockRestore(); workspaceSpy.mockRestore();
+        await org.cleanup();
+      }
       console.log('CARRY_NATIVE_GATEWAY_RECEIPT', JSON.stringify({ mode, threadId, turnId, nativeStatus,
         gatewayRequestId: timeline.requestId, upstreamAttempts: timeline.upstreamWrites.calls.length,
         selectedAccounts: accounts, gatewayOutcome: timeline.outcome, providerInference: false,
-        canonicalChargeJoin: false, clockDomainsBound: false }));
+        canonicalUsageSamples: canonicalSamples, canonicalChargeJoin: false, colocatedClockBound: true }));
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
       finally {
