@@ -220,6 +220,10 @@ describe('buildRoleLaunchSpec', () => {
         '  - kind: recipe',
         '    ref: launch-recipe',
         '    version: 1.0.0',
+        'knobs:',
+        '  aiBackend:',
+        '    default:',
+        '      model: selected-domain-model',
         '',
       ].join('\n'),
     );
@@ -269,6 +273,8 @@ describe('buildRoleLaunchSpec', () => {
       expect(fromDefault.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'package', packageKind: 'recipe', ref: 'launch-recipe',
       }));
+      expect(fromDefault.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
+        .toBe('selected-domain-model');
       expect(fromDefault.resourceArtifacts).toHaveLength(1);
 
       const explicitEmpty = await compileLaunchSpecificationArtifact({
@@ -939,6 +945,65 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(out.text.startsWith('# DEFAULT GUIDE\n\n## Addressed guidance')).toBe(true);
     expect(out.text).toContain('LEADER ONLY RULE');
     expect(out.addressed?.partKeys).toEqual(['lead-1']);
+  });
+
+  it('renders a selected local domain identity on the first SU launch without fleet or goal state', async () => {
+    const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const dir = mkdtempSync(join(tmpdir(), 'su-selected-domain-'));
+    const id = 'fixture-generic-domain';
+    const identityDir = join(dir, '.papercusp', 'blueprints', id);
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        `id: ${id}`, 'extends: base', 'version: 1.0.0',
+        'description: Generic selected domain.', 'slots:', '  - slot: domain', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'GENERIC SELECTED DOMAIN\n');
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      resolvePromptFilesMock.mockReturnValueOnce([
+        join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md'),
+      ]);
+
+      const spec = await buildLaunchSpec({ ...su, harnessSlug: 'fixture', stack: [`domain:${id}`] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText ?? '').toContain('GENERIC SELECTED DOMAIN');
+      expect(spec.stack).toEqual([`domain:${id}`]);
+      expect(new URL(spec.mcpUrl).searchParams.get('superuser')).toBe('1');
+
+      rmSync(join(identityDir, 'prompts', 'domain.md'));
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      resolvePromptFilesMock.mockReturnValueOnce([
+        join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md'),
+      ]);
+      await expect(buildLaunchSpec({ ...su, harnessSlug: 'fixture', stack: [`domain:${id}`] }))
+        .rejects.toThrow(/missing domain document/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses an explicitly selected local practice document when its id also exists in the built-in SU stack', async () => {
+    const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const dir = mkdtempSync(join(tmpdir(), 'su-selected-practice-'));
+    const identityDir = join(dir, '.papercusp', 'blueprints', 'su.practice');
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: su.practice', 'extends: base', 'version: 1.0.0',
+        'description: Selected local SU practice.', 'slots:', '  - slot: practice', '',
+      ].join('\n'));
+      writeFileSync(join(identityDir, 'prompts', 'practice.md'), 'SELECTED LOCAL PRACTICE\n');
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      resolvePromptFilesMock.mockReturnValueOnce([
+        join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md'),
+      ]);
+
+      await buildLaunchSpec({ ...su, harnessSlug: 'fixture', stack: ['practice:su.practice'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText ?? '').toContain('SELECTED LOCAL PRACTICE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('first render and guide addressing use the selected moderated mode revision', async () => {

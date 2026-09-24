@@ -446,6 +446,53 @@ async function roleStackDocuments(input: {
   return documents;
 }
 
+/** Resolve the selected identities as peer source layers of the launch source.
+ * This keeps authored grants and model defaults in the final configuration,
+ * where the existing host consumers read them, with loader validation and
+ * per-layer provenance intact. An unselected launch keeps its original source. */
+async function selectedLaunchCompositionSource(
+  source: Awaited<ReturnType<typeof launchCompositionSource>>,
+  stack: readonly string[],
+  cwd: string,
+) {
+  if (stack.length === 0) return source.source;
+  const [{ resolveBlueprint, stackBindingFromRefs }, { getIdentitySource }, { operatorResolveExtends }] =
+    await Promise.all([
+      import('@papercusp/orchestrator/blueprint'),
+      import('./agent-identities/source'),
+      import('./blueprint/installed-blueprints'),
+    ]);
+  const paths = new Map<string, string>();
+  const parents: string[] = [];
+  if (source.loaded?.sourcePath) {
+    paths.set('__launch_root__', source.loaded.sourcePath);
+    parents.push('__launch_root__');
+  }
+  const selected = [] as Array<{ id: string; path: string; hash: string }>;
+  for (const [index, layer] of stackBindingFromRefs(stack).layers.entries()) {
+    const identity = await getIdentitySource(layer.id, { repoDir: cwd });
+    if (!identity.ok || !identity.sourcePath ||
+        !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is unavailable for ${layer.slot} composition`);
+    }
+    const alias = `__launch_identity_${index}__`;
+    paths.set(alias, identity.sourcePath);
+    parents.push(alias);
+    selected.push({ id: layer.id, path: identity.sourcePath, hash: identity.contentHash });
+  }
+  const fallback = operatorResolveExtends({ localDirs: [path.join(cwd, '.papercusp', 'blueprints')] });
+  const own = source.loaded ? {} : source.source;
+  const composed = resolveBlueprint({ ...own, id: `effective-launch-${source.loaded?.blueprint.id ?? 'compatibility'}`,
+    extends: parents }, { resolve: (id) => paths.get(id) ?? fallback(id) });
+  for (const entry of selected) {
+    if (!composed.layers.some((layer) => layer.id === entry.id && layer.sourcePath === entry.path &&
+        layer.contentHash === entry.hash)) {
+      throw new Error(`launch stack identity ${JSON.stringify(entry.id)} changed during composition`);
+    }
+  }
+  return composed;
+}
+
 /** Compile the exact final launch bytes through the one P-038 artifact boundary. */
 export async function compileLaunchSpecificationArtifact(input: LaunchArtifactInput): Promise<LaunchArtifactResult> {
   const source = await launchCompositionSource(input);
@@ -454,46 +501,39 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
     : [...input.stack];
   const state = { ...input.state, stack };
   const stateRevision = input.stateRevision?.trim() || launchStateRevision(state);
-  const { compileAgentSpecification, specificationPrompt, stackBindingFromRefs, validateAgentInputClosure } =
+  const { compileAgentSpecification, specificationPrompt } =
     await import('@papercusp/orchestrator/blueprint');
-  const { compileSelectedIdentityResources } = await import('./agent-identities/source');
   const resourceArtifacts: CompiledAgentSpecification[] = [];
-  for (const layer of stackBindingFromRefs(stack).layers) {
-    const resource = await compileSelectedIdentityResources({
-      identityId: layer.id, repoDir: input.cwd,
-      workspaceId: input.workspaceId ?? '', harnessSlug: input.harnessSlug ?? '',
-    });
-    if (resource) resourceArtifacts.push(resource);
-  }
-  const resourceInputs = validateAgentInputClosure(resourceArtifacts.flatMap((artifact) =>
-    artifact.inputs.filter((entry) => entry.kind === 'package' || entry.kind === 'capability-provider')));
+  const compositionSource = await selectedLaunchCompositionSource(source, stack, input.cwd);
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
   const compileInput = {
     prompt,
-    inputClosure: resourceInputs,
     mutableState: { ref: 'launch-state-v1', revision: stateRevision, value: state },
   };
   const { resolveSeedPackKey } = await import('./knowledge-packs/seed-pack-key');
-  const harnessResources = source.loaded && (
-    source.loaded.blueprint.bundles.length > 0 ||
-    (source.loaded.blueprint.grants?.requires.length ?? 0) > 0 ||
-    (source.loaded.blueprint.grants?.optional.length ?? 0) > 0 ||
-    Boolean(resolveSeedPackKey(source.loaded.blueprint).packId)
+  const effectiveBlueprint = stack.length > 0
+    ? (compositionSource as LoadedBlueprint).blueprint
+    : source.loaded?.blueprint;
+  const harnessResources = effectiveBlueprint && (
+    effectiveBlueprint.bundles.length > 0 ||
+    (effectiveBlueprint.grants?.requires.length ?? 0) > 0 ||
+    (effectiveBlueprint.grants?.optional.length ?? 0) > 0 ||
+    Boolean(resolveSeedPackKey(effectiveBlueprint).packId)
   );
   let specificationArtifact: CompiledAgentSpecification;
-  if (harnessResources && source.loaded) {
+  if (harnessResources && effectiveBlueprint) {
     if (!input.workspaceId?.trim() || !input.harnessSlug?.trim()) {
       throw new Error('harness resource bundles need an explicit workspace and harness scope');
     }
     const { compileBlueprintWithPackages } = await import('./blueprint/compile-packages');
-    specificationArtifact = await compileBlueprintWithPackages(source.loaded, {
+    specificationArtifact = await compileBlueprintWithPackages(compositionSource, {
       workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, input: compileInput,
     });
     resourceArtifacts.push(specificationArtifact);
   } else {
-    specificationArtifact = compileAgentSpecification({ source: source.source, ...compileInput });
+    specificationArtifact = compileAgentSpecification({ source: compositionSource, ...compileInput });
   }
   return {
     promptText: specificationPrompt(specificationArtifact),
@@ -1038,7 +1078,8 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource, normalizeStackBinding, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, normalizeStackBinding, slotSpec, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { getIdentitySource } = await import('./agent-identities/source');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
           // launches into and the definition identity of each mode it launches with — is
@@ -1046,9 +1087,25 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           // full render). Derived from the same facts presence + agent_modes carry.
           const derived = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
           const launchBinding = normalizeStackBinding([...requestedStack.layers, ...derived.layers]);
-          const selectedModeDocs = new Map<string, import('@papercusp/orchestrator/blueprint').StackDocument>();
+          const selectedLayerDocs = new Map<string, import('@papercusp/orchestrator/blueprint').StackDocument>();
+          for (const layer of requestedStack.layers) {
+            const identity = await getIdentitySource(layer.id, { repoDir: cwd });
+            if (!identity.ok || !identity.sourcePath ||
+                !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
+              throw new Error(`selected SU identity ${layer.slot}:${layer.id} is unavailable or invalid`);
+            }
+            const spec = slotSpec(layer.slot);
+            if (!spec) throw new Error(`selected SU identity ${layer.id} has unknown slot ${layer.slot}`);
+            const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
+            if (!fsSync.existsSync(sourcePath)) {
+              throw new Error(`selected SU identity ${layer.id} is missing ${layer.slot} document`);
+            }
+            selectedLayerDocs.set(`${layer.slot}:${layer.id}`, {
+              id: layer.id, layer: spec.layer, slot: layer.slot,
+              text: await fs.readFile(sourcePath, 'utf8'), sourcePath,
+            });
+          }
           if (modeCatalog) {
-            const { getIdentitySource } = await import('./agent-identities/source');
             for (const layer of derived.layers) {
               if (!modeCatalog.entries.some((entry) => entry.sourceId === layer.id && entry.slot === layer.slot)) continue;
               const identity = await getIdentitySource(layer.id);
@@ -1056,7 +1113,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
                 throw new Error(`selected mode identity ${layer.id} is no longer available`);
               }
               const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
-              selectedModeDocs.set(`${layer.slot}:${layer.id}`, {
+              selectedLayerDocs.set(`${layer.slot}:${layer.id}`, {
                 id: layer.id, layer: 'modes', slot: layer.slot,
                 text: await fs.readFile(sourcePath, 'utf8'), sourcePath,
               });
@@ -1065,15 +1122,18 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           suBaseText = composeSuStackSource({
             harnessDir,
             binding: launchBinding,
-            resolveLayer: (layer) => selectedModeDocs.get(`${layer.slot}:${layer.id}`) ?? null,
+            resolveLayer: (layer) => selectedLayerDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
         } catch (e) {
-          if (modeCatalog) throw e;
+          if (modeCatalog || requestedStack.layers.length > 0) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     }
-  } catch {
+  } catch (error) {
+    // An explicit layer or selected mode is part of the requested identity.
+    // Never turn its missing document into an apparently successful plain SU.
+    if (requestedStack.layers.length > 0 || modeCatalog) throw error;
     /* flag/resolve miss → fall through to today's playbook (byte-identical) */
   }
   // P-017/P-018 persona tier: explicit ask wins; else auto-select 'fleet' for a
