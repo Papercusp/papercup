@@ -46,6 +46,7 @@ import {
   scorecardRatingsClaimPass,
   ratingVerdict,
   recordGradingAudit,
+  isCurrentSourceAuditResponder,
   scorecardEvidenceFingerprint,
   parseGradedGeneration,
   computeWorkOnEverythingRollup,
@@ -1103,6 +1104,8 @@ export async function emitScorecard(
     resolveAcceptanceSeatSuccession?: typeof resolveAcceptanceSeatSuccession;
     /** Test seam for the bounded post-write pending-audit dispatcher. */
     dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
+    /** Verify a routed grading-audit fork is still the consult's current answerer. */
+    isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
     closeSourceAuditConsults?: typeof closeSourceAuditConsults;
     /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
     generationAncestry?: GenerationAncestryProbe;
@@ -2017,6 +2020,23 @@ export async function emitScorecard(
           error:
             `audit subject '${args.subject.ref}' has a different active dispatch reservation; ` +
             'pass gradingAuditReservation with the exact key and reservedAt from your dispatch brief, then retry only if that lease is still current',
+        };
+      }
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        activeDispatchReservation &&
+        suppliedDispatchReservation &&
+        !(await (deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder)(
+          args.subject.ref,
+          activeDispatchReservation,
+          input.createdBy,
+        ))
+      ) {
+        return {
+          ok: false as const,
+          error:
+            `audit subject '${args.subject.ref}' is assigned to a different active consult answerer; ` +
+            'only the current answering session may emit under this dispatch reservation',
         };
       }
       if (gradedObservation.gradingAudit.state !== 'pending') {
