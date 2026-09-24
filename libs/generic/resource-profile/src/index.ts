@@ -421,6 +421,19 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     // ever caps a pathological stuck slot. 32GB ≫ normal WAL churn (max_wal_size
     // ~1GB) and ≪ the cluster's data volume.
     max_slot_wal_keep_size: '32GB',
+    // log_parameter_max_length / _on_error — log-volume disk-fill defense
+    // (WI-10002867). PG's default -1 logs EVERY bound parameter of a statement
+    // that crosses log_min_duration_statement at FULL length. This workload binds
+    // multi-MB text/jsonb payloads (session archives, transcripts), so each slow
+    // statement wrote its whole payload to the server log. Measured 2026-09-24 on
+    // the dev host: 13.4 GB of a 14.2 GB day's postgresql-18-main.log was
+    // `DETAIL: Parameters:` lines (56,908 of them, the largest 10.6 MB on one
+    // line), peaking at ~3.9 GB/hour, which filled the root filesystem. A
+    // 1 KB prefix keeps each value identifiable for diagnosis. Fixed, not
+    // host-scaled: a safety ceiling like the one above. Reloadable (superuser
+    // context, SIGHUP).
+    log_parameter_max_length: '1024',
+    log_parameter_max_length_on_error: '1024',
     // jit_inline_above_cost / jit_optimize_above_cost — LLVM-compilation defense
     // (WI-6859). Like max_slot_wal_keep_size above, these are FIXED, not
     // host-scaled: they encode a workload SHAPE (short OLTP statements), not a

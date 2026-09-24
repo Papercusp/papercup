@@ -384,14 +384,53 @@ const ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 const ESCALATION_TITLE = 'Disk critically low';
 
-/** Build the human-facing escalation body. Pure — unit-testable. */
-export function formatDiskEscalation(critical: DiskBreach[]): { title: string; body: string } {
+/** Deepest rung of the escalation ladder (free ≤ reserve / 2^6 ≈ 1.6% of the reserve). */
+const MAX_ESCALATION_TIER = 6;
+
+/**
+ * Escalation LADDER rung for a critical breach (WI-10002867): how many times free
+ * space has HALVED below the critical write-headroom reserve.
+ *
+ * Why this exists: the cooldown identity used to be one fixed title, so ONE
+ * escalation at the top of the critical band silenced every later tick for 6h —
+ * however much worse it got. Measured 2026-09-23: the alarm escalated once near
+ * 1.4% free on a 1.9 TB root, then logged "CRITICAL, within cooldown" at 1.5%,
+ * 0.1% and 0.3% while the filesystem ran down to 2.9 GB, and the owner found it
+ * by hand. Keying the cooldown on the rung keeps the anti-spam property for a
+ * disk that merely STAYS full (same rung ⇒ same title ⇒ one ping per cooldown)
+ * while a disk that keeps FILLING re-pings once per halving.
+ */
+export function diskEscalationTier(
+  breach: Pick<DiskBreach, 'freeBytes' | 'totalBytes'>,
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): number {
+  const reserve = criticalWriteHeadroomBytes(breach.totalBytes, policy);
+  if (!(reserve > 0)) return 0;
+  if (!(breach.freeBytes > 0)) return MAX_ESCALATION_TIER;
+  const halvings = Math.floor(Math.log2(reserve / breach.freeBytes));
+  return Math.min(MAX_ESCALATION_TIER, Math.max(0, halvings));
+}
+
+/** Build the human-facing escalation. Pure — unit-testable. The TITLE is the
+ *  durable cooldown identity (alarm-attention), so it names the ladder rung. */
+export function formatDiskEscalation(
+  critical: DiskBreach[],
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): { title: string; body: string } {
   const worst = [...critical].sort((a, b) => a.freePct - b.freePct)[0];
   const others = critical.length > 1 ? ` (+${critical.length - 1} more)` : '';
+  const tier = diskEscalationTier(worst, policy);
+  const rungCeiling = criticalWriteHeadroomBytes(worst.totalBytes, policy) / 2 ** tier;
   return {
-    title: ESCALATION_TITLE,
+    title:
+      tier === 0
+        ? ESCALATION_TITLE
+        : `${ESCALATION_TITLE} — worsening (tier ${tier}: under ${fmtGb(rungCeiling)} free)`,
     body:
       `${worst.path}: ${fmtGb(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGb(worst.totalBytes)})${others}. ` +
+      (tier > 0
+        ? `Free space has halved ${tier}× below the critical reserve since this alarm first fired — it re-escalates on each halving, not once per cooldown. `
+        : '') +
       `Builds and writes will start failing mid-operation. Free space now.`,
   };
 }
@@ -486,7 +525,7 @@ export async function runDiskSpaceAlarmOnce(
   let escalated = false;
   const critical = breaches.filter((b) => b.severity === 'critical');
   if (critical.length > 0) {
-    const request = formatDiskEscalation(critical);
+    const request = formatDiskEscalation(critical, policy);
     escalated = await escalateAlarm(
       {
         ...request,

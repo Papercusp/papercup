@@ -6,6 +6,8 @@ import {
   criticalWriteHeadroomBytes,
   describeWriteHeadroomBreach,
   describeWriteHeadroomBreaches,
+  diskEscalationTier,
+  formatDiskEscalation,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
@@ -307,6 +309,56 @@ describe('runDiskSpaceAlarmOnce', () => {
     expect(escalate).not.toHaveBeenCalled();
     expect(res.escalated).toBe(false);
     expect(res.breaches).toHaveLength(1); // still detected + toasted, just not re-pinged
+  });
+
+  it('hands the escalation rail the ladder-rung title, so a deeper rung is a new cooldown identity', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/', totalBytes: 1875 * GIB, freeBytes: 2.9 * GIB, freePct: 2.9 / 1875 })],
+      emitToast: async () => {},
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(escalate.mock.calls[0][0].title).toMatch(/worsening \(tier 3:/);
+  });
+});
+
+describe('escalation ladder — a worsening critical disk re-escalates inside the cooldown (WI-10002867)', () => {
+  // The measured incident: 1.875 TB root, default policy ⇒ critical reserve =
+  // min(2% of total, 64 GiB cap) = 37.5 GiB.
+  const total = 1875 * GIB;
+  const breach = (freeGib: number) =>
+    detectLowSpace([snap({ path: '/', totalBytes: total, freeBytes: freeGib * GIB, freePct: (freeGib * GIB) / total })])[0];
+
+  it('counts halvings below the critical reserve', () => {
+    expect(criticalWriteHeadroomBytes(total) / GIB).toBeCloseTo(37.5, 6);
+    expect(diskEscalationTier(breach(30))).toBe(0);
+    expect(diskEscalationTier(breach(17))).toBe(1);
+    expect(diskEscalationTier(breach(2.9))).toBe(3);
+    expect(diskEscalationTier({ totalBytes: total, freeBytes: 0 })).toBe(6);
+  });
+
+  it('keeps ONE cooldown identity while the disk merely stays on the same rung (no spam)', () => {
+    expect(formatDiskEscalation([breach(17)]).title).toBe(formatDiskEscalation([breach(15)]).title);
+    expect(formatDiskEscalation([breach(30)]).title).toBe('Disk critically low');
+  });
+
+  it('replays 2026-09-23: 1.4% → 1.5% → 0.1% → 0.3% free now re-pings when it gets worse', () => {
+    // Title-keyed cooldown, exactly as alarm-attention's defaultRecentlyEscalated applies it.
+    const pinged = new Set<string>();
+    const pings: number[] = [];
+    for (const freeGib of [26, 28, 1.9, 5.6]) {
+      const { title } = formatDiskEscalation([breach(freeGib)]);
+      if (!pinged.has(title)) {
+        pinged.add(title);
+        pings.push(freeGib);
+      }
+    }
+    // Before the ladder a single fixed title ⇒ only the 26 GiB tick pinged.
+    expect(pings).toContain(26);
+    expect(pings).toContain(1.9);
+    expect(pings).not.toContain(28);
   });
 
   it('never throws when the escalation rail itself fails', async () => {

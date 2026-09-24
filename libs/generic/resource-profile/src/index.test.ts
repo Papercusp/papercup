@@ -589,6 +589,25 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     expect(small.max_slot_wal_keep_size).toBe('32GB');
   });
 
+  it('bounds logged bind parameters on every host so slow-query logging cannot fill the disk (WI-10002867)', () => {
+    // PG's default -1 wrote multi-MB bound payloads for every slow statement:
+    // 13.4 GB of one day's server log was `DETAIL: Parameters:` lines. The cap
+    // must be present and finite for native AND embedded hosts alike.
+    for (const s of [
+      databaseTuningToSettings(
+        deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+      ),
+      databaseTuningToSettings(
+        deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
+      ),
+    ]) {
+      for (const k of ['log_parameter_max_length', 'log_parameter_max_length_on_error'] as const) {
+        const v = Number(s[k]);
+        expect(Number.isInteger(v) && v > 0 && v <= 4096).toBe(true);
+      }
+    }
+  });
+
   it('scales max_wal_size with shared_buffers: big hosts stop forcing early checkpoints, small hosts keep the 1GB default', () => {
     // 2026-09-23 dev host (128 cores / 252 GiB): at PG's 1 GB default, 2,217 of
     // 5,338 checkpoints were WAL-volume FORCED, and every forced checkpoint
