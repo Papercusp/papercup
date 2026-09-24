@@ -20,7 +20,7 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import type { TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { parsePlan } from '@papercusp/plan-parser';
 import {
@@ -75,7 +75,7 @@ export const REVISION_SPINE_GUARD_AUTHOR = 'with-plan-lock:revision-spine-guard'
  * advisory xact lock (held by the caller) serializes same-plan writers, so it is race-free.
  */
 async function insertSystemPlanRevision(
-  tx: TransactionSql,
+  tx: Sql,
   row: {
     workspaceId: string;
     harnessSlug: string;
