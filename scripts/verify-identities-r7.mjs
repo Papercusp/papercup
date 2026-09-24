@@ -115,7 +115,7 @@ export async function main() {
     returnTo,
     realBackend: true,
     syntheticHostAcknowledgement: false,
-    treeHead: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    treeHead: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5_000 }).trim(),
     bridgePid: Number(pid),
     launchProvenance: process.env.VERIFY_TAURI_LAUNCH_PROVENANCE || null,
     steps: [],
