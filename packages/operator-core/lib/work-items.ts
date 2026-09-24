@@ -2408,6 +2408,9 @@ async function loadWorkItemSearchCoverage(seam?: () => Promise<CoverageSnapshot>
 
 // ── Writes ─────────────────────────────────────────────────────────────────────────
 export interface CreateWorkItemInput {
+  /** Internal caller-reserved identity for a replayable create. Ordinary
+   * public creates omit it and use next_work_item_id(). */
+  id?: string;
   kind: WorkItemKind;
   title: string;
   /** Free-text body/summary (issue body, feature summary). */
@@ -2594,7 +2597,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       : false;
     if (!registered) throw new Error(`unknown work_item kind '${input.kind}'`);
   }
-  let id = await nextWorkItemId();
+  const explicitId = input.id?.trim();
+  if (input.id !== undefined && (!explicitId || explicitId.length > 120)) {
+    throw new Error('createWorkItem: explicit id must be 1-120 characters');
+  }
+  let id = explicitId ?? await nextWorkItemId();
 
   // ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): a non-empty
   // `assignee` makes the row land already-claimed by that agent — no separate
@@ -2857,6 +2864,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     if (inserted.length > 0) {
       id = inserted[0].feature_id;
       break;
+    }
+    if (explicitId) {
+      throw new Error(`createWorkItem: explicit id '${explicitId}' already exists in '${featureHarness}'`);
     }
     if (attempt >= MAX_INSERT_ID_ATTEMPTS) {
       throw new Error(
