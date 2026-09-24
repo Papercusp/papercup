@@ -4244,6 +4244,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // EN-2 → scopedApply, so policy/rate see PLAINTEXT and an undecryptable op (the
         // read-cut / defer) drops before spending rate budget / content checks.
         applyImpl: rekeyDeps ? rekeyDeps.epochGate(enforcedApply) : enforcedApply,
+        // p2p-join-catchup-speed-2026-09-23 P-524: when the gate defers an op for want of
+        // this device's epoch key, look ahead on that log for the key row and apply it
+        // before folding on. A fresh joiner's key row is written at its admission, after
+        // the content it unlocks, so without this every row defers until the fold reaches it.
+        ...(rekeyDeps?.keySeek ? { keySeek: rekeyDeps.keySeek } : {}),
         // The old per-author cap, reshaped: a per-PASS read budget. A log with
         // more backlog than this advances chunk-by-chunk across the 1Hz poll
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).
@@ -4360,6 +4365,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               ? mergeOpts.applyImpl(op)
               : Promise.resolve(false),
           onCursorAdvance: () => persistDurableCursor(),
+          // P-524: this sink drops every non-memory op, so a seek here could not apply
+          // the key row it finds; the main fold's seek supplies the key.
+          keySeek: undefined,
         };
         let replayResult = await mergeAdmittedLogsIncremental(
           orderedLogs,

@@ -1285,7 +1285,9 @@ function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number): bool
   const since = pending.get(keyHex);
   if (since === undefined) {
     pending.set(keyHex, now);
-    console.warn(
+    // console.info, not warn: a fresh joiner's scan routinely needs more than one pass.
+    // Only the give-up below is an anomaly.
+    console.info(
       `[read-merge] P-522 snapshot seed pending: log ${keyHex.slice(0, 12)} is held out of the fold ` +
         `until its seed scan concludes (give-up after ${Math.round(maxMs / 1000)}s).`,
     );
