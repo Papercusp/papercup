@@ -162,9 +162,15 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     });
     pids.add(descendantPid);
     expect(alive(descendantPid)).toBe(true);
+    let descendantAliveAtSettlement: boolean | undefined;
+    h.finished.mockImplementationOnce(async () => {
+      descendantAliveAtSettlement = alive(descendantPid);
+      return true;
+    });
     controller.abort();
     expect(await result).toMatchObject({ code: -1 });
     expect(alive(descendantPid)).toBe(false);
+    expect(descendantAliveAtSettlement).toBe(false);
     expect(h.finished).toHaveBeenCalledOnce();
   }, 5000);
 

@@ -99,6 +99,12 @@ describe('logical checkpoint qualification transaction', () => {
       lastScheduledAtMs: 400, lastProgressAtMs: 500,
       currentPhysicalRunner: { heartbeatAtMs: 500, phase: 'suite', leaseExpiresAtMs: 1_000_300 },
     } });
+    expect(projectCheckpointQualificationState(progress.transaction, 550, 'live')).toMatchObject({
+      lease: { holder: 'fire-1', acquiredAtMs: 200, expiresAtMs: 1_000_300, expired: false },
+      runnerHealth: { state: 'progressing', liveness: 'live', phase: 'suite', progressAgeMs: 50 },
+      clocks: { lastScheduledAtMs: 400, lastStartedAtMs: 300, lastProgressAtMs: 500, lastTerminalVerdictAtMs: null },
+      agesMs: { scheduled: 150, started: 250, progress: 50, terminal: null },
+    });
     const staleAt = 500 + QUALIFICATION_PROGRESS_STALE_MS + 1;
     const anotherFire = recordQualificationScheduledFire(progress.transaction, staleAt).transaction;
     expect(projectCheckpointQualificationState(anotherFire, staleAt, 'live')).toMatchObject({
