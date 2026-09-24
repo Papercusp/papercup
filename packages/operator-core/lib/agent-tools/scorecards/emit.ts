@@ -777,11 +777,19 @@ export async function validateGradingAuditReplayConsistency(
     };
   }
 
+  const recordedEvaluatorBuild = parsedRecipe.data.evaluatorBuild ?? parsedRecipe.data.args.evaluatorBuild;
+  const replayArgs = {
+    ...parsedRecipe.data.args,
+    ...(recordedEvaluatorBuild && !parsedRecipe.data.args.evaluatorBuild
+      ? { evaluatorBuild: recordedEvaluatorBuild }
+      : {}),
+  };
+
   let replay: unknown;
   try {
     replay = unwrapSpecTestAdequacyReplay(
       await dispatchTool('plans:evaluate-spec-test-adequacy', {
-        ...parsedRecipe.data.args,
+        ...replayArgs,
         payloadTier: 'full',
       }),
     );
@@ -797,7 +805,13 @@ export async function validateGradingAuditReplayConsistency(
 
   const payload =
     replay && typeof replay === 'object' && !Array.isArray(replay)
-      ? (replay as { ok?: unknown; rows?: unknown; error?: unknown })
+      ? (replay as {
+          ok?: unknown;
+          rows?: unknown;
+          error?: unknown;
+          evaluatorBuild?: unknown;
+          evaluatorBuildDrift?: unknown;
+        })
       : null;
   if (payload?.ok === false) {
     return {
@@ -808,6 +822,41 @@ export async function validateGradingAuditReplayConsistency(
         `(${typeof payload.error === 'string' ? payload.error : 'unknown evaluator error'}); ` +
         'no audit card was persisted',
     };
+  }
+
+  if (recordedEvaluatorBuild) {
+    const drift = payload?.evaluatorBuildDrift;
+    if (drift && typeof drift === 'object' && !Array.isArray(drift)) {
+      return {
+        code: 'grading_audit_evaluator_changed',
+        error:
+          'grading-integrity cannot settle re-runnable evidence from an evaluator-build-drift replay (' +
+          JSON.stringify(drift) +
+          '); re-emit the target card under the current evaluator build; no audit card was persisted',
+      };
+    }
+    const liveEvaluatorBuild = payload?.evaluatorBuild;
+    if (!liveEvaluatorBuild || typeof liveEvaluatorBuild !== 'object' || Array.isArray(liveEvaluatorBuild)) {
+      return {
+        code: 'grading_audit_evaluator_changed',
+        error:
+          'grading-integrity cannot settle re-runnable evidence because the evaluator replay omitted its live build identity; ' +
+          're-emit the target card under a pinned evaluator build; no audit card was persisted',
+      };
+    }
+    const parsedLiveBuild = specTestAdequacyEvaluatorBuildSchema.safeParse(liveEvaluatorBuild);
+    if (!parsedLiveBuild.success || !isSameEvaluatorBuild(recordedEvaluatorBuild, parsedLiveBuild.data)) {
+      return {
+        code: 'grading_audit_evaluator_changed',
+        error:
+          'grading-integrity cannot settle re-runnable evidence because the exact evaluator replay changed build identity ' +
+          '(recorded=' +
+          JSON.stringify(recordedEvaluatorBuild) +
+          ', live=' +
+          JSON.stringify(liveEvaluatorBuild) +
+          '); re-emit the target card under the current evaluator build; no audit card was persisted',
+      };
+    }
   }
 
   const selection = parsedRecipe.data.selection;
