@@ -4,9 +4,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -31,7 +33,7 @@ import { startSuStdioPeer } from './su-session-stdio-peer';
 import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/launch-cost-metrics';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
-import { captureCompletedCarrySource, recheckCarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
+import { captureCompletedCarrySource, recheckCarrySourceSnapshot, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -41,8 +43,9 @@ afterEach(async () => {
   processState.children.clear(); processState.stderr = ''; processState.killFailure = '';
 });
 
-async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}) {
+async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string) {
   const home = mkdtempSync(join(tmpdir(), 'pui-native-protocol-')); homes.push(home);
+  if (config) writeFileSync(join(home, 'config.toml'), config, { mode: 0o600 });
   const result = await startSuStdioPeer({ binary, args, cwd: home,
     env: { PATH: process.env.PATH, CODEX_HOME: home, PI_CODING_AGENT_DIR: home, ...env },
     workspaceId: 'protocol-test', ownerId: 'su-protocol-test',
@@ -123,17 +126,113 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it.skipIf(process.env.PUI_NATIVE_PLATFORM_MCP !== '1')('resolves the inherited platform caller through native MCP without provider inference', async () => {
+    // Explicit opt-in uses ONLY this session's existing MCP bearer and client.
+    // Never copy its provider/auth.json, hooks, instructions, or model routing.
+    const inherited = parseToml(readFileSync(join(process.env.CODEX_HOME!, 'config.toml'), 'utf8'));
+    const mcp = (inherited.mcp_servers as Record<string, Record<string, unknown>>)['papercusp-su'];
+    const url = new URL(String(mcp.url));
+    expect(url.searchParams.get('client')).toBe(process.env.PAPERCUSP_SID);
+    expect(typeof (mcp.http_headers as Record<string, unknown>)?.Authorization === 'string').toBe(true);
+    const events: RpcFrame[] = [], requests: Array<Record<string, unknown>> = [];
+    const errors: string[] = [];
+    const server = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const request = JSON.parse(Buffer.concat(chunks).toString()); requests.push(request);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (requests.length === 1) {
+          // Use the name actually advertised by this installed client. A
+          // guessed/flattened name is not evidence of a successful MCP call.
+          const namespace = request.tools.find((entry: Record<string, unknown>) => entry.type === 'namespace' &&
+            (entry.tools as Array<Record<string, unknown>>).some(tool => tool.name === 'tools_invoke'));
+          if (!namespace) throw new Error('Native tools_invoke namespace missing');
+          const item = { id: 'fc_identity', type: 'function_call', call_id: 'identity-call',
+            namespace: namespace.name, name: 'tools_invoke',
+            arguments: JSON.stringify({ name: 'coord:whoami', args: {} }), status: 'completed' };
+          const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
+          const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+          res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
+            event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
+        } else {
+          res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+            text: '{"offline":true}', inputTokens: 0, outputTokens: 0 })));
+        }
+      } catch { errors.push('Local scripted response failed'); res.end(); }
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    let p: SuStdioPeer | undefined;
+    try {
+      const config = stringifyToml({
+        model_provider: 'cache_protocol_probe',
+        model_providers: { cache_protocol_probe: { name: 'Local protocol fixture',
+          base_url: `http://127.0.0.1:${address.port}/v1`, wire_api: 'responses', requires_openai_auth: false,
+          supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } },
+        features: { apps: false, shell_tool: false }, web_search: 'disabled',
+        mcp_servers: { 'papercusp-su': { url: String(mcp.url), http_headers: mcp.http_headers,
+          enabled_tools: ['tools_invoke'] } },
+      } as Parameters<typeof stringifyToml>[0]);
+      p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config);
+      await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_identity_test', version: '1' } } });
+      p.send({ method: 'initialized', params: {} });
+      const start = await p.request({ method: 'thread/start', params: { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
+        cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only' } });
+      const threadId = String((start.thread as RpcFrame).id);
+      const before = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
+      const inventory = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
+      expect(inventory.nextCursor == null).toBe(true);
+      const entries = inventory.data as Array<Record<string, unknown>>;
+      expect(entries.map(entry => entry.name)).toEqual(['papercusp-su']);
+      expect(entries[0].toolsError == null).toBe(true);
+      expect(Object.keys(entries[0].tools as object), JSON.stringify({ auth: entries[0].authStatus,
+        runtime: entries[0].runtimeStatus, events: events.filter(frame => frame.method?.toString().includes('mcpServer')) }))
+        .toHaveLength(1);
+      const response = await p.request({ method: 'turn/start', params: {
+        threadId, input: [{ type: 'text', text: 'Offline native identity receipt fixture.' }],
+      } });
+      const turnId = String((response.turn as RpcFrame).id);
+      await vi.waitFor(() => expect(events.some(frame => frame.method === 'turn/completed' &&
+        (frame.params as RpcFrame)?.threadId === threadId)).toBe(true), { timeout: 30_000 });
+      const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+      expect(inspectCarryNativeTurn({ threadId, turnId, events, threadRead,
+        allowedMcpCalls: [{ server: 'papercusp-su', tool: 'tools_invoke', arguments: { name: 'coord:whoami', args: {} } }] }).status)
+        .toBe('verified');
+      const items = ((threadRead.thread as RpcFrame).turns as RpcFrame[])[0].items as RpcFrame[];
+      const call = items.find(item => item.type === 'mcpToolCall')!;
+      const content = (call.result as RpcFrame).content as Array<{ type: string; text?: string }>;
+      const identities = content.flatMap(block => {
+        try { const value = JSON.parse(block.text ?? ''); return value.ownerId ? [value] : []; } catch { return []; }
+      });
+      expect(identities).toHaveLength(1);
+      expect(identities[0].ownerId).toBe(process.env.PAPERCUSP_SID);
+      expect(identities[0].workspaceId).toBe(process.env.PAPERCUSP_WORKSPACE);
+      expect(JSON.stringify(requests.at(-1)?.input).includes(process.env.PAPERCUSP_SID!)).toBe(true);
+      // Compare as booleans: a failed assertion must never print bearer-bearing
+      // native configuration, either on stdout or in the test-run ledger.
+      const after = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
+      expect(isDeepStrictEqual(before, after)).toBe(true);
+      const afterInventory = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
+      expect(isDeepStrictEqual(inventory, afterInventory)).toBe(true);
+      expect(requests).toHaveLength(2);
+      expect(errors).toEqual([]);
+    } finally {
+      try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
+      finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+    }
+  }, 90_000);
+
   it.each([false, true])('cross-checks completed native item receipts against persisted history without provider inference (source read %s)', async readSource => {
     const events: RpcFrame[] = [];
     const fixtureHome = mkdtempSync(join(tmpdir(), 'carry-source-receipt-')); homes.push(fixtureHome);
-    const filePath = join(fixtureHome, 'frozen-source.jsonl');
-    const sourceBytes = Buffer.from('prefix\n{"sourceSentinel":"cedar-48f6e9a2"}\n');
-    writeFileSync(filePath, sourceBytes);
-    const window = sourceBytes.subarray(7);
-    const readArgs = { file_path: filePath, byte_offset: 7, byte_limit: window.length };
+    let predecessor: CarrySourceSnapshot | undefined;
+    const window = Buffer.from('cedar-48f6e9a2');
+    let readArgs = { file_path: '', byte_offset: 0, byte_limit: window.length };
     const observedReads: unknown[] = [], httpErrors: unknown[] = [], mcpHosts: McpServer[] = [];
     const providerCalls: Array<Record<string, unknown>> = [];
-    let requests = 0;
+    let requests = 0, preparationRequests = 0, preparingSource = readSource;
     const server = createServer(async (req, res) => {
       if (req.url === '/mcp') {
         const host = new McpServer({ name: 'carry-receipt-fixture', version: '1' }); mcpHosts.push(host);
@@ -162,8 +261,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       providerCalls.push(JSON.parse(Buffer.concat(chunks).toString()));
-      requests++;
-      if (readSource && requests === 1) {
+      if (preparingSource) preparationRequests++; else requests++;
+      if (readSource && !preparingSource && requests === 1) {
         const item = { id: 'fc_source', type: 'function_call', call_id: 'source-read-call',
           namespace: 'mcp__cache_receipts', name: 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
@@ -175,7 +274,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       // Existing production SSE serializer, scripted local text only. These
       // zero fixture counters are never recorded as real provider usage.
-      const body = codexCliResponsesBody({ model: 'gpt-6-sol', text: '{"offline":true}', inputTokens: 0, outputTokens: 0 });
+      const body = codexCliResponsesBody({ model: 'gpt-6-sol',
+        text: preparingSource ? '{"sourceSentinel":"cedar-48f6e9a2"}' : '{"offline":true}', inputTokens: 0, outputTokens: 0 });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(body));
     });
@@ -199,23 +299,37 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           'mcp_servers.cache_receipts.http_headers.Authorization': 'Bearer offline-fixture',
         } : {}),
       };
-      p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
-        ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame));
-      await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
-      p.send({ method: 'initialized', params: {} });
-      const start = await p.request({ method: 'thread/start', params: {
-        model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
-      } });
-      const threadId = String((start.thread as RpcFrame).id);
-      const response = await p.request({ method: 'turn/start', params: {
-        threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
-      } });
-      const turnId = String((response.turn as RpcFrame).id);
-      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
-        method: 'turn/completed', params: expect.objectContaining({ threadId,
-          turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
-      })), { timeout: 20_000 });
-      const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+      const nativeTurn = async () => {
+        p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
+          ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame));
+        await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
+        p.send({ method: 'initialized', params: {} });
+        const start = await p.request({ method: 'thread/start', params: {
+          model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
+        } });
+        const threadId = String((start.thread as RpcFrame).id);
+        const response = await p.request({ method: 'turn/start', params: {
+          threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
+        } });
+        const turnId = String((response.turn as RpcFrame).id);
+        await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+          method: 'turn/completed', params: expect.objectContaining({ threadId,
+            turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
+        })), { timeout: 20_000 });
+        const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        return { threadId, turnId, threadRead };
+      };
+      if (readSource) {
+        const prepared = await nativeTurn();
+        predecessor = await captureCompletedCarrySource(p!, prepared.threadId, prepared.turnId);
+        peers.splice(peers.indexOf(p!), 1); p = undefined;
+        const byteOffset = predecessor.snapshot.bytes.indexOf(window);
+        expect(byteOffset).toBeGreaterThan(0);
+        readArgs = { file_path: predecessor.filePath, byte_offset: byteOffset, byte_limit: window.length };
+        await recheckCarrySourceSnapshot(predecessor);
+        preparingSource = false; events.length = 0; providerCalls.length = 0;
+      }
+      const { threadId, turnId, threadRead } = await nativeTurn();
       if (readSource) {
         // Native Codex received the platform result and returned it to the
         // next local provider request, not just a successful tools/list.
@@ -233,14 +347,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           mcpItemIds: readSource ? [expect.any(String)] : [] });
       if (readSource) {
         expect(observedReads).toEqual([readArgs]);
-        expect(inspectCarrySourceRead(evidence, { sourceRef: 'fixture:completed-source/cut',
-          server: 'cache_receipts', tool: 'capability_read', filePath, byteOffset: 7, byteLength: window.length,
-          totalBytes: sourceBytes.length, sha256: createHash('sha256').update(window).digest('hex') }))
-          .toMatchObject({ status: 'verified', missing: [], violations: [], sourceRef: 'fixture:completed-source/cut' });
+        const sourceRef = `codex:${predecessor!.threadId}/${predecessor!.turnId}@${predecessor!.snapshot.sha256}`;
+        expect(inspectCarrySourceRead(evidence, { sourceRef,
+          server: 'cache_receipts', tool: 'capability_read', filePath: predecessor!.filePath,
+          byteOffset: readArgs.byte_offset, byteLength: window.length,
+          totalBytes: predecessor!.snapshot.completeBytes, sha256: createHash('sha256').update(window).digest('hex') }))
+          .toMatchObject({ status: 'verified', missing: [], violations: [], sourceRef });
+        await recheckCarrySourceSnapshot(predecessor!);
+        expect(threadId).not.toBe(predecessor!.threadId);
       }
       expect(httpErrors).toEqual([]);
       expect(requests).toBe(readSource ? 2 : 1);
-      const source = await captureCompletedCarrySource(p, threadId, turnId);
+      expect(preparationRequests).toBe(readSource ? 1 : 0);
+      const source = await captureCompletedCarrySource(p!, threadId, turnId);
       expect(source.filePath).toBe((threadRead.thread as RpcFrame).path);
       expect(source.snapshot.completeBytes).toBeGreaterThan(0);
       expect(source.snapshot.highWaterBytes).toBe(source.snapshot.completeBytes);
