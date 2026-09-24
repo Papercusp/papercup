@@ -1979,7 +1979,7 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     const withdrawn = await bindAtCurrent('surface:POST /events', external.testRunId, external.coverageEvidenceRef);
     expect(
       (await evidenceStore.retractSpecEvidence({
-        harnessSlug: HARNESS, bindingId: withdrawn, reason: 'bound run was never executed', actorId: RETRACTOR,
+        harnessSlug: HARNESS, bindingId: withdrawn, reason: 'bound run was never executed', actorId: 'su-retractor-wi2889',
       })).status,
     ).toBe('retracted');
 
