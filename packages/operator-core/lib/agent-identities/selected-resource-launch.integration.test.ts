@@ -45,16 +45,20 @@ describe('selected identity recipe reaches its existing consumer', () => {
     const recipeDir = join(root, 'home', 'recipes', recipeId);
     try {
       mkdirSync(identityDir, { recursive: true });
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       mkdirSync(recipeDir, { recursive: true });
       vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
       const identity = {
         id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
         bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
         grants: { optional: ['calendar.read@1.0.0'] },
+        contributions: [{ id: 'resource-rules', purpose: 'prompt', source: 'fixed',
+          refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:domain' }],
       };
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
         ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
       }));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'SELECTED RESOURCE DOMAIN RULES\n');
       writeFileSync(join(recipeDir, 'recipe.json'), JSON.stringify({
         id: recipeId, title: 'Selected launch recipe', script: 'return "from selected identity"',
       }));
@@ -66,8 +70,16 @@ describe('selected identity recipe reaches its existing consumer', () => {
       const launch = await compileLaunchSpecificationArtifact({
         promptText: 'Inspect the selected recipe before use.',
         cwd: root, workspaceId: 'identity-resource-ws', harnessSlug: 'identity-resource-harness',
-        role: 'worker', stack: [`domain:${identityId}`], state: { schemaVersion: 1 },
+        role: 'worker', stack: [`domain:${identityId}`], state: { schemaVersion: 1 }, renderStack: true,
       });
+      expect(launch.promptText.match(/SELECTED RESOURCE DOMAIN RULES/g)).toHaveLength(1);
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'prompt-file', ref: 'fixed:domain', bytes: 'SELECTED RESOURCE DOMAIN RULES\n',
+      }));
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('workItem');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('spine');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('fleet');
+      expect(launch.specificationArtifact.configuration.roles ?? []).toEqual([]);
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'package', packageKind: 'recipe', ref: recipeId,
       }));
