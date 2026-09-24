@@ -1165,7 +1165,11 @@ export async function composeOrient(
   // empty-roster shape (never throws) so downstream folds — already
   // try/catch-guarded (fingerprintFleet, slimAssignmentsForDelta) — see an
   // empty-but-well-shaped roster instead of hanging past the deadline.
-  const meResult = await withBoundedTimeout(
+  // Assignments and the backlog/inbox reads below have no data dependency.
+  // Start the bounded read after fleet-scope recovery, but join it only at
+  // result assembly so their latencies overlap. Publish its early snapshot
+  // on settlement even if the backlog chain is still waiting.
+  const mePromise = withBoundedTimeout(
     call('fleet:assignments', {
       ...(recoveredFleetMembership ? { fleet: recoveredFleetMembership.fleetSlug } : ownerId ? { agent: ownerId } : {}),
       ...(args.harness ? { harness: args.harness } : {}),
@@ -1175,19 +1179,21 @@ export async function composeOrient(
       timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
       label: 'orient:fleet:assignments',
     },
-  );
-  let me = overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership);
-  me = annotateDegradedFleetAssignments(me, meResult);
-  // EI-21589715378243224: assignments are the first useful reconciliation
-  // result. Publish them immediately so a later backlog/inbox/fold timeout
-  // returns a meaningful partial orientation instead of the bare aggregate
-  // marker.
-  reportProgress({
-    ok: true,
-    me,
-    claimable: [],
-    inbox: {},
-    host: getHostSnapshot(),
+  ).then((meResult) => {
+    const me = annotateDegradedFleetAssignments(
+      overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership),
+      meResult,
+    );
+    // EI-21589715378243224: retain useful reconciliation in the aggregate
+    // fallback even when a slower backlog/inbox/fold exhausts its budget.
+    reportProgress({
+      ok: true,
+      me,
+      claimable: [],
+      inbox: {},
+      host: getHostSnapshot(),
+    });
+    return me;
   });
   // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
   // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
@@ -1440,6 +1446,7 @@ export async function composeOrient(
     }
   }
 
+  let me = await mePromise;
   const result: OrientResult = {
     ok: true,
     me,

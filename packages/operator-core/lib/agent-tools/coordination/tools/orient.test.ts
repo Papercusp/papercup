@@ -1203,6 +1203,45 @@ function composeGoalOrient(
 }
 
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
+  it.each([1, 8])('overlaps assignments with the independent backlog chain for %i readers', async (readers) => {
+    vi.useFakeTimers();
+    const delay = <T>(value: T, ms: number): Promise<T> =>
+      new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    const assignments = { ok: true, agents: [{ ownerId: 'me' }] };
+    const rows = [{ id: 'WI-visible' }, { id: 'WI-held' }];
+    const inbox = { summary: { unread: 1 }, entries: [{ id: 'message-1' }] };
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'fleet:assignments': () => delay(assignments, 100),
+      'work_items:list': () => delay(rows, 80),
+      'coord:inbox': () => delay(inbox, 30),
+      'work_items:observe': () => delay({ results: [{ id: 'WI-held', available: false }] }, 20),
+    });
+    const results: Array<Awaited<ReturnType<typeof composeOrient>>> = [];
+    const pending = Promise.all(Array.from({ length: readers }, () =>
+      composeOrient({ includePlanEvents: false }, call, 'me').then((value) => {
+        results.push(value);
+      }),
+    ));
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls.filter((entry) => entry.name === 'work_items:list')).toHaveLength(readers);
+      await vi.advanceTimersByTimeAsync(129);
+      expect(results).toHaveLength(readers);
+      for (const result of results) {
+        expect(result).toMatchObject({
+          me: assignments,
+          claimable: [{ id: 'WI-visible' }],
+          inbox: { summary: inbox.summary, entries: inbox.entries, recent: inbox.entries },
+        });
+      }
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
   it('folds the handler-injected GOAL portfolio on full and monitor orientations', async () => {
     for (const args of [{}, { mode: 'monitor' as const }]) {
       const { call } = fakeCall({ ...CORE });

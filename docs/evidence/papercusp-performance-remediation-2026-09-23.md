@@ -336,3 +336,37 @@ the final run.
 P-005 remains open for coordination/orientation and Learning/roster stage
 profiling, complete current-build acceptance, and the plan's controlled full
 workload evidence. No shipment or whole-plan completion is asserted here.
+
+## P-005 orientation core-read overlap
+
+Existing invocation `29360561` completed at 2026-09-24T07:44:47.458Z with
+`duration_ms=7295`, serving build `d06ec6cafb`. The same owner's preceding
+`in_process` rows were assignments `29360536` (2355ms), list `29360544`
+(1480ms), inbox `29360545` (373ms), and observe `29360550` (497ms).
+`recordInvocationImpl` stamps completion time; these timestamps and the source
+confirm sequential execution in this one request. They do not establish a
+production latency distribution or a controlled before/after comparison.
+
+`composeOrient` now starts its existing bounded assignments promise after fleet
+scope recovery and joins it at result assembly. The independent backlog, inbox
+and eligibility reads proceed while it is in flight. The assignments promise
+still publishes the early aggregate-fallback snapshot on settlement. Existing
+scope recovery, claim filtering, deadline, failure and delta semantics remain
+covered by the orientation suite; no cache or durable surface was introduced.
+
+The new regression failed before the change: only `fleet:assignments` had
+started while the backlog should have been in flight. The final test exercises
+one and eight concurrent readers with deterministic leg delays (100ms
+assignments, 80ms list, 30ms inbox, 20ms observe) and asserts complete result
+parity at 130ms, including exclusion of an unavailable item. This is a simulated
+dependency schedule, not a measured production speedup.
+
+Verification at HEAD `431b0e2a22` plus local source/test edits:
+
+- `orient.test.ts`: final 215 passed, zero skipped, 08:27:26Z.
+- `orient-obligations.integration.test.ts`: 7 passed, zero skipped, 08:26:14Z.
+- Scoped typecheck: zero diagnostics in the two changed files; 23 diagnostics
+  elsewhere in the loaded import graph. No whole-project typecheck claim.
+
+Learning/roster stage measurements and complete current-build acceptance remain
+open on WI-10002827.
