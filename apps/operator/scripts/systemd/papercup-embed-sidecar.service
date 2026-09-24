@@ -98,6 +98,19 @@ Environment=PAPERCUSP_EMBED_SIDECAR_MODE=1
 # REQUESTED. Verify what is ACTUALLY running:
 #     curl -s localhost:3384/healthz | jq .rerankExecution
 Environment=PAPERCUSP_RERANK_DEVICE=cuda
+# EMBEDDINGS on the GPU (plan memory-reduction-2026-09-24, P-008 / D-003).
+# `auto` is the default and is spelled out only so the choice is visible here:
+# CUDA when the CUDA execution provider is installed beside onnxruntime-node
+# AND the NVIDIA driver is loaded, else CPU; a CUDA session that will not
+# construct (or a forward pass that fails on the GPU) falls back to the CPU with
+# the cause recorded. `gpu` / `cpu` force a device. Weights (dtype) are NOT
+# changed — only the device — so stored vectors stay comparable (CPU vs CUDA
+# cosine 0.9999999, measured 2026-09-24). Verify what actually runs:
+#     curl -s localhost:3384/healthz | jq '.embedExecution, .embedExecutionHealth.demotion'
+Environment=PAPERCUSP_EMBED_DEVICE=auto
+# glibc otherwise grows up to 8×cores malloc arenas for the ORT/worker threads,
+# which holds freed native memory as RSS (memory audit WI-10002858, F5).
+Environment=MALLOC_ARENA_MAX=2
 ExecStartPre=/usr/bin/bash -c 'exec bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs'
 ExecStart=/usr/bin/bash -c 'exec node dist-sidecar/embed-sidecar.mjs'
 Restart=always

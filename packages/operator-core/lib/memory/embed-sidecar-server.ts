@@ -14,9 +14,12 @@
  *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
  *                      models: { '<model>:<kind>': state },
  *                      rerankExecution: { device, dtype, why },
- *                      embedExecution: { device, dtype, why },
- *                      embedExecutionHealth: { requested, active, gpuBundled,
- *                                              backends, probe, sessionOptions },
+ *                      embedExecution: { device, dtype, verified, why },
+ *                      embedExecutionHealth: { requested, active, pipelines,
+ *                                              demotion, nvidiaDriverPresent,
+ *                                              providerLibraries, gpuProviderAvailable,
+ *                                              defaultBundledBackends, probe,
+ *                                              sessionOptions },
  *                      workers: { embedder: state, reranker: state } }
  *
  * `capabilities` lists every route THIS BUILD serves ("POST /rerank", ...),

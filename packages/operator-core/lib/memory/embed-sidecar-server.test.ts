@@ -168,9 +168,11 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     // live sidecar. This block is what makes the next such question a GET.
     await boot();
     const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
-      embedExecution: { device: string; dtype: string | null; why: string };
+      embedExecution: { device: string; dtype: string | null; verified: boolean; why: string };
       embedExecutionHealth: {
-        requested: { device: string | null; dtype: string | null };
+        requested: { device: string; dtype: string | null; preference: string; why: string };
+        pipelines: Record<string, string>;
+        demotion: unknown;
         gpuProviderAvailable: boolean | null;
         providerLibraries: string[] | null;
         defaultBundledBackends: { name: string; bundled: boolean }[] | null;
@@ -181,17 +183,25 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     };
 
     expect(body.embedExecution).toBeDefined();
-    expect(body.embedExecution.device).toBe('cpu');
+    // Since 2026-09-24 the device is CHOSEN (PAPERCUSP_EMBED_DEVICE auto|gpu|cpu,
+    // plan memory-reduction-2026-09-24 D-003), so it depends on the host: cpu,
+    // cuda, or `mixed` once models constructed on different devices.
+    expect(['cpu', 'cuda', 'mixed']).toContain(body.embedExecution.device);
+    // `verified` separates what constructed from what will merely be TRIED.
+    expect(typeof body.embedExecution.verified).toBe('boolean');
     // `why` carries the basis for the device. A bare pair with no provenance is
     // what let the CPU fact stay invisible while /healthz looked complete.
     expect(body.embedExecution.why).toBeTruthy();
 
     const health = body.embedExecutionHealth;
     expect(health).toBeDefined();
-    // The finding itself, and the thing the pin in @papercusp/memory protects:
-    // no embedder passes a device or dtype to pipeline(), so the CPU default
-    // applies by omission rather than by decision.
-    expect(health.requested).toEqual({ device: null, dtype: null });
+    // What is requested and why; dtype is ALWAYS null — only the device may move,
+    // or new vectors drift away from the stored corpus.
+    expect(['cpu', 'cuda']).toContain(health.requested.device);
+    expect(health.requested.dtype).toBeNull();
+    expect(['auto', 'cuda', 'cpu']).toContain(health.requested.preference);
+    expect(health.requested.why).toBeTruthy();
+    expect(typeof health.pipelines).toBe('object');
     // An unresolved probe must serialize as null, not false — over the wire is
     // exactly where a fabricated `false` would be read as a measurement.
     expect(['pending', 'ok', 'failed']).toContain(health.probe);
