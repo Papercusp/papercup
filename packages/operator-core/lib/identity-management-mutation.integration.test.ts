@@ -57,6 +57,7 @@ const h = vi.hoisted(() => {
       stack: [...stack],
       specificationRevision,
       stateRevision,
+      resourceArtifacts: [],
       // The ResolvedAgentSpecification fields the explain/diff path reads.
       specificationArtifact: {
         specificationRevision,
