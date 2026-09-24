@@ -75,7 +75,7 @@ function planRow(content: string): HarnessPlanRow {
 
 describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans projection writer)', () => {
   let db: FreshPgDb;
-  let writeRemote: (row: HarnessPlanRow, ts: number | undefined) => Promise<void>;
+  let writeRemote: (row: HarnessPlanRow, ts: number | undefined) => Promise<void | false>;
 
   beforeAll(async () => {
     db = await createFreshPgDb('ei117_replay_guard');

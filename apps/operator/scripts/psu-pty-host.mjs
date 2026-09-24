@@ -4248,7 +4248,10 @@ export function createHeadlessNormalizedLogWriter(path, {
  * A headless launch must keep its explicitly selected model and advance this
  * one startup menu before the ordinary composer gate can submit the kickoff.
  * Never answer an interactive session or a later turn. */
-export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS = 30_000;
+// Codex may paint the model offer well after its loading frame. Keep the
+// startup choice handler alive for the launcher's bounded first-turn window;
+// a real composer disarms it as soon as startup succeeds.
+export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS = 600_000;
 const HEADLESS_CODEX_MODEL_CHOICE_BUFFER_CHARS = 32_768;
 
 export function headlessCodexModelChoiceEnabled(env = process.env) {
@@ -4293,6 +4296,13 @@ export function makeHeadlessCodexModelChoiceStateMachine({
         phase = 'complete';
         observed = '';
         return snapshot('select-existing');
+      }
+      return snapshot();
+    },
+    complete() {
+      if (phase === 'watching') {
+        phase = 'complete';
+        observed = '';
       }
       return snapshot();
     },
@@ -8896,6 +8906,9 @@ export function hostThroughPty(o) {
         // the full expiry window even when no wizard is present.
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }
+      // Once Codex has painted its real ready footer, a later model offer is
+      // no longer a launch-time choice for this child.
+      if (childStartupReady) headlessCodexModelChoice.complete();
       if (!childPromptReady) {
         childPromptReady = freshChildPromptReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }

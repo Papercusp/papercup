@@ -15,6 +15,7 @@ import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from '../../blueprint/project-to-pg';
 import { acceptBlueprintPlanRun } from '../../blueprint/operation-admission';
+import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from '../../blueprint/operation-service';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
@@ -217,6 +218,8 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         inputSchema: { type: 'object', required: ['segment'], additionalProperties: false,
           properties: { segment: { type: 'string' } } },
         acceptance: { resultSchema: { type: 'object' } },
+        signals: { note: { payloadSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } } },
+        waits: { approve: { responseSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } } } },
       }],
     };
     const blueprint = BlueprintSchema.parse(source);
@@ -266,12 +269,60 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     `;
     const repaired = await acceptBlueprintPlanRun(sql, request);
     expect(repaired).toMatchObject({ instanceSlug: first.instanceSlug, runId: first.runId, replayed: true });
+    const handle = await submitBlueprintOperation(sql, request);
+    expect(handle.target).toEqual({ kind: 'plan', runId: first.runId, instanceSlug: first.instanceSlug });
+    const status = await getBlueprintOperationStatus(sql, handle, request.callerId);
+    expect(status).toMatchObject({ phase: 'waiting', outcome: null });
+    expect(status.items).toHaveLength(2);
+    await expect(getBlueprintOperationStatus(sql, handle, 'other-principal'))
+      .rejects.toThrow('does not match its durable receipt');
+    const signal = await signalBlueprintOperation(sql, handle, request.callerId, {
+      channel: 'note', payload: { text: 'continue' }, requestKey: 'plan-note',
+    });
+    expect(signal).toMatchObject({ accepted: true, handled: false });
+    await openBlueprintOperationWait(sql, handle, request.callerId, { waitName: 'approve', token: 'plan-wait' });
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ wait: { name: 'approve', token: 'plan-wait' } });
+    const response = await resumeBlueprintOperation(sql, handle, request.callerId, {
+      token: 'plan-wait', response: { approved: true }, requestKey: 'plan-resume',
+    });
+    expect(response).toMatchObject({ accepted: true, handled: false });
+    const cancellation = await cancelBlueprintOperation(sql, handle, request.callerId, {
+      requestKey: 'plan-cancel', reason: 'Stop this run',
+    });
+    expect(cancellation).toMatchObject({ accepted: true, effected: false });
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ cancellationRequested: true, wait: null });
+    const cancelledChildren = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND payload->'plan_run'->>'runId' = ${String(first.runId)}
+         AND payload ? 'blueprintCancellation'
+    `;
+    expect(cancelledChildren[0]?.n).toBe(2);
+    const eventPage = await getBlueprintOperationEvents(sql, handle, request.callerId, { limit: 1 });
+    expect(eventPage.events).toHaveLength(1);
+    expect(eventPage.hasMore).toBe(true);
+    expect((await getBlueprintOperationEvents(sql, handle, request.callerId, { cursor: eventPage.cursor })).events.length).toBeGreaterThan(0);
     await expect(acceptBlueprintPlanRun(sql, { ...request, input: { segment: 'west' } }))
       .rejects.toThrow('reused with different input');
 
     await expect(acceptBlueprintPlanRun(sql, { ...request, requestKey: 'batch-002' }))
       .rejects.toThrow('plan_run_template_pin_mismatch');
     expect((await acceptBlueprintPlanRun(sql, request)).runId).toBe(first.runId);
+    const beforeOutcome = await getBlueprintOperationEvents(sql, handle, request.callerId);
+    await sql`
+      UPDATE harness_shared.plan_runs
+         SET status = 'done', outcome = 'partial', outputs = ${JSON.stringify({ count: 1 })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${first.runId}
+    `;
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ phase: 'terminal', outcome: 'failed' });
+    expect(await getBlueprintOperationResult(sql, handle, request.callerId))
+      .toMatchObject({ state: 'failed' });
+    expect((await getBlueprintOperationEvents(sql, handle, request.callerId, { cursor: beforeOutcome.cursor })).events)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'plan-run', status: 'done', outcome: 'partial', outputStored: true }),
+      ]));
   });
   it('rejects an invalid executable dependency candidate before the instance and ledger transaction lands', async () => {
     const invalidContent = TEMPLATE_CONTENT.replace('blocked-by: P-001', 'blocked-by: P-404');
@@ -307,6 +358,12 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(res!.minted).toBe(2); // P-001 + P-003 (P-002 is done → skipped)
     expect(res!.workItemIds).toHaveLength(2);
     expect(res!.actionableWorkItemIds).toHaveLength(1); // P-003 is blocked by P-001
+    const unrelatedBlueprintEvents = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${WS} AND surface = 'blueprint-operation'
+         AND body->>'kind' = 'plan-run' AND body->>'runId' = ${String(res!.runId)}
+    `;
+    expect(unrelatedBlueprintEvents[0]?.n).toBe(0);
 
     // Instance plan: a copy pinned to the template, hidden from the main list.
     const inst = await sql<Array<{ template_slug: string; run_seq: number; content: string }>>`

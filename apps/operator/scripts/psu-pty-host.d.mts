@@ -1626,6 +1626,11 @@ export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, n
         phase: string;
         active: boolean;
     };
+    complete(): {
+        action: string;
+        phase: string;
+        active: boolean;
+    };
     status: () => {
         phase: string;
         active: boolean;
@@ -2573,7 +2578,7 @@ export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
  * A headless launch must keep its explicitly selected model and advance this
  * one startup menu before the ordinary composer gate can submit the kickoff.
  * Never answer an interactive session or a later turn. */
-export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 30000;
+export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 600000;
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
