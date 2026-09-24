@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "name": "P-015 R-4 real-backend identity UI journey with recovery leg (2026-09-24): nuqs URL round-trip, read-only provider-bindings boundary, a forced real compare-and-swap failure with prior state retained, pointer retry reaching the page over SSE sync, then switch and rollback each reaching an applied host activation",
+  "name": "P-015 R-4 real-backend identity UI journey with recovery leg (2026-09-24): nuqs URL round-trip, read-only provider bindings, a forced real compare-and-swap failure with prior state kept, retry reaching the page over SSE, then switch and rollback each applied on the host",
   "framework": "operational",
   "testLayer": "e2e",
   "evidencePlane": "live",
@@ -26,7 +26,7 @@
     "bridgePid": 3082298,
     "treeHead": "71957470ff659ba1c834f3dabd129ddc375db67b",
     "launchHead": "71957470ff659ba1c834f3dabd129ddc375db67b",
-    "buildHead": "431b0e2a2276b371a41d9ef1483dadcd25798cb4",
+    "buildHead": "b47b622ff507d02ef80b25b149d3b30a7c3812b9",
     "frozenSpaIndexSha256": "d86c55e908a6542d7ad6a73ca3cd32f209f37f21e44ffd1a4b4baa610f4a3831",
     "sourceBlobs": {
       "apps/operator/app/settings/identities/page.tsx": "36c86fc6bf319a81d243b6fe18539efe12cfe6ec",

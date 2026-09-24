@@ -37,6 +37,25 @@ beforeEach(() => {
 });
 
 describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
+  it('calibrates in-process audit bytes against the actual UTF-8 response envelope', async () => {
+    const { measureSyncReadPayloadsInProcess, PAYLOAD_BUDGET_BYTES } =
+      await import('../../../sync-resolver/sync-read-audit');
+    const rows = [{ title: '界'.repeat(PAYLOAD_BUDGET_BYTES / 2) }];
+    resolveNamedQueryMock.mockResolvedValueOnce(rows).mockResolvedValueOnce(rows);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_790_240_000_000);
+    try {
+      const response = await (await route()).handler(new Request(
+        'http://localhost:3170/api/zero-harness/rest-query?name=workItems.stats&args=%7B%7D',
+      ));
+      expect(response.status).toBe(200);
+      const expectedBytes = (await response.arrayBuffer()).byteLength;
+      const report = await measureSyncReadPayloadsInProcess({ fixtures: { 'workItems.stats': {} } });
+      expect(report.measured[0]).toMatchObject({ bytes: expectedBytes, overBytes: true });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('keeps the sync read surface loopback-only', async () => {
     expect((await route()).auth).toBe('loopback');
   });
