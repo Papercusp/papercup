@@ -34,10 +34,12 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/launch-cost-metrics';
+import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
 import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
-  captureCarryArtifactManifest, recheckCarryArtifactManifest, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
+  captureCarryArtifactManifest, recheckCarryArtifactManifest, captureCarryRuntimeSnapshot,
+  type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -524,12 +526,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         if (readSource) await waitForMcpStartup(events, threadId, serverName);
         const nativeConfig = await captureCarryNativeConfiguration(p, { threadId, cwd: homes.at(-1)!,
           servers: readSource ? [{ name: serverName, tools: [toolName], authStatus: 'bearerToken' }] : [] });
+        const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
+        expect(runtime.processes.some(process => /\/codex$/.test(process.executable))).toBe(true);
         const manifest = await captureCarryArtifactManifest({
           protocolRef: 'installed-native-loopback-fixture:no-provider-inference', configuration: nativeConfig,
+          runtime,
           artifacts: [
-            // This is the launched peer's executable, not an assertion that a
-            // wrapper's subprocesses or dynamic dependencies were censused.
-            { id: 'peer-executable', filePath: `/proc/${p.pid()}/exe`, maxBytes: 512 * 1024 * 1024 },
+            ...runtime.artifacts,
             { id: 'task-and-checker', filePath: fileURLToPath(import.meta.url), maxBytes: 1024 * 1024 },
             { id: 'transport', filePath: fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url)), maxBytes: 1024 * 1024 },
             { id: 'capture', filePath: fileURLToPath(new URL('./launch-cost/scan-launch-transcripts.ts', import.meta.url)), maxBytes: 1024 * 1024 },
@@ -731,6 +734,17 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         turn_id: turnId,
         cache_eval_case: 'native-correlation-control',
       });
+      const telemetry = new GatewayRequestTelemetry();
+      const observation = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      observation.setNativeCorrelation(requests[0]);
+      const correlated = observation.finish('upstream-error', failure === 'retryable-http' ? 500 : 400)!;
+      const fieldShapes = Object.fromEntries(['session_id', 'thread_id', 'turn_id', 'window_id'].map(key =>
+        [key, { type: typeof metadata[key], length: metadata[key]?.length, isNull: metadata[key] === null,
+          suffix: key === 'window_id' ? metadata[key]?.slice(36, 48) : undefined,
+          uuid: typeof metadata[key] === 'string' && /^[0-9a-f-]{36}$/i.test(metadata[key]) }]));
+      expect(correlated.nativeCorrelation, JSON.stringify(fieldShapes)).toMatchObject({ status: 'observed', threadId, turnId });
+      expect(correlated.cache.servingAccountId).toBeNull(); // loopback has no serving account
+      expect(JSON.stringify(correlated)).not.toContain('native-correlation-control');
     } finally {
       try {
         if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }

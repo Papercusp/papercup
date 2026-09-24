@@ -6999,6 +6999,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // Track the account that actually served, so the terminal error path
             // and the response headers report it rather than the first candidate.
             cli = codexCliAccounts().find((a) => a.accountId === metadata.accountId) ?? cli;
+            stageSpan?.setServingAccount(metadata.accountId);
             // RESTORE THE WIRE TRUTH. The kernel has just stamped the span from
             // the UPSTREAM's shape (`request-kernel.ts:978`), which for this
             // transport is a buffered subprocess and therefore `false`. That is
@@ -7915,6 +7916,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
       try {
         const parsed = JSON.parse(preBody.toString('utf8')) as Record<string, unknown>;
+        // Same parsed request for bearer, OAuth and CLI routes, before model
+        // policy/account selection; diagnostic ids are never routing inputs.
+        stageSpan?.setNativeCorrelation(parsed);
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
           throw new Error('request body must be a JSON object');
         const modelSpec = typeof parsed.model === 'string' ? parsed.model : undefined;

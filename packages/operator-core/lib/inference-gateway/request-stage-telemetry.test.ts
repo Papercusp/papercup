@@ -97,6 +97,76 @@ function completeCloudSpan(telemetry: GatewayRequestTelemetry, advance: (ms: num
 }
 
 describe('GatewayRequestTelemetry', () => {
+  const nativeIds = { session_id: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc',
+    thread_id: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc', turn_id: '01a0cf6d-a2ba-7b43-b095-f73f45732d30',
+    window_id: '01a0cf6d-a2ba-7b43-b095-f73f45732d31:0' };
+  const nativeBody = (meta: unknown = nativeIds) => ({
+    client_metadata: { 'x-codex-turn-metadata': JSON.stringify(meta) },
+  });
+
+  it('retains only exact native ids, independently of serving account, and isolates returned snapshots', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ ownerId: 'su-native', provider: 'codex', protocol: 'openai-responses' });
+    const body = nativeBody({ ...nativeIds, ownerId: 'forged-owner', servingAccountId: 'forged-account',
+      prompt: 'PRIVATE_PROMPT', token: 'PRIVATE_TOKEN', nested: { password: 'PRIVATE_PASSWORD' } });
+    span.setNativeCorrelation(body);
+    body.client_metadata['x-codex-turn-metadata'] = 'changed';
+    span.setServingAccount('actual-account');
+    span.finish('ok', 200);
+    const before = telemetry.snapshot();
+    expect(before.recent[0]).toMatchObject({ ownerId: 'su-native', cache: { servingAccountId: 'actual-account' },
+      nativeCorrelation: { status: 'observed', sessionId: nativeIds.session_id, threadId: nativeIds.thread_id,
+        turnId: nativeIds.turn_id, windowId: nativeIds.window_id } });
+    expect(JSON.stringify(before)).not.toMatch(/PRIVATE_|forged-/);
+    before.recent[0].nativeCorrelation.threadId = 'changed';
+    const owner = telemetry.snapshotForOwner('su-native');
+    expect(owner.recent[0].nativeCorrelation.threadId).toBe(nativeIds.thread_id);
+    owner.recent[0].nativeCorrelation.turnId = 'changed';
+    expect(telemetry.snapshot().recent[0].nativeCorrelation.turnId).toBe(nativeIds.turn_id);
+    span.setNativeCorrelation(nativeBody({ ...nativeIds, turn_id: nativeIds.window_id }));
+    expect(telemetry.snapshot().recent[0].nativeCorrelation.turnId).toBe(nativeIds.turn_id);
+  });
+
+  it.each([
+    ['no-client', {}, 'missing'], ['no-meta', { client_metadata: {} }, 'missing'],
+    ['null-body', null, 'invalid'], ['array-body', [], 'invalid'],
+    ['null-client', { client_metadata: null }, 'invalid'],
+    ['object-meta', { client_metadata: { 'x-codex-turn-metadata': nativeIds } }, 'invalid'],
+    ['bad-json', { client_metadata: { 'x-codex-turn-metadata': '{' } }, 'invalid'],
+    ['array-meta', nativeBody([]), 'invalid'],
+    ['missing-turn', nativeBody({ thread_id: nativeIds.thread_id }), 'invalid'],
+    ['overlong-id', nativeBody({ ...nativeIds, turn_id: nativeIds.turn_id + 'x' }), 'invalid'],
+    ['whitespace-id', nativeBody({ ...nativeIds, turn_id: ' ' + nativeIds.turn_id }), 'invalid'],
+    ['invalid-optional', nativeBody({ ...nativeIds, session_id: null }), 'invalid'],
+    ['invalid-window', nativeBody({ ...nativeIds, window_id: nativeIds.window_id + ':extra' }), 'invalid'],
+    ['oversized-meta', nativeBody({ ...nativeIds, extra: 'x'.repeat(4096) }), 'oversized'],
+    ['multibyte-meta', nativeBody({ ...nativeIds, extra: '界'.repeat(1400) }), 'oversized'],
+  ])('keeps %s metadata explicitly unknown without stale identifiers', (_name, body, status) => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.setNativeCorrelation(nativeBody());
+    span.setNativeCorrelation(body);
+    expect(span.finish('client-error', 400)?.nativeCorrelation).toEqual({ status,
+      sessionId: null, threadId: null, turnId: null, windowId: null });
+  });
+
+  it('does not infer native identity from owner or equate a native turn with one request', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const absent = telemetry.begin({ ownerId: 'su-native', provider: 'codex', protocol: 'openai-responses' });
+    expect(absent.finish('shed', 503)?.nativeCorrelation.status).toBe('unobserved');
+    for (const outcome of ['ok', 'upstream-error'] as const) {
+      const span = telemetry.begin({ ownerId: 'su-native', provider: 'codex', protocol: 'openai-responses' });
+      span.setNativeCorrelation(nativeBody({ thread_id: nativeIds.thread_id, turn_id: nativeIds.turn_id }));
+      span.recordAttempt(); span.recordAttempt(); span.recordFailover();
+      span.finish(outcome, outcome === 'ok' ? 200 : 500);
+    }
+    const rows = telemetry.snapshotForOwner('su-native').recent.slice(1);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].requestId).not.toBe(rows[1].requestId);
+    expect(rows[0].nativeCorrelation).toEqual(rows[1].nativeCorrelation);
+    expect(rows.every(row => row.cache.servingAccountId === null && row.attempts === 2 && row.failovers === 1)).toBe(true);
+  });
+
   it('reports observed account/cache usage with explicit unknown miss cause and bounded coverage', () => {
     const telemetry = new GatewayRequestTelemetry();
     expect(telemetry.snapshot().requests.cacheUsageCoverage).toBeNull();

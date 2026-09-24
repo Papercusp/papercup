@@ -14,6 +14,20 @@ export interface GatewayCacheFingerprint {
   hashedBytes: number;
 }
 
+/** Caller-supplied diagnostic identifiers, never authority or a cache key.
+ * A native turn may generate multiple HTTP requests; this is NOT a unique
+ * charged-request identity or proof of an authenticated native session. */
+export interface GatewayNativeCorrelation {
+  status: 'unobserved' | 'missing' | 'invalid' | 'oversized' | 'observed';
+  sessionId: string | null;
+  threadId: string | null;
+  turnId: string | null;
+  windowId: string | null;
+}
+
+const emptyNativeCorrelation = (status: GatewayNativeCorrelation['status'] = 'unobserved'): GatewayNativeCorrelation =>
+  ({ status, sessionId: null, threadId: null, turnId: null, windowId: null });
+
 export interface GatewayCacheObservation {
   servingAccountId: string | null;
   providerRequestId: string | null;
@@ -206,6 +220,7 @@ export interface GatewayRequestTimeline {
   model: string | null;
   cacheRouting: GatewayCacheRoutingDecision;
   cache: GatewayCacheObservation;
+  nativeCorrelation: GatewayNativeCorrelation;
   /** Gap to this owner's prior completed request in the bounded process-local ring; null is unknown. */
   previousObservedRequestGapMs: number | null;
   cacheObservationMs: number;
@@ -396,6 +411,7 @@ export class GatewayRequestSpan {
   private model: string | null = null;
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
+  private nativeCorrelation = emptyNativeCorrelation();
   private readonly previousObservedRequestGapMs: number | null;
   private cacheObservationMs = 0;
   private attempts = 0;
@@ -508,6 +524,45 @@ export class GatewayRequestSpan {
     this.cacheRouting = decision;
   }
 
+  /** Reuse the object already parsed at the Codex forwarding boundary. This
+   * never parses/stringifies the full request, so even a body beyond the 2MiB
+   * fingerprint ceiling can carry a bounded correlation observation. */
+  setNativeCorrelation(body: unknown): void {
+    if (this.finished) return;
+    const record = (v: unknown): Record<string, unknown> | null =>
+      v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+    const unknown = (status: GatewayNativeCorrelation['status']) => { this.nativeCorrelation = emptyNativeCorrelation(status); };
+    const parsed = record(body);
+    if (!parsed || this.provider !== 'codex' || this.protocol !== 'openai-responses') { unknown('invalid'); return; }
+    if (!Object.hasOwn(parsed, 'client_metadata')) { unknown('missing'); return; }
+    const client = record(parsed.client_metadata);
+    if (!client) { unknown('invalid'); return; }
+    if (!Object.hasOwn(client, 'x-codex-turn-metadata')) { unknown('missing'); return; }
+    const text = client['x-codex-turn-metadata'];
+    if (typeof text !== 'string') { unknown('invalid'); return; }
+    // Fixed diagnostic bound, not a larger request parse/retention budget.
+    if (Buffer.byteLength(text, 'utf8') > 4096) { unknown('oversized'); return; }
+    try {
+      const meta = record(JSON.parse(text));
+      const uuid = (v: unknown): v is string => typeof v === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+      // Installed Codex emits window_id as UUID:<window ordinal>, e.g. :0;
+      // it is not itself a UUID. Keep that exact bounded identity intact.
+      const windowId = (v: unknown): v is string => uuid(v) || typeof v === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{1,10}$/i.test(v);
+      if (!meta || !uuid(meta.thread_id) || !uuid(meta.turn_id) ||
+        (Object.hasOwn(meta, 'session_id') && !uuid(meta.session_id)) ||
+        (Object.hasOwn(meta, 'window_id') && !windowId(meta.window_id))) {
+        unknown('invalid'); return;
+      }
+      // No truncation, normalization, or fallback from owner/time proximity.
+      // Discard every non-whitelisted field, including custom case/prompt data.
+      this.nativeCorrelation = { status: 'observed', threadId: meta.thread_id, turnId: meta.turn_id,
+        sessionId: typeof meta.session_id === 'string' ? meta.session_id : null,
+        windowId: typeof meta.window_id === 'string' ? meta.window_id : null };
+    } catch { unknown('invalid'); }
+  }
+
   /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */
   setCacheShape(body: Uint8Array): void {
     if (this.finished) return;
@@ -590,6 +645,7 @@ export class GatewayRequestSpan {
       model: this.model,
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
+      nativeCorrelation: { ...this.nativeCorrelation },
       previousObservedRequestGapMs: this.previousObservedRequestGapMs,
       cacheObservationMs: this.cacheObservationMs,
       startedAt: this.startedAt,
@@ -717,6 +773,7 @@ export class GatewayRequestTelemetry {
       recent: this.recent.map((timeline) => ({
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
+        nativeCorrelation: { ...timeline.nativeCorrelation },
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
@@ -750,6 +807,7 @@ export class GatewayRequestTelemetry {
       recent: timelines.map((timeline) => ({
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
+        nativeCorrelation: { ...timeline.nativeCorrelation },
         durationsMs: { ...timeline.durationsMs },
         admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
