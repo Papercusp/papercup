@@ -64,6 +64,7 @@
 
 import { isAutoReapExempt, isTerminalState, taskIdFromScopeUnit, type TaskRow } from './types';
 import type { AgentSessionProgressCensus } from './agent-session-progress-census';
+import { nodeCgroupFs, parseProcCgroup, type CgroupFs } from './cgroup-read';
 import type { ResidueGroup } from './reconcile';
 
 /** A terminal row's scope gets this long after `ended_at` before its survivors
@@ -153,6 +154,63 @@ export function managedResidueCandidates(groups: readonly ResidueGroup[]): Manag
     .sort((a, b) => a.scopeUnit.localeCompare(b.scopeUnit));
 }
 
+/** A live process OUTSIDE a no-row scope that still parents one of its members. */
+export interface ScopeHolder {
+  pid: number;
+  comm: string;
+  cgroupPath: string;
+}
+
+/**
+ * Who still HOLDS a no-row managed scope, read from `/proc`.
+ *
+ * `systemd-run --scope` execs the payload in the very process the spawner forked,
+ * so the scope's root stays the spawner's child for as long as the spawner lives.
+ * When the spawner dies the kernel reparents it to the nearest subreaper: the user
+ * manager (cgroup `…/init.scope`) or pid 1. A live parent outside the scope that is
+ * neither is therefore the process that launched the scope and still owns it, and
+ * the scope is not residue.
+ *
+ * That is exactly what a scope from ANOTHER store looks like here. An isolated
+ * operator (the installed-PUI acceptance suite, a VERIFY_TAURI_ISOLATED_DB desktop)
+ * confines its engines into this same agent-session slice but enrols them in its
+ * own ledger, so this reaper finds no row. Measured 2026-09-24: the live reaper
+ * stopped the acceptance suite's Claude engine mid-turn, three minutes into a
+ * journey (WI-10000435).
+ *
+ * `pids` must be the scope's CURRENT members; a pid that has left the scope (exited,
+ * or recycled into another cgroup) is skipped. Returns 'unreadable' when no
+ * member's parentage could be read: an unmeasurable holder must never authorize a
+ * kill.
+ */
+export function readScopeHolder(
+  scopeUnit: string,
+  pids: readonly number[],
+  fs: CgroupFs = nodeCgroupFs,
+): ScopeHolder | null | 'unreadable' {
+  const inScope = (cgroupPath: string) => cgroupPath.split('/').includes(scopeUnit);
+  let measured = 0;
+  for (const pid of pids) {
+    const own = parseProcCgroup(fs.readFile(`/proc/${pid}/cgroup`) ?? '');
+    if (!own || !inScope(own)) continue;
+    const ppid = parseStatusPpid(fs.readFile(`/proc/${pid}/status`));
+    if (ppid === null) continue;
+    measured += 1;
+    if (ppid <= 1) continue;
+    const parent = parseProcCgroup(fs.readFile(`/proc/${ppid}/cgroup`) ?? '');
+    // A parent that exited between the two reads holds nothing: its child is
+    // being reparented to the subreaper right now.
+    if (!parent || inScope(parent) || parent.split('/').at(-1) === 'init.scope') continue;
+    return { pid: ppid, comm: fs.readFile(`/proc/${ppid}/comm`)?.trim() || '?', cgroupPath: parent };
+  }
+  return measured > 0 ? null : 'unreadable';
+}
+
+function parseStatusPpid(status: string | null): number | null {
+  const match = status?.match(/^PPid:\s*(\d+)\s*$/m);
+  return match ? Number(match[1]) : null;
+}
+
 export interface ReapDecision {
   taskId: string;
   scopeUnit: string;
@@ -202,6 +260,9 @@ export interface ReaperInputs {
   scopePidCount: (row: TaskRow) => number | null;
   /** Positive recheck for a no-row candidate. Missing means candidates are spared. */
   scopePidCountForScope?: (scopeUnit: string) => number | null;
+  /** Live out-of-scope parent still holding a no-row candidate (`readScopeHolder`).
+   *  Missing reads as unmeasurable, so candidates are spared. */
+  scopeHolderForScope?: (scopeUnit: string) => ScopeHolder | null | 'unreadable';
   /** coord_presence owner_ids with a heartbeat fresher than REAP_PRESENCE_FRESH_MS. */
   freshOwners: ReadonlySet<string>;
   /** ms since the row's log was last written; null = unmeasurable. Consulted for
@@ -307,6 +368,24 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
     if (rowTaskIds.has(candidate.taskId) || rowScopes.has(candidate.scopeUnit)) continue;
     const pids = inputs.scopePidCountForScope?.(candidate.scopeUnit);
     if (pids == null || pids <= 0) continue;
+    // Only a MISSING probe is unmeasurable: null is the probe's positive "no holder".
+    const holder = inputs.scopeHolderForScope ? inputs.scopeHolderForScope(candidate.scopeUnit) : 'unreadable';
+    if (holder === 'unreadable') {
+      spared.push({
+        taskId: candidate.taskId,
+        why: `managed scope ${candidate.scopeUnit}: no member's parent could be read, so its holder is unmeasurable`,
+      });
+      continue;
+    }
+    if (holder) {
+      spared.push({
+        taskId: candidate.taskId,
+        why:
+          `managed scope ${candidate.scopeUnit} has no ledger row but live parent pid ${holder.pid} ` +
+          `(${holder.comm}) outside it still holds it — a live spawner, e.g. an isolated store's operator`,
+      });
+      continue;
+    }
     reap.push({
       taskId: candidate.taskId,
       scopeUnit: candidate.scopeUnit,

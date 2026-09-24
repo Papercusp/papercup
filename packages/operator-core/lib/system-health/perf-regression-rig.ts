@@ -588,6 +588,44 @@ const defaultCadenceDeps: PerfRegressionCadenceDeps = {
   collect: collectPerfRegressionSnapshot,
 };
 
+export interface PerfRegressionProducerHealth {
+  status: 'ok' | 'warn' | 'unknown' | 'disabled';
+  lastCapturedAt: string | null;
+  ageMs: number | null;
+  note: string;
+}
+
+/** Read independently of the producer, so a stopped collector cannot hide its own silence. */
+export async function readPerfRegressionProducerHealth(
+  workspaceId: string,
+  deps: Pick<PerfRegressionCadenceDeps, 'nowMs' | 'latestCapturedAt'> & {
+    isEnabled: () => Promise<boolean>;
+  } = { ...defaultCadenceDeps, isEnabled: defaultDeps.isEnabled },
+): Promise<PerfRegressionProducerHealth> {
+  try {
+    if (!(await deps.isEnabled())) {
+      return { status: 'disabled', lastCapturedAt: null, ageMs: null, note: PERF_REGRESSION_DISABLED_NOTE };
+    }
+    const capturedAt = await deps.latestCapturedAt(workspaceId);
+    if (capturedAt == null) {
+      return { status: 'warn', lastCapturedAt: null, ageMs: null, note: 'performance history has no persisted sample; lastCapturedAt=never' };
+    }
+    const at = new Date(capturedAt).getTime();
+    const ageMs = deps.nowMs() - at;
+    if (!Number.isFinite(at) || ageMs < 0) {
+      return { status: 'unknown', lastCapturedAt: null, ageMs: null, note: 'performance history timestamp is invalid or in the future' };
+    }
+    const lastCapturedAt = new Date(at).toISOString();
+    const stale = ageMs >= 2 * PERF_REGRESSION_SAMPLE_INTERVAL_MS;
+    return {
+      status: stale ? 'warn' : 'ok', lastCapturedAt, ageMs,
+      note: stale ? `performance producer stale; lastCapturedAt=${lastCapturedAt}` : `lastCapturedAt=${lastCapturedAt}`,
+    };
+  } catch (e) {
+    return { status: 'unknown', lastCapturedAt: null, ageMs: null, note: `performance history unreadable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 export async function collectPerfRegressionWhenDue(
   workspaceId: string,
   deps: PerfRegressionCadenceDeps = defaultCadenceDeps,

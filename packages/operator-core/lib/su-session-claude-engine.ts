@@ -129,6 +129,19 @@ export function claudeReadOnlySuTools(server: {
     .map((name) => prefix + name));
 }
 
+/** D-022: only the exact owner-directive bookkeeping write may skip its card,
+ * and only when the papercusp-su server explicitly advertises it as writable. */
+export function claudeDirectiveDispositionSuTools(server: {
+  name: string; tools?: Array<{ name: string; annotations?: { readOnly?: boolean } }>;
+}): Set<string> {
+  const qualifiedName = 'mcp__papercusp-su__orders_disposition';
+  if (server.name !== 'papercusp-su') return new Set();
+  const advertised = (server.tools ?? []).filter((tool) =>
+    tool.name === 'orders_disposition' || tool.name === qualifiedName);
+  if (advertised.length !== 1 || advertised[0].annotations?.readOnly !== false) return new Set();
+  return new Set([qualifiedName]);
+}
+
 /** psu-isolation D-002: a playbook that splices the project guide delivers it
  * itself, so project-memory auto-load must not send the same CLAUDE.md again
  * (measured: a second 39k-token copy on every full-tier launch). Returns each
@@ -179,6 +192,7 @@ export function startClaudeSuEngine(
   let activeOwnerTurnId: string | undefined;
   // Filled once the SU tool connection is up; until then every request asks.
   let readOnlySuTools = new Set<string>();
+  let directiveDispositionSuTools = new Set<string>();
   // Whether the active owner turn has produced any assistant frame. A turn that
   // ends having produced none is reported, never left to read as an answer.
   let activeTurnSawAssistant = false;
@@ -309,9 +323,10 @@ export function startClaudeSuEngine(
       : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
     canUseTool(toolName, input, permission) {
       if (closed || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
-      // D-021: a call the SU server itself advertises read-only needs no owner
-      // card. A user-configured ask rule still forces the prompt.
-      if (readOnlySuTools.has(toolName) && !permission.matchedAskRule) {
+      // D-021 allows advertised read-only SU tools; D-022 adds only the exact
+      // owner directive disposition write. A user ask rule always forces the card.
+      if ((readOnlySuTools.has(toolName) || directiveDispositionSuTools.has(toolName))
+        && !permission.matchedAskRule) {
         return Promise.resolve({ behavior: 'allow', updatedInput: input });
       }
       return cards.handleClaude(toolName, input, activeOwnerTurnId, permission);
@@ -519,6 +534,7 @@ export function startClaudeSuEngine(
       throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
     readOnlySuTools = claudeReadOnlySuTools(suServer);
+    directiveDispositionSuTools = claudeDirectiveDispositionSuTools(suServer);
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });

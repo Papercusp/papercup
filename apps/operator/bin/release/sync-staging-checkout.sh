@@ -515,7 +515,10 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result="$({
   cd "$INTEGRATION_ROOT"
-  PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --json - <<JSON
+  # The default ptool endpoint is the older background operator (:9071),
+  # whose identity kernel may not yet admit the installer's machine client.
+  # The staging operator owns this target and accepts that same static client.
+  PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json - <<JSON
 {"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
 } 2>&1)" || {

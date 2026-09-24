@@ -393,7 +393,14 @@ describe('workspace-host provisioning DBOS admission', () => {
 
     describe('after an upgrade or repair of the machine (D-407)', () => {
       const lifecycle = { workspaceId: 'ws-1', hostId: 'host-1', connection: input.connection, operationId: 'op-up' };
-      const lifecycleDone = { status: 'succeeded' as const, operationId: 'op-up', hostId: 'host-1', plan, checkpoints: [] };
+      const lifecycleDone = {
+        status: 'succeeded' as const,
+        operationId: 'op-up',
+        hostId: 'host-1',
+        plan,
+        checkpoints: [],
+        requiresInitialization: true,
+      };
 
       beforeEach(() => {
         control.readDestroyTarget.mockResolvedValue({ desired: input.desired });
@@ -439,19 +446,94 @@ describe('workspace-host provisioning DBOS admission', () => {
         expect(control.readDestroyTarget).not.toHaveBeenCalled();
       });
 
-      it('leaves a hosted machine alone after actions that keep its setup, and after a failed upgrade', async () => {
+      it('leaves a hosted machine alone after actions that keep its setup and an upgrade without a completed rollback', async () => {
         const order = recordOrder();
         control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
-        for (const action of ['start', 'stop', 'restart', 'snapshot', 'restore'] as const) {
-          control.runLifecycle.mockResolvedValueOnce({ ...lifecycleDone, operationId: `op-${action}` });
+        for (const action of ['start', 'stop', 'restart', 'snapshot'] as const) {
+          control.runLifecycle.mockResolvedValueOnce({
+            ...lifecycleDone,
+            operationId: `op-${action}`,
+            requiresInitialization: false,
+          });
           await workspaceHostProvisioningWorkflow({ ...lifecycle, operationId: `op-${action}`, action });
         }
-        control.runLifecycle.mockResolvedValueOnce({ ...lifecycleDone, status: 'failed' });
+        // A failed upgrade that did not complete its rollback has no requiresInitialization signal.
+        control.runLifecycle.mockResolvedValueOnce({
+          status: 'failed',
+          operationId: 'op-up',
+          hostId: 'host-1',
+          plan,
+          checkpoints: [],
+        });
         await workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'upgrade' }).catch(() => undefined);
 
-        expect(control.runLifecycle).toHaveBeenCalledTimes(6);
+        expect(control.runLifecycle).toHaveBeenCalledTimes(5);
         expect(order).toEqual([]);
         expect(control.readHostedBinding).not.toHaveBeenCalled();
+      });
+
+      it('re-runs hosted bring-up after an upgrade rollback recreated the machine', async () => {
+        const order = recordOrder();
+        control.runLifecycle.mockResolvedValueOnce({
+          ...lifecycleDone,
+          status: 'failed',
+          rollback: { stepId: 'create-boot-runtime', status: 'succeeded' },
+        });
+        control.readHostedBinding.mockResolvedValueOnce({ customerWorkspaceId: 'customer-ws-1' });
+
+        await expect(workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'upgrade' })).resolves.toMatchObject({
+          status: 'failed',
+          requiresInitialization: true,
+        });
+
+        expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'connector', 'activate']);
+        expect(control.readDestroyTarget).toHaveBeenCalledWith('ws-1', 'host-1');
+      });
+
+      it('refuses a Papercusp-hosted restore before mutating the provider', async () => {
+        const restore = {
+          ...lifecycle,
+          action: 'restore' as const,
+          desired: { ...desired, hostId: 'host-restored' },
+          snapshot: {
+            target: 'gcp' as const,
+            providerId: 'projects/project-1/global/snapshots/snapshot-1',
+            hostId: 'host-1',
+          },
+        };
+        control.readHostedBinding.mockResolvedValueOnce({ customerWorkspaceId: 'customer-ws-1' });
+
+        await expect(workspaceHostProvisioningWorkflow(restore)).rejects.toThrow(
+          /Papercusp-hosted restore is refused before provider mutation/,
+        );
+
+        expect(control.readHostedBinding).toHaveBeenCalledWith({ controlPlaneWorkspaceId: 'ws-1', hostId: 'host-1' });
+        expect(control.runLifecycle).not.toHaveBeenCalled();
+        expect(control.readDestroyTarget).not.toHaveBeenCalled();
+      });
+
+      it('keeps restore available for BYOC hosts with no hosted connector binding', async () => {
+        const restore = {
+          ...lifecycle,
+          action: 'restore' as const,
+          desired: { ...desired, hostId: 'host-restored' },
+          snapshot: {
+            target: 'gcp' as const,
+            providerId: 'projects/project-1/global/snapshots/snapshot-1',
+            hostId: 'host-1',
+          },
+        };
+        control.readHostedBinding.mockResolvedValueOnce(null);
+        control.runLifecycle.mockResolvedValueOnce({ ...lifecycleDone, hostId: 'host-restored' });
+
+        await expect(workspaceHostProvisioningWorkflow(restore)).resolves.toMatchObject({
+          status: 'succeeded',
+          hostId: 'host-restored',
+        });
+
+        expect(control.runLifecycle).toHaveBeenCalledWith(expect.objectContaining({ action: 'restore', hostId: 'host-1' }));
+        expect(control.runInitialization).not.toHaveBeenCalled();
+        expect(control.readDestroyTarget).not.toHaveBeenCalled();
       });
     });
   });

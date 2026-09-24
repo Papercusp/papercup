@@ -11,8 +11,8 @@
  * The load-bearing claims, each with its own case below:
  *  1. it actually appends a snapshot AT THE TAIL (that is the precondition
  *     `computeSparseFrom` scans for; without it a "sparse" cut ships the FULL core);
- *  2. it is NOT gated by the dark `SUBSTRATE_LOG_SNAPSHOT` producer flag — which is
- *     OFF here, exactly as in production;
+ *  2. it is NOT gated by the `SUBSTRATE_LOG_SNAPSHOT` producer flag — forced OFF in
+ *     that case (the flag defaults ON since p2p-join-catchup-speed P-005);
  *  3. concurrent callers COALESCE onto one snapshot (a naive flag would orphan the
  *     first waiter and hang it forever);
  *  4. a stopped engine REJECTS rather than hanging (mergeNow short-circuits when
@@ -97,13 +97,20 @@ describe('produceHeadSnapshotNow (P-019 / D-012)', () => {
     expect(isSnapshotOp(tailOp)).toBe(true);
   });
 
-  it('runs with the dark SUBSTRATE_LOG_SNAPSHOT producer flag OFF — the request is not rationed by it', async () => {
-    // The flag is unset here, i.e. OFF, exactly as in production (KNOWN_DARK_FLAGS,
-    // case:'incomplete', pending the P-008 cross-machine proof). If this request were
-    // gated on it, the no-outage cut would be strictly weaker than the outage-taking
-    // one it replaces — for no new exposure, since the QUIESCED cut path already calls
-    // produceLogSnapshot unconditionally (cut-seed-cli refreshCorestoreStateForSeed).
-    expect(process.env.PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT ?? '').not.toBe('1');
+  it('runs with the SUBSTRATE_LOG_SNAPSHOT producer flag forced OFF — the request is not rationed by it', async () => {
+    // The producer flag defaults ON since p2p-join-catchup-speed P-005, so force it OFF
+    // here (env override precedes the default; the flag is read once at boot). If this
+    // request were gated on it, a box running with the producer switched off would lose
+    // the no-outage cut — strictly weaker than the outage-taking one it replaces, for no
+    // new exposure, since the QUIESCED cut path already calls produceLogSnapshot
+    // unconditionally (cut-seed-cli refreshCorestoreStateForSeed).
+    const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
+    const prior = process.env[FLAG_ENV];
+    process.env[FLAG_ENV] = '0';
+    cleanups.push(() => {
+      if (prior === undefined) delete process.env[FLAG_ENV];
+      else process.env[FLAG_ENV] = prior;
+    });
     const handle = await bootWithOps('p019-b', 2);
     const snap = await handle.produceHeadSnapshotNow();
     expect(snap.appended).toBe(true);

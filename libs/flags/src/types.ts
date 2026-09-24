@@ -365,15 +365,17 @@ export const FLAGS = {
   // inversion silently made BOTH legs live-default-ON in production (the 6th
   // instance of that EI-7230 bug class in this file). Split: this flag now gates
   // ONLY the PRODUCER — periodically compacts the OWN log (appends one additive
-  // snapshot op once it grows past a threshold of ops since the last snapshot) —
-  // whose real-wire replay-cost saving + cross-machine convergence are real-
-  // hardware-unverified (P-008, same D-003 gate as the sibling
-  // AUTHORITY_RPC_PROTOMUX). DEFAULT OFF (dark, see DARK_FLAGS below): OFF = no
-  // NEW snapshot ops produced (existing ones already on disk are untouched and
-  // still read normally); byte-identical to the pre-P-011 intent. The READER leg
-  // (seeding a joiner's cursor at a log's latest snapshot) is now its own flag,
-  // SUBSTRATE_LOG_SNAPSHOT_READER, immediately below — see that flag's comment for
-  // why the two needed to separate.
+  // snapshot set once ops since the last snapshot reach
+  // `snapshotCompactThreshold`, i.e. max(1000, ratio × the prior set's rows)).
+  // GRADUATED 2026-09-24 (p2p-join-catchup-speed-2026-09-23 P-005): the
+  // cross-machine proof it was dark for landed — P-003 (proportional cadence,
+  // compaction off the merge gate), P-004 (reader finds the latest set at any
+  // distance) and P-008 (sequential readers skip redundant sets, A/B-verified).
+  // Default ON (not in DARK_FLAGS). OFF (env `PAPERCUSP_FLAG_…=0` or an override)
+  // ⇒ no NEW snapshot sets produced; existing sets on disk are untouched and
+  // still read normally. The READER leg (seeding a joiner's cursor at a log's
+  // latest snapshot) is its own flag, SUBSTRATE_LOG_SNAPSHOT_READER, immediately
+  // below — see that flag's comment for why the two needed to separate.
   SUBSTRATE_LOG_SNAPSHOT: "papercusp-substrate-log-snapshot",
   // WI-3370 (2026-07-10) split of SUBSTRATE_LOG_SNAPSHOT (design A, D-005): gates
   // ONLY the reader — seedCursorFromSnapshots seeds a fresh/reset merge cursor at
@@ -3263,14 +3265,6 @@ export const DARK_FLAGS: ReadonlyMap<
     },
   ],
   [
-    FLAGS.SUBSTRATE_LOG_SNAPSHOT,
-    {
-      case: "incomplete",
-      reason:
-        'WI-3370: 6th instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class in this file — this flag\'s OWN code comment (directly above in FLAGS) has always said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so the 2026-06-29 P-011 inversion silently flipped it (and the reader leg riding the same boolean) to live default-ON. Confirmed live: flags:get(papercusp-substrate-log-snapshot)=true. Split per this fix: the flag now gates ONLY the producer (produceLogSnapshot, boot.ts) — periodic own-log compaction whose real-wire replay-cost saving + cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE). The reader leg (seedCursorFromSnapshots) is now the separate default-ON SUBSTRATE_LOG_SNAPSHOT_READER flag, since the local-seed case it serves is unambiguously safe and REQUIRED for the seed-history-trim-public-builds-2026-07-07 sparse public-build seed to restore. OFF ⇒ no NEW snapshot ops produced by this box (existing on-disk snapshot markers are untouched and still read via the reader flag) — byte-identical to the pre-P-011 intent. Owner/leader flips ON after the P-008 two-machine convergence proof.',
-    },
-  ],
-  [
     FLAGS.SUBSTRATE_SIDECAR,
     {
       case: "incomplete",
@@ -3867,7 +3861,12 @@ export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // owner-directed production ChatGPT canary satisfied the dark entry's exact gate.
 // Ratchet the ceiling with the removal so this graduation does not become headroom
 // for another parked/incomplete flag.
-export const DARK_FLAGS_HIGH_WATERMARK = 13;
+//
+// 2026-09-24 (p2p-join-catchup-speed-2026-09-23 P-005) — 13→12, SUBSTRATE_LOG_SNAPSHOT
+// (case 'incomplete') GRADUATED: the producer's dark gate was the cross-machine
+// catch-up proof, delivered by P-003/P-004/P-008 of that plan. Same ratchet rule —
+// the freed slot is spent, not banked.
+export const DARK_FLAGS_HIGH_WATERMARK = 12;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

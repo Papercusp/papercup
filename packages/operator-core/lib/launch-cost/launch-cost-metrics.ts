@@ -239,3 +239,129 @@ export function summarizeByDay(samples: readonly LaunchSample[]): DayStats[] {
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([day, daySamples]) => ({ day, ...statsOver(daySamples) }));
 }
+
+export interface CarryUsageObservation {
+  inputTotalTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** Zero before the first observed compaction; null means unknown. */
+  contextGeneration: number | null;
+}
+
+/**
+ * Diagnose the pre-compaction input-volume class separately from cache misses.
+ * Routing/TTL can alter cached reads, but cannot remove inherited prompt bytes.
+ * This is a diagnostic, NOT the matched-task savings/quality acceptance verdict.
+ */
+export function diagnoseCarryUsage(
+  observations: readonly CarryUsageObservation[],
+  inheritedHistory: boolean | null,
+  oversizedThreshold = 600_000,
+) {
+  const first = observations.slice(0, 2);
+  const count = (value: number | null): value is number => value !== null && Number.isSafeInteger(value) && value >= 0;
+  const fullFirstTwo = first.length === 2 && first.every(event => count(event.inputTotalTokens));
+  const splitKnown = fullFirstTwo && first.every(event => count(event.cacheReadTokens) && count(event.cacheWriteTokens) &&
+    event.cacheReadTokens! + event.cacheWriteTokens! <= event.inputTotalTokens!);
+  const after = observations.find(event => event.contextGeneration !== null && event.contextGeneration > 0 && count(event.inputTotalTokens));
+  const beforeGenerationKnown = first.length === 2 && first.every(event => event.contextGeneration === 0);
+  const oversizedThenCompacted = inheritedHistory === true && fullFirstTwo && beforeGenerationKnown &&
+    first.every(event => event.inputTotalTokens! >= oversizedThreshold) && after !== undefined &&
+    after.inputTotalTokens! < Math.min(...first.map(event => event.inputTotalTokens!));
+  return {
+    observedRequests: observations.length,
+    firstTwoTotalInput: fullFirstTwo ? first.reduce((sum, event) => sum + event.inputTotalTokens!, 0) : null,
+    firstTwoUncachedInput: splitKnown ? first.reduce((sum, event) => sum + event.inputTotalTokens! - event.cacheReadTokens! - event.cacheWriteTokens!, 0) : null,
+    firstAfterCompactionInput: after?.inputTotalTokens ?? null,
+    oversizedThenCompacted,
+    // Do not manufacture a remote-cache cause from usage counters alone.
+    cacheMissCause: 'undetermined' as const,
+    coverage: { firstTwoInput: fullFirstTwo, firstTwoCacheSplit: splitKnown,
+      inheritedHistory: inheritedHistory !== null, preCompactionGeneration: beforeGenerationKnown },
+  };
+}
+
+export interface CarryTaskEvaluation {
+  /** Stable workload identity shared ONLY by the control/candidate pair. */
+  taskId: string;
+  arm: 'control' | 'candidate';
+  model: string | null;
+  transport: string | null;
+  authorizationScope: string | null;
+  workloadFingerprint: string | null;
+  completed: boolean;
+  /** Independent task-specific correctness checks, not a self-rated score. */
+  quality: 'pass' | 'fail' | 'unverified';
+  qualityEvidenceRef: string | null;
+  firstUsefulResponseMs: number | null;
+  /** Every charged request, including work done BEFORE creating the successor. */
+  requests: readonly {
+    id: string;
+    phase: 'preparation' | 'startup' | 'work' | 'compaction' | 'recovery' | 'retry';
+    uncachedInputTokens: number | null;
+  }[];
+  accountingComplete: boolean;
+}
+
+/** R-4/R-8 acceptance arithmetic. A passing synthetic test is not a passing live cohort. */
+export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], minimumPairs = 20) {
+  if (!Number.isSafeInteger(minimumPairs) || minimumPairs < 2) throw new Error('minimumPairs must be at least two');
+  const insufficient: string[] = [];
+  const failures: string[] = [];
+  const byTask = new Map<string, CarryTaskEvaluation[]>();
+  for (const sample of samples) byTask.set(sample.taskId, [...(byTask.get(sample.taskId) ?? []), sample]);
+  const pairs: Array<{ control: CarryTaskEvaluation; candidate: CarryTaskEvaluation }> = [];
+  for (const [taskId, rows] of byTask) {
+    const control = rows.filter(row => row.arm === 'control');
+    const candidate = rows.filter(row => row.arm === 'candidate');
+    if (!taskId || control.length !== 1 || candidate.length !== 1) {
+      insufficient.push(`unpaired-or-duplicate:${taskId}`); continue;
+    }
+    const a = control[0], b = candidate[0];
+    const dimensions = ['model', 'transport', 'authorizationScope', 'workloadFingerprint'] as const;
+    if (dimensions.some(key => !a[key] || !b[key] || a[key] !== b[key])) {
+      insufficient.push(`unmatched-dimensions:${taskId}`); continue;
+    }
+    if (!a.completed || !b.completed) failures.push(`incomplete-task:${taskId}`);
+    if (a.quality === 'fail' || b.quality === 'fail') failures.push(`quality-failure:${taskId}`);
+    if (a.quality === 'unverified' || b.quality === 'unverified' || !a.qualityEvidenceRef || !b.qualityEvidenceRef) {
+      insufficient.push(`unverified-quality:${taskId}`);
+    }
+    for (const row of [a, b]) {
+      if (!row.accountingComplete || row.requests.some(request => !request.id ||
+        request.uncachedInputTokens === null || !Number.isSafeInteger(request.uncachedInputTokens) || request.uncachedInputTokens < 0) ||
+        new Set(row.requests.map(request => request.id)).size !== row.requests.length) {
+        insufficient.push(`incomplete-accounting:${taskId}:${row.arm}`);
+      }
+      if (row.requests.filter(request => request.phase === 'startup').length < 2) {
+        insufficient.push(`missing-startup:${taskId}:${row.arm}`);
+      }
+      if (row.firstUsefulResponseMs === null || !Number.isFinite(row.firstUsefulResponseMs) || row.firstUsefulResponseMs < 0) {
+        insufficient.push(`missing-latency:${taskId}:${row.arm}`);
+      }
+    }
+    pairs.push({ control: a, candidate: b });
+  }
+  if (pairs.length < minimumPairs) insufficient.push(`too-few-pairs:${pairs.length}/${minimumPairs}`);
+  if (insufficient.length) return { status: failures.length ? 'fail' as const : 'insufficient' as const,
+    pairs: pairs.length, insufficient, failures, metrics: null };
+  const total = (arm: 'control' | 'candidate') => pairs.reduce((sum, pair) => sum +
+    pair[arm].requests.reduce((n, request) => n + request.uncachedInputTokens!, 0), 0);
+  const startup = (arm: 'control' | 'candidate') => pairs.reduce((sum, pair) => sum +
+    pair[arm].requests.filter(request => request.phase === 'startup').slice(0, 2)
+      .reduce((n, request) => n + request.uncachedInputTokens!, 0), 0);
+  const latency = (arm: 'control' | 'candidate') => percentile(pairs.map(pair => pair[arm].firstUsefulResponseMs!), 0.95);
+  const controlTotal = total('control'), controlStartup = startup('control'), controlP95 = latency('control');
+  if (controlTotal <= 0 || controlStartup <= 0 || controlP95 <= 0) return {
+    status: 'insufficient' as const, pairs: pairs.length, insufficient: ['zero-control-denominator'], failures, metrics: null,
+  };
+  const candidateTotal = total('candidate'), candidateStartup = startup('candidate'), candidateP95 = latency('candidate');
+  const metrics = { controlTotal, candidateTotal, controlStartup, candidateStartup, controlP95, candidateP95,
+    firstTwoUncachedReduction: 1 - candidateStartup / controlStartup,
+    taskUncachedReduction: 1 - candidateTotal / controlTotal,
+    p95LatencyChange: candidateP95 / controlP95 - 1 };
+  if (metrics.firstTwoUncachedReduction < 0.5) failures.push('first-two-reduction-below-50-percent');
+  if (metrics.taskUncachedReduction < 0.25) failures.push('task-reduction-below-25-percent');
+  if (metrics.p95LatencyChange > 0.1 + Number.EPSILON) failures.push('p95-latency-regression-above-10-percent');
+  return { status: failures.length ? 'fail' as const : 'pass' as const, pairs: pairs.length, insufficient, failures, metrics };
+}

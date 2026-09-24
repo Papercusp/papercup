@@ -269,7 +269,12 @@ export interface DeployStatus {
   gate: {
     green: boolean;
     consecutiveReds: number;
-    stalled: boolean;
+    /**
+     * Tri-state gate evidence. True/false are returned only when the in-routine counters or
+     * watchdog establish a verdict; null means neither source could establish one (for example,
+     * incomplete red/age data or a suppressed watchdog reading).
+     */
+    stalled: boolean | null;
     fireStale: boolean;
     fireStaleReason: string | null;
     lastGreenAtMs: number | null;

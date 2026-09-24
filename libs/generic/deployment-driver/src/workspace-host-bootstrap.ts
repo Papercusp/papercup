@@ -1656,7 +1656,7 @@ function localInferenceRuntimeInstallLines(
     '  *) die "unsupported architecture for the local-inference runtime: $(uname -m)";;',
     'esac',
     // The upstream artifact is zstd-compressed and stock Ubuntu 24.04 ships no unzstd.
-    'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
+    'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive retry 5 apt-get install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
     // MEASURED on canary-11 (2026-09-03): a GCE startup-script runs as root with NO $HOME, and the
     // ollama CLI PANICS at construction when it is unset — `envconfig.Models()` (config.go:120) is
     // reached from `NewCLI()` before any subcommand runs, so EVERY ollama CLI call dies instantly:
@@ -1820,7 +1820,12 @@ function hostModelHardenLines(
 ): { head: string[]; tail: string[] } {
   if (v.hostModel === 'ubuntu-release-bundle') {
     return {
-      head: ['export DEBIAN_FRONTEND=noninteractive', 'apt-get update -qq'],
+      head: [
+        'export DEBIAN_FRONTEND=noninteractive',
+        // `--error-on=any`: without it an unreachable archive is only a `W:` line and exit 0, so the
+        // failure surfaced one command later as `E: Unable to locate package minisign` (WI-10002837).
+        'retry 10 apt-get update -qq --error-on=any || die "package index refresh failed after 10 attempts: the Ubuntu archive is unreachable from this host"',
+      ],
       tail: [
         'ufw default deny incoming',
         'ufw default allow outgoing',
@@ -2111,6 +2116,11 @@ export function buildWorkspaceHostBootstrap(
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     'die() { log "ERROR: $1" >&2; exit 1; }',
     'phase() { log "phase:$1"; }',
+    // Bounded retry for the few commands that reach the network before anything else has. A fresh
+    // boot can lose its first egress attempts (WI-10002837: every archive fetch failed ~110s after
+    // boot, the host re-ran the same bootstrap fine minutes later), and a single try turned that
+    // blip into a dead host. Logs go to stderr so a caller's `>/dev/null` cannot hide them.
+    'retry() { local max="$1" attempt=1; shift; until "$@"; do (( attempt >= max )) && return 1; log "attempt $attempt/$max failed, retrying in $(( attempt * 5 ))s: $*" >&2; sleep $(( attempt * 5 )); attempt=$(( attempt + 1 )); done; }',
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`,
     '[[ "${EUID}" -eq 0 ]] || die "bootstrap must run as root"',
@@ -2134,7 +2144,7 @@ export function buildWorkspaceHostBootstrap(
     // dnf layer in the image, traced name-by-name in infra/images/bootc/RPM-EQUIVALENCE.md.
     ...(hostModel === 'ubuntu-release-bundle'
       ? [
-          `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")}`,
+          `retry 5 apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")} || die "runtime package install failed after 5 attempts"`,
         ]
       : []),
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',

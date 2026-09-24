@@ -122,6 +122,13 @@ export type BootHistoryKind =
   // is the only way to tell a working fairness bound from a silent starvation.
   | 'peer_dial_throttled'
   | 'peer_capped'
+  // p2p-join-catchup-speed P-005: the periodic OWN-log compaction (runOwnCompaction in
+  // boot.ts) — its boot-time cadence anchor, each start, and each outcome (appended /
+  // failed). These used to be recorded as 'peer_capped', which is neither stdout- nor
+  // PG-mirrored, so whether a tower compaction ever ran, how long its full-history read
+  // took, and why it failed were all unobservable once the in-memory ring rolled or the
+  // process restarted. Sparse: one anchor per boot, then two rows per compaction.
+  | 'own_log_compaction'
   | 'peer_revoked'
   | 'peer_unrevoked'
   // WI-10002600: ONE admitted log was retired by its own device's signed
@@ -369,6 +376,9 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   'peer_unrevoked',
   'peer_log_superseded',
   'boot_fail',
+  // P-005: own-log compaction anchor/start/outcome — sparse, and the only record of
+  // whether the periodic snapshot producer actually ran on a box.
+  'own_log_compaction',
   // WI-6043 (2026-07-26, revocation_kcut post-ban content LEAK): these three are the
   // re-key/K-cut path's own "loud signal" kinds (WI-280's stated purpose: "NAMES itself
   // instead of a silent 0→0" / "instead of a swallowed console.error") — but before this

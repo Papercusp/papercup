@@ -67,6 +67,8 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   announce_pending: true,
   announce_rejected: true,
   policy_drop: true,
+  // P-005: own-log compaction anchor/start/outcome.
+  own_log_compaction: true,
   announce_clock_skew: true,
   announce_error: true,
   merge_error: true,

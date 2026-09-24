@@ -13,7 +13,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
-const h = vi.hoisted(() => ({ sql: null as unknown as import('postgres').Sql }));
+const h = vi.hoisted(() => ({
+  sql: null as unknown as import('postgres').Sql,
+  hookBundle: vi.fn(async () => ({ generation: 'integration-generation', glance: {} })),
+}));
+
+vi.mock('./hook-bundle', () => ({ buildActivityHookBundle: h.hookBundle }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
@@ -158,6 +163,26 @@ describe('activity:report — write + server-side summary', () => {
   it('honors an explicit pre-formatted summary over the derived one', async () => {
     const { parsed } = await report({ owner: 'su-w1', tool_name: 'Edit', tool_input: { file_path: '/x.ts' }, summary: 'custom marker' });
     expect(parsed.summary).toBe('custom marker');
+  });
+
+  it('accepts the installed hook glance_stale payload through schema, write and bundle dispatch', async () => {
+    const args = reportTool.args.parse({
+      owner: 'su-hook-compat', agent: 'codex', tool_name: 'Read', phase: 'post',
+      tool_input: { file_path: '/hook-compat.ts' },
+      hook_bundle: { generation: 'previous-generation', glance_stale: true },
+    });
+    expect(args.hook_bundle?.glance_stale).toBe(true);
+    const { parsed } = await report(args);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.hook_bundle).toMatchObject({ generation: 'integration-generation' });
+    expect(h.hookBundle).toHaveBeenCalledWith(
+      'su-hook-compat', { generation: 'previous-generation', glance_stale: true }, WORKER_CTX,
+    );
+    const rows = await db.sql<Array<{ owner_id: string; tool_name: string }>>`
+      SELECT owner_id, tool_name FROM harness_shared.agent_activity
+       WHERE owner_id = 'su-hook-compat'
+    `;
+    expect(rows).toEqual([{ owner_id: 'su-hook-compat', tool_name: 'Read' }]);
   });
 
   it('falls back to the principal slug when owner is omitted', async () => {

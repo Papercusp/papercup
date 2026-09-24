@@ -3960,24 +3960,41 @@ async function amendAcceptanceBarRubric(
         { ...rubricScope, planSlug: input.rubricId },
         { ...subjectScope, planSlug: subjectPlanHint },
       ],
+      mode: preview ? 'preview' : 'write',
     },
     async (tx) => {
-      const rubricRows = await tx<AcceptanceAmendmentPlanRow[]>`
-        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-               title, status, created, updated, owner, archived, template_data
-          FROM harness_shared.harness_plans
-         WHERE workspace_id = ${rubricScope.workspaceId}
-           AND harness_slug = ${rubricScope.harnessSlug}
-           AND plan_slug = ${input.rubricId}
-         FOR UPDATE`;
-      const subjectRows = await tx<AcceptanceAmendmentPlanRow[]>`
-        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-               title, status, created, updated, owner, archived, template_data
-          FROM harness_shared.harness_plans
-         WHERE workspace_id = ${subjectScope.workspaceId}
-           AND harness_slug = ${subjectScope.harnessSlug}
-           AND plan_slug = ${subjectPlanHint}
-         FOR UPDATE`;
+      const rubricRows = preview
+        ? await tx<AcceptanceAmendmentPlanRow[]>`
+            SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                   title, status, created, updated, owner, archived, template_data
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${rubricScope.workspaceId}
+               AND harness_slug = ${rubricScope.harnessSlug}
+               AND plan_slug = ${input.rubricId}`
+        : await tx<AcceptanceAmendmentPlanRow[]>`
+            SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                   title, status, created, updated, owner, archived, template_data
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${rubricScope.workspaceId}
+               AND harness_slug = ${rubricScope.harnessSlug}
+               AND plan_slug = ${input.rubricId}
+             FOR UPDATE`;
+      const subjectRows = preview
+        ? await tx<AcceptanceAmendmentPlanRow[]>`
+            SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                   title, status, created, updated, owner, archived, template_data
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${subjectScope.workspaceId}
+               AND harness_slug = ${subjectScope.harnessSlug}
+               AND plan_slug = ${subjectPlanHint}`
+        : await tx<AcceptanceAmendmentPlanRow[]>`
+            SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                   title, status, created, updated, owner, archived, template_data
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${subjectScope.workspaceId}
+               AND harness_slug = ${subjectScope.harnessSlug}
+               AND plan_slug = ${subjectPlanHint}
+             FOR UPDATE`;
       const rubricRow = rubricRows[0];
       const subjectRow = subjectRows[0];
       if (!rubricRow || !subjectRow) return null;
@@ -4338,6 +4355,21 @@ async function amendAcceptanceBarRubric(
         const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
         const { evaluateAmendmentReadinessDelta } = await import('./acceptance-bar-amendment-readiness');
         const readinessDelta = evaluateAmendmentReadinessDelta(snapshot, candidate);
+        const finalVersions = await tx<Array<{ harness_slug: string; plan_slug: string; version: number | string }>>`
+          SELECT harness_slug, plan_slug, version
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${rubricScope.workspaceId}
+             AND ((harness_slug = ${rubricScope.harnessSlug} AND plan_slug = ${input.rubricId})
+               OR (harness_slug = ${subjectScope.harnessSlug} AND plan_slug = ${subjectPlanHint}))`;
+        const finalVersionByPlan = new Map(
+          finalVersions.map((row) => [`${row.harness_slug}\0${row.plan_slug}`, Number(row.version)]),
+        );
+        if (
+          finalVersionByPlan.get(`${rubricScope.harnessSlug}\0${input.rubricId}`) !== oldRubricRevision ||
+          finalVersionByPlan.get(`${subjectScope.harnessSlug}\0${subjectPlanHint}`) !== oldSubjectRevision
+        ) {
+          throw new Error('acceptance_bar_amendment_preview_stale: source plans changed during preview; re-run dryRun');
+        }
         // P-039: when the amendment only raises the proof floor, say so FIRST — the requester
         // posts this preview for an outside countersignature, and that review should not be spent
         // on an amendment whose only effect is new blocking codes on formerly manual BARs.

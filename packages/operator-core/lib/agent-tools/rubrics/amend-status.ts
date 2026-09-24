@@ -28,12 +28,12 @@ export default defineTool({
   name: 'rubrics:amend-status',
   profile: 'engineer',
   description:
-    'Poll a rubrics:amend receipt: running, committed (with the amend result), failed (with the error), or not_found. not_found means nothing is running and no committed amendment carries the key; re-issuing the same amend with the same idempotencyKey is then safe.',
+    'Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.',
   guidance: {
     when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
     notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
     returns:
-      "{ ok, state: 'running'|'committed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec? }.",
+      "{ ok, state: 'running'|'committed'|'previewed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec? }.",
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -43,7 +43,7 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean(),
-      state: z.enum(['running', 'committed', 'failed', 'not_found']),
+      state: z.enum(['running', 'committed', 'previewed', 'failed', 'not_found']),
       source: z.enum(['receipt', 'decision', 'none']),
       result: z.record(z.string(), z.unknown()).optional(),
       error: z.string().optional(),
@@ -79,8 +79,10 @@ export default defineTool({
       state: 'not_found',
       source: 'none',
       note:
-        'No amendment with this key is running in this operator process and no committed Decision carries it. ' +
-        'The amendment is atomic and keyed, so re-issuing the same rubrics:amend with this idempotencyKey is safe.',
+        args.idempotencyKey.startsWith('preview-')
+          ? 'No dry-run preview with this receipt is running or retained in this process. dryRun is read-only; issue rubrics:amend with dryRun:true again for a fresh preview.'
+          : 'No amendment with this key is running in this operator process and no committed Decision carries it. ' +
+            'The amendment is atomic and keyed, so re-issuing the same rubrics:amend with this idempotencyKey is safe.',
     });
   },
 });

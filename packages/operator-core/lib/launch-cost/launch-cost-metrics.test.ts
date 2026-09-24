@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
+  diagnoseCarryUsage,
+  evaluateCarryTaskPairs,
+  type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
   isLaunchCandidate,
@@ -12,6 +15,98 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => {
+  const cohort = (): CarryTaskEvaluation[] => Array.from({ length: 20 }, (_, n) => ['control', 'candidate'].map(arm => ({
+    taskId: `task-${n}`, arm: arm as 'control' | 'candidate', model: 'gpt-6-sol', transport: 'subscription',
+    authorizationScope: 'tenant-a/account-a', workloadFingerprint: 'fixture-v1', completed: true,
+    quality: 'pass' as const, qualityEvidenceRef: `fixture:test-${n}-${arm}`, firstUsefulResponseMs: 1000,
+    accountingComplete: true, requests: [
+      { id: 'one', phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 700000 : 50000 },
+      { id: 'two', phase: 'startup' as const, uncachedInputTokens: arm === 'control' ? 690000 : 50000 },
+      { id: 'work', phase: 'work' as const, uncachedInputTokens: 100000 },
+    ],
+  }))).flat();
+  it('computes adopted thresholds on a complete paired cohort', () => {
+    const result = evaluateCarryTaskPairs(cohort());
+    expect(result.status).toBe('pass');
+    expect(result.pairs).toBe(20);
+    expect(result.metrics?.controlTotal).toBe(29_800_000);
+    expect(result.metrics?.candidateTotal).toBe(4_000_000);
+  });
+  it('fails relocated cost in preparation/compaction/recovery/retry even when startup looks cheap', () => {
+    for (const phase of ['preparation', 'compaction', 'recovery', 'retry'] as const) {
+      const rows = cohort().map(row => row.arm === 'candidate' ? { ...row,
+        requests: [...row.requests, { id: 'hidden-cost', phase, uncachedInputTokens: 1_400_000 }] } : row);
+      const result = evaluateCarryTaskPairs(rows);
+      expect(result.status).toBe('fail');
+      expect(result.failures).toContain('task-reduction-below-25-percent');
+    }
+  });
+  it('rejects cherry-picked, duplicate, incomplete or mismatched pairs', () => {
+    const full = cohort();
+    expect(evaluateCarryTaskPairs(full.slice(0, -1)).status).toBe('insufficient');
+    expect(evaluateCarryTaskPairs([...full, full[0]]).status).toBe('insufficient');
+    expect(evaluateCarryTaskPairs(full.map((row, n) => n === 0 ? { ...row, accountingComplete: false } : row)).status).toBe('insufficient');
+    for (const dimension of ['model', 'transport', 'authorizationScope', 'workloadFingerprint'] as const) {
+      expect(evaluateCarryTaskPairs(full.map((row, n) => n === 0 ? { ...row, [dimension]: 'different' } : row)).status).toBe('insufficient');
+    }
+  });
+  it('fails quality/completion and p95 latency regressions despite token savings', () => {
+    const full = cohort();
+    expect(evaluateCarryTaskPairs(full.map((row, n) => n === 1 ? { ...row, completed: false } : row)).status).toBe('fail');
+    expect(evaluateCarryTaskPairs(full.map((row, n) => n === 1 ? { ...row, quality: 'fail' } : row)).status).toBe('fail');
+    expect(evaluateCarryTaskPairs(full.map(row => row.arm === 'candidate' ? { ...row, firstUsefulResponseMs: 1101 } : row)).failures)
+      .toContain('p95-latency-regression-above-10-percent');
+  });
+  it('does not pass unknown counts, duplicate request ids, missing quality evidence, or empty cohorts', () => {
+    expect(evaluateCarryTaskPairs([]).status).toBe('insufficient');
+    expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, qualityEvidenceRef: null }))).status).toBe('insufficient');
+    expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, requests: [...row.requests, row.requests[0]] }))).status).toBe('insufficient');
+    expect(evaluateCarryTaskPairs(cohort().map(row => ({ ...row, requests: row.requests.map(request => ({ ...request, uncachedInputTokens: null })) }))).status).toBe('insufficient');
+  });
+});
+
+describe('carry input volume versus remote cache miss (P-004)', () => {
+  // Counts reproduced from audit session01a0cd8f; fixture contains no prompt text.
+  const observations = [
+    { inputTotalTokens: 691102, cacheReadTokens: 0, cacheWriteTokens: 0, contextGeneration: 0 },
+    { inputTotalTokens: 690650, cacheReadTokens: 2816, cacheWriteTokens: 0, contextGeneration: 0 },
+    { inputTotalTokens: 90205, cacheReadTokens: 7936, cacheWriteTokens: 0, contextGeneration: 1 },
+    { inputTotalTokens: 90825, cacheReadTokens: 89856, cacheWriteTokens: 0, contextGeneration: 1 },
+  ];
+  it('measures the 600k–700k inherited-prefix then compaction class without asserting a routing cause', () => {
+    expect(diagnoseCarryUsage(observations, true)).toMatchObject({
+      firstTwoTotalInput: 1381752, firstTwoUncachedInput: 1378936,
+      firstAfterCompactionInput: 90205, oversizedThenCompacted: true, cacheMissCause: 'undetermined',
+    });
+  });
+  it('distinguishes a cache-only counterfactual from removing inherited input', () => {
+    const cached = observations.map(event => ({ ...event, cacheReadTokens: Math.floor(event.inputTotalTokens * 0.99) }));
+    const baseline = diagnoseCarryUsage(observations, true);
+    const routeOrTtlOnly = diagnoseCarryUsage(cached, true);
+    expect(routeOrTtlOnly.firstTwoTotalInput).toBe(baseline.firstTwoTotalInput);
+    expect(routeOrTtlOnly.firstTwoUncachedInput).toBeLessThan(baseline.firstTwoUncachedInput!);
+    expect(routeOrTtlOnly.oversizedThenCompacted).toBe(true);
+    const boundedCarry = observations.map(event => ({ ...event, inputTotalTokens: 50000,
+      cacheReadTokens: 0, contextGeneration: 0 }));
+    expect(diagnoseCarryUsage(boundedCarry, false)).toMatchObject({ firstTwoTotalInput: 100000,
+      oversizedThenCompacted: false, cacheMissCause: 'undetermined' });
+  });
+  it('does not turn unknown splits, missing evidence or a short cohort into a saving', () => {
+    expect(diagnoseCarryUsage([], null)).toMatchObject({ firstTwoTotalInput: null, firstTwoUncachedInput: null,
+      oversizedThenCompacted: false });
+    expect(diagnoseCarryUsage(observations.map(event => ({ ...event, cacheWriteTokens: null })), true))
+      .toMatchObject({ firstTwoTotalInput: 1381752, firstTwoUncachedInput: null });
+    expect(diagnoseCarryUsage(observations, null).oversizedThenCompacted).toBe(false);
+    expect(diagnoseCarryUsage(observations.map(event => ({ ...event, contextGeneration: null })), true).oversizedThenCompacted).toBe(false);
+  });
+  it('rejects impossible cache decompositions and does not label a large fresh task as inherited-history waste', () => {
+    expect(diagnoseCarryUsage(observations.map(event => ({ ...event, cacheReadTokens: 999999 })), true)
+      .firstTwoUncachedInput).toBeNull();
+    expect(diagnoseCarryUsage(observations, false).oversizedThenCompacted).toBe(false);
+  });
+});
 
 function sample(overrides: Partial<LaunchSample> & { totalPromptTokens: number }): LaunchSample {
   return {

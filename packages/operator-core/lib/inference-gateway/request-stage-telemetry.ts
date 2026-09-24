@@ -46,6 +46,67 @@ function cacheFingerprint(value: unknown): GatewayCacheFingerprint | null {
   return { sha256: createHash('sha256').update(prefix).digest('hex'), bytes: bytes.length, hashedBytes: prefix.length };
 }
 
+export interface StartupCacheEvidence {
+  /** Observed authorization/tenant cache scope, never an owner-id or requested account pin. */
+  authorizationScope: string | null;
+  model: string | null;
+  transport: GatewayTelemetryTransport;
+  tools: GatewayCacheFingerprint | null;
+  instructions: GatewayCacheFingerprint | null;
+  startedAt: number;
+  /** Provider-specific observed eligibility time/expiry; null if not observable. */
+  availableAt: number | null;
+  expiresAt: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+}
+
+/**
+ * Privacy-safe startup-cohort diagnosis, not a provider cache emulator or cache key.
+ * Matching components are necessary evidence, not a guarantee: conversation prefix,
+ * provider routing, retention and concurrency can still differ. Never returns a
+ * promised number of writes or hits from local fingerprints.
+ */
+export function assessStartupCacheSharing(rows: readonly StartupCacheEvidence[]) {
+  const validTime = (value: number | null): value is number => value !== null && Number.isFinite(value) && value >= 0;
+  const full = (fingerprint: GatewayCacheFingerprint | null) => fingerprint !== null &&
+    fingerprint.bytes === fingerprint.hashedBytes && fingerprint.bytes > 0 && /^[a-f0-9]{64}$/.test(fingerprint.sha256);
+  const known = rows.map(row => Boolean(row.authorizationScope && row.model && row.transport !== 'unknown' &&
+    full(row.tools) && full(row.instructions) && validTime(row.startedAt)));
+  const keys = rows.map((row, index) => known[index] ? JSON.stringify([
+    row.authorizationScope, row.model, row.transport,
+    row.tools!.sha256, row.tools!.bytes, row.instructions!.sha256, row.instructions!.bytes,
+  ]) : null);
+  let withEarlierEligibleComponentMatch = 0;
+  let coldOrConcurrent = 0;
+  let timingUnknown = 0;
+  rows.forEach((row, index) => {
+    if (!known[index]) return;
+    const earlier = rows.filter((other, otherIndex) => keys[otherIndex] === keys[index] && other.startedAt < row.startedAt);
+    if (earlier.some(other => validTime(other.availableAt) && validTime(other.expiresAt) &&
+      other.availableAt >= other.startedAt && other.expiresAt > other.availableAt &&
+      row.startedAt >= other.availableAt && row.startedAt < other.expiresAt)) {
+      withEarlierEligibleComponentMatch++;
+    } else if (earlier.some(other => !validTime(other.availableAt) || !validTime(other.expiresAt))) {
+      timingUnknown++;
+    } else {
+      coldOrConcurrent++;
+    }
+  });
+  const reportedReads = rows.filter(row => row.cacheReadTokens !== null && Number.isFinite(row.cacheReadTokens) && row.cacheReadTokens >= 0);
+  const reportedWrites = rows.filter(row => row.cacheWriteTokens !== null && Number.isFinite(row.cacheWriteTokens) && row.cacheWriteTokens >= 0);
+  return {
+    requests: rows.length, comparable: known.filter(Boolean).length,
+    unknown: known.filter(value => !value).length,
+    componentGroups: new Set(keys.filter(key => key !== null)).size,
+    withEarlierEligibleComponentMatch, coldOrConcurrent, timingUnknown,
+    observedReadRequests: reportedReads.filter(row => row.cacheReadTokens! > 0).length,
+    observedWriteRequests: reportedWrites.filter(row => row.cacheWriteTokens! > 0).length,
+    readCoverage: reportedReads.length, writeCoverage: reportedWrites.length,
+    singleWriteGuaranteed: false as const,
+  };
+}
+
 export const GATEWAY_REQUEST_STAGE_NAMES = [
   'routeSelection',
   'queueWait',

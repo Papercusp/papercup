@@ -207,7 +207,10 @@ async function workspaceHostProvisioningWorkflowImpl(
   if (input.action === 'provision' && input.bringUp && result.status === 'succeeded') {
     await bringUpWorkspaceHost(input, input.bringUp);
   }
-  if (isExistingHostLifecycle(input) && result.status === 'succeeded') {
+  // The lifecycle runner marks successful upgrades, repairs, restores, and completed upgrade
+  // rollbacks with this explicit host-readiness signal. A rollback is still a failed upgrade
+  // operation, but it has recreated the host and needs the same hosted bring-up as a success.
+  if (isExistingHostLifecycle(input) && result.requiresInitialization === true) {
     await bringUpHostedHostAgain(input);
   }
   return result;
@@ -343,6 +346,27 @@ async function runWorkspaceHostOperation(
   retry: OperationStepRetry = OPERATION_STEP_RETRY,
 ): Promise<WorkspaceHostWorkflowResult> {
   try {
+    if (input.action === 'restore') {
+      const hostedBinding = await DBOS.runStep(
+        () => readHostedBringUpBinding({ controlPlaneWorkspaceId: input.workspaceId, hostId: input.hostId }),
+        {
+          name: 'workspace-host-restore-check-hosted-binding',
+          retriesAllowed: true,
+          maxAttempts: 3,
+          intervalSeconds: 2,
+        },
+      );
+      if (hostedBinding) {
+        const restoredHostId = input.desired?.hostId ?? '(unspecified)';
+        throw new WorkspaceHostProvisioningRequestError([
+          `Papercusp-hosted restore is refused before provider mutation: customer workspace ` +
+            `'${hostedBinding.customerWorkspaceId}' remains bound to source host '${input.hostId}', while restore ` +
+            `creates a distinct host '${restoredHostId}'. This workflow cannot move the ` +
+            'customer workspace binding and connector credential.',
+        ]);
+      }
+    }
+
     for (let turn = 0; turn < MAX_WORKFLOW_TURNS; turn += 1) {
       const result = await DBOS.runStep(() => executeToleratingControllerFence(input), {
         name: `workspace-host-${input.action}-${turn}`,

@@ -490,7 +490,8 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
   it('passes the resolved identity to the audited dev:restart call', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     expect(script).toContain('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
-    expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --json -');
+    expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
+    expect(script).not.toContain('"$PTOOL_BIN" dev:restart --json -');
   });
 });
 
@@ -603,7 +604,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   });
 
   it('routes a required restart through audited dev:restart, never raw systemctl', () => {
-    expect(script).toContain('"$PTOOL_BIN" dev:restart --json -');
+    expect(script).toContain('"$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
     expect(script).toContain('"confirm":true,"authorize":true');
     expect(script).not.toContain('systemctl --user restart "$UNIT"');
   });

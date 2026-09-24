@@ -34,6 +34,7 @@ import {
   evaluateReaperFloor,
   executeReaps,
   managedResidueCandidates,
+  readScopeHolder,
   REAP_PRESENCE_FRESH_MS,
   residualAfterPass,
   type ReapDecision,
@@ -509,6 +510,13 @@ async function reapAgentSessionResidue(
         return scopePidCountForUnit(row.scopeUnit);
       },
       scopePidCountForScope: scopePidCountForUnit,
+      // A no-row scope whose spawner is still alive belongs to that spawner, which
+      // is how an isolated store's operator looks from here (readScopeHolder).
+      scopeHolderForScope: (scopeUnit) => {
+        const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', scopeUnit));
+        const pids = walkCgroupTree(abs, nodeCgroupFs).flatMap((g) => g.pids);
+        return readScopeHolder(scopeUnit, pids);
+      },
       freshOwners: freshOwners ?? new Set(),
       logQuietForMs: (row) => {
         const p = row.logPath?.trim();

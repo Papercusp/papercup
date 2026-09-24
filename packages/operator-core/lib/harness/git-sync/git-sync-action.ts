@@ -263,6 +263,10 @@ const GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
  */
 const DEFAULT_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = LOCK_TTL_SEC * 1000;
 const DEFAULT_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = 2 * 60 * 60_000;
+// Completion settlement is best-effort post-commit bookkeeping. Bound one
+// scheduled fire to half the three-minute cadence; rows updated by a partial
+// pass move forward so a later fire can continue the remaining candidates.
+const DEFAULT_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = 90_000;
 const GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS = 15_000;
 
 const positiveEnvMs = (name: string, fallback: number): number => {
@@ -282,6 +286,13 @@ export function gitSyncActionHardTimeoutMs(): number {
   return positiveEnvMs('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', DEFAULT_GIT_SYNC_ACTION_HARD_TIMEOUT_MS);
 }
 
+function gitSyncCompletionSettlementBudgetMs(): number {
+  return positiveEnvMs(
+    'PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS',
+    DEFAULT_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS,
+  );
+}
+
 /** A timeout raised by the action-level liveness guard, distinct from git's own child timeout. */
 export class GitSyncActionTimeoutError extends Error {
   readonly code = 'git_sync_action_timeout';
@@ -294,6 +305,17 @@ export class GitSyncActionTimeoutError extends Error {
     this.name = 'GitSyncActionTimeoutError';
     this.phase = phase;
     this.timeoutKind = timeoutKind;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+class GitSyncCompletionSettlementBudgetError extends Error {
+  readonly code = 'git_sync_completion_settlement_budget';
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`git-sync completion settlement exceeded its ${timeoutMs}ms per-fire budget`);
+    this.name = 'GitSyncCompletionSettlementBudgetError';
     this.timeoutMs = timeoutMs;
   }
 }
@@ -2162,6 +2184,11 @@ async function patchRoutineMetadata(
 }
 
 type GitSyncActivityPhase = 'local-sync' | 'post-legs' | 'completion-settlement' | 'complete' | 'error';
+type GitSyncSettlementProgress = {
+  completed: number;
+  total: number;
+  feature_id: string;
+};
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -2180,6 +2207,7 @@ async function writeGitSyncActivity(
     updated_at: number;
     completed_at: number | null;
     outcome_status: GitSyncOutcome['status'] | null;
+    settlement_progress?: GitSyncSettlementProgress;
   },
 ): Promise<void> {
   await patchRoutineMetadata(slug, workspaceId, { git_sync_activity: activity });
@@ -3513,49 +3541,94 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         let lastSettlementProgressAt = 0;
         let settlementProgressWrite = Promise.resolve();
         let settlementTimeout: GitSyncActionTimeoutError | undefined;
-        await guardedPostLegs('git-sync:completion-settlement', () =>
-          runCheckpointedStep('git-sync:completion-settlement', () =>
-            reconcileProposedCompletionsAtCommit(
-              outcome.headSha,
-              {
-                installSlug: slug,
-                workspaceId,
-                repositoryRoot,
-              },
-              {
-                signal: postLegsLiveness.signal,
-                onProgress: ({ completed, total }) => {
-                  if (postLegsLiveness.signal.aborted) return;
-                  postLegsLiveness.touch();
-                  const now = Date.now();
-                  if (completed !== total && now - lastSettlementProgressAt < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS) {
-                    return settlementProgressWrite;
-                  }
-                  lastSettlementProgressAt = now;
-                  settlementProgressWrite = settlementProgressWrite
-                    .catch(() => {})
-                    .then(() =>
-                      writeGitSyncActivity(slug, workspaceId, {
-                        active: true,
-                        phase: 'completion-settlement',
-                        started_at: activityStartedAt,
-                        updated_at: now,
-                        completed_at: null,
-                        outcome_status: outcome.status,
-                      }),
-                    )
-                    .catch(() => {});
-                  return settlementProgressWrite;
-                },
-              },
-            ),
-          ),
-        ).catch((error) => {
-          console.warn(
-            `[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          if (error instanceof GitSyncActionTimeoutError) settlementTimeout = error;
+        const settlementBudgetMs = gitSyncCompletionSettlementBudgetMs();
+        const settlementController = new AbortController();
+        const abortSettlementOnActionTimeout = () => {
+          if (!settlementController.signal.aborted) {
+            settlementController.abort(postLegsLiveness.signal.reason);
+          }
+        };
+        postLegsLiveness.signal.addEventListener('abort', abortSettlementOnActionTimeout, { once: true });
+        if (postLegsLiveness.signal.aborted) abortSettlementOnActionTimeout();
+        let settlementBudgetTimer: ReturnType<typeof setTimeout> | null = null;
+        const settlementBudget = new Promise<never>((_resolve, reject) => {
+          settlementBudgetTimer = setTimeout(() => {
+            const error = new GitSyncCompletionSettlementBudgetError(settlementBudgetMs);
+            // Reject first so abort listeners cannot win the race with a generic
+            // cancellation error instead of the expected budget outcome.
+            reject(error);
+            settlementController.abort(error);
+          }, settlementBudgetMs);
+          settlementBudgetTimer.unref?.();
         });
+        try {
+          await Promise.race([
+            guardedPostLegs('git-sync:completion-settlement', () =>
+              runCheckpointedStep('git-sync:completion-settlement', () =>
+                reconcileProposedCompletionsAtCommit(
+                  outcome.headSha,
+                  {
+                    installSlug: slug,
+                    workspaceId,
+                    repositoryRoot,
+                  },
+                  {
+                    signal: settlementController.signal,
+                    onProgress: ({ completed, total, featureId }) => {
+                      if (settlementController.signal.aborted) return;
+                      postLegsLiveness.touch();
+                      const now = Date.now();
+                      if (
+                        completed !== total &&
+                        now - lastSettlementProgressAt < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS
+                      ) {
+                        return settlementProgressWrite;
+                      }
+                      lastSettlementProgressAt = now;
+                      settlementProgressWrite = settlementProgressWrite
+                        .catch(() => {})
+                        .then(() =>
+                          writeGitSyncActivity(slug, workspaceId, {
+                            active: true,
+                            phase: 'completion-settlement',
+                            started_at: activityStartedAt,
+                            updated_at: now,
+                            completed_at: null,
+                            outcome_status: outcome.status,
+                            settlement_progress: {
+                              completed,
+                              total,
+                              feature_id: featureId,
+                            },
+                          }),
+                        )
+                        .catch(() => {});
+                      return settlementProgressWrite;
+                    },
+                  },
+                ),
+              ),
+            ),
+            settlementBudget,
+          ]);
+        } catch (error) {
+          if (error instanceof GitSyncCompletionSettlementBudgetError) {
+            console.warn(
+              `[git-sync] ${slug}: completion settlement exceeded its ${error.timeoutMs}ms per-fire budget; ` +
+                'the remaining candidates will be retried on a later fire',
+            );
+          } else {
+            console.warn(
+              `[git-sync] ${slug}: completion settlement reconcile failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            if (error instanceof GitSyncActionTimeoutError) settlementTimeout = error;
+          }
+        } finally {
+          if (settlementBudgetTimer) clearTimeout(settlementBudgetTimer);
+          postLegsLiveness.signal.removeEventListener('abort', abortSettlementOnActionTimeout);
+        }
         // The emitted commit remains independently observable even when completion
         // settlement timed out; after emitting it, let the outer action handler record
         // the timeout and end the fire instead of overwriting it with a success marker.

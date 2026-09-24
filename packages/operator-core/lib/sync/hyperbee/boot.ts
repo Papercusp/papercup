@@ -809,7 +809,7 @@ export interface BootedHarnessHandle {
    * "sparse" seed silently ships the FULL core — how a 1.9 GB seed labelled sparse
    * shipped on 2026-07-21 and went unnoticed for three weeks.
    *
-   * NOT gated on the dark `SUBSTRATE_LOG_SNAPSHOT` producer flag — see the call site.
+   * NOT gated on the `SUBSTRATE_LOG_SNAPSHOT` producer flag — see the call site.
    *
    * ⚠ EXPENSIVE and SYNCHRONOUS with respect to merging: it reads the whole own log,
    * so the merge loop stalls for its duration. One-shot and request-driven on purpose.
@@ -2384,10 +2384,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // SUBSTRATE_LOG_SNAPSHOT_READER (default ON) — seeds a fresh/reset cursor at
   // each log's latest `__snapshot__` index so a new joiner folds from the
   // snapshot instead of replaying full history (P-007); and (b) the PRODUCER —
-  // SUBSTRATE_LOG_SNAPSHOT (dark, default OFF) — periodically compacts the OWN
-  // log once it grows past SNAPSHOT_COMPACT_EVERY_OPS ops since its last snapshot
-  // (P-005), whose real-wire replay-cost saving + cross-machine convergence are
-  // still P-008-unverified. Both flags are read ONCE at boot (boot-scoped, like
+  // SUBSTRATE_LOG_SNAPSHOT (default ON since p2p-join-catchup-speed P-005) —
+  // periodically compacts the OWN log once ops since its last snapshot reach
+  // `snapshotCompactThreshold` (P-003's proportional cadence). Both flags are read ONCE at boot (boot-scoped, like
   // the authority transports — a runtime flip needs a reboot to take effect).
   // producerEnabled OFF ⇒ no NEW snapshot ops produced (no-op); readerEnabled OFF
   // ⇒ cursor never seeds from a snapshot, folds from 0 instead — either OFF is
@@ -2417,6 +2416,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           lastOwnCompactionSet = { coversUpTo: seed.coversUpTo, chunkCount: seed.chunkCount };
         }
       }
+    }
+    // P-005: the cadence anchor this boot will compact against. Without it, a box
+    // whose producer is ON but whose log has not grown a threshold since its last set
+    // is indistinguishable from one whose producer never ran.
+    try {
+      const threshold = snapshotCompactThreshold(lastSnapshotRowCount);
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'own_log_compaction',
+        `own log compaction anchor: producer=on ownLogLength=${ownLog.length} lastCoversUpTo=${lastSnapshotCoversUpTo} ` +
+          `lastRows=${lastSnapshotRowCount} threshold=${threshold} ` +
+          `due=${shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, threshold)}`,
+      );
+    } catch {
+      // observability must never fail boot
     }
   }
 
@@ -3355,6 +3370,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const startedAt = Date.now();
     const previousCoversUpTo = lastSnapshotCoversUpTo;
     try {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'own_log_compaction',
+        `own log compaction started: ownLogLength=${ownLog.length} lastCoversUpTo=${previousCoversUpTo} ` +
+          `threshold=${snapshotCompactThreshold(lastSnapshotRowCount)} seeded=${lastOwnCompactionSet ? 'yes' : 'no'}`,
+      );
+    } catch {
+      // observability must never fail the compaction
+    }
+    try {
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -3369,7 +3395,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'peer_capped',
+          'own_log_compaction',
           `own log compaction: coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount} ` +
             `grewBy=${snap.coversUpTo - previousCoversUpTo} nextThreshold=${snapshotCompactThreshold(snap.rowCount)} ` +
             `elapsedMs=${Date.now() - startedAt} mergeGateHeld=false`,
@@ -3383,8 +3409,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'peer_capped',
-          `log compaction failed: ${e instanceof Error ? e.message : String(e)}`,
+          'own_log_compaction',
+          `log compaction failed after elapsedMs=${Date.now() - startedAt}: ${e instanceof Error ? e.message : String(e)}`,
         );
       } catch {
         // observability must never fail the compaction

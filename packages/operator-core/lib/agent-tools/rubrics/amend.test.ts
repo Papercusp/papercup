@@ -331,6 +331,37 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     });
   });
 
+  it('a slow dry-run returns a pollable preview receipt without applying the amendment', async () => {
+    const slow = deferred<unknown>();
+    rubricsMocks.previewAcceptanceBarAmendment.mockReturnValue(slow.promise);
+
+    const answered = await body({ ...amendArgs, dryRun: true, approvedBy: 'outside-reviewer' });
+    expect(answered).toMatchObject({
+      ok: true,
+      dryRun: true,
+      pending: true,
+      receipt: {
+        rubricRef: 'acceptance-example',
+        poll: { tool: 'rubrics:amend-status', args: { rubricRef: 'acceptance-example' } },
+      },
+    });
+    expect(answered.receipt.idempotencyKey).toMatch(/^preview-/);
+    expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+    expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+      state: 'running',
+      source: 'receipt',
+    });
+
+    slow.resolve({ changedBars: ['R-1'] });
+    await vi.waitFor(async () => {
+      expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+        state: 'previewed',
+        source: 'receipt',
+        result: { ok: true, dryRun: true, preview: { changedBars: ['R-1'] } },
+      });
+    });
+  });
+
   it('after a restart (no in-process receipt) the committed Decision still answers committed', async () => {
     rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue({
       decisionId: 'D-007',

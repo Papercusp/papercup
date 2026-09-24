@@ -634,6 +634,42 @@ describe('durable detached snapshot lifecycle', () => {
     });
   });
 
+  it('retries an empty sibling read until the confirmed snapshot becomes visible', async () => {
+    let snapshotReads = 0;
+    const durableRow = {
+      run_id: 'visible-after-write',
+      task_id: null,
+      kind: 'vitest',
+      label: 'detached test',
+      file_path: null,
+      command: ['node', 'vitest'],
+      status: 'running',
+      exit_code: null,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: null,
+      output: '',
+      truncated: false,
+      task_state: null,
+      task_deadline_at: null,
+    };
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        snapshotReads += 1;
+        return snapshotReads === 1 ? [] : [durableRow];
+      }
+      if (statement.includes('SELECT DISTINCT ON (file_path)')) return [];
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync(durableRow.run_id, sql)).resolves.toMatchObject({
+      runId: durableRow.run_id,
+      status: 'running',
+      finishedAt: null,
+    });
+    expect(snapshotReads).toBe(2);
+  });
+
   it('distinguishes an unavailable snapshot lookup from a missing row', async () => {
     const unavailableSql = vi.fn(async () => {
       throw new Error('database unavailable');

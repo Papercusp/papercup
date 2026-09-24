@@ -139,6 +139,17 @@ export async function runPeriodicCheck(
 // registerWorkflow → no persisted workflow_status row). Lazy imports inside the
 // ticks keep boot light and defer the heavy module loads to first fire.
 
+// A warning is one line per sampling interval while persistence stays broken;
+// the ordinary 30-second health tick must not flood the journal.
+const perfSnapshotWarningAt = new Map<string, number>();
+function warnPerfSnapshot(workspaceId: string, message: string): void {
+  const now = Date.now();
+  const prior = perfSnapshotWarningAt.get(workspaceId);
+  if (prior != null && now - prior < 15 * 60_000) return;
+  perfSnapshotWarningAt.set(workspaceId, now);
+  console.warn(`[perf-regression] ${message}`);
+}
+
 // Every 30s: whole-system Health snapshot (system-health-tab P-003/D-001).
 // Recompute per-workspace SystemHealth + fire notifySyncInvalidate('health.snapshot')
 // (inside runSystemHealthTick) so an open Health tab stays SSE-live. Flag-gated
@@ -164,6 +175,18 @@ const systemHealthCheck: PeriodicCheck = {
       await runSystemHealthTick(ws).catch((e) => {
         console.warn(`[system-health] tick failed for ${ws}: ${e instanceof Error ? e.message : e}`);
       });
+      // The performance history used to ride only the owner-paused learning
+      // watchdog. Reuse this active health sweep for its measurements without
+      // re-arming that routine or dispatching its improvement signals.
+      try {
+        const { collectPerfRegressionWhenDue } = await import('../system-health/perf-regression-rig');
+        const sample = await collectPerfRegressionWhenDue(ws);
+        if (sample.overdue) {
+          warnPerfSnapshot(ws, `producer overdue after health tick for ${ws}; lastCapturedAt=${sample.lastCapturedAt ?? 'never'}: ${sample.note ?? 'no snapshot persisted'}`);
+        }
+      } catch (e) {
+        warnPerfSnapshot(ws, `health-tick sampling failed for ${ws}: ${e instanceof Error ? e.message : e}`);
+      }
     }
   },
 };

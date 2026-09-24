@@ -118,6 +118,11 @@ function liveCertification(
 }
 
 describe('computeDeployStatus — decision tree', () => {
+  it('preserves an unmeasured gate stalled signal as unknown', () => {
+    const s = computeDeployStatus(mkSnap({ stalled: null }, {}));
+    expect(s.gate.stalled).toBeNull();
+  });
+
   it('projects the normalized repair queue into release status', () => {
     const repairQueue = {
       phase: 'awaiting-fixer',

@@ -9,7 +9,8 @@ import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import {
-  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
+  CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeDirectiveDispositionSuTools,
+  claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
   formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
   type ClaudeEngineOptions, type ClaudeSuEngine,
 } from './su-session-claude-engine';
@@ -543,7 +544,7 @@ describe('structured Claude SU engine', () => {
       .resolves.toEqual({ behavior: 'allow', updatedInput: { id: 'WI-1' } });
     expect(openCards(engine)).toHaveLength(0);
     // A user ask rule outranks the annotation; writes and host reads still ask.
-    for (const [name, id] of [['mcp__papercusp-su__work_items_get', 'ask-rule'], ['mcp__papercusp-su__orders_disposition', 'write'],
+    for (const [name, id] of [['mcp__papercusp-su__work_items_get', 'ask-rule'], ['mcp__papercusp-su__work_items_comment', 'write'],
       ['mcp__papercusp-su__capability_read', 'host-read'], ['mcp__other__work_items_get', 'other-server']] as const) {
       void canUseTool(name, {}, { ...request(id), ...(id === 'ask-rule' ? { matchedAskRule: { source: 'userSettings', toolName: name } } : {}) });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
@@ -552,6 +553,40 @@ describe('structured Claude SU engine', () => {
       resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(0));
     }
+  });
+
+  it('auto-allows only the advertised directive disposition write, and keeps ask-rule matches gated (D-022)', async () => {
+    const p = peer({ holdResult: true, suTools: [
+      { name: 'orders_disposition', annotations: { readOnly: false } },
+      { name: 'work_items_comment', annotations: { readOnly: false } },
+    ] });
+    const engine = open(p, { toolApproval: 'prompt' }); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const canUseTool = p.options()!.canUseTool!;
+    const name = 'mcp__papercusp-su__orders_disposition';
+    const input = { id: '#430', status: 'done', note: 'settle the captured owner directive' };
+    const request = (id: string) => ({ signal: new AbortController().signal, toolUseID: id, requestId: `${id}-request` });
+
+    await expect(canUseTool(name, input, request('disposition')))
+      .resolves.toEqual({ behavior: 'allow', updatedInput: input });
+    expect(openCards(engine)).toHaveLength(0);
+
+    const otherWrite = canUseTool('mcp__papercusp-su__work_items_comment', {}, request('other-write'));
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const otherCard = openCards(engine)[0];
+    expect(otherCard.prompt).toContain('mcp__papercusp-su__work_items_comment');
+    resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+    await expect(otherWrite).resolves.toMatchObject({ behavior: 'deny' });
+    expect(openCards(engine)).toHaveLength(0);
+
+    const forcedByAskRule = canUseTool(name, input, {
+      ...request('ask-rule'), matchedAskRule: { source: 'userSettings', toolName: name },
+    });
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const askRuleCard = openCards(engine)[0];
+    expect(askRuleCard.prompt).toContain(name);
+    resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' });
+    await expect(forcedByAskRule).resolves.toMatchObject({ behavior: 'allow' });
   });
 
   it('names the exact SU tools it will allow from the advertised annotations', () => {
@@ -563,6 +598,25 @@ describe('structured Claude SU engine', () => {
       { name: 'unannotated' },
     ] })]).toEqual(['mcp__papercusp-su__coord_whoami', 'mcp__papercusp-su__plans_get']);
     expect(claudeReadOnlySuTools({ name: 'papercusp-su' }).size).toBe(0);
+  });
+
+  it('recognizes only a uniquely advertised writable owner directive disposition tool (D-022)', () => {
+    expect([...claudeDirectiveDispositionSuTools({ name: 'papercusp-su', tools: [
+      { name: 'orders_disposition', annotations: { readOnly: false } },
+    ] })]).toEqual(['mcp__papercusp-su__orders_disposition']);
+    expect([...claudeDirectiveDispositionSuTools({ name: 'papercusp-su', tools: [
+      { name: 'mcp__papercusp-su__orders_disposition', annotations: { readOnly: false } },
+    ] })]).toEqual(['mcp__papercusp-su__orders_disposition']);
+    expect(claudeDirectiveDispositionSuTools({ name: 'other-server', tools: [
+      { name: 'orders_disposition', annotations: { readOnly: false } },
+    ] }).size).toBe(0);
+    expect(claudeDirectiveDispositionSuTools({ name: 'papercusp-su', tools: [
+      { name: 'orders_disposition' },
+    ] }).size).toBe(0);
+    expect(claudeDirectiveDispositionSuTools({ name: 'papercusp-su', tools: [
+      { name: 'orders_disposition', annotations: { readOnly: false } },
+      { name: 'mcp__papercusp-su__orders_disposition', annotations: { readOnly: false } },
+    ] }).size).toBe(0);
   });
 
   it('cleans up a disconnected SU tool connection before ready', async () => {

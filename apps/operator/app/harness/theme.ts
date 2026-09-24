@@ -431,6 +431,8 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   // WI-6063: a deliberate, self-releasing bound rather than a fault — warn, not bad.
   peer_dial_throttled: 'var(--warn)',
   peer_capped: 'var(--warn)',
+  // P-005: routine own-log compaction; a failure names itself in the message.
+  own_log_compaction: 'var(--accent)',
   peer_revoked: 'var(--bad)',
   peer_unrevoked: 'var(--good)',
   replication_stalled: 'var(--bad)',

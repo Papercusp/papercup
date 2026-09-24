@@ -344,7 +344,7 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
   return rows !== null;
 }
 
-function waitForSnapshotPersistenceRetry(delayMs: number): Promise<void> {
+function waitForSnapshotRetry(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, delayMs);
     // A recovery retry must not keep an otherwise idle operator alive by itself.
@@ -379,7 +379,7 @@ export async function persistRunSnapshotWithRetry(
 
     const delayMs = DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS[attempt];
     if (delayMs === undefined) return false;
-    await waitForSnapshotPersistenceRetry(delayMs);
+    await waitForSnapshotRetry(delayMs);
   }
 }
 
@@ -421,6 +421,26 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   const snapshot = snapshotFromRow(row);
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
   return reconcilePersistedOrphan(snapshot, row, sql);
+}
+
+async function readPersistedRunSnapshotWithRetry(
+  runId: string,
+  sqlOverride?: SqlLike,
+): Promise<RunSnapshot | null> {
+  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride);
+  if (snapshot) return snapshot;
+
+  // `testing:run` waits for the initial upsert before it marks detachedDurable
+  // true. A sibling worker can still observe an empty read during the short
+  // read-after-write visibility window. Keep unknown_run for a stable miss, but
+  // give the shared row a bounded chance to become visible before declaring it
+  // absent; read errors remain snapshot_unavailable and are never retried here.
+  for (const delayMs of DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS) {
+    await waitForSnapshotRetry(delayMs);
+    snapshot = await readPersistedRunSnapshot(runId, sqlOverride);
+    if (snapshot) return snapshot;
+  }
+  return null;
 }
 
 interface PersistedTestRunRow {
@@ -1069,7 +1089,7 @@ export async function getRunAsync(runId: string, sqlOverride?: SqlLike): Promise
   evictOldRuns();
   const local = getRun(runId);
   if (local) return local;
-  return readPersistedRunSnapshot(runId, sqlOverride);
+  return readPersistedRunSnapshotWithRetry(runId, sqlOverride);
 }
 
 export function cancelRun(runId: string): boolean {

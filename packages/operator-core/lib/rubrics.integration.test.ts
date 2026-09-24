@@ -27,6 +27,27 @@ import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
+const MAX_BOUNDED_LOCK_BUSY_RETRIES = 2;
+const retryBoundedLockBusy = async <T>(operation: () => Promise<T>): Promise<T> => {
+  let retries = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        !(error instanceof OrgTxnTimeoutError) ||
+        error.timeoutSource !== 'pg' ||
+        error.pgCode !== '55P03' ||
+        retries >= MAX_BOUNDED_LOCK_BUSY_RETRIES
+      ) {
+        throw error;
+      }
+      retries += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20 * retries));
+    }
+  }
+};
+
 // The re-pointed writes go through withPlanLock → withWorkspace; the reads through
 // getOrgPg. Mock BOTH onto the migrated throwaway DB's admin (RLS-bypass) client — the
 // withPlanLock advisory xact-lock needs a real transaction, which `.begin` provides.
@@ -822,7 +843,7 @@ Preserve this plan body.
 
     await Promise.all(
       criteria.map((criterion, index) =>
-        rubrics.amendRubric({
+        retryBoundedLockBusy(() => rubrics.amendRubric({
           rubricId,
           criterion: {
             key: criterion.key,
@@ -832,7 +853,7 @@ Preserve this plan body.
           },
           ...(index === 0 ? { methodRef: 'concurrent-amendments-runbook' } : {}),
           by: `amender-${index}`,
-        }),
+        })),
       ),
     );
 
@@ -853,6 +874,38 @@ Preserve this plan body.
         replication: `REPLICATION DRILL ${index}: amend criterion ${index} and verify the persisted field.`,
       })),
     );
+  });
+
+  it('retries only a bounded number of PostgreSQL lock-busy amendment results', async () => {
+    const lockBusy = new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
+    let attempts = 0;
+    await expect(
+      retryBoundedLockBusy(async () => {
+        attempts += 1;
+        if (attempts < MAX_BOUNDED_LOCK_BUSY_RETRIES + 1) throw lockBusy;
+        return 'committed';
+      }),
+    ).resolves.toBe('committed');
+    expect(attempts).toBe(MAX_BOUNDED_LOCK_BUSY_RETRIES + 1);
+
+    attempts = 0;
+    await expect(
+      retryBoundedLockBusy(async () => {
+        attempts += 1;
+        throw lockBusy;
+      }),
+    ).rejects.toBe(lockBusy);
+    expect(attempts).toBe(MAX_BOUNDED_LOCK_BUSY_RETRIES + 1);
+
+    const statementTimeout = new OrgTxnTimeoutError('57014', new Error('statement timeout'));
+    attempts = 0;
+    await expect(
+      retryBoundedLockBusy(async () => {
+        attempts += 1;
+        throw statementTimeout;
+      }),
+    ).rejects.toBe(statementTimeout);
+    expect(attempts).toBe(1);
   });
 
   it('ratify of an unknown rubric returns null', async () => {
@@ -1708,9 +1761,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const after = (await listSpecClauses(scope))[0]!;
       expect(rubricAfter!.barSetHash).toBe(rubricBefore!.barSetHash);
       expect(after).toMatchObject(authored);
-      expect(after.revision).toBe(before.revision + 1);
-      expect(after.sourceBar).toEqual({ ...before.sourceBar, rubricRevision: rubricAfter!.revision });
-      expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
+      // P-001 keeps the clause's stable identity when only rubric-wide provenance changes.
+      expect(after.revision).toBe(before.revision);
+      expect(after.sourceBar).toEqual(before.sourceBar);
+      expect(after.acceptanceRef).toBe(before.acceptanceRef);
     },
   );
 
@@ -2069,30 +2123,23 @@ describe('template_data persistence boundary — the set-template-data door', ()
          AND e.plan_slug=${subject}
          AND e.work_item_id = ANY(${[explicitWorkItemId, provenanceWorkItemId]}::text[])
        ORDER BY e.work_item_id, e.spec_id, e.spec_revision`;
-    expect(edges).toHaveLength(4);
+    // R-1 changed and gets a new edge beside its historical edge. R-2 kept its
+    // stable revision, so its original terminal-work edge remains current.
+    expect(edges).toHaveLength(3);
     expect(edges.filter((edge) => edge.spec_revision === edge.current_revision)).toEqual([
       expect.objectContaining({ work_item_id: explicitWorkItemId, spec_id: 'AUTO-BAR-R-1-P-001' }),
       expect.objectContaining({ work_item_id: provenanceWorkItemId, spec_id: 'AUTO-BAR-R-2-P-002' }),
     ]);
     expect(edges.filter((edge) => edge.spec_revision !== edge.current_revision)).toEqual([
       expect.objectContaining({ work_item_id: explicitWorkItemId, spec_id: 'AUTO-BAR-R-1-P-001' }),
-      expect.objectContaining({ work_item_id: provenanceWorkItemId, spec_id: 'AUTO-BAR-R-2-P-002' }),
     ]);
   });
 
-  // EI-23454038580165889 / P-008. The PREDICATE (shouldCarryBarEvidence) and the
-  // carry helper are unit-covered in acceptance-bar-amendment.test.ts, but the
-  // TRANSACTION wiring in rubrics.ts that actually calls them reached no fixture:
-  // this file asserted `work_item_spec_revision_edges` only, and edges rebind for
-  // EVERY clause whether its bar changed or not, so they cannot witness scoping.
-  // `spec_evidence_bindings` — the table the scoped carry actually writes — did
-  // not appear in this file at all.
-  //
-  // The assertions below are deliberately BIDIRECTIONAL, so the test cannot pass
-  // vacuously in either direction: delete the carry call and the UNCHANGED bar's
-  // proof vanishes from the new revision; widen it to carry changed bars too and
-  // the CHANGED bar gains a row it must not have. Both are the real driftMarker.
-  it('carries an UNCHANGED bar proof onto the new revision and strands only the CHANGED bar (P-008 transaction wiring)', async () => {
+  // EI-23454038580165889 / P-008. With P-001, an unchanged BAR no longer mints a
+  // provenance-only clause revision, so its proof stays on the same current revision.
+  // A changed BAR does mint a revision and must not inherit its old proof. These
+  // assertions guard both sides of that stable-identity contract.
+  it('keeps unchanged-bar proof on its stable clause revision and strands only the CHANGED bar (P-001/P-008)', async () => {
     const seeded = await seedBarContract('carry-unchanged-bar-evidence', { authorMethods: true });
     const { workspaceId, subject } = seeded;
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
@@ -2190,10 +2237,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(after!.revision).toBe(before.revision! + 1);
 
     const clauseAfter = await readClauses();
-    // BOTH clauses re-project — the revision pin is global. That global re-projection
-    // is precisely what stranded an unchanged bar's proof before P-008, so if this
-    // stops being true the rest of the test is no longer exercising the bug.
-    expect(clauseAfter.get(unchangedSpecId)!.revision).toBeGreaterThan(clauseBefore.get(unchangedSpecId)!.revision);
+    // P-001 keeps the unchanged bar's clause revision stable; only R-1 gets a
+    // new revision because its meaning changed.
+    expect(clauseAfter.get(unchangedSpecId)!.revision).toBe(clauseBefore.get(unchangedSpecId)!.revision);
     expect(clauseAfter.get(changedSpecId)!.revision).toBeGreaterThan(clauseBefore.get(changedSpecId)!.revision);
 
     const bindings = await db.adminSql<
@@ -2212,21 +2258,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const at = (specId: string, revision: number) =>
       bindings.filter((row) => row.spec_id === specId && Number(row.spec_revision) === revision);
 
-    // UNCHANGED bar: its proof is carried onto the newly-minted revision.
-    const carried = at(unchangedSpecId, clauseAfter.get(unchangedSpecId)!.revision);
-    expect(carried).toHaveLength(1);
+    // UNCHANGED bar: its proof remains bound to the same current clause revision.
+    const preserved = at(unchangedSpecId, clauseAfter.get(unchangedSpecId)!.revision);
+    expect(preserved).toHaveLength(1);
     // CHANGED bar: different meaning, so its proof is NOT carried and must be re-run.
     expect(at(changedSpecId, clauseAfter.get(changedSpecId)!.revision)).toHaveLength(0);
     // Append-only: both originals survive at their old revisions.
     expect(at(unchangedSpecId, clauseBefore.get(unchangedSpecId)!.revision)).toHaveLength(1);
     expect(at(changedSpecId, clauseBefore.get(changedSpecId)!.revision)).toHaveLength(1);
 
-    // The carry RECOMPUTES binding_fingerprint over the new revision. Copying the
-    // old hash would be cheaper and wrong: the fingerprint is defined over the
-    // revision it pins, so a copied one stops matching its own row and the next
-    // identical bind appends a duplicate instead of deduplicating.
+    // The unchanged proof stays attached to its original fingerprint because
+    // the clause revision did not move.
     const nextClause = clauseAfter.get(unchangedSpecId)!;
-    expect(carried[0]!.binding_fingerprint).toBe(
+    expect(preserved[0]!.binding_fingerprint).toBe(
       specEvidenceBindingFingerprint({
         workspaceId,
         harnessSlug: 'papercusp',
@@ -2247,14 +2291,11 @@ describe('template_data persistence boundary — the set-template-data door', ()
         details: {},
       } as never),
     );
-    expect(carried[0]!.binding_fingerprint).not.toBe(
-      at(unchangedSpecId, clauseBefore.get(unchangedSpecId)!.revision)[0]!.binding_fingerprint,
-    );
 
     // The proof was observed when it was observed: the carry is not a new
     // observation by the amending actor.
-    expect(new Date(carried[0]!.observed_at).toISOString()).toBe(observedAt.toISOString());
-    expect(carried[0]!.created_by).toBe(prover);
+    expect(new Date(preserved[0]!.observed_at).toISOString()).toBe(observedAt.toISOString());
+    expect(preserved[0]!.created_by).toBe(prover);
   });
 
   it('applies an identical METHOD edit through the amendment transaction when stored BAR hashes are legacy', async () => {
@@ -2346,7 +2387,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
-  it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
+  it('updates the BAR set pin without churning stable clause revisions on a METHOD edit, then rolls back a late refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
@@ -2373,6 +2414,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
         check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
       })),
     };
+    const projectionsBefore = await db.adminSql`SELECT r.source_rubric_revision FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+      WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
+        AND r.revision=c.current_revision ORDER BY c.spec_id`;
+    const [historyBefore] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     const written = await setTemplateDataDoor(seeded.rubricSlug, next);
     expect(written.kind).toBe('applied');
     const after = await rubrics.getRubric(seeded.rubricSlug);
@@ -2386,15 +2433,16 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const projections = await db.adminSql`SELECT r.source_rubric_revision FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
       WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
-        AND r.revision=c.current_revision`;
+        AND r.revision=c.current_revision ORDER BY c.spec_id`;
     expect(projections).toHaveLength(2);
-    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([after!.revision, after!.revision]);
+    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual(
+      projectionsBefore.map((row) => Number(row.source_rubric_revision)),
+    );
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
-    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
-    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
-    // The assertion still pins that the amendment advanced BOTH clause pins.
-    expect(history.n).toBe(6);
+    // A method-only write advances the rubric and plan-level BAR pin, while
+    // unchanged clause meanings retain their revisions and evidence identities.
+    expect(Number(history.n)).toBe(Number(historyBefore!.n));
 
     // Append a divergent projection in this isolated database to trigger a
     // refusal AFTER the rubric UPDATE, preserving the immutable prior rows.
@@ -2437,7 +2485,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(after!.revision);
   });
 
-  it('advances unchanged BAR projections on a semantic amendment and rolls back both plans on a late failure', async () => {
+  it('revises the changed BAR and preserves the stable unchanged projection on a semantic amendment', async () => {
     const seeded = await seedBarContract('semantic-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
@@ -2470,6 +2518,13 @@ describe('template_data persistence boundary — the set-template-data door', ()
       idempotencyKey: 'semantic-amendment-replay',
       expectedRubricRevision: before!.revision,
     };
+    const projectionsBefore = await db.adminSql`SELECT c.spec_id, r.source_rubric_revision, r.source_bar_set_hash
+      FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+      WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
+        AND r.revision=c.current_revision ORDER BY c.spec_id`;
+    const [historyBefore] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     const after = await rubrics.amendRubric(accepted);
     expect(after).not.toBeNull();
     const current = await rubrics.getRubric(seeded.rubricSlug);
@@ -2494,17 +2549,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     await expect(
       rubrics.amendRubric({ ...accepted, reason: 'Reuse the token for a different request.' }),
     ).rejects.toThrow('acceptance_bar_amendment_replay_conflict');
-    const projections = await db.adminSql`SELECT r.source_rubric_revision, r.source_bar_set_hash
+    const projections = await db.adminSql`SELECT c.spec_id, r.source_rubric_revision, r.source_bar_set_hash
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
       WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
         AND r.revision=c.current_revision ORDER BY c.spec_id`;
     expect(projections).toHaveLength(2);
-    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([
-      current!.revision,
-      current!.revision,
-    ]);
-    expect(projections.map((row) => row.source_bar_set_hash)).toEqual([current!.barSetHash, current!.barSetHash]);
+    expect(Number(projections[0]!.source_rubric_revision)).toBe(current!.revision);
+    expect(projections[0]!.source_bar_set_hash).toBe(current!.barSetHash);
+    // R-2's meaning did not change, so P-001 leaves its projection and historical
+    // provenance intact while the plan and rubric carry the new BAR-set pin.
+    expect(Number(projections[1]!.source_rubric_revision)).toBe(
+      Number(projectionsBefore[1]!.source_rubric_revision),
+    );
+    expect(projections[1]!.source_bar_set_hash).toBe(projectionsBefore[1]!.source_bar_set_hash);
     const [subjectBeforeFailure] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision
       FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
         AND harness_slug='papercusp' AND plan_slug=${subject}`;
@@ -2534,10 +2592,53 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(subjectAfterFailure).toEqual(subjectBeforeFailure);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
-    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
-    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
-    // The assertion still pins that the amendment advanced BOTH clause pins.
-    expect(history.n).toBe(6);
+    // Only the changed R-1 projection gets a new clause revision.
+    expect(Number(history.n)).toBe(Number(historyBefore!.n) + 1);
+  });
+
+  it('dry-run BAR previews complete while a writer holds both plan locks', async () => {
+    const seeded = await seedBarContract('preview-under-write-locks', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+    let releaseLocks!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLocks = resolve; });
+    const lockHolder = db.adminSql.begin(async (tx) => {
+      for (const planSlug of [seeded.rubricSlug, seeded.subject].sort()) {
+        await tx`SELECT pg_advisory_xact_lock(
+          hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+          hashtext(${planAdvisoryLockKey(seeded.workspaceId, 'papercusp', planSlug)}))`;
+      }
+      await tx`SELECT plan_slug FROM harness_shared.harness_plans
+        WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp'
+          AND plan_slug = ANY(${[seeded.rubricSlug, seeded.subject]}::text[])
+        FOR UPDATE`;
+      signalLocked();
+      await release;
+    });
+    await locked;
+
+    const previewPromise = rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug,
+      criteria: before.criteria,
+      actorId: 'preview-requester',
+      approvedBy: 'outside-reviewer',
+      reason: 'Screen a reviewer while the source plans are being written.',
+    });
+    let completed = false;
+    try {
+      completed = await Promise.race([
+        previewPromise.then(() => true, () => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3500)),
+      ]);
+    } finally {
+      releaseLocks();
+      await lockHolder;
+    }
+    const preview = await previewPromise;
+    expect(completed).toBe(true);
+    expect(preview).not.toBeNull();
+    expect(preview?.approverEligibility).toBeDefined();
   });
 
   it('adds a declared BAR with structured checks through the existing atomic amendment path', async () => {
@@ -2893,7 +2994,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const first = revisions.filter((row) => row.source_bar_key === 'R-1');
     expect(first[0]!.required_test_layers).toEqual([]);
     expect(first.at(-1)!.required_test_layers).toEqual(['integration']);
-    expect(Number(first.at(-1)!.source_rubric_revision)).toBe(replaced.revision);
+    // Later verification-method edits do not churn the meaning revision, so the
+    // clause stays pinned to the rubric revision that changed its required layers.
+    expect(Number(first.at(-1)!.source_rubric_revision)).toBe(changed.revision);
     expect(first.length).toBeGreaterThan(2);
     expect(revisions.filter((row) => row.source_bar_key === 'R-2').at(-1)!.required_test_layers).toEqual([]);
   });
@@ -3104,6 +3207,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }));
     const first = { ...inputs[0]!, approvalRef: await postApproval(inputs[0]!) };
     const second = { ...inputs[1]!, approvalRef: await postApproval(inputs[1]!) };
+    const [historyBefore] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
     const results = await Promise.allSettled([rubrics.amendRubric(first), rubrics.amendRubric(second)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const refusal = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
@@ -3131,10 +3236,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
-    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
-    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
-    // The assertion still pins that the amendment advanced BOTH clause pins.
-    expect(history.n).toBe(6);
+    // The winner changes R-1 only; R-2 retains its stable clause revision.
+    expect(Number(history.n)).toBe(Number(historyBefore!.n) + 1);
   });
 
   it('refuses a stale expectedRubricRevision with the revision-conflict code when no lock competes', async () => {

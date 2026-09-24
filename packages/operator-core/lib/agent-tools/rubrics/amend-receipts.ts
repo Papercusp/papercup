@@ -26,7 +26,7 @@
  */
 import { pinModuleState } from '@papercusp/module-singleton';
 
-export type AmendReceiptState = 'running' | 'committed' | 'failed';
+export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
 export interface AmendReceiptEntry {
   idempotencyKey: string;
@@ -83,7 +83,7 @@ export function trackAmendRun(
     (result) => {
       entry.finishedAt = Date.now();
       entry.result = result;
-      entry.state = result.ok === true ? 'committed' : 'failed';
+      entry.state = result.ok === true ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
       if (entry.state === 'failed') entry.error = typeof result.error === 'string' ? result.error : 'amend returned ok:false';
       return result;
     },

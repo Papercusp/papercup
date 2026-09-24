@@ -5,8 +5,8 @@
  *  - armInProcessPeriodicChecks: idempotent, unref'd, re-entrancy-guarded, disarmable.
  *  - buildDefaultChecks: the exact converted set + cadences + which ticks shed.
  *
- * Pure: every check is injected (no real timers fire against PG/flags; the default
- * ticks are only inspected as config, never invoked).
+ * Pure: scheduled checks are injected; the default health tick runs against
+ * mocked service modules, with no PG/flags/network initialization.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -18,6 +18,17 @@ import {
   runPeriodicCheck,
   type PeriodicCheck,
 } from './in-process-periodic';
+
+const healthCadence = vi.hoisted(() => ({
+  getFlag: vi.fn(),
+  readRegistry: vi.fn(),
+  tick: vi.fn(),
+  sample: vi.fn(),
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: healthCadence.getFlag }));
+vi.mock('../workspace-registry', () => ({ readRegistry: healthCadence.readRegistry }));
+vi.mock('../system-health', () => ({ runSystemHealthTick: healthCadence.tick }));
+vi.mock('../system-health/perf-regression-rig', () => ({ collectPerfRegressionWhenDue: healthCadence.sample }));
 
 afterEach(() => {
   disarmInProcessPeriodicChecks();
@@ -191,22 +202,56 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
-  it('feeds performance history from the active system-health tick', async () => {
-    const flags = await import('@papercusp/flags/server');
-    const registry = await import('../workspace-registry');
-    const health = await import('../system-health');
-    const perf = await import('../system-health/perf-regression-rig');
-    vi.spyOn(flags, 'getFlag').mockResolvedValue(true);
-    vi.spyOn(registry, 'readRegistry').mockReturnValue({ workspaces: [{ id: 'perf-test-ws' }] } as ReturnType<typeof registry.readRegistry>);
-    const healthTick = vi.spyOn(health, 'runSystemHealthTick').mockResolvedValue({} as Awaited<ReturnType<typeof health.runSystemHealthTick>>);
-    const perfSample = vi.spyOn(perf, 'collectPerfRegressionWhenDue').mockResolvedValue({
+  function mockHealthCadence(workspaceId: string): void {
+    healthCadence.getFlag.mockReset().mockResolvedValue(true);
+    healthCadence.readRegistry.mockReset().mockReturnValue({ workspaces: [{ id: workspaceId }] });
+    healthCadence.tick.mockReset().mockResolvedValue({});
+    healthCadence.sample.mockReset().mockResolvedValue({
       attempted: true, persisted: true, overdue: false, lastCapturedAt: null,
     });
+  }
+
+  it('feeds performance history from the active system-health tick', async () => {
+    mockHealthCadence('perf-test-ws');
 
     await byName.get('system-health')!.tick();
 
-    expect(healthTick).toHaveBeenCalledWith('perf-test-ws');
-    expect(perfSample).toHaveBeenCalledWith('perf-test-ws');
+    expect(healthCadence.tick).toHaveBeenCalledWith('perf-test-ws');
+    expect(healthCadence.sample).toHaveBeenCalledWith('perf-test-ws');
+  });
+
+  it('reports a silent producer with its last persisted sample and bounds repeated warnings', async () => {
+    mockHealthCadence('silent-perf-ws');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-23T12:00:00Z'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    healthCadence.sample.mockResolvedValue({
+      attempted: true, persisted: false, overdue: true,
+      lastCapturedAt: '2026-08-24T16:46:53.652Z', note: 'snapshot insert failed',
+    });
+    await byName.get('system-health')!.tick();
+    await byName.get('system-health')!.tick();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lastCapturedAt=2026-08-24T16:46:53.652Z: snapshot insert failed'));
+    vi.setSystemTime(new Date('2026-09-23T12:15:00Z'));
+    await byName.get('system-health')!.tick();
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds persistence-read errors and continues sampling other workspaces', async () => {
+    mockHealthCadence('broken-perf-ws');
+    healthCadence.readRegistry.mockReturnValue({ workspaces: [{ id: 'broken-perf-ws' }, { id: 'healthy-perf-ws' }] });
+    healthCadence.sample.mockImplementation(async (ws: string) => {
+      if (ws === 'broken-perf-ws') throw new Error('database unavailable');
+      return { attempted: false, persisted: true, overdue: false, lastCapturedAt: null };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await byName.get('system-health')!.tick();
+    await byName.get('system-health')!.tick();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sampling failed for broken-perf-ws: database unavailable'));
+    expect(healthCadence.sample).toHaveBeenCalledWith('healthy-perf-ws');
+    expect(healthCadence.sample).toHaveBeenCalledTimes(4);
   });
 
   it('carries exactly the expected ephemeral probe set (the EI-1622 conversions + later additions)', () => {

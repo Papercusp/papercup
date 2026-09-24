@@ -15,6 +15,7 @@
  */
 
 import type { PerfVerdict } from './perf-budgets';
+import type { PerfRegressionProducerHealth } from './perf-regression-rig';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 
@@ -755,6 +756,9 @@ export interface InfraHealth {
    *  stale. Budgets are per-thread (worker CPU%, event-loop lag, CLOSE_WAIT,
    *  reachability) — never loadavg-absolute (128-core box; round-4 D-002 reframe). */
   perf: PerfVerdict | null;
+  /** Persisted performance-history freshness, read independently of its producer.
+   * Optional for older shared snapshots; unknown is never treated as a healthy sample. */
+  performanceHistory?: PerfRegressionProducerHealth;
   /** MCP proxy windowed failure summary (W8/P-008). null = ledger unreadable this tick
    *  (greyed leg, fail-soft — never blanks the panel). Absent-file = a healthy zero. */
   mcpProxy: McpProxyHealth | null;

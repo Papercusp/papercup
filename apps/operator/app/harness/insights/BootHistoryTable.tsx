@@ -70,6 +70,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_cap_near: '📶',
   peer_dial_throttled: '⚖',
   peer_capped: '✂',
+  // P-005: the periodic own-log compaction (anchor / start / appended / failed).
+  own_log_compaction: '🗜',
   peer_revoked: '🚫',
   peer_unrevoked: '↩',
   // WI-10002600: an own-log supersession re-keyed an admitted log. The device

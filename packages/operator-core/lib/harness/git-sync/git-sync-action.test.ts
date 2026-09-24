@@ -935,6 +935,70 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
+  it('bounds a progressing completion-settlement pass and aborts its remaining work', async () => {
+    const priorBudget = process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
+    process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = '35';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let observedSignal: AbortSignal | undefined;
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, { signal, onProgress }) => {
+      observedSignal = signal;
+      await new Promise<never>((_resolve, reject) => {
+        let completed = 0;
+        const progress = setInterval(() => {
+          completed += 1;
+          void onProgress({ completed, total: 200, featureId: `WI-${completed}` });
+        }, 1);
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearInterval(progress);
+            reject(signal.reason ?? new Error('settlement aborted'));
+          },
+          { once: true },
+        );
+      });
+    });
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    try {
+      await action(ctx);
+
+      expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledOnce();
+      expect(observedSignal?.aborted).toBe(true);
+      expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+        syncedOutcome.headSha,
+        expect.objectContaining({ scope: expect.any(Object) }),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('remaining candidates will be retried on a later fire'));
+    } finally {
+      warn.mockRestore();
+      if (priorBudget === undefined) delete process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = priorBudget;
+    }
+  }, 2_000);
+
+  it('persists count-bearing completion-settlement progress for routine health readers', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, progress) => {
+      await progress.onProgress({ completed: 2, total: 7, featureId: 'WI-42476' });
+      return { inspected: 7, upgraded: [], residual: 0, unreadable: [] };
+    });
+
+    await action(ctx);
+
+    expect(gitSyncActivityPatches()).toContainEqual(
+      expect.objectContaining({
+        active: true,
+        phase: 'completion-settlement',
+        settlement_progress: {
+          completed: 2,
+          total: 7,
+          feature_id: 'WI-42476',
+        },
+      }),
+    );
+  });
+
   it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {
     const canonicalRepo = join(tmpRoot, 'canonical-repo');
     const ambientSibling = join(tmpRoot, 'ambient-sibling');

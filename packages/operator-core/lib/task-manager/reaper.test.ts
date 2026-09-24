@@ -20,6 +20,7 @@ import {
   evaluateReaperFloor,
   executeReaps,
   managedResidueCandidates,
+  readScopeHolder,
   REAP_MAX_PER_TICK,
   REAP_TERMINAL_GRACE_MS,
   residualAfterPass,
@@ -28,7 +29,9 @@ import {
   type ReapDecision,
   type ReaperFloorSample,
   type ReapOutcome,
+  type ScopeHolder,
 } from './reaper';
+import type { CgroupFs } from './cgroup-read';
 import type { ResidueGroup } from './reconcile';
 import type { TaskRow } from './types';
 
@@ -71,6 +74,7 @@ function decide(
     logQuiet?: Record<string, number | null>;
     managedResidue?: ManagedResidueCandidate[];
     scopePids?: Record<string, number | null>;
+    holders?: Record<string, ScopeHolder | 'unreadable'>;
     maxPerTick?: number;
   } = {},
 ) {
@@ -80,6 +84,7 @@ function decide(
     scopePidCount: (r) => (opts.pids ? (r.taskId in opts.pids ? opts.pids[r.taskId] : 0) : 0),
     managedResidue: opts.managedResidue,
     scopePidCountForScope: (scopeUnit) => opts.scopePids?.[scopeUnit] ?? 0,
+    scopeHolderForScope: (scopeUnit) => opts.holders?.[scopeUnit] ?? null,
     freshOwners: new Set(opts.freshOwners ?? []),
     logQuietForMs: (r) => opts.logQuiet?.[r.taskId] ?? null,
     now: NOW,
@@ -315,6 +320,80 @@ describe('managed no-row residue candidates', () => {
         scopePids: { [scopeUnit]: 4 },
       }).reap,
     ).toEqual([]);
+  });
+
+  it('spares a no-row scope its live spawner still holds, and one whose holder is unmeasurable (CONTROL)', () => {
+    const candidate = managedResidueCandidates([group({})])[0]!;
+    const holder: ScopeHolder = { pid: 500, comm: 'node', cgroupPath: '/user.slice/app.slice/vitest.scope' };
+    const held = decide([], { managedResidue: [candidate], scopePids: { [scopeUnit]: 4 }, holders: { [scopeUnit]: holder } });
+    expect(held.reap).toEqual([]);
+    expect(held.spared).toMatchObject([{ taskId: 'missing123', why: expect.stringContaining('live parent pid 500 (node)') }]);
+    const unmeasured = decide([], {
+      managedResidue: [candidate],
+      scopePids: { [scopeUnit]: 4 },
+      holders: { [scopeUnit]: 'unreadable' },
+    });
+    expect(unmeasured.reap).toEqual([]);
+    expect(unmeasured.spared).toMatchObject([{ taskId: 'missing123', why: expect.stringContaining('unmeasurable') }]);
+  });
+
+  it('spares every no-row candidate when the caller supplies no holder probe', () => {
+    const candidate = managedResidueCandidates([group({})])[0]!;
+    const verdict = decideReaps({
+      rows: [],
+      census: census([], {}),
+      scopePidCount: () => 0,
+      managedResidue: [candidate],
+      scopePidCountForScope: () => 4,
+      freshOwners: new Set(),
+      logQuietForMs: () => null,
+      now: NOW,
+    });
+    expect(verdict.reap).toEqual([]);
+  });
+});
+
+describe('readScopeHolder', () => {
+  const userManager = '/user.slice/user-1000.slice/user@1000.service';
+  const scopeUnit = 'pc-missing123--fleet-member.scope';
+  const scope = `${userManager}/papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice/${scopeUnit}`;
+  const proc = (files: Record<string, string>): CgroupFs => ({
+    readFile: (path) => files[path] ?? null,
+    readDir: () => [],
+    isDir: () => false,
+  });
+  const member = (pid: number, ppid: number, cgroup = scope) => ({
+    [`/proc/${pid}/cgroup`]: `0::${cgroup}\n`,
+    [`/proc/${pid}/status`]: `Name:\tclaude\nUmask:\t0002\nPPid:\t${ppid}\nTracerPid:\t0\n`,
+  });
+  const other = (pid: number, cgroup: string, comm = 'node') => ({
+    [`/proc/${pid}/cgroup`]: `0::${cgroup}\n`,
+    [`/proc/${pid}/comm`]: `${comm}\n`,
+  });
+
+  it('names a live parent outside the scope: an isolated operator still owns its engine', () => {
+    const fs = proc({ ...member(31, 500), ...other(500, `${userManager}/app.slice/pc-runner.scope`) });
+    expect(readScopeHolder(scopeUnit, [31], fs)).toEqual({
+      pid: 500,
+      comm: 'node',
+      cgroupPath: `${userManager}/app.slice/pc-runner.scope`,
+    });
+  });
+
+  it('finds no holder once the spawner died and the subreaper adopted the scope (CAUGHT)', () => {
+    expect(readScopeHolder(scopeUnit, [31], proc({ ...member(31, 900), ...other(900, `${userManager}/init.scope`, 'systemd') }))).toBeNull();
+    expect(readScopeHolder(scopeUnit, [31], proc(member(31, 1)))).toBeNull();
+    // A member parented inside the scope is not a holder, and the scope root is orphaned.
+    const nested = proc({ ...member(31, 900), ...member(32, 31), ...other(900, `${userManager}/init.scope`, 'systemd') });
+    expect(readScopeHolder(scopeUnit, [31, 32], nested)).toBeNull();
+    // The parent exited between reads: its child is being reparented right now.
+    expect(readScopeHolder(scopeUnit, [31], proc(member(31, 500)))).toBeNull();
+  });
+
+  it('never measures through a pid that left the scope, and reports an unreadable scope as such', () => {
+    const recycled = proc({ ...member(31, 500, `${userManager}/app.slice/other.scope`), ...other(500, `${userManager}/app.slice/x.scope`) });
+    expect(readScopeHolder(scopeUnit, [31], recycled)).toBe('unreadable');
+    expect(readScopeHolder(scopeUnit, [31], proc({}))).toBe('unreadable');
   });
 });
 

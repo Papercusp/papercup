@@ -3,7 +3,67 @@ import {
   GatewayRequestTelemetry,
   assertCompleteGatewayRequestTimeline,
   classifyGatewayTelemetryOutcome,
+  assessStartupCacheSharing,
+  type StartupCacheEvidence,
 } from './request-stage-telemetry';
+
+describe('ten-agent startup sharing evidence (R-10)', () => {
+  const fingerprint = { sha256: 'a'.repeat(64), bytes: 1000, hashedBytes: 1000 };
+  const cohort = (): StartupCacheEvidence[] => Array.from({ length: 10 }, (_, index) => ({
+    authorizationScope: 'tenant-a/provider-project-a', model: 'test-model', transport: 'bearer-http',
+    tools: { ...fingerprint }, instructions: { ...fingerprint }, startedAt: index * 100,
+    availableAt: index * 100 + 50, expiresAt: 300000, cacheReadTokens: null, cacheWriteTokens: null,
+  }));
+  it('finds nine sequential component matches but never promises one write and nine hits', () => {
+    expect(assessStartupCacheSharing(cohort())).toEqual({ requests: 10, comparable: 10, unknown: 0,
+      componentGroups: 1, withEarlierEligibleComponentMatch: 9, coldOrConcurrent: 1, timingUnknown: 0,
+      observedReadRequests: 0, observedWriteRequests: 0, readCoverage: 0, writeCoverage: 0,
+      singleWriteGuaranteed: false });
+  });
+  it('allows all ten simultaneous cold starts to require writes before any cache is eligible', () => {
+    const concurrent = cohort().map(row => ({ ...row, startedAt: 0, availableAt: 50,
+      cacheReadTokens: 0, cacheWriteTokens: 1000 }));
+    expect(assessStartupCacheSharing(concurrent)).toMatchObject({ coldOrConcurrent: 10,
+      withEarlierEligibleComponentMatch: 0, observedWriteRequests: 10, singleWriteGuaranteed: false });
+  });
+  it('never groups across authorization scope, model or transport boundaries', () => {
+    for (const dimension of ['authorizationScope', 'model', 'transport'] as const) {
+      const rows = cohort().map((row, index) => ({ ...row,
+        [dimension]: dimension === 'transport' ? (index < 5 ? 'bearer-http' : 'oauth-http') : `${dimension}-${index}`,
+      })) as StartupCacheEvidence[];
+      expect(assessStartupCacheSharing(rows).componentGroups).toBe(dimension === 'transport' ? 2 : 10);
+    }
+  });
+  it('treats absent authorization and partial fingerprints as unknown, not identical', () => {
+    const rows = cohort().map((row, index) => index < 5 ? { ...row, authorizationScope: null }
+      : { ...row, instructions: { ...fingerprint, bytes: 100000, hashedBytes: 65536 } });
+    expect(assessStartupCacheSharing(rows)).toMatchObject({ comparable: 0, unknown: 10,
+      withEarlierEligibleComponentMatch: 0 });
+  });
+  it('honors expiry and leaves unobservable subscription timing unknown', () => {
+    expect(assessStartupCacheSharing(cohort().map(row => ({ ...row, expiresAt: row.availableAt! + 10 }))))
+      .toMatchObject({ withEarlierEligibleComponentMatch: 0, coldOrConcurrent: 10 });
+    expect(assessStartupCacheSharing(cohort().map(row => ({ ...row, availableAt: null, expiresAt: null }))))
+      .toMatchObject({ withEarlierEligibleComponentMatch: 0, timingUnknown: 9 });
+  });
+  it('detects changed tool order/schema and instruction content without retaining raw content', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const shapes = [
+      { tools: [{ name: 'a' }, { name: 'b' }], instructions: 'base' },
+      { tools: [{ name: 'b' }, { name: 'a' }], instructions: 'base' },
+      { tools: [{ name: 'a', description: 'changed' }, { name: 'b' }], instructions: 'base' },
+      { tools: [{ name: 'a' }, { name: 'b' }], instructions: 'base with volatile text before stable boundary' },
+    ];
+    const rows = shapes.map((body, index) => {
+      const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify(body)));
+      const cache = span.finish('ok', 200)!.cache;
+      return { ...cohort()[index], tools: cache.tools, instructions: cache.instructions };
+    });
+    expect(assessStartupCacheSharing(rows).componentGroups).toBe(4);
+    expect(JSON.stringify(assessStartupCacheSharing(rows))).not.toContain('volatile');
+  });
+});
 
 function completeCloudSpan(telemetry: GatewayRequestTelemetry, advance: (ms: number) => void, owner = 'su-test') {
   const span = telemetry.begin({

@@ -186,9 +186,9 @@ describe('release:deploy — orchestration effect classification', () => {
     const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
     expect(chaining).toContain('heldExternally:true');
     expect(chaining).toContain('systemd.appliesToActiveRun:false');
-    expect(chaining).toContain('not evidence the run ended');
-    expect(chaining).toContain('progressAtMs:null');
-    expect(chaining).toContain('Do not fire another checkpoint based on those fields');
+    expect(chaining).toContain('not evidence it ended');
+    expect(chaining).toContain('Null or unchanged progressAtMs');
+    expect(chaining).toContain('Do not fire a duplicate checkpoint from these fields');
   });
 });
 
@@ -231,6 +231,14 @@ describe('release:deploy — status', () => {
     expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
     expect(statusM).toHaveBeenCalledWith({ readerOwnerId: 'o' });
     expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('preserves an unknown stalled measurement in the full status response', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ gate: { ...mkStatus().gate, stalled: null } }),
+    );
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b.gate.stalled).toBeNull();
   });
 
   it('emits registry-derived re-read handles for the gate verdict and deployed SHA', async () => {

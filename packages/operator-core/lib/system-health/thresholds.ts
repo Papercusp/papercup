@@ -671,6 +671,7 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
+  if (d.performanceHistory?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
   // A partial/ramping handler failure — visible, sub-page (EI-18798264517111160).
   if (d.toolFailures?.rating === 'degraded') return 'warn';
@@ -693,6 +694,7 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   // pgHealth-latency proxy is coarse, matching P-005 slotLeak → warn, so one slow tick
   // doesn't red the panel; a sustained freeze still crits via the dead-routine detector).
   if (d.pool?.band === 'critical') return 'warn';
+  if (d.performanceHistory?.status === 'unknown') return 'unknown';
   return 'ok';
 }
 
@@ -763,7 +765,9 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   const mcpNote = mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : '';
   const perfNote = d.perf?.status === 'warn' ? `, perf warn (${d.perf.reasons[0] ?? ''})` : '';
   const hostPressureNote = hostPressureWarn ? `, ${d.hostPressure!.summary}` : '';
-  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}${hostPressureNote}`;
+  const historyNote = d.performanceHistory && ['warn', 'unknown'].includes(d.performanceHistory.status)
+    ? `, ${d.performanceHistory.note}` : '';
+  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}${hostPressureNote}${historyNote}`;
 }
 
 /**

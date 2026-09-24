@@ -27969,7 +27969,7 @@
           "POST"
         ]
       },
-      "description": "Poll a rubrics:amend receipt: running, committed (with the amend result), failed (with the error), or not_found. not_found means nothing is running and no committed amendment carries the key; re-issuing the same amend with the same idempotencyKey is then safe.",
+      "description": "Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
       "capabilities": [
         "coord:read"
       ],

@@ -215,7 +215,10 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // DARK_FLAGS_HIGH_WATERMARK (22); the watermark ceiling is `<=`, so this does not
   // breach it, but leaves ZERO headroom — see EI-9140's 2026-07-10 review (types.ts)
   // for the standing capacity note to the owner.
-  "papercusp-substrate-log-snapshot",
+  // 2026-09-24 (p2p-join-catchup-speed-2026-09-23 P-005) — GRADUATED to default-ON and
+  // removed here: the cross-machine catch-up proof it was held dark for landed
+  // (P-003 cadence off the merge gate, P-004 any-distance reader, P-008 redundant-set
+  // skip). Entry removed (the set shrinks).
   // 2026-07-10 (WI-3796) — NOT a new post-inversion darkening: the SEVENTH instance of
   // the same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-sidecar /
   // papercusp-reclaim-stalled / papercusp-psu-end-user / papercusp-plan-part-federation /
@@ -783,7 +786,11 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // 2026-09-04 (EI-19360358881224651) — GRADUATION_TRACKER restored to its
     // documented owner-authority dark default. Count 34 → 35; parking subset and
     // DARK_FLAGS_HIGH_WATERMARK remain unchanged.
-    expect(offCount).toBe(35);
+    // 2026-09-24 (p2p-join-catchup-speed-2026-09-23 P-005) — papercusp-substrate-log-snapshot
+    // GRADUATED to default-ON (the snapshot producer; cross-machine catch-up proof met by
+    // P-003/P-004/P-008). case was 'incomplete', so the parking subset and
+    // DARK_FLAGS_HIGH_WATERMARK both ratchet 13 → 12. Count 35 → 34.
+    expect(offCount).toBe(34);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
