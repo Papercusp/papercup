@@ -251,3 +251,78 @@ describe('listResumableSessions exact tracked-row recovery', () => {
     expect(rows.map((row) => row.id)).toEqual([recent, old]);
   });
 });
+
+describe('listResumableSessions port filtering without whole-row serialization', () => {
+  it('excludes pending and failed ports from every candidate arm, including exact-id recovery', async () => {
+    const delivered = await seedSession({ agent: 'codex', owner: 'su-delivered', startedMinAgo: 3 });
+    const pendingLive = await seedSession({ agent: 'claude', owner: 'su-pending-live', startedMinAgo: 1 });
+    const pendingEnded = await seedSession({ agent: 'omp', owner: 'su-pending-ended', startedMinAgo: 2, endedMinAgo: 1 });
+    const failed = await seedSession({ agent: 'claude', owner: 'su-failed', startedMinAgo: 4 });
+    await admin`UPDATE harness_shared.adv_sessions SET port_status = 'pending' WHERE id IN (${pendingLive}, ${pendingEnded})`;
+    await admin`UPDATE harness_shared.adv_sessions SET port_status = 'failed' WHERE id = ${failed}`;
+    // The picker deliberately spans workspaces; the optimization must preserve that scope.
+    await admin`UPDATE harness_shared.adv_sessions SET workspace_id = 'other-resumable-workspace' WHERE id = ${delivered}`;
+    for (const exactId of [pendingLive, pendingEnded, failed]) {
+      expect((await listResumableSessions(30, { exactId })).map((row) => row.id)).toEqual([delivered]);
+    }
+  });
+
+  it('works before the port column exists and immediately observes its later availability', async () => {
+    const pending = await seedSession({ agent: 'codex', owner: 'su-rollout', startedMinAgo: 1 });
+    await admin`UPDATE harness_shared.adv_sessions SET port_status = 'pending' WHERE id = ${pending}`;
+    // This suite holds the baseline schema mutex. Rename preserves the column and its
+    // constraints while exercising a real parse-time absence, then restore in finally.
+    await admin`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN port_status TO port_status_rollout_test`;
+    try {
+      expect((await listResumableSessions()).map((row) => row.id)).toEqual([pending]);
+    } finally {
+      await admin`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN port_status_rollout_test TO port_status`;
+    }
+    expect(await listResumableSessions()).toEqual([]);
+  });
+
+  it('measures the candidate filter on the same large-launch-payload fixture', async () => {
+    await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, agent, cwd, coord_owner_id, started_at, ended_at, launch_spec)
+      SELECT ${WS}, 'console', 'codex', '/repo', 'su-filter-' || i,
+             now() - i * interval '1 minute', now() - i * interval '1 minute',
+             jsonb_build_object('v', 1, 'workspaceId', ${WS}::text, 'harnessSlug', 'papercusp',
+                                'benchmarkPayload', repeat(md5(i::text), 512))
+        FROM generate_series(1, 1000) i
+    `;
+    const legacy = () => admin`
+      SELECT a.id FROM harness_shared.adv_sessions a
+       WHERE a.agent IS NOT NULL AND a.cwd IS NOT NULL
+         AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+       ORDER BY GREATEST(a.started_at, COALESCE(a.ended_at, a.started_at)) DESC LIMIT 300
+    `;
+    const direct = () => admin`
+      SELECT a.id FROM harness_shared.adv_sessions a
+       WHERE a.agent IS NOT NULL AND a.cwd IS NOT NULL
+         AND COALESCE(a.port_status, 'delivered') = 'delivered'
+       ORDER BY GREATEST(a.started_at, COALESCE(a.ended_at, a.started_at)) DESC LIMIT 300
+    `;
+    expect(await direct()).toEqual(await legacy());
+    const timings: Record<'legacy' | 'direct', number[]> = { legacy: [], direct: [] };
+    // Alternate order to avoid assigning all cold/early effects to one variant.
+    for (let i = 0; i < 100; i++) {
+      for (const mode of (i % 2 ? ['direct', 'legacy'] : ['legacy', 'direct']) as Array<'legacy' | 'direct'>) {
+        const start = performance.now();
+        await (mode === 'legacy' ? legacy() : direct());
+        timings[mode].push(performance.now() - start);
+      }
+    }
+    const p50 = (values: number[]) => [...values].sort((a, b) => a - b)[50];
+    console.info('RESUMABLE_FILTER_BENCHMARK', JSON.stringify({
+      rows: 1000, payloadChars: 16384, callsPerMode: 100,
+      p50Ms: { legacy: p50(timings.legacy), direct: p50(timings.direct) },
+    }));
+    // Exercise the actual listing too: both limits and persisted harness scope survive.
+    const rows = await listResumableSessions(30);
+    expect(rows).toHaveLength(30);
+    expect(rows.every((row) => row.harnessSlug === 'papercusp')).toBe(true);
+    const burst = await Promise.all(Array.from({ length: 8 }, () => listResumableSessions(30)));
+    for (const concurrentRows of burst) expect(concurrentRows).toEqual(rows);
+  }, 120_000);
+});
