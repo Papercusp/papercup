@@ -4324,7 +4324,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
                       poisoned: true,
                       poisonReason,
                     };
-                    await notifyPoisonedResumeSession(d, context, errorText, sendCoordMessage);
+                    // The event engine owns terminal delivery settlement and its
+                    // owner/fleet notice when it observes this callback. Keep the
+                    // local notice for direct executor callers so one poisoned
+                    // resume cannot notify the same audience twice.
+                    if (!deps.onResumeTurnExit) {
+                      await notifyPoisonedResumeSession(d, context, errorText, sendCoordMessage);
+                    }
                   }
                 } catch (error) {
                   console.warn(`[wake-executor] tool-reference poison detector failed: ${(error as Error)?.message ?? error}`);

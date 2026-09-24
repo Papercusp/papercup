@@ -112,6 +112,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
       let observedContext: unknown;
       const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const sendCoordMessage = vi.fn(async () => ({} as never));
       const { deps, s } = await exitedClaudeResumeDeps({
         getSessionLifecycle: async () => null,
         collectSessionFiles: async () => [{
@@ -121,7 +122,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
           mtimeMs: 1,
         }],
         quarantineToolReferenceSession: quarantine as never,
-        sendCoordMessage: vi.fn(async () => ({} as never)),
+        sendCoordMessage,
         spawnDetached: (_bin, _args, opts, onExit) => {
           spawnedEnvs.push(opts.env);
           onExitWired = onExit;
@@ -155,6 +156,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         ownerId: s.ownerId,
         sessionId: 'native-A',
       }), missing);
+      expect(sendCoordMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
