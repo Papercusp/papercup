@@ -25,6 +25,7 @@ import {
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationVerdict,
+  reserveQualificationRunner,
   reserveStoredQualificationRunner,
   settleQualificationTransaction,
 } from './checkpoint-qualification-transaction';
@@ -32,6 +33,7 @@ import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  parseFrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 import {
   reconcileGateVerdictFreshnessWithRepairQueue,
@@ -204,6 +206,51 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     expect(stored.qualificationTransaction).toMatchObject({ attemptId: 'attempt-2', candidate: 'repair-1' });
     expect(stored.repair_queue).toMatchObject({
       candidate: 'candidate-1', repairHead: 'repair-1', qualificationAttemptId: 'attempt-2',
+    });
+  });
+
+  it('hands an abandoned runner queue to its successor before gate self-heal writes', async () => {
+    const first = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction;
+    const abandoned = reserveQualificationRunner(first, {
+      attemptId: 'attempt-1', runnerId: 'dead-runner', candidate: 'candidate-1',
+      leaseDurationMs: 1_000, nowMs: 200,
+    }).transaction;
+    const red = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 110,
+    }), { failingTests: ['broken.test.ts'], nowMs: 150 });
+    const admitted = markFrozenRepairAdmitted(red, {
+      atMs: 250, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+    await seed({ qualificationTransaction: abandoned, repair_queue: admitted });
+
+    const successor = await beginStoredQualification(target, {
+      attemptId: 'attempt-2', candidate: 'repair-1', requiredAncestorSha: 'repair-1',
+      incumbentLiveness: 'dead', nowMs: 100_000,
+    }, { reconcileTerminalRepairQueueForSuccessor: true });
+    expect(successor).toMatchObject({
+      status: 'updated', repairQueueReconciliation: { status: 'preserved' },
+    });
+    const handedOff = await metadata();
+    expect(handedOff.qualificationTransaction).toMatchObject({ attemptId: 'attempt-2' });
+    expect(handedOff.repair_queue).toMatchObject({
+      repairHead: 'repair-1', qualificationAttemptId: 'attempt-2',
+    });
+
+    const queue = parseFrozenCandidateRepairQueue(handedOff.repair_queue)!;
+    const healed = markFrozenRepairAdmitted(queue, {
+      atMs: 100_100, actor: 'gate', source: { ref: 'writer', sha: 'repair-2' },
+      fromRepairHead: 'repair-1', toRepairHead: 'repair-2',
+      paths: ['artifact.json'], unchanged: [], blobs: { 'artifact.json': 'blob-2' },
+    });
+    await expect(writeFrozenCandidateRepairQueue(target, healed, {
+      expectedUpdatedAtMs: queue.updatedAtMs,
+    })).resolves.toBeUndefined();
+    expect((await metadata()).repair_queue).toMatchObject({
+      repairHead: 'repair-2', qualificationAttemptId: 'attempt-2',
     });
   });
 
