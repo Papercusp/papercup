@@ -1087,6 +1087,39 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     ).toBeNull();
   });
 
+  // WI-10002903 (second leg): the host's NON-quota kickoff drop. Observed on
+  // EI-24118203560334206 at 07:39Z: the drop landed after the launch receipt,
+  // the PTY stayed live, and the live-task guard deduped to a judge that never
+  // received its brief.
+  it('matches the launcher-owned non-quota kickoff drop only for a controlled caller with no first-turn progress', () => {
+    const receipt =
+      'psu-pty-host: launch kickoff DROPPED for role-d5284217-0000-4000-8000-000000000000 ' +
+      '(the child never settled to its prompt within 20000ms over 3 attempt(s))';
+    const raw = `100% left · staging\u001b[22;3H\u001b[?2026l${receipt}\n`;
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowLauncherKickoffDrop: true })).toEqual({
+      code: 'launch_kickoff_dropped',
+      evidence: receipt,
+    });
+    // Another host drop kind (a turn inject, not the launch kickoff) is not this signal.
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace('launch kickoff', 'turn inject'), {
+        allowLauncherKickoffDrop: true,
+      }),
+    ).toBeNull();
+    // A judge that visibly entered its first turn is never retired on the receipt alone.
+    expect(
+      classifyAcceptanceGraderTerminalFailure(`• Called scorecards:get\n${raw}`, { allowLauncherKickoffDrop: true }),
+    ).toBeNull();
+    // The quota variant keeps its own opt-in, code and backoff.
+    const quota = raw.replace('the child never settled to its prompt', 'submit verification aborted (quota-blocked)');
+    expect(classifyAcceptanceGraderTerminalFailure(quota, { allowLauncherKickoffDrop: true })).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(quota, { allowLauncherKickoffDrop: true, allowLauncherQuotaDrop: true }),
+    ).toMatchObject({ code: 'model_quota_exhausted' });
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
