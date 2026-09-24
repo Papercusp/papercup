@@ -9,12 +9,18 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
 import recipeGetTool from '../agent-tools/recipes/get';
 import recipeRunTool from '../agent-tools/recipes/run';
+import rubricGetTool from '../agent-tools/rubrics/get';
 import { getIdentitySource } from './source';
 
-const pg = vi.hoisted(() => ({ sql: null as Sql | null }));
+const pg = vi.hoisted(() => ({ sql: null as Sql | null, appSql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: pg.sql }),
+  withWorkspace: <T,>(workspaceId: string, callback: (tx: unknown) => Promise<T>): Promise<T> =>
+    pg.appSql!.begin(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
+      return callback(tx);
+    }) as Promise<T>,
 }));
 
 describe('selected identity recipe reaches its existing consumer', () => {
@@ -22,9 +28,11 @@ describe('selected identity recipe reaches its existing consumer', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     pg.sql = db.adminSql;
+    pg.appSql = db.appSql;
   }, 120_000);
   afterAll(async () => {
     pg.sql = null;
+    pg.appSql = null;
     await db?.cleanup();
   });
 
@@ -81,6 +89,57 @@ describe('selected identity recipe reaches its existing consumer', () => {
       } }).data;
       expect(runBody.results[0]).toMatchObject({
         ok: true, id: recipeId, result: { summary: 'from selected identity' },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it('provisions a selected rubric pin into the existing gradeable workspace store', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'selected-rubric-launch-'));
+    const identityId = 'installed-rubric-domain';
+    const rubricId = 'selected-launch-rubric';
+    const identityDir = join(root, 'home', 'blueprints', identityId);
+    const rubricDir = join(root, 'home', 'rubrics', rubricId);
+    try {
+      mkdirSync(identityDir, { recursive: true });
+      mkdirSync(rubricDir, { recursive: true });
+      vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+      const identity = {
+        id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+        bundles: [{ kind: 'rubric', ref: rubricId, version: '1.0.0' }],
+      };
+      writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
+        ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
+      }));
+      writeFileSync(join(rubricDir, 'rubric.json'), JSON.stringify({
+        rubricId, title: 'Selected rubric', characteristic: 'identity grading',
+        description: 'Grade a selected identity.', version: '1.0.0',
+        ratingScale: ['pass', 'fail', 'unknown'],
+        criteria: [{ key: 'correct', title: 'Correct behavior', model: 'Use the pinned rubric.',
+          method: 'Inspect a real run.', driftMarkers: 'The run fails.' }],
+      }));
+      writeFileSync(join(rubricDir, 'listing.json'), JSON.stringify({ version: '1.0.0' }));
+
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'Grade using the selected rubric.', cwd: root,
+        workspaceId: 'default', harnessSlug: 'papercusp', role: 'su',
+        stack: [`domain:${identityId}`], state: { schemaVersion: 1 },
+      });
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'package', packageKind: 'rubric', ref: rubricId,
+      }));
+      await provisionLaunchIdentityResources(launch, db.adminSql);
+
+      const read = await rubricGetTool.handler({ rubricRef: rubricId, detail: 'full' }, {
+        role: 'su', workspaceId: 'default', harnessSlug: 'papercusp',
+        isSuperuser: true, uiClientId: 'su-selected-rubric-test',
+      } as never);
+      const body = (read as { data: { results: Array<Record<string, unknown>> } }).data;
+      expect(body.results[0]).toMatchObject({
+        ok: true, rubricRef: rubricId,
+        rubric: { status: 'active', criteria: [{ key: 'correct', model: 'Use the pinned rubric.' }] },
       });
     } finally {
       vi.unstubAllEnvs();
