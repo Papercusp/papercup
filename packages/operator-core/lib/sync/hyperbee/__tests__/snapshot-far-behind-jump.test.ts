@@ -173,6 +173,8 @@ describe('P-004 R-4 — the reader finds a complete set at any distance from the
       },
     };
     log.reads.length = 0;
+    // The pending line is info (a fresh joiner routinely needs several passes); only a give-up warns.
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cursor = createMergeCursor();
     let calls = 0;
@@ -182,7 +184,8 @@ describe('P-004 R-4 — the reader finds a complete set at any distance from the
     }
     expect(calls).toBeGreaterThan(1); // the budget really cut the scan short
     expect(cursor.positions.get(log.keyHex)).toBe(2);
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed pending'))).toBe(true);
+    expect(info.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed pending'))).toBe(true);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
     expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
     // Resume, not restart: every index above the set was read exactly once across all calls.
     const seen = new Map<number, number>();

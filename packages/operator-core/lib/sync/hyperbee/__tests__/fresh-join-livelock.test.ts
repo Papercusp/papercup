@@ -8,6 +8,7 @@ import {
   seedCursorFromSnapshots,
   SNAPSHOT_SEED_DEFER_MAX_MS,
   SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS,
+  SNAPSHOT_UNREADABLE_RETRY_MS,
   type AdmittedLog,
   type MergeCursor,
 } from '../read-merge';
@@ -254,6 +255,89 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
       applyImpl: (async () => true) as never,
     });
     expect(cursor.positions.get(log.keyHex)).toBe(10); // folding from 0
+  });
+
+  /** A view whose reads of the indices in `hangOnce` never answer, once each (a timeout). */
+  function hangingOnceView(log: CountingLog, slow: boolean): { view: AdmittedLog; hangOnce: Set<number> } {
+    const hangOnce = new Set<number>();
+    const view: AdmittedLog = {
+      keyHex: log.keyHex,
+      get length() {
+        return log.length;
+      },
+      get: async (i) => {
+        if (hangOnce.delete(i)) return new Promise<PeerLogOp | null>(() => {});
+        if (slow) await new Promise<void>((r) => setImmediate(r));
+        return log.get(i);
+      },
+    };
+    return { view, hangOnce };
+  }
+
+  /** `Date.now` running at real speed plus a settable offset (the budget still needs a live clock). */
+  function offsetClock() {
+    const realNow = Date.now.bind(Date);
+    const clock = { offset: 0 };
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clock.offset);
+    return clock;
+  }
+
+  it('P-007 run #2: ONE read timeout after a long budget-only hold does not give up (the hold age is not a stuck block)', async () => {
+    // Measured on mac-vm 08:25:05-08:29:04Z: the hold engaged on the 30-min bound (budget),
+    // one scan read then missed its 5 s bound, and the 3-min UNREADABLE bound, measured from
+    // the start of the hold (239 s), gave up at once. The joiner folded 7.76M ops from 0.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { log, setAt } = await towerWithOldPrefix('e7'.repeat(32), 600, 1_500);
+    const { view, hangOnce } = hangingOnceView(log, true);
+    const cursor = createMergeCursor();
+    const opts = { getTimeoutMs: 5, scanBudgetMs: 2 };
+    const clock = offsetClock();
+
+    await seedCursorFromSnapshots([view], cursor, opts);
+    expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true); // budget-inconclusive: held
+    const resumeBelow = cursor.snapshotScans?.get(log.keyHex)?.resumeBelow;
+    expect(resumeBelow).toBeGreaterThan(setAt); // the set is still below the scan
+
+    clock.offset = 4 * 60_000; // past the 3-min unreadable bound, inside the 30-min one
+    hangOnce.add(resumeBelow! - 1); // the very next block the resumed scan reads times out once
+    await seedCursorFromSnapshots([view], cursor, opts);
+    expect(cursor.snapshotScans?.get(log.keyHex)?.unreadableAtLength).toBeDefined(); // it WAS unreadable
+    expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true); // ...and still held
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
+
+    clock.offset += SNAPSHOT_UNREADABLE_RETRY_MS + 1_000; // the block now reads on the retry
+    for (let pass = 0; pass < 400 && !cursor.positions.has(log.keyHex); pass++) {
+      await seedCursorFromSnapshots([view], cursor, opts);
+    }
+    expect(cursor.positions.get(log.keyHex)).toBe(setAt); // seeded at the set, not folded from 0
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
+  });
+
+  it('a SLOW store (a different block times out on each retry, past 3 min) stays held and seeds at the set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { log, setAt } = await towerWithOldPrefix('e8'.repeat(32), 300, 400);
+    const { view, hangOnce } = hangingOnceView(log, false);
+    const cursor = createMergeCursor();
+    const opts = { getTimeoutMs: 5, scanBudgetMs: 0 }; // unbounded: only the timeouts stop a pass
+    const clock = offsetClock();
+
+    // Each round the scan reads past the block that timed out last round, then times out on
+    // one 10 blocks further down. 9 rounds span 4.5 min, all above the set.
+    for (let round = 0; round < 9; round++) {
+      hangOnce.add(log.length - 1 - 10 * (round + 1));
+      await seedCursorFromSnapshots([view], cursor, opts);
+      expect(cursor.snapshotScans?.get(log.keyHex)?.unreadableAtLength).toBeDefined();
+      expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true);
+      clock.offset += SNAPSHOT_UNREADABLE_RETRY_MS + 1_000;
+    }
+    expect(clock.offset).toBeGreaterThan(SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
+
+    await seedCursorFromSnapshots([view], cursor, opts); // nothing hangs now: the scan concludes
+    expect(cursor.positions.get(log.keyHex)).toBe(setAt);
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
   });
 });
 
