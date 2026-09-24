@@ -160,6 +160,8 @@ export interface TranscriptUsageEvent {
   turnId?: string;
   contextGeneration?: number;
   predecessorSessionId?: string;
+  /** Unique usage observations since an observed native session header; absent for partial sources. */
+  requestOrdinal?: number;
 }
 
 export function transcriptEventTime(value: unknown): number | null {
@@ -202,6 +204,7 @@ export interface TranscriptParserState {
   lastCumulativeUsage?: string;
   predecessorSessionId?: string;
   contextGeneration?: number;
+  requestOrdinal?: number;
 }
 
 const emptyDelta = (): TranscriptDelta => ({
@@ -728,6 +731,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               inputTotalTokens: event.inputTotalTokens ?? null,
               accountSource: 'unavailable', triggerSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
+              requestOrdinal: event.requestOrdinal ?? null,
               ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
                 byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
                 legacyFingerprint: opts.historical.legacyFingerprint,

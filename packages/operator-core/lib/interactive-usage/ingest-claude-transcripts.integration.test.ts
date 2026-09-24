@@ -59,6 +59,21 @@ afterAll(async () => {
 });
 
 describe('persistent transcript accounting', () => {
+  it('persists source-start ordinals and compaction generations through incremental ingestion', async () => {
+    const file = path.join(root, 'carry-startup.jsonl');
+    await fs.writeFile(file, line({ type: 'session_meta', payload: { forked_from_id: 'parent-session' } }) +
+      context('gpt-6-sol') + usage(1000));
+    expect((await ingestInteractiveUsage({ adapters: adapter() })).errors).toEqual([]);
+    await fs.appendFile(file, usage(1000) + usage(2000)); // repeated cumulative notification is not request 2
+    expect((await ingestInteractiveUsage({ adapters: adapter() })).errors).toEqual([]);
+    await fs.appendFile(file, line({ type: 'compacted' }) + usage(3000));
+    expect((await ingestInteractiveUsage({ adapters: adapter() })).errors).toEqual([]);
+    const rows = await sql`SELECT usage_provenance FROM harness_shared.agent_usage_samples
+      WHERE workspace_id=${WS} ORDER BY (usage_provenance->>'byteOffset')::bigint`;
+    expect(rows.map(row => [row.usage_provenance.requestOrdinal, row.usage_provenance.contextGeneration,
+      row.usage_provenance.predecessorSessionId])).toEqual([[1, 0, 'parent-session'], [2, 0, 'parent-session'], [3, 1, 'parent-session']]);
+  });
+
   it('marks a confirmed missing source unknown, preserves original evidence, and is idempotent', async () => {
     const file = path.join(root, 'missing-history.jsonl');
     await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
