@@ -135,7 +135,11 @@ describe('persistent transcript accounting', () => {
     expect(rows[0].usage_provenance.reconciliation.originalRows).toHaveLength(1);
     expect(rows[0].usage_provenance.reconciliation.originalRows[0]).toMatchObject({ model: 'gpt-5.5', cost_usd: 123 });
     expect(rows[0].usage_provenance.reconciliation.backupSnapshotId).toBe(backupId);
-    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).samples).toBe(0);
+    const repeated = await ingestInteractiveUsage({ adapters: adapter(), historical });
+    expect(repeated.errors).toEqual([]);
+    expect(repeated.samples).toBe(0);
+    expect(await sql`SELECT model,input_tokens,cache_creation_tokens,usage_provenance
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS} ORDER BY id`).toEqual(rows);
     // A normal ingestion tick after backfill uses the restored parser state and
     // cannot count the terminal cumulative notification twice.
     await fs.appendFile(file, usage(2000) + usage(3000));
