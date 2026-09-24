@@ -1046,6 +1046,7 @@ export async function buildControlAnchorState(
     return leg;
   };
   const modesP = guard(getModes(workspaceId, ownerId, sql));
+  const modeCatalogP = guard(import('../../agent-identities/source').then((module) => module.getSelectedModeCatalog()));
   const loopP = guard(
     opts.loop === undefined ? getLoopStatus(ownerId, { sql }) : Promise.resolve(opts.loop),
   );
@@ -1113,8 +1114,9 @@ export async function buildControlAnchorState(
       () => new Map<string, SelfWakeSignals>(),
     ),
   );
-  const [modes, loop, membership, brief, goalAuthority, explicitStack, claims, selfWake] = await Promise.all([
+  const [modes, modeCatalog, loop, membership, brief, goalAuthority, explicitStack, claims, selfWake] = await Promise.all([
     modesP,
+    modeCatalogP,
     loopP,
     membershipP,
     briefP,
@@ -1141,7 +1143,7 @@ export async function buildControlAnchorState(
     ),
     // P-012 / P-021: the stack binding is a projection of the route (fleet posture) and of
     // the active modes (one definition identity per mode axis) — no new leg.
-    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode), explicit: explicitStack }),
+    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode), explicit: explicitStack, modeCatalog }),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',
