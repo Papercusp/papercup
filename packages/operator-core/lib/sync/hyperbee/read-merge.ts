@@ -496,6 +496,13 @@ export interface MergeCursor {
    */
   batchSerialUntil?: Map<string, number>;
   /**
+   * P-527: per log, the end (exclusive) of a snapshot chunk whose parallel lanes ended
+   * on a retryable outcome. Its retry applies the chunk on the serial path, so a
+   * failure the lanes caused (a lock wait that timed out, a deadlock) cannot repeat on
+   * every pass. In memory only; dropped once the log's cursor reaches it.
+   */
+  laneSerialUntil?: Map<string, number>;
+  /**
    * WI-2003: per-position CONSECUTIVE read-throw counter (`${log.keyHex}:${pos}`
    * → count), the READ-side mirror of `applyThrows`. `readOpBoundedDetailed`
    * distinguishes a genuinely TRANSIENT timeout (peer withholding/offline — kept
@@ -2184,6 +2191,26 @@ export const MERGE_BATCH_COMMIT_TIMEOUT_MS = 30_000;
 export const MERGE_COALESCE_NOTIFY_MIN_BACKLOG = 256;
 export const SYNC_NOTIFY_COALESCE_GUC = 'papercusp.sync_notify_coalesce';
 
+/**
+ * P-527 (p2p-join-catchup-speed D-014): a snapshot-set chunk is applied on this many
+ * parallel lanes, each with its own batch transaction. Measured on the P-007 VM (run
+ * #4): a set crossing ran at ~259 rows/s while using about 1.4 of 8 cores, and turning
+ * synchronous_commit off changed nothing (223 vs 215 rows/s). So each row waits on a
+ * serial chain of round trips, not on a saturated resource. The rows of one chunk are
+ * distinct keys of one set, so they can be applied in any order. Capped at the merge
+ * apply admission limit, which bounds how many applies run at once anyway.
+ */
+export const MERGE_SNAPSHOT_LANES = 4;
+/** A chunk with fewer applicable rows than this is applied serially. */
+export const MERGE_SNAPSHOT_LANE_MIN_ROWS = 32;
+
+/**
+ * P-527: a WI-N work item's INSERT takes migration 1003's transaction advisory lock
+ * (the id-sequence floor), held until COMMIT. Two lanes inserting WI-N rows would take
+ * turns on it at transaction length, so every such row goes to lane 0.
+ */
+const WI_N_KEY = /(?:^|[^A-Za-z0-9-])WI-\d+(?:$|[^0-9])/;
+
 export interface MergeBatchOpts {
   /**
    * Commit after this many ops wrote into the batch. Keep it under 64, PG's
@@ -2195,6 +2222,8 @@ export interface MergeBatchOpts {
   maxMs?: number;
   /** Bound on the COMMIT round trip (ms). */
   commitTimeoutMs?: number;
+  /** P-527: parallel lanes for one snapshot chunk. Default {@link MERGE_SNAPSHOT_LANES}; 1 applies chunks serially. */
+  snapshotLanes?: number;
 }
 
 /** Batch counters for one incremental pass. */
@@ -2244,7 +2273,9 @@ class FoldBatch {
    * holds for that whole transaction ({@link MERGE_COALESCE_NOTIFY_MIN_BACKLOG}).
    */
   coalesceNotify = false;
-  readonly stats: MergeBatchStats = { commits: 0, ops: 0, rewinds: 0 };
+  readonly stats: MergeBatchStats;
+  /** P-527: sibling batches for the lanes of a snapshot chunk, created on first use. */
+  private readonly lanes: FoldBatch[] = [];
 
   constructor(
     private readonly cursor: MergeCursor,
@@ -2253,7 +2284,32 @@ class FoldBatch {
     private readonly commitTimeoutMs: number,
     private readonly maxWinnersEntries: number,
     private readonly onWinnersEvicted?: (evictedCount: number, size: number) => void,
-  ) {}
+    stats?: MergeBatchStats,
+  ) {
+    this.stats = stats ?? { commits: 0, ops: 0, rewinds: 0 };
+  }
+
+  /**
+   * P-527: `k` batches with this batch's bounds, one per lane, that count into this
+   * batch's stats. Each has its own connection, savepoints and provisional winners.
+   * Reused across chunks; the lanes commit before a chunk ends, so none is open between chunks.
+   */
+  laneBatches(k: number): FoldBatch[] {
+    while (this.lanes.length < k) {
+      this.lanes.push(
+        new FoldBatch(
+          this.cursor,
+          this.maxOps,
+          this.maxMs,
+          this.commitTimeoutMs,
+          this.maxWinnersEntries,
+          this.onWinnersEvicted,
+          this.stats,
+        ),
+      );
+    }
+    return this.lanes.slice(0, k);
+  }
 
   /** The open transaction can no longer commit; the fold must replay from {@link startPos}. */
   get failed(): boolean {
@@ -2379,6 +2435,7 @@ class FoldBatch {
 
   /** Drop a lost batch: roll back what is open, forget its provisional winners and its poisoned in-flight applies. */
   discard(): void {
+    for (const lane of this.lanes) lane.discard();
     const hadWork = this.reserved !== null || this.overlay.size > 0 || this.failureReason !== null;
     if (this.reserved) abandonReserved(this.reserved);
     this.reserved = null;
