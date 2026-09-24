@@ -11,6 +11,7 @@ import recipeGetTool from '../agent-tools/recipes/get';
 import recipeRunTool from '../agent-tools/recipes/run';
 import rubricGetTool from '../agent-tools/rubrics/get';
 import { getIdentitySource } from './source';
+import { resolveIdentityGrantEnvelope } from '../capability-envelope/blueprint-envelopes';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null, appSql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -49,6 +50,7 @@ describe('selected identity recipe reaches its existing consumer', () => {
       const identity = {
         id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
         bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
+        grants: { optional: ['calendar.read@1.0.0'] },
       };
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
         ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
@@ -69,6 +71,15 @@ describe('selected identity recipe reaches its existing consumer', () => {
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'package', packageKind: 'recipe', ref: recipeId,
       }));
+      expect(launch.specificationArtifact.configuration.grants?.optional).toContain('calendar.read@1.0.0');
+      // The host's existing grant consumer must see the declaration, while an
+      // unbound optional provider still gives the session no tool authority.
+      expect(resolveIdentityGrantEnvelope({
+        specification: launch.specificationArtifact,
+        appliedSpecificationRevision: launch.specificationRevision,
+        policyRevision: 'policy-1', potSlug: 'identity-resource-harness',
+        bindings: [], ceilings: [{ allowCapabilities: ['*'] }], tools: new Map(),
+      })).toMatchObject({ applied: true, allowedTools: [], failures: [] });
       expect(launch.resourceArtifacts).toHaveLength(1);
       await provisionLaunchIdentityResources(launch, db.adminSql);
 
