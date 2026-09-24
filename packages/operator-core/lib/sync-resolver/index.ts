@@ -4115,9 +4115,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // plans.attentionCounts — the AGGREGATE half of the attention feed (WI-5955).
   // The sidebar "needs you" badge and the Plans-face badge are mounted on every
   // app start and used to derive two integers by pulling the whole ~1MB unscoped
-  // feed. This returns ~100 bytes instead. It rides the SAME cachedRead entry the
-  // feed uses, so server-side work is unchanged — what this saves is wire bytes,
-  // the desktop IPC/base64 inflation, JSON.parse, and retained client memory.
+  // feed. Request the projection before tool serialization so even a warm cache
+  // hit avoids constructing and parsing a full feed. Source/cache policy is shared.
   // Deliberately UNSCOPED: the badge answers "how many decisions need you" across
   // the workspace, so it must not inherit a panel's harness scope.
   // One row, like plans.get/plans.attentionItem.
@@ -4141,9 +4140,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [
         attentionCountsRowFromOutcome(
           await withDeadlineFallback(
-            callPlansRead('attention', {}) as Promise<{ groups?: unknown[] }>,
+            callPlansRead('attention', { output: 'counts' }) as Promise<{
+              counts?: import('./attention-counts').AttentionCounts;
+              degraded?: boolean;
+            }>,
             ATTENTION_COUNTS_FALLBACK_MS,
-            () => ({ groups: [] }),
+            () => ({ degraded: true }),
           ),
         ),
       ];
@@ -4216,9 +4218,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     backingTables: ['harness_shared.harness_plans'],
     resolve: async () => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('attention', {})) as { groups?: unknown[] };
-      const { deriveAttentionRefs } = await import('./attention-counts');
-      return deriveAttentionRefs(Array.isArray(r?.groups) ? r.groups : []);
+      const r = (await callPlansRead('attention', { output: 'refs' })) as {
+        refs?: import('./attention-counts').AttentionRefRow[];
+        degraded?: boolean;
+      };
+      // Keep the last good sync snapshot on a failed build; an unknown ref set
+      // must not look like a successful empty inbox and remove drill-in links.
+      if (r?.degraded) throw new Error('Attention refs unavailable: source read deadline exceeded');
+      return Array.isArray(r?.refs) ? r.refs : [];
     },
   },
   // plans.attentionItem — the DETAIL half of the attention list/detail split

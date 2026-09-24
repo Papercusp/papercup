@@ -105,6 +105,16 @@ describe('WI-39779: a deadline-fallback row is distinguishable from a real empty
     });
   });
 
+  it('preserves projected counts and the inner cache deadline marker', () => {
+    const counts = { decisionItems: 2, decisionPlans: 1, alerts: 3, total: 7 };
+    expect(attentionCountsRowFromOutcome({ value: { counts, degraded: false }, degraded: false }))
+      .toEqual({ ...counts, degraded: false });
+    expect(attentionCountsRowFromOutcome({ value: { counts: ZERO_COUNTS, degraded: true }, degraded: false }))
+      .toEqual({ ...ZERO_COUNTS, degraded: true });
+    expect(attentionCountsRowFromOutcome({ value: { counts }, degraded: true }))
+      .toEqual({ ...counts, degraded: true });
+  });
+
   it('survives a fallback whose value has no groups at all', () => {
     expect(attentionCountsRowFromOutcome({ value: undefined, degraded: true })).toEqual({
       ...ZERO_COUNTS,

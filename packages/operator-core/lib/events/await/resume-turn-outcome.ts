@@ -70,12 +70,27 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 const STALE_RESUME_TARGET_RE =
   /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bno conversation found with session id\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b|\bno rollout found for thread\b/i;
 
+const MISSING_TOOL_REFERENCE_RE =
+  /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
+
 export function isStaleResumeTargetMessage(message: string): boolean {
   return STALE_RESUME_TARGET_RE.test(message);
 }
 
 export function isStaleResumeTargetError(outcome: ResumeTurnOutcome): boolean {
   return !outcome.ok && outcome.error.class === 'permanent' && isStaleResumeTargetMessage(outcome.error.message);
+}
+
+function missingToolReferenceEvidence(stderr: string, stdout: string): string | null {
+  for (const stream of [stderr, stdout]) {
+    const match = MISSING_TOOL_REFERENCE_RE.exec(stream);
+    if (match) return match[0].trim().slice(0, 200);
+  }
+  return null;
+}
+
+export function isUnavailableToolReferenceError(outcome: ResumeTurnOutcome): boolean {
+  return !outcome.ok && outcome.error.class === 'permanent' && MISSING_TOOL_REFERENCE_RE.test(outcome.error.message);
 }
 
 /**
@@ -143,6 +158,29 @@ function latestCodexTerminalEvent(stdoutTail: string): 'turn.completed' | 'turn.
  */
 export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Date.now()): ResumeTurnOutcome {
   const provider = raw.outputProtocol === 'codex-jsonl' ? 'openai' : 'anthropic';
+  const missingToolReference = missingToolReferenceEvidence(raw.stderrTail, raw.stdoutTail);
+  if (missingToolReference) {
+    // A resumed transcript can replay a tool_reference absent from the relaunched
+    // client's surface. The provider rejects that request permanently, even if the
+    // CLI exits cleanly; reusing the saved transcript cannot make the tool available.
+    const classified = classifySubprocessResult(
+      { exitCode: 1, signal: raw.signal ?? null, stderr: raw.stderrTail, stdout: raw.stdoutTail },
+      provider,
+      now,
+    );
+    if (classified.class === 'agent_crash') {
+      return {
+        ok: false,
+        error: {
+          ...classified,
+          class: 'permanent',
+          message: missingToolReference,
+          retryable: false,
+          surfaceToUser: true,
+        },
+      };
+    }
+  }
   if (raw.exitCode === 0 && !raw.signal) {
     if (raw.outputProtocol === 'codex-jsonl') {
       const terminal = latestCodexTerminalEvent(raw.stdoutTail);

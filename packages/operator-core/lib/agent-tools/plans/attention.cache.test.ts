@@ -19,7 +19,17 @@ const M = vi.hoisted(() => ({
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
   // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
   seenConversationsWs: [] as Array<string | undefined>,
+  groupsOverride: null as unknown[] | null,
 }));
+
+vi.mock("../../attention/group", async (orig) => {
+  const actual = await orig<typeof import("../../attention/group")>();
+  return {
+    ...actual,
+    buildAttentionGroups: (...args: Parameters<typeof actual.buildAttentionGroups>) =>
+      M.groupsOverride === null ? actual.buildAttentionGroups(...args) : M.groupsOverride,
+  };
+});
 
 vi.mock("./source", () => ({ readAllPlans: M.readAllPlans }));
 vi.mock("./_ctx-opts", () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
@@ -77,6 +87,7 @@ vi.mock("../../attention/triage-store", () => ({
 }));
 
 import tool from "./attention";
+import { deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 import {
   getOperatorCache,
   resetOperatorCacheForTests,
@@ -119,6 +130,7 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.readAllPlans.mockClear();
+  M.groupsOverride = null;
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -158,6 +170,96 @@ describe("plans:attention — cache wiring", () => {
     await run({});
     await run({});
     expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+  });
+
+  it("concurrent feed/count/ref reads share a build and project the complete deduped set before pagination", async () => {
+    const items = Array.from({ length: 150 }, (_, i) => ({
+      id: `item-${i}`, kind: 'plan-item', tier: i < 120 ? 'decision' : 'alert',
+      planSlug: 'alpha', ownerAgentId: i < 100 ? 'su-a' : 'su-b',
+      importance: 'normal', title: `Item ${i}`, body: 'large detail body '.repeat(100),
+      itemRef: `alpha#P-${String(i + 1).padStart(3, '0')}`,
+    }));
+    M.groupsOverride = [
+      { key: 'alpha', kind: 'plan', planSlug: 'alpha', title: 'Alpha', maxImportance: 'normal', items },
+      { key: 'duplicate', kind: 'alerts', title: 'Duplicates', maxImportance: 'normal', items: [items[0]] },
+    ];
+    const [feed, counts, refs] = await Promise.all([
+      run({ limit: 1 }), run({ output: 'counts', limit: 1, offset: 1 }), run({ output: 'refs', limit: 1 }),
+    ]);
+    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(counts).toEqual({ counts: { decisionItems: 120, decisionPlans: 1, alerts: 30, total: 150 }, degraded: false });
+    const complete = await run({ limit: null });
+    expect(refs).toEqual({
+      refs: deriveAttentionRefs(complete.groups),
+      degraded: false,
+    });
+    expect(feed.groups.flatMap((g) => (g as { items: unknown[] }).items)).toHaveLength(1);
+    expect(JSON.stringify(refs)).not.toContain('large detail body');
+    expect(JSON.stringify(counts).length).toBeLessThan(150);
+
+    // Presentation scope stays outside the cache, while projections honor it.
+    expect(await run({ output: 'counts', ownerAgentId: 'su-b' })).toEqual({
+      counts: { decisionItems: 20, decisionPlans: 1, alerts: 30, total: 50 }, degraded: false,
+    });
+    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+
+    // A write invalidates derived views together with their source groups.
+    M.groupsOverride = [];
+    expect(await run({ output: 'counts' })).toEqual(counts);
+    getOperatorCache().invalidateByTags('ws-attn', ['harness_plans']);
+    expect(await run({ output: 'refs' })).toEqual({ refs: [], degraded: false });
+    expect(M.readAllPlans).toHaveBeenCalledTimes(2);
+  });
+
+  it('compact views retain the same priority winner for conflicting duplicate ids as the full feed', async () => {
+    const base = { id: 'duplicate', kind: 'plan-item', importance: 'normal', title: 'Item', ownerAgentId: 'su-a' };
+    M.groupsOverride = [
+      { key: 'old', kind: 'plan', planSlug: 'old', title: 'Old', maxImportance: 'normal',
+        items: [{ ...base, tier: 'activity', planSlug: 'old', itemRef: 'old#P-001' }] },
+      { key: 'new', kind: 'plan', planSlug: 'new', title: 'New', maxImportance: 'normal',
+        items: [{ ...base, tier: 'decision', planSlug: 'new', itemRef: 'new#P-001' }] },
+    ];
+    expect(await run({ output: 'counts' })).toEqual({
+      counts: { decisionItems: 1, decisionPlans: 1, alerts: 0, total: 1 }, degraded: false,
+    });
+    expect(await run({ output: 'refs' })).toEqual({
+      refs: [{ id: 'duplicate', itemRef: 'new#P-001', planSlug: 'new', ownerAgentId: 'su-a' }], degraded: false,
+    });
+  });
+
+  it('measures cold and warm transport construction without serializing detail bodies for compact views', async () => {
+    const items = Array.from({ length: 1_000 }, (_, i) => ({
+      id: `row-${i}`, kind: 'plan-item', tier: 'decision', planSlug: 'alpha',
+      importance: 'normal', title: `Item ${i}`, body: 'x'.repeat(2_000), itemRef: `alpha#${i}`,
+    }));
+    M.groupsOverride = [{ key: 'alpha', kind: 'plan', planSlug: 'alpha', title: 'Alpha', maxImportance: 'normal', items }];
+    const coldStart = performance.now();
+    await run({ output: 'counts' });
+    const coldMs = performance.now() - coldStart;
+    const timings = { feed: [] as number[], counts: [] as number[], refs: [] as number[] };
+    const bytes = { feed: 0, counts: 0, refs: 0 };
+    const outputs = ['feed', 'counts', 'refs'] as const;
+    for (let round = 0; round < 20; round++) {
+      // Rotate order so one mode does not always pay first-call/JIT effects.
+      for (let n = 0; n < outputs.length; n++) {
+        const output = outputs[(round + n) % outputs.length]!;
+        const start = performance.now();
+        const serialized = JSON.stringify(await run({ output, limit: null }));
+        JSON.parse(serialized); // same JSON round trip as the in-process tool read
+        timings[output].push(performance.now() - start);
+        bytes[output] = Buffer.byteLength(serialized);
+      }
+    }
+    expect(M.readAllPlans).toHaveBeenCalledTimes(1);
+    expect(bytes.feed).toBeGreaterThan(2_000_000);
+    expect(bytes.counts).toBeLessThan(150);
+    expect(bytes.refs).toBeLessThan(bytes.feed / 20);
+    const p50Ms = Object.fromEntries(outputs.map((output) => [
+      output, timings[output].sort((a, b) => a - b)[10],
+    ]));
+    // Evidence, not a flaky machine-speed threshold. The assertions above guard
+    // source coalescing and bounded payloads on every CI run.
+    console.info('ATTENTION_PROJECTION_BENCHMARK', JSON.stringify({ items: items.length, callsPerMode: 20, coldMs, p50Ms, bytes }));
   });
 
   it("a plan-table write BUSTS the entry", async () => {

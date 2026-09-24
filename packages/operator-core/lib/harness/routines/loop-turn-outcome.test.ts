@@ -259,6 +259,42 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
   });
 
+  it('a missing tool-reference API 400 pauses the loop and surfaces fresh-session recovery', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    mockResolvedTyped(vi.mocked(captureImprovement).mockClear(), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockClear().mockResolvedValue({ wired: true, result: { fired: true } });
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: "API Error: 400 Tool reference 'Monitor' not found in available tools",
+        stderrTail: '',
+      }),
+      { sql: sql as never, recordFire, autoPause },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'permanent' });
+    expect(res.rearmedMs).toBeUndefined();
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-owner', 'resume-turn-death:permanent', 'error');
+    expect(autoPause).toHaveBeenCalledWith(
+      sql,
+      'loop_su_owner',
+      expect.stringContaining('stale tool reference'),
+      'loop-turn-outcome',
+    );
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+    const body = vi.mocked(captureImprovement).mock.calls.at(-1)?.[0]?.body as string;
+    expect(body).toContain('stale-tool-reference terminal guard');
+    expect(body).toContain('fresh session');
+    expect(body).not.toContain('every wake risks re-firing');
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
+
   it('a context-overflow death queues carry-respawn first, then re-arms the loop cold through CAS', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(claimWatchdogFire).mockResolvedValue(false);

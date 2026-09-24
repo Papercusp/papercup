@@ -106,10 +106,12 @@ export interface DeferSourceLogContentInput {
  * apply loop (single-threaded JS, same as the merge cursor).
  */
 export class PendingMembershipContent {
-  /** authorDevice → ordered deferred ops (insertion order). */
-  private readonly buckets = new Map<string, DeferredMemberContentOp[]>();
-  /** sourceLogKey → ordered deferred ops waiting for admission identity resolution. */
-  private readonly sourceLogBuckets = new Map<string, DeferredSourceLogContentOp[]>();
+  /** authorDevice → deferred ops keyed by {@link memberOpIdentity}, in insertion order.
+   *  P-523: Maps make dedupe, eviction and the TTL sweep O(1) per op; the arrays they
+   *  replaced cost a scan per defer (D-009). */
+  private readonly buckets = new Map<string, Map<string, DeferredMemberContentOp>>();
+  /** sourceLogKey → deferred ops waiting for admission identity resolution, same shape. */
+  private readonly sourceLogBuckets = new Map<string, Map<string, DeferredSourceLogContentOp>>();
   /** Monotone insertion counter (deterministic ordering; never wall-clock). */
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
@@ -139,13 +141,14 @@ export class PendingMembershipContent {
    */
   defer(input: DeferMemberContentInput, now: number): boolean {
     this.sweepExpired(now);
-    let list = this.buckets.get(input.authorDevice);
-    if (!list) {
-      list = [];
-      this.buckets.set(input.authorDevice, list);
+    let bucket = this.buckets.get(input.authorDevice);
+    if (!bucket) {
+      bucket = new Map();
+      this.buckets.set(input.authorDevice, bucket);
     }
-    if (list.some((d) => sameOp(d, input))) return false; // already pending (re-fold / re-drain)
-    list.push({
+    const id = memberOpIdentity(input);
+    if (bucket.has(id)) return false; // already pending (re-fold / re-drain)
+    bucket.set(id, {
       authorDevice: input.authorDevice,
       tableTag: input.tableTag,
       rowKey: input.rowKey,
@@ -168,13 +171,14 @@ export class PendingMembershipContent {
    */
   deferUnresolvedSourceLog(input: DeferSourceLogContentInput, now: number): boolean {
     this.sweepExpired(now);
-    let list = this.sourceLogBuckets.get(input.sourceLogKey);
-    if (!list) {
-      list = [];
-      this.sourceLogBuckets.set(input.sourceLogKey, list);
+    let bucket = this.sourceLogBuckets.get(input.sourceLogKey);
+    if (!bucket) {
+      bucket = new Map();
+      this.sourceLogBuckets.set(input.sourceLogKey, bucket);
     }
-    if (list.some((d) => sameOp(d, input))) return false;
-    list.push({
+    const id = memberOpIdentity(input);
+    if (bucket.has(id)) return false;
+    bucket.set(id, {
       sourceLogKey: input.sourceLogKey,
       tableTag: input.tableTag,
       rowKey: input.rowKey,
@@ -198,11 +202,11 @@ export class PendingMembershipContent {
     this.sweepExpired(now);
     const out: DeferredMemberContentOp[] = [];
     for (const device of devices) {
-      const list = this.buckets.get(device);
-      if (!list || list.length === 0) continue;
+      const bucket = this.buckets.get(device);
+      if (!bucket || bucket.size === 0) continue;
       this.buckets.delete(device);
-      this.total -= list.length;
-      out.push(...list);
+      this.total -= bucket.size;
+      out.push(...bucket.values());
     }
     // FIFO across the (possibly multiple) drained buckets.
     return out.sort((a, b) => a.seq - b.seq);
@@ -216,11 +220,11 @@ export class PendingMembershipContent {
     this.sweepExpired(now);
     const out: DeferredSourceLogContentOp[] = [];
     for (const sourceLogKey of sourceLogKeys) {
-      const list = this.sourceLogBuckets.get(sourceLogKey);
-      if (!list || list.length === 0) continue;
+      const bucket = this.sourceLogBuckets.get(sourceLogKey);
+      if (!bucket || bucket.size === 0) continue;
       this.sourceLogBuckets.delete(sourceLogKey);
-      this.total -= list.length;
-      out.push(...list);
+      this.total -= bucket.size;
+      out.push(...bucket.values());
     }
     return out.sort((a, b) => a.seq - b.seq);
   }
@@ -229,21 +233,21 @@ export class PendingMembershipContent {
    *  empty) so genuine non-member content expires even if no member ever joins to drain it.
    *  Returns the count evicted. */
   sweepExpired(now: number): number {
-    let removed = 0;
-    for (const [device, list] of this.buckets) {
-      const live = list.filter((d) => d.expiresAt > now);
-      if (live.length === list.length) continue;
-      removed += list.length - live.length;
-      if (live.length === 0) this.buckets.delete(device);
-      else this.buckets.set(device, live);
-    }
-    for (const [sourceLogKey, list] of this.sourceLogBuckets) {
-      const live = list.filter((d) => d.expiresAt > now);
-      if (live.length === list.length) continue;
-      removed += list.length - live.length;
-      if (live.length === 0) this.sourceLogBuckets.delete(sourceLogKey);
-      else this.sourceLogBuckets.set(sourceLogKey, live);
-    }
+    // Every entry gets the same ttlMs from a non-decreasing `now`, so each bucket expires in
+    // insertion order: pop expired heads and stop at the first live one (P-523).
+    const sweep = <T extends { expiresAt: number }>(buckets: Map<string, Map<string, T>>): number => {
+      let n = 0;
+      for (const [key, bucket] of buckets) {
+        for (const [id, d] of bucket) {
+          if (d.expiresAt > now) break;
+          bucket.delete(id);
+          n++;
+        }
+        if (bucket.size === 0) buckets.delete(key);
+      }
+      return n;
+    };
+    const removed = sweep(this.buckets) + sweep(this.sourceLogBuckets);
     this.total -= removed;
     if (removed > 0) this.evictedSinceCheck = true;
     return removed;
@@ -274,16 +278,16 @@ export class PendingMembershipContent {
     let oldestKey: string | null = null;
     let oldestKind: 'device' | 'sourceLog' | null = null;
     let oldestSeq = Infinity;
-    for (const [device, list] of this.buckets) {
-      const head = list[0]; // each bucket is seq-ascending (push order)
+    for (const [device, bucket] of this.buckets) {
+      const head = bucket.values().next().value; // each bucket is seq-ascending (insertion order)
       if (head && head.seq < oldestSeq) {
         oldestSeq = head.seq;
         oldestKey = device;
         oldestKind = 'device';
       }
     }
-    for (const [sourceLogKey, list] of this.sourceLogBuckets) {
-      const head = list[0];
+    for (const [sourceLogKey, bucket] of this.sourceLogBuckets) {
+      const head = bucket.values().next().value;
       if (head && head.seq < oldestSeq) {
         oldestSeq = head.seq;
         oldestKey = sourceLogKey;
@@ -291,11 +295,11 @@ export class PendingMembershipContent {
       }
     }
     if (oldestKey === null || oldestKind === null) return;
-    const buckets = oldestKind === 'device' ? this.buckets : this.sourceLogBuckets;
-    const list = buckets.get(oldestKey)!;
-    list.shift();
+    const buckets: Map<string, Map<string, unknown>> = oldestKind === 'device' ? this.buckets : this.sourceLogBuckets;
+    const bucket = buckets.get(oldestKey)!;
+    bucket.delete(bucket.keys().next().value!);
     this.total--;
-    if (list.length === 0) buckets.delete(oldestKey);
+    if (bucket.size === 0) buckets.delete(oldestKey);
     this.evictedSinceCheck = true;
   }
 }
@@ -323,14 +327,8 @@ export async function reapplyDrainedMemberContent(
 /** Two deferrals are the SAME iff they project the same row version: same projection + key +
  *  LWW ordering keys. A strictly-newer op for the same key is a DIFFERENT deferral (the apply
  *  path's LWW guard supersedes the stale one on re-apply). */
-function sameOp(
-  d: Pick<DeferredMemberContentOp | DeferredSourceLogContentOp, 'tableTag' | 'rowKey' | 'fedHlc' | 'fedTs'>,
+export function memberOpIdentity(
   input: Pick<DeferMemberContentInput | DeferSourceLogContentInput, 'tableTag' | 'rowKey' | 'fedHlc' | 'fedTs'>,
-): boolean {
-  return (
-    d.tableTag === input.tableTag &&
-    d.rowKey === input.rowKey &&
-    d.fedHlc === (input.fedHlc ?? null) &&
-    d.fedTs === (input.fedTs ?? null)
-  );
+): string {
+  return JSON.stringify([input.tableTag, input.rowKey, input.fedHlc ?? null, input.fedTs ?? null]);
 }

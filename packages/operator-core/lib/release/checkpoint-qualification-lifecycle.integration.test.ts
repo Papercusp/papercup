@@ -4,10 +4,15 @@ import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const db = vi.hoisted(() => ({ sql: null as Sql | null }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: db.sql }) }));
-vi.mock('../pg-bounded-txn', () => ({
-  boundedOrgTxn: async (run: (tx: Sql) => Promise<unknown>) => db.sql!.begin(async (tx) => run(tx as Sql)),
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: db.sql }),
 }));
+vi.mock('../pg-bounded-txn', () => ({
+  boundedOrgTxn: async (run: (tx: Sql) => Promise<unknown>) => db.sql!.begin(async (tx) => run(tx as unknown as Sql)),
+}));
+// Queue projection is a separate filesystem optimization; keep this DB test's fixture isolated.
+vi.mock('./frozen-repair-edit-marker', () => ({ projectFrozenRepairMarker: () => {} }));
 
 import {
   beginQualificationTransaction,
@@ -28,6 +33,7 @@ import {
   markFrozenRepairAdmitted,
 } from './frozen-candidate-repair-queue';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
+import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -203,5 +209,59 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     expect(await fireAwaitsForKey({ eventKey: key, payload: { sha: 'candidate-a123', runId: 'run-a' } })).toEqual([]);
     const second = await fireAwaitsForKey({ eventKey: key, payload: { sha: 'candidate-b123', runId: 'run-b' } });
     expect(second.map((row) => row.id)).toEqual([b.id]);
+  });
+
+  it('moves an admitted repair head and its qualification handoff in one row CAS', async () => {
+    const first = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction;
+    const terminal = settleQualificationTransaction(first, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', reason: 'not-green', green: false, nowMs: 200,
+    }).transaction;
+    const redQueue = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 110,
+    }), { failingTests: ['broken.test.ts'], nowMs: 150 });
+    await seed({ qualificationTransaction: terminal, repair_queue: redQueue });
+    const admitted = markFrozenRepairAdmitted(redQueue, {
+      atMs: 250, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+    await writeFrozenCandidateRepairQueue(target, admitted, { expectedUpdatedAtMs: redQueue.updatedAtMs });
+    const handoff = await metadata();
+    expect(handoff.repair_queue).toMatchObject({ repairHead: 'repair-1', qualificationAttemptId: 'attempt-1' });
+    expect(handoff.qualificationTransaction).toMatchObject({
+      attemptId: 'attempt-1', outcome: { kind: 'red' }, pendingRepairHead: 'repair-1',
+    });
+    const successor = await beginStoredQualification(target, {
+      attemptId: 'attempt-2', candidate: 'repair-1', nowMs: 300,
+    }, { reconcileTerminalRepairQueueForSuccessor: true });
+    expect(successor.status).toBe('updated');
+    const after = await metadata();
+    expect(after.qualificationTransaction).toMatchObject({ attemptId: 'attempt-2', pendingRepairHead: null });
+    expect(after.repair_queue).toMatchObject({ repairHead: 'repair-1', qualificationAttemptId: 'attempt-2' });
+  });
+
+  it('rejects an admitted head whose qualification owner differs and writes neither half', async () => {
+    const first = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction;
+    const terminal = settleQualificationTransaction(first, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', reason: 'not-green', green: false, nowMs: 200,
+    }).transaction;
+    const redQueue = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'candidate-1', qualificationAttemptId: 'foreign-attempt', base: null, nowMs: 110,
+    }), { failingTests: ['broken.test.ts'], nowMs: 150 });
+    await seed({ qualificationTransaction: terminal, repair_queue: redQueue });
+    const before = await metadata();
+    const admitted = markFrozenRepairAdmitted(redQueue, {
+      atMs: 250, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+    await expect(writeFrozenCandidateRepairQueue(target, admitted, {
+      expectedUpdatedAtMs: redQueue.updatedAtMs,
+    })).rejects.toThrow();
+    expect(await metadata()).toEqual(before);
   });
 });

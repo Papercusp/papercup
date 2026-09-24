@@ -248,6 +248,8 @@ export interface CheckpointQualificationTransaction {
   candidate: string | null;
   /** Exact repair-head identity selected for this attempt, when a frozen queue supplied one. */
   repairHead: string | null;
+  /** A newly admitted head waiting for its own successor verification attempt. */
+  pendingRepairHead?: string | null;
   /** Physical run identity that currently owns (or produced) this logical attempt. */
   runId: string | null;
   phase: QualificationPhase;
@@ -660,6 +662,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     !Array.isArray(row.blockers) ||
     !Array.isArray(row.evidenceRefs) ||
     (row.repairHead != null && (typeof row.repairHead !== 'string' || !row.repairHead.trim())) ||
+    (row.pendingRepairHead != null && (typeof row.pendingRepairHead !== 'string' || !row.pendingRepairHead.trim())) ||
     (row.runId != null && (typeof row.runId !== 'string' || !row.runId.trim())) ||
     [row.lastScheduledAtMs, row.lastStartedAtMs, row.lastProgressAtMs, row.lastTerminalVerdictAtMs].some(
       (at) => at != null && (!Number.isFinite(at) || at < 0),
@@ -738,6 +741,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
   return {
     ...(row as CheckpointQualificationTransaction),
     repairHead: typeof row.repairHead === 'string' ? row.repairHead.trim() : null,
+    pendingRepairHead: typeof row.pendingRepairHead === 'string' ? row.pendingRepairHead.trim() : null,
     runId: typeof row.runId === 'string' ? row.runId.trim() : null,
     phaseEnteredAtMs,
     phaseDurationsMs,
@@ -768,6 +772,7 @@ export function beginQualificationTransaction(
           },
           candidate: input.candidate?.trim() || current.candidate,
           repairHead: input.repairHead?.trim() || current.repairHead,
+          pendingRepairHead: null,
           runId: input.runId?.trim() || current.runId,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
@@ -799,6 +804,7 @@ export function beginQualificationTransaction(
     },
     candidate: input.candidate?.trim() || null,
     repairHead: input.repairHead?.trim() || null,
+    pendingRepairHead: null,
     runId: input.runId?.trim() || null,
     phase: 'ready',
     phaseEnteredAtMs: nowMs,
@@ -1389,6 +1395,10 @@ async function mutateStoredQualification(
         return { status: 'unreadable' as const, error: 'qualification transaction metadata is malformed' };
       }
       const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
+      const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
+      if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
+        return { status: 'conflict' as const, transaction: current };
+      }
       const transition = change(current, rowContext);
       if (transition.status !== 'updated') return transition;
       const successorInput =

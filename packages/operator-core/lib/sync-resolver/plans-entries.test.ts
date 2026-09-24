@@ -42,6 +42,22 @@ describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
     expect(await resolveNamedQueryV2('plans.attention', { harnessSlug: 'x' })).toEqual([{ key: 'g1' }]);
   });
 
+  it('attention counts request the compact source projection and preserve degraded results', async () => {
+    const counts = { decisionItems: 2, decisionPlans: 1, alerts: 0, total: 2 };
+    callPlansRead.mockResolvedValue({ counts, degraded: true });
+    expect(await resolveNamedQueryV2('plans.attentionCounts', {})).toEqual([{ ...counts, degraded: true }]);
+    expect(callPlansRead).toHaveBeenCalledWith('attention', { output: 'counts' });
+  });
+
+  it('attention refs request the compact source projection and reject a false empty fallback', async () => {
+    const refs = [{ id: 'd1', itemRef: 'plan:a#P-001', planSlug: 'a' }];
+    callPlansRead.mockResolvedValueOnce({ refs, degraded: false });
+    expect(await resolveNamedQueryV2('plans.attentionRefs', {})).toEqual(refs);
+    expect(callPlansRead).toHaveBeenCalledWith('attention', { output: 'refs' });
+    callPlansRead.mockResolvedValueOnce({ refs: [], degraded: true });
+    await expect(resolveNamedQueryV2('plans.attentionRefs', {})).rejects.toThrow('Attention refs unavailable');
+  });
+
   it('plans.search → search verb, unwraps .hits', async () => {
     callPlansRead.mockResolvedValue({ hits: [{ plan: 'a', score: 1 }] });
     expect(await resolveNamedQueryV2('plans.search', { query: 'q' })).toEqual([{ plan: 'a', score: 1 }]);

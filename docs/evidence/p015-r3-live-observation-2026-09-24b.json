@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane NATURAL observation (2026-09-24b): a fleet-leader posture span with real tool and inference rows, a naturally lagging acknowledgement with fail-closed stale-artifact denials on the STAGING operator, and a generation-mismatch full-resync after a carry-respawn",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "rubricCriterion": "R-3 (AUTO-BAR-R-3-P-008/P-009/P-040/P-041@6)",
+  "observer": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "recordedBy": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+  "capturedAt": "2026-09-24T07:35:04.667Z",
+  "command": [
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 < .papercusp/scratch/r7/r3-natural/q-nat.sql   # read-only; SQL in replication[]",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 < .papercusp/scratch/r7/r3-natural/q-nat2.sql  # read-only; SQL in replication[]",
+    "curl -s 127.0.0.1:3170/api/health; curl -s 127.0.0.1:3070/api/health"
+  ],
+  "commandBasis": "Nothing was driven or injected. Every row below was produced by ordinary fleet traffic; the observer only READ it afterwards. The candidate rows were first located with dev:pg_query and then re-read in two read-only psql passes whose SQL is reproduced verbatim in replication[]. Outputs: q-nat.txt (sha256 9cdd6b9fd6adc2f848050fed247f6c0f4a03ccb614420f44d6824055726069ba) and q-nat2.txt (sha256 24517e40d85bce3aaf41169eca4c9a88d0e0a9ba298ca8c6242954138a1e9dbe).",
+  "exitCode": 0,
+  "startedAt": "2026-09-24T07:33:56.361Z",
+  "finishedAt": "2026-09-24T07:35:04.667Z",
+  "timeBasis": "startedAt/finishedAt bracket the two psql passes (database clock_timestamp() 07:33:56.44Z and 07:35:04.64Z). psql rendered timestamps in the box-local -04:00 zone; every time quoted here is converted to UTC. Health reads at 07:34:21Z: :3170 sha d06ec6cafb, :3070 sha 80521d598f.",
+  "summary": "Three unforced live observations close the R-3 legs the independent grade (EI-24105995228250975) marked unobserved. (A) Leader posture: fleet leader su-f99310ce applied stack [autonomy:su.mode-auto, fleet-posture:su.fleet-leader] at generation 13 (desired 19162, prepared 19165, applied 19166, all actor == owner, principal system:superuser, adv session 30269). Two persisted layer spans (autonomy, fleet-posture:su.fleet-leader) cover 05:38:55.98Z-06:06:36.50Z. On that span, 502 tool invocations and 145 Opus inference samples (100,163 output tokens) join to activation 19166 with its stack refs and specification revision a382118dc9ee. 110 of the tool rows were served by the STAGING operator :3170 (builds aa5d9aad1b and 8702d166fa, whose four R-3 source blobs equal canonical HEAD), including model-initiated plans:audit, testing:run and plans:bind-spec-evidence. (B) Lagging acknowledgement and fail-closed: on :3170 d06ec6cafb, su-7273d7a5 self-compacted at 07:29:22Z. Its relaunch wrote desired generation 195 (event 19290, source restart, spec af77a735edb6) at 07:29:33.79Z while applied still held generation 193 (bbe2b58fe582). During the 19.3 s lag, two activity:report calls (tool rows 29358158 at 07:29:34.39Z and 29358169 at 07:29:40.76Z) were refused authorization_denied with \"Identity capability (unresolved): stale-artifact\". The turn-start boundary then wrote prepared 19291 and applied 19292 at 07:29:53.05Z-07:29:53.08Z. Every one of the session's next 13 calls succeeded, including coord:orient at 07:30:10.26Z. (C) Resync: after the observer's own forced carry-respawn, the server wrote desired generation 123 (event 19287, source restart) at 07:25:09.42Z. The turn-start hook delivered a CTRL full-resync with reason generation-mismatch (previousGeneration 121, generation 123, status desired, applied revision trailing) at 07:25:09.478Z, and the boundary wrote prepared 19288 and applied 19289 at 07:25:15.50Z-07:25:15.52Z. The following coord:orient { afterCompaction } left session_briefs at generation 124, delivered 124, applied.",
+  "subject": {
+    "workspaceId": "papercusp-workspace",
+    "leaderPosture": {
+      "ownerId": "su-f99310ce-83a4-42d8-add9-dde7f549c713",
+      "advSessionId": 30269,
+      "activationEventId": 19166,
+      "controlGeneration": 13
+    },
+    "laggingAck": {
+      "ownerId": "su-7273d7a5-ed8f-4ca4-ac4d-d31fc4e8c396",
+      "advSessionId": 29780,
+      "activationEventIds": [
+        19290,
+        19291,
+        19292
+      ],
+      "stagingOperator": {
+        "port": 3170,
+        "healthSha": "d06ec6cafb"
+      }
+    },
+    "resync": {
+      "ownerId": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+      "advSessionId": 29827,
+      "activationEventIds": [
+        19287,
+        19288,
+        19289
+      ]
+    },
+    "note": "All three subjects are ordinary sessions doing their own work. None was launched, prodded or instrumented for this observation."
+  },
+  "sourceBlobs": {
+    "basis": "git rev-parse <ref>:<path>. Identical in aa5d9aad1b, 8702d166fa and d06ec6cafb (the staging builds that served legs A and B), 41b4c7a88e, and canonical HEAD 388f1ea271. The :3070 build 80521d598f carries OLDER grants-port 776b9da77d and control-anchor 48a4c4f1dc; the :3070-served rows in leg A are counted separately and are not relied on for the staging claim.",
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": "150edc7d8d",
+    "packages/operator-core/lib/identity-management.ts": "492f1fe36b",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts": "49a6b9c45c",
+    "packages/operator-core/lib/session-identity-attribution.ts": "cb25149512"
+  },
+  "replication": [
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-natural/q-nat.sql",
+      "sha256": "2e872c0ac0f1b5a20324c85c5a1a5695dec0bdd4e2f2eb5a1d934e69f2b03ff3",
+      "sql": "\\pset footer off\n\\echo === observed_at\nSELECT clock_timestamp() AS observed_at;\n\n\\echo === A1 leader-posture activation (su-f99310ce, gen 13) and its successor\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state,\n       e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.session_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713'\n   AND e.control_generation IN (13, 15)\n ORDER BY e.id;\n\n\\echo === A2 activation span 19166\nSELECT activation_event_id, control_generation, actor_id, principal_id, adv_session_id, stack_refs, left(specification_revision,12) AS spec, active_from, active_until\n  FROM harness_shared.session_identity_activation_spans\n WHERE workspace_id='papercusp-workspace' AND owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713' AND activation_event_id = 19166;\n\n\\echo === A3 persisted per-layer spans for activation 19166\nSELECT activation_event_id, layer_slot, layer_ref, layer_id, left(specification_revision,12) AS spec, left(state_revision,12) AS state, active_from, active_until\n  FROM harness_shared.session_identity_layer_spans\n WHERE owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713' AND activation_event_id = 19166\n ORDER BY layer_slot;\n\n\\echo === A4 launch receipt (adv_sessions 30269)\nSELECT id, coord_owner_id, session_id, launch_spec->>'agent' AS agent, launch_spec->'stack' AS stack, launch_spec->>'principalId' AS principal,\n       left(launch_spec->>'specificationRevision',12) AS launch_spec_rev, left(launch_spec->>'stateRevision',12) AS launch_state_rev,\n       launch_spec->>'launchedBy' AS launched_by, jsonb_array_length(COALESCE(launch_spec->'identityHistory','[]'::jsonb)) AS identity_history_len\n  FROM harness_shared.adv_sessions WHERE id = 30269;\n\n\\echo === A5 tool invocations attributed to activation 19166, by serving host\nSELECT serving_host, serving_build_sha, count(*) AS n, min(invoked_at) AS first, max(invoked_at) AS last\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713'\n   AND invoked_at >= '2026-09-24 05:38:55.984804+00' AND invoked_at < '2026-09-24 06:06:36.497465+00'\n   AND identity_activation_event_id = 19166\n GROUP BY 1,2 ORDER BY 1,2;\n\n\\echo === A6 sample model-initiated tool rows on activation 19166 (excluding hook-issued locks/activity/journal rows)\nSELECT id, tool_name, status, serving_host, serving_build_sha, invoked_at, identity_activation_event_id AS act, identity_stack_refs, left(identity_specification_revision,12) AS spec\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713'\n   AND invoked_at >= '2026-09-24 05:38:55.984804+00' AND invoked_at < '2026-09-24 06:06:36.497465+00'\n   AND identity_activation_event_id = 19166\n   AND tool_name IN ('plans:audit','testing:run','plans:bind-spec-evidence','coord:glance')\n ORDER BY invoked_at LIMIT 6;\n\n\\echo === A7 inference usage samples attributed to activation 19166\nSELECT count(*) AS n, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AS first, max(to_timestamp(ts/1000.0)) AS last,\n       array_agg(DISTINCT model_class) AS model_classes, array_agg(DISTINCT session_id) AS sessions, sum(output_tokens) AS output_tokens\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace'\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-24 05:38:55.984804+00')*1000)::bigint\n   AND ts <  (extract(epoch FROM timestamptz '2026-09-24 06:06:36.497465+00')*1000)::bigint\n   AND identity_owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713' AND identity_activation_event_id = 19166;\nSELECT id, to_timestamp(ts/1000.0) AS at, source, model_class, session_id, identity_activation_event_id AS act, identity_stack_refs, left(identity_specification_revision,12) AS spec\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace'\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-24 05:38:55.984804+00')*1000)::bigint\n   AND ts <  (extract(epoch FROM timestamptz '2026-09-24 06:06:36.497465+00')*1000)::bigint\n   AND identity_owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713' AND identity_activation_event_id = 19166\n ORDER BY ts LIMIT 3;\n\n\\echo === B1 lagging acknowledgement + stale-artifact denial (su-7273d7a5): activation events\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state,\n       e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-7273d7a5-ed8f-4ca4-ac4d-d31fc4e8c396'\n   AND e.id IN (19269, 19270, 19271, 19290, 19291, 19292)\n ORDER BY e.id;\n\n\\echo === B2 tool invocations for su-7273d7a5, 07:29:20Z-07:30:12Z\nSELECT id, tool_name, status, error_code, left(error_message, 160) AS error_message, serving_host, serving_build_sha, invoked_at\n  FROM harness_shared.tool_invocations\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-7273d7a5-ed8f-4ca4-ac4d-d31fc4e8c396'\n   AND invoked_at BETWEEN '2026-09-24T07:29:20Z' AND '2026-09-24T07:30:12Z'\n ORDER BY invoked_at;\n\n\\echo === B3 su-7273d7a5 control state now\nSELECT control_generation, control_delivered_generation, control_state->'activation'->>'status' AS status,\n       left(control_state->'activation'->'desired'->>'specificationRevision',12) AS desired_spec,\n       left(control_state->'activation'->'applied'->>'specificationRevision',12) AS applied_spec, updated_at\n  FROM harness_shared.session_briefs WHERE workspace_id='papercusp-workspace' AND owner_id='su-7273d7a5-ed8f-4ca4-ac4d-d31fc4e8c396';\n\n\\echo === C1 observer full-resync after a carry-respawn (su-38e71009): activation events\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state,\n       e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd'\n   AND e.id BETWEEN 19285 AND 19289\n ORDER BY e.id;\n\n\\echo === C2 observer control state now\nSELECT control_generation, control_delivered_generation, control_state->'activation'->>'status' AS status, updated_at\n  FROM harness_shared.session_briefs WHERE workspace_id='papercusp-workspace' AND owner_id='su-38e71009-f36b-4ca7-8a14-e617921fd7cd';\n"
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7/r3-natural/q-nat2.sql",
+      "sha256": "07d3e7d12c69f9d7f1af857cd8047a9f073f9afae1ee8121526bd89a89e0768f",
+      "sql": "\\pset footer off\n\\echo === observed_at\nSELECT clock_timestamp() AS observed_at;\n\n\\echo === A4b launch receipt identityHistory entries (adv_sessions 30269)\nSELECT ord, left(h->>'specificationRevision',12) AS spec, left(h->>'stateRevision',12) AS state, h->'stack' AS stack, h->>'appliedAt' AS applied_at, h->>'recordedAt' AS recorded_at\n  FROM harness_shared.adv_sessions a, jsonb_array_elements(COALESCE(a.launch_spec->'identityHistory','[]'::jsonb)) WITH ORDINALITY AS x(h, ord)\n WHERE a.id = 30269 ORDER BY ord;\n\n\\echo === A6b model-initiated tool rows served by :3170 on activation 19166 (distinct tools, first row id each)\nSELECT tool_name, serving_build_sha, count(*) AS n, min(id) AS first_id, min(invoked_at) AS first_at\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-f99310ce-83a4-42d8-add9-dde7f549c713'\n   AND invoked_at >= '2026-09-24 05:38:55.984804+00' AND invoked_at < '2026-09-24 06:06:36.497465+00'\n   AND identity_activation_event_id = 19166 AND serving_host = 'port-3170'\n GROUP BY 1,2 ORDER BY 1,2;\n"
+    },
+    {
+      "tool": "hook output (verbatim copy)",
+      "file": ".papercusp/scratch/r7/r3-natural/ctrl-hook-0725.txt",
+      "sha256": "f7e8820ebbff245badcf37db2bb359294e1c3226cefd7500cc7f277b824d7b86",
+      "note": "The UserPromptSubmit additionalContext the observer received at 07:25Z; it opens with the CTRL full-resync block (stateHash 8532623062a2fb5f...)."
+    }
+  ],
+  "assertions": [
+    {
+      "id": "leader-posture-applied-receipts",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "su-f99310ce generation 13: 19162 desired (restart) 05:38:39.93Z, 19165 prepared 05:38:55.96Z, 19166 applied 05:38:55.98Z, all with stack [autonomy:su.mode-auto, fleet-posture:su.fleet-leader], spec a382118dc9ee, state 18cf633bd759, adv 30269, actor == owner, principal system:superuser, failure null. Generation 15 (19190 prepared, 19191 applied 06:06:36.50Z) repeats the same revision pair and closes the 19166 span."
+    },
+    {
+      "id": "leader-posture-layer-spans",
+      "scope": "per-layer-span-usage-join",
+      "passed": true,
+      "evidence": "session_identity_layer_spans holds two rows for activation 19166: layer_slot autonomy (autonomy:su.mode-auto) and layer_slot fleet-posture (fleet-posture:su.fleet-leader, layer_id su.fleet-leader), both spec a382118dc9ee, active 05:38:55.98Z-06:06:36.50Z, matching session_identity_activation_spans."
+    },
+    {
+      "id": "leader-span-tool-join",
+      "scope": "per-layer-span-usage-join",
+      "passed": true,
+      "evidence": "tool_invocations_identity_attribution joins 502 rows to activation 19166 inside its span: 392 served by port-3070 80521d598f and 110 by port-3170 (75 on aa5d9aad1b, 35 on 8702d166fa). The :3170 rows include model-initiated plans:audit (2, first id 29347047), testing:run (3, first ids 29345045 and 29345704), plans:bind-spec-evidence (4), plans:evaluate-spec-test-adequacy (91) and improvements:capture (1). Each row carries identity_stack_refs [autonomy:su.mode-auto, fleet-posture:su.fleet-leader] and identity_specification_revision a382118dc9ee."
+    },
+    {
+      "id": "leader-span-inference-join",
+      "scope": "per-layer-span-usage-join",
+      "passed": true,
+      "evidence": "agent_usage_samples_identity_attribution joins 145 samples (ids 159403-160161, 05:39:02.33Z-06:06:31.63Z, model_class opus, source interactive, native session 1ded16a0-3d5a-4195-bf6a-825f3a2d1e2f, 100,163 output tokens) to activation 19166 with the same stack refs and spec a382118dc9ee."
+    },
+    {
+      "id": "lagging-ack-converges",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "su-7273d7a5 on :3170 d06ec6cafb: session:request-compaction ok at 07:29:22.36Z (tool row 29358128). Relaunch wrote 19290 desired generation 195 (source restart, spec af77a735edb6) at 07:29:33.79Z while the last applied was 19271 generation 193 (bbe2b58fe582, 07:10:58.31Z). Applied trailed desired for 19.3 s, then the turn-start boundary wrote 19291 prepared (07:29:53.05Z) and 19292 applied (07:29:53.08Z). All three events have actor == owner, principal system:superuser, adv 29780, failure null. session_briefs now reads generation 196, delivered 196, status applied, desired spec == applied spec af77a735edb6."
+    },
+    {
+      "id": "stale-artifact-fails-closed",
+      "scope": "authority-reduction-fails-closed",
+      "passed": true,
+      "evidence": "Inside that lag, the kernel preflight on :3170 d06ec6cafb (identity-grants-port.ts 150edc7d8d) refused the session twice: tool rows 29358158 (07:29:34.39Z) and 29358169 (07:29:40.76Z), activity:report, status error, error_code authorization_denied, message \"Kernel preflight denied tool \\\"activity:report\\\": Identity capability (unresolved): stale-artifact\". The next row after applied, 29358214 coord:whoami at 07:29:59.70Z, succeeded, and so did all 12 rows after it through 07:30:11.14Z. Authority that the host had not acknowledged was not exercised; tool execution resumed only after the applied receipt."
+    },
+    {
+      "id": "generation-mismatch-full-resync",
+      "scope": "desired-prepared-applied-receipts",
+      "passed": true,
+      "evidence": "Observer su-38e71009: 19286 applied generation 121 (07:24:39.29Z). After the watchdog force-compaction respawn, 19287 desired generation 123 (source restart, spec 2893a83ca62e, state 18cf633bd759) at 07:25:09.42Z. The turn-start hook delivered ⟦CTRL:full-resync⟧ with reason generation-mismatch, previousGeneration 121, generation 123, activation status desired and applied still 378afcbf... (recordedAt 07:25:09.478Z, ctrl-hook-0725.txt). 19288 prepared and 19289 applied at 07:25:15.50Z-07:25:15.52Z (actor == owner, adv 29827). After coord:orient { afterCompaction }, session_briefs reads generation 124, delivered 124, status applied."
+    },
+    {
+      "id": "actor-principal-session-stability",
+      "scope": "actor-principal-session-stability",
+      "passed": true,
+      "evidence": "In all 16 activation events read (A: 19162, 19165, 19166, 19190, 19191; B: 19269-19271, 19290-19292; C: 19285-19289), actor_id == owner_id and principal_id == system:superuser, and adv_session_id stays constant per owner (30269, 29780, 29827) across restart-sourced generations."
+    }
+  ],
+  "notProven": [
+    "The launch RECEIPT for the leader span. adv_sessions 30269.launch_spec is rewritten by later relaunches. Read at 07:35Z it carries spec e7bd2e19fb02 and two identityHistory entries (4da93f1973c8), not a382118dc9ee. The 05:38Z revision is carried by activation events 19162/19165/19166 and the layer spans, not by the current launch row.",
+    "Which stale-artifact sub-reason fired. The refusal row stores only the class; identity-grants-port.ts can return replay-failed, record-revision-mismatch, receipt-missing or grants-asymmetric. Whether generation 195 narrowed or broadened grants was not read.",
+    "A live forced REDUCTION transition. The refusals were of a pending, unacknowledged specification on a relaunch. The reduction-specific fail-closed property is carried by the tree mutant on grants-port 150edc7d8d (runs 19250225 baseline, 19250227 mutant caught).",
+    "That the observer resync was caused by a lost acknowledgement rather than a skipped generation. Generation 122 has no activation event; the CTRL block states only generation-mismatch 121 -> 123.",
+    "The leader posture was served by a mix of hosts. The activation events carry no serving host, and 392 of the 502 tool rows were served by :3070 80521d598f, which has older grants-port and control-anchor blobs.",
+    "Independent passing grading."
+  ],
+  "supersedes": null,
+  "complements": "docs/evidence/p015-r3-live-observation-2026-09-24a.json (the driven ideate on/off drill on :3170 41b4c7a88e)",
+  "sourcePaths": [
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "testRunIds": []
+}

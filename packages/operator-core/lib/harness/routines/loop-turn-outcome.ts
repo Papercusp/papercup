@@ -61,6 +61,7 @@ import { buildLoopWakePrompt, materializeLoop as defaultMaterializeLoop, type Ma
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
   classifyResumeTurnExit,
+  isUnavailableToolReferenceError,
   isStaleResumeTargetError,
   type ResumeTurnExitRaw,
   type ResumeTurnOutcome,
@@ -467,6 +468,7 @@ export async function handleLoopResumeTurnExit(
 
     const klass = outcome.error.class;
     const staleResumeTarget = isStaleResumeTargetError(outcome);
+    const unavailableToolReference = isUnavailableToolReferenceError(outcome);
     // 1. Feed the EXISTING autoloop circuit (P0b). recordFire keys off activeWorkspaceId(),
     //    so run it under the loop's workspace (the delivery lives in the coord workspace).
     await runWithWorkspace(ref.workspaceId, () =>
@@ -505,9 +507,13 @@ export async function handleLoopResumeTurnExit(
     let delayMs: number | undefined;
     let rearmed = false;
     let recovery: ContextOverflowRecoveryResult | undefined;
-    if (contextOverflow || staleResumeTarget || authWall) {
+    if (contextOverflow || staleResumeTarget || authWall || unavailableToolReference) {
       const autoPause = deps.autoPause ?? defaultAutoPauseLoopRoutine;
-      const pauseReason = contextOverflow
+      const pauseReason = unavailableToolReference
+        ? 'loop-turn-outcome: stale tool reference (' +
+          outcome.error.message +
+          '); paused to prevent replaying the rejected transcript'
+        : contextOverflow
         ? `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`
         : authWall
           ? malformedAuthorization
@@ -538,7 +544,22 @@ export async function handleLoopResumeTurnExit(
       });
     }
     log(
-      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : staleResumeTarget ? 'paused for stale resume target' : authWall ? 'paused for auth wall (needs new creds / different account)' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
+      "loop '" +
+        routineId +
+        "' turn DIED (" +
+        klass +
+        ") → recorded error + " +
+        (unavailableToolReference
+          ? 'paused for stale tool reference'
+          : contextOverflow
+            ? 'paused for fresh-context recovery'
+            : staleResumeTarget
+              ? 'paused for stale resume target'
+              : authWall
+                ? 'paused for auth wall (needs new creds / different account)'
+                : rearmed
+                  ? `re-armed +${Math.round(delayMs! / 1000)}s`
+                  : 'not re-armed (already advanced)'),
     );
 
     // 3. EI-13818 (c): raise a LOUD, debounced signal the first time this loop is observed
@@ -603,7 +624,11 @@ export async function handleLoopResumeTurnExit(
               // wake-loop that was already stopped. Give each class the residue it actually
               // has, and — for the paused ones — the criterion that CLOSES the item, since
               // by the time anyone reads it the answer is usually "already resolved".
-              (contextOverflow || staleResumeTarget
+              (unavailableToolReference
+                ? 'The loop was paused after the provider rejected its saved tool reference: ' +
+                  outcome.error.message +
+                  '. Resume from a fresh session using the durable carry/checkpoint after correcting or restoring the available tool surface. Check this owner’s claims and fleet-leader state for stranded work.'
+                : contextOverflow || staleResumeTarget
                 ? `The loop was PAUSED by a terminal guard, so it is NOT re-firing on a cadence and there ` +
                   `is no wake-loop left to clear. The residue to check is STRANDED WORK, because this ` +
                   `owner's session is gone: does owner ${ref.targetOwnerId ?? 'unknown'} still hold claims ` +
@@ -630,6 +655,8 @@ export async function handleLoopResumeTurnExit(
                       ? 'a carry-respawn was queued and the loop will resume cold.'
                       : `recovery was not queued${recovery?.reason ? ` (${recovery.reason})` : ''}.`
                   }]`
+                : unavailableToolReference
+                ? ' [stale-tool-reference terminal guard: the provider rejected a saved tool reference absent from the current tool surface; the loop was paused instead of replaying the same transcript.]'
                 : malformedAuthorization
                 ? ` [malformed-authorization terminal guard: the header value could not be encoded; do not wait for a provider reset. Inspect the credential-construction path and relaunch with a valid credential.]`
                 : staleResumeTarget

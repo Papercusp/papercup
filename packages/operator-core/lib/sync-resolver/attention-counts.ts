@@ -32,9 +32,8 @@
  * whereas the client counts the GROUPS it renders. Counting what the client
  * counts is what makes the parity test meaningful.
  *
- * NOTE ON WHAT THIS SAVES. Server-side work is unchanged — this rides the same
- * `cachedRead` entry the feed uses. The saving is wire bytes, IPC/base64
- * inflation, JSON.parse, and retained client memory: ~1MB becomes ~100 bytes.
+ * The canonical attention read derives these projections inside its existing
+ * cache build. Compact callers avoid serializing and parsing the full feed.
  */
 
 /** The attention tiers, as the client's `AttentionTier` union. */
@@ -206,12 +205,12 @@ export interface AttentionCountsRow extends AttentionCounts {
  * off the wrapper — deriving all-zeros on EVERY call, degraded or not.
  */
 export function attentionCountsRowFromOutcome(
-  outcome: DeadlineOutcome<{ groups?: unknown[] } | null | undefined>,
+  outcome: DeadlineOutcome<{ groups?: unknown[]; counts?: AttentionCounts; degraded?: boolean } | null | undefined>,
 ): AttentionCountsRow {
   const groups = outcome.value?.groups;
   return {
-    ...deriveAttentionCounts(Array.isArray(groups) ? groups : []),
-    degraded: outcome.degraded,
+    ...(outcome.value?.counts ?? deriveAttentionCounts(Array.isArray(groups) ? groups : [])),
+    degraded: outcome.degraded || outcome.value?.degraded === true,
   };
 }
 

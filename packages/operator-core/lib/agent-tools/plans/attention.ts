@@ -78,6 +78,15 @@ import { runWithWorkspace } from '../../workspace-als';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ownerAttentionSourcesFor, type OwnerAttentionSource } from '../../interest-profiles';
 import { attachListMeta } from '../../sync-resolver/list-meta';
+import { deriveAttentionCounts, deriveAttentionRefs } from '../../sync-resolver/attention-counts';
+
+function attentionProjections(groups: ReturnType<typeof buildAttentionGroups>) {
+  // The full feed chooses duplicate winners by global priority before grouping.
+  // Preserve that exact presentation semantics once per build, including ref
+  // order; deriving straight from source groups could choose a different copy.
+  const presented = paginateAttentionGroups(groups, { limit: null }).groups;
+  return { counts: deriveAttentionCounts(presented), refs: deriveAttentionRefs(presented) };
+}
 
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
@@ -109,11 +118,16 @@ function emptyAttentionResult(): {
   groups: ReturnType<typeof buildAttentionGroups>;
   tierCounts: ReturnType<typeof groupByTier>['counts'];
   itemCount: number;
+  projections: ReturnType<typeof attentionProjections>;
+  degraded: boolean;
 } {
-  return { groups: buildAttentionGroups([]), tierCounts: groupByTier([]).counts, itemCount: 0 };
+  const groups = buildAttentionGroups([]);
+  return { groups, tierCounts: groupByTier([]).counts, itemCount: 0, projections: attentionProjections(groups), degraded: true };
 }
 
 const argsSchema = z.object({
+  output: z.enum(['feed', 'counts', 'refs']).optional()
+    .describe('Return the feed (default), badge counts, or drill-in refs. Counts/refs cover the complete scoped feed and ignore limit/offset.'),
   harnessSlug: z
     .string()
     .min(1)
@@ -217,7 +231,8 @@ export default defineTool({
       // already routine at the 5-minute maxDeltaAge below).
       const owner = (args as { ownerAgentId?: unknown } | null | undefined)?.ownerAgentId;
       const ownerKey = typeof owner === 'string' && owner.length > 0 ? owner : '';
-      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}:${ownerKey}`;
+      const output = args.output ?? 'feed';
+      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}:${ownerKey}:${output}`;
     },
     schemaVersion: 'attn-v1',
     // Periodic forced-full reconciliation: a cursor older than 5 min reconciles to a
@@ -288,7 +303,7 @@ export default defineTool({
     // another from cache). Tags are ONLY the trigger-covered plan tables; the other
     // sources (coord_event_log escalations/messages — append-heavy, the coord:inbox
     // D-006 problem) are deliberately un-tagged and bounded by the short SWR softTtl.
-    const { groups, tierCounts } = await cachedRead(
+    const aggregation = await cachedRead(
       ctx as CachedReadCtx,
       {
         tool: 'plans:attention',
@@ -1002,9 +1017,12 @@ export default defineTool({
 
         const groups = buildAttentionGroups(triaged);
         const tierCounts = groupByTier(triaged).counts;
-        return { groups, tierCounts, itemCount: triaged.length };
+        // Derive once per cache build, before transport serialization. The badge
+        // and ref lookup must not copy/sort/serialize full item bodies on every hit.
+        return { groups, tierCounts, itemCount: triaged.length, projections: attentionProjections(groups), degraded: false };
       },
     );
+    const { groups, tierCounts } = aggregation;
 
     // WI-2144754: the owner filter runs in the presentation layer too, BEFORE
     // the window — that ordering is the whole point. Filtering after the page
@@ -1014,6 +1032,18 @@ export default defineTool({
     // dropped-empty-group set stay derived rather than patched.
     const ownerFilter = args.ownerAgentId ?? null;
     const scopedGroups = ownerFilter ? scopeGroupsToOwner(groups, ownerFilter) : groups;
+    if (args.output === 'counts' || args.output === 'refs') {
+      // Older L2 entries may predate projections. Reuse their canonical groups;
+      // neither the presentation mode nor owner filter forks the source cache.
+      const projections = ownerFilter
+        ? attentionProjections(scopedGroups)
+        : aggregation.projections ?? attentionProjections(groups);
+      const degraded = aggregation.degraded === true;
+      ctxAny.metadata?.({ itemCount: projections.counts.total, output: args.output, degraded });
+      return { data: args.output === 'counts'
+        ? { counts: projections.counts, degraded }
+        : { refs: projections.refs, degraded } };
+    }
     // Counts must describe the set they were computed over. `tierCounts` is
     // documented below as "the complete-feed count, not the page count" — with
     // a scope argument in play, the complete feed IS the scoped one, and

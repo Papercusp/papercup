@@ -5564,10 +5564,31 @@ export async function writeFrozenCandidateRepairQueue(
     // a replace here would silently clobber whichever of them a concurrent reader depends on.
     // `jsonb_set(..., true)` creates `gate_health` when the row has none.
     const convergence = buildFrozenRepairConvergenceGateHealth(queue, Date.now());
+    // An admission moves repairHead while the predecessor qualification may still be
+    // terminal or finishing its old physical run. Persist the NEW unjudged head beside
+    // the queue in this one CAS statement; the successor begin consumes this handoff.
+    const latestAdmission = queue.admissions?.at(-1);
+    const handoff = queue.qualificationAttemptId && latestAdmission?.toRepairHead === queue.repairHead
+      ? { from: latestAdmission.fromRepairHead, to: queue.repairHead,
+          attemptId: queue.qualificationAttemptId, atMs: queue.updatedAtMs }
+      : null;
+    const queueWithHandoff = handoff
+      ? `CASE WHEN metadata->'repair_queue'->>'repairHead' = $5::text
+           THEN jsonb_set(
+                  jsonb_set(COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                            '{qualificationTransaction,pendingRepairHead}', to_jsonb($6::text), true),
+                  '{qualificationTransaction,updatedAtMs}', to_jsonb($8::bigint), true)
+           ELSE COALESCE(metadata, '{}'::jsonb) || $3::jsonb END`
+      : `COALESCE(metadata, '{}'::jsonb) || $3::jsonb`;
+    const handoffGuard = handoff
+      ? ` AND (metadata->'repair_queue'->>'repairHead' = $6::text
+                OR (metadata->'repair_queue'->>'repairHead' = $5::text
+                    AND metadata->'qualificationTransaction'->>'attemptId' = $7::text))`
+      : '';
     const written = await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = jsonb_set(
-                COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                ${queueWithHandoff},
                 '{gate_health}',
                 COALESCE(metadata->'gate_health', '{}'::jsonb) || $4::jsonb,
                 true
@@ -5575,13 +5596,14 @@ export async function writeFrozenCandidateRepairQueue(
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
-          AND target_role = 'system:green-checkpoint'${casClause(5)}
+          AND target_role = 'system:green-checkpoint'${handoffGuard}${casClause(handoff ? 9 : 5)}
         RETURNING true AS written`,
       [
         target.workspaceId,
         target.installSlug,
         JSON.stringify({ repair_queue: queue }),
         JSON.stringify({ convergence }),
+        ...(handoff ? [handoff.from, handoff.to, handoff.attemptId, String(handoff.atMs)] : []),
         ...casParams,
       ],
     );

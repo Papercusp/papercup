@@ -65,8 +65,10 @@ function bucketKey(potId: string, epoch: number): string {
  * (single-threaded JS, same as the merge cursor).
  */
 export class PendingEpochContent {
-  /** bucket → ordered deferred ops (insertion order). */
-  private readonly buckets = new Map<string, DeferredContentOp[]>();
+  /** bucket → deferred ops keyed by {@link opIdentity}, in insertion order. P-523: a Map
+   *  makes dedupe and oldest-eviction O(1); the array this replaced cost a scan of the
+   *  whole bucket per defer, which set the pace of a fresh join (D-009). */
+  private readonly buckets = new Map<string, Map<string, DeferredContentOp>>();
   /** Monotone insertion counter (deterministic ordering; never wall-clock). */
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
@@ -91,13 +93,14 @@ export class PendingEpochContent {
    */
   defer(op: OpEnvelope, potId: string, epoch: number): boolean {
     const k = bucketKey(potId, epoch);
-    let list = this.buckets.get(k);
-    if (!list) {
-      list = [];
-      this.buckets.set(k, list);
+    let bucket = this.buckets.get(k);
+    if (!bucket) {
+      bucket = new Map();
+      this.buckets.set(k, bucket);
     }
-    if (list.some((d) => sameOp(d.op, op))) return false; // already pending (re-fold)
-    list.push({ op, potId, epoch, seq: this.seqCounter++ });
+    const id = opIdentity(op);
+    if (bucket.has(id)) return false; // already pending (re-fold)
+    bucket.set(id, { op, potId, epoch, seq: this.seqCounter++ });
     this.total++;
     if (this.total > this.maxPending) this.evictOldest();
     return true;
@@ -110,13 +113,13 @@ export class PendingEpochContent {
    */
   drainEpoch(potId: string, epoch: number): DeferredContentOp[] {
     const k = bucketKey(potId, epoch);
-    const list = this.buckets.get(k);
-    if (!list || list.length === 0) return [];
+    const bucket = this.buckets.get(k);
+    if (!bucket || bucket.size === 0) return [];
     this.buckets.delete(k);
-    this.total -= list.length;
-    // FIFO: insertion order (already ordered by push); explicit sort for safety
+    this.total -= bucket.size;
+    // FIFO: insertion order (a Map iterates in insertion order); explicit sort for safety
     // against any future out-of-order insert path.
-    return list.slice().sort((a, b) => a.seq - b.seq);
+    return [...bucket.values()].sort((a, b) => a.seq - b.seq);
   }
 
   /** Total deferred ops (observability / tests). */
@@ -147,18 +150,19 @@ export class PendingEpochContent {
   private evictOldest(): void {
     let oldestKey: string | null = null;
     let oldestSeq = Infinity;
-    for (const [k, list] of this.buckets) {
-      const head = list[0]; // each bucket is seq-ascending (push order)
+    // Scans buckets, not ops: one bucket per (hive, epoch), so this loop is short.
+    for (const [k, bucket] of this.buckets) {
+      const head = bucket.values().next().value; // each bucket is seq-ascending (insertion order)
       if (head && head.seq < oldestSeq) {
         oldestSeq = head.seq;
         oldestKey = k;
       }
     }
     if (oldestKey === null) return;
-    const list = this.buckets.get(oldestKey)!;
-    list.shift();
+    const bucket = this.buckets.get(oldestKey)!;
+    bucket.delete(bucket.keys().next().value!);
     this.total--;
-    if (list.length === 0) this.buckets.delete(oldestKey);
+    if (bucket.size === 0) this.buckets.delete(oldestKey);
     this.evictedSinceCheck = true;
   }
 }
@@ -166,13 +170,8 @@ export class PendingEpochContent {
 /** Two ops are the SAME deferral iff they project the same row version: same
  *  table + hbKey + ordering key (hlc when present, else ts). This is the LWW
  *  identity — a strictly-newer op for the same key is a DIFFERENT deferral (it
- *  should supersede, and the apply path's LWW guard handles that on re-apply). */
-function sameOp(a: OpEnvelope, b: OpEnvelope): boolean {
-  return (
-    a.table === b.table &&
-    a.hbKey === b.hbKey &&
-    (a.hlc ?? '') === (b.hlc ?? '') &&
-    (a.ts ?? 0) === (b.ts ?? 0) &&
-    a.type === b.type
-  );
+ *  should supersede, and the apply path's LWW guard handles that on re-apply).
+ *  JSON keeps the tuple unambiguous whatever characters a key holds. */
+export function opIdentity(op: Pick<OpEnvelope, 'table' | 'hbKey' | 'hlc' | 'ts' | 'type'>): string {
+  return JSON.stringify([op.table, op.hbKey, op.hlc ?? '', op.ts ?? 0, op.type]);
 }
