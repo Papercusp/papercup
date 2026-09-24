@@ -339,6 +339,85 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
   );
 });
 
+it('waits for a headless Codex model-menu repaint before confirming the existing model', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-late-model-choice-'));
+  const ownerId = uniqueOwner('LATE-MODEL-CHOICE');
+  const { captured, io } = fakeIo();
+  const childCode = [
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+    "process.stdout.write('100% context left\\n› Ask Codex to do anything\\n');",
+    "setTimeout(()=>process.stdout.write('Meet GPT-6 Sol\\n› 1. Try new model\\n2. Use existing model\\n'),300);",
+    "let selected=false,moving=false,input='';process.stdin.on('data',data=>{input+=data;",
+    "if(input.includes('\\u0004'))process.exit(0);",
+    "if(!moving&&input.includes('\\u001b[B')){moving=true;input=input.replace('\\u001b[B','');",
+    "setTimeout(()=>{selected=true;process.stdout.write('› 2. Use existing model\\n');},50);}",
+    "if(input.includes('\\r')){input=input.replace('\\r','');",
+    "process.stdout.write(selected?'EXISTING_MODEL_SELECTED\\n':'PREMATURE_CONFIRM\\n');}});",
+    'setTimeout(()=>process.exit(0),3000);',
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', childCode],
+    cwd: root,
+    env: hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: root }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  try {
+    expect(await waitForOutput(captured, 'EXISTING_MODEL_SELECTED', 2500)).toBe(true);
+    expect(captured()).not.toContain('PREMATURE_CONFIRM');
+    const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+    expect(events).toContain('"kind":"headless-codex-model-choice-kept-existing"');
+  } finally {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+
+it('leaves a later Codex model menu to the agent after a turn was submitted', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-later-model-choice-'));
+  const ownerId = uniqueOwner('LATER-MODEL-CHOICE');
+  const { captured, io } = fakeIo();
+  const childCode = [
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+    "process.stdout.write('100% context left\\n› Ask Codex to do anything\\n');",
+    "let input='';let submitted=false;let answered=false;",
+    "process.stdin.on('data',data=>{input+=data;if(input.includes('\\u0004'))process.exit(0);",
+    "if(!submitted&&input.includes('\\r')){submitted=true;input='';process.stdout.write('FIRST_TURN_SUBMITTED\\n');",
+    "setTimeout(()=>{process.stdout.write('Meet GPT-6 Sol\\n› 1. Try new model\\n2. Use existing model\\n');",
+    "setTimeout(()=>process.stdout.write(answered?'LATER_MENU_AUTO_ANSWERED\\n':'LATER_MENU_UNANSWERED\\n'),400);},100);}",
+    "else if(submitted&&input.includes('\\u001b[B\\r'))answered=true;});",
+    'setTimeout(()=>process.exit(0),3500);',
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', childCode],
+    cwd: root,
+    env: hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: root,
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1' }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  try {
+    expect(await waitForOutput(captured, '100% context left')).toBe(true);
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'turn', data: 'first turn', ownerId });
+    expect(await waitForOutput(captured, 'LATER_MENU_UNANSWERED', 2500), captured()).toBe(true);
+    const eventPath = eventLogPathForOwner(ownerId);
+    if (existsSync(eventPath)) {
+      expect(readFileSync(eventPath, 'utf8')).not.toContain('"kind":"headless-codex-model-choice-kept-existing"');
+    }
+  } finally {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+
 it('quota wall during launch kickoff preserves the host and publishes recovery through discovery', async () => {
   const ownerId = uniqueOwner('QUOTA-STARTUP');
   const sock = socketPathFor(ownerId);
