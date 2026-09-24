@@ -46,6 +46,7 @@ import {
   DELIVERY_TOKEN_KEY,
   resetReadCursorStore,
   stage,
+  annotateReadCursorByToken,
 } from './read-cursors';
 
 describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real getOrgPg client', () => {
@@ -138,6 +139,25 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
       const r = await ackAndRead(owner, surface, { confirmedToken: 'tok-1' });
       expect(r).toEqual({ committed: { gen: 1 }, baseline: false });
       expect(await readRow(owner, surface)).toEqual({ committed: { gen: 1 }, pending: null });
+    });
+
+    it('annotates the exact candidate across pending and committed without altering ACK', async () => {
+      const owner = `su-${randomUUID().slice(0, 8)}`;
+      const surface = 'turn-start-orientation';
+      await stage(owner, surface, { gen: 1, identity: { token: 'tok-1', status: 'pending' } },
+        { deliveryToken: 'tok-1' });
+      expect(await annotateReadCursorByToken(owner, surface, 'identity', 'tok-1',
+        { token: 'tok-1', status: 'bound' })).toBe(true);
+      expect((await ackAndRead(owner, surface, { confirmedToken: 'tok-1' })).committed).toEqual({
+        gen: 1, identity: { token: 'tok-1', status: 'bound' },
+      });
+      expect(await annotateReadCursorByToken(owner, surface, 'identity', 'tok-1',
+        { token: 'tok-1', status: 'verified' })).toBe(true);
+      expect((await readRow(owner, surface))?.committed).toEqual({
+        gen: 1, identity: { token: 'tok-1', status: 'verified' },
+      });
+      expect(await annotateReadCursorByToken(owner, surface, 'identity', 'wrong',
+        { token: 'wrong', status: 'late' })).toBe(false);
     });
 
     it('a MISMATCHED or NULL confirmation discards pending and keeps the proven floor', async () => {

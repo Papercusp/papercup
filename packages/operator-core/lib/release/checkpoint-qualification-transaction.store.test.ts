@@ -197,6 +197,48 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(update.values).toContain(JSON.stringify(current));
   });
 
+  it('re-stamps an inherited repair head when the predecessor runner is proved dead', async () => {
+    const ready = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction;
+    const current = reserveQualificationRunner(ready, {
+      attemptId: 'attempt-1', runnerId: 'dead-runner', candidate: 'candidate-1',
+      leaseDurationMs: 1_000, nowMs: 200,
+    }).transaction;
+    const red = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'], nowMs: 150,
+    });
+    const queue = markFrozenRepairAdmitted(red, {
+      atMs: 250, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+      paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const next = {
+      ...successor, candidate: 'repair-1', requiredAncestorSha: 'repair-1',
+      incumbentLiveness: 'dead' as const, nowMs: 100_000,
+    };
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+
+    const result = await beginStoredQualification(target, next, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: { attemptId: 'attempt-2', previousAttemptId: 'attempt-1' },
+      repairQueueReconciliation: { status: 'preserved', reason: 'matching-untested-repair-head' },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+    expect(update.values).toContain(JSON.stringify('attempt-2'));
+    expect(update.values).toContain(JSON.stringify(queue));
+
+    const unknown = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+    expect((await beginStoredQualification(target, { ...next, incumbentLiveness: 'unknown' }, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    })).status).toBe('conflict');
+    expect(unknown.statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
   it('resumes an unowned repair wait on the exact newly admitted head without waiting three hours', async () => {
     const begun = beginQualificationTransaction(null, {
       attemptId: 'attempt-1',

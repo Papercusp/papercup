@@ -2,8 +2,9 @@
  * Durable dispatch for the backup destructive trio (dbos-durable-flows-adoption
  * P-012). One place that decides, per call, whether to run restoreInPlace /
  * promoteRestore / rollbackPromote as a crash-resumable DBOS workflow (when the
- * backup flag is opted-in AND DBOS has launched) or to call the lib method
- * directly (the A/B fallback — behavior identical to before). Every operator
+ * backup flag is opted-in AND DBOS has launched), refuse an opted-in operation
+ * before its executor launches, or call the lib directly when the flag is off.
+ * Every operator
  * entry point (the MCP tools + the HTTP routes) goes through these helpers so
  * the A/B decision lives in exactly one place.
  *
@@ -16,7 +17,13 @@ import { dbosBackupActive } from '../dbos/dbos-flags';
 import { dbosStarted } from '../dbos/bootstrap';
 
 const nonce = (): string => Date.now().toString(36) + randomBytes(4).toString('hex');
-const durable = (): boolean => dbosBackupActive() && dbosStarted();
+const durable = (): boolean => {
+  if (!dbosBackupActive()) return false;
+  if (!dbosStarted()) {
+    throw new Error('backup durability enabled, executor unavailable; no backup operation started');
+  }
+  return true;
+};
 
 export async function durableRestoreInPlace(
   workspaceId: string,

@@ -1,13 +1,13 @@
 /**
  * durable-ops.test.ts — the backup destructive trio's single A/B decision point
  * (dbos-durable-flows-adoption P-012). Each of restoreInPlace / promoteRestore /
- * rollbackPromote either starts a crash-resumable DBOS workflow (when the backup
- * flag is opted-in AND DBOS has launched) or calls the lib method directly. This
+ * rollbackPromote starts a crash-resumable DBOS workflow when the backup flag
+ * is opted-in, refuses while its executor is absent, or calls the lib directly
+ * only when durability was not promised. This
  * pins the WIRING, not the workflows or the lib (those have their own tests):
  *
- *  - the AND-gate: `durable() = dbosBackupActive() && dbosStarted()` — BOTH must
- *    be true; any single-flag combo must take the direct path (a regression that
- *    flips `&&` to `||` would route to DBOS when it hasn't started → crash).
+ *  - an opted-in backup cannot silently fall through to a direct destructive
+ *    call while DBOS has not launched; flag-off calls keep the direct path.
  *  - per-function workflow selection (restore→RestoreInPlace, promote→Promote,
  *    rollback→Rollback) — a copy-paste swap is what this catches.
  *  - the args-forwarding distinction: the workflow gets `{ workspaceId, ...args }`
@@ -91,18 +91,29 @@ describe('durableRestoreInPlace — A/B dispatch', () => {
   });
 });
 
-describe('the AND-gate: durable requires BOTH flags', () => {
+describe('backup durability routing', () => {
   const args = { kopiaSnapshotId: 's' };
-  // A regression flipping && to || would send 3 of these 4 combos to DBOS.
   it.each([
     ['active off, started on', false, true],
-    ['active on, started off', true, false],
     ['both off', false, false],
   ])('%s → direct lib path (no workflow)', async (_label, a, s) => {
     setFlags(a, s);
     await ops.durableRestoreInPlace('ws', args);
     expect(restoreInPlace).toHaveBeenCalledTimes(1);
     expect(wfRestore).not.toHaveBeenCalled();
+  });
+
+  it('active on, started off refuses all destructive operations before any direct effect', async () => {
+    setFlags(true, false);
+    await expect(ops.durableRestoreInPlace('ws', args)).rejects.toThrow(/backup durability.*executor unavailable/i);
+    await expect(ops.durablePromoteRestore('ws', { restoredPath: '/r' })).rejects.toThrow(/backup durability.*executor unavailable/i);
+    await expect(ops.durableRollbackPromote('ws', { brokenPath: '/broken' })).rejects.toThrow(/backup durability.*executor unavailable/i);
+    expect(restoreInPlace).not.toHaveBeenCalled();
+    expect(promoteRestore).not.toHaveBeenCalled();
+    expect(rollbackPromote).not.toHaveBeenCalled();
+    expect(wfRestore).not.toHaveBeenCalled();
+    expect(wfPromote).not.toHaveBeenCalled();
+    expect(wfRollback).not.toHaveBeenCalled();
   });
 
   it('both on → durable workflow path', async () => {

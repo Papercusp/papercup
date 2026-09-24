@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentIdentity } from '../coordination/identity';
 
 const h = vi.hoisted(() => ({
+  getSelectedModeDefinitions: vi.fn(),
   // stickyConflict is optional here (not part of the default resolved value) so
   // TS infers a return type wide enough for the sticky-guard-refusal test below
   // (mockResolvedValue({ ..., stickyConflict: true, ... })) without an excess-
@@ -108,6 +109,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject }));
+vi.mock('../../agent-identities/source', () => ({
+  getSelectedModeDefinitions: h.getSelectedModeDefinitions,
+}));
 // PARTIAL on purpose: the guard's RULE (goalHolderPolicyProblem) is pure and must
 // stay REAL here — mocking it would leave this suite asserting against a stub of
 // the very thing it is meant to pin. Only the DB read is replaced.
@@ -165,6 +169,7 @@ import setTool, {
   renderImpliedNote,
 } from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
+import { modeById } from '../../modes/registry';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -205,6 +210,13 @@ describe('mode:set registration', () => {
 });
 
 beforeEach(() => {
+  h.getSelectedModeDefinitions.mockReset().mockImplementation(async (ids: string[]) =>
+    new Map(ids.map((id) => [id, {
+      contract: modeById(id)?.contract ?? '',
+      contractRevision: 'definition-' + id,
+      sourceRevision: 'source-' + id,
+    }])),
+  );
   h.setMode.mockClear().mockResolvedValue({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false });
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
   h.refreshControlAnchorAfterMutation.mockClear().mockResolvedValue({ generation: 1 });
@@ -225,6 +237,47 @@ beforeEach(() => {
   h.readGoalLaunchSettings
     .mockClear()
     .mockResolvedValue({ settings: { holder: { requireLive: true } }, budget: {}, error: null });
+});
+
+describe('mode:set selected definition delivery', () => {
+  it('uses the approved selected bytes and revisions in the self result', async () => {
+    h.getSelectedModeDefinitions.mockResolvedValueOnce(new Map([[
+      'auto', { contract: 'SELECTED AUTO DEFINITION', contractRevision: 'definition-r2',
+        sourceRevision: 'source-r2' },
+    ]]));
+    const body = parse(await run({ mode: 'auto', reason: 'activate selected source' }));
+    expect(body).toMatchObject({
+      ok: true, contract: 'SELECTED AUTO DEFINITION',
+      definitionRevision: 'definition-r2', sourceRevision: 'source-r2',
+    });
+    expect(h.getSelectedModeDefinitions).toHaveBeenCalledExactlyOnceWith(['auto']);
+  });
+
+  it('delivers the same selected definition to a peer', async () => {
+    h.getSelectedModeDefinitions.mockResolvedValueOnce(new Map([[
+      'auto', { contract: 'SELECTED PEER AUTO', contractRevision: 'definition-r3',
+        sourceRevision: 'source-r3' },
+    ]]));
+    await run({ mode: 'auto', agent: PEER, reason: 'peer posture change' });
+    const body = (h.sendMessage.mock.calls[0]![1] as { body: string }).body;
+    expect(body).toContain('SELECTED PEER AUTO');
+    expect(body).toContain('source-r3');
+    expect(body).not.toContain(modeById('auto')!.contract.slice(0, 60));
+  });
+
+  it('refuses stale selected content before any mode write or peer message', async () => {
+    h.getSelectedModeDefinitions.mockRejectedValueOnce(new Error('approval changed'));
+    const body = parse(await run({ mode: 'auto', agent: PEER, reason: 'must not apply stale mode' }));
+    expect(body).toMatchObject({ ok: false, error: 'selected-mode-definition-unavailable',
+      detail: 'approval changed' });
+    expect(h.setMode).not.toHaveBeenCalled();
+    expect(h.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('preflights the registry implication closure in one selected read', async () => {
+    await run({ mode: 'goal', subject: 'goal-1', reason: 'own goal' });
+    expect(h.getSelectedModeDefinitions).toHaveBeenCalledExactlyOnceWith(['goal', 'auto', 'ideate']);
+  });
 });
 
 /* ── a subject-requiring mode cannot be entered unattributed (EI-20015592992797890)

@@ -75,6 +75,9 @@ export interface ReadCursorStore {
   ackAndRead(ownerId: string, surface: string, confirmation?: AckConfirmation): Promise<AckResult>;
   /** Phase 2 ALONE — see the module-level {@link stage}. */
   stage(ownerId: string, surface: string, next: CursorState): Promise<void>;
+  /** Replace one metadata candidate only while its own token still matches
+   * pending or committed. Never changes the fingerprint floor or ACK token. */
+  annotateByToken(ownerId: string, surface: string, key: string, token: string, value: unknown): Promise<boolean>;
   /** Drop a surface's cursor (e.g. a schema change invalidates fingerprints). */
   clear(ownerId: string, surface: string): Promise<void>;
 }
@@ -168,6 +171,30 @@ class PgReadCursorStore implements ReadCursorStore {
     `;
   }
 
+  async annotateByToken(ownerId: string, surface: string, field: string, token: string, value: unknown): Promise<boolean> {
+    const encoded = JSON.stringify(value);
+    if (!field || !token || encoded === undefined) return false;
+    const { sql } = getOrgPg();
+    const ws = coordScopeWorkspace();
+    const rows = await sql<Array<{ updated: number }>>`
+      UPDATE harness_shared.coord_read_cursors
+         SET pending = CASE
+               WHEN pending -> ${field}::text ->> 'token' = ${token}::text
+                 THEN jsonb_set(pending, ARRAY[${field}::text], ${encoded}::jsonb, true)
+               ELSE pending END,
+             committed = CASE
+               WHEN committed -> ${field}::text ->> 'token' = ${token}::text
+                 THEN jsonb_set(committed, ARRAY[${field}::text], ${encoded}::jsonb, true)
+               ELSE committed END,
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND owner_id = ${ownerId} AND surface = ${surface}
+         AND (pending -> ${field}::text ->> 'token' = ${token}::text OR
+              committed -> ${field}::text ->> 'token' = ${token}::text)
+      RETURNING 1 AS updated
+    `;
+    return rows.length > 0;
+  }
+
   async clear(ownerId: string, surface: string): Promise<void> {
     const { sql } = getOrgPg();
     const ws = coordScopeWorkspace();
@@ -206,6 +233,21 @@ export class InMemoryReadCursorStore implements ReadCursorStore {
     const key = `${ownerId}\0${surface}`;
     const row = this.rows.get(key) ?? { committed: null, pending: null };
     this.rows.set(key, { committed: row.committed, pending: next });
+  }
+  async annotateByToken(ownerId: string, surface: string, field: string, token: string, value: unknown): Promise<boolean> {
+    const key = ownerId + '\0' + surface;
+    const row = this.rows.get(key);
+    if (!row || !field || !token) return false;
+    const update = (state: CursorState | null): CursorState | null => {
+      const candidate = state?.[field];
+      return candidate && typeof candidate === 'object' && 'token' in candidate &&
+        candidate.token === token ? { ...state, [field]: value } : state;
+    };
+    const pending = update(row.pending);
+    const committed = update(row.committed);
+    if (pending === row.pending && committed === row.committed) return false;
+    this.rows.set(key, { pending, committed });
+    return true;
   }
   async clear(ownerId: string, surface: string): Promise<void> {
     this.rows.delete(`${ownerId}\0${surface}`);
@@ -291,6 +333,15 @@ export async function stage(
     surface,
     opts.deliveryToken ? { ...next, [DELIVERY_TOKEN_KEY]: opts.deliveryToken } : next,
   );
+}
+
+/** Enrich a staged or already ACKed metadata candidate without changing the
+ * cursor's delivery floor. The candidate's token prevents late work from
+ * annotating a newer turn. */
+export async function annotateReadCursorByToken(
+  ownerId: string, surface: string, key: string, token: string, value: unknown,
+): Promise<boolean> {
+  return store.annotateByToken(ownerId, surface, key, token, value);
 }
 
 /** Drop a surface's cursor for an owner. */

@@ -10,6 +10,22 @@ import type { TaskSpec } from './task-manager/types';
 import { redactSensitiveText } from './sensitive-text';
 
 export type RpcFrame = Record<string, unknown>;
+/** Process-local observations, not provider dispatch or billing receipts. A
+ * write-started receipt records the attempt to enqueue a native RPC command;
+ * only write-completed confirms the pipe accepted it, not native execution.
+ * Received frames are stamped before response resolution or user callbacks.
+ */
+export interface SuStdioReceipt {
+  peerId: string;
+  sequence: number;
+  clockId: string;
+  atMs: number;
+  phase: 'write-started' | 'write-completed' | 'write-failed' | 'received';
+  frame: RpcFrame;
+}
+// Every peer created by this module in one controller uses the same monotonic
+// origin. A successor controller receives a new id and cannot mix its clocks.
+const receiptClockId = `su-stdio:${randomUUID()}`;
 export interface SuStdioPeer {
   request(frame: RpcFrame, timeoutMs?: number): Promise<RpcFrame>;
   send(frame: RpcFrame): void;
@@ -26,6 +42,9 @@ export interface SuStdioPeerOptions {
   spec: TaskSpec;
   ownerId: string;
   onMessage(frame: RpcFrame): void;
+  /** Optional synchronous evidence sink. Throwing fails the peer visibly;
+   * callers must not dispatch again after an uncertain write. */
+  onReceipt?(receipt: SuStdioReceipt): void;
 }
 
 export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuStdioPeer> {
@@ -40,6 +59,13 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   let buffer = '';
   let stderr = '';
   let stderrTruncated = false;
+  const peerId = randomUUID();
+  let receiptSequence = 0;
+  function receipt(phase: SuStdioReceipt['phase'], frame: RpcFrame): void {
+    if (!options.onReceipt) return;
+    options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: receiptClockId,
+      atMs: performance.now(), phase, frame: structuredClone(frame) });
+  }
   const diagnosticSecrets = Object.entries(options.env)
     .filter(([key]) => /token|secret|password|credential|authorization|api.?key|database.?url|dsn/i.test(key))
     .map(([, value]) => value);
@@ -69,7 +95,22 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   }
   function send(frame: RpcFrame): void {
     if (closed || exited || child.stdin!.destroyed) throw new Error('Structured engine connection is closed');
-    child.stdin!.write(`${JSON.stringify(frame)}\n`, (error) => { if (error) fail(error); });
+    // Serialize before recording an attempt: a serialization error never
+    // reached the native pipe. Capture the serialized value so later caller
+    // mutation cannot rewrite the evidence of what was actually enqueued.
+    const line = JSON.stringify(frame);
+    const sent = options.onReceipt ? JSON.parse(line) as RpcFrame : frame;
+    try {
+      receipt('write-started', sent);
+      child.stdin!.write(`${line}\n`, (error) => {
+        try { receipt(error ? 'write-failed' : 'write-completed', sent); }
+        catch (failure) { fail(failure instanceof Error ? failure : new Error(String(failure))); return; }
+        if (error) fail(error);
+      });
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
@@ -83,6 +124,9 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
       try {
         const frame = JSON.parse(line) as RpcFrame;
         if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new Error('Structured engine emitted a non-object frame');
+        // Separate the retained observation from the mutable response/event
+        // objects exposed to consumers. A slow callback cannot move its clock.
+        receipt('received', frame);
         const id = frame.id == null ? null : String(frame.id);
         const response = frame.type === 'response' || (!frame.method && ('result' in frame || 'error' in frame));
         const request = id && response ? pending.get(id) : undefined;

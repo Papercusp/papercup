@@ -16,6 +16,7 @@ import {
   ackAndAdvance,
   ackAndRead,
   stage,
+  annotateReadCursorByToken,
   clearReadCursor,
 } from './read-cursors';
 
@@ -156,6 +157,29 @@ describe('read-cursors — ack-on-proof (P-005)', () => {
       committed: { gen: 1 },
       baseline: false,
     });
+  });
+
+  it('enriches a matching candidate before or after ACK without advancing the floor', async () => {
+    await ackAndRead('su-1', 'orient', { confirmedToken: null });
+    await stage('su-1', 'orient', { gen: 1, identity: { token: 'tok-1', status: 'pending' } },
+      { deliveryToken: 'tok-1' });
+    expect(await annotateReadCursorByToken('su-1', 'orient', 'identity', 'wrong',
+      { token: 'wrong', status: 'bound' })).toBe(false);
+    expect(await annotateReadCursorByToken('su-1', 'orient', 'identity', 'tok-1',
+      { token: 'tok-1', status: 'bound' })).toBe(true);
+    expect((await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-1' })).committed).toEqual({
+      gen: 1, identity: { token: 'tok-1', status: 'bound' },
+    });
+    expect(await annotateReadCursorByToken('su-1', 'orient', 'identity', 'tok-1',
+      { token: 'tok-1', status: 'verified' })).toBe(true);
+    expect((await ackAndRead('su-1', 'orient', { confirmedToken: null })).committed).toEqual({
+      gen: 1, identity: { token: 'tok-1', status: 'verified' },
+    });
+    await stage('su-1', 'orient', { gen: 2, identity: { token: 'tok-2', status: 'pending' } },
+      { deliveryToken: 'tok-2' });
+    await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-2' });
+    expect(await annotateReadCursorByToken('su-1', 'orient', 'identity', 'tok-1',
+      { token: 'tok-1', status: 'late' })).toBe(false);
   });
 
   it('the hook-killed case: a MISMATCHED confirmation keeps the old floor, so the block is re-diffed and re-sent', async () => {

@@ -11,6 +11,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { modeById } from '../../modes/registry';
 import { getModesWithLiveness } from '../../modes/liveness';
+import { getSelectedModeDefinitions, type SelectedModeDefinition } from '../../agent-identities/source';
 
 export default defineTool({
   name: 'mode:get',
@@ -60,8 +61,20 @@ export default defineTool({
     // ownerId → owner alias).
     const target = (args.agent ?? args.ownerId)?.trim() || ident.ownerId;
     const resolved = await getModesWithLiveness(ident.workspaceId ?? 'default', target);
+    let selected = new Map<string, SelectedModeDefinition>();
+    if (args.contracts) {
+      try {
+        selected = await getSelectedModeDefinitions(
+          resolved.modes.filter((row) => modeById(row.mode)).map((row) => row.mode),
+        );
+      } catch (error) {
+        return { data: { ok: false, agent: target, error: 'selected-mode-definition-unavailable',
+          detail: error instanceof Error ? error.message : String(error) } };
+      }
+    }
     const modes = resolved.modes.map((r) => {
       const def = modeById(r.mode);
+      const definition = selected.get(r.mode);
       return {
         mode: r.mode,
         axis: def?.axis ?? r.axisKey,
@@ -69,7 +82,10 @@ export default defineTool({
         setBy: r.setBy,
         ownerDirected: r.ownerDirected,
         setAt: r.setAt,
-        ...(args.contracts && def ? { contract: def.contract } : {}),
+        ...(args.contracts && definition
+          ? { contract: definition.contract, definitionRevision: definition.contractRevision,
+              sourceRevision: definition.sourceRevision }
+          : {}),
       };
     });
     return {

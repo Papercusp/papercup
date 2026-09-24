@@ -10,7 +10,11 @@ import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { setMode } from './modes/store';
 import { defaultAgentObligationReaderDeps, projectAgentTurnStartObligationBrief, readAgentObligationAgenda } from './agent-obligation-reader';
-import { buildTurnStartOrientationBlock, ORIENTATION_CURSOR_SURFACE, type OrientationDeps } from './turn-start-orientation';
+import {
+  buildTurnStartOrientationBlock, ORIENTATION_CURSOR_SURFACE,
+  TURN_START_IDENTITY_DELIVERY_KEY, type OrientationDeps,
+} from './turn-start-orientation';
+import { drainDetached } from './detached-imports';
 import { recordScoutTick } from './scout/tick-ledger';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
 
@@ -113,7 +117,8 @@ describe('production planning-needed consumer', () => {
       neverDropFacts: async () => [], toolSurface: async () => null, carryBlindWindow: async () => null,
       contextEpoch: async () => epoch,
     };
-    const receipts: Array<{ confirmed: unknown; offered: string | null }> = [];
+    const receipts: Array<{ confirmed: unknown; offered: string | null; elapsedMs: number }> = [];
+    const startedRequests: number[] = [];
     const serverErrors: unknown[] = [];
     // Only HTTP transport is local. The canonical reader/provider, final composer,
     // PG cursor, real hook process, native adapter and stdout ledger are exercised.
@@ -121,10 +126,13 @@ describe('production planning-needed consumer', () => {
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', () => { void (async () => {
+        const startedAt = Date.now();
+        startedRequests.push(startedAt);
         const request = JSON.parse(body) as { confirmedDelivery?: string | null };
         const delivery = await buildTurnStartOrientationBlock({ ownerId: OWNER, workspaceId: WS, deps,
           budgetChars, confirmedDeliveryToken: request.confirmedDelivery ?? null });
-        receipts.push({ confirmed: request.confirmedDelivery, offered: delivery.deliveryToken });
+        receipts.push({ confirmed: request.confirmedDelivery, offered: delivery.deliveryToken,
+          elapsedMs: Date.now() - startedAt });
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ text: delivery.block, deliveryToken: delivery.deliveryToken }));
       })().catch((error) => { serverErrors.push(error); res.writeHead(500); res.end('{}'); }); });
@@ -142,7 +150,14 @@ describe('production planning-needed consumer', () => {
         }, (error, output) => error ? reject(error) : resolve(output));
         child.stdin?.end(JSON.stringify({ prompt: 'Continue the goal', cwd: process.cwd() }));
       });
-      expect(stdout.trim(), JSON.stringify(serverErrors)).not.toBe('');
+      if (!stdout.trim()) {
+        const cursor = await fx.admin`SELECT committed, pending FROM harness_shared.coord_read_cursors
+          WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}`;
+        throw new Error('native hook returned an empty payload: ' +
+          JSON.stringify({ serverErrors, receipts, startedRequests: startedRequests.length,
+            activeRequestAgeMs: startedRequests.length ? Date.now() - startedRequests.at(-1)! : null,
+            cursor: cursor[0] ?? null }));
+      }
       const output = JSON.parse(stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
       expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
       return output.hookSpecificOutput.additionalContext;
@@ -182,6 +197,12 @@ describe('production planning-needed consumer', () => {
       const recovered = await nativeTurn();
       expectExact(recovered, current);
       expect(recovered).not.toContain(original.id);
+      await drainDetached();
+      const identityRows = await fx.admin`SELECT pending FROM harness_shared.coord_read_cursors
+        WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}`;
+      expect(identityRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+        status: 'bound', deliveryToken: receipts.at(-1)?.offered,
+      });
       expect(serverErrors).toEqual([]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

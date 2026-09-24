@@ -5,7 +5,11 @@ import { performance } from 'node:perf_hooks';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
-import { areAcceptanceLineageRelated, lineagePartyKeys } from './acceptance-author-identity';
+// scripts/mutation-probe.sh points this test at a frozen copy, preserving the
+// shared source and still exercising the same production function at runtime.
+const { areAcceptanceLineageRelated, lineagePartyKeys } = await import(
+  process.env.PAPERCUSP_LINEAGE_TEST_SOURCE ?? './acceptance-author-identity'
+) as typeof import('./acceptance-author-identity');
 
 const workspaceId = 'p004-frozen-lineage';
 const migration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/1217-adv-session-launch-parent-projection.sql', import.meta.url));

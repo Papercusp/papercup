@@ -24,7 +24,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject } from '../../modes/registry';
+import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject, resolveImpliedModes } from '../../modes/registry';
+import { getSelectedModeDefinitions, type SelectedModeDefinition } from '../../agent-identities/source';
 import { setMode, getModeSubject } from '../../modes/store';
 import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-launch-settings';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
@@ -462,6 +463,23 @@ export default defineTool({
       }
     }
 
+    // A mode write must not bind a selected identity whose source or prompt has
+    // changed since approval. Resolve the whole implication closure once before
+    // the mutation so self and peer delivery use the same selected revision.
+    let selected = new Map<string, SelectedModeDefinition>();
+    if (enabled) {
+      try {
+        selected = await getSelectedModeDefinitions([def.id, ...resolveImpliedModes(def.id)]);
+      } catch (error) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: false, mode: def.id, error: 'selected-mode-definition-unavailable',
+          detail: error instanceof Error ? error.message : String(error),
+        }) }] };
+      }
+    }
+    const selectedContract = (id: string) => selected.get(id)?.contract ??
+      '[selected definition unavailable; run mode:get { contracts: true }]';
+
     const res = await setMode({
       workspaceId,
       ownerId: target,
@@ -687,10 +705,11 @@ export default defineTool({
               ? `\n\n${renderImpliedNote(def.id, res.implied)}` +
                 res.implied
                   .filter((i) => i.status === 'set')
-                  .map((i) => `\n\nBinding contract — '${i.mode}':\n\n${modeById(i.mode)?.contract ?? ''}`)
+                  .map((i) => `\n\nBinding contract — '${i.mode}':\n\n${selectedContract(i.mode)}`)
                   .join('')
               : '') +
-            (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${def.contract}` : '') +
+            (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${selectedContract(def.id)}` +
+              `\nSource revision: ${selected.get(def.id)?.sourceRevision}; definition revision: ${selected.get(def.id)?.contractRevision}` : '') +
             (wakeWarning ? `\n\n${wakeWarning}` : ''),
           extra: { mode_change: { mode: def.id, enabled, applied: res.ok === true, stickyConflict: res.stickyConflict === true, by: ident.ownerId } },
         });
@@ -767,7 +786,11 @@ export default defineTool({
          `implies` closure, so a mode that gains or loses autonomy updates this
          answer with no second edit. */
       impliesAutonomy: def.axis === 'autonomy' || modeImpliesAutonomy(def.id),
-      ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
+      ...(res.ok && enabled && isSelf ? {
+        contract: selectedContract(def.id),
+        definitionRevision: selected.get(def.id)?.contractRevision,
+        sourceRevision: selected.get(def.id)?.sourceRevision,
+      } : {}),
       /* D-003 — the cascade is reported, never inferred. `impliedNote` is the
          line an agent actually reads; `implied` is the machine-readable detail.
          The CONTRACTS of newly-entered modes ride along on a self-set for the
@@ -782,7 +805,7 @@ export default defineTool({
                   impliedContracts: Object.fromEntries(
                     res.implied
                       .filter((i) => i.status === 'set')
-                      .map((i) => [i.mode, modeById(i.mode)?.contract ?? ''])
+                      .map((i) => [i.mode, selectedContract(i.mode)])
                       .filter(([, c]) => c),
                   ),
                 }
