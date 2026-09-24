@@ -20,9 +20,9 @@
     "--fake-destructive"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-24T10:46:48Z",
-  "finishedAt": "2026-09-24T10:48:09Z",
-  "summary": "The guarded baseline passed all four focused PostgreSQL completion-intent cases. A mutant that removed the completion intent token from the done-event payload failed three cases, including the killed-producer recovery and both normal work-item families. The probe reported MUTANT CAUGHT and restored the source byte-for-byte.",
+  "startedAt": "2026-09-24T14:55:04Z",
+  "finishedAt": "2026-09-24T14:57:00Z",
+  "summary": "The tool-call window is bounded by the P-020 mutation lock grant and completion. Against the current isolated PostgreSQL fixture, the guarded baseline passed all four completion-intent cases. Removing the completion intent token from the done-event payload failed three cases, including killed-producer recovery and both normal work-item families. The probe reported MUTANT CAUGHT and restored the source byte for byte.",
   "assertions": [
     {
       "id": "baseline-passed",
@@ -32,7 +32,7 @@
     {
       "id": "missing-token-mutant-killed",
       "passed": true,
-      "evidence": "Mutation changed only completionIntentIdOf(wi) to null inside emitWorkItemDoneEvent. Focused Vitest reported 3 failed assertions: the killed-producer reconciler could not acknowledge its intent, and normal feature and issue completion latches lacked the matching token."
+      "evidence": "Mutation changed only completionIntentIdOf(wi) to null inside emitWorkItemDoneEvent. Focused Vitest reported 3 failed assertions: the killed-producer reconciler emitted but could not acknowledge its intent, and normal feature and issue completion latches lacked the matching token."
     },
     {
       "id": "source-restored",

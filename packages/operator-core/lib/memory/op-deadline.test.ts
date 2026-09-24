@@ -84,6 +84,35 @@ describe('memory degraded latch — self-healing', () => {
 });
 
 describe('withMemoryTimeout — deadline race', () => {
+  it('forwards expiry while retaining non-cooperative raw work until it settles', async () => {
+    const controller = new AbortController();
+    let resolve!: (v: string) => void;
+    const raw = new Promise<string>((res) => { resolve = res; });
+    const tracked = await runWithTrackedMemoryTimeouts(async () => {
+      await expect(withMemoryTimeout(raw, 'search', 5, controller)).rejects.toBeInstanceOf(MemoryTimeoutError);
+    });
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason).toBeInstanceOf(MemoryTimeoutError);
+    expect(tracked.pending).not.toBeNull();
+    let drained = false;
+    void tracked.pending!.then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    resolve('late');
+    await tracked.pending;
+    expect(drained).toBe(true);
+  });
+
+  it('never cancels a completed operation after its deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      await expect(withMemoryTimeout(Promise.resolve('ok'), 'search', 5, controller)).resolves.toBe('ok');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(controller.signal.aborted).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('rejects with MemoryTimeoutError when the op exceeds the deadline', async () => {
     const slow = new Promise((resolve) => setTimeout(resolve, 1000));
     await expect(withMemoryTimeout(slow, 'slow-op', 10)).rejects.toBeInstanceOf(MemoryTimeoutError);

@@ -153,16 +153,19 @@ export async function runWithTrackedMemoryTimeouts<T>(run: () => Promise<T>): Pr
 
 /**
  * Race a memory backend promise against a deadline. Rejects with
- * `MemoryTimeoutError` if the deadline fires first. NOTE: this does NOT cancel
- * the underlying work (a synchronous native wedge cannot be interrupted from JS
- * — that is B3's worker-thread-offload territory); it bounds the CALLER's wait
- * so the request returns instead of hanging forever.
+ * `MemoryTimeoutError` if the deadline fires first. An optional controller
+ * forwards expiry to cooperative work. Native/SQL operations may ignore it;
+ * keep tracking their raw promise until settlement, never treat abort as exit.
  */
-export function withMemoryTimeout<T>(p: Promise<T>, label: string, timeoutMs: number): Promise<T> {
+export function withMemoryTimeout<T>(
+  p: Promise<T>, label: string, timeoutMs: number, controller?: AbortController,
+): Promise<T> {
   trackUnderlyingMemoryWork(p);
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`));
+      const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`);
+      controller?.abort(error);
+      reject(error);
     }, timeoutMs);
     p.then(
       (v) => {

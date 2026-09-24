@@ -20,10 +20,15 @@
  * NEWER weak ones` below fails if anyone reintroduces a recency-ordered candidate cap.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CanonicalVectorStore } from '@papercusp/memory';
+import { performance } from 'node:perf_hooks';
+import { CanonicalVectorStore, EMBEDDER_DIM_SPECS, MEMORY_VECTOR_STORAGE_PROFILES } from '@papercusp/memory';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const SCOPE = 'lex-scope';
+const storageConfig = {
+  vecTable:'memory_vec_local' as const,embeddingModelDims:EMBEDDER_DIM_SPECS.local.targetDims,
+  embeddingProfile:EMBEDDER_DIM_SPECS.local,storageProfile:MEMORY_VECTOR_STORAGE_PROFILES.local,
+};
 
 describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
   let db: OrgTestDb;
@@ -33,6 +38,7 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
     db = await createOrgTestDb();
     const u = new URL(db.adminDsn);
     store = new CanonicalVectorStore({
+      ...storageConfig,
       host: u.hostname,
       port: Number(u.port),
       user: decodeURIComponent(u.username),
@@ -43,8 +49,29 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
   }, 180_000);
 
   afterAll(async () => {
+    await store?.dispose();
     await db?.cleanup();
   });
+
+  /** Use the real query builder/admission and real PG, changing only the old
+   * SQL normalization placement in the counterfactual arm. */
+  function comparisonStore(legacy: boolean) {
+    const u = new URL(db.adminDsn);
+    const variant = new CanonicalVectorStore({ ...storageConfig,host:u.hostname,port:Number(u.port),
+      user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),
+      dbname:u.pathname.slice(1),schema:'harness_shared' });
+    const calls: {text:string;params:unknown[]}[]=[];
+    (variant as unknown as {pool:unknown}).pool = {
+      query: async (text:string,params:unknown[]) => {
+        if(legacy) text=text.replace(/lower\((payload->>'(?:name|description|data)')\)/g,'$1')
+          .replace(/\b(nm|ds|dt) LIKE\b/g,'$1 ILIKE');
+        calls.push({text,params});
+        return {rows:await db.adminSql.unsafe(text,params as never[])};
+      },
+      on:()=>{},end:async()=>{},
+    };
+    return {variant,calls};
+  }
 
   /** Seed one canonical memory row. `created` drives the recency the old bug ranked by. */
   async function seed(payload: Record<string, unknown>, created = '2026-01-01T00:00:00Z'): Promise<string> {
@@ -123,4 +150,68 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
     const decoyScore = out.find((r) => r.id === decoy)?.score ?? 0;
     expect(out[0].score!).toBeGreaterThan(decoyScore);
   });
+
+  it('preserves mixed-case, Unicode, null, numeric, scope, kind and validity ranking against ILIKE', async () => {
+    const scope='normalization-parity';
+    const payloads=[
+      {name:'PAPERCUSP_MEMORY_TIMEOUT',description:'Mixed CASE',data:'Alpha user_id'},
+      {name:'αβ İI Iı ßSS Σσς',description:'Éé é CAFÉ',data:'userxid PATH\\NAME 100%'},
+      {name:null,description:'MEMORY',data:'ALPHA'},
+      {name:123,description:true,data:['ALPHA','MEMORY']},
+      {},{data:'unrelated'},
+    ];
+    for(let i=0;i<payloads.length;i++) {
+      await db.adminSql`INSERT INTO harness_shared.memory_canonical(payload,state,created_at)
+        VALUES(${db.adminSql.json({...payloads[i],user_id:scope})},'active',${new Date(Date.UTC(2026,0,i+1)).toISOString()})`;
+    }
+    for(const [extra,state,invalidAt] of [
+      [{user_id:'foreign-scope'},'active',null],
+      [{entityType:'THING'},'active',null],[{},'archived',null],[{},'active','2026-02-01T00:00:00Z'],
+    ] as const) {
+      await db.adminSql`INSERT INTO harness_shared.memory_canonical(payload,state,created_at,invalid_at)
+        VALUES(${db.adminSql.json({user_id:scope,name:'ALPHA MEMORY',...extra})},${state},'2026-01-20T00:00:00Z',${invalidAt})`;
+    }
+    const legacy=comparisonStore(true).variant;
+    for(const query of ['MEMORY alpha','PAPERCUSP_MEMORY_TIMEOUT','user_id','SS ii cafe PATH','123 true','nothing']) {
+      for(const filters of [{user_id:scope},{user_id:scope,include_superseded:true},{user_id:scope,as_of:'2026-01-25T00:00:00Z'}]) {
+        const expected=await legacy.lexicalSearch(query,20,filters);
+        const actual=await store.lexicalSearch(query,20,filters);
+        expect(actual).toEqual(expected);
+        expect(await store.lexicalSearch(query,20,filters)).toEqual(actual);
+      }
+    }
+  });
+
+  it('reduces repeated case-folding cost on a frozen wide-text workload without changing top-K', async () => {
+    const scope='normalization-benchmark';
+    await db.adminSql`INSERT INTO harness_shared.memory_canonical(payload,state,created_at)
+      SELECT jsonb_build_object('user_id',${scope}::text,'name',CASE WHEN n%5=0 THEN 'PAPERCUSP MEMORY' ELSE 'NOTE' END,
+        'description',CASE WHEN n%3=0 THEN 'LEXICAL RANKING' ELSE 'DETAIL' END,
+        'data',repeat('MixedCase long contextual MEMORY text with PERFORMANCE and QUERY references. ',40)),
+        'active','2026-01-01'::timestamptz+n*interval '1 second'
+      FROM generate_series(1,2000) n`;
+    await db.adminSql`ANALYZE harness_shared.memory_canonical`;
+    const query='papercusp memory lexical retrieval ranking scope deterministic query performance timeout lineage candidate exclusion active history search';
+    const legacy=comparisonStore(true),current=comparisonStore(false);
+    const expected=await legacy.variant.lexicalSearch(query,10,{user_id:scope});
+    const times={legacy:[] as number[],current:[] as number[]};
+    for(const key of ['legacy','current','current','legacy'] as const) {
+      const variant=key==='legacy'?legacy:current;
+      for(let i=0;i<5;i++) {
+        const started=performance.now();
+        expect(await variant.variant.lexicalSearch(query,10,{user_id:scope})).toEqual(expected);
+        times[key].push(performance.now()-started);
+      }
+    }
+    const median=(xs:number[])=>[...xs].sort((a,b)=>a-b)[Math.ceil(xs.length/2)-1];
+    const plans:Record<string,unknown>={};
+    for(const [key,arm] of [['legacy',legacy],['current',current]] as const) {
+      const call=arm.calls.at(-1)!;
+      const [row]=await db.adminSql.unsafe('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) '+call.text,call.params as never[]);
+      const p=row['QUERY PLAN'][0];
+      plans[key]={executionMs:p['Execution Time'],hits:p.Plan['Shared Hit Blocks']};
+    }
+    console.info('P004_LEXICAL_NORMALIZATION',JSON.stringify({rows:2000,tokens:16,legacyMedian:median(times.legacy),currentMedian:median(times.current),plans}));
+    expect(median(times.current)).toBeLessThan(median(times.legacy));
+  },60_000);
 });

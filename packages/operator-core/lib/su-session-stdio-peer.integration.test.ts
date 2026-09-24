@@ -35,7 +35,8 @@ import { startSuStdioPeer } from './su-session-stdio-peer';
 import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/launch-cost-metrics';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
-import { captureCompletedCarrySource, recheckCarrySourceSnapshot, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
+import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
+  recheckCarryNativeConfiguration, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -520,17 +521,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(start.model).toBe(expectedModel);
         const threadId = String((start.thread as RpcFrame).id);
         if (readSource) await waitForMcpStartup(events, threadId, serverName);
-        const beforeConfig = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
-        const beforeTools = await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } });
-        if (readSource) {
-          const inventory = beforeTools.data as Array<Record<string, unknown>>;
-          expect(beforeTools.nextCursor == null).toBe(true);
-          expect(inventory.map(entry => entry.name)).toEqual([serverName]);
-          expect(inventory[0].runtimeStatus).toBe('connected');
-          expect(inventory[0].toolsError == null).toBe(true);
-          expect(Object.keys(inventory[0].tools as object)).toEqual([toolName]);
-          if (platform) expect(inventory[0].authStatus).toBe('bearerToken');
-        }
+        const nativeConfig = await captureCarryNativeConfiguration(p, { threadId, cwd: homes.at(-1)!,
+          servers: readSource ? [{ name: serverName, tools: [toolName], authStatus: 'bearerToken' }] : [] });
         const response = await p.request({ method: 'turn/start', params: {
           threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
         } });
@@ -560,10 +552,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           const metadata = JSON.parse((call.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
           expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
         }
-        expect(isDeepStrictEqual(beforeConfig,
-          await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } }))).toBe(true);
-        expect(isDeepStrictEqual(beforeTools,
-          await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } }))).toBe(true);
+        await recheckCarryNativeConfiguration(p, nativeConfig);
         return { threadId, turnId, threadRead, rpcWrite: writes[0], completed: completed[0] };
       };
       let sourceCompleted: SuStdioReceipt | undefined;

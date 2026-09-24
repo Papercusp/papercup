@@ -18,11 +18,13 @@
  */
 
 import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { opendir } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
 import type { SuStdioPeer } from '../su-session-stdio-peer';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -89,6 +91,78 @@ export interface CarrySourceSnapshot {
   turnId: string;
   filePath: string;
   snapshot: StableSource;
+}
+
+export interface CarryNativeConfigurationScope {
+  threadId: string;
+  cwd: string;
+  servers: Array<{ name: string; tools: string[]; authStatus: string }>;
+}
+
+/** Read-only manifest component, not an authorization or serving-account
+ * receipt. Hash the FULL native config/layers and complete MCP inventory,
+ * retaining neither credentials nor raw config in the returned evidence.
+ * The caller supplies a frozen allowlist and waits for native startup first.
+ * A paginated inventory must finish without duplicate servers/cursor loops.
+ */
+export async function captureCarryNativeConfiguration(peer: SuStdioPeer, scope: CarryNativeConfigurationScope) {
+  // The controller can continue running while RPC reads await; pin its supplied
+  // scope now so a concurrent mutation cannot widen the declared allowlist.
+  scope = structuredClone(scope);
+  const record = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  if (!nonblank(scope.threadId) || !isAbsolute(scope.cwd) || !Array.isArray(scope.servers) ||
+    new Set(scope.servers.map(server => server.name)).size !== scope.servers.length || scope.servers.some(server =>
+      !nonblank(server.name) || !nonblank(server.authStatus) || !Array.isArray(server.tools) ||
+      server.tools.some(tool => !nonblank(tool)) || new Set(server.tools).size !== server.tools.length)) {
+    throw new Error('carry config requires exact thread/cwd and a unique server/tool allowlist');
+  }
+  const config = await peer.request({ method: 'config/read', params: { cwd: scope.cwd, includeLayers: true } });
+  if (!record(config.config) || !Array.isArray(config.layers)) throw new Error('carry native config/layers unavailable');
+  const servers = new Map<string, Record<string, unknown>>(), cursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pageNumber = 0; ; pageNumber++) {
+    // Bound a malformed peer without accepting a truncated census. No retry.
+    if (pageNumber >= 64) throw new Error('carry MCP inventory exceeded page bound');
+    const page = await peer.request({ method: 'mcpServerStatus/list', params: {
+      threadId: scope.threadId, detail: 'toolsAndAuthOnly', ...(cursor ? { cursor } : {}),
+    } });
+    if (!Array.isArray(page.data) || !Object.hasOwn(page, 'nextCursor')) throw new Error('carry MCP inventory incomplete');
+    for (const value of page.data) {
+      const server = record(value), tools = record(server?.tools);
+      if (!server || !nonblank(server.name) || !tools || server.runtimeStatus !== 'connected' ||
+        server.toolsError != null || servers.has(server.name)) throw new Error('carry MCP inventory invalid or unavailable');
+      const allowed = scope.servers.find(expected => expected.name === server.name);
+      if (!allowed || server.authStatus !== allowed.authStatus ||
+        canonicalJson(Object.keys(tools).sort()) !== canonicalJson([...allowed.tools].sort()) ||
+        Object.entries(tools).some(([name, tool]) => !record(tool) || record(tool)!.name !== name || !record(record(tool)!.inputSchema))) {
+        throw new Error('carry MCP inventory differs from frozen allowlist');
+      }
+      servers.set(server.name, server);
+    }
+    if (page.nextCursor === null) break;
+    if (!nonblank(page.nextCursor) || cursors.has(page.nextCursor)) throw new Error('carry MCP inventory cursor invalid or repeated');
+    cursor = page.nextCursor; cursors.add(cursor);
+  }
+  if (servers.size !== scope.servers.length) throw new Error('carry MCP inventory missing required server');
+  const ordered = [...servers.values()].sort((a, b) => String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0);
+  const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  return { threadId: scope.threadId, cwd: scope.cwd,
+    configSha256: hash(config), toolInventorySha256: hash(ordered),
+    servers: ordered.map(server => ({ name: String(server.name), authStatus: String(server.authStatus),
+      tools: Object.keys(server.tools as object).sort() })) };
+}
+
+/** Recheck using the original scope; never silently refresh a changed manifest.
+ * These discrete observations do not prove there was no transient change
+ * between reads, or that the effective provider honored the native settings.
+ */
+export async function recheckCarryNativeConfiguration(
+  peer: SuStdioPeer, snapshot: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>,
+): Promise<void> {
+  const current = await captureCarryNativeConfiguration(peer, snapshot);
+  if (canonicalJson(current) !== canonicalJson(snapshot)) throw new Error('carry native configuration changed after capture');
 }
 
 /** Capture an owned native preparation peer at its last completed turn. The

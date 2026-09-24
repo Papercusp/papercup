@@ -1187,10 +1187,12 @@ async function buildBlockInner(
       ...harnessSlugs.map((slug) => `harness:${slug}`),
       ...potSlugs.map(hiveScopeKey),
     ];
+    const searchLifetime = new AbortController();
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
         ? []
         : backend.search(queryText, {
+            signal: searchLifetime.signal,
             scope: scopes,
             limit: totalLimit,
             ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
@@ -1211,7 +1213,7 @@ async function buildBlockInner(
             ...(diversityLambda !== undefined ? { diversify: { lambda: diversityLambda } } : {}),
           });
 
-    ranked = await withMemoryTimeout(doSearch(), 'search', MEMORY_INJECT_TIMEOUT_MS).finally(() => {
+    ranked = await withMemoryTimeout(doSearch(), 'search', MEMORY_INJECT_TIMEOUT_MS, searchLifetime).finally(() => {
       const searchMs = Date.now() - tSearch;
       mark('searchMs', searchMs);
       if (searchMs > SLOW_INJECTION_LOG_MS) {

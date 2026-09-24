@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Backup restore workflow identity crash recovery mutation",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=180",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/dbos/backup-workflow.ts",
+    "--mutate 's|return restoreInPlaceOp.start\\(input, nonce\\);|return restoreInPlaceOp.start(input, nonce + \"-mutated\");|'",
+    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/dbos/backup-workflow-crash-resume.integration.test.ts --reporter=dot'",
+    "--expect caught",
+    "--in-tree --sweep-lock-held --fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T14:58:03Z",
+  "finishedAt": "2026-09-24T15:00:12Z",
+  "summary": "The isolated real DBOS and temporary-filesystem crash-recovery baseline passed. Mutating the restore workflow ID broke recovery after the child process was SIGKILLed; the fresh executor recovered one workflow but the original operation receipt could not be found. The mutation was caught and the tracked source restored byte for byte.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real DBOS SIGKILL integration: 1 passed, 0 failed."
+    },
+    {
+      "id": "workflow-identity-mutant-killed",
+      "passed": true,
+      "evidence": "Changing restoreInPlaceOp.start(input, nonce) to use nonce + '-mutated' made the recovery child fail its exact original workflow receipt check; Vitest guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1; tree integrity VERIFIED for backup-workflow.ts."
+    }
+  ],
+  "workItemId": "WI-10002943",
+  "specId": "GBE-P-023-contract",
+  "testFile": "packages/operator-core/lib/dbos/backup-workflow-crash-resume.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/dbos/backup-workflow.ts"
+}

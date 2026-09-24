@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MEMORY_INJECT_TIMEOUT_MS, MemoryTimeoutError, resetMemoryDegradedForTest } from './op-deadline';
 
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
@@ -159,6 +160,39 @@ const mockBackend = (rows: Row[], availability: { ok: boolean; reason?: string }
 const useBackend = (b: ReturnType<typeof mockBackend>): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
+
+it('cancels upstream search when the existing injection phase deadline expires', async () => {
+  vi.useFakeTimers();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const backend = mockBackend([]);
+  let upstream!: AbortSignal;
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  backend.search.mockImplementation((_query, opts) => {
+    upstream = (opts as { signal: AbortSignal }).signal;
+    started();
+    return new Promise((_resolve, reject) => {
+      upstream.addEventListener('abort', () => reject(upstream.reason), { once: true });
+    });
+  });
+  useBackend(backend);
+  try {
+    const block = buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'recall',
+      harnessSlugs: ['papercusp'], potSlugs: [],
+    });
+    await didStart;
+    await vi.advanceTimersByTimeAsync(MEMORY_INJECT_TIMEOUT_MS + 1);
+    await expect(block).resolves.toBeNull();
+    expect(upstream.aborted).toBe(true);
+    expect(upstream.reason).toBeInstanceOf(MemoryTimeoutError);
+    expect(backend.search).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+    log.mockRestore();
+    resetMemoryDegradedForTest();
+  }
+});
 
 beforeEach(() => {
   vi.mocked(getMemoryBackend).mockReset();
@@ -1271,6 +1305,7 @@ describe('buildMemoryContextBlock', () => {
       [
         'foo',
         {
+          signal: expect.any(AbortSignal),
           scope: ['u-123', 'harness:papercup'],
           limit: 12,
           minScore: MEMORY_INJECTION_COSINE_FLOOR,
@@ -1354,6 +1389,7 @@ describe('buildMemoryContextBlock', () => {
       [
         'testing?',
         {
+          signal: expect.any(AbortSignal),
           scope: ['harness:member-a', 'hive:my-hive'],
           limit: 12,
           minScore: MEMORY_INJECTION_COSINE_FLOOR,

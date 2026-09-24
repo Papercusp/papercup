@@ -16,22 +16,23 @@
     "--expect",
     "caught",
     "--in-tree",
-    "--sweep-lock-held"
+    "--sweep-lock-held",
+    "--fake-destructive"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-24T09:32:23Z",
-  "finishedAt": "2026-09-24T09:33:16Z",
-  "summary": "With a held mutation-probe file lock, the baseline A-to-B canonical work-item test passed. A mutant that rereads the mutable current blueprint hash instead of the accepted revision made that test fail after B projection. The runner reported MUTANT CAUGHT and restored the source byte-for-byte.",
+  "startedAt": "2026-09-24T14:17:49Z",
+  "finishedAt": "2026-09-24T14:20:34Z",
+  "summary": "The tool-call window is bounded by the P-003 mutation lock grant and completion. Against the current source and lifecycle fixture, the baseline A-to-B canonical work-item test passed. A mutant that rereads the mutable current blueprint hash instead of the accepted revision failed after B projection. The runner reported MUTANT CAUGHT and restored the source byte-for-byte.",
   "assertions": [
     {
       "id": "baseline-passed",
       "passed": true,
-      "evidence": "Baseline focused Vitest: 1 passed, 45 filtered, exit 0."
+      "evidence": "Baseline focused Vitest: 1 passed, 49 filtered, exit 0."
     },
     {
       "id": "current-cache-mutant-killed",
       "passed": true,
-      "evidence": "Mutation changed only readAcceptedBlueprintDirectWorkItem's snapshot lookup from pin.specificationRevision to readBlueprintHashFromPg(current). After revision B projection, focused Vitest failed at line 272 with 'accepted blueprint operation pin does not match the work item'; mutant guard exited 1."
+      "evidence": "Mutation changed only readAcceptedBlueprintDirectWorkItem's snapshot lookup from pin.specificationRevision to readBlueprintHashFromPg(current). After revision B projection, focused Vitest failed at line 316 with 'accepted blueprint operation pin does not match the work item'; mutant guard exited 1."
     },
     {
       "id": "source-restored",
