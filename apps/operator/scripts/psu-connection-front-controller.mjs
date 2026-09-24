@@ -45,8 +45,15 @@ const HOSTED_TOKEN_RE = /^pct_[A-Za-z0-9_-]{43}$/;
 const HOSTED_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HOSTED_TICKET_RE = /^ht_[A-Za-z0-9_-]{43}$/;
 const HOSTED_SESSION_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/**
+ * Programs the controller may run on the chosen host. `pui --connect…` execs
+ * `psu --connect-program=pui …` so PUI reuses these profiles and transports
+ * (pui-first-party-public-release P-017 / D-025).
+ */
+const CONNECT_PROGRAMS = new Set(["psu", "pui"]);
 const VALUE_FLAGS = new Map([
   ["--connect", "selection"],
+  ["--connect-program", "program"],
   ["--connect-add-gcp-iap", "addName"],
   ["--connect-remove", "removeName"],
   ["--connect-project", "projectId"],
@@ -99,6 +106,7 @@ export function parsePsuConnectionArgs(argv) {
     logout: false,
     logoutName: null,
     sessionKey: null,
+    program: "psu",
   };
   let passthrough = false;
 
@@ -163,6 +171,11 @@ export function parsePsuConnectionArgs(argv) {
   ) {
     throw new Error(
       "--connect-session must be 1-64 letters, digits, '-' or '_'",
+    );
+  }
+  if (!CONNECT_PROGRAMS.has(transport.program)) {
+    throw new Error(
+      `--connect-program must be one of ${[...CONNECT_PROGRAMS].join(", ")}`,
     );
   }
   if (
@@ -481,9 +494,9 @@ function defaultRunInteractive(command, args) {
   });
 }
 
-async function defaultPickConnection(choices) {
+async function defaultPickConnection(choices, { program = "psu" } = {}) {
   const { select } = await import("@inquirer/prompts");
-  return select({ message: "Where should psu run?", choices });
+  return select({ message: `Where should ${program} run?`, choices });
 }
 
 /** Best effort: the URL is always printed too, so a headless box loses nothing. */
@@ -642,14 +655,15 @@ function connectionControlPath(profile, home) {
   return join(home, ".papercusp", "ssh", `cm-${digest}`);
 }
 
-function tmuxSessionName(profile, argv) {
+/** The program is in the name, so `pui` never reattaches a `psu` shell with the same argv. */
+function tmuxSessionName(profile, argv, program = "psu") {
   const digest = createHash("sha256")
     .update(profile.name)
     .update("\0")
     .update(argv.join("\0"))
     .digest("hex")
     .slice(0, 16);
-  return `papercusp-psu-${digest}`;
+  return `papercusp-${program}-${digest}`;
 }
 
 function assertProfileUsable(profile, deps) {
@@ -749,12 +763,12 @@ function shellQuote(value) {
  * interrupted command reattaches to the shell still alive on the machine, the
  * way `tmux new-session -A` does for the SSH transport.
  */
-function hostedSessionKey(profile, workspaceId, argv) {
-  return createHash("sha256")
-    .update(`${profile.name}\0${workspaceId}\0`)
-    .update(argv.join("\0"))
-    .digest("base64url")
-    .slice(0, 22);
+function hostedSessionKey(profile, workspaceId, argv, program = "psu") {
+  const hash = createHash("sha256").update(`${profile.name}\0${workspaceId}\0`);
+  // psu keys predate other programs; folding only the others in keeps every
+  // existing psu shell reattachable.
+  if (program !== "psu") hash.update(`program=${program}\0`);
+  return hash.update(argv.join("\0")).digest("base64url").slice(0, 22);
 }
 
 const HOSTED_ERROR_GUIDANCE = {
@@ -932,6 +946,7 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
           name: describeHostedWorkspace(profile, candidate),
           value: `${profile.name}/${candidate.id}`,
         })),
+        { program: transport.program },
       );
       workspace = reachable.find((candidate) => `${profile.name}/${candidate.id}` === chosen) ?? null;
     }
@@ -945,7 +960,10 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
     }
   }
 
-  const session = transport.sessionKey ?? hostedSessionKey(profile, workspace.id, forwardedArgv);
+  const { program } = transport;
+  const session =
+    transport.sessionKey ??
+    hostedSessionKey(profile, workspace.id, forwardedArgv, program);
   const opened = await hostedRequest(
     deps,
     profile,
@@ -969,7 +987,7 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
   socketUrl.searchParams.set("ticket", ticket);
 
   deps.notice(`psu: connected to ${describeHostedWorkspace(profile, workspace)}`);
-  const initialInput = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu${forwardedArgv
+  const initialInput = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}${forwardedArgv
     .map((cell) => ` ${shellQuote(cell)}`)
     .join("")}\r`;
   const result = await deps.openHostedTerminal({
@@ -979,7 +997,7 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
   });
   if (result.exit) return { handled: true, argv: forwardedArgv, exitCode: result.exit.code ?? 1 };
   throw new Error(
-    `The connection to ${workspace.id} closed${result.closeReason ? ` (${result.closeReason})` : ""}. Your shell stays alive on the machine for a while: run psu --connect=${profile.name}/${workspace.id} --connect-session=${opened.payload.session ?? session} to resume it.`,
+    `The connection to ${workspace.id} closed${result.closeReason ? ` (${result.closeReason})` : ""}. Your shell stays alive on the machine for a while: run ${program} --connect=${profile.name}/${workspace.id} --connect-session=${opened.payload.session ?? session} to resume it.`,
   );
 }
 
@@ -987,9 +1005,11 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
  * Every place psu can run. A Papercusp cloud sign-in expands to its workspaces
  * (a stopped one is shown but not selectable); with no sign-in yet, the picker
  * offers one, so the remote option is discoverable from a plain `psu`.
+ * `pui --connect` always means a remote host, so it gets no local entry.
  */
-async function pickerChoices(store, deps) {
-  const choices = [{ name: "Local — this computer", value: "local" }];
+async function pickerChoices(store, deps, program = "psu") {
+  const choices =
+    program === "psu" ? [{ name: "Local — this computer", value: "local" }] : [];
   let signedIn = false;
   for (const profile of store.profiles) {
     if (profile.kind !== "papercusp-hosted") {
@@ -1053,6 +1073,17 @@ function connectionDeps(overrides) {
   };
 }
 
+function savedProfile(name, deps) {
+  const profile = loadPsuConnectionStore(deps.storePath).profiles.find(
+    (candidate) => candidate.name === name,
+  );
+  if (!profile)
+    throw new Error(
+      `Unknown psu connection profile '${name}'. Run psu --connect-list to inspect saved profiles.`,
+    );
+  return profile;
+}
+
 /**
  * @returns {Promise<{ handled: boolean, argv: string[], exitCode?: number }>}
  */
@@ -1084,7 +1115,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
   if (transport.login) {
     const profile = await hostedLogin(transport.loginOrigin, store, deps);
     deps.output(
-      `Signed in to ${profile.origin}. Run psu --connect=${profile.name} to open psu on one of your workspaces.`,
+      `Signed in to ${profile.origin}. Run ${transport.program} --connect=${profile.name} to open ${transport.program} on one of your workspaces.`,
     );
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
@@ -1172,26 +1203,29 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     !pickerAllowed
   ) {
     throw new Error(
-      "--connect needs a saved profile name when psu is non-interactive",
+      `--connect needs a saved profile name when ${transport.program} is non-interactive`,
     );
   }
   if (selection == null && pickerAllowed)
-    selection = await deps.pickConnection(await pickerChoices(store, deps));
+    selection = await deps.pickConnection(
+      await pickerChoices(store, deps, transport.program),
+      { program: transport.program },
+    );
   if (selection === HOSTED_LOGIN_CHOICE) {
     const profile = await hostedLogin(undefined, store, deps);
     selection = profile.name;
   }
+  // Only psu itself continues on this computer. Returning unhandled for any
+  // other program would make the launcher start a local psu in its place.
+  if (transport.program !== "psu" && (selection == null || selection === "local"))
+    throw new Error(
+      `${transport.program} --connect runs ${transport.program} on a saved remote host; run ${transport.program} without --connect to stay on this computer`,
+    );
   if (selection == null || selection === "local")
     return { handled: false, argv: forwardedArgv };
 
   const { name, workspaceId } = parseSelection(selection);
-  const profile = loadPsuConnectionStore(deps.storePath).profiles.find(
-    (candidate) => candidate.name === name,
-  );
-  if (!profile)
-    throw new Error(
-      `Unknown psu connection profile '${name}'. Run psu --connect-list to inspect saved profiles.`,
-    );
+  const profile = savedProfile(name, deps);
   assertProfileUsable(profile, deps);
   if (profile.kind === "papercusp-hosted")
     return runHostedConnection(
@@ -1220,11 +1254,11 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
       "new-session",
       "-A",
       "-s",
-      tmuxSessionName(profile, forwardedArgv),
+      tmuxSessionName(profile, forwardedArgv, transport.program),
       "--",
       "env",
       "PAPERCUSP_PSU_CONNECTION_FORWARDED=1",
-      "psu",
+      transport.program,
       ...forwardedArgv,
     ];
     const session = buildOpenSshPtySessionCommand({
@@ -1237,7 +1271,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
       throw new Error(`Remote psu transport ended on ${result.signal}`);
     if (result.code === 255) {
       throw new Error(
-        `Remote psu transport failed. The tmux session remains reattachable; retry psu --connect=${profile.name} after correcting the OpenSSH/IAP error above.`,
+        `Remote psu transport failed. The tmux session remains reattachable; retry ${transport.program} --connect=${profile.name} after correcting the OpenSSH/IAP error above.`,
       );
     }
     return { handled: true, argv: forwardedArgv, exitCode: result.code ?? 1 };
