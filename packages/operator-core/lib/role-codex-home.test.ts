@@ -691,6 +691,56 @@ describe('writeSuCodexHome', () => {
     expect(idempotent).toMatchObject({ repaired: false, identityRepaired: false });
   });
 
+  it('restores canonical instructions and carry base without deleting an existing rollout', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'missing-agents',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'ORIGINAL SU RULES',
+      sid: 'su-missing-agents',
+    });
+    const rollout = join(home.codexHome, 'sessions', '2026', '09', '24', 'rollout.jsonl');
+    mkdirSync(join(home.codexHome, 'sessions', '2026', '09', '24'), { recursive: true });
+    writeFileSync(rollout, '{"type":"session_meta"}\n');
+    rmSync(home.agentsPath);
+    writeFileSync(join(home.codexHome, '.papercusp-carry-base-AGENTS.md'), '');
+
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'missing-agents',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-missing-agents',
+      promptText: 'CURRENT CANONICAL SU RULES',
+    });
+    expect(repaired).toMatchObject({ repaired: true, promptRepaired: true });
+    expect(readFileSync(home.agentsPath, 'utf8')).toContain('CURRENT CANONICAL SU RULES');
+    expect(readFileSync(join(home.codexHome, '.papercusp-carry-base-AGENTS.md'), 'utf8'))
+      .toContain('CURRENT CANONICAL SU RULES');
+    expect(readFileSync(rollout, 'utf8')).toContain('session_meta');
+    expect(ensureSuCodexHomeConfig({
+      sessionKey: 'missing-agents',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-missing-agents',
+      promptText: 'CURRENT CANONICAL SU RULES',
+    }).promptRepaired).toBe(false);
+  });
+
+  it('rematerializes an entirely missing home for a fresh carry without using a destructive rebuild', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig } = await loadMod();
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'gc-removed-home',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-gc-removed-home',
+      promptText: 'RESTORED CANONICAL SU RULES',
+      recoverMissingHome: true,
+    });
+    expect(repaired).toMatchObject({ repaired: true, promptRepaired: true });
+    expect(readFileSync(join(repaired.codexHome, 'AGENTS.md'), 'utf8'))
+      .toContain('RESTORED CANONICAL SU RULES');
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('client=su-gc-removed-home');
+  });
+
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
     const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
     const prepared = writeSuCodexHome({

@@ -1189,17 +1189,28 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * (or carry superseded values) are rewritten from this canonical renderer so a
  * model-less resume cannot silently fall back to Codex's smaller native window.
  */
-export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey: string | number }): {
+export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
+  sessionKey: string | number;
+  /** Canonical, current SU render; supplied by the operator repair route. */
+  promptText?: string;
+  /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
+  recoverMissingHome?: boolean;
+}): {
   codexHome: string;
   configPath: string;
   repaired: boolean;
   identityRepaired: boolean;
+  promptRepaired: boolean;
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
-    return { codexHome, configPath, repaired: false, identityRepaired: false, reason: 'no-home' };
+    if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
+      return { codexHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
+    }
+    mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    inheritUserCodexHome(codexHome);
   }
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
@@ -1241,11 +1252,36 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
     opts.sessionKey,
     mcpUrlWithClient(opts.mcpUrl, opts.sid),
   );
+  const agentsPath = join(codexHome, 'AGENTS.md');
+  const carryBasePath = join(codexHome, '.papercusp-carry-base-AGENTS.md');
+  const readBase = (path: string): string => {
+    try {
+      return readFileSync(path, 'utf8').split(/\n---\n## Managed carry checkpoint\b/)[0].trim();
+    } catch {
+      return '';
+    }
+  };
+  // The carry minter prefers its base snapshot over AGENTS.md. Repair BOTH
+  // whenever either is empty, otherwise a prior empty snapshot wins again.
+  const agentsBase = readBase(agentsPath);
+  const snapshotExists = existsSync(carryBasePath);
+  const snapshotBase = snapshotExists ? readBase(carryBasePath) : agentsBase;
+  const promptRepaired = !!opts.promptText?.trim() && (!agentsBase || !snapshotBase);
+  if (promptRepaired) {
+    const lockRuntime = readCodexLockRuntimeVerdict({
+      ownerId: opts.sid,
+      hooksConfigured: identity.hooksInstalled,
+    });
+    const canonicalPrompt = codexAgentsPrompt(opts.promptText!, lockRuntime);
+    writeFileSync(agentsPath, canonicalPrompt, { mode: 0o600 });
+    writeFileSync(carryBasePath, canonicalPrompt, { mode: 0o600 });
+  }
   return {
     codexHome,
     configPath,
-    repaired: !configReady || identity.repaired,
+    repaired: !configReady || identity.repaired || promptRepaired,
     identityRepaired: identity.repaired,
+    promptRepaired,
   };
 }
 

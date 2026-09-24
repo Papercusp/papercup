@@ -128,12 +128,23 @@ export function buildPlanFreshness(
 export async function readActiveAcceptanceRubrics(input: {
   workspaceId: string;
   planSlugs: readonly string[];
+  timings?: Record<string, number>;
 }): Promise<Map<string, string>> {
   if (input.planSlugs.length === 0) return new Map();
+  let stageStarted = input.timings ? performance.now() : 0;
+  const mark = (stage: string) => {
+    if (!input.timings) return;
+    const now = performance.now();
+    input.timings[`lifecycle.${stage}`] = Math.max(0, now - stageStarted);
+    stageStarted = now;
+  };
   const { withWorkspace } = await import('@papercusp/db-org');
+  mark('loadReader');
   const rows = await withWorkspace(
     input.workspaceId,
-    async (tx) => tx<{ plan_slug: string; subject_plan: string }[]>`
+    async (tx) => {
+      mark('acquireAndSetup');
+      const rows = await tx<{ plan_slug: string; subject_plan: string }[]>`
       SELECT plan_slug, template_data ->> 'subjectPlan' AS subject_plan
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${input.workspaceId}
@@ -144,8 +155,12 @@ export async function readActiveAcceptanceRubrics(input: {
          AND template_data ->> 'kind' = 'acceptance'
          AND NULLIF(template_data ->> 'subjectPlan', '') IS NOT NULL
          AND template_data ->> 'subjectPlan' = ANY(${[...input.planSlugs]})
-    `,
+      `;
+      mark('query');
+      return rows;
+    },
   );
+  mark('finishTransaction');
   return new Map(rows.map((r) => [r.subject_plan, r.plan_slug] as const));
 }
 
@@ -199,6 +214,8 @@ export interface GatherPlanLifecycleSignalsInput {
   now?: string;
   /** Injected reader, so callers that already batched the lookup skip the query. */
   readAcceptance?: typeof readActiveAcceptanceRubrics;
+  /** Request-local wall times for the existing plans:get diagnostic metadata. */
+  timings?: Record<string, number>;
   /** Injected RETIRED-rubric reader (read only for a shipped plan with no active rubric). */
   readRetiredAcceptance?: typeof readRetiredAcceptanceRubrics;
   /**
@@ -239,7 +256,8 @@ export async function gatherPlanLifecycleSignals(
 
   try {
     const read = input.readAcceptance ?? readActiveAcceptanceRubrics;
-    const found = await read({ workspaceId: input.workspaceId, planSlugs: [input.planSlug] });
+    const found = await read({ workspaceId: input.workspaceId, planSlugs: [input.planSlug],
+      ...(input.timings ? { timings: input.timings } : {}) });
     const ref = found.get(input.planSlug) ?? null;
     return { freshness, acceptance: { rubricActive: ref !== null, rubricRef: ref } };
   } catch {

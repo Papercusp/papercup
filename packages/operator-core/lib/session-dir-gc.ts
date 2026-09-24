@@ -59,6 +59,7 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { listLiveHosts, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import {
   sessionClaudeRoot,
   sessionMcpRoot,
@@ -140,6 +141,24 @@ export interface ProtectedSessionIdentity {
    * kills live sessions.
    */
   degraded?: boolean;
+}
+
+/** A live PTY host is a stronger liveness witness than an adv row or a recent
+ * coord heartbeat. Those rows can be ended or reaped while the process still
+ * owns its socket. Protect both its owner-keyed dirs and its Codex home keyed
+ * by advSessionId, even if every DB-derived protected-set source says "ended".
+ * Shared by the periodic janitor and Storage prune so neither path can delete
+ * a live host's instructions under a stale lifecycle row. */
+export function protectLivePtyHostHomes(
+  identity: ProtectedSessionIdentity,
+  hosts: readonly Pick<PsuPtyHost, 'ownerId' | 'advSessionId'>[],
+): ProtectedSessionIdentity {
+  for (const host of hosts) {
+    if (host.ownerId) identity.ownerIds.add(host.ownerId);
+    const key = String(host.advSessionId ?? '');
+    if (/^[1-9]\d*$/.test(key)) identity.sessionKeys.add(key);
+  }
+  return identity;
 }
 
 export interface SessionDirGcPlan {
@@ -397,6 +416,7 @@ export async function gatherProtectedSessionIdentity(): Promise<ProtectedSession
     console.warn('[session-dir-gc] PG protected-set read failed:', (e as Error).message);
   }
 
+  protectLivePtyHostHomes({ ownerIds, sessionKeys }, listLiveHosts());
   return { ownerIds, sessionKeys, degraded };
 }
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { disqualification, HARNESS_TAG, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
+import { runReleaseAcceptance } from './release-acceptance-run';
 
 describe('release acceptance evidence parsing', () => {
   it('reads every record when Vitest batches two console writes into one chunk', () => {
@@ -55,5 +59,33 @@ describe('release acceptance evidence parsing', () => {
     };
     expect(disqualification(row, candidate)).toBeNull();
     expect(disqualification({ ...row, unparsed: true }, candidate)).toBe('its acceptance line did not parse');
+  });
+});
+
+describe('release acceptance account preflight', () => {
+  it('refuses a missing or invalid routed catalog before opening the archive or running suites', async () => {
+    const work = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-preflight-'));
+    const archive = path.join(work, 'missing.tar.gz');
+    try {
+      await expect(runReleaseAcceptance({ archive, advertise: [], real: [{ backend: 'claude', env: {
+        PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: '',
+      } }] })).rejects.toThrow(/PUI_NATIVE_ACCOUNT_CATALOG.*before installed suites run/);
+      await expect(runReleaseAcceptance({ archive, advertise: [], real: [{ backend: 'claude', env: {
+        PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: 'relative-accounts.json',
+      } }] })).rejects.toThrow(/must be an absolute path/);
+
+      const catalog = path.join(work, 'accounts.json');
+      writeFileSync(catalog, '{"accounts":[{"id":"bad id","provider":"claude"}]}');
+      await expect(runReleaseAcceptance({ archive, advertise: [], real: [{ backend: 'claude', env: {
+        PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: catalog,
+      } }] })).rejects.toThrow(/valid id\/provider metadata/);
+
+      writeFileSync(catalog, '{"accounts":[{"id":"claude-main","provider":"claude"}]}');
+      await expect(runReleaseAcceptance({ archive, advertise: [], real: [{ backend: 'claude', env: {
+        PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: catalog,
+      } }] })).rejects.toThrow(/ENOENT/);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });

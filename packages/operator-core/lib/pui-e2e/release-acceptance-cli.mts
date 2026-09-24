@@ -12,6 +12,9 @@ const USAGE = `Usage: apps/tui/scripts/release-acceptance.sh --archive <pui-*.ta
                        (repeatable; names come from apps/tui/PUBLIC_RELEASE_UX.md)
   --real <b>[:<model>] add a real-engine leg (claude | codex | omp). Pin the model
                        (D-012); omit it only for omp under PUI_REAL_ACCOUNT=auto (D-013)
+  PUI_REAL_ACCOUNT=auto requires PUI_NATIVE_ACCOUNT_CATALOG=<absolute-json-path> before any
+                       installed tests run. Supply a current accounts:list snapshot
+                       containing accounts with id/provider metadata only.
   --test-filter <re>   vitest -t pattern (partial runs; a release leaves it unset)
   --out <f>            verdict file (default <archive>.acceptance.json)
   --work <dir>         scratch directory (default a fresh temp dir)

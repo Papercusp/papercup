@@ -29,6 +29,7 @@ import {
   findUnarchivedSessionDirs,
   isProtected,
   planSessionDirGc,
+  protectLivePtyHostHomes,
   runSessionDirGc,
   sessionDirKey,
   sweepStaleSessionDirs,
@@ -93,6 +94,24 @@ describe('planSessionDirGc', () => {
     mtimeMs: NOW - ageMs,
   });
   const RET = DEFAULT_RETENTION_MS;
+
+  it('keeps a live PTY host home even when its adv row and coord presence are gone', () => {
+    const protectedIdentity = protectLivePtyHostHomes(
+      { ownerIds: new Set(), sessionKeys: new Set() },
+      [{ ownerId: 'su-live-pty', advSessionId: '23321' }],
+    );
+    const plan = planSessionDirGc({
+      candidates: [
+        mk('su-live-pty', 'owner', RET * 3),
+        mk('23321', 'session', RET * 3),
+      ],
+      protectedIdentity,
+      nowMs: NOW,
+      retentionMs: RET,
+    });
+    expect(plan.keptProtected.map((c) => c.key).sort()).toEqual(['23321', 'su-live-pty']);
+    expect(plan.remove).toEqual([]);
+  });
 
   it('keeps protected dirs regardless of age', () => {
     const prot: ProtectedSessionIdentity = { ownerIds: new Set(['su-live']), sessionKeys: new Set() };

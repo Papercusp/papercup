@@ -14,9 +14,11 @@ import { join, sep } from 'node:path';
 import {
   defaultSessionDirRoots,
   discoverSessionDirCandidates,
+  protectLivePtyHostHomes,
   type SessionDirCandidate,
   type ProtectedSessionIdentity,
 } from '../session-dir-gc';
+import { listLiveHosts } from '../events/await/psu-pty-discovery';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import { scratchRoot } from '../scratch-uri';
 import type { DiskStorageCategory } from './categories';
@@ -542,5 +544,6 @@ export async function gatherProtectedSessionIdentity(
   } catch {
     return { ok: false, identity: { ownerIds, sessionKeys } };
   }
-  return { ok: true, identity: { ownerIds, sessionKeys } };
+  const identity = protectLivePtyHostHomes({ ownerIds, sessionKeys }, listLiveHosts());
+  return { ok: true, identity };
 }

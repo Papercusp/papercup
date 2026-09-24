@@ -753,12 +753,23 @@ export async function listPlanFiles(
 export async function getPlanRow(
   slug: string,
   opts: PlanSourceOpts = {},
+  timings?: Record<string, number>,
 ): Promise<PlanRow | null> {
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  let stageStarted = timings ? performance.now() : 0;
+  const mark = (stage: string) => {
+    if (!timings) return;
+    const now = performance.now();
+    timings[`source.${stage}`] = Math.max(0, now - stageStarted);
+    stageStarted = now;
+  };
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  mark('resolveScope');
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
-      return tx<PlanDbRow[]>`
+      // Includes pool acquisition, BEGIN and workspace setup, not just pool wait.
+      mark('acquireAndSetup');
+      const rows = await tx<PlanDbRow[]>`
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -769,8 +780,13 @@ export async function getPlanRow(
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
       `;
+      mark('query');
+      return rows;
     });
-    return rows[0] ? rowFromDb(rows[0]) : null;
+    mark('finishTransaction');
+    const row = rows[0] ? rowFromDb(rows[0]) : null;
+    mark('row');
+    return row;
   } catch (err: unknown) {
     // Fallback for databases where migration 299 hasn't been applied yet
     // (schedule columns don't exist). Gracefully default them to null/false.
@@ -1562,11 +1578,15 @@ export async function listPlanRowsMatchingAnyToken(
 export async function readPlanBySlug(
   slug: string,
   opts: PlanSourceOpts = {},
+  timings?: Record<string, number>,
 ): Promise<{ parsed: ParsedPlan; archived: boolean; row: PlanRow } | null> {
-  const row = await getPlanRow(slug, opts);
+  const row = await getPlanRow(slug, opts, timings);
   if (!row) return null;
+  const started = timings ? performance.now() : 0;
+  const parsed = parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) });
+  if (timings) timings['source.parse'] = Math.max(0, performance.now() - started);
   return {
-    parsed: parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    parsed,
     archived: row.archived,
     row,
   };

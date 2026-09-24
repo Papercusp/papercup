@@ -283,6 +283,16 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
     expect(isCodexHomeLaunchReady(dir)).toBe(true);
   });
 
+  it('rejects a carry-only prompt or empty carry base even when config is healthy', () => {
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    const prompt = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
+    writeFileSync(join(dir, 'AGENTS.md'), '\n---\n## Managed carry checkpoint\nRead the carry file.\n');
+    expect(isCodexHomeLaunchReady(dir)).toBe(false);
+    writeFileSync(join(dir, 'AGENTS.md'), prompt);
+    writeFileSync(join(dir, '.papercusp-carry-base-AGENTS.md'), '');
+    expect(isCodexHomeLaunchReady(dir)).toBe(false);
+  });
+
   it('FALSE for the trust-only stub codex writes after the config is deleted', () => {
     writeFileSync(join(dir, 'config.toml'), CODEX_STUB);
     // The stub is a plausible-looking config.toml; existence is NOT the test.

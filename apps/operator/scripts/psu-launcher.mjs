@@ -3527,8 +3527,8 @@ export function mintCarryRespawnArgs(
     const targetHome = String(codexHome ?? "").trim();
     if (!targetHome) throw new Error("Codex carry-respawn requires CODEX_HOME");
     // A long-lived PTY host can outlive the per-session home repair/archiver.
-    // If AGENTS.md was removed, keep the carry contract terminally deliverable
-    // by recreating the home and layering this checkpoint onto an empty base.
+    // The operator repair route restores the canonical prompt before minting.
+    // Never turn an unavailable repair into a fresh thread with no SU rules.
     mkdirSync(targetHome, { recursive: true, mode: 0o700 });
     const agentsPath = join(targetHome, "AGENTS.md");
     const basePath = join(targetHome, ".papercusp-carry-base-AGENTS.md");
@@ -3545,6 +3545,9 @@ export function mintCarryRespawnArgs(
       ? readFileSync(baseSourcePath, "utf8")
       : "";
     const baseText = stripManagedCarrySection(sourceBaseText);
+    if (!baseText.trim()) {
+      throw new Error("Codex carry-respawn requires a restored non-empty AGENTS.md base");
+    }
     if (!baseExists || baseText !== sourceBaseText) {
       writeFileSync(basePath, baseText, { mode: 0o600 });
       chmodSync(basePath, 0o600);
@@ -13866,7 +13869,13 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
     // AGENTS.md is this session's behavioral spine. A home with valid MCP/hooks
     // but no prompt is not launch-ready and must be rematerialized before a
     // resume or deterministic carry successor starts.
-    if (!readFileSync(join(codexHome, "AGENTS.md"), "utf8").trim()) return false;
+    const agentsText = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
+    if (!stripManagedCarrySection(agentsText).trim()) return false;
+    const carryBasePath = join(codexHome, ".papercusp-carry-base-AGENTS.md");
+    if (
+      existsSync(carryBasePath) &&
+      !stripManagedCarrySection(readFileSync(carryBasePath, "utf8")).trim()
+    ) return false;
     const text = readFileSync(join(codexHome, "config.toml"), "utf8"); // throws when absent
     if (!text.includes("[mcp_servers.papercusp-su]")) return false;
     if (!expectedOwner) return true;

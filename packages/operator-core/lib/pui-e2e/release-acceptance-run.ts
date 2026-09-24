@@ -106,7 +106,37 @@ function listedDigest(unit: string, file: string): string | null {
   return line ? line.split(/\s+/)[0] : null;
 }
 
+/** Reject a missing routed-account fixture before the long scripted leg starts. */
+function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
+  for (const leg of real ?? []) {
+    const account = leg.env?.PUI_REAL_ACCOUNT ?? process.env.PUI_REAL_ACCOUNT;
+    if (account !== 'auto') continue;
+    const catalogPath = leg.env?.PUI_NATIVE_ACCOUNT_CATALOG ?? process.env.PUI_NATIVE_ACCOUNT_CATALOG;
+    if (!catalogPath?.trim()) {
+      throw new Error(`PUI_REAL_ACCOUNT=auto for ${leg.backend} requires PUI_NATIVE_ACCOUNT_CATALOG: a current accounts:list JSON snapshot with id/provider metadata, before installed suites run`);
+    }
+    if (!path.isAbsolute(catalogPath)) {
+      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must be an absolute path so the installed suites read the same file: ${catalogPath}`);
+    }
+    let accounts: unknown;
+    try {
+      const parsed = JSON.parse(readFileSync(catalogPath, 'utf8')) as { accounts?: unknown };
+      accounts = parsed.accounts;
+    } catch {
+      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must point to readable accounts:list JSON with id/provider metadata: ${catalogPath}`);
+    }
+    if (!Array.isArray(accounts) || accounts.length === 0 || accounts.some((entry: unknown) => {
+      const row = entry as Record<string, unknown> | null;
+      return !row || typeof row.id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(row.id)
+        || !['claude', 'codex'].includes(String(row.provider));
+    })) {
+      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must contain nonempty accounts:list accounts with valid id/provider metadata: ${catalogPath}`);
+    }
+  }
+}
+
 export async function runReleaseAcceptance(options: RunOptions): Promise<RunResult> {
+  preflightRoutedAccountCatalog(options.real);
   const archive = path.resolve(options.archive);
   const work = options.work ?? mkdtempSync(path.join(tmpdir(), 'pui-release-acceptance-'));
   const archiveSha256 = sha256(archive);
