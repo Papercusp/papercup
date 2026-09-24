@@ -2172,6 +2172,18 @@ export const MERGE_BATCH_MAX_MS = 500;
 /** Bound on the COMMIT round trip (ms); past it the batch counts as lost and is replayed. */
 export const MERGE_BATCH_COMMIT_TIMEOUT_MS = 30_000;
 
+/**
+ * P-525 (p2p-join-catchup-speed D-013): a batch opened while its log is at least
+ * this many ops behind, or while it applies snapshot rows, sets
+ * {@link SYNC_NOTIFY_COALESCE_GUC}. emit_change_notify (mig 1213) then sends one
+ * table-scoped sync_invalidate per table per transaction instead of one per row.
+ * Measured on the P-007 VM: handling the per-row echoes of a snapshot-set crossing
+ * was 22.8% of the main thread. Below the bound (live catch-up), per-row scoped
+ * invalidation is kept because it is more precise.
+ */
+export const MERGE_COALESCE_NOTIFY_MIN_BACKLOG = 256;
+export const SYNC_NOTIFY_COALESCE_GUC = 'papercusp.sync_notify_coalesce';
+
 export interface MergeBatchOpts {
   /**
    * Commit after this many ops wrote into the batch. Keep it under 64, PG's
@@ -2227,6 +2239,11 @@ class FoldBatch {
   private failureReason: string | null = null;
   /** Log position of the first op whose writes sit in the open transaction; -1 when none do. */
   startPos = -1;
+  /**
+   * P-525: set by the fold before each op. Read when a transaction opens, so it
+   * holds for that whole transaction ({@link MERGE_COALESCE_NOTIFY_MIN_BACKLOG}).
+   */
+  coalesceNotify = false;
   readonly stats: MergeBatchStats = { commits: 0, ops: 0, rewinds: 0 };
 
   constructor(
@@ -2394,6 +2411,8 @@ class FoldBatch {
       this.openedAt = Date.now();
       this.startPos = this.opPos;
       this.pipe(reserved.unsafe('BEGIN'));
+      // Before any SAVEPOINT, so a per-op rollback cannot undo it; COMMIT clears it.
+      if (this.coalesceNotify) this.pipe(reserved.unsafe(`SELECT set_config('${SYNC_NOTIFY_COALESCE_GUC}', 'on', true)`));
     } catch {
       // No connection, no transaction: this op simply autocommits.
     } finally {
@@ -3182,6 +3201,8 @@ async function mergeIncrementalPass(
     };
 
     for (; pos < upper; pos++) {
+      // P-525 (D-013): a far-behind fold asks for table-scoped change notifications.
+      if (batch) batch.coalesceNotify = log.length - pos >= MERGE_COALESCE_NOTIFY_MIN_BACKLOG;
       // EI-81: yield a macrotask every ~1k iterations — counted per pass
       // (the counter carries across logs) so N small logs can't dodge it.
       // WI-2344: OR every MERGE_YIELD_MAX_MS of wall-clock, whichever comes
@@ -3383,6 +3404,8 @@ async function mergeIncrementalPass(
         // of rows, so a seeded set checkpoints about every MERGE_PERSIST_EVERY_OPS rows
         // and a restart resumes mid-set. The watermark is persisted too, so it applies.
         if (rows.length > 1) opsSincePersist += rows.length - 1;
+        // P-525: one chunk expands to thousands of rows, so a set is bulk wherever it sits.
+        if (batch) batch.coalesceNotify = true;
         let retryable = false;
         for (const row of rows) {
           // P-002 step 2: one chunk can hold thousands of rows; bound the batch inside it too.
