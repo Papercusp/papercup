@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { compileJsonSchema } from '../json-schema-validation';
 
 import {
@@ -8,6 +9,7 @@ import {
   type CarryStartupObservation,
   evaluateCarryTaskPairs,
   inspectCarryNativeTurn,
+  inspectCarrySourceRead,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -152,6 +154,77 @@ describe('carry native action evidence (unpaid trial preparation)', () => {
     const input = fixture();
     input.events.splice(1, 0, { id: 'request', method: 'item/tool/call', params: { threadId: 'thread', turnId: 'turn' } });
     expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+});
+
+describe('carry frozen source-window receipts (T2)', () => {
+  const fixture = (eof = true) => {
+    const bytes = Buffer.from('exact source sentinel: cèdre 🌲');
+    const source = { sourceRef: 'native:predecessor/cut', server: 'papercusp-su', tool: 'capability_read',
+      filePath: '/fixture/frozen.jsonl', byteOffset: 100, byteLength: bytes.length,
+      totalBytes: 100 + bytes.length + (eof ? 0 : 50), sha256: createHash('sha256').update(bytes).digest('hex') };
+    const args = { file_path: source.filePath, byte_offset: source.byteOffset, byte_limit: bytes.length };
+    const page = { ok: true, file_path: source.filePath, encoding: 'base64', byte_offset: source.byteOffset,
+      byte_length: bytes.length, total_bytes: source.totalBytes, data: bytes.toString('base64'), eof,
+      next_cursor: eof ? null : { tool: 'capability:read', args: { ...args, byte_offset: 100 + bytes.length } } };
+    const read = { id: 'read', type: 'mcpToolCall', server: source.server, tool: source.tool, arguments: args,
+      status: 'completed', error: null, result: { isError: false, content: [{ type: 'text', text: JSON.stringify(page) }] } };
+    const items = [read, { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '{"sourceSentinel":"wrong"}' }];
+    const turn = { id: 'turn', status: 'completed', itemsView: 'full', items };
+    const input = { threadId: 'thread', turnId: 'turn', allowedMcpCalls: [{ server: source.server, tool: source.tool, arguments: args }],
+      threadRead: { thread: { id: 'thread', turns: [turn] } }, events: [
+        { method: 'turn/started', params: { threadId: 'thread', turn: { id: 'turn', status: 'inProgress' } } },
+        ...items.flatMap(item => ['item/started', 'item/completed'].map(method => ({ method, params: { threadId: 'thread', turnId: 'turn', item } }))),
+        { method: 'turn/completed', params: { threadId: 'thread', turn } },
+      ] };
+    return { source, input, page, read };
+  };
+
+  it.each([true, false])('verifies exact UTF-8 bytes at a nonzero offset (EOF %s), independently of response quality', eof => {
+    const { source, input } = fixture(eof);
+    expect(inspectCarrySourceRead(input, source)).toEqual({ status: 'verified', missing: [], violations: [],
+      sourceRef: source.sourceRef, itemId: 'read' });
+    expect(inspectCarrySourceRead(input, source)).not.toHaveProperty('quality');
+  });
+
+  it.each(['wrong-path', 'wrong-offset', 'wrong-total', 'changed-bytes', 'truncated', 'base64-garbage', 'base64-whitespace',
+    'wrong-length', 'false-ok', 'wrong-encoding', 'missing-data', 'wrong-eof', 'wrong-cursor', 'missing-page', 'duplicate-page',
+    'tool-error', 'tool-failure', 'unapproved', 'missing-native-event', 'wrong-thread', 'no-read', 'duplicate-read',
+    'invalid-hash', 'invalid-window'])('does not accept %s as source-read proof', fault => {
+    const { source, input, read, page } = fixture();
+    if (fault === 'wrong-path') page.file_path += '.different';
+    if (fault === 'wrong-offset') page.byte_offset++;
+    if (fault === 'wrong-total') page.total_bytes++;
+    if (fault === 'changed-bytes') page.data = Buffer.alloc(source.byteLength, 65).toString('base64');
+    if (fault === 'truncated') page.data = page.data.slice(0, -4);
+    if (fault === 'base64-garbage') page.data += '!';
+    if (fault === 'base64-whitespace') page.data += '\n';
+    if (fault === 'wrong-length') page.byte_length++;
+    if (fault === 'false-ok') page.ok = false;
+    if (fault === 'wrong-encoding') page.encoding = 'utf8';
+    if (fault === 'missing-data') delete (page as Partial<typeof page>).data;
+    if (fault === 'wrong-eof') page.eof = false;
+    if (fault === 'wrong-cursor') page.next_cursor = { tool: 'capability:read', args: { ...read.arguments, byte_offset: 0 } };
+    read.result.content[0].text = JSON.stringify(page);
+    if (fault === 'missing-page') read.result.content = [{ type: 'text', text: 'See also: capability:read' }];
+    if (fault === 'duplicate-page') read.result.content.push(read.result.content[0]);
+    if (fault === 'tool-error') read.result.isError = true;
+    if (fault === 'tool-failure') read.status = 'failed';
+    if (fault === 'unapproved') input.allowedMcpCalls = [];
+    if (fault === 'missing-native-event') input.events.splice(1, 1);
+    if (fault === 'wrong-thread') input.threadId = 'different';
+    if (fault === 'no-read') read.arguments = { ...read.arguments, file_path: '/another' };
+    if (fault === 'duplicate-read') input.threadRead.thread.turns[0].items.push(read);
+    if (fault === 'invalid-hash') source.sha256 = 'unknown';
+    if (fault === 'invalid-window') source.byteOffset = Number.MAX_SAFE_INTEGER;
+    expect(inspectCarrySourceRead(input, source).status).not.toBe('verified');
+  });
+
+  it('rejects an inconsistent continuation cursor before EOF', () => {
+    const { source, input, read, page } = fixture(false);
+    page.next_cursor!.args.byte_offset--;
+    read.result.content[0].text = JSON.stringify(page);
+    expect(inspectCarrySourceRead(input, source).missing).toContain('source-window-cursor-mismatch');
   });
 });
 

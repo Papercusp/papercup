@@ -29,6 +29,7 @@
  */
 
 import { pairedBootstrapCI } from '@papercusp/bench-metrics';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 /** The three prompt-side token fields, plus their sum. */
@@ -457,6 +458,95 @@ export function inspectCarryNativeTurn(input: CarryNativeTurnEvidence) {
   return { status, violations: [...violations], missing: [...missing],
     finalResponse: status === 'verified' ? text(final[0].text) : null,
     mcpItemIds: status === 'verified' ? items.filter(item => item.type === 'mcpToolCall').map(item => text(item.id)) : [] };
+}
+
+export interface CarrySourceWindow {
+  /** Frozen native source/cut reference; never taken from the model's answer. */
+  sourceRef: string;
+  server: string;
+  tool: string;
+  filePath: string;
+  byteOffset: number;
+  byteLength: number;
+  totalBytes: number;
+  /** SHA-256 of the selected bytes, computed at manifest freeze. */
+  sha256: string;
+}
+
+/** T2's content witness, reusing capability:read's exact byte-window protocol.
+ * Verifies a selected window, NOT the unread remainder of the source. The
+ * controller must independently bind the immutable source/cut and authenticated
+ * MCP configuration to the frozen manifest. This does not establish those
+ * bindings, serving-account identity, response correctness, or overall quality.
+ */
+export function inspectCarrySourceRead(input: CarryNativeTurnEvidence, source: CarrySourceWindow) {
+  const trace = inspectCarryNativeTurn(input);
+  const violations = new Set(trace.violations), missing = new Set(trace.missing);
+  const count = (n: number) => Number.isSafeInteger(n) && n >= 0;
+  if (!source.sourceRef.trim() || !source.server.trim() || !source.tool.trim() || !source.filePath.startsWith('/') ||
+    ![source.byteOffset, source.byteLength, source.totalBytes].every(count) || source.byteLength === 0 ||
+    !Number.isSafeInteger(source.byteOffset + source.byteLength) ||
+    source.byteOffset + source.byteLength > source.totalBytes || !/^[a-f0-9]{64}$/.test(source.sha256)) {
+    missing.add('invalid-frozen-source-window');
+  }
+  const items = asRecord(asRecord(input.threadRead)?.thread)?.turns;
+  const turn = Array.isArray(items) ? items.find(value => asRecord(value)?.id === input.turnId) : null;
+  const persisted = asRecord(turn)?.items;
+  const candidates = Array.isArray(persisted) ? persisted.map(asRecord).filter(item => {
+    const args = asRecord(item?.arguments);
+    return item?.type === 'mcpToolCall' && item.server === source.server && item.tool === source.tool &&
+      args?.file_path === source.filePath && args.byte_offset === source.byteOffset &&
+      typeof args.byte_limit === 'number' && Number.isSafeInteger(args.byte_limit) && args.byte_limit >= source.byteLength;
+  }) : [];
+  // Retried/duplicated reads need their own manifest disposition, not an
+  // arbitrary choice of the successful-looking receipt.
+  if (candidates.length !== 1) missing.add('missing-or-ambiguous-source-read');
+  const item = candidates[0], result = asRecord(item?.result);
+  if (item && (item.status !== 'completed' || item.error != null || result?.isError === true)) {
+    missing.add('unsuccessful-source-read');
+  }
+  const pages: Record<string, unknown>[] = [];
+  if (Array.isArray(result?.content)) for (const block of result.content) {
+    const entry = asRecord(block);
+    if (entry?.type !== 'text' || typeof entry.text !== 'string') continue;
+    try {
+      const page = asRecord(JSON.parse(entry.text));
+      if (page?.ok === false || page?.isError === true) missing.add('unsuccessful-source-read');
+      if (page && ('data' in page || 'byte_offset' in page)) pages.push(page);
+    } catch { /* Plain advisory text is not a byte receipt. */ }
+  }
+  if (pages.length !== 1) missing.add('missing-or-ambiguous-byte-receipt');
+  if (pages.length === 1) {
+    const page = pages[0];
+    if (page.ok !== true || page.encoding !== 'base64') missing.add('unsuccessful-byte-receipt');
+    if (page.file_path !== source.filePath || page.byte_offset !== source.byteOffset || page.total_bytes !== source.totalBytes) {
+      violations.add('source-window-identity-mismatch');
+    }
+    if (typeof page.data !== 'string') missing.add('missing-source-bytes');
+    else {
+      const bytes = Buffer.from(page.data, 'base64');
+      // Buffer.from tolerates truncation, whitespace and invalid characters.
+      // Round-trip equality rejects those otherwise successful partial decodes.
+      if (bytes.toString('base64') !== page.data || bytes.length !== page.byte_length) missing.add('corrupt-source-bytes');
+      if (bytes.length !== source.byteLength) missing.add('incomplete-source-window');
+      else if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) violations.add('source-window-hash-mismatch');
+    }
+    const end = source.byteOffset + source.byteLength;
+    if (page.eof !== (end === source.totalBytes)) missing.add('source-window-eof-mismatch');
+    if (end === source.totalBytes) {
+      if (page.next_cursor !== null) missing.add('source-window-cursor-mismatch');
+    } else {
+      const cursor = asRecord(page.next_cursor), args = asRecord(cursor?.args);
+      if (cursor?.tool !== 'capability:read' || args?.file_path !== source.filePath || args?.byte_offset !== end ||
+        typeof args?.byte_limit !== 'number' || !Number.isSafeInteger(args.byte_limit) || args.byte_limit < source.byteLength) {
+        missing.add('source-window-cursor-mismatch');
+      }
+    }
+  }
+  const status = violations.size ? 'violation' as const : missing.size ? 'incomplete' as const : 'verified' as const;
+  return { status, violations: [...violations], missing: [...missing],
+    sourceRef: status === 'verified' ? source.sourceRef : null,
+    itemId: status === 'verified' ? String(item!.id) : null };
 }
 
 export interface CarryTaskEvaluation {

@@ -2,12 +2,15 @@
  * runner owns the subprocess cgroup; only DB-backed enrollment is substituted.
  * No model prompt, credential, SU launch, or native user interface is needed. */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { RpcFrame, SuStdioPeer } from './su-session-stdio-peer';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
@@ -25,8 +28,10 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
-import { inspectCarryNativeTurn } from './launch-cost/launch-cost-metrics';
+import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/launch-cost-metrics';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
+import sourceReadTool from './agent-tools/capability/read';
+import { captureCompletedCarrySource, recheckCarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -118,12 +123,56 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
-  it('cross-checks completed native item receipts against persisted history without provider inference', async () => {
+  it.each([false, true])('cross-checks completed native item receipts against persisted history without provider inference (source read %s)', async readSource => {
     const events: RpcFrame[] = [];
+    const fixtureHome = mkdtempSync(join(tmpdir(), 'carry-source-receipt-')); homes.push(fixtureHome);
+    const filePath = join(fixtureHome, 'frozen-source.jsonl');
+    const sourceBytes = Buffer.from('prefix\n{"sourceSentinel":"cedar-48f6e9a2"}\n');
+    writeFileSync(filePath, sourceBytes);
+    const window = sourceBytes.subarray(7);
+    const readArgs = { file_path: filePath, byte_offset: 7, byte_limit: window.length };
+    const observedReads: unknown[] = [], httpErrors: unknown[] = [], mcpHosts: McpServer[] = [];
+    const providerCalls: Array<Record<string, unknown>> = [];
     let requests = 0;
     const server = createServer(async (req, res) => {
-      for await (const _chunk of req) { /* drain the local fixture request */ }
+      if (req.url === '/mcp') {
+        const host = new McpServer({ name: 'carry-receipt-fixture', version: '1' }); mcpHosts.push(host);
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        try {
+          expect(req.headers.authorization).toBe('Bearer offline-fixture');
+          host.registerTool('capability_read', {
+            inputSchema: { file_path: z.string(), byte_offset: z.number(), byte_limit: z.number() },
+            annotations: { readOnlyHint: true },
+          }, async args => {
+            observedReads.push(args);
+            // Real platform byte-window writer; only network/auth are fixtures.
+            return await sourceReadTool.handler(args as never, { projectDir: fixtureHome } as never) as {
+              content: Array<{ type: 'text'; text: string }>;
+            };
+          });
+          await host.connect(transport);
+          await transport.handleRequest(req, res);
+        } catch (error) {
+          httpErrors.push(error);
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        }
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      providerCalls.push(JSON.parse(Buffer.concat(chunks).toString()));
       requests++;
+      if (readSource && requests === 1) {
+        const item = { id: 'fc_source', type: 'function_call', call_id: 'source-read-call',
+          namespace: 'mcp__cache_receipts', name: 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
+        const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
+        const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
+          event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
+        return;
+      }
       // Existing production SSE serializer, scripted local text only. These
       // zero fixture counters are never recorded as real provider usage.
       const body = codexCliResponsesBody({ model: 'gpt-6-sol', text: '{"offline":true}', inputTokens: 0, outputTokens: 0 });
@@ -145,6 +194,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         'model_providers.cache_protocol_probe.request_max_retries': 0,
         'model_providers.cache_protocol_probe.stream_max_retries': 0,
         'features.apps': false, 'features.shell_tool': false, web_search: 'disabled',
+        ...(readSource ? {
+          'mcp_servers.cache_receipts.url': `http://127.0.0.1:${address.port}/mcp`,
+          'mcp_servers.cache_receipts.http_headers.Authorization': 'Bearer offline-fixture',
+        } : {}),
       };
       p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
         ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame));
@@ -163,13 +216,41 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
       })), { timeout: 20_000 });
       const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
-      expect(inspectCarryNativeTurn({ threadId, turnId, events, threadRead, allowedMcpCalls: [] }),
+      if (readSource) {
+        // Native Codex received the platform result and returned it to the
+        // next local provider request, not just a successful tools/list.
+        expect(providerCalls[0]?.tools).toContainEqual(expect.objectContaining({ type: 'namespace', name: 'mcp__cache_receipts',
+          tools: expect.arrayContaining([expect.objectContaining({ type: 'function', name: 'capability_read' })]) }));
+        expect(JSON.stringify(providerCalls.at(-1)?.input), JSON.stringify({
+          outputs: (providerCalls.at(-1)?.input as Array<Record<string, unknown>>)?.filter(item => item.type === 'function_call_output') }))
+          .toContain(window.toString('base64'));
+      }
+      const evidence = { threadId, turnId, events, threadRead, allowedMcpCalls: readSource
+        ? [{ server: 'cache_receipts', tool: 'capability_read', arguments: readArgs }] : [] };
+      expect(inspectCarryNativeTurn(evidence),
         JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
-        .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}', mcpItemIds: [] });
-      expect(requests).toBe(1);
+        .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}',
+          mcpItemIds: readSource ? [expect.any(String)] : [] });
+      if (readSource) {
+        expect(observedReads).toEqual([readArgs]);
+        expect(inspectCarrySourceRead(evidence, { sourceRef: 'fixture:completed-source/cut',
+          server: 'cache_receipts', tool: 'capability_read', filePath, byteOffset: 7, byteLength: window.length,
+          totalBytes: sourceBytes.length, sha256: createHash('sha256').update(window).digest('hex') }))
+          .toMatchObject({ status: 'verified', missing: [], violations: [], sourceRef: 'fixture:completed-source/cut' });
+      }
+      expect(httpErrors).toEqual([]);
+      expect(requests).toBe(readSource ? 2 : 1);
+      const source = await captureCompletedCarrySource(p, threadId, turnId);
+      expect(source.filePath).toBe((threadRead.thread as RpcFrame).path);
+      expect(source.snapshot.completeBytes).toBeGreaterThan(0);
+      expect(source.snapshot.highWaterBytes).toBe(source.snapshot.completeBytes);
+      await expect(recheckCarrySourceSnapshot(source)).resolves.toBeUndefined();
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
-      finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+      finally {
+        await Promise.all(mcpHosts.map(host => host.close()));
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
     }
   }, 90_000);
 
