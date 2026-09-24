@@ -1078,9 +1078,12 @@ describe('headless Codex model choice (EI-24125798951755231)', () => {
       action: 'none', phase: 'watching',
     });
     expect(machine.observe(' model\x1b[9;3H2. Use existing model')).toMatchObject({
-      action: 'select-existing', phase: 'complete', active: false,
+      action: 'select-existing', phase: 'await-existing', active: true,
     });
     expect(machine.observe('› 1. Try new model 2. Use existing model')).toMatchObject({ action: 'none' });
+    expect(machine.observe('› 2. Use existing model')).toMatchObject({
+      action: 'confirm-existing', phase: 'complete', active: false,
+    });
     now += 10_000;
     expect(machine.status()).toMatchObject({ phase: 'complete', active: false });
   });
@@ -1109,8 +1112,10 @@ describe('headless Codex model choice (EI-24125798951755231)', () => {
     });
     now += 90_000;
     expect(delayed.observe('Meet GPT-6 Sol\n› 1. Try new model\n2. Use existing model')).toMatchObject({
-      action: 'select-existing', phase: 'complete',
+      action: 'select-existing', phase: 'await-existing',
     });
+    delayed.complete();
+    expect(delayed.status()).toMatchObject({ phase: 'complete', active: false });
 
     const ready = makeHeadlessCodexModelChoiceStateMachine({ now: () => now });
     ready.complete();
