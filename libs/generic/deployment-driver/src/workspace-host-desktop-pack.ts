@@ -146,6 +146,41 @@ export const WORKSPACE_HOST_DESKTOP_PACK_APT = {
    * session worker uses to paint the root a non-black colour.
    */
   desktopFloor: ['xterm', 'x11-xserver-utils'],
+  /**
+   * The customer-facing desktop (WI-10002863, owner: XFCE). Named components, never the
+   * `xfce4`/`xubuntu-desktop` metapackages: those pull a display manager. xfwm4 is the WM
+   * of this session; openbox stays above for the bare agent desktops. `dbus-bin` ships
+   * `dbus-run-session`, which gives the session the full bus xfconf needs; the a11y bus's
+   * minimal bus cannot activate it. The icon theme is named because --no-install-recommends
+   * otherwise leaves the panel with blank launchers.
+   */
+  desktopEnvironment: [
+    'xfce4-session',
+    'xfwm4',
+    'xfce4-panel',
+    'xfdesktop4',
+    'xfce4-settings',
+    'xfce4-terminal',
+    'thunar',
+    'dbus-bin',
+    'adwaita-icon-theme',
+  ],
+  /** Verifies the pinned Mozilla signing key before its repo is trusted (see install-browser). */
+  browserKeyring: ['gpg'],
+} as const;
+
+/**
+ * The browser comes from Mozilla's own APT repo. Ubuntu 24.04's `firefox` and `chromium`
+ * debs are transitional stubs that install the snap, and snapd cannot run inside the
+ * desktop's systemd unit. The key is pinned by fingerprint, so a substituted key fails the
+ * pack instead of becoming a trusted root.
+ */
+export const WORKSPACE_HOST_DESKTOP_BROWSER_REPO = {
+  keyUrl: 'https://packages.mozilla.org/apt/repo-signing-key.gpg',
+  keyFingerprint: '35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3',
+  source: 'https://packages.mozilla.org/apt mozilla main',
+  origin: 'packages.mozilla.org',
+  package: 'firefox',
 } as const;
 
 export const WORKSPACE_HOST_DESKTOP_PACK_PHASES = [
@@ -177,6 +212,8 @@ export const WORKSPACE_HOST_DESKTOP_PACK_CHECKS = [
   'x-stack',
   'a11y-stack',
   'gl-stack',
+  'desktop-environment',
+  'browser',
   'desktop-runtime',
   'desktop-socket',
   'desktop-egress-isolation',
@@ -325,7 +362,10 @@ export function buildWorkspaceHostDesktopPackScript(
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.driver,
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.sandbox,
     ...WORKSPACE_HOST_DESKTOP_PACK_APT.desktopFloor,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.desktopEnvironment,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.browserKeyring,
   ];
+  const browser = WORKSPACE_HOST_DESKTOP_BROWSER_REPO;
 
   const script = `#!/usr/bin/env bash
 # Papercusp workspace-host DESKTOP PACK (${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION})
@@ -367,6 +407,21 @@ retry 10 apt-get update -qq --error-on=any
 # several of these recommend a display manager, and a workspace host must never
 # acquire a login screen as a side effect of opting into agent desktops.
 retry 5 apt-get install -y --no-install-recommends ${apt.join(' ')}
+
+# The browser: Mozilla's real deb (see WORKSPACE_HOST_DESKTOP_BROWSER_REPO). The fingerprint
+# is checked BEFORE the key is installed, for the same reason as the KasmVNC digest below.
+# The pin outranks Ubuntu's snap stub, whose epoch makes its version compare higher.
+install -d -m 0755 /etc/apt/keyrings
+MOZ_KEY=/etc/apt/keyrings/packages.mozilla.org.asc
+curl -fsSL --proto '=https' --tlsv1.2 -o "$MOZ_KEY.tmp" ${shellQuote(browser.keyUrl)}
+[ "$(gpg --show-keys --with-colons "$MOZ_KEY.tmp" | awk -F: '$1=="fpr"{print $10; exit}')" = ${shellQuote(browser.keyFingerprint)} ] \\
+  || { rm -f "$MOZ_KEY.tmp"; fail browser; }
+mv "$MOZ_KEY.tmp" "$MOZ_KEY"
+chmod 0644 "$MOZ_KEY"
+echo "deb [signed-by=$MOZ_KEY] ${browser.source}" > /etc/apt/sources.list.d/mozilla.list
+printf 'Package: *\\nPin: origin ${browser.origin}\\nPin-Priority: 1000\\n' > /etc/apt/preferences.d/mozilla
+retry 10 apt-get update -qq --error-on=any
+retry 5 apt-get install -y --no-install-recommends ${browser.package}
 phase install-x-stack
 
 # ── install-kasmvnc ─────────────────────────────────────────────────────────────────
@@ -539,6 +594,13 @@ command -v x-terminal-emulator >/dev/null 2>&1 || fail x-stack
 command -v dbus-daemon >/dev/null 2>&1 || fail a11y-stack
 [ -f /usr/lib/at-spi2-core/at-spi-bus-launcher ] || [ -f /usr/libexec/at-spi-bus-launcher ] || fail a11y-stack
 command -v glxinfo >/dev/null 2>&1 || fail gl-stack
+# The binaries the hosted worker's XFCE session execs, not the package names.
+for bin in xfce4-session xfwm4 xfce4-panel xfdesktop xfsettingsd xfce4-terminal thunar dbus-run-session; do
+  command -v "$bin" >/dev/null 2>&1 || fail desktop-environment
+done
+# Mozilla's build, not the stub: the stub's /usr/bin/firefox only execs snap.
+command -v firefox >/dev/null 2>&1 || fail browser
+case "$(dpkg-query -W -f='\${Version}' firefox)" in *snap*) fail browser ;; esac
 
 printf '${WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX}%s\\n' "$(cat <<JSON | tr -d '\\n'
 {"contractVersion":"${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION}",

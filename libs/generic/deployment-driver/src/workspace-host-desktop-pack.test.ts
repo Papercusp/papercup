@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import {
   DEFAULT_WORKSPACE_HOST_DESKTOP_USER,
   PINNED_KASMVNC_ARTIFACT,
+  WORKSPACE_HOST_DESKTOP_BROWSER_REPO,
   WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX,
   WORKSPACE_HOST_DESKTOP_PACK_CHECKS,
   WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
@@ -97,6 +98,36 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     expect(install.split(' ')).toEqual(expect.arrayContaining(['xterm', 'x11-xserver-utils']));
     expect(script).toContain('command -v x-terminal-emulator >/dev/null 2>&1 || fail x-stack');
     expect(script).toContain('command -v xsetroot  >/dev/null 2>&1 || fail x-stack');
+  });
+
+  it('ships an XFCE session from named components and attests the binaries it execs (WI-10002863)', () => {
+    // Owner chose XFCE. A metapackage would pull a display manager onto a headless host.
+    const script = render();
+    const install = script.match(/^retry \d+ apt-get install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
+    const packages = install.split(' ');
+    expect(packages).toEqual(expect.arrayContaining([
+      'xfce4-session', 'xfwm4', 'xfce4-panel', 'xfdesktop4', 'xfce4-terminal', 'dbus-bin',
+    ]));
+    for (const meta of ['xfce4', 'xubuntu-desktop', 'task-xfce-desktop', 'lightdm']) {
+      expect(packages).not.toContain(meta);
+    }
+    expect(script).toContain('for bin in xfce4-session xfwm4 xfce4-panel xfdesktop xfsettingsd xfce4-terminal thunar dbus-run-session; do');
+    expect(script).toContain('command -v "$bin" >/dev/null 2>&1 || fail desktop-environment');
+  });
+
+  it("installs Mozilla's firefox deb behind a fingerprint-pinned key, never Ubuntu's snap stub (WI-10002863)", () => {
+    const script = render();
+    const fingerprint = WORKSPACE_HOST_DESKTOP_BROWSER_REPO.keyFingerprint;
+    // The fingerprint is compared BEFORE the key is moved into the keyring apt trusts.
+    const check = script.indexOf(`= '${fingerprint}' ]`);
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(script.indexOf('mv "$MOZ_KEY.tmp" "$MOZ_KEY"'));
+    expect(script.indexOf('mv "$MOZ_KEY.tmp" "$MOZ_KEY"')).toBeLessThan(script.indexOf('retry 5 apt-get install -y --no-install-recommends firefox'));
+    expect(script).toContain('deb [signed-by=$MOZ_KEY] https://packages.mozilla.org/apt mozilla main');
+    // Ubuntu's stub has epoch 1, so without a 1000 pin apt prefers it over Mozilla's build.
+    expect(script).toContain("printf 'Package: *\\nPin: origin packages.mozilla.org\\nPin-Priority: 1000\\n'");
+    expect(script).toContain("case \"$(dpkg-query -W -f='${Version}' firefox)\" in *snap*) fail browser ;; esac");
+    expect(script).toContain('command -v firefox >/dev/null 2>&1 || fail browser');
   });
 
   it('pins Ubuntu 24.04, matching the bootstrap contract', () => {

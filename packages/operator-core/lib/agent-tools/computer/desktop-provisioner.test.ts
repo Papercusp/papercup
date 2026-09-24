@@ -11,6 +11,7 @@ import {
   releaseDesktopResources,
   releaseDesktopProcesses,
 } from './desktop-provisioner';
+import { xfceSessionLaunch } from './desktop-provisioner-core';
 
 describe('findFreeDisplayNumber', () => {
   it('returns the lowest free number ≥ base (skips locked displays)', () => {
@@ -70,12 +71,47 @@ describe('desktop prerequisites', () => {
       .toThrow(/rootColor must be #rrggbb/);
   });
 
+  it('requires the XFCE session binaries instead of openbox for an xfce desktop (WI-10002863)', () => {
+    const installed = new Set(['Xkasmvnc', 'xdpyinfo', 'openbox', 'kasmvncpasswd']);
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc', desktopSession: 'xfce' }, (b) => installed.has(b)))
+      .toThrow(/missing kasmvnc prerequisites: xfce4-session, dbus-run-session/);
+    const xfce = new Set(['Xkasmvnc', 'xdpyinfo', 'kasmvncpasswd', 'xfce4-session', 'dbus-run-session']);
+    expect(() => assertDesktopPrerequisites({ xServer: 'kasmvnc', desktopSession: 'xfce' }, (b) => xfce.has(b))).not.toThrow();
+  });
+
   it('honors a custom server, existing credentials, and a disabled window manager', () => {
     const installed = new Set(['/opt/kasm/Xkasmvnc', 'xdpyinfo']);
     expect(() => assertDesktopPrerequisites({
       xServer: 'kasmvnc', xServerBinaryPath: '/opt/kasm/Xkasmvnc',
       kasmvncPasswordFile: '/run/desktop/passwd', windowManager: false,
     }, (binary) => installed.has(binary))).not.toThrow();
+  });
+});
+
+describe('xfceSessionLaunch (WI-10002863)', () => {
+  const xEnv = { DISPLAY: ':110', PATH: '/usr/bin:/bin', HOME: '/elsewhere', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/host/bus' };
+  const a11yEnv = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/pc-a11y/bus', AT_SPI_BUS_ADDRESS: 'unix:path=/tmp/at-spi/bus_110' };
+
+  it('runs xfce4-session on its own full bus, keeping this desktop\'s a11y bus', () => {
+    const launch = xfceSessionLaunch(xEnv, a11yEnv, '/var/lib/papercusp-desktop');
+    expect([launch.command, ...launch.args]).toEqual(['dbus-run-session', '--', 'xfce4-session']);
+    // Neither the host bus nor the a11y bus's minimal bus: xfconfd cannot activate on either.
+    expect(launch.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+    expect(launch.env.AT_SPI_BUS_ADDRESS).toBe('unix:path=/tmp/at-spi/bus_110');
+    expect(launch.env.DISPLAY).toBe(':110');
+    expect(launch.env.HOME).toBe('/var/lib/papercusp-desktop');
+  });
+
+  it('hides at-spi\'s autostart so the session cannot republish AT_SPI_BUS on the root', () => {
+    const { autostartOverride } = xfceSessionLaunch(xEnv, a11yEnv, '/var/lib/papercusp-desktop');
+    expect(autostartOverride.path).toBe('/var/lib/papercusp-desktop/.config/autostart/at-spi-dbus-bus.desktop');
+    expect(autostartOverride.content).toMatch(/^Hidden=true$/m);
+  });
+
+  it('still launches without an a11y bus (accessibility disabled)', () => {
+    const launch = xfceSessionLaunch(xEnv, undefined, '/h');
+    expect(launch.env.AT_SPI_BUS_ADDRESS).toBeUndefined();
+    expect(launch.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
   });
 });
 

@@ -73,7 +73,7 @@ export async function runWorkspaceDesktopWorker(argv: string[]): Promise<number>
   const number = Number(argv[1]);
   if (number < 110 || number > 250 || existsSync(`/tmp/.X${number}-lock`)) throw new Error('desktop display unavailable');
   await serveWorkspaceDesktop(process.stdin, process.stdout, options => provisionSandboxDesktop({
-    ...options, displayNumber: number, xServer: 'kasmvnc', rootColor: WORKSPACE_DESKTOP_ROOT_COLOR,
+    ...options, displayNumber: number, xServer: 'kasmvnc', rootColor: WORKSPACE_DESKTOP_ROOT_COLOR, desktopSession: 'xfce',
     credentialDir: `${WORKSPACE_DESKTOP_HOME}/credentials`, sandboxHomeDir: WORKSPACE_DESKTOP_HOME,
   }, runtime));
   return 0;

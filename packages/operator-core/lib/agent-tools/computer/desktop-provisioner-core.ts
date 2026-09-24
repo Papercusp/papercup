@@ -16,7 +16,8 @@
  * (`PAPERCUSP_COMPUTER_DISPLAY`) is set to for the operating agent.
  */
 import { spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { applyGlStrategy, detectGlStrategy, hostGlProbe, type GlStrategy } from '../../desktop/gl-strategy';
 import type { managedSpawn, markManagedSpawnTeardown } from '../../task-manager/managed-spawn';
 import type { killScopeUnit, killTask } from '../../task-manager/control';
@@ -203,6 +204,14 @@ export interface ProvisionOptions {
   captureHeight?: number;
   /** Launch a window manager (openbox). Default true. */
   windowManager?: boolean;
+  /**
+   * What runs on the display. `'openbox'` (default) is the bare WM agent desktops use.
+   * `'xfce'` is a full XFCE session for the customer-facing hosted desktop (WI-10002863);
+   * xfwm4 replaces openbox. Anything launched from its panel inherits the session, not the
+   * per-app bubblewrap wrapper, so use it only where the enclosing unit is the sandbox (the
+   * pack's papercusp-desktop@ worker). Ignored when `windowManager` is false.
+   */
+  desktopSession?: 'openbox' | 'xfce';
   /**
    * Paint the X root this solid `#rrggbb` colour once the display is up. Default: leave
    * the server's black root. A customer-facing desktop sets it so that an empty desktop
@@ -468,6 +477,36 @@ async function waitForDisplay(display: string, timeoutMs: number): Promise<void>
   throw new Error(`desktop-provisioner — X display ${display} did not come up within ${timeoutMs}ms`);
 }
 
+/**
+ * The launch for `desktopSession: 'xfce'` (WI-10002863). Pure, so its env contract is
+ * testable without an X server.
+ *
+ * - `dbus-run-session` gives the session its OWN full bus. xfconfd is D-Bus activated, and
+ *   the a11y bus's minimal bus carries only org.a11y.Bus, so XFCE on it loses its settings.
+ * - The session keeps THIS desktop's `AT_SPI_BUS_ADDRESS`, so apps started from the panel
+ *   register on the bus `observe` reads.
+ * - at-spi's autostart entry is hidden for the same reason. Left enabled, it launches a
+ *   second a11y bus and republishes `AT_SPI_BUS` on the root, pointing `observe` at a bus
+ *   the provisioner does not own.
+ */
+export function xfceSessionLaunch(
+  xEnv: Record<string, string>,
+  a11yEnv: Record<string, string> | undefined,
+  home: string,
+): { command: string; args: string[]; env: Record<string, string>; autostartOverride: { path: string; content: string } } {
+  const env: Record<string, string> = { ...xEnv, ...(a11yEnv ?? {}), HOME: home };
+  delete env.DBUS_SESSION_BUS_ADDRESS;
+  return {
+    command: 'dbus-run-session',
+    args: ['--', 'xfce4-session'],
+    env,
+    autostartOverride: {
+      path: join(home, '.config', 'autostart', 'at-spi-dbus-bus.desktop'),
+      content: '[Desktop Entry]\nType=Application\nName=AT-SPI D-Bus Bus\nHidden=true\n',
+    },
+  };
+}
+
 /** Fail before creating credentials or processes when the selected X stack is absent. */
 export function assertDesktopPrerequisites(
   opts: ProvisionOptions,
@@ -475,7 +514,9 @@ export function assertDesktopPrerequisites(
 ): void {
   const xServer = opts.xServer ?? 'xvfb';
   const required = [opts.xServerBinaryPath ?? (xServer === 'kasmvnc' ? 'Xkasmvnc' : 'Xvfb'), 'xdpyinfo'];
-  if (opts.windowManager !== false) required.push('openbox');
+  if (opts.windowManager !== false) {
+    required.push(...(opts.desktopSession === 'xfce' ? ['xfce4-session', 'dbus-run-session'] : ['openbox']));
+  }
   if (opts.rootColor !== undefined) {
     if (!/^#[0-9a-fA-F]{6}$/.test(opts.rootColor)) {
       throw new Error(`desktop-provisioner — rootColor must be #rrggbb, got ${JSON.stringify(opts.rootColor)}`);
@@ -640,7 +681,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions, runtime: D
     // the one process that cannot benefit — and the blank-screenshot trap is specifically
     // about app CONTENT, not chrome (the chrome is exactly what still shows up when GL is
     // missing, which is what makes the failure look like a half-broken app).
-    if (opts.windowManager !== false) {
+    if (opts.windowManager !== false && opts.desktopSession !== 'xfce') {
       const wm = await spawnDesktop(
         'openbox',
         [],
@@ -665,6 +706,31 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions, runtime: D
     // That is why this sits above the app loop rather than beside it.
     a11y = opts.accessibility === false ? null : runtime.startBus(display);
     const appEnv = a11y ? { ...env, ...a11y.env } : env;
+
+    // Unlike openbox, the XFCE session starts AFTER the a11y bus: it is also an app
+    // launcher, and everything started from its panel reads the bus address from the
+    // env it inherits here, once.
+    if (opts.windowManager !== false && opts.desktopSession === 'xfce') {
+      const home = opts.sandboxHomeDir ?? env.HOME;
+      if (!home) throw new Error('desktop-provisioner — an xfce session needs a HOME (sandboxHomeDir)');
+      const launch = xfceSessionLaunch(env, a11y?.env, home);
+      mkdirSync(dirname(launch.autostartOverride.path), { recursive: true, mode: 0o700 });
+      writeFileSync(launch.autostartOverride.path, launch.autostartOverride.content, { mode: 0o600 });
+      const session = await spawnDesktop(
+        launch.command,
+        launch.args,
+        {
+          class: 'desktop',
+          title: `xfce4-session ${display}`,
+          launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
+          argv: launch.args,
+          parentTaskId: taskId,
+          ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+        },
+        { spawnOptions: { env: launch.env, stdio: 'ignore' } },
+      );
+      procs.push(session.child);
+    }
 
     // P-010 (D-015): apps are the ONLY thing wrapped in bubblewrap. Xvfb and openbox are
     // the desktop's own infrastructure — confining the X server inside a namespace whose
