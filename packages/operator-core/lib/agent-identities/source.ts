@@ -291,20 +291,24 @@ export interface ProducedIdentityOutput {
 /** Pin a set of outputs already produced for one selected identity. The same
  * compiler validates fixed prompt files, provider output and explicit absences
  * together; the caller keeps delivering the original values through its sink. */
-export async function bindSelectedIdentityOutputs(input: {
+interface BindSelectedIdentityOutputsInput {
   identityId: string;
+  /** Local selected identities resolve through the same project root as launch. */
+  repoDir?: string;
   /** The SU's static fleet-posture binding currently resolves from the built-in
    * harness; an unrelated installed catalog shadow is not this session's layer. */
   sourceTier?: 'builtin' | 'selected';
   outputs: readonly ProducedIdentityOutput[];
   scope: Record<string, unknown>;
   observedAt: string;
-}) {
+}
+
+async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdentityOutputsInput) {
   if (input.outputs.length === 0) throw new Error('identity binding needs a produced output or omission');
   let sourcePath: string | null;
   if (input.sourceTier === 'builtin') sourcePath = builtinBlueprintPath(input.identityId);
   else {
-    const identity = await getIdentitySource(input.identityId);
+    const identity = await getIdentitySource(input.identityId, { repoDir: input.repoDir });
     if (!identity.ok) {
       throw new Error('selected identity ' + input.identityId + ' is unavailable: ' +
         identity.error + ('errors' in identity ? ' ' + JSON.stringify(identity.errors) : ''));
@@ -312,7 +316,8 @@ export async function bindSelectedIdentityOutputs(input: {
     sourcePath = identity.sourcePath;
   }
   if (!sourcePath) throw new Error(`selected identity ${input.identityId} is unavailable`);
-  const resolver = input.sourceTier === 'builtin' ? resolveBuiltinExtends : operatorResolveExtends();
+  const resolver = input.sourceTier === 'builtin' ? resolveBuiltinExtends
+    : operatorResolveExtends({ localDirs: localDirs(input.repoDir) });
   const raw = parseBlueprintSource(await readFile(sourcePath, 'utf8'));
   const source = resolveBlueprintSource(raw, { sourcePath, resolve: resolver });
   if (!source.validation.ok) throw new Error(`selected identity ${input.identityId} is invalid`);
@@ -381,7 +386,8 @@ export async function bindSelectedIdentityOutputs(input: {
   const fixedPrompts = (declarations ?? []).filter((entry) =>
     entry.source === 'fixed' && entry.inputKind === 'prompt-file').map((entry) => {
     const refParts = entry.ref.split(':');
-    const layerId = refParts[0] === 'mode' ? refParts[1] : refParts[0];
+    const layerId = refParts[0] === 'mode' ? refParts[1]
+      : refParts[0] === 'fixed' ? source.layers.at(-1)?.id : refParts[0];
     const fileName = refParts.at(-1);
     const layer = source.layers.find((candidate) => candidate.id === layerId);
     if (!layer?.sourcePath || !fileName) {
@@ -391,7 +397,7 @@ export async function bindSelectedIdentityOutputs(input: {
       ...(selectedMode && entry.ref === selectedPromptRef
         ? { bytes: selectedMode.contract, contentHash: selectedMode.definitionHash } : {}) };
   });
-  const artifact = compileAgentSpecification({
+  const compileInput = {
     source: raw,
     sourcePath,
     resolve: resolver,
@@ -399,17 +405,46 @@ export async function bindSelectedIdentityOutputs(input: {
     settings,
     inputClosure: closure,
     contributionOmissions: omissions,
-  });
+  };
+  const document = BlueprintSourceDocumentSchema.parse(source.merged);
+  const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
+    document.grants?.optional?.length || resolveSeedPackKey(document).packId);
+  const workspaceId = input.scope.workspace;
+  const harnessSlug = input.scope.harness;
+  if (hasResources && (typeof workspaceId !== 'string' || !workspaceId.trim() ||
+      typeof harnessSlug !== 'string' || !harnessSlug.trim())) {
+    throw new Error('identity producer binding with resources needs workspace and harness scope');
+  }
+  const artifact = hasResources
+    ? await compileBlueprintWithPackages(raw, {
+      workspaceId: workspaceId as string, harnessSlug: harnessSlug as string,
+      sourcePath, resolve: resolver, input: compileInput,
+    })
+    : compileAgentSpecification(compileInput);
   return {
     identityId: input.identityId,
     sourceRevision: source.layers.at(-1)!.contentHash,
     ...(selectedMode ? { definitionRevision: selectedMode.contractRevision,
       catalogRevision: selectedMode.catalogRevision } : {}),
     specificationRevision: artifact.specificationRevision,
+    artifact,
     contributions: receipts,
     observedAt: input.observedAt,
     scope: input.scope,
   };
+}
+
+/** Public producer receipt for turn-start, orient and fleet metadata. The
+ * full artifact carries live output bytes, so it must not ride in that metadata. */
+export async function bindSelectedIdentityOutputs(input: BindSelectedIdentityOutputsInput) {
+  const { artifact: _artifact, ...receipt } = await bindSelectedIdentityOutputsWithArtifact(input);
+  return receipt;
+}
+
+/** Trusted launch adapter: carry the already-validated artifact into the final
+ * composition without re-running the producer or exporting its live bytes. */
+export async function bindSelectedIdentityOutputArtifact(input: BindSelectedIdentityOutputsInput) {
+  return bindSelectedIdentityOutputsWithArtifact(input);
 }
 
 /** Compatibility wrapper for an existing operational setting sink. */
