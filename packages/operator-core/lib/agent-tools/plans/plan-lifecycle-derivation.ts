@@ -125,6 +125,26 @@ export function buildPlanFreshness(
  * axis as unmeasured (see `gatherPlanLifecycleSignals`), which the derivation
  * keeps distinct from "measured false".
  */
+/** Shared statement: both the standalone reader and the source-read subquery
+ * use this exact predicate, including the partial-index conjuncts. */
+export function activeAcceptanceRubricsQuery(
+  tx: import('postgres').Sql,
+  input: { workspaceId: string; planSlugs: readonly string[] },
+) {
+  return tx<{ plan_slug: string; subject_plan: string }[]>`
+    SELECT plan_slug, template_data ->> 'subjectPlan' AS subject_plan
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${input.workspaceId}
+       AND template = 'rubric'
+       AND template_slug IS NULL
+       AND archived = false
+       AND status = ANY(ARRAY['active', 'ready'])
+       AND template_data ->> 'kind' = 'acceptance'
+       AND NULLIF(template_data ->> 'subjectPlan', '') IS NOT NULL
+       AND template_data ->> 'subjectPlan' = ANY(${[...input.planSlugs]})
+  `;
+}
+
 export async function readActiveAcceptanceRubrics(input: {
   workspaceId: string;
   planSlugs: readonly string[];
@@ -144,18 +164,7 @@ export async function readActiveAcceptanceRubrics(input: {
     input.workspaceId,
     async (tx) => {
       mark('acquireAndSetup');
-      const rows = await tx<{ plan_slug: string; subject_plan: string }[]>`
-      SELECT plan_slug, template_data ->> 'subjectPlan' AS subject_plan
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${input.workspaceId}
-         AND template = 'rubric'
-         AND template_slug IS NULL
-         AND archived = false
-         AND status = ANY(ARRAY['active', 'ready'])
-         AND template_data ->> 'kind' = 'acceptance'
-         AND NULLIF(template_data ->> 'subjectPlan', '') IS NOT NULL
-         AND template_data ->> 'subjectPlan' = ANY(${[...input.planSlugs]})
-      `;
+      const rows = await activeAcceptanceRubricsQuery(tx, input);
       mark('query');
       return rows;
     },

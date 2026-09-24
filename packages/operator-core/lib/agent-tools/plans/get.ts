@@ -770,7 +770,7 @@ export default defineTool({
           async () => {
             buildState = 'running';
             stageStarted = performance.now();
-            const result = await readPlanBySlug(slug, opts, detailMs);
+            const result = await readPlanBySlug(slug, { ...opts, prefetchAcceptance: true }, detailMs);
             markStage('source');
             // cachedRead caches every non-null result, so returning a `{ok:false}`
             // not_found object here would make a transient read miss sticky for
@@ -1037,6 +1037,7 @@ export default defineTool({
                   planUpdatedAt: row.updatedAt,
                   linkedWorkItemUpdatedAt,
                   timings: detailMs,
+                  acceptanceRubricRef: row.activeAcceptanceRubricRef,
                 },
               });
             } catch {

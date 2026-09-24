@@ -40,6 +40,7 @@ import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
+import { activeAcceptanceRubricsQuery } from './plan-lifecycle-derivation';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -133,6 +134,8 @@ function plansRelFor(harnessPath: string): string {
  * through the Stage-2 cleanup.
  */
 export interface PlanSourceOpts {
+  /** plans:get reuses this signal in lifecycle derivation without another transaction. */
+  prefetchAcceptance?: boolean;
   /** Harness whose plans to read. Omitted / '*' / 'all' → papercup primary. */
   harnessSlug?: string;
   /** Workspace the plans live in. Omitted → resolved from the registry / DEFAULT. */
@@ -182,6 +185,8 @@ export interface PlanSchedule {
 }
 
 export interface PlanRow {
+  /** Undefined = not prefetched; null = measured absence in the source snapshot. */
+  activeAcceptanceRubricRef?: string | null;
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
@@ -269,6 +274,7 @@ export interface PlanRow {
 }
 
 interface PlanDbRow {
+  active_acceptance_rubric_ref?: string | null;
   workspace_id: string;
   harness_slug: string;
   plan_slug: string;
@@ -319,6 +325,9 @@ interface PlanDbRow {
 
 function rowFromDb(r: PlanDbRow): PlanRow {
   return {
+    ...('active_acceptance_rubric_ref' in r
+      ? { activeAcceptanceRubricRef: r.active_acceptance_rubric_ref }
+      : {}),
     workspaceId: r.workspace_id,
     harnessSlug: r.harness_slug,
     planSlug: r.plan_slug,
@@ -776,6 +785,10 @@ export async function getPlanRow(
                archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, output_schema, forced_past
+               ${opts.prefetchAcceptance ? tx`, (
+                 SELECT plan_slug FROM (${activeAcceptanceRubricsQuery(tx, { workspaceId, planSlugs: [slug] })}) AS active_rubric
+                 LIMIT 1
+               ) AS active_acceptance_rubric_ref` : tx``}
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
@@ -788,6 +801,12 @@ export async function getPlanRow(
     mark('row');
     return row;
   } catch (err: unknown) {
+    // The lifecycle overlay is advisory. If its subquery cannot be read, retain
+    // the ordinary source read and let lifecycle perform its existing guarded
+    // lookup (failure there remains unmeasured, never measured false).
+    if (opts.prefetchAcceptance) {
+      return getPlanRow(slug, { ...opts, prefetchAcceptance: false }, timings);
+    }
     // Fallback for databases where migration 299 hasn't been applied yet
     // (schedule columns don't exist). Gracefully default them to null/false.
     if (

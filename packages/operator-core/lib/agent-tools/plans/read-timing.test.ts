@@ -6,10 +6,13 @@ vi.mock('@papercusp/db-org', async (original) => ({
   withWorkspace: async (workspace: string, fn: (tx: unknown) => Promise<unknown>) => {
     state.workspaces.push(workspace);
     state.clock += 100; // acquisition + BEGIN + workspace setup
-    const result = await fn(async () => {
-      state.clock += state.queryMs;
-      return state.rows;
-    });
+    const result = await fn(() => ({
+      // postgres templates are lazy: nested fragments do not execute a query.
+      then(resolve: (rows: unknown[]) => unknown) {
+        state.clock += state.queryMs;
+        return Promise.resolve(resolve(state.rows));
+      },
+    }));
     state.clock += 3; // transaction finalization
     return result;
   },

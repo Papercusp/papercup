@@ -1961,3 +1961,53 @@ separate. Scoped typecheck found zero diagnostics in the five changed source
 and test files, with23 other import-graph diagnostics. Native measurement on
 the activated diagnostic build is still required; these checks establish the
 measurement boundaries, not an improved popup latency or acceptance pass.
+
+The diagnostic source landed through5c78c636e3 andc1e041d09f (the latter
+contains the former). Native run `/tmp/p007-native-detail-stages-20260924-2230.log`
+used APIc1e041d09f/PID3465319 with the unchanged e41628 shell and938a5191 SPA.
+It failed at1938ms and acknowledged16 measures as
+`perfrun-1790289058794-3onqcz`. Matching invocation29474293 took1067ms,
+including900.429ms in the plan handler. Source took312.950ms:42.793ms
+acquisition/setup,82.922ms query,186.332ms finalization,0.102ms row conversion,
+and0.733ms parsing. Lifecycle took425.918ms:413.049ms acquisition/setup,
+10.395ms query and1.945ms finalization. This sample isolates the expensive
+intervals; it does not establish a database-only cause for their wall time.
+
+The next source change embeds the existing active-acceptance statement in the
+plan's existing app-role SELECT, then uses lifecycle's existing pre-resolved
+signal input. It preserves the shared SQL predicate and workspace filtering;
+the separate admin rubric-summary reader has different failure/scope semantics
+and is not substituted. Optional enrichment failure falls back to an ordinary
+source read with an undefined signal, leaving the existing guarded lifecycle
+lookup to distinguish unknown from measured absence.
+
+Runf426c78e-9082-422f-a791-fe6419c5b231 passed the real PostgreSQL prefetch
+suite and four existing unit files. The PG cases compare both workspace
+results with the standalone reader, exclude inactive/archived/instance rubrics,
+assert one source transaction, and exercise measured absence and failure
+fallback. Final getter wiring test19358223 passed5 cases, zero skipped.
+The scoped six-file typecheck is clean, with23 other import-graph diagnostics.
+This optimization still requires commit, staging activation and native proof.
+
+### Staging cutover safeguards discovered during P-007
+
+EI-24180022773715880 now prepares the pinned target schema before stopping the
+ready API, reusing `applyPendingMigrationsNow` and its backup rendezvous,
+reservation, compatibility and snapshot guards (planD-003). Existing boot logic
+can then handle a backup starting after preparation because the target has no
+pending migration. Real-PG test19358159 passed, including that late-backup case;
+final shell test19358229 passed71 cases, zero skipped. A real invocation logged
+`target schema prepared: {"applied":0,"failed":[]}` before its restart request
+at22:28:48Z. The stale engineering runbook was corrected through docs:author
+and independently read back. This complements da314's migration-lint preflight.
+
+EI-24183493174271355 arose when editing the long-running sync script shifted
+the bytes Bash had not parsed yet. Both file versions passed `bash -n` while
+the running process failed at a later offset. The existing script-snapshot
+launcher now wraps the staging systemd entry and its mutable setup helper.
+A deterministic FIFO regression rewrites the paused source: the raw launch
+loses its original tail, while the snapshot preserves it. All9 launcher tests
+passed (19358162). The tracked drop-in matches the installed file byte-for-byte,
+systemd reports the wrapper in ExecStart, and the subsequent configured sync
+completed successfully. These fixes and their source proof do not constitute
+popup acceptance or final promotion.
