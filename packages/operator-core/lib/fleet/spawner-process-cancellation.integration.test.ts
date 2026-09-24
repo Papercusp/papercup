@@ -11,6 +11,7 @@ vi.mock('../flag-override-store-boot-effect', () => ({}));
 vi.mock('../flag-override-store', () => ({ installFlagOverrideStore: () => {} }));
 vi.mock('../flag-change-listener', () => ({ ensureFlagChangeListener: async () => {} }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
+vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => {} }));
 vi.mock('./sidecar-exec-process', async (original) => {
   const actual = await original<typeof import('./sidecar-exec-process')>();
   return {
@@ -22,7 +23,9 @@ vi.mock('./sidecar-exec-process', async (original) => {
 
 import { execProcess } from './sidecar-exec-process';
 import { runSpawnerSidecarServer } from './spawner-sidecar-server';
-import { SpawnerIpcClient } from './spawner-ipc-client';
+import { SpawnerIpcClient, type SpawnerCallOpts } from './spawner-ipc-client';
+import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
+import * as lifetime from './sidecar-exec-lifetime';
 
 function receipt(): GovernedExecution {
   return {
@@ -68,6 +71,7 @@ afterEach(async () => {
   pids.clear();
   if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -109,6 +113,51 @@ async function executionFence(client: SpawnerIpcClient) {
   });
   return capabilities.processExecFence;
 }
+
+describe('cancellable caller with real IPC and child processes', () => {
+  it('drains a lost reply without replaying a file mutation or killing a shared sibling', async () => {
+    // Kernel recovery is exercised separately against real Linux scopes in
+    // sidecar-exec-lifetime.integration.test.ts. This in-process server models
+    // only a transport loss; it must never try the dead-server cleanup branch.
+    const snapshot = { pid: process.pid, identity: 'fixture', scopeUnit: 'pc-fixture.scope',
+      cgroupPath: '/fixture', rootIdentity: 'fixture', cgroupIdentity: 'fixture' };
+    vi.spyOn(lifetime, 'captureSidecarContainment').mockReturnValue(snapshot);
+    vi.spyOn(lifetime, 'sidecarContainmentCurrent').mockReturnValue(true);
+    const reap = vi.spyOn(lifetime, 'reapDeadSidecar');
+    const sibling = runChild();
+    await sibling.started;
+    const marker = join(dir, 'mutation-count');
+    const originalCall = SpawnerIpcClient.prototype.call;
+    let executions = 0;
+    let childPid = 0;
+    vi.spyOn(SpawnerIpcClient.prototype, 'call').mockImplementation(function<T>(
+      this: SpawnerIpcClient, method: string, params?: unknown, opts?: SpawnerCallOpts,
+    ): Promise<T> {
+      if (method === 'process:exec') {
+        executions += 1;
+        opts = { ...opts, onPid: (pid) => { childPid = pid; pids.add(pid); },
+          onOutputActivity: () => this.close() };
+      }
+      return originalCall.call(this, method, params, opts) as Promise<T>;
+    });
+    const script = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'one\\n'); ${childScript}`;
+    try {
+      const result = await runCommandViaSpawnerSidecar(process.execPath, ['-e', script], {
+        timeoutMs: 5000, signal: new AbortController().signal,
+      });
+      expect(childPid).toBeGreaterThan(0);
+      expect(alive(childPid)).toBe(false);
+      expect(await readFile(marker, 'utf8')).toBe('one\n');
+      expect(executions).toBe(1);
+      expect(isSidecarInfrastructureFault(result)).toBe(false);
+      expect(reap).not.toHaveBeenCalled();
+      expect(alive(sibling.pid())).toBe(true);
+    } finally {
+      await sibling.client.call('spawn:cancel', { requestId: sibling.id() });
+      await sibling.result;
+    }
+  });
+});
 
 describe('process:drain connection-generation exit proof', () => {
   it('waits for disconnected command exit and settlement without cancelling another client', async () => {
