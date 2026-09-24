@@ -3,6 +3,7 @@ name = "pui-companion"
 version = "0.1.0"
 edition = "2021"
 description = "Thin companion zellij plugin for pui — its eyes + hands inside zellij (SP-TUI P-004 / D-008)"
+license = "Apache-2.0"
 publish = false
 
 # A wasm32-wasip1 zellij plugin. Built with

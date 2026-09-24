@@ -105,5 +105,6 @@ needs no download.
 | `CONTENTS.sha256` | digest of every file in this release |
 | `PROVENANCE.json` | source commit, toolchain, measured runtime requirements |
 | `COMPATIBILITY.md` | supported platforms and what each has been verified on |
+| `LICENSE` | Apache-2.0 terms for PUI and its first-party companion components |
 | `THIRD_PARTY_LICENSES.md` | licenses of everything built into or shipped with PUI |
 | `RELEASE_NOTES.md` | what changed |

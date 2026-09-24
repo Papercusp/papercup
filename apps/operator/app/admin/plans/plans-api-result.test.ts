@@ -13,14 +13,53 @@
  *  - `PROMOTABLE_PLAN_STATUSES` — which frontmatter statuses can be written
  *    (the parser-synthesized `unknown` + item-only `blocked` are excluded).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+const { phaseSpy } = vi.hoisted(() => ({ phaseSpy: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', () => ({
+  markInteractionPhase: phaseSpy,
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
+}));
 import {
+  fetchPlan,
   staleConflictOf,
   planLockPath,
   PROMOTABLE_PLAN_STATUSES,
   normalizeAttentionGroups,
   type SetContentResult,
 } from './plans-api';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  phaseSpy.mockClear();
+});
+
+describe('popup plan read phases', () => {
+  it('marks request start and parsed response without changing the plan result', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:3170' } });
+    const fetchSpy = vi.fn(async (_url: string) => new Response(JSON.stringify({ slug: 'p', raw: '# Body' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await fetchPlan('p', 'papercusp');
+    expect(result).toEqual({ slug: 'p', raw: '# Body' });
+    expect(fetchSpy.mock.calls[0]?.[0]).toContain('/api/admin/plans/get?slug=p&mode=full&harness=papercusp');
+    expect(phaseSpy.mock.calls).toEqual([
+      ['plan-popup-open', 'request-started'],
+      ['plan-popup-open', 'response-ready'],
+    ]);
+  });
+
+  it('does not mark a response that arrives after the caller was cancelled', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:3170' } });
+    let resolveFetch!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve; })));
+    const controller = new AbortController();
+    const pending = fetchPlan('p', controller.signal);
+    expect(phaseSpy).toHaveBeenCalledWith('plan-popup-open', 'request-started');
+    controller.abort();
+    resolveFetch(new Response(JSON.stringify({ slug: 'p' }), { status: 200 }));
+    expect(await pending).toEqual({ slug: 'p' });
+    expect(phaseSpy.mock.calls).toEqual([['plan-popup-open', 'request-started']]);
+  });
+});
 
 describe('normalizeAttentionGroups', () => {
   it('removes sparse and malformed live-sync entries before Create reads item.kind', () => {

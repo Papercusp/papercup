@@ -1,5 +1,9 @@
 # PUI release notes
 
+PUI and its first-party companion components are distributed under the
+Apache License 2.0. The release archive includes the complete terms in
+`LICENSE`; dependency notices remain in `THIRD_PARTY_LICENSES.md`.
+
 ## 0.1.0 — public beta candidate (unpublished)
 
 First packaged PUI release. Not yet published: publication waits for the

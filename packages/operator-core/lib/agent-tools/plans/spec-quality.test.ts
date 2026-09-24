@@ -197,6 +197,27 @@ describe('evaluatePlanSpecQuality', () => {
     }
   });
 
+  it('fails atomicity when one liveness-backed lock clause bundles independent controls', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'main-greening-control-plane-durable-fix-2026-09-21',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-003'],
+      clauses: [
+        clause({
+          specId: 'AUTO-BAR-R-004-P-003',
+          sourceValId: 'VAL-AUTO-BAR-R-004-P-003',
+          planItemId: 'P-003',
+          behavior:
+            'Preserve single-flight safety while making lock ownership liveness-backed with phase, heartbeat, owner identity, hard deadline, dead-owner reclaim, and explicit unknown-liveness escalation.',
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('AUTO-BAR-R-004-P-003:');
+  });
+
   it('keeps a single outcome with a while-condition atomic', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

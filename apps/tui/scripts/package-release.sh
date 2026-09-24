@@ -141,6 +141,14 @@ for required in apps/tui/release/install.sh apps/tui/release/compatibility.json 
                 apps/tui/scripts/write-install-manifest.py apps/tui/scripts/license-inventory.py; do
   [[ -f "$SRC/$required" ]] || die "$required is not in commit $SHA; commit the release tooling first"
 done
+# git archive records a submodule as a gitlink and cannot export files inside it.
+# Resolve the first-party license from the exact agent-chat commit pinned by this
+# release's superproject commit, never from the submodule's moving worktree.
+LICENSE_SHA="$(git -C "$ROOT" rev-parse --verify "$SHA:libs/agent-chat")" \
+  || die "could not resolve the agent-chat license pin from $SHA"
+git -C "$ROOT/libs/agent-chat" cat-file -e "$LICENSE_SHA:LICENSE" \
+  || die "agent-chat $LICENSE_SHA has no LICENSE file"
+git -C "$ROOT/libs/agent-chat" show "$LICENSE_SHA:LICENSE" > "$WORK/PUI_LICENSE"
 # compatibility.json is committed before the candidate it ships in exists, so it
 # can never hold that candidate's installed-product evidence: a 'verified' target
 # there is always evidence of another generation (R-10). Refused before anything
@@ -224,6 +232,7 @@ install -m 0644 "$WASM" "$UNIT/pui-companion.wasm"
 install -m 0755 "$SRC/apps/tui/release/install.sh" "$UNIT/install.sh"
 install -m 0644 "$SRC/apps/tui/release/README.md" "$UNIT/README.md"
 install -m 0644 "$SRC/apps/tui/release/RELEASE_NOTES.md" "$UNIT/RELEASE_NOTES.md"
+install -m 0644 "$WORK/PUI_LICENSE" "$UNIT/LICENSE"
 
 python3 "$SRC/apps/tui/scripts/write-install-manifest.py" write \
   --manifest "$UNIT/pui-install.json" \

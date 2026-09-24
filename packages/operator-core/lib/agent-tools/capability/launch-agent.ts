@@ -91,6 +91,7 @@ import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEn
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { classifyResumeTurnExit } from '../../events/await/resume-turn-outcome';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
@@ -1692,6 +1693,25 @@ export default defineTool({
                 // identity at boot.
                 coordOwnerId: targetOwnerId,
               });
+              // A one-turn headless agent may finish at its CLI prompt without
+              // calling coord:orient or activity:report. Arm its standing wake
+              // watcher here so follow-up work can still reach the live session.
+              if (result.status === 'ok' && targetOwnerId) {
+                try {
+                  await armInboxWake({
+                    ownerId: targetOwnerId,
+                    note: 'headless launch-agent inbox-wake',
+                  });
+                } catch (error) {
+                  notes.push(
+                    '⚠ HEADLESS INBOX-WAKE NOT ARMED — ' +
+                      targetOwnerId +
+                      ' launched but follow-up wake registration failed: ' +
+                      ((error as Error)?.message ?? String(error)) +
+                      '.',
+                  );
+                }
+              }
               // Preserve the successful spawn result. The process/task/log
               // identity is recoverable evidence even though the first-turn
               // receipt is not; the summary below reports this as a partial

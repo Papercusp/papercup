@@ -3,6 +3,7 @@ name = "pui-companion-proto"
 version = "0.1.0"
 edition = "2021"
 description = "Shared JSON-line protocol between pui and its companion zellij plugin (SP-TUI P-004 / D-008)"
+license = "Apache-2.0"
 publish = false
 
 # Standalone crate (no Cargo workspace under papercup/, by design — see

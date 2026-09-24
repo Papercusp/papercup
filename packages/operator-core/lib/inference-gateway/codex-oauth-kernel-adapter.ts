@@ -113,6 +113,8 @@ export interface CodexOAuthFetchResponse {
 
 export interface CodexOAuthFetchInit {
   method: string;
+  /** Prepared routing identity for internal telemetry; never an HTTP header. */
+  diagnosticAccountId?: string;
   headers: Record<string, string>;
   body: Uint8Array | null;
   signal: AbortSignal;
@@ -421,6 +423,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       try {
         upstream = await opts.fetch(prepared.url, {
           method: prepared.method,
+          diagnosticAccountId: prepared.accountId,
           headers: prepared.headers,
           body: prepared.body,
           signal: context.signal,

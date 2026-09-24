@@ -25,6 +25,7 @@ import { useSyncQuery } from "@papercusp/sync";
 import type { ReportBlock } from "@papercusp/chat-protocol";
 import type { AuthorIdentity } from "../../_components/AuthorBadge";
 import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
+import { markInteractionPhase, PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
 
 export type { AuthorIdentity };
 
@@ -752,11 +753,19 @@ export function fetchPlan(
   // `data.raw`/`data.prose` to render/round-trip the whole plan, so without
   // mode:'full' the editor renders BLANK. These are user-driven, one-plan-at-
   // a-time fetches, so the full body is the right payload.
+  markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "request-started");
   return getJson<PlanGetResult>(
     "get",
     { slug, mode: "full", ...(harnessSlug ? { harness: harnessSlug } : {}) },
     actualSignal,
-  );
+  ).then((result) => {
+    // A superseded/closed popup must not credit its old response to a new
+    // interaction. getJson resolves only after the response body is parsed.
+    if (!actualSignal?.aborted) {
+      markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "response-ready");
+    }
+    return result;
+  });
 }
 
 export function fetchPlanItems(params?: {

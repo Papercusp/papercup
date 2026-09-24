@@ -440,6 +440,10 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     for (const component of ['| zellij | 0.44.3 | MIT |', '| ratatui |', '| tokio |', '| serde |']) {
       expect(licenses).toContain(component);
     }
+    const firstPartyLicense = readFileSync(path.join(unit, 'LICENSE'), 'utf8');
+    expect(firstPartyLicense).toContain('Apache License');
+    expect(firstPartyLicense).toContain('Version 2.0, January 2004');
+    expect(firstPartyLicense).toContain('Copyright 2026 Papercusp');
     // This archive's own target is the machine running the test: it executes.
     const runs = spawnSync(binary, ['--version'], { encoding: 'utf8' });
     expect(runs.status, output(runs)).toBe(0);

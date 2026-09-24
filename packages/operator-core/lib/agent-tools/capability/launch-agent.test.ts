@@ -94,6 +94,12 @@ vi.mock('../../console-launcher', () => ({
   })),
 }));
 
+const armInboxWakeMock = vi.hoisted(() => vi.fn());
+vi.mock('../../events/await/inbox-wake-arm', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  armInboxWake: (...args: unknown[]) => armInboxWakeMock(...args),
+}));
+
 // launch-agent's mode matrix is about command composition and spawn routing. The
 // backend PATH preflight and startup probes have their own focused suites
 // (backend-bin-resolve.test.ts and agent-launch-verification.test.ts); keep those
@@ -307,6 +313,12 @@ beforeEach(() => {
     waitedMs: 0,
     sessions: [] as Array<{ ownerId: string; advSessionId?: number; sessionId?: string | null; successfulCalls: number }>,
     note: 'test launch verification stub',
+  });
+  armInboxWakeMock.mockReset().mockResolvedValue({
+    awaitId: 123,
+    eventKey: 'coord:inbox-wake:su-headless',
+    handleNote: 'test handle',
+    minSleepSec: 60,
   });
   verifyResumeStartedMock.mockResolvedValue({
     started: true,
@@ -1049,6 +1061,10 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     });
     const ownerId = (spawnHeadlessMock.mock.calls[0][0] as { coordOwnerId?: string }).coordOwnerId;
     expect(ownerId).toMatch(/^su-[0-9a-f-]{36}$/);
+    expect(armInboxWakeMock).toHaveBeenCalledWith({
+      ownerId,
+      note: 'headless launch-agent inbox-wake',
+    });
     expect(dataOf(res)?.launch).toMatchObject({ ownerIds: [ownerId], tasks: [{ ownerId }] });
     expect(dataOf(res)?.launch).toMatchObject({
       deduped: false,

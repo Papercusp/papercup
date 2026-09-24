@@ -3,6 +3,7 @@ name = "pui"
 version = "0.1.0"
 edition = "2021"
 description = "Papercusp terminal workbench (TUI) — SP-TUI tui-workbench-ratatui-2026-06-04"
+license = "Apache-2.0"
 publish = false
 
 # Standalone crate: there is no Cargo workspace under papercup/, so this never
