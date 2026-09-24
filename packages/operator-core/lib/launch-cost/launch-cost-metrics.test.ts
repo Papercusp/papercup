@@ -7,6 +7,7 @@ import {
   evaluateCarryStartup,
   type CarryStartupObservation,
   evaluateCarryTaskPairs,
+  inspectCarryNativeTurn,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -18,6 +19,141 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry native action evidence (unpaid trial preparation)', () => {
+  const allowed = { server: 'papercusp-su', tool: 'capability:read', arguments: { file_path: '/fixture/source', byte_offset: 0 } };
+  const fixture = () => {
+    const items = [
+      { id: 'input', type: 'userMessage', content: [{ type: 'text', text: 'Recover the source.' }] },
+      { id: 'read', type: 'mcpToolCall', ...allowed, status: 'completed', result: { content: [] }, error: null },
+      { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '{"sourceRef":"fixture:cut"}' },
+    ];
+    const turn = { id: 'turn', status: 'completed', itemsView: 'full', items };
+    const events: Array<Record<string, unknown>> = [
+      { method: 'turn/started', params: { threadId: 'thread', turn: { id: 'turn', status: 'inProgress' } } },
+      ...items.flatMap(item => ['item/started', 'item/completed'].map(method => ({
+        method, params: { threadId: 'thread', turnId: 'turn', item },
+      }))),
+      { method: 'turn/completed', params: { threadId: 'thread', turn } },
+    ];
+    return { threadId: 'thread', turnId: 'turn', events,
+      threadRead: { thread: { id: 'thread', turns: [turn] } }, allowedMcpCalls: [allowed] };
+  };
+  const edit = (input: ReturnType<typeof fixture>, change: (turn: ReturnType<typeof fixture>['threadRead']['thread']['turns'][number]) => void) => {
+    change(input.threadRead.thread.turns[0]);
+    return input;
+  };
+
+  it('verifies a complete native trace without turning it into a quality or billing pass', () => {
+    const result = inspectCarryNativeTurn(fixture());
+    expect(result).toEqual({ status: 'verified', violations: [], missing: [],
+      finalResponse: '{"sourceRef":"fixture:cut"}', mcpItemIds: ['read'] });
+    expect(result).not.toHaveProperty('quality');
+    expect(result).not.toHaveProperty('accountingComplete');
+  });
+
+  it('honors the native schema full-items default for older rollouts', () => {
+    const input = fixture();
+    delete (input.threadRead.thread.turns[0] as { itemsView?: string }).itemsView;
+    expect(inspectCarryNativeTurn(input).status).toBe('verified');
+  });
+
+  it.each(['summary', 'notLoaded'])('rejects persisted itemsView=%s even when its visible items agree', view => {
+    expect(inspectCarryNativeTurn(edit(fixture(), turn => { turn.itemsView = view; })).status).toBe('incomplete');
+  });
+
+  it.each(['commandExecution', 'fileChange', 'dynamicToolCall', 'collabAgentToolCall', 'collabToolCall',
+    'subAgentActivity', 'webSearch', 'imageView', 'imageGeneration', 'sleep'])('catches forbidden %s even without a UI tool card', type => {
+    const input = fixture();
+    input.threadRead.thread.turns[0].items.push({ id: 'forbidden', type } as never);
+    expect(inspectCarryNativeTurn(input)).toMatchObject({ status: 'violation', violations: [`forbidden-item:${type}:forbidden`] });
+  });
+
+  it('does not let a final snapshot hide a forbidden started action', () => {
+    const input = fixture();
+    input.events.splice(1, 0, { method: 'item/started', params: { threadId: 'thread', turnId: 'turn',
+      item: { id: 'hidden', type: 'fileChange', changes: [] } } });
+    expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+
+  it('catches an action seen only in the terminal event, despite a truncated persisted witness', () => {
+    const input = fixture();
+    const turn = input.threadRead.thread.turns[0];
+    input.events[input.events.length - 1] = { method: 'turn/completed', params: { threadId: 'thread',
+      turn: { ...turn, items: [...turn.items, { id: 'hidden', type: 'commandExecution' }] } } };
+    expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+
+  it('uses full persisted history and item receipts when the terminal notification intentionally omits items', () => {
+    const input = fixture();
+    input.events[input.events.length - 1] = { method: 'turn/completed', params: { threadId: 'thread',
+      turn: { id: 'turn', status: 'completed', itemsView: 'notLoaded', items: [] } } };
+    expect(inspectCarryNativeTurn(input).status).toBe('verified');
+    input.events.splice(2, 1);
+    expect(inspectCarryNativeTurn(input).status).toBe('incomplete');
+  });
+
+  it('checks native terminal summaries as a subset without confusing them with full persisted history', () => {
+    const input = fixture();
+    const turn = input.threadRead.thread.turns[0];
+    input.events[input.events.length - 1] = { method: 'turn/completed', params: { threadId: 'thread',
+      turn: { ...turn, itemsView: 'summary', items: [turn.items[2]] } } };
+    expect(inspectCarryNativeTurn(input).status).toBe('verified');
+    input.events.splice(2, 1);
+    expect(inspectCarryNativeTurn(input).status).toBe('incomplete');
+  });
+
+  it('accepts one terminal unphased message but never ambiguous legacy messages or explicit commentary', () => {
+    const input = fixture();
+    delete (input.threadRead.thread.turns[0].items[2] as { phase?: string }).phase;
+    expect(inspectCarryNativeTurn(input).status).toBe('verified');
+    input.threadRead.thread.turns[0].items.push({ id: 'other', type: 'agentMessage', text: 'ambiguous' } as never);
+    expect(inspectCarryNativeTurn(input).status).toBe('incomplete');
+  });
+
+  it.each(['server', 'tool', 'arguments'] as const)('checks the exact allowed MCP %s, not its read-only hint', field => {
+    const input = fixture();
+    const item = input.threadRead.thread.turns[0].items[1] as Record<string, unknown>;
+    item[field] = field === 'arguments' ? { ...allowed.arguments, file_path: '/another/source' } : 'unapproved';
+    item.readOnlyHint = true;
+    expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+
+  it('ignores object key order but rejects additional MCP arguments', () => {
+    const input = fixture();
+    const item = input.threadRead.thread.turns[0].items[1] as Record<string, unknown>;
+    item.arguments = { byte_offset: 0, file_path: '/fixture/source' };
+    expect(inspectCarryNativeTurn(input).status).toBe('verified');
+    item.arguments = { ...allowed.arguments, follow_symlinks: true };
+    expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+
+  it.each(['missing-start', 'missing-terminal', 'missing-item', 'duplicate-terminal', 'wrong-thread', 'wrong-turn',
+    'changed-item', 'unknown-item', 'failed-tool', 'failed-turn', 'no-final', 'duplicate-id'])('fails closed for %s', fault => {
+    const input = fixture();
+    if (fault === 'missing-start') input.events.shift();
+    if (fault === 'missing-terminal') input.events.pop();
+    if (fault === 'missing-item') input.events.splice(2, 1);
+    if (fault === 'duplicate-terminal') input.events.push(input.events.at(-1)!);
+    if (fault === 'wrong-thread') input.threadRead.thread.id = 'other-thread';
+    if (fault === 'wrong-turn') input.turnId = 'other-turn';
+    if (fault === 'changed-item') input.events[4] = { method: 'item/completed', params: {
+      threadId: 'thread', turnId: 'turn', item: { ...input.threadRead.thread.turns[0].items[1], result: { content: ['different'] } },
+    } };
+    if (fault === 'unknown-item') input.threadRead.thread.turns[0].items.push({ id: 'new', type: 'futureNativeAction' } as never);
+    if (fault === 'failed-tool') (input.threadRead.thread.turns[0].items[1] as Record<string, unknown>).status = 'failed';
+    if (fault === 'failed-turn') input.threadRead.thread.turns[0].status = 'failed';
+    if (fault === 'no-final') input.threadRead.thread.turns[0].items[2].phase = 'commentary';
+    if (fault === 'duplicate-id') input.threadRead.thread.turns[0].items.push(input.threadRead.thread.turns[0].items[0]);
+    expect(inspectCarryNativeTurn(input).status).toBe('incomplete');
+  });
+
+  it('rejects native approval/dynamic-tool requests rather than silently treating them as notifications', () => {
+    const input = fixture();
+    input.events.splice(1, 0, { id: 'request', method: 'item/tool/call', params: { threadId: 'thread', turnId: 'turn' } });
+    expect(inspectCarryNativeTurn(input).status).toBe('violation');
+  });
+});
 
 describe('carry task response oracles (D017 draft 1143234)', () => {
   // Reuse the standard schema engine, not a second acceptance scorer. These

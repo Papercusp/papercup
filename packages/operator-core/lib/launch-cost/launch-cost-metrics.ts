@@ -29,6 +29,7 @@
  */
 
 import { pairedBootstrapCI } from '@papercusp/bench-metrics';
+import { isDeepStrictEqual } from 'node:util';
 
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
@@ -329,6 +330,133 @@ export function evaluateCarryStartup(observations: readonly CarryStartupObservat
     firstTwoTotalInput: startupKnown ? diagnosis.firstTwoTotalInput : null,
     firstTwoUncachedInput: startupKnown ? diagnosis.firstTwoUncachedInput : null,
     cacheMissCause: diagnosis.cacheMissCause };
+}
+
+export interface CarryNativeTurnEvidence {
+  threadId: string;
+  turnId: string;
+  /** Raw app-server frames, captured before any UI projection. */
+  events: readonly unknown[];
+  /** Actual thread/read response with includeTurns, not an authored summary. */
+  threadRead: unknown;
+  /** Exact call signatures fixed in the trial manifest before execution. */
+  allowedMcpCalls: readonly { server: string; tool: string; arguments: unknown }[];
+}
+
+/** Verify the native ACTION TRACE only. A verified trace is not proof of tool
+ * result correctness, source-read success, serving-account identity, complete
+ * charges, or task quality. Those still need their independent receipts/oracle.
+ * In particular, readOnlyHint is metadata, not permission or evidence.
+ */
+export function inspectCarryNativeTurn(input: CarryNativeTurnEvidence) {
+  const violations = new Set<string>();
+  const missing = new Set<string>();
+  const record = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const text = (value: unknown): string => typeof value === 'string' ? value : '';
+  const passive = new Set(['userMessage', 'hookPrompt', 'agentMessage', 'reasoning', 'plan', 'contextCompaction']);
+  const forbidden = new Set(['commandExecution', 'fileChange', 'dynamicToolCall', 'collabToolCall',
+    'collabAgentToolCall', 'subAgentActivity', 'webSearch', 'imageView', 'imageGeneration', 'sleep',
+    'enteredReviewMode', 'exitedReviewMode', 'functionCallOutput']);
+  const checkItem = (item: Record<string, unknown>, completed: boolean) => {
+    const id = text(item.id), type = text(item.type);
+    if (!id || !type) missing.add('malformed-item');
+    if (forbidden.has(type)) violations.add(`forbidden-item:${type}:${id}`);
+    else if (type === 'mcpToolCall') {
+      if (!input.allowedMcpCalls.some(call => call.server === item.server && call.tool === item.tool &&
+        isDeepStrictEqual(call.arguments, item.arguments))) violations.add(`unapproved-mcp-call:${id}`);
+      if (completed && (item.status !== 'completed' || item.error != null || !Array.isArray(record(item.result).content))) {
+        missing.add(`unsuccessful-mcp-item:${id}`);
+      }
+    } else if (!passive.has(type)) missing.add(`unknown-item-type:${type}`);
+  };
+  if (!input.threadId.trim() || !input.turnId.trim()) missing.add('missing-native-identity');
+  const thread = record(record(input.threadRead).thread);
+  if (thread.id !== input.threadId) missing.add('thread-read-identity-mismatch');
+  const turns = Array.isArray(thread.turns) ? thread.turns.filter(turn => record(turn).id === input.turnId) : [];
+  if (turns.length !== 1) missing.add('missing-or-duplicate-persisted-turn');
+  const turn = record(turns[0]);
+  // The native schema defaults an omitted itemsView to full for older rollouts.
+  // Explicit summary/notLoaded (and future values) cannot establish completeness.
+  if (turn.itemsView !== undefined && turn.itemsView !== 'full') missing.add('persisted-items-not-full');
+  if (turn.status !== 'completed' || turn.error != null) missing.add('persisted-turn-not-completed');
+  if (!Array.isArray(turn.items)) missing.add('missing-persisted-items');
+  const items = Array.isArray(turn.items) ? turn.items.map(record) : [];
+  const persisted = new Map<string, Record<string, unknown>>();
+  for (const item of items) {
+    const id = text(item.id);
+    if (persisted.has(id)) missing.add(`duplicate-persisted-item:${id}`);
+    persisted.set(id, item);
+    checkItem(item, true);
+  }
+
+  const started = new Map<string, Record<string, unknown>>();
+  const completed = new Map<string, Record<string, unknown>>();
+  let turnStarts = 0, turnEnds = 0;
+  for (const raw of input.events) {
+    const frame = record(raw), method = text(frame.method), params = record(frame.params);
+    if (!method) { missing.add('malformed-native-event'); continue; }
+    if (frame.id != null) { violations.add(`native-server-request:${method}`); continue; }
+    if (!['turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
+      if (method === 'error') missing.add('native-error-event');
+      continue; // Deltas and informational notifications are not completion receipts.
+    }
+    const isTurn = method.startsWith('turn/');
+    const eventTurn = record(params.turn);
+    if (params.threadId !== input.threadId || (isTurn ? eventTurn.id : params.turnId) !== input.turnId) {
+      missing.add('native-event-identity-mismatch'); continue;
+    }
+    if (method === 'turn/started') {
+      turnStarts++;
+      if (eventTurn.status !== 'inProgress') missing.add('native-turn-start-not-in-progress');
+      if (turnEnds) missing.add('turn-start-after-completion');
+    } else if (method === 'turn/completed') {
+      turnEnds++;
+      if (turnStarts !== 1 || eventTurn.status !== 'completed' || eventTurn.error != null) missing.add('native-turn-not-completed');
+      // Native 0.156 emits summary here. Completeness comes from the full
+      // thread/read witness AND the item lifecycle census below, not this empty
+      // notification. A supplied full terminal witness must agree as well.
+      if (eventTurn.itemsView === 'notLoaded') {
+        if (!Array.isArray(eventTurn.items) || eventTurn.items.length) missing.add('malformed-unloaded-terminal-items');
+      } else if (eventTurn.itemsView === 'summary') {
+        if (!Array.isArray(eventTurn.items) || eventTurn.items.some(item =>
+          !isDeepStrictEqual(record(item), persisted.get(text(record(item).id))))) missing.add('terminal-summary-mismatch');
+      } else {
+        if (eventTurn.itemsView !== undefined && eventTurn.itemsView !== 'full') missing.add('terminal-items-not-full');
+        if (!Array.isArray(eventTurn.items) || !isDeepStrictEqual(eventTurn.items, turn.items)) missing.add('terminal-items-mismatch');
+      }
+      // Inspect both witnesses: an action present only in a terminal event is
+      // still an attempted action, even if the persisted read omitted it.
+      if (Array.isArray(eventTurn.items)) for (const item of eventTurn.items) checkItem(record(item), true);
+    } else {
+      const item = record(params.item), id = text(item.id);
+      checkItem(item, method === 'item/completed');
+      if (turnStarts !== 1 || turnEnds) missing.add('item-outside-active-turn');
+      const target = method === 'item/started' ? started : completed;
+      if (target.has(id)) missing.add(`duplicate-item-event:${method}:${id}`);
+      if (method === 'item/completed' && !started.has(id)) missing.add(`completion-without-start:${id}`);
+      target.set(id, item);
+    }
+  }
+  if (turnStarts !== 1 || turnEnds !== 1) missing.add('missing-or-duplicate-turn-boundary');
+  for (const id of new Set([...persisted.keys(), ...started.keys(), ...completed.keys()])) {
+    const before = started.get(id), after = completed.get(id), stored = persisted.get(id);
+    if (!before || !after || !stored) { missing.add(`incomplete-item-lifecycle:${id}`); continue; }
+    if (before.type !== after.type || !isDeepStrictEqual(after, stored)) missing.add(`item-receipt-mismatch:${id}`);
+    if (before.type === 'mcpToolCall' && (before.server !== after.server || before.tool !== after.tool ||
+      !isDeepStrictEqual(before.arguments, after.arguments))) missing.add(`mcp-signature-changed:${id}`);
+  }
+  let final = items.filter(item => item.type === 'agentMessage' && item.phase === 'final_answer');
+  // phase is optional in the native protocol. Do not reinterpret commentary;
+  // only a single unphased reply at the end of the completed turn is usable.
+  if (!final.length) final = items.filter(item => item.type === 'agentMessage' && item.phase == null);
+  if (final.length !== 1 || final[0] !== items.at(-1) || typeof final[0]?.text !== 'string' || !final[0].text.trim()) {
+    missing.add('missing-or-ambiguous-final-response');
+  }
+  const status = violations.size ? 'violation' as const : missing.size ? 'incomplete' as const : 'verified' as const;
+  return { status, violations: [...violations], missing: [...missing],
+    finalResponse: status === 'verified' ? text(final[0].text) : null,
+    mcpItemIds: status === 'verified' ? items.filter(item => item.type === 'mcpToolCall').map(item => text(item.id)) : [] };
 }
 
 export interface CarryTaskEvaluation {
