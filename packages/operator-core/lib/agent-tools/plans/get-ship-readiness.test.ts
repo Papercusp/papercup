@@ -182,6 +182,38 @@ afterEach(async () => {
 });
 
 describe('plans:get — shipReadiness', () => {
+  it('attributes cold source latency and never replays build timings on a cache hit', async () => {
+    const fixture = await M.readPlanBySlug('timing');
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    M.readPlanBySlug.mockImplementationOnce(async () => {
+      clock += 75;
+      return fixture;
+    });
+    M.getLatestPlanAudit.mockImplementationOnce(async () => {
+      clock += 125;
+      return null;
+    });
+    const metadata = vi.fn();
+    const context = { workspaceId: 'ws-timing', harnessSlug: 'papercup', metadata,
+      log: vi.fn(), progress: vi.fn() };
+    const read = () => tool.handler({ slug: 'timing', harness: 'papercup', includeHistory: false } as never, context as never);
+    try {
+      const cold = await read();
+      const coldTiming = metadata.mock.calls.find(([m]) => m.plansGetRead)?.[0].plansGetRead;
+      expect(coldTiming).toMatchObject({ unit: 'ms', reads: [{ slug: 'timing', buildState: 'complete',
+        waitMs: 200, stagesMs: { source: 75, rubricAndAudit: 125 } }] });
+      metadata.mockClear();
+      const warm = await read();
+      const warmTiming = metadata.mock.calls.find(([m]) => m.plansGetRead)?.[0].plansGetRead;
+      expect(warmTiming).toMatchObject({ reads: [{ buildState: 'not-started', waitMs: 0, stagesMs: {} }] });
+      expect(warm).toEqual(cold);
+      expect(JSON.stringify(warm)).not.toContain('plansGetRead');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('accepts a boolean and rejects the string a caller might guess', () => {
     expect(tool.args.safeParse({ slug: 'alpha', shipReadiness: true }).success).toBe(true);
     expect(tool.args.safeParse({ slug: 'alpha', shipReadiness: 'yes' }).success).toBe(false);

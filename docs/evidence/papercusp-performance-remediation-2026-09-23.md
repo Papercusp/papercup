@@ -1870,6 +1870,54 @@ Log `/tmp/p007-native-theme-resume-20260924.log`. Its report upload returned
 HTTP408 (`route exceeded 30s`), so there is no accepted publish receipt.
 The local timing remains evidence; persistence requires separate reconciliation.
 
+At20:43–20:45Z that reconciliation found the row: **`perfrun-1790282211518-bjovxk`**,
+workspace `default`, status `fail`,16 measures, source
+`0c6826c5e63cd3c1aad720c2da2b5d11da1e3307`. The stored1983ms total and phase
+values match the local run. The runner does not send its UI workspace to this
+publisher, so the earlier `papercusp-workspace` filter also missed known-positive
+receipts; it could not establish absence. No upload retry was made. HTTP408
+described the response failure, not absence of the durable write.
+
+Server invocation **29459524**, `plans:get`, started20:36:49.446Z and took1446ms
+inside the1497ms native request interval. Its arguments name the pinned plan,
+`mode:full`, `includeRaw:true`, `includeHistory:false`, and the
+`pc-admin-plans-ui` client. Dispatch duration includes middleware, handler and
+result processing; it is not DB-only time. The foreground scheduler wait total
+did not rise during this popup. This isolates substantial cost to the server
+dispatch, without yet identifying a handler substage.
+
+The current source extends existing invocation metadata with `plansGetRead`:
+per-slug cache wait and wall times between source, issue-block, linked-feature,
+coverage, liveness, lifecycle, rubric/audit, stale-path and shaping stages.
+It snapshots each call outside the cached payload; a cache hit cannot inherit
+an earlier build's measurements. Nine project tests passed in
+`/tmp/p007-request-stage-tests-20260924.log`, including controlled75ms source
+and125ms audit costs followed by a zero-build cache hit. That initial run was
+unscoped; a final harness-scoped verification is still required after the last
+source adjustment. The instrumentation is not yet runtime attribution.
+
+Separately, upload regression test19345699 held the optional trend notification
+after resolving the durable insert. The handler withheld its response:7 tests
+passed and the new case failed as expected. The source now acknowledges the
+committed row without awaiting that notification, using the existing polling
+fallback. This proves and fixes the acknowledgement dependency; the historical
+408's exact substage remains unknown. Final post-fix tests were refused before
+execution while WI-10002932's separate in-tree mutation probe was active.
+EI-24176734149355374 remains open pending verification; P-007 acceptance and
+shipment remain open.
+
+After that probe restored, run `21113ae7-964b-4d52-9750-2b8f9e158772`
+passed17 tests with zero skips: ingest8 (`19348261`) and plan-read9
+(`19348262`). Scoped typecheck caught a test-only `Response | Promise<Response>`
+union; the test now normalizes it with `Promise.resolve`. The follow-up
+typecheck reports zero errors in the four edited files, with23 other
+import-graph diagnostics. The final ingest-test rerun after that typing
+correction was fenced before execution by a newer, separate read-merge mutation
+probe. Existing git-sync is active and reporting progress; neither those
+source checks nor the acknowledgement fix establishes a native latency pass.
+Current `PERF-P-007@1` requires ten valid native runs, each at most1500ms,
+on the accepted build and frozen measurement profile.
+
 The staging sync incident is separately fixed under `EI-24170757950252845`:
 launcher stderr no longer contaminates its JSON receipt, and scheduled but
 unobserved restarts enter the existing bounded wait, requiring a new PID and

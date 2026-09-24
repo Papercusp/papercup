@@ -708,6 +708,10 @@ export default defineTool({
       args.decisionId || decisionSelectors?.length
         ? [...new Set([...(args.decisionId ? [args.decisionId] : []), ...(decisionSelectors ?? [])])]
         : null;
+    // Keep diagnostics in the invocation ledger, outside the cached payload.
+    // Stage times include awaited IO and synchronous work since the prior mark;
+    // they are wall time, not database-only or CPU time.
+    const readTimings: Array<Record<string, unknown>> = [];
     const env = await runBulk(
       slugs,
       async (slug) => {
@@ -732,6 +736,15 @@ export default defineTool({
           }
         }
 
+        const readStarted = performance.now();
+        let stageStarted = readStarted;
+        const stagesMs: Record<string, number> = {};
+        let buildState: 'not-started' | 'running' | 'complete' = 'not-started';
+        const markStage = (name: string) => {
+          const now = performance.now();
+          stagesMs[name] = Math.max(0, now - stageStarted);
+          stageStarted = now;
+        };
         return cachedRead(
           ctx as CachedReadCtx,
           {
@@ -754,7 +767,10 @@ export default defineTool({
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
           },
           async () => {
+            buildState = 'running';
+            stageStarted = performance.now();
             const result = await readPlanBySlug(slug, opts);
+            markStage('source');
             // cachedRead caches every non-null result, so returning a `{ok:false}`
             // not_found object here would make a transient read miss sticky for
             // the full plans:get soft TTL. Let runBulk preserve the per-slug error
@@ -811,6 +827,8 @@ export default defineTool({
                   ...(includeRaw ? { raw: parsed.raw } : {}),
                 };
               }
+              markStage('legacyShape');
+              buildState = 'complete';
               return { ok: true as const, ...payload };
             }
 
@@ -822,6 +840,7 @@ export default defineTool({
             // (the closing of the issue unblocks every target atomically). The pure
             // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
             const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(slug, resolved.items);
+            markStage('issueBlocks');
             const responseItems = requestedItemIdSet
               ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
               : resolvedItems;
@@ -899,6 +918,7 @@ export default defineTool({
               // Non-fatal — UI degrades to no badges.
             }
 
+            markStage('linkedFeatures');
             // P-083: per-plan-item test coverage (the plan↔test rollup, through the
             // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
             // side by decoratePlanItemTestBadges. Skips the tests query when the plan
@@ -935,6 +955,7 @@ export default defineTool({
               // Non-fatal — UI degrades to no coverage badges.
             }
 
+            markStage('testCoverage');
             const sections = splitSections(parsed.prose);
             // WI-1442 fix (a): read-time liveness decoration — annotate any
             // su-* agent-id mention in the ## Now prose with its CURRENT
@@ -942,6 +963,7 @@ export default defineTool({
             // su-X" claim self-discloses instead of silently outliving the
             // agent it names. Best-effort; never mutates the stored plan.
             const decoratedNow = await decoratePlanNowBlock(parsed.now);
+            markStage('nowDecoration');
             // deterministic-plan-state-derivation-2026-08-31 P-002 / D-002:
             // the `next:` pointer is a SECOND COPY of a fact the item graph
             // already owns, and nothing recomputed it when an item flipped
@@ -1020,6 +1042,7 @@ export default defineTool({
               // the plan read. Absent means "not derived", which the schema
               // documents as distinct from any verdict.
             }
+            markStage('lifecycle');
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -1088,6 +1111,8 @@ export default defineTool({
             if (requestedDecisionIds) {
               const requestedDecisionIdSet = new Set(requestedDecisionIds);
               const selectedDecisions = parsed.decisions.filter((decision) => requestedDecisionIdSet.has(decision.id));
+              markStage('shape');
+              buildState = 'complete';
               return {
                 ok: true as const,
                 ...narrowDecisionPayload(
@@ -1111,6 +1136,8 @@ export default defineTool({
               };
             }
             if (args.heading) {
+              markStage('shape');
+              buildState = 'complete';
               return {
                 ok: true as const,
                 ...narrowHeadingPayload(base, args.heading, findSection(sections, args.heading)),
@@ -1118,6 +1145,8 @@ export default defineTool({
             }
 
             if (mode === 'meta') {
+              markStage('shape');
+              buildState = 'complete';
               return { ok: true as const, ...base };
             }
 
@@ -1167,6 +1196,7 @@ export default defineTool({
                 workspaceId: row.workspaceId,
               }),
             ]);
+            markStage('rubricAndAudit');
             // EI-20049758099997696: plan-item prose is the source of truth for many
             // promoted work-items, but promotion intentionally keeps those citations in
             // `summary` rather than `payload.paths`. Decorate the structured read with
@@ -1180,6 +1210,7 @@ export default defineTool({
                 summary: typeof item.text === 'string' ? item.text : null,
               })),
             ).catch(() => ({}));
+            markStage('stalePaths');
             const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
               decoratePlanItemStalePathRefs(item, stalePathRefsByItem);
             const structured = {
@@ -1217,9 +1248,20 @@ export default defineTool({
                     ...(includeRaw ? { raw: parsed.raw } : {}),
                   }
                 : structured;
+            markStage('shape');
+            buildState = 'complete';
             return { ok: true as const, ...payload };
           },
-        );
+        ).finally(() => {
+          // Snapshot now: SWR can finish its factory after this request returns.
+          // A cache hit must never inherit an earlier call's build timings.
+          readTimings.push({
+            slug,
+            waitMs: Math.max(0, performance.now() - readStarted),
+            buildState,
+            stagesMs: { ...stagesMs },
+          });
+        });
       },
       { keyOf: (slug) => ({ slug }) },
     );
@@ -1413,6 +1455,7 @@ export default defineTool({
         result.harnessMismatch = mismatch;
       }
     }
+    ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-between-stages', reads: readTimings } });
     return bulkContent(env);
   },
 });

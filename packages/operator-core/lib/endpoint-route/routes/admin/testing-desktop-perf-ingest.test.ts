@@ -14,10 +14,41 @@
  * A round-trip assertion is the only thing that catches that class, so it is worth
  * a test file of its own even though the parser is four lines long.
  */
-import { describe, expect, it } from 'vitest';
-import { hasDesktopPerfOutcomeMeasure, parseMeasure } from './testing-desktop-perf-ingest';
+import { describe, expect, it, vi } from 'vitest';
+
+const M = vi.hoisted(() => ({ record: vi.fn(), notify: vi.fn() }));
+vi.mock('../../../system-health/desktop-perf-runs', () => ({ recordDesktopPerfRun: M.record }));
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: M.notify }));
+
+import route, { hasDesktopPerfOutcomeMeasure, parseMeasure } from './testing-desktop-perf-ingest';
 
 const base = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
+
+describe('desktop-perf durable acknowledgement', () => {
+  it('waits for persistence but acknowledges without waiting for the optional notification', async () => {
+    let commit!: (id: string) => void;
+    let notify!: () => void;
+    M.record.mockReset().mockReturnValue(new Promise<string>((resolve) => { commit = resolve; }));
+    M.notify.mockReset().mockReturnValue(new Promise<void>((resolve) => { notify = resolve; }));
+    let response: Response | undefined;
+    const pending = Promise.resolve(route.handler(new Request('http://localhost/api/admin/testing/desktop-perf-runs', {
+      method: 'POST', body: JSON.stringify({ measures: [base], workspaceId: 'ws-perf' }),
+    }), {} as never)).then((value) => { response = value; });
+    try {
+      await vi.waitFor(() => expect(M.record).toHaveBeenCalledOnce());
+      expect(response).toBeUndefined();
+      expect(M.notify).not.toHaveBeenCalled();
+      commit('persisted-run');
+      await vi.waitFor(() => expect(response?.status).toBe(200), { timeout: 500 });
+      expect(await response!.json()).toEqual({ id: 'persisted-run', recorded: 1, status: 'fail' });
+      await vi.waitFor(() => expect(M.notify).toHaveBeenCalledWith('desktopPerfTrend', { workspaceId: 'ws-perf' }));
+    } finally {
+      commit('persisted-run');
+      notify();
+      await pending;
+    }
+  });
+});
 
 describe('parseMeasure — invariant passthrough (P-003c)', () => {
   it('carries invariant:true through to the persisted measure', () => {

@@ -143,13 +143,12 @@ export default defineTool({
       runId,
     });
 
-    // Best-effort nudge for the admin trend panel; it polls regardless.
-    try {
-      const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('desktopPerfTrend', { workspaceId });
-    } catch {
-      /* the trend panel polls; sync invalidation is a best-effort nudge */
-    }
+    // The committed row is the acknowledgement boundary. Waiting on this
+    // optional nudge can turn a successful insert into a route timeout and
+    // encourage a duplicate publication. The trend panel also polls.
+    void import('../../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('desktopPerfTrend', { workspaceId }))
+      .catch(() => { /* the trend panel polls; this nudge is best-effort */ });
 
     return Response.json({ id, recorded: measures.length, status });
   },
