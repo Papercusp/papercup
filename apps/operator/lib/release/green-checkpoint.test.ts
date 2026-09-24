@@ -96,6 +96,7 @@ import {
   checkpointRunLockSkipSummary,
   activateScheduledCheckpointRunner,
   startScheduledQualificationProgress,
+  checkpointRunIdFromScheduledEnv,
   createCheckpointTerminalEventBuffer,
   emitTerminalCheckpointResult,
   type CheckpointResult,
@@ -3043,6 +3044,13 @@ describe("in-flight candidate retirement ownership", () => {
 });
 
 describe("acquireCheckpointRunLock", () => {
+  it('uses the scheduled wrapper runId for its child and preserves legacy sentinel behavior', () => {
+    const shared = 'ae4f7c6c-56c6-4bb6-8d38-633a23f94a4f';
+    expect(checkpointRunIdFromScheduledEnv(shared, () => 'new')).toBe(shared);
+    expect(checkpointRunIdFromScheduledEnv('1', () => 'new')).toBe('new');
+    expect(checkpointRunIdFromScheduledEnv(undefined, () => 'new')).toBe('new');
+    expect(checkpointRunIdFromScheduledEnv('untrusted', () => 'new')).toBe('new');
+  });
   it("records one exact-candidate terminal result before releasing buffered green/red wakes", async () => {
     const order: string[] = [];
     const emitted: string[] = [];
