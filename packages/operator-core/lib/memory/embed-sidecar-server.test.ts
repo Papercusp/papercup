@@ -8,7 +8,8 @@
  */
 import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
 import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { EmbedDeviceSettingLoad } from './embed-device-setting';
 import type { AdmissionContext } from '../resource-governor/admission';
 import type { GovernedOperationInput, runGovernedOperation } from '../resource-governor/execution';
 import {
@@ -23,10 +24,12 @@ import {
   validateRerankRequest,
   EMBED_SIDECAR_WARM_ENV,
   MAX_TEXTS_PER_CALL,
+  EMBED_SIDECAR_CAP_DEVICE_RELOAD,
   EMBED_SIDECAR_CAP_EMBED,
   EMBED_SIDECAR_CAP_HEALTHZ,
   EMBED_SIDECAR_CAP_RERANK,
   EMBED_SIDECAR_RUNTIME,
+  type EmbedDeviceReloadResponse,
   EMBED_SIDECAR_INTERACTIVE_PRIORITY,
   EMBED_SIDECAR_BACKGROUND_PRIORITY,
   EMBED_SIDECAR_PRIORITY_BURST_MAX,
@@ -122,6 +125,9 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       warmAtBoot: false,
       log: () => {},
       concurrency: 1,
+      // No PG here: the device-reload route (probed by the anti-drift test
+      // below) must not reach for the real Settings row.
+      embedDevice: { load: async () => ({ setting: null, changed: false, readError: null }) },
     });
     const port = await handle.listening;
     baseUrl = `http://127.0.0.1:${port}`;
@@ -399,7 +405,12 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     // what it can do — otherwise a route added after the running bundle was
     // built 404s forever and every caller's fail-safe swallows it.
     expect(body.capabilities).toEqual(
-      expect.arrayContaining([EMBED_SIDECAR_CAP_HEALTHZ, EMBED_SIDECAR_CAP_EMBED, EMBED_SIDECAR_CAP_RERANK]),
+      expect.arrayContaining([
+        EMBED_SIDECAR_CAP_HEALTHZ,
+        EMBED_SIDECAR_CAP_EMBED,
+        EMBED_SIDECAR_CAP_RERANK,
+        EMBED_SIDECAR_CAP_DEVICE_RELOAD,
+      ]),
     );
   });
 
@@ -1615,5 +1626,141 @@ describe('rerank sidecar HTTP surface (fake rerankers, ephemeral port)', () => {
   it('GET /rerank is not a route (POST only)', async () => {
     await bootRerank();
     expect((await fetch(`${baseUrl}/rerank`)).status).toBe(404);
+  });
+});
+
+/**
+ * The Settings embedding-device choice (plan memory-reduction-2026-09-24 D-008,
+ * WI-10002872). The loader is injected — the real one reads PG and recycles the
+ * worker — so what is pinned here is the sidecar's half: WHEN it applies the
+ * choice (before the boot warm-up; on POST /embed-device/reload) and what a
+ * change does to the models it holds.
+ */
+describe('embed sidecar — Settings embedding-device choice (D-008)', () => {
+  let handle: EmbedSidecarHandle | null = null;
+  let baseUrl = '';
+  let savedWarmEnv: string | undefined;
+  const builds: string[] = [];
+  const logs: string[] = [];
+
+  const builders: EmbedderBuilders = {
+    gemma: async (kind) => {
+      builds.push(`gemma:${kind}`);
+      return async (text: string) => [text.length, 1];
+    },
+    local: async (kind) => {
+      builds.push(`local:${kind}`);
+      return async (text: string) => [text.length, 3];
+    },
+    harrier: async (kind) => {
+      builds.push(`harrier:${kind}`);
+      return async (text: string) => [text.length, 4];
+    },
+  };
+
+  beforeEach(() => {
+    savedWarmEnv = process.env[EMBED_SIDECAR_WARM_ENV];
+    delete process.env[EMBED_SIDECAR_WARM_ENV]; // boot-warm set = gemma (the default)
+  });
+
+  afterEach(async () => {
+    await handle?.close();
+    handle = null;
+    builds.length = 0;
+    logs.length = 0;
+    if (savedWarmEnv === undefined) delete process.env[EMBED_SIDECAR_WARM_ENV];
+    else process.env[EMBED_SIDECAR_WARM_ENV] = savedWarmEnv;
+  });
+
+  async function boot(load: () => Promise<EmbedDeviceSettingLoad>, warmAtBoot = false): Promise<void> {
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders,
+      warmAtBoot,
+      log: (line) => logs.push(line),
+      concurrency: 1,
+      embedDevice: { load },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+  }
+
+  const embedQuery = () =>
+    fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma', kind: 'query', texts: ['x'] }),
+    });
+
+  const reload = async (): Promise<{ status: number; body: EmbedDeviceReloadResponse }> => {
+    const res = await fetch(`${baseUrl}/embed-device/reload`, { method: 'POST' });
+    return { status: res.status, body: (await res.json()) as EmbedDeviceReloadResponse };
+  };
+
+  it('an unchanged reload reports the held choice and rebuilds nothing', async () => {
+    const load = vi.fn(async (): Promise<EmbedDeviceSettingLoad> => ({ setting: 'cuda', changed: false, readError: null }));
+    await boot(load);
+    expect((await embedQuery()).status).toBe(200);
+
+    const { status, body } = await reload();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, setting: 'cuda', changed: false, readError: null, rewarm: null });
+    // The caller renders "in use" from these, so the reload answers them directly.
+    expect(body.embedExecution).toBeDefined();
+    expect(body.embedExecutionHealth).toBeDefined();
+    // warmAtBoot:false ⇒ no boot read; the one call is the reload's.
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(builds).toEqual(['gemma:query']);
+  });
+
+  it('a changed reload drops the memoized embedders and re-warms the boot-warm set', async () => {
+    await boot(async () => ({ setting: 'cpu', changed: true, readError: null }));
+    expect((await embedQuery()).status).toBe(200);
+    expect(builds).toEqual(['gemma:query']);
+
+    const { status, body } = await reload();
+    expect(status).toBe(200);
+    expect(body.changed).toBe(true);
+    expect(body.rewarm).toEqual({
+      timedOut: false,
+      models: { 'gemma:document': 'warm', 'gemma:query': 'warm' },
+    });
+    // gemma:query is REBUILT, not reused: its old closure may hold an inline
+    // pipeline built on the previous device. Keeping the memo would add only
+    // gemma:document here.
+    expect(builds.slice(1).sort()).toEqual(['gemma:document', 'gemma:query']);
+    expect(handle!.warmStates()).toEqual({ 'gemma:document': 'warm', 'gemma:query': 'warm' });
+  });
+
+  it('a failing loader keeps the current device — 200 with readError, never a 500', async () => {
+    await boot(async () => {
+      throw new Error('pg unreachable');
+    });
+    const { status, body } = await reload();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ changed: false, readError: 'pg unreachable', rewarm: null });
+    expect(logs.some((l) => l.includes('read failed: pg unreachable'))).toBe(true);
+  });
+
+  it('boot applies the choice BEFORE any model loads, then warms', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = vi.fn(async (): Promise<EmbedDeviceSettingLoad> => {
+      await gate;
+      return { setting: 'cpu', changed: true, readError: null };
+    });
+    await boot(load, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The read is in flight and nothing has been built: a warm-up that raced
+    // ahead would load on auto and then need a recycle.
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(builds).toEqual([]);
+
+    release();
+    await vi.waitFor(() =>
+      expect(handle!.warmStates()).toEqual({ 'gemma:document': 'warm', 'gemma:query': 'warm' }),
+    );
+    expect(logs.some((l) => l.includes('embedding device setting (boot): cpu'))).toBe(true);
   });
 });

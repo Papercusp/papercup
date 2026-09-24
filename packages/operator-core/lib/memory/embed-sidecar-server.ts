@@ -100,6 +100,7 @@ import {
 } from '../resource-governor/execution';
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { activeWorkspaceId } from '../workspace-registry';
+import { loadEmbedDeviceSetting, type EmbedDeviceSettingLoad } from './embed-device-setting';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
@@ -282,6 +283,15 @@ export const EMBED_SIDECAR_RUNTIME = 'node-onnx-worker';
 export const EMBED_SIDECAR_CAP_HEALTHZ = 'GET /healthz';
 export const EMBED_SIDECAR_CAP_EMBED = 'POST /embed';
 export const EMBED_SIDECAR_CAP_RERANK = 'POST /rerank';
+/**
+ * Re-read the Settings embedding-device choice and apply it to this process
+ * (plan memory-reduction-2026-09-24 D-008). The save route calls it right after
+ * writing the row, so a change reaches the shared sidecar without a restart.
+ * A client that gets 404 is talking to an older build: restart the sidecar.
+ */
+export const EMBED_SIDECAR_CAP_DEVICE_RELOAD = 'POST /embed-device/reload';
+/** Bound on re-warming the boot-warm embedders after a device change. */
+export const EMBED_DEVICE_REWARM_TIMEOUT_MS = 45_000;
 
 /**
  * Resolve the optional production scheduler window.
@@ -541,6 +551,26 @@ export interface EmbedSidecarOptions {
    * the wire, testable at all.
    */
   workerStates?: WorkerStateReaders;
+  /**
+   * The Settings device-choice loader (D-008). Production reads the PG row via
+   * `loadEmbedDeviceSetting`, which is bounded, never throws, and recycles the
+   * embed worker itself when the effective device changes. Applied at boot
+   * BEFORE the warm-up (only when `warmAtBoot` is on) and on every
+   * `POST /embed-device/reload`. Tests inject one so no PG is needed.
+   */
+  embedDevice?: { load: () => Promise<EmbedDeviceSettingLoad> };
+}
+
+/** What `POST /embed-device/reload` answers. */
+export interface EmbedDeviceReloadResponse {
+  ok: true;
+  setting: EmbedDeviceSettingLoad['setting'];
+  changed: boolean;
+  readError: string | null;
+  /** Present only when the device changed: the boot-warm embedders were rebuilt. */
+  rewarm: { models: Record<string, string>; timedOut: boolean } | null;
+  embedExecution: ReturnType<typeof embedExecutionTarget>;
+  embedExecutionHealth: ReturnType<typeof embedExecutionHealth>;
 }
 
 /** The two worker breakers this process owns; shape-compatible with both modules' getters. */
@@ -1367,6 +1397,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     },
     [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),
     [EMBED_SIDECAR_CAP_RERANK]: withRequestCancellation(handleRerank),
+    // Deliberately NOT tied to the request lifetime: once a device change has
+    // recycled the worker, the re-warm must finish even if the caller gave up.
+    // (`handleDeviceReload` is declared below; it is only invoked per request.)
+    [EMBED_SIDECAR_CAP_DEVICE_RELOAD]: (req, res) => {
+      void handleDeviceReload(req, res).catch((e) => {
+        if (!res.headersSent) json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+      });
+    },
   };
   const capabilities = Object.keys(handlers);
 
@@ -1389,14 +1427,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     });
   });
 
-  if (opts.warmAtBoot !== false) {
-    // Warm the configured models (EMBED_SIDECAR_WARM_ENV, default gemma) in the
-    // background AFTER listen is queued: the READY handshake must not wait out
-    // a model load (can be 10s+ cold), and a request that races the warm-up
-    // simply awaits the same promise.
-    void listening.then(() => {
-      for (const model of resolveWarmModels()) {
-        for (const kind of ['document', 'query'] as const) {
+  // Warm the configured embedders (EMBED_SIDECAR_WARM_ENV, default gemma), one
+  // governed background unit per model:kind slot. Each unit logs its own
+  // outcome; the returned promise settles when every slot has, and never
+  // rejects — a failed warm-up degrades that slot, it does not stop the others.
+  const warmEmbedders = (): Promise<void> =>
+    Promise.all(
+      resolveWarmModels().flatMap((model) =>
+        (['document', 'query'] as const).map((kind) =>
           runSidecarUnit({
             admissionClass: 'embedding',
             operation: 'warmup',
@@ -1409,14 +1447,19 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
               const embed = await getEmbedder(model, kind);
               return embed('warm-up');
             },
-          })
-            .then(() => log(`[embed-sidecar] ${model}:${kind} warm`))
-            .catch((e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
-        }
-      }
-      // Rerankers are opt-in via the same env (default: none) — a host that
-      // does not serve search should not pay a ~150M-param load.
-      for (const model of resolveWarmRerankers()) {
+          }).then(
+            () => log(`[embed-sidecar] ${model}:${kind} warm`),
+            (e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`),
+          ),
+        ),
+      ),
+    ).then(() => undefined);
+
+  // Rerankers are opt-in via the same env (default: none) — a host that
+  // does not serve search should not pay a ~150M-param load.
+  const warmRerankers = (): Promise<void> =>
+    Promise.all(
+      resolveWarmRerankers().map((model) =>
         runSidecarUnit({
           admissionClass: 'inference',
           operation: 'warmup',
@@ -1428,10 +1471,78 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             const rerankFn = await getReranker(model);
             return rerankFn('warm-up', ['warm-up']);
           },
-        })
-            .then(() => log(`[embed-sidecar] ${model} warm`))
-          .catch((e) => log(`[embed-sidecar] ${model} warm-up failed: ${e instanceof Error ? e.message : e}`));
-      }
+        }).then(
+          () => log(`[embed-sidecar] ${model} warm`),
+          (e) => log(`[embed-sidecar] ${model} warm-up failed: ${e instanceof Error ? e.message : e}`),
+        ),
+      ),
+    ).then(() => undefined);
+
+  // The Settings device choice (D-008). `loadEmbedDeviceSetting` is bounded and
+  // never throws, but an injected loader might: a loader fault must degrade to
+  // "keep the current device", never take the sidecar down.
+  const embedDevice = opts.embedDevice ?? { load: () => loadEmbedDeviceSetting() };
+  const applyEmbedDeviceSetting = async (when: 'boot' | 'reload'): Promise<EmbedDeviceSettingLoad> => {
+    let result: EmbedDeviceSettingLoad;
+    try {
+      result = await embedDevice.load();
+    } catch (e) {
+      result = { setting: null, changed: false, readError: e instanceof Error ? e.message : String(e) };
+    }
+    log(
+      `[embed-sidecar] embedding device setting (${when}): ${result.setting ?? 'none'}` +
+        `${result.changed ? ' — device changed, worker recycled' : ''}` +
+        `${result.readError ? ` — read failed: ${result.readError}` : ''}`,
+    );
+    return result;
+  };
+
+  // After a device change the embed worker was recycled, so the models it held
+  // are gone. Drop the memoized embedders too — a closure's inline-fallback
+  // pipeline was built on the OLD device — and re-warm the boot-warm set so the
+  // first real request does not pay the load, bounded so a slow GPU session
+  // construction cannot hold the save request open indefinitely.
+  const rewarmAfterDeviceChange = async (): Promise<{ models: Record<string, string>; timedOut: boolean }> => {
+    for (const key of [...embedders.keys()]) {
+      embedders.delete(key);
+      delete warm[key];
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      warmEmbedders().then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), EMBED_DEVICE_REWARM_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    return { models: { ...warm }, timedOut };
+  };
+
+  const handleDeviceReload = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+    req.resume(); // no body is read; discard any so the socket is released
+    const load = await applyEmbedDeviceSetting('reload');
+    const rewarm = load.changed ? await rewarmAfterDeviceChange() : null;
+    const body: EmbedDeviceReloadResponse = {
+      ok: true,
+      setting: load.setting,
+      changed: load.changed,
+      readError: load.readError,
+      rewarm,
+      embedExecution: embedExecutionTarget(),
+      embedExecutionHealth: embedExecutionHealth(),
+    };
+    json(res, 200, body);
+  };
+
+  if (opts.warmAtBoot !== false) {
+    // Warm AFTER listen is queued: the READY handshake must not wait out a
+    // model load (can be 10s+ cold), and a request that races the warm-up
+    // simply awaits the same promise. The device setting is applied FIRST, so
+    // the boot warm-up builds on the chosen device instead of building on auto
+    // and then recycling (the read is bounded at 5s and never throws).
+    void listening.then(async () => {
+      await applyEmbedDeviceSetting('boot');
+      void warmEmbedders();
+      void warmRerankers();
     });
   }
 

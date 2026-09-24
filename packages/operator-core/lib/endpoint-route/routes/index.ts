@@ -482,6 +482,7 @@ import userMemory from './user/memory';
 import userMemoryFeedback from './user/memory-feedback';
 import userMemoryReembed from './user/memory-reembed';
 import userKnowledgePackSettings from './user/knowledge-pack-settings';
+import userEmbedDevice from './user/embed-device';
 import userMemoryRelinkEntities from './user/memory-relink-entities';
 import userMemoryAudit from './user/memory-audit';
 import userPersonalVault from './user/personal-vault';
@@ -977,6 +978,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userMemoryFeedback as AnyRoute),
   ...flatten(userMemoryReembed as AnyRoute[]),
   ...flatten(userKnowledgePackSettings as AnyRoute[]),
+  ...flatten(userEmbedDevice as AnyRoute[]),
   ...flatten(userMemoryRelinkEntities as AnyRoute),
   ...flatten(userMemoryAudit as AnyRoute),
   ...flatten(userPersonalVault as AnyRoute[]),
