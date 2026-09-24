@@ -639,3 +639,100 @@ passed **16 tests, zero skipped** (19274010) at stable `cb4aa8932b`, with the
 named test path clean after the background commit. The prior 15-test run and
 scoped typecheck above remain the source-change validation; this final run
 strengthens lifecycle coverage without changing the server implementation.
+
+### Profiler investigation: preserve V8 state with bounded overlapping recordings
+
+This is an exploratory mechanism result, **not an implemented monitor fix**.
+The prior probes (native transcript `01a0d245-47d2-7e13-9365-3a1b016fbac2`)
+established that reusing an inspector Session, or switching to Node's direct
+`v8.startCpuProfile()`, still paid substantial startup cost. On the same
+25,000-function fixture, reused Session starts took 83–95 ms; the direct API
+took 90–97 ms. Those probes did not retain an active native profile between
+captures.
+
+Node v25.9.0's bundled V8 source explains the distinction:
+`deps/v8/src/inspector/v8-profiler-agent-impl.cc`, `startProfiling` constructs
+`CpuProfiler::New` when `m_startedProfilesCount` is zero; `stopProfiling`
+disposes it when the last recording stops. `Profiler.enable` alone retains no
+native profiler. Source read:
+https://raw.githubusercontent.com/nodejs/node/v25.9.0/deps/v8/src/inspector/v8-profiler-agent-impl.cc
+
+At approximately 10:38Z, a fresh Node v25.9.0 process retained 25,000 distinct
+`new Function` instances. It used one enabled inspector Session and captured
+100 ms windows in order: ordinary, three overlapping, ordinary. A named
+`console.profile` anchor remained active during the middle captures and was
+ended before the final control. Ordinary `Profiler.start` calls took
+142.04/143.96 ms and stops took 31.59/31.46 ms. Overlapping starts took
+0.443/0.055/0.058 ms and stops 0.240/0.242/0.606 ms. First-sample deltas tracked
+the ordinary startup cost, while overlapping deltas were 0.008–0.011 ms.
+These five observations are a mechanism probe, not a production p95 claim.
+
+A separate 12-round probe used 50 ms foreground captures and rotated the
+anchor by starting its successor before ending its predecessor. The initial
+anchor cost 108.04 ms; later foreground starts took 0.032–0.113 ms and complete
+anchor rotations took 0.137–0.289 ms. At most two anchors overlapped, 13 ended,
+and none remained after shutdown. The largest ended anchor had 49 samples and
+2,021 serialized JSON bytes. After disconnect and explicit GC, heapUsed was
+1,745,608 bytes above the pre-start measurement; this single delta is **not** a
+leak test or a steady-state memory bound. Both probes ran in their own Node
+process, with no profiling or configuration changes to a serving host.
+
+Next: prove rotation, cleanup, capture fidelity, flag/safety-cap behavior,
+failure cleanup and sustained memory/CPU cost in the project test framework.
+If viable, extend the existing monitor's tick and capture seam rather than
+adding a separate profiler service or timer. Continuous sampling overhead and
+rotation delayed by a wedged loop remain explicit risks. No production code
+has been changed for this candidate, and P-003 remains open.
+
+### Project profiler experiment and cancellation repair (10:55Z)
+
+The mechanism is now exercised by the canonical integration suite in
+`packages/operator-core/lib/event-loop-profiler-overlap.integration.test.ts`.
+It spawns an isolated Node v25.9.0 process retaining 25,000 functions, records
+48 overlapping 60 ms work/idle windows between two ordinary controls, and
+rotates the anchor after each window. Run **19278072 passed 2 tests, zero
+skipped**, at `db87ad0325` with the new test uncommitted. Every capture contained
+multiple samples of fixture work. All 49 anchors ended, with at most two live
+at once. Ordinary starts took 103.03/81.36 ms; the median overlapping start
+was 0.044 ms and median rotation 0.217 ms. The largest anchor held 84 samples
+and 4,018 serialized bytes. Across four GC observations, heap varied by
+12,712 bytes and RSS stayed at 109,133,824 bytes. This short fixture is not a
+long-duration leak test or a bound during arbitrary main-thread stalls.
+
+The initial fidelity assertion failed in runs 19278066/19278069 because V8
+inlined `profilerFixtureWork` into `capture`: the actual missing-name profiles
+contained sampled `capture`/`now` frames. The corrected assertion requires
+multiple work-loop samples, including its sampled `performance.now` calls,
+rather than insisting on an uninlined function name. No product regression
+was inferred from those fixture failures.
+
+The separate idle-cost experiment alternates five unprofiled and four active
+500 ms windows, excluding profiler construction/destruction from CPU timing.
+Active sampling consumed about 20 ms CPU per window versus 0.15–0.41 ms in
+controls: approximately **4 percentage points of one core** additional CPU.
+This explains why fast warm starts alone are insufficient acceptance evidence.
+Continuous overlap has **not** been integrated into the serving monitor; its
+steady cost, delayed rotation, dynamic gate and saturation safety still need
+a satisfactory design and verification.
+
+Review also exposed **EI-24139818636862387**: monitor stop did not cancel CPU
+work. A pending async gate could resolve true after shutdown and start a new
+capture; an active capture retained its duration timer and native sampler.
+Two canonical counterexamples failed against old source in **19278080**:
+shutdown still created the output directory, and cancellation was still
+recording after 500 ms. The fix gives the monitor an AbortController, checks
+shutdown after the gate, passes its signal through capture setup and sampling,
+clears the duration timer on abort, disconnects in `finally`, and removes
+cancelled partial writes before publication. It reuses the existing monitor
+and capture function without adding a service, flag or recurring timer.
+
+Verification: **54 lag-monitor tests (19278088) plus 9 profiler-safety tests
+(19278087) passed, zero skipped**, at `db87ad0325` with local source/test changes.
+Coverage includes a pending gate, active direct capture, active monitor
+capture and pre-aborted capture, alongside existing dynamic-gate, safety-cap
+and retention cases. Scoped typechecking of monitor, unit test and overlap
+integration test passed with zero requested or imported diagnostics; diff
+whitespace checks passed. The new EI's claim was admission-pending, so this
+repair was implemented under the already-held WI-10002825/P-003 lane. Source
+verification is not independent acceptance or shipment. Transport-loss fencing,
+profiler startup remediation and the remaining P-003 performance proof stay open.
