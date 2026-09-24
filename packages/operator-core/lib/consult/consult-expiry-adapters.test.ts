@@ -39,6 +39,7 @@ const ROW_WS = 'ws-row-7f3a';
 const alertRow: DueConsultRow = {
   workspace_id: ROW_WS, conversation_id: 'conv-alert', requester_id: 'su-requester',
   responder_id: 'su-reviewer', state: 'awaiting_responder', is_due: true,
+  expires_at: '2026-09-19T23:59:00Z',
   updated_at: '2026-09-20T00:00:00Z', latency_contract: 'hard-blocked',
   question: 'review this', routing: {}, cascade_cursor: 0, cascade_digest: [],
 };
@@ -202,10 +203,10 @@ describe('consultExpiryFindSilentResponders', () => {
   it('requires active-after-route + parked + zero posts, and reads each thread in its row workspace', async () => {
     const routedAt = '2026-08-27T05:00:00.000Z';
     const rows = [
-      { workspaceId: ROW_WS, conversationId: 'conv-positive', responderId: 'su-parked', routedAt },
-      { workspaceId: 'ws-live', conversationId: 'conv-live', responderId: 'su-live', routedAt },
-      { workspaceId: 'ws-before', conversationId: 'conv-before', responderId: 'su-before', routedAt },
-      { workspaceId: 'ws-posted', conversationId: 'conv-posted', responderId: 'su-posted', routedAt },
+      { workspaceId: ROW_WS, conversationId: 'conv-positive', answeringOwnerId: 'su-parked', routedAt },
+      { workspaceId: 'ws-live', conversationId: 'conv-live', answeringOwnerId: 'su-live', routedAt },
+      { workspaceId: 'ws-before', conversationId: 'conv-before', answeringOwnerId: 'su-before', routedAt },
+      { workspaceId: 'ws-posted', conversationId: 'conv-posted', answeringOwnerId: 'su-posted', routedAt },
     ];
     const presence = new Map([
       ['su-parked', { lastActiveAt: '2026-08-27T05:01:00.000Z' }],
@@ -271,11 +272,11 @@ describe('consultExpiryFindSilentResponders', () => {
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
     const freshRoute = new Date(now.getTime() - 30 * 60_000 + 1).toISOString();
     const rows = [
-      { workspaceId: ROW_WS, conversationId: 'conv-live-stale', responderId: 'su-live-stale', routedAt: staleRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-live-fresh', responderId: 'su-live-fresh', routedAt: freshRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-live-posted', responderId: 'su-live-posted', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-stale', answeringOwnerId: 'su-live-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-fresh', answeringOwnerId: 'su-live-fresh', routedAt: freshRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-posted', answeringOwnerId: 'su-live-posted', routedAt: staleRoute },
     ];
-    const verdicts = new Map(rows.map((row) => [row.responderId, { sessionState: 'live' }]));
+    const verdicts = new Map(rows.map((row) => [row.answeringOwnerId, { sessionState: 'live' }]));
     const threadReads: string[] = [];
 
     const found = await consultExpiryFindSilentResponders({
@@ -305,12 +306,12 @@ describe('consultExpiryFindSilentResponders', () => {
     async (sessionState) => {
       const routedAt = '2026-08-27T05:59:59.000Z';
       const rows = [
-        { workspaceId: ROW_WS, conversationId: `conv-${sessionState}`, responderId: `su-${sessionState}`, routedAt },
-        { workspaceId: ROW_WS, conversationId: `conv-posted-${sessionState}`, responderId: `su-posted-${sessionState}`, routedAt },
+        { workspaceId: ROW_WS, conversationId: `conv-${sessionState}`, answeringOwnerId: `su-${sessionState}`, routedAt },
+        { workspaceId: ROW_WS, conversationId: `conv-posted-${sessionState}`, answeringOwnerId: `su-posted-${sessionState}`, routedAt },
       ];
       const verdicts = new Map([
-        [rows[0]!.responderId, { sessionState }],
-        [rows[1]!.responderId, { sessionState }],
+        [rows[0]!.answeringOwnerId, { sessionState }],
+        [rows[1]!.answeringOwnerId, { sessionState }],
       ]);
       const resolveSessionStates = vi.fn(async () => verdicts);
       const threadReads: string[] = [];
@@ -339,14 +340,14 @@ describe('consultExpiryFindSilentResponders', () => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
     const rows = [
-      { workspaceId: ROW_WS, conversationId: 'conv-parked-stale', responderId: 'su-parked-stale', routedAt: staleRoute },
-      { workspaceId: ROW_WS, conversationId: 'conv-parked-fresh', responderId: 'su-parked-fresh', routedAt: now.toISOString() },
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-stale', answeringOwnerId: 'su-parked-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-parked-fresh', answeringOwnerId: 'su-parked-fresh', routedAt: now.toISOString() },
     ];
 
     const found = await consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: null }),
       resolveSessionStates: async () =>
-        new Map(rows.map((row) => [row.responderId, { sessionState: 'parked' }])),
+        new Map(rows.map((row) => [row.answeringOwnerId, { sessionState: 'parked' }])),
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
         listRecentPosts: async () => ({ total: 0 }),
@@ -376,7 +377,7 @@ describe('consultExpiryFindSilentResponders', () => {
         {
           workspaceId: ROW_WS,
           conversationId: `conv-${sessionState}`,
-          responderId: 'su-unresolved',
+          answeringOwnerId: 'su-unresolved',
           routedAt: staleRoute,
         },
       ]);
