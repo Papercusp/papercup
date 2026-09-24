@@ -87,6 +87,13 @@ describe('carry preparation and idle clock boundaries', () => {
     input.allocationEvidenceRef = 'fixture:allocation'; input.idleBand = 'toString' as never;
     expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
   });
+
+  it('does not coerce wire values into allocation or idle-band enums', () => {
+    const input = fixture(); input.preparationAllocation = ['this-arm'] as never;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+    input.preparationAllocation = 'this-arm'; input.idleBand = ['under-60s'] as never;
+    expect(measureCarryArmTiming(input)).toMatchObject({ status: 'incomplete', metrics: null });
+  });
 });
 
 describe('carry conservative request reservation', () => {

@@ -596,11 +596,11 @@ export function measureCarryArmTiming(input: {
     clockId ??= event.clockId;
     times.push(event.atMs);
   }
-  if (!['this-arm', 'other-arm'].includes(String(input.preparationAllocation)) || !nonblank(input.allocationEvidenceRef)) {
+  if ((input.preparationAllocation !== 'this-arm' && input.preparationAllocation !== 'other-arm') || !nonblank(input.allocationEvidenceRef)) {
     missing.push('unbound-preparation-allocation');
   }
   const bands = { 'under-60s': [0, 60_000], '6-10min': [360_000, 600_000], '65-75min': [3_900_000, 4_500_000] };
-  const band = Object.hasOwn(bands, input.idleBand) ? bands[input.idleBand] : null;
+  const band = typeof input.idleBand === 'string' && Object.hasOwn(bands, input.idleBand) ? bands[input.idleBand] : null;
   if (!band) missing.push('unknown-idle-band');
   if (times.length === names.length) for (let i = 1; i < times.length; i++) {
     if (times[i] < times[i - 1]) violations.push(`clock-order:${names[i - 1]}:${names[i]}`);

@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { RpcFrame, SuStdioPeer } from './su-session-stdio-peer';
+import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from './su-session-stdio-peer';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -45,13 +45,14 @@ afterEach(async () => {
   processState.children.clear(); processState.stderr = ''; processState.killFailure = '';
 });
 
-async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string) {
+async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string,
+  onReceipt?: (receipt: SuStdioReceipt) => void) {
   const home = mkdtempSync(join(tmpdir(), 'pui-native-protocol-')); homes.push(home);
   if (config) writeFileSync(join(home, 'config.toml'), config, { mode: 0o600 });
   const result = await startSuStdioPeer({ binary, args, cwd: home,
     env: { PATH: process.env.PATH, CODEX_HOME: home, PI_CODING_AGENT_DIR: home, ...env },
     workspaceId: 'protocol-test', ownerId: 'su-protocol-test',
-    spec: { class: 'test', title: 'PUI native protocol test', launchedBy: 'vitest', argv: [binary, ...args] }, onMessage });
+    spec: { class: 'test', title: 'PUI native protocol test', launchedBy: 'vitest', argv: [binary, ...args] }, onMessage, onReceipt });
   peers.push(result); return result;
 }
 
@@ -64,6 +65,88 @@ async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: str
 }
 
 describe('native JSON-line pipe transport', () => {
+  it('captures immutable wire values before consumers mutate them, with one clock across peers', async () => {
+    const receipts: SuStdioReceipt[] = [];
+    const onReceipt = (value: SuStdioReceipt) => receipts.push(value);
+    const command = ['-e', `
+      require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+        const r=JSON.parse(line);
+        process.stdout.write(JSON.stringify({id:r.id,result:{echo:r.params}})+'\\n'+
+          JSON.stringify({method:'notice',params:{value:'original'}})+'\\n');
+      });
+    `];
+    const a = await peer(process.execPath, command, {}, frame => {
+      expect(receipts.at(-1)?.phase).toBe('received');
+      (frame.params as RpcFrame).value = 'mutated-event';
+    }, undefined, onReceipt);
+    const b = await peer(process.execPath, command, {}, undefined, undefined, onReceipt);
+    const frame = { method: 'turn/start', params: { value: 'original' } };
+    const pending = a.request(frame);
+    frame.params.value = 'mutated-input';
+    const response = await pending;
+    (response.echo as RpcFrame).value = 'mutated-response';
+    await b.request({ method: 'initialize' });
+    await vi.waitFor(() => expect(receipts.filter(r => r.phase === 'received' && r.frame.method === 'notice')).toHaveLength(2));
+    expect(new Set(receipts.map(r => r.clockId)).size).toBe(1);
+    expect(new Set(receipts.map(r => r.peerId)).size).toBe(2);
+    for (const peerId of new Set(receipts.map(r => r.peerId))) {
+      const observed = receipts.filter(r => r.peerId === peerId);
+      expect(observed.map(r => r.sequence)).toEqual(observed.map((_, index) => index + 1));
+      expect(observed[0].phase).toBe('write-started');
+      expect(observed.some(r => r.phase === 'write-completed')).toBe(true);
+      for (let i = 0; i < observed.length; i++) {
+        expect(Number.isFinite(observed[i].atMs)).toBe(true);
+        if (i) expect(observed[i].atMs).toBeGreaterThanOrEqual(observed[i - 1].atMs);
+      }
+    }
+    const writes = receipts.filter(r => r.frame.method === 'turn/start');
+    expect(writes.map(r => r.phase)).toEqual(['write-started', 'write-completed']);
+    expect(writes.map(r => r.frame.params)).toEqual([{ value: 'original' }, { value: 'original' }]);
+    expect(receipts.find(r => r.phase === 'received' && (r.frame.result as RpcFrame)?.echo)?.frame.result)
+      .toEqual({ echo: { value: 'original' } });
+    expect(receipts.filter(r => r.frame.method === 'notice').map(r => r.frame.params))
+      .toEqual([{ value: 'original' }, { value: 'original' }]);
+    expect(receipts.some(r => /provider|dispatch/.test(r.phase))).toBe(false);
+  });
+
+  it('fails closed before writing if the receipt sink cannot retain the attempt', async () => {
+    const p = await peer(process.execPath, ['-e', `
+      process.stdin.on('data',()=>process.stdout.write('unexpected-send\\n'));
+    `], {}, undefined, undefined, () => { throw new Error('receipt storage unavailable'); });
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow('receipt storage unavailable');
+    await expect(p.done).rejects.toThrow('receipt storage unavailable');
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow('connection is closed');
+  });
+
+  it.each(['write-completed', 'received'] as const)('surfaces receipt failure after a possible send (%s) without replay', async phase => {
+    const receipts: SuStdioReceipt[] = [];
+    const p = await peer(process.execPath, ['-e', `
+      require('node:readline').createInterface({input:process.stdin}).on('line',line=>
+        process.stdout.write(JSON.stringify({id:JSON.parse(line).id,result:{ack:true}})+'\\n'));
+    `], {}, undefined, undefined, value => {
+      receipts.push(value);
+      if (value.phase === phase) throw new Error(`cannot retain ${phase}`);
+    });
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow(`cannot retain ${phase}`);
+    await expect(p.done).rejects.toThrow(`cannot retain ${phase}`);
+    expect(receipts.filter(r => r.phase === 'write-started')).toHaveLength(1);
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow('connection is closed');
+  });
+
+  it('isolates the wire and later receipts from a sink mutating its own frame', async () => {
+    const receipts: SuStdioReceipt[] = [];
+    const p = await peer(process.execPath, ['-e', `
+      require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+        const r=JSON.parse(line);process.stdout.write(JSON.stringify({id:r.id,result:r.params})+'\\n');
+      });
+    `], {}, undefined, undefined, value => {
+      receipts.push(value);
+      if (value.phase === 'write-started') (value.frame.params as RpcFrame).value = 'changed-by-sink';
+    });
+    await expect(p.request({ method: 'turn/start', params: { value: 'wire-value' } })).resolves.toEqual({ value: 'wire-value' });
+    expect(receipts.find(r => r.phase === 'write-completed')?.frame.params).toEqual({ value: 'wire-value' });
+  });
+
   it('preserves the tracked teardown cause while redacting credentials', async () => {
     const secret = NEVER_EMIT_MARKER;
     const p = await peer(process.execPath, ['-e', `
@@ -323,6 +406,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   it.skipIf(platform && process.env.PUI_NATIVE_PLATFORM_MCP !== '1').each(platform ? [true] : [false, true])(
     `cross-checks completed native item receipts against persisted history without provider inference (platform ${platform}, source read %s)`, async readSource => {
     const events: RpcFrame[] = [];
+    const protocolReceipts: SuStdioReceipt[] = [];
     const fixtureHome = mkdtempSync(join(tmpdir(), 'carry-source-receipt-')); homes.push(fixtureHome);
     let predecessor: CarrySourceSnapshot | undefined;
     const window = Buffer.from('cedar-48f6e9a2');
@@ -426,7 +510,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const nativeTurn = async () => {
         const expectedModel = preparingSource ? 'gpt-6-luna' : 'gpt-6-sol';
         p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
-          ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame), privateMcpConfig);
+          ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame), privateMcpConfig,
+        receipt => protocolReceipts.push(receipt));
         await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
         p.send({ method: 'initialized', params: {} });
         const start = await p.request({ method: 'thread/start', params: {
@@ -455,6 +540,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
         })), { timeout: 20_000 });
         const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        const writes = protocolReceipts.filter(r => r.phase === 'write-started' && r.frame.method === 'turn/start' &&
+          (r.frame.params as RpcFrame).threadId === threadId);
+        expect(writes).toHaveLength(1);
+        const ack = protocolReceipts.find(r => r.phase === 'received' && r.peerId === writes[0].peerId &&
+          r.frame.id === writes[0].frame.id);
+        expect(((ack?.frame.result as RpcFrame)?.turn as RpcFrame)?.id).toBe(turnId);
+        const completed = protocolReceipts.filter(r => r.phase === 'received' && r.frame.method === 'turn/completed' &&
+          (r.frame.params as RpcFrame).threadId === threadId && ((r.frame.params as RpcFrame).turn as RpcFrame).id === turnId);
+        expect(completed).toHaveLength(1);
+        expect(completed[0].atMs).toBeGreaterThanOrEqual(writes[0].atMs);
         // Check the actual native requests, including tool continuations, not
         // a model name in the prompt or scripted assistant self-identification.
         // This is client-side phase provenance only; the local endpoint has no
@@ -469,10 +564,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } }))).toBe(true);
         expect(isDeepStrictEqual(beforeTools,
           await p.request({ method: 'mcpServerStatus/list', params: { threadId, detail: 'toolsAndAuthOnly' } }))).toBe(true);
-        return { threadId, turnId, threadRead };
+        return { threadId, turnId, threadRead, rpcWrite: writes[0], completed: completed[0] };
       };
+      let sourceCompleted: SuStdioReceipt | undefined;
       if (readSource) {
         const prepared = await nativeTurn();
+        sourceCompleted = prepared.completed;
         predecessor = await captureCompletedCarrySource(p!, prepared.threadId, prepared.turnId);
         peers.splice(peers.indexOf(p!), 1); p = undefined;
         const byteOffset = predecessor.snapshot.bytes.indexOf(window);
@@ -481,7 +578,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         await recheckCarrySourceSnapshot(predecessor);
         preparingSource = false; events.length = 0; providerCalls.length = 0;
       }
-      const { threadId, turnId, threadRead } = await nativeTurn();
+      const { threadId, turnId, threadRead, rpcWrite, completed } = await nativeTurn();
       if (readSource) {
         // Native Codex received the platform result and returned it to the
         // next local provider request, not just a successful tools/list.
@@ -498,6 +595,23 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
         .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}',
           mcpItemIds: platform ? [expect.any(String), expect.any(String)] : readSource ? [expect.any(String)] : [] });
+      // Use the captured native frame arrival, not the later thread/read or
+      // polling completion time. Full action/history validation above must
+      // pass before this terminal response can count as useful even locally.
+      const useful = protocolReceipts.filter(r => r.phase === 'received' && r.frame.method === 'item/completed' &&
+        (r.frame.params as RpcFrame).threadId === threadId && (r.frame.params as RpcFrame).turnId === turnId &&
+        ((r.frame.params as RpcFrame).item as RpcFrame).type === 'agentMessage' &&
+        ((r.frame.params as RpcFrame).item as RpcFrame).text === '{"offline":true}');
+      expect(useful).toHaveLength(1);
+      expect(useful[0].atMs).toBeGreaterThanOrEqual(rpcWrite.atMs);
+      expect(completed.atMs).toBeGreaterThanOrEqual(useful[0].atMs);
+      expect(new Set(protocolReceipts.map(r => r.clockId)).size).toBe(1);
+      if (sourceCompleted) {
+        expect(sourceCompleted.peerId).not.toBe(rpcWrite.peerId);
+        expect(rpcWrite.atMs).toBeGreaterThanOrEqual(sourceCompleted.atMs);
+      }
+      // Do not pass rpcWrite as measureCarryArmTiming.firstRequestDispatched:
+      // the native engine still owns the later provider send, unobserved here.
       if (readSource) {
         expect(observedReads).toEqual(platform ? [] : [readArgs]);
         if (platform) {
