@@ -430,3 +430,74 @@ auto-commit and was repeated to obtain this stable provenance. Scoped typecheck
 reported zero diagnostics in the two changed files and 23 elsewhere in their
 import graph. Roster source-stage profiling and complete current-build acceptance
 remain open; this is not a shipment claim.
+
+## P-005 roster and served-read observations
+
+The existing roster already batches source joins and enrichment joins, resolves
+transcript freshness concurrently, and shares reads through a 2s fresh/15s stale
+cache. A fresh diagnostic process with the runtime flag override store installed
+measured the existing source joins concurrently at 100–134ms. Complete merge
+samples with and without transcript decoration were 127ms and 192ms respectively;
+their order/cache state differs, so subtraction would not isolate decoration cost.
+The existing roster cache measured 108.7ms for its first read, 0.025ms for a fresh
+hit, and 110.7ms for eight concurrent readers after clearing only this diagnostic
+process's cache. All eight shared the identical result object, with 73 active
+rows and no degraded fields. Log: `.papercusp/scratch/bash-7d7bb319-406.log`.
+An earlier probe omitted runtime flag setup; it is not the basis for these values.
+No roster source change was justified by these probes, and they do not explain
+the historical primary-active-leg six-second timeouts under other conditions.
+
+The existing REST audit harness was then used against `:3170`, whose `/api/health`
+reported `sha=0f1d0bd04e`, `bundleStale=null`. Two sequential observed passes:
+
+| Query | First HTTP ms | Second HTTP ms | UTF-8 response bytes, second pass |
+|---|---:|---:|---:|
+| advRoster.list | 1120 | 7 | 264540 |
+| plans.attentionCounts | 5 | 2 | 232 |
+| plans.attentionRefs | 261 | 24 | 196613 |
+| learning.observations.summary | 347 | 339 | 1767 |
+| learning.observations | 9 | 8 | 121228 |
+
+These are HTTP wall times from two requests per query, not percentiles or proven
+cold/warm worker states. The generic audit still flags roster bytes above 250KB
+and Learning summary wall time above 150ms. This is backend read evidence, not
+a completed desktop user journey. Log: `.papercusp/scratch/bash-4b6546bd-dbe.log`.
+The initial diagnostic mistakenly requested `/health` and received HTML; it
+aborted before the query audit. The corrected probe uses `/api/health`.
+
+### Measurement repair
+
+While reusing that harness, EI-24132496490732089 corrected two defects: REST and
+in-process audits counted UTF-16 string units as bytes, and the in-process model
+omitted the route's timing envelope. Guards compare against actual
+`Response.arrayBuffer()` bytes and the real REST handler under a fixed clock.
+Before repair, a 375049-byte response was reported as 125049 and missed its
+budget violation; after that correction, route calibration caught 112 omitted
+timing bytes. Final tests 19266588/19266589: 24 passed, zero skipped, at
+`86bf19b66e` plus local source edits. Scoped typecheck: zero diagnostics in three
+changed files, 23 elsewhere. The item is recorded done with proposed completion
+authority until git-sync commits its exact source blob; the settlement reconciler
+owns that promotion. No deployed-fix claim is made here.
+
+A subsequent read found the exact verified source blob committed at
+`bf59109b709c0da8033899ba6cc4de0107b89380`; all three declared working-tree blobs
+matched their committed counterparts. The completion record still retained its
+older proposed stamp at that read, so automatic settlement remains unverified.
+
+### Exact warm-count clause
+
+PERF-P-005@1 requires p95 ≤250ms across 100 completed warm reads. The existing
+attention fixture now reports and asserts that percentile. Run 19267334 passed
+14 tests at `4fe29369c7` plus the local test change: frozen profile
+`attention-1000-items-2000-ascii-body-v1`, workspace `ws-attn`, concurrency one,
+100 calls per mode, counts p95 0.176041ms, cold count construction 6.762740ms.
+
+A permanent counterexample injects a 275ms wait at the real handler's metadata
+callback in six of 100 completed warm reads. It independently counts the six
+over-budget observations and confirms the same budget assertion rejects them
+(observed p95 275.197474ms), while the source is still read only once. This is a
+passing negative-scenario test, not a mutation-probe process; no production
+source was mutated and the clock was real. Bindings 11236/11237 attach the run
+and counterexample to PERF-P-005@1. The evaluator passed and emitted card
+EI-24133989725260512; independent grading audit remains pending. This does not
+close P-005 or establish shipment.
