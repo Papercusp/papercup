@@ -78,6 +78,17 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     for (const line of installs) expect(line).toContain('--no-install-recommends');
   });
 
+  it('treats an unreachable archive as an error and retries every archive step (WI-10002837)', () => {
+    // Without --error-on=any a failed index fetch is a warning and exit 0; the pack then
+    // died one command later on a "missing" package that was merely unreachable.
+    const script = render();
+    expect(script).toContain('retry 10 apt-get update -qq --error-on=any');
+    const installs = script.match(/^.*apt-get install[^\n]*/gm) ?? [];
+    expect(installs.length).toBeGreaterThan(0);
+    for (const line of installs) expect(line).toMatch(/^retry \d+ apt-get install/);
+    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt-get update'));
+  });
+
   it('pins Ubuntu 24.04, matching the bootstrap contract', () => {
     expect(render()).toMatch(/VERSION_ID:-\}" = '24\.04' \] \|\| fail ubuntu-24\.04/);
   });

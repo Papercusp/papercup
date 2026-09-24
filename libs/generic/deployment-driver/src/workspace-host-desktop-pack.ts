@@ -337,6 +337,9 @@ KASM_YAML=/etc/kasmvnc/kasmvnc.yaml
 
 phase() { echo "PAPERCUSP_DESKTOP_PACK_PHASE=$1"; }
 fail()  { echo "PAPERCUSP_DESKTOP_PACK_FAIL=$1" >&2; exit 1; }
+# Bounded retry for archive access: one missed fetch must not fail the pack (WI-10002837).
+# Exhaustion returns non-zero, so set -e still stops the script exactly as a single try did.
+retry() { local max="$1" attempt=1; shift; until "$@"; do (( attempt >= max )) && return 1; echo "attempt $attempt/$max failed, retrying in $(( attempt * 5 ))s: $*" >&2; sleep $(( attempt * 5 )); attempt=$(( attempt + 1 )); done; }
 
 # ── validate-host ───────────────────────────────────────────────────────────────────
 . /etc/os-release
@@ -349,11 +352,12 @@ phase validate-host
 
 # ── install-x-stack ─────────────────────────────────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+# --error-on=any: an unreachable archive is otherwise only a warning with exit 0.
+retry 10 apt-get update -qq --error-on=any
 # --no-install-recommends is what keeps this a PACK and not a desktop environment:
 # several of these recommend a display manager, and a workspace host must never
 # acquire a login screen as a side effect of opting into agent desktops.
-apt-get install -y --no-install-recommends ${apt.join(' ')}
+retry 5 apt-get install -y --no-install-recommends ${apt.join(' ')}
 phase install-x-stack
 
 # ── install-kasmvnc ─────────────────────────────────────────────────────────────────
@@ -364,7 +368,7 @@ KASM_DEB="$(mktemp -t kasmvnc-XXXXXX.deb)"
 trap 'rm -f "$KASM_DEB"' EXIT
 curl -fsSL --proto '=https' --tlsv1.2 -o "$KASM_DEB" "$KASM_URL"
 echo "$KASM_SHA  $KASM_DEB" | sha256sum -c - >/dev/null 2>&1 || fail kasmvnc-digest
-apt-get install -y --no-install-recommends "$KASM_DEB"
+retry 5 apt-get install -y --no-install-recommends "$KASM_DEB"
 command -v Xkasmvnc >/dev/null 2>&1 || fail kasmvnc-binary
 command -v kasmvncpasswd >/dev/null 2>&1 || fail kasmvnc-binary
 phase install-kasmvnc

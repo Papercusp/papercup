@@ -679,6 +679,58 @@ describe('bundle extraction storage preflight', () => {
   });
 });
 
+/**
+ * WI-10002837, measured 2026-09-24: ~110s after an upgrade boot every archive fetch failed once,
+ * `apt-get update` only warned, and the install died on `E: Unable to locate package minisign`.
+ * The same bootstrap passed minutes later after a reset. These run the RENDERED helper, so a
+ * retry that stops retrying (or never gives up) fails here rather than on a live host.
+ */
+describe('archive access retry (WI-10002837)', () => {
+  function runRetry(failuresBeforeSuccess: number, max: number) {
+    const script = buildWorkspaceHostBootstrap(input());
+    const helper = script.split('\n').find((line) => line.trimStart().startsWith('retry() {'));
+    expect(helper).toBeDefined();
+    const root = mkdtempSync(join(tmpdir(), 'workspace-host-retry-'));
+    try {
+      return spawnSync('bash', ['-c', [
+        'set -Eeuo pipefail',
+        'log() { printf "%s\\n" "$1"; }',
+        'sleep() { :; }',
+        helper!,
+        `flaky() { local n; n=$(cat "$COUNTER" 2>/dev/null || echo 0); echo $((n + 1)) > "$COUNTER"; (( n >= ${failuresBeforeSuccess} )); }`,
+        `retry ${max} flaky || { printf "EXHAUSTED after %s\\n" "$(cat "$COUNTER")"; exit 3; }`,
+        'printf "SUCCEEDED after %s\\n" "$(cat "$COUNTER")"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, COUNTER: join(root, 'attempts') },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('rides out transient failures and logs each retry to stderr', () => {
+    const result = runRetry(3, 10);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('SUCCEEDED after 4');
+    expect(result.stderr).toContain('attempt 3/10 failed');
+  });
+
+  it('gives up after its bound and returns non-zero so the caller can die', () => {
+    const result = runRetry(99, 5);
+    expect(result.status).toBe(3);
+    expect(result.stdout).toContain('EXHAUSTED after 5');
+  });
+
+  it('makes an unreachable archive an error, and retries both apt steps', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).toMatch(/retry 10 apt-get update -qq --error-on=any \|\| die "/);
+    expect(script).toMatch(/retry 5 apt-get install -y --no-install-recommends [^\n]* \|\| die "/);
+    expect(script).not.toMatch(/^\s*apt-get update -qq\s*$/m);
+    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt-get update'));
+  });
+});
+
 describe('buildWorkspaceHostBootstrap', () => {
   it('emits one deterministic, ordered, signed and loopback-only host contract', () => {
     const first = buildWorkspaceHostBootstrap(input());
