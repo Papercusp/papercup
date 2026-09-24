@@ -8,6 +8,7 @@ import { managedSpawn } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
 import { redactSensitiveText } from './sensitive-text';
+import { processMonotonicClock } from './process-monotonic-clock';
 
 export type RpcFrame = Record<string, unknown>;
 /** Process-local observations, not provider dispatch or billing receipts. A
@@ -23,9 +24,6 @@ export interface SuStdioReceipt {
   phase: 'write-started' | 'write-completed' | 'write-failed' | 'received';
   frame: RpcFrame;
 }
-// Every peer created by this module in one controller uses the same monotonic
-// origin. A successor controller receives a new id and cannot mix its clocks.
-const receiptClockId = `su-stdio:${randomUUID()}`;
 export interface SuStdioPeer {
   request(frame: RpcFrame, timeoutMs?: number): Promise<RpcFrame>;
   send(frame: RpcFrame): void;
@@ -63,8 +61,8 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   let receiptSequence = 0;
   function receipt(phase: SuStdioReceipt['phase'], frame: RpcFrame): void {
     if (!options.onReceipt) return;
-    options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: receiptClockId,
-      atMs: performance.now(), phase, frame: structuredClone(frame) });
+    options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: processMonotonicClock.id,
+      atMs: processMonotonicClock.now(), phase, frame: structuredClone(frame) });
   }
   const diagnosticSecrets = Object.entries(options.env)
     .filter(([key]) => /token|secret|password|credential|authorization|api.?key|database.?url|dsn/i.test(key))
