@@ -2945,6 +2945,38 @@ export const ORIENT_FOLD_TOOL_NAMES = [
 
 export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const;
 
+/** Bind the one already-assembled orient result and write ONE merged invocation
+ * metadata object. The result, priority shape and delivery cursors stay owned by
+ * the existing orient path. */
+export async function bindOrientOutputResult<T extends Record<string, unknown>>(
+  result: T,
+  scope: { ownerId: string | null; workspaceId: string; harness: string | null },
+  deltaServed: boolean,
+  metadata?: (data: Record<string, unknown>) => void,
+  binder?: typeof import('../../../agent-identities/source').bindSelectedIdentityOutputs,
+): Promise<T> {
+  if (!metadata) return result;
+  const invocationMetadata: Record<string, unknown> = deltaServed ? { deltaServed: true } : {};
+  try {
+    const bind = binder ?? (await import('../../../agent-identities/source')).bindSelectedIdentityOutputs;
+    invocationMetadata.identityContribution = await bind({
+      identityId: 'su.practice',
+      sourceTier: 'builtin',
+      outputs: [{ contributionId: 'coord-orientation', value: result }],
+      scope,
+      observedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    invocationMetadata.identityContribution = {
+      identityId: 'su.practice', contributionId: 'coord-orientation',
+      status: 'unavailable', errorRef: 'coord:orient:identity-binding-failed',
+      detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    };
+  }
+  metadata(invocationMetadata);
+  return result;
+}
+
 export default defineTool({
   name: 'coord:orient',
   description:
@@ -4046,9 +4078,9 @@ export default defineTool({
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
     // stamped `false`: absence already reads as "no delta mechanism engaged" (flag off,
     // no cursor, or a baseline/first read), same convention as the formal protocol.
-    if (orientServedDelta(result)) {
-      ctx.metadata?.({ deltaServed: true });
-    }
+    await bindOrientOutputResult(out, {
+      ownerId: ownerId ?? null, workspaceId: orientWorkspaceId, harness: args.harness ?? null,
+    }, orientServedDelta(result), ctx.metadata);
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path

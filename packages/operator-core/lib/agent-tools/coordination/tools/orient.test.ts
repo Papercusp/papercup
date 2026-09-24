@@ -4,6 +4,7 @@ import {
   composeOrient,
   extractRecoveredFleetScope,
   orientServedDelta,
+  bindOrientOutputResult,
   orientRoleFolds,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
@@ -26,6 +27,49 @@ import type { InnerCall } from '../../_compound-dispatch';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
+
+describe('coord:orient component receipt', () => {
+  it('keeps the same assembled result and merges the delta marker into one metadata write', async () => {
+    const result = { ok: true, inbox: { summary: { total: 2 } } };
+    const metadata = vi.fn();
+    const receipt = { marker: 'already-composed-orient' };
+    const binder = vi.fn(async (_input: unknown) => receipt);
+    const returned = await bindOrientOutputResult(
+      result,
+      { ownerId: 'su-1', workspaceId: 'ws-1', harness: 'papercusp' },
+      true,
+      metadata,
+      binder as never,
+    );
+    expect(returned).toBe(result);
+    expect(binder).toHaveBeenCalledTimes(1);
+    expect(binder.mock.calls[0]![0]).toMatchObject({
+      identityId: 'su.practice',
+      outputs: [{ contributionId: 'coord-orientation', value: result }],
+    });
+    expect(metadata).toHaveBeenCalledExactlyOnceWith({
+      deltaServed: true, identityContribution: receipt,
+    });
+  });
+
+  it('keeps the public orient result when the component receipt is unavailable', async () => {
+    const result = { ok: true, self: { ownerId: 'su-1' } };
+    const metadata = vi.fn();
+    const returned = await bindOrientOutputResult(
+      result,
+      { ownerId: 'su-1', workspaceId: 'ws-1', harness: 'papercusp' },
+      false,
+      metadata,
+      (async () => { throw new Error('source unreadable'); }) as never,
+    );
+    expect(returned).toBe(result);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata.mock.calls[0]![0]).toMatchObject({
+      identityContribution: { status: 'unavailable', errorRef: 'coord:orient:identity-binding-failed' },
+    });
+    expect(metadata.mock.calls[0]![0]).not.toHaveProperty('deltaServed');
+  });
+});
 
 // Register every orient fold so the guard checks the projected metadata, not
 // merely a duplicated source-file regex. These imports intentionally mirror
