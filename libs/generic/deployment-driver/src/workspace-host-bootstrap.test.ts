@@ -10,6 +10,9 @@ import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
+  WORKSPACE_HOST_APT_FETCH_TIMEOUT_SEC,
+  WORKSPACE_HOST_APT_UPDATE_TIMEOUT_SEC,
+  WORKSPACE_HOST_CURL_STALL_GUARD,
   WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES,
   WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
@@ -724,10 +727,90 @@ describe('archive access retry (WI-10002837)', () => {
 
   it('makes an unreachable archive an error, and retries both apt steps', () => {
     const script = buildWorkspaceHostBootstrap(input());
-    expect(script).toMatch(/retry 10 apt-get update -qq --error-on=any \|\| die "/);
-    expect(script).toMatch(/retry 5 apt-get install -y --no-install-recommends [^\n]* \|\| die "/);
+    expect(script).toMatch(/retry 10 apt_update -qq --error-on=any \|\| die "/);
+    expect(script).toMatch(/retry 5 apt_install -y --no-install-recommends [^\n]* \|\| die "/);
     expect(script).not.toMatch(/^\s*apt-get update -qq\s*$/m);
-    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt-get update'));
+    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt_update'));
+  });
+});
+
+/**
+ * WI-10002863, measured on avi-test 2026-09-24: one `apt-get update` ran ~30 min on a first boot
+ * and apt's own timeouts never ended it, so `retry` had nothing to retry. These run the RENDERED
+ * helpers against a stub apt-get, so a helper that loses its bound (or bounds dpkg) fails here.
+ */
+describe('wall-clock bounded archive access (WI-10002863)', () => {
+  function runHelpers(body: string, env: Record<string, string> = {}) {
+    const script = buildWorkspaceHostBootstrap(input());
+    const helpers = script.split('\n').filter((line) => /^apt_(update|install)\(\) \{/.test(line.trimStart()));
+    expect(helpers).toHaveLength(2);
+    const root = mkdtempSync(join(tmpdir(), 'workspace-host-apt-'));
+    try {
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      // `update` hangs like the measured archive stall; a --download-only fetch fails on demand.
+      writeFileSync(join(bin, 'apt-get'), [
+        '#!/bin/sh',
+        'echo "apt-get $*" >> "$LOG"',
+        '[ "$1" = update ] && exec sleep 30',
+        'case "$*" in *--download-only*) [ -n "${FAIL_FETCH:-}" ] && exit 100 ;; esac',
+        'exit 0',
+      ].join('\n'), { mode: 0o755 });
+      const log = join(root, 'calls');
+      const startedAt = Date.now();
+      const result = spawnSync('bash', ['-c', [
+        'set -uo pipefail',
+        // Record the bound the helper asked for, then enforce a 1s one so a hang is observable.
+        'timeout() { echo "timeout $*" >> "$LOG"; [ "$1 $2" = "-k 30" ] || return 99; command timeout -k 1 1 "${@:4}"; }',
+        ...helpers,
+        body,
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: { ...process.env, ...env, LOG: log, PATH: `${bin}:${process.env.PATH}` },
+      });
+      const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+      return { ...result, calls, elapsedMs: Date.now() - startedAt };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('kills a hung index refresh at its bound so retry sees an ordinary failure', () => {
+    const result = runHelpers('apt_update -qq --error-on=any; echo "EXIT=$?"');
+    expect(result.stdout).toContain('EXIT=124');
+    expect(result.elapsedMs).toBeLessThan(10_000);
+    expect(result.calls[0]).toBe(`timeout -k 30 ${WORKSPACE_HOST_APT_UPDATE_TIMEOUT_SEC} apt-get update -qq --error-on=any`);
+  });
+
+  it('fetches under the bound, then installs from the cache without one', () => {
+    const result = runHelpers('apt_install -y --no-install-recommends xterm; echo "EXIT=$?"');
+    expect(result.stdout).toContain('EXIT=0');
+    expect(result.calls).toEqual([
+      `timeout -k 30 ${WORKSPACE_HOST_APT_FETCH_TIMEOUT_SEC} apt-get install --download-only -y --no-install-recommends xterm`,
+      'apt-get install --download-only -y --no-install-recommends xterm',
+      'apt-get install -y --no-install-recommends xterm',
+    ]);
+  });
+
+  it('never reaches dpkg when the bounded fetch fails', () => {
+    const result = runHelpers('apt_install -y xterm; echo "EXIT=$?"', { FAIL_FETCH: '1' });
+    expect(result.stdout).toContain('EXIT=100');
+    expect(result.calls.filter((call) => call.startsWith('apt-get install -y'))).toEqual([]);
+  });
+
+  it('routes every networked apt call through a bounded helper and stall-guards every download', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    const unbounded = script
+      .split('\n')
+      .filter((line) => !/^\s*#/.test(line))
+      .filter((line) => /\bapt-get (update|install)\b/.test(line) && !/^\s*apt_(update|install)\(\) \{/.test(line));
+    expect(unbounded).toEqual([]);
+    expect(script.indexOf('apt_update() {')).toBeLessThan(script.indexOf('retry 10 apt_update'));
+    // The release bundle and its signature; agent-runtime downloads render only when opted in.
+    const downloads = script.split('\n').filter((line) => /\bcurl\b/.test(line) && /(\s-o\s|--output\s)/.test(line));
+    expect(downloads.length).toBeGreaterThanOrEqual(2);
+    for (const line of downloads) expect(line).toContain(WORKSPACE_HOST_CURL_STALL_GUARD);
   });
 });
 
@@ -812,7 +895,7 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).toContain('StandardOutput=journal');
     expect(first).toContain(WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX);
     expect(first).toContain(
-      `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(' ')}`,
+      `apt_install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(' ')}`,
     );
     expect(first).not.toContain('RWQpublickey');
     expect(first).not.toMatch(/PAPERCUSP_(?:API_KEY|TOKEN|PASSWORD)=/);
