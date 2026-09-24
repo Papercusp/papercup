@@ -403,7 +403,12 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
       expect(table, name).toContain(`| ${name} | ${target.platforms.join(', ')} | ${target.status} |`);
     }
     expect(compat.targets[TARGET].status).not.toBe('verified');
-    expect(table).toContain('Not advertised');
+    expect(table).toContain('build-time compatibility');
+    expect(table).toContain('Build-time status');
+    expect(table).toContain('Not advertised by this build-time record');
+    expect(table).toContain(`pui-${provenance.version}-${TARGET}.tar.gz.acceptance.json`);
+    expect(table).toContain('candidate.archiveSha256');
+    expect(table).toContain('matches the SHA-256 of the archive you downloaded');
 
     // compatibility.json is committed before the candidate it ships in exists,
     // so a 'verified' target there can only be another generation's evidence:
