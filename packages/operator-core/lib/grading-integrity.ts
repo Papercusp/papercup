@@ -933,6 +933,12 @@ export async function dispatchPendingGradingAudits(
         // so the refusal was receipted as a successful launch and the card sat
         // on a held reservation until the TTL expired.
         allowLauncherWalledPoolRefusal: true,
+        // WI-10002903 (second leg): a judge whose kickoff psu-pty-host DROPPED
+        // after the launch receipt returned never received this brief, yet its
+        // PTY stays live. Without this the live-task guard deduped to it for the
+        // whole reservation. The brief carries only the scorecard identity and
+        // fingerprint, so it cannot quote the host receipt.
+        allowLauncherKickoffDrop: true,
         detectStartupStall: false,
       });
     /**

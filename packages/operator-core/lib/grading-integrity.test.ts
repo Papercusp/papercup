@@ -1433,6 +1433,57 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  // WI-10002903 (second leg): psu-pty-host dropped the kickoff AFTER the launch
+  // receipt returned, so the receipt carried no failure and the PTY stayed
+  // ledger-live. The live-task guard must retire it instead of deduping to it
+  // for the whole reservation (observed on EI-24118203560334206 at 07:39Z).
+  it('retires a ledger-live auditor whose kickoff psu-pty-host dropped after launch, instead of deduping to it', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-dropped-kickoff')]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-dropped-kickoff',
+        state: 'running',
+        detail: { label: 'grading-audit:EI-dropped-kickoff' },
+        logPath: '/tmp/dropped-kickoff.log',
+      } as unknown as TaskRow,
+    ]);
+    d.launch.mockResolvedValue(
+      launchResult({
+        deduped: false,
+        launch: {
+          agentStarted: true,
+          tasks: [{ taskId: 'task-dropped-recovery', logPath: '/tmp/recovery.log', kickoffProof: { persisted: true } }],
+        },
+      }),
+    );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const readLogTail = vi.fn((path: string) =>
+      path.includes('dropped-kickoff')
+        ? 'psu-pty-host: launch kickoff DROPPED for role-d5284217 ' +
+          '(the child never settled to its prompt within 20000ms over 3 attempt(s))\n'
+        : 'healthy fallback boot',
+    );
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-dropped-kickoff', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-dropped-kickoff',
+        state: 'launched',
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-dropped-kickoff'],
+          codes: ['launch_kickoff_dropped'],
+        }),
+      }),
+    ]);
+  });
+
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-late-marker')]);
