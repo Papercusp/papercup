@@ -33,6 +33,7 @@ import {
   extractSampleContext,
   isLaunchCandidate,
   utcDay,
+  createCarryTrialRecipe,
   type LaunchSample,
 } from './launch-cost-metrics';
 
@@ -171,6 +172,57 @@ export interface CarryArtifactInput {
   id: string;
   filePath: string;
   maxBytes: number;
+}
+
+const CARRY_DEPENDENCY_ROLES = ['launcher', 'native-runtime', 'scripts', 'task', 'seed',
+  'source', 'pricing', 'checker', 'instrument'] as const;
+
+/** A declared dependency graph, not a discovered or authenticated census.
+ * Every frozen artifact must have a node and be reachable from a named root.
+ * Missing roles and unresolved runtime surfaces remain visible in the binding.
+ * An empty residue does not prove the caller declared all real dependencies.
+ */
+export interface CarryDependencyScope {
+  recipeSha256: string;
+  roots: Array<{ role: typeof CARRY_DEPENDENCY_ROLES[number]; artifactIds: string[] }>;
+  nodes: Array<{ artifactId: string; dependsOn: string[] }>;
+  unresolved: string[];
+}
+
+function bindCarryDependencyScope(scope: CarryDependencyScope, artifacts: readonly CarryArtifactInput[]) {
+  const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  const ids = new Set(artifacts.map(artifact => artifact.id));
+  const references = (value: unknown): value is string[] => Array.isArray(value) && value.length <= ids.size &&
+    value.every(id => typeof id === 'string' && ids.has(id)) && new Set(value).size === value.length;
+  const recipe = createCarryTrialRecipe();
+  if (!scope || scope.recipeSha256 !== recipe.sha256 || !Array.isArray(scope.roots) || !scope.roots.length ||
+    scope.roots.length > CARRY_DEPENDENCY_ROLES.length || scope.roots.some(root => !root ||
+      !CARRY_DEPENDENCY_ROLES.includes(root.role) || !references(root.artifactIds) || !root.artifactIds.length) ||
+    new Set(scope.roots.map(root => root.role)).size !== scope.roots.length || !Array.isArray(scope.nodes) ||
+    scope.nodes.length !== ids.size || scope.nodes.some(node => !node || !ids.has(node.artifactId) || !references(node.dependsOn)) ||
+    new Set(scope.nodes.map(node => node.artifactId)).size !== ids.size || !Array.isArray(scope.unresolved) ||
+    scope.unresolved.length > 64 || scope.unresolved.some(entry => !nonblank(entry) || entry.length > 2000) ||
+    new Set(scope.unresolved).size !== scope.unresolved.length) {
+    throw new Error('carry dependency scope requires the current recipe, unique roots and a complete declared artifact graph');
+  }
+  const nodes = new Map(scope.nodes.map(node => [node.artifactId, node.dependsOn]));
+  const reachable = new Set<string>(), pending = scope.roots.flatMap(root => root.artifactIds);
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    pending.push(...nodes.get(id)!);
+  }
+  if (reachable.size !== ids.size) throw new Error('carry dependency scope contains artifacts unreachable from its roots');
+  // Project only the public schema. Raw config, task contents and other caller
+  // additions must not escape through this otherwise descriptive surface.
+  const ordered = <T>(values: T[], key: (value: T) => string) => [...values].sort((a, b) =>
+    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+  return { evidenceKind: 'declaration-only' as const, recipeSha256: recipe.sha256,
+    roots: ordered(scope.roots.map(root => ({ role: root.role, artifactIds: [...root.artifactIds].sort() })), root => root.role),
+    nodes: ordered(scope.nodes.map(node => ({ artifactId: node.artifactId, dependsOn: [...node.dependsOn].sort() })), node => node.artifactId),
+    missingRoles: CARRY_DEPENDENCY_ROLES.filter(role => !scope.roots.some(root => root.role === role)),
+    unresolved: [...scope.unresolved].sort() };
 }
 
 export interface CarryRuntimeSnapshot {
@@ -316,6 +368,7 @@ export async function captureCarryArtifactManifest(input: {
   protocolRef: string;
   artifacts: readonly CarryArtifactInput[];
   configuration: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>;
+  dependencyScope?: CarryDependencyScope;
 }) {
   input = structuredClone(input);
   const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -325,6 +378,8 @@ export async function captureCarryArtifactManifest(input: {
       !Number.isSafeInteger(a.maxBytes) || a.maxBytes <= 0)) {
     throw new Error('carry manifest requires a protocol and a bounded unique artifact set');
   }
+  const dependencyScope = input.dependencyScope === undefined ? undefined :
+    bindCarryDependencyScope(input.dependencyScope, input.artifacts);
   const observed = input.configuration;
   if (!observed || !Array.isArray(observed.servers) || observed.servers.some(server =>
     !nonblank(server.name) || !nonblank(server.authStatus) || !Array.isArray(server.tools) ||
@@ -374,7 +429,8 @@ export async function captureCarryArtifactManifest(input: {
     } finally { await fh.close(); }
   }
   const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
-    protocolRef: input.protocolRef, configuration: config, artifacts };
+    protocolRef: input.protocolRef, configuration: config, artifacts,
+    ...(dependencyScope ? { dependencyScope } : {}) };
   return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
 }
 
@@ -395,6 +451,7 @@ export async function recheckCarryArtifactManifest(
   await recheckCarryNativeConfiguration(peer, manifest.configuration);
   const current = await captureCarryArtifactManifest({ protocolRef: manifest.protocolRef,
     configuration: manifest.configuration,
+    dependencyScope: manifest.dependencyScope,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
   if (current.sha256 !== sha256) throw new Error('carry artifacts changed after manifest freeze');
 }
