@@ -29,6 +29,7 @@ vi.mock('./workspace-registry', async () => {
 
 const { claimNextWorkItem, claimWorkItem, getWorkItem, listWorkItems } = await import('./work-items');
 const { claimReplicaSlot } = await import('./work-item-redundancy');
+const { claimNextAgentReview } = await import('./harness/improvements/agent-review');
 const { autoPickableWhereSql, resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
 const {
   agentReviewPendingAdmissionSql,
@@ -473,6 +474,17 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       agentReviewAdmission: admission!,
     });
     expect(claimed).toMatchObject({ id: 'F-REVIEW', assignee: 'su-reviewer' });
+
+    const nextPayload = {
+      agentReview: { status: 'pending' as const, submittedBy: 'su-filer', ledgerIdeaId: 'F-REVIEW-NEXT', round: 1 },
+    };
+    await ins('F-REVIEW-NEXT', 'local', null, 3);
+    await h.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET admission = 'pending', payload = ${JSON.stringify(nextPayload)}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-NEXT'`;
+    const nextClaim = await claimNextAgentReview({ reviewer: 'su-next-reviewer', harnessSlug: HARNESS });
+    expect(nextClaim).toMatchObject({ id: 'F-REVIEW-NEXT', assignee: 'su-next-reviewer' });
 
     const stalePayload = {
       agentReview: {
