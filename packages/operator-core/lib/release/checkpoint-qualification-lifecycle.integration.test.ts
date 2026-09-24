@@ -264,4 +264,53 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     })).rejects.toThrow();
     expect(await metadata()).toEqual(before);
   });
+
+  it('commits one terminal pipeline result with qualification and rolls both back on event failure', async () => {
+    const ready = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction;
+    await seed({ qualificationTransaction: ready });
+    const terminal = {
+      attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+      reason: 'not-green', green: false, nowMs: 200,
+      terminalEvent: { status: 'not-green', detail: { runId: 'run-1', candidate: 'candidate-1' } },
+    };
+    expect((await recordStoredQualificationVerdict(target, terminal)).status).toBe('updated');
+    expect((await recordStoredQualificationVerdict(target, terminal)).status).toBe('terminal');
+    const events = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.pipeline_events
+       WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+         AND kind = 'green_checkpoint' AND detail->>'runId' = 'run-1'`;
+    expect(events[0].n).toBe(1);
+    expect((await metadata()).qualificationTransaction).toMatchObject({
+      phase: 'terminal', lastTerminalVerdictAtMs: 200,
+    });
+
+    const second = beginQualificationTransaction(null, {
+      attemptId: 'attempt-2', candidate: 'candidate-2', nowMs: 300,
+    }).transaction;
+    await sql`
+      UPDATE harness_shared.routines
+         SET metadata = jsonb_set(metadata, '{qualificationTransaction}', ${JSON.stringify(second)}::text::jsonb, true)
+       WHERE workspace_id = ${target.workspaceId}`;
+    await sql`ALTER TABLE harness_shared.pipeline_events ADD CONSTRAINT checkpoint_lifecycle_reject_test
+      CHECK (status <> 'forced-fail')`;
+    try {
+      const failed = await recordStoredQualificationVerdict(target, {
+        attemptId: 'attempt-2', candidate: 'candidate-2', runId: 'run-2',
+        reason: 'not-green', green: false, nowMs: 400,
+        terminalEvent: { status: 'forced-fail', detail: { runId: 'run-2' } },
+      });
+      expect(failed.status).toBe('unreadable');
+      expect((await metadata()).qualificationTransaction).toMatchObject({
+        attemptId: 'attempt-2', phase: 'ready', outcome: { kind: 'pending' },
+      });
+      const rolledBack = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.pipeline_events
+         WHERE workspace_id = ${target.workspaceId} AND detail->>'runId' = 'run-2'`;
+      expect(rolledBack[0].n).toBe(0);
+    } finally {
+      await sql`ALTER TABLE harness_shared.pipeline_events DROP CONSTRAINT checkpoint_lifecycle_reject_test`;
+    }
+  });
 });

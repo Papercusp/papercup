@@ -79,6 +79,10 @@ if (process.argv.includes("--preflight")) process.exit(0);
 const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN || "tauri-agent-tools";
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || "default";
 const realBackend = process.env.P015_R4_REAL_BACKEND === "1";
+// Real-backend recovery leg (R-4 grade EI-24105995228250975): nuqs round-trip,
+// provider-picker boundary, one FORCED apply failure refused by the real
+// identity-management compare-and-swap, retry, and SSE sync invalidation.
+const realRecovery = realBackend && process.env.P015_R4_REAL_RECOVERY === "1";
 const owner = `p015-r4-owned-${process.pid}-${Date.now()}`;
 const label = `P-015 R-4 disposable owner ${owner.slice(-12)}`;
 const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "");
@@ -89,8 +93,10 @@ const evidence = {
   schemaVersion: "p015-r4-identities-ui-v1",
   status: "running",
   realBackend,
+  realRecovery,
   syntheticMutationResponses: !realBackend,
   hostActivationProven: false,
+  forcedRealFailureProven: false,
   workspace,
   owner,
   ownerLabel: label,
@@ -222,6 +228,146 @@ const acknowledgeRealHost = async (label) => {
   evidence.steps.push({ label, response });
   if (response.status !== 200) throw new Error(`${label} failed: ${responseText}`);
   return response;
+};
+
+const syncInvalidations = (label) => {
+  const value = JSON.parse(evalFile(
+    "JSON.stringify(window.__sync_metrics__?.snapshot()?.invalidations ?? null)",
+    label,
+  ));
+  evidence.steps.push({ label, invalidations: value });
+  if (!value) throw new Error(`${label}: window.__sync_metrics__ is absent`);
+  return value;
+};
+
+// Pointer selection must WRITE the nuqs params, and a fresh navigation to that
+// URL must RESTORE the same selection. The provider-bindings tab must stay a
+// read-only boundary: it names M3 and exposes no enabled control, so no
+// provider can be silently selected.
+const recoveryUrlStateAndBindings = () => {
+  run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}`], "recovery-navigate-bare");
+  settle();
+  click('[aria-label="Inspect identity research-steward"]', "recovery-select-identity");
+  settle();
+  check(["--eval", "new URLSearchParams(location.search).get('identityId') === 'research-steward'"], "nuqs-selection-written");
+  click('[aria-label="Identity management sections"] [role="tab"]:nth-child(3)', "recovery-bindings-tab");
+  settle();
+  check(["--eval", "new URLSearchParams(location.search).get('identityTab') === 'bindings'"], "nuqs-tab-written");
+  const bindings = JSON.parse(evalFile(`JSON.stringify((() => {
+    const s = document.querySelector('section[aria-label="Provider bindings"]');
+    if (!s) return null;
+    const controls = [...s.querySelectorAll('input,select,textarea,button,a[href],[role="combobox"],[role="listbox"],[role="option"],[contenteditable="true"]')];
+    return { text: s.innerText, controls: controls.length, enabled: controls.filter((c) => !c.disabled).length };
+  })())`, "provider-bindings-boundary"));
+  evidence.steps.push({ label: "provider-bindings-boundary", bindings });
+  if (!bindings || !bindings.text.includes("Available in M3") || bindings.enabled !== 0) {
+    throw new Error(`provider-bindings boundary exposes a selectable control: ${JSON.stringify(bindings)}`);
+  }
+  const url = JSON.parse(evalFile("JSON.stringify(location.pathname + location.search)", "nuqs-url-captured"));
+  run(["navigate", url], "nuqs-restore-navigate");
+  settle();
+  check(["--eval", "document.querySelector('[aria-label=\"Identity management sections\"] [role=\"tab\"][aria-selected=\"true\"]')?.textContent.trim() === 'Provider bindings' && !!document.querySelector('section[aria-label=\"Provider bindings\"]') && new URLSearchParams(location.search).get('identityId') === 'research-steward'"], "nuqs-state-restored-from-url");
+  click('[aria-label="Identity management sections"] [role="tab"]:nth-child(1)', "recovery-library-tab");
+  settle();
+  check(["--eval", "new URLSearchParams(location.search).get('identityTab') !== 'bindings' && document.querySelector('[aria-label=\"Identity management sections\"] [role=\"tab\"][aria-selected=\"true\"]')?.textContent.trim() === 'Library'"], "nuqs-tab-rewritten");
+  // Everything after this point must happen WITHOUT a reload: the marker dies with the document.
+  evalFile("(window.__p015R4NoReload = 'p015-r4-no-reload', 'marked')", "no-reload-marker");
+};
+
+const controlStates = (label) => {
+  const value = JSON.parse(evalFile(`JSON.stringify(['Apply identity', 'Roll back identity'].map((name) => {
+    const b = document.querySelector('button[aria-label="' + name + '"]');
+    return { name, present: !!b, disabled: b ? b.disabled : null };
+  }))`, label));
+  evidence.steps.push({ label, controls: value });
+  return value;
+};
+
+// One FORCED apply failure on the REAL backend. A second writer rewrites the
+// session row (launchedBy only) in an open transaction, holding its row lock. The
+// pointer-clicked switch reads the committed row, rebuilds, and its compare-and-swap
+// UPDATE blocks on that lock; only once it is observed blocked does the writer
+// commit, so the UPDATE re-evaluates against the changed row and matches nothing.
+// A free-running writer raced the rebuild and lost (the switch returned 200). The
+// fixture row is then restored byte-for-byte and the prior applied identity must
+// be unchanged.
+const forcedRealApplyFailure = async () => {
+  const [before] = await sql`
+    SELECT id, launch_spec FROM harness_shared.adv_sessions
+     WHERE workspace_id = ${workspace} AND coord_owner_id = ${owner}`;
+  if (!before) throw new Error("forced failure: fixture adv_sessions row is missing");
+  const [eventsBefore] = await sql`
+    SELECT count(*)::int AS n FROM harness_shared.session_identity_activation_events
+     WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+  const activationBefore = await observeActivation("forced-failure-activation-before");
+  const callsBefore = JSON.parse(evalFile("JSON.stringify(window.__p015R4RealCalls.length)", "forced-failure-calls-before"));
+  const lockSql = postgres(dsn, { max: 1, connect_timeout: 10, onnotice: () => {} });
+  let releaseWriter;
+  const writerMayCommit = new Promise((resolveRelease) => { releaseWriter = resolveRelease; });
+  let writerHolding;
+  const writerHoldsLock = new Promise((resolveHeld) => { writerHolding = resolveHeld; });
+  const writer = lockSql.begin(async (tx) => {
+    const [{ pid }] = await tx`SELECT pg_backend_pid() AS pid`;
+    await tx`
+      UPDATE harness_shared.adv_sessions
+         SET launch_spec = jsonb_set(launch_spec, '{launchedBy}', to_jsonb('p015-r4-concurrent-writer'::text))
+       WHERE id = ${before.id}`;
+    writerHolding(pid);
+    await writerMayCommit;
+  });
+  writer.catch(() => {});
+  let blockedSwitch = null;
+  try {
+    const writerPid = await Promise.race([writerHoldsLock, writer.then(() => { throw new Error("forced failure: writer committed before holding the lock"); })]);
+    click('button[aria-label="Apply identity"]', "forced-failure-apply");
+    // The switch's compare-and-swap is the only statement carrying `AND launch_spec =`;
+    // the writer's own backend is idle in its transaction, not waiting on a lock.
+    const deadline = Date.now() + 30_000;
+    while (!blockedSwitch && Date.now() < deadline) {
+      [blockedSwitch = null] = await sql`
+        SELECT pid, wait_event_type, wait_event, left(query, 160) AS query
+          FROM pg_stat_activity
+         WHERE pid <> pg_backend_pid() AND pid <> ${writerPid}
+           AND datname = current_database()
+           AND wait_event_type = 'Lock'
+           AND query ILIKE ${"%UPDATE harness_shared.adv_sessions%AND launch_spec =%"}`;
+      if (!blockedSwitch) await new Promise((resolveTick) => setTimeout(resolveTick, 50));
+    }
+  } finally {
+    releaseWriter();
+    await writer.catch((error) => { throw new Error(`forced failure: concurrent writer failed: ${error}`); });
+    await lockSql.end({ timeout: 5 });
+  }
+  if (!blockedSwitch) throw new Error("forced failure: the switch never blocked on the concurrent writer's row lock");
+  checkedCommand("bash", [required("VERIFY_TAURI_POLL"), "--require", "body", "--eval", `window.__p015R4RealCalls.length > ${Number(callsBefore)}`]);
+  await sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${sql.json(before.launch_spec)} WHERE id = ${before.id}`;
+  const response = JSON.parse(evalFile("JSON.stringify(window.__p015R4RealCalls.at(-1))", "forced-failure-response"));
+  evidence.steps.push({ label: "forced-failure-response", response, blockedSwitch: { waitEventType: blockedSwitch.wait_event_type, waitEvent: blockedSwitch.wait_event, query: blockedSwitch.query } });
+  if (response?.request?.action !== "switch" || response?.status === 200 || !String(response?.body).includes("changed concurrently")) {
+    throw new Error(`forced failure was not refused by the real compare-and-swap: ${JSON.stringify(response)}`);
+  }
+  const [after] = await sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${before.id}`;
+  const [eventsAfter] = await sql`
+    SELECT count(*)::int AS n FROM harness_shared.session_identity_activation_events
+     WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+  const activationAfter = await observeActivation("forced-failure-activation-after");
+  const retained = {
+    launchSpecUnchanged: JSON.stringify(after.launch_spec) === JSON.stringify(before.launch_spec),
+    stack: after.launch_spec?.stack ?? null,
+    activationEventsBefore: eventsBefore.n,
+    activationEventsAfter: eventsAfter.n,
+    activationUnchanged: JSON.stringify(activationAfter) === JSON.stringify(activationBefore),
+  };
+  evidence.steps.push({ label: "forced-failure-prior-state", retained });
+  if (!retained.launchSpecUnchanged || retained.activationEventsAfter !== retained.activationEventsBefore || !retained.activationUnchanged) {
+    throw new Error(`forced failure mutated prior state: ${JSON.stringify(retained)}`);
+  }
+  check(["--eval", "document.body.innerText.includes('Identity change failed: The session identity changed concurrently') && !document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer') && !document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:research-steward')"], "forced-failure-banner-prior-identity-kept");
+  const controls = controlStates("forced-failure-controls");
+  if (!controls.find((c) => c.name === "Apply identity")?.present || controls.find((c) => c.name === "Apply identity")?.disabled) {
+    throw new Error(`retry is not reachable after the forced failure: ${JSON.stringify(controls)}`);
+  }
+  evidence.forcedRealFailureProven = true;
 };
 
 const captureRealFetch = `
@@ -389,6 +535,11 @@ try {
 
   check(["--selector", '[aria-label="Agent to manage"]', "--eval", `document.querySelector('[aria-label="Agent to manage"]')?.disabled === false && new URLSearchParams(location.search).get('identityAgent') === ${JSON.stringify(owner)}`], "owned-agent-selected");
   if (realBackend) {
+    if (realRecovery) {
+      recoveryUrlStateAndBindings();
+      // A navigation may replace the document; keep exactly one fetch observer either way.
+      evalFile(`window.__p015R4RealCalls ? 'p015-r4-real-fetch-observer-kept' : ${captureRealFetch.trim()}`, "observe-real-fetch-after-navigation");
+    }
     click('[aria-label="Inspect identity research-steward"]', "real-select-identity");
     settle();
     click(".pc-identities__actions button", "real-review-switch");
@@ -398,6 +549,11 @@ try {
     if (reviewCall?.status !== 200) throw new Error(`real preview route refused the mutation: ${reviewCall?.body ?? JSON.stringify(reviewCall)}`);
     check(["--eval", "document.querySelector('.pc-identities__diff')?.textContent.includes('Revision diff') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "real-review-diff-visible");
 
+    let syncBeforeSwitch = null;
+    if (realRecovery) {
+      await forcedRealApplyFailure();
+      syncBeforeSwitch = syncInvalidations("sync-before-retry-switch");
+    }
     click('button[aria-label="Apply identity"]', "real-switch");
     settle();
     const switchResponse = JSON.parse(evalFile("window.__p015R4RealCalls.at(-1)", "real-switch-response"));
@@ -406,6 +562,16 @@ try {
       throw new Error(`real switch route did not return a successful switch response: ${JSON.stringify(switchResponse)}`);
     }
     check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-switch-change-requested");
+    if (realRecovery) {
+      // The retried switch must reach the page through @papercusp/sync: the route's
+      // notifySyncInvalidate('identities.surface') arrives over SSE and refetches
+      // the surface, in the same document (no reload marker lost).
+      const before = syncBeforeSwitch?.bySseName?.["identities.surface"] ?? 0;
+      checkedCommand("bash", [required("VERIFY_TAURI_POLL"), "--require", "body", "--eval", `(window.__sync_metrics__?.snapshot()?.invalidations?.bySseName?.['identities.surface'] ?? 0) > ${Number(before)}`]);
+      const syncAfter = syncInvalidations("sync-after-retry-switch");
+      check(["--eval", "window.__p015R4NoReload === 'p015-r4-no-reload'"], "retry-switch-same-document");
+      evidence.syncInvalidationProven = (syncAfter.bySseName?.["identities.surface"] ?? 0) > before;
+    }
     const switchRequested = await observeActivation("real-switch-requested");
     if (switchRequested?.status !== "desired" || !switchRequested?.desired) {
       throw new Error(`real switch did not persist desired activation: ${JSON.stringify(switchRequested)}`);
@@ -452,6 +618,14 @@ try {
       }
     }
     evidence.hostActivationProven = switchApplied?.status === "applied" && rollbackApplied?.status === "applied";
+    if (realRecovery) {
+      evidence.recoveryObserved = [
+        "nuqs-selection-written", "nuqs-tab-written", "provider-bindings-boundary", "nuqs-state-restored-from-url",
+        "forced-real-apply-failure", "prior-state-retained", "retry-reachable", "retry-switch-change-requested",
+        evidence.syncInvalidationProven ? "sse-sync-invalidation" : "sse-sync-invalidation-missing",
+        rollbackApplied?.status === "applied" ? "rollback-applied" : "rollback-requested",
+      ];
+    }
     evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", switchApplied?.status === "applied" ? "real-switch-applied" : "real-switch-pending-after-fresh-context-boundary", "real-rollback-change-requested", rollbackApplied?.status === "applied" ? "real-rollback-applied" : "real-rollback-pending-after-fresh-context-boundary"];
   } else {
     click('[aria-label="Inspect identity research-steward"]', "select-identity");

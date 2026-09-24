@@ -98,8 +98,13 @@ function currentVintageStamp(): { treeSha: string | null; bundleVersion: string 
   return { treeSha: info.sha, bundleVersion: info.version };
 }
 
-/** Append one pipeline event. Best-effort — never throws (warns on failure). */
-export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): Promise<void> {
+/** Append one pipeline event. Ordinary telemetry is best-effort; a required terminal
+ * result may opt into throwing so its enclosing qualification transaction rolls back. */
+export async function appendPipelineEvent(
+  ev: AppendPipelineEvent,
+  sql?: Sql,
+  options: { required?: boolean } = {},
+): Promise<void> {
   try {
     // P-015: stamp every event with the emitting host/process so the Git tab + a
     // post-mortem can tell WHICH operator ran a given tick (desktop vs :3070 vs :3170).
@@ -123,6 +128,7 @@ export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): P
               ${JSON.stringify(detail)}::text::jsonb)
     `;
   } catch (e) {
+    if (options.required) throw e;
     console.warn(`[pipeline-events] append failed (${ev.kind}/${ev.status}): ${e instanceof Error ? e.message : e}`);
   }
 }
