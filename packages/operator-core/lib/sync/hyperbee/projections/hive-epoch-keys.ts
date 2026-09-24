@@ -59,10 +59,18 @@ export interface HiveEpochKeysProjectionOpts {
   onEpochKeyApplied?: (potHomeSlug: string, epoch: number) => void;
 }
 
+/** The peer-log table tag of a wrapped epoch-key row. */
+export const HIVE_EPOCH_KEYS_TABLE_TAG = 'hive-epoch-keys';
+
 /** The peer-log key for a row: `${epoch}:${member_device_pubkey}` — matches the
- *  generated `epoch_key_fed_key` column (mig 316; ':' separator, base64 has '/'). */
+ *  generated `epoch_key_fed_key` column (mig 316; ':' separator, base64 has '/').
+ *  Exported so the P-524 key seek matches this device's row by the same key. */
+export function epochKeyRowKey(epoch: number, memberDevicePubkey: string): string {
+  return `${epoch}:${memberDevicePubkey}`;
+}
+
 function composeKey(row: HiveEpochKeyRow): string {
-  return `${row.epoch}:${row.member_device_pubkey}`;
+  return epochKeyRowKey(row.epoch, row.member_device_pubkey);
 }
 
 function decodeValue(raw: unknown): HiveEpochKeyRow | null {
@@ -137,7 +145,7 @@ export function buildHiveEpochKeysProjection(
   opts: HiveEpochKeysProjectionOpts,
 ): TableProjection<HiveEpochKeyRow> {
   return {
-    tableTag: 'hive-epoch-keys',
+    tableTag: HIVE_EPOCH_KEYS_TABLE_TAG,
     // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
     skipOwnOps: true,
     composeKey,

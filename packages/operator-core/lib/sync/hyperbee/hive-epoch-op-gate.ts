@@ -30,6 +30,8 @@ import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
 import { BASELINE_EPOCH, getEpochGeneration } from './hive-epoch-state';
 import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
+import type { EpochKeyMiss, EpochKeySeek } from './read-merge';
+import { HIVE_EPOCH_KEYS_TABLE_TAG, epochKeyRowKey } from './projections/hive-epoch-keys';
 
 /** Resolve the epoch key for `(potId, epoch)` on THIS peer: owner derives, member
  *  unwraps. Rejects (EpochKeyUnavailableError) on a member whose wrapped row hasn't
@@ -299,6 +301,13 @@ export interface EpochDecryptGateDeps extends EpochOpGateDeps {
    * Pure observability — a throw here must never alter the gate's verdict.
    */
   onTrace?: (phase: string, detail: string) => void;
+  /**
+   * P-524 (p2p-join-catchup-speed-2026-09-23 D-009 (b)): told each time an op defers for
+   * want of the key for `(potId, epoch)`, so the fold can look ahead on the same log for
+   * this device's key row ({@link buildEpochKeySeek}). A throw here must never alter the
+   * gate's verdict.
+   */
+  onKeyMissing?: (potId: string, epoch: number) => void;
 }
 
 /**
@@ -371,6 +380,11 @@ export function buildEpochDecryptGate(
         // key not yet local (remaining member waiting; or removed member forever) → defer.
         trace('epoch_defer', `${where} hive=${deps.potId} no-key-yet: ${(e as Error)?.message ?? e}`);
         deps.pending.defer(op, deps.potId, op.epoch);
+        try {
+          deps.onKeyMissing?.(deps.potId, op.epoch);
+        } catch {
+          // the key seek only speeds convergence; it must never alter the gate verdict
+        }
         return false;
       }
 
@@ -390,6 +404,38 @@ export function buildEpochDecryptGate(
       trace('epoch_applied', `${where} hive=${deps.potId}`);
       return inner({ ...op, value: bytesToValue(plaintext), epoch: undefined });
     };
+}
+
+/**
+ * P-524 (p2p-join-catchup-speed-2026-09-23 D-009 (b)) — the boot half of the key seek.
+ * `onKeyMissing` goes to the decrypt gate and `keySeek` to the merge options. The gate
+ * records each (hive, epoch) it had to defer for want of a key; the fold takes those after
+ * each apply and looks ahead on that log for THIS device's wrapped key row
+ * (`hive-epoch-keys`, keyed `${epoch}:${devicePubkeyBase64}` — the same pubkey the member
+ * provider's PG lookup uses). Pure: no PG, no boot.
+ */
+export function buildEpochKeySeek(devicePubkeyBase64: string): {
+  onKeyMissing: (potId: string, epoch: number) => void;
+  keySeek: EpochKeySeek;
+} {
+  const missed = new Map<string, EpochKeyMiss>();
+  const none: readonly EpochKeyMiss[] = [];
+  return {
+    onKeyMissing: (potId, epoch) => {
+      const k = `${epoch}:${potId}`;
+      if (!missed.has(k)) missed.set(k, { potId, epoch });
+    },
+    keySeek: {
+      takeMisses: () => {
+        if (missed.size === 0) return none;
+        const out = [...missed.values()];
+        missed.clear();
+        return out;
+      },
+      suppliesKey: (env, miss) =>
+        env.table === HIVE_EPOCH_KEYS_TABLE_TAG && env.hbKey === epochKeyRowKey(miss.epoch, devicePubkeyBase64),
+    },
+  };
 }
 
 /** A boot-scope drain-queue entry: a `(hive, epoch)` whose `hive_epoch_keys` row just

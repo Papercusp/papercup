@@ -32,7 +32,13 @@ import { isCanonicalHiveOwner } from '../../hive-identity';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
-import { buildEpochKeyResolver, buildEpochDecryptGate, buildEpochEncryptCapability } from './hive-epoch-op-gate';
+import {
+  buildEpochKeyResolver,
+  buildEpochDecryptGate,
+  buildEpochEncryptCapability,
+  buildEpochKeySeek,
+} from './hive-epoch-op-gate';
+import type { EpochKeySeek } from './read-merge';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import type { OpEnvelope } from './op-envelope-types';
 import type { EpochEncryptCapability } from './outbox-drain';
@@ -46,6 +52,12 @@ export interface HiveRekeyBootDeps {
   epochEncrypt: EpochEncryptCapability;
   /** The shared deferral buffer — the drain hook (`onEpochKeyApplied`) calls `drainEpoch`. */
   pending: PendingEpochContent;
+  /**
+   * P-524: inject into the merge options (`keySeek`) so a key miss fetches this device's
+   * key row ahead of content. Absent when this box has no member device identity: a
+   * bundled-seed-only install has no federated key row to seek.
+   */
+  keySeek?: EpochKeySeek;
 }
 
 /**
@@ -139,8 +151,10 @@ export async function buildHiveRekeyBootDeps(opts: {
     // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
     const crypto = await resolveHiveEpochCrypto(true);
     let memberProvider: EpochKeyProvider | null = null;
+    let devicePubkeyBase64: string | null = null;
     if (ident.kind === 'ok') {
       const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
+      devicePubkeyBase64 = localDevice.pubkeyBase64;
       // WI-2009 / wake-#5742 (v3 instrumentation, leg a): the SPLIT-IDENTITY class —
       // presence stamps one device pubkey while THIS tier resolves another (an OS
       // keychain unreadable in the service context → a different file-tier key, or a
@@ -186,6 +200,8 @@ export async function buildHiveRekeyBootDeps(opts: {
       isOwner: () => isCanonicalHiveOwner(opts.workspaceId, potHomeSlug),
     });
     const pending = new PendingEpochContent();
+    // P-524: a member device looks ahead for its own key row when content arrives first.
+    const seeker = devicePubkeyBase64 ? buildEpochKeySeek(devicePubkeyBase64) : null;
     const epochGate = buildEpochDecryptGate({
       crypto,
       resolveKey,
@@ -194,6 +210,7 @@ export async function buildHiveRekeyBootDeps(opts: {
       // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
       // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
       onTrace: (phase, detail) => recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
+      ...(seeker ? { onKeyMissing: seeker.onKeyMissing } : {}),
     });
     const epochEncrypt = buildEpochEncryptCapability({
       crypto,
@@ -220,7 +237,7 @@ export async function buildHiveRekeyBootDeps(opts: {
       memberProvider: memberProvider != null,
       bundledProvider: bundledProvider != null,
     });
-    return { potHomeSlug, epochGate, epochEncrypt, pending };
+    return { potHomeSlug, epochGate, epochEncrypt, pending, ...(seeker ? { keySeek: seeker.keySeek } : {}) };
   } catch (e) {
     throwRekeyBootUnavailable(opts, 'compose confirmed Hive dependencies', e);
   }

@@ -81,6 +81,32 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies a missing tool-reference API 400 as permanent even when the CLI exits cleanly', () => {
+    const message = "API Error: 400 Tool reference 'Monitor' not found in available tools";
+    const out = classifyResumeTurnExit(
+      raw({
+        exitCode: 0,
+        stdoutTail: message,
+        stderrTail: 'Permission deny rule "ToolSearch" matches no known tool — check for typos.',
+      }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.message).toBe(message);
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+    }
+  });
+
+  it('does not treat an unmatched local permission-rule warning as a provider tool-reference rejection', () => {
+    const out = classifyResumeTurnExit(
+      raw({ exitCode: 1, stderrTail: 'Permission deny rule "ToolSearch" matches no known tool — check for typos.' }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error.class).toBe('agent_crash');
+  });
+
   it('classifies Codex stale rollout-path stderr as permanent, not a retryable crash', () => {
     const out = classifyResumeTurnExit(
       raw({

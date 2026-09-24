@@ -185,6 +185,7 @@ describe("plans:attention — cache wiring", () => {
     ];
     const [feed, counts, refs] = await Promise.all([
       run({ limit: 1 }), run({ output: 'counts', limit: 1, offset: 1 }), run({ output: 'refs', limit: 1 }),
+      ...Array.from({ length: 5 }, (_, i) => run({ output: i % 2 ? 'counts' : 'refs' })),
     ]);
     expect(M.readAllPlans).toHaveBeenCalledTimes(1);
     expect(counts).toEqual({ counts: { decisionItems: 120, decisionPlans: 1, alerts: 30, total: 150 }, degraded: false });
@@ -239,7 +240,7 @@ describe("plans:attention — cache wiring", () => {
     const timings = { feed: [] as number[], counts: [] as number[], refs: [] as number[] };
     const bytes = { feed: 0, counts: 0, refs: 0 };
     const outputs = ['feed', 'counts', 'refs'] as const;
-    for (let round = 0; round < 20; round++) {
+    for (let round = 0; round < 100; round++) {
       // Rotate order so one mode does not always pay first-call/JIT effects.
       for (let n = 0; n < outputs.length; n++) {
         const output = outputs[(round + n) % outputs.length]!;
@@ -255,11 +256,29 @@ describe("plans:attention — cache wiring", () => {
     expect(bytes.counts).toBeLessThan(150);
     expect(bytes.refs).toBeLessThan(bytes.feed / 20);
     const p50Ms = Object.fromEntries(outputs.map((output) => [
-      output, timings[output].sort((a, b) => a - b)[10],
+      output, timings[output].sort((a, b) => a - b)[50],
     ]));
     // Evidence, not a flaky machine-speed threshold. The assertions above guard
     // source coalescing and bounded payloads on every CI run.
-    console.info('ATTENTION_PROJECTION_BENCHMARK', JSON.stringify({ items: items.length, callsPerMode: 20, coldMs, p50Ms, bytes }));
+    console.info('ATTENTION_PROJECTION_BENCHMARK', JSON.stringify({ items: items.length, callsPerMode: 100, coldMs, p50Ms, bytes }));
+  });
+
+  it('marks compact output degraded when the shared source build exceeds its own deadline', async () => {
+    vi.useFakeTimers();
+    let finishRead!: (plans: unknown[]) => void;
+    M.readAllPlans.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    try {
+      const result = run({ output: 'counts' });
+      await vi.waitFor(() => expect(M.readAllPlans).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(45_001);
+      expect(await result).toEqual({
+        counts: { decisionItems: 0, decisionPlans: 0, alerts: 0, total: 0 }, degraded: true,
+      });
+    } finally {
+      finishRead?.([]);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
   });
 
   it("a plan-table write BUSTS the entry", async () => {
