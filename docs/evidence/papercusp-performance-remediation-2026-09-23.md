@@ -1485,3 +1485,63 @@ in the regular dist. The reason is unverified. Both test snapshots were copied
 under the existing dist build lock, leaving the native binary unchanged. No
 process was killed: cancellation guards refused to signal an unmatched process,
 and the original queued command completed normally. No commands remain running.
+
+### P-007 staging activation and native isolation repair — follow-up
+
+The plan-read changes are committed in the canonical tree at `abab84b83d` and
+are now active on :3170: an authenticated `plans:get` with `includeHistory:false`
+returned `su-agent-behavior` version89 without history. The automatic staging
+sync performed the activation; no manual restart was needed. The obsolete
+git-sync await196699 was already settled/not found when cancellation was tried;
+that call did not itself cancel anything.
+
+A bounded paired diagnostic used the same full/raw plan and warm document cache,
+alternating only `includeHistory`, via the existing `code:run` tool after a recipe
+search returned no match. Version89/content hash
+`042f83e599a6f2bbee674297754fe0cbc5539050efd2ec077f6bc3de168f5750`
+stayed identical. Server tool-wall samples in order:
+
+| includeHistory | milliseconds |
+| --- | ---: |
+| true | 34 |
+| false | 176 |
+| false | 8 |
+| true | 18 |
+| true | 206 |
+| false | 8 |
+
+This small diagnostic establishes neither a native speedup nor history loading
+as the cause of the older multi-second popup delay. Native backend selection
+and client-side/transport timing still need the controlled comparison.
+
+**EI-24161953656319715:** the server's established `PAPERCUSP_HOME` override was
+honored by `serve.ts` and the JS host-platform reader, but native Rust HTTP and
+IPC discovery joined the default workspace home. A real Cargo regression used
+two temporary discovery roots and ran each environment case in its own child
+test process. The original production reader returned port40001 instead of the
+explicit isolated port40002 (receipts19318917/19318918). This is a measured
+discovery mismatch, not evidence that an actual user operation crossed instances.
+
+The existing native discovery path now shares `native_papercusp_dir`: HTTP,
+raw/validated IPC, the recovery reader and debug IPC initialization honor the
+override; unset/empty preserves the default, and a missing explicit directory
+does not adopt another instance. Existing WSL/default-discovery tests also run
+their environment cases in isolated child processes to avoid parallel-test races.
+Final `main.rs` SHA256:
+`0471cbdbc9857987a28e545e8c4ea8180ce44fdbf5edeb3eab703cf7ec2738d9`.
+
+Project command:
+`env PC_HEAVY_COALESCE=0 scripts/pc-heavy.sh node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml -- discovery --nocapture`.
+**64 tests passed, zero failed/ignored**; final regression receipt19318988
+(earlier isolated pass19318923). Logs are
+`/tmp/p007-native-discovery-control-20260924.log` and
+`/tmp/p007-native-discovery-suite-20260924.log`. A post-edit attempt without the
+coalescing opt-out replayed the old failure instead of executing new source;
+that result is explicitly not new test evidence (EI-24162290157408503).
+
+The fresh release-shell build is still queued through `pc-heavy`; log
+`/tmp/p007-native-release-build-20260924.log`. Its artifact will use the frozen
+current SPA and a private `PAPERCUSP_HOME` containing the fresh :3170 discovery
+advertisement, preserving the real user's home/preferences. Full GUI validation
+of the discovery fix and P-007's ten-run native acceptance remain open. No
+shipment claim; the discovery work-item remains owned until runtime proof.
