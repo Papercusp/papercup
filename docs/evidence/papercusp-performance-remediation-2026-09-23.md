@@ -1437,3 +1437,51 @@ metric, and retain ten named-build native results plus cold/warm coverage.
 The isolated Vite build is queued through the existing heavy-work admission and
 singleflight wrappers, output root `/tmp/p007-current-20260924`, log
 `/tmp/p007-current-build-20260924.log`. No P-007 acceptance or shipment claim.
+
+### P-007 finer attribution and body-read optimization — 16:30Z
+
+Frozen current UI snapshot `/tmp/p007-native-current-20260924` used the unchanged
+native shell SHA256 `ebdba9181122d5da2d5446efd4aebae2f714cd122111845ec96b6ccbb6082a34`.
+Its SPA index hash was `7540a6b3723732bd233c425985fbf5330f67ed97d2cfe0911c8de2c7fff1ea06`;
+the complete `spa-sha256.json` manifest hashes to
+`3e7669728cfaf4252d529c3b6e5cfaf3bde8f76cfb42cac8e1d8d855ed29d719`.
+The entry dependency graph reaches the new phase instrumentation. Native result
+`perfrun-1790266630922-9f0vyh` was **2630ms**: content-ready2576,
+renderer-ready2584, preview-rendered2629. FCP2494/LCP3692 passed. Raw resource
+timing was empty, so it supplies no network attribution in this custom protocol.
+
+A second snapshot `/tmp/p007-native-detail-20260924` (SPA index
+`ac646930a9dd7d34e63f091f6612eccfc27ea42d7a08a4f2097edc270e80939c`)
+adds detail-mounted/data-ready marks. Native receipt
+`perfrun-1790266932270-f8qluy` failed at **4081ms**: detail-mounted209,
+data-ready3194, content-ready3989, renderer-ready4003, preview-rendered4080.
+Thus this run's largest interval is the detail's wait for data; renderer prep and
+preview are small. These are diagnostic runs on different snapshots, not a
+controlled speedup comparison. Logs are `/tmp/p007-native-current-20260924.log`
+and `/tmp/p007-native-detail-20260924.log`. The narrower PlanDetail instrumentation
+passes 14 existing tests (19314246); its scoped typecheck is clean in that file,
+with 86 diagnostics elsewhere in the loaded graph.
+
+The full plan read unconditionally loads fresh descendant execution history
+outside the document cache. The popup does not consume this history. Extended
+the existing `plans:get` option set with `includeHistory` (default remains true),
+and the existing UI read-dispatch seam supplies false for body reads. Explicit
+History headings and prior-attempt references still retrieve history. This
+removes proven unused work; its share of the native latency is not yet measured.
+No second reader/service/cache was introduced. Tests compare the complete result
+apart from history, preserve raw bytes/version, and alternate UI/agent reads
+through the same cache to guard against contamination.
+
+`get.cache.test.ts` + `read-dispatch.test.ts`: **39 pass, zero skipped**,
+receipts **19314960/19314959**, source `eaa65935fc` plus local edits. Scoped
+typecheck: four requested files clean, 23 other graph diagnostics. Logs:
+`/tmp/p007-plan-read-tests-20260924.log`. Native improvement remains unverified:
+both MCP and explicit :3170 reads still rejected the new option on running
+build `c36a6834a5` at 16:30Z. Do not confuse source proof with runtime activation.
+
+Correction to the earlier build note: the command completed successfully, but
+the requested `VITE_BUILD_OUT_ROOT` path was absent; the completed build appeared
+in the regular dist. The reason is unverified. Both test snapshots were copied
+under the existing dist build lock, leaving the native binary unchanged. No
+process was killed: cancellation guards refused to signal an unmatched process,
+and the original queued command completed normally. No commands remain running.
