@@ -272,7 +272,9 @@ describe('P-007 owner-directive buckets', () => {
 
     it('a peer whose state and intent are unknown still renders its group, without an empty "()"', () => {
       const [line] = lines(directive({ id: 42, recordedBy: PEER, addressedToMe: false }));
-      expect(line).toMatch(new RegExp(`^- 👥 ${PEER.slice(0, 12)} — THEIR open owner directives: #42`));
+      expect(line).toMatch(
+        new RegExp(`^- 👥 ${PEER.slice(0, 12)} — THEIR open owner directives addressed to ${PEER.slice(0, 12)}: owner directive #42`),
+      );
       expect(line).not.toContain('()');
     });
   });
