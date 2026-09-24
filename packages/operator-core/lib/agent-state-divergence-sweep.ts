@@ -45,6 +45,7 @@ import { claimWatchdogFire, recentWatchdogFires } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { agentToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
 
 /** How far back each sweep looks. Comfortably wider than THRASH_WINDOW_MS so a
  *  run straddling the tick boundary is still seen whole. */
@@ -290,6 +291,11 @@ export async function loadRecentCalls(opts: {
      WHERE i.workspace_id = ${opts.workspaceId}
        AND i.invoked_at > ${since}
        AND i.coord_owner_id IS NOT NULL
+       -- The retry-loop leg judges reasoning-authored calls. PostToolUse and
+       -- lifecycle hooks also write tool_invocations rows (notably their own
+       -- activity:report failures), so use the shared origin/name contract
+       -- before those rows can manufacture an FM-2.6 finding against an agent.
+       AND ${agentToolInvocationPredicate(sql, 'i')}
        -- coord:emit is the canonical MACHINE lifecycle fire-target. It is
        -- telemetry about a declaration/claim/completion that just happened,
        -- never the agent-authored action this detector judges. In particular,

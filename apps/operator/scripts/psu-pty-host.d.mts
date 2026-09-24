@@ -227,6 +227,8 @@ export function leadingTurnOriginMarker(text: any): string | null;
  * although Codex received it, and a machine-injected turn reached the transcript
  * with nothing to distinguish it from owner input. Compose instead: the original
  * marker line FIRST, then the original body, then the minted carry text.
+ * When the mint already starts with the complete original body, retain that
+ * body only once; the mint may append a lineage/recovery reference to it.
  * Without a leading marker on the original there is nothing to preserve, so the
  * minted text is used as before. Pure and exported for tests. */
 export function composeCarryTurnText(originalText: any, mintedCarryText: any): string;

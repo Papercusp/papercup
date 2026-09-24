@@ -32,6 +32,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import {
+  CACHE_POLICY_VERSION,
   deferLargeToolsEnabled,
   deferMinToolBytesFromEnv,
   rewriteAnthropicCacheBody,
@@ -106,7 +107,15 @@ export function createCacheProxy(opts: CacheProxyOptions): http.Server & { stats
       // LOCALLY (never forwarded) so a probe costs nothing upstream and stays instant.
       if (url === '/__cache_proxy_health') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, upstream: upstreamHost, stats }));
+        res.end(JSON.stringify({ ok: true, upstream: upstreamHost, stats,
+          cachePolicy: {
+            policyVersion: CACHE_POLICY_VERSION,
+            enabled: process.env.PAPERCUSP_CACHE_POLICY !== '0',
+            toolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1',
+            splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
+            deferLargeTools: deferLargeToolsEnabled(),
+          },
+        }));
         return;
       }
 

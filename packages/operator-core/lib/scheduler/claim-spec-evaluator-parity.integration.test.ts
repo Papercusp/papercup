@@ -207,6 +207,31 @@ const ROWS: SeedRow[] = [
     summary: 'Team accepted P-205 Mac peer for the next round of federation drills.',
     createdTs: 9000,
   },
+  {
+    id: 'F-p2p-plan-column',
+    why: 'P-207 regression: a neutral issue title and summary still carry structured P2P source_plan_slug.',
+    title: 'Neutral plan-scoped bug title',
+    summary: 'The generic summary carries no P2P transport terms.',
+    createdTs: 10000,
+    planSlugCol: 'p2p-public-release-endgame-2026-09-01',
+    planItemIdsCol: ['P-401'],
+  },
+  {
+    id: 'F-p2p-plan-payload',
+    why: 'P-207 regression: plan scope may be present only in payload.plan_item.plan_slug.',
+    title: 'Neutral payload-plan bug title',
+    summary: 'The generic summary carries no P2P transport terms.',
+    createdTs: 11000,
+    payload: { plan_item: { plan_slug: 'p2p-public-release-endgame-2026-09-01', item_id: 'P-401' } },
+  },
+  {
+    id: 'F-nonp2p-plan',
+    why: 'P-207 negative control: the whole-word plan fence must preserve nonp2p-* plans.',
+    title: 'Neutral non-P2P plan-scoped bug title',
+    summary: 'The generic summary carries no P2P transport terms.',
+    createdTs: 12000,
+    planSlugCol: 'nonp2p-feature-change-drain-2026-09-04-v3',
+  },
 ];
 
 async function seed(r: SeedRow) {
@@ -559,6 +584,42 @@ describe('EI-20288042426947475 — issue-family projection parity', () => {
       }
     }
     expect(disagreements, disagreements.join('\n')).toEqual([]);
+  }, 120_000);
+});
+
+describe('EI-24072346395029750 — plan-only P2P fence for non-P2P drains', () => {
+  it('excludes structured column/payload P2P plans in both evaluators without over-fencing summary-only text', async () => {
+    const validated = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'p2p-plan-lane-regression',
+      revision: 1,
+      view: { fence: 'p2p-plan-lane' },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(validated.ok, `plan-only fence rejected: ${validated.errors.join('; ')}`).toBe(true);
+    const filter = validated.spec?.view.filter;
+    if (!filter) throw new Error('plan-only fence did not expand into a filter');
+
+    const featureAdmitted = await sqlAdmits(filter);
+    const issueAdmitted = await issueSqlAdmits(filter);
+    const featureSubjects = await subjects();
+    const issueSubjectsById = await issueSubjects();
+
+    for (const id of ['F-p2p-plan-column', 'F-p2p-plan-payload']) {
+      expect(featureAdmitted.has(id), `${id} must be excluded by SQL plan scope`).toBe(false);
+      expect(matchesClaimSpecFilter(featureSubjects.get(id)!, filter), `${id} must be excluded by the JS evaluator`).toBe(false);
+      const issueId = `I-${id}`;
+      expect(issueAdmitted.has(issueId), `${issueId} must be excluded by SQL plan scope`).toBe(false);
+      expect(matchesClaimSpecFilter(issueSubjectsById.get(issueId)!, filter), `${issueId} must be excluded by the JS evaluator`).toBe(false);
+    }
+
+    for (const id of ['F-summary-only', 'F-nonp2p-plan']) {
+      expect(featureAdmitted.has(id), `${id} must remain admitted without structured P2P plan scope`).toBe(true);
+      expect(matchesClaimSpecFilter(featureSubjects.get(id)!, filter), `${id} must remain admitted in the JS evaluator`).toBe(true);
+      const issueId = `I-${id}`;
+      expect(issueAdmitted.has(issueId), `${issueId} must remain admitted without structured P2P plan scope`).toBe(true);
+      expect(matchesClaimSpecFilter(issueSubjectsById.get(issueId)!, filter), `${issueId} must remain admitted in the JS evaluator`).toBe(true);
+    }
   }, 120_000);
 });
 

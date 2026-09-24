@@ -269,3 +269,17 @@ export function buildP2pLaneFence(): FilterNode {
     },
   };
 }
+
+/**
+ * Structured-plan-only variant for a lane that already owns its title rules and
+ * cannot safely treat every keyword in an issue summary as a P2P classification.
+ * It reuses the same shared term source, but matches only the resolved `plan`
+ * field (indexed source_plan_slug or its supported payload fallback).
+ */
+export function buildP2pPlanLaneFence(): FilterNode {
+  return {
+    not: {
+      any: P2P_LANE_EXCLUSION_TERMS.map((value) => ({ field: 'plan', op: 'word', value }) as const),
+    },
+  };
+}

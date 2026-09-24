@@ -108,6 +108,37 @@ function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   return r.status === 0;
 }
 
+function restartIsObserved(beforePid: string, currentPid: string, healthSha: string, targetSha: string): boolean {
+  const r = runFn(
+    ['health_sha_matches_target', 'staging_restart_is_observed'],
+    'staging_restart_is_observed "$BEFORE_PID" "$CURRENT_PID" "$HEALTH_SHA" "$TARGET_SHA"',
+    {
+      env: {
+        BEFORE_PID: beforePid,
+        CURRENT_PID: currentPid,
+        HEALTH_SHA: healthSha,
+        TARGET_SHA: targetSha,
+      },
+    },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`staging_restart_is_observed exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
+function isPreDispatchRestartRefusal(result: string): boolean {
+  const r = runFn(
+    ['restart_result_is_pre_dispatch_refusal'],
+    'restart_result_is_pre_dispatch_refusal "$RESULT"',
+    { env: { RESULT: result } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`restart_result_is_pre_dispatch_refusal exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
 describe('sync-staging-checkout.sh argument parsing', () => {
   it('prints help and exits before touching the live sync workflow', () => {
     const r = runScriptArgs(['--help'], {
@@ -492,6 +523,27 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     expect(script).toContain('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
     expect(script).toContain('PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
     expect(script).not.toContain('"$PTOOL_BIN" dev:restart --json -');
+  });
+
+  it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {
+    const target = '0123456789abcdef0123456789abcdef01234567';
+    expect(restartIsObserved('470360', '471002', '0123456789ab', target)).toBe(true);
+    expect(restartIsObserved('470360', '470360', '0123456789ab', target)).toBe(false);
+    expect(restartIsObserved('470360', '471002', 'deadbeef00', target)).toBe(false);
+    expect(restartIsObserved('0', '471002', '0123456789ab', target)).toBe(true);
+  });
+
+  it('fails fast on the original no-launch-record auth refusal but not an unknown timeout', () => {
+    expect(isPreDispatchRestartRefusal('authorization_denied: identity no-launch-record')).toBe(true);
+    expect(isPreDispatchRestartRefusal('MCP error -32001: Request timed out; outcome=unknown')).toBe(false);
+  });
+
+  it('watches the verified restart while ptool runs and bounds the self-restart response wait', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    expect(script).toContain('restart_tool_timeout_sec=350');
+    expect(script).toContain('while staging_sync_process_running "$restart_tool_pid"; do');
+    expect(script).toContain('staging_restart_is_observed "$main_pid" "$observed_main_pid" "$observed_health_sha" "$target"');
+    expect(script).toContain('terminating only the ptool client');
   });
 });
 

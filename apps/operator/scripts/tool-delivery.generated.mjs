@@ -9,14 +9,14 @@
 // registry in apps/operator/lib/tool-delivery-floors.ts. Editing this file
 // changes nothing durable: the next generator run overwrites it.
 //
-// Catalog measured: 901 tools.
+// Catalog measured: 907 tools.
 
-/** claude: 2 full + 62 compact = 99983 B of 100000 B. */
+/** claude: 0 full + 64 compact = 99977 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99983,
+  spentBytes: 99977,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 62, deferred: 837 }),
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 843 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -28,10 +28,10 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:inbox": "compact",
     "coord:orient": "compact",
     "coord:presence": "compact",
-    "coord:read": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
+    "dev:pg_health": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -70,7 +70,7 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "testing:run": "compact",
     "testing:runs": "compact",
     "tools:find": "compact",
-    "tools:invoke": "full",
+    "tools:invoke": "compact",
     "work_items:checkpoint": "compact",
     "work_items:claim": "compact",
     "work_items:claim_next": "compact",
@@ -95,10 +95,10 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:inbox",
     "coord:orient",
     "coord:presence",
-    "coord:read",
     "coord:send",
     "coord:whoami",
     "db:migrations",
+    "dev:pg_health",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
@@ -163,6 +163,7 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
     "coord:orient",
     "coord:presence",
     "coord:send",
+    "coord:whoami",
     "db:migrations",
     "dev:pg_query",
     "dev:pipeline_position",
@@ -218,12 +219,12 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 2 full + 62 compact = 99983 B of 100000 B. */
+/** codex: 0 full + 64 compact = 99977 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99983,
+  spentBytes: 99977,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 62, deferred: 837 }),
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 843 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -235,10 +236,10 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:inbox": "compact",
     "coord:orient": "compact",
     "coord:presence": "compact",
-    "coord:read": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
+    "dev:pg_health": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -277,7 +278,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "testing:run": "compact",
     "testing:runs": "compact",
     "tools:find": "compact",
-    "tools:invoke": "full",
+    "tools:invoke": "compact",
     "work_items:checkpoint": "compact",
     "work_items:claim": "compact",
     "work_items:claim_next": "compact",
@@ -302,10 +303,10 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:inbox",
     "coord:orient",
     "coord:presence",
-    "coord:read",
     "coord:send",
     "coord:whoami",
     "db:migrations",
+    "dev:pg_health",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
@@ -370,6 +371,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
     "coord:orient",
     "coord:presence",
     "coord:send",
+    "coord:whoami",
     "db:migrations",
     "dev:pg_query",
     "dev:pipeline_position",
@@ -425,12 +427,12 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 2 full + 62 compact = 99983 B of 100000 B. */
+/** omp: 0 full + 64 compact = 99977 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99983,
+  spentBytes: 99977,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 62, deferred: 837 }),
+  counts: Object.freeze({ full: 0, compact: 64, deferred: 843 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -442,10 +444,10 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:inbox": "compact",
     "coord:orient": "compact",
     "coord:presence": "compact",
-    "coord:read": "compact",
     "coord:send": "compact",
-    "coord:whoami": "full",
+    "coord:whoami": "compact",
     "db:migrations": "compact",
+    "dev:pg_health": "compact",
     "dev:pg_query": "compact",
     "dev:pipeline_position": "compact",
     "dev:restart": "compact",
@@ -484,7 +486,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "testing:run": "compact",
     "testing:runs": "compact",
     "tools:find": "compact",
-    "tools:invoke": "full",
+    "tools:invoke": "compact",
     "work_items:checkpoint": "compact",
     "work_items:claim": "compact",
     "work_items:claim_next": "compact",
@@ -509,10 +511,10 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:inbox",
     "coord:orient",
     "coord:presence",
-    "coord:read",
     "coord:send",
     "coord:whoami",
     "db:migrations",
+    "dev:pg_health",
     "dev:pg_query",
     "dev:pipeline_position",
     "dev:restart",
@@ -577,6 +579,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
     "coord:orient",
     "coord:presence",
     "coord:send",
+    "coord:whoami",
     "db:migrations",
     "dev:pg_query",
     "dev:pipeline_position",

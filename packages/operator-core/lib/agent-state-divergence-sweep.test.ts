@@ -56,9 +56,25 @@ function deps(over: Parameters<typeof divergenceSweep>[0] = {}) {
   } as unknown as Parameters<typeof divergenceSweep>[0] & Record<string, ReturnType<typeof vi.fn>>;
 }
 
+function mockSqlTag(rows: unknown[] = []) {
+  const calls: Array<{ strings: TemplateStringsArray; values: unknown[] }> = [];
+  const originPredicate = { kind: 'agent-origin-predicate' };
+  const sql = Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ strings, values });
+      return calls.length === 1 ? originPredicate : Promise.resolve(rows);
+    }),
+    {
+      unsafe: (identifier: string) => identifier,
+      array: (values: unknown[]) => values,
+    },
+  );
+  return { sql, calls, originPredicate };
+}
+
 describe('loadRecentCalls', () => {
-  it('excludes machine lifecycle/reaction rows while retaining contextual agent actions', async () => {
-    const sql = vi.fn(async () => []);
+  it('excludes automatic hook/system/UI rows while retaining agent-authored behavior', async () => {
+    const { sql, calls, originPredicate } = mockSqlTag();
     await loadRecentCalls({
       workspaceId: 'test-workspace',
       sinceMs: T0,
@@ -66,9 +82,27 @@ describe('loadRecentCalls', () => {
       sql: sql as never,
     });
 
-    expect(sql).toHaveBeenCalledTimes(1);
-    const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
-    const query = Array.from(template).join(' ');
+    expect(sql).toHaveBeenCalledTimes(2);
+    expect(calls).toHaveLength(2);
+    const [originCall, queryCall] = calls;
+    const originSql = Array.from(originCall.strings).join(' ');
+    const originValues = originCall.values.flatMap((value) =>
+      Array.isArray(value) ? value : [value],
+    );
+    expect(originSql).toContain('= ANY');
+    expect(originSql).toContain('IS NULL');
+    expect(originSql).toContain('<> ALL');
+    expect(originValues).toEqual(expect.arrayContaining([
+      'i.call_origin',
+      'i.tool_name',
+      'agent',
+      'unknown',
+      'activity:report',
+      'coord:glance',
+      'coord:inbox',
+    ]));
+    expect(queryCall.values).toContain(originPredicate);
+    const query = Array.from(queryCall.strings).join(' ');
     expect(query).toContain('i.args_json, i.metadata_json, i.call_origin');
     expect(query).toContain("e.body->>'plan_slug' AS declared_plan_slug");
     expect(query).toContain("e.body->'declared_plan_items' AS declared_plan_items");
@@ -100,7 +134,7 @@ describe('loadRecentCalls', () => {
   });
 
   it('hydrates typed declared goal refs from the durable intent event', async () => {
-    const sql = vi.fn(async () => [
+    const { sql } = mockSqlTag([
       {
         id: '7',
         owner: 'su-a',
@@ -137,7 +171,7 @@ describe('loadRecentCalls', () => {
   });
 
   it('hydrates a launch outcome from the persisted transaction joined by telemetry identity', async () => {
-    const sql = vi.fn(async () => [
+    const { sql } = mockSqlTag([
       {
         id: '8',
         owner: 'su-a',

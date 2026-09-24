@@ -41,7 +41,7 @@ import { CLAIM_STATES_ALLOWLIST } from './claim-states';
 // p2p-lane-fence.ts only imports `type { FilterNode }` from THIS module (erased at
 // compile time — no runtime dependency), so importing its runtime export here does not
 // reopen the cycle above. Safe, one-directional at runtime: claim-spec.ts -> p2p-lane-fence.ts.
-import { buildP2pLaneFence } from './p2p-lane-fence';
+import { buildP2pLaneFence, buildP2pPlanLaneFence } from './p2p-lane-fence';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vocabulary — the fixed primitive set the Queen composes a spec from.
@@ -426,6 +426,7 @@ export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
  */
 export const CLAIM_SPEC_FENCE_MACROS = {
   'p2p-lane': buildP2pLaneFence,
+  'p2p-plan-lane': buildP2pPlanLaneFence,
 } satisfies Record<string, () => FilterNode>;
 
 // Keep the wire schema in lockstep with the registry above. A free-form string

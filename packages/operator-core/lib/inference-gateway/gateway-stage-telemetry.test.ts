@@ -3,6 +3,7 @@ import { afterEach, expect, it } from 'vitest';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats } from './gateway';
+import { CACHE_POLICY_VERSION } from './cache-policy';
 
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 let upstream: http.Server | undefined;
@@ -60,6 +61,7 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
 
   const statsResponse = await fetch(`http://127.0.0.1:${port}/stats`);
   const stats = (await statsResponse.json()) as GatewayStats;
+  expect(stats.cachePolicy?.policyVersion).toBe(CACHE_POLICY_VERSION);
   const stages = stats.requestStages!;
   expect(stages.requests).toEqual({
     started: 1,
@@ -70,6 +72,9 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
     reconciled: true,
     outcomeReconciled: true,
     missingStageTimelines: 0,
+    cacheUsageObserved: 0,
+    cacheWriteObserved: 0,
+    cacheUsageCoverage: 0,
   });
   expect(stages.outcomes.ok).toBe(1);
   expect(stages.outcomes.unclassified).toBe(0);

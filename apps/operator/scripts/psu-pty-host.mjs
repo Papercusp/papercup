@@ -538,6 +538,38 @@ export function ptyWriteChunks(value, maxCodeUnits = 16 * 1024) {
   return chunks;
 }
 
+const KICKOFF_MARKER_ECHO_TIMEOUT_MS = 2_000;
+const KICKOFF_MARKER_ECHO_POLL_MS = 25;
+
+/**
+ * Confirm a fresh Codex kickoff reached the visible composer before Enter can
+ * submit it. A backend frame proves the TUI rendered; child.write only proves
+ * the host attempted input. Neither proves the composer accepted the marker.
+ */
+async function waitForPtyTextEcho({
+  read,
+  text,
+  timeoutMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
+  pollMs = KICKOFF_MARKER_ECHO_POLL_MS,
+  shouldCancel = () => false,
+} = {}) {
+  const expected = String(text ?? '');
+  if (!expected || typeof read !== 'function') {
+    return { echoed: false, reason: 'invalid-echo-check', elapsedMs: 0 };
+  }
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(1, Number(timeoutMs) || KICKOFF_MARKER_ECHO_TIMEOUT_MS);
+  while (true) {
+    if (shouldCancel()) return { echoed: false, cancelled: true, elapsedMs: Date.now() - startedAt };
+    const visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
+    if (visible.includes(expected)) return { echoed: true, elapsedMs: Date.now() - startedAt };
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(1, Number(pollMs) || 1), remainingMs)));
+  }
+  return { echoed: false, reason: 'timeout', elapsedMs: Date.now() - startedAt };
+}
+
 /**
  * P-006 (psu-pty-turn-boundary-generalization-2026-09-22): may a ROUTINE host
  * diagnostic be written to stderr right now?
@@ -613,6 +645,8 @@ export function leadingTurnOriginMarker(text) {
  * although Codex received it, and a machine-injected turn reached the transcript
  * with nothing to distinguish it from owner input. Compose instead: the original
  * marker line FIRST, then the original body, then the minted carry text.
+ * When the mint already starts with the complete original body, retain that
+ * body only once; the mint may append a lineage/recovery reference to it.
  * Without a leading marker on the original there is nothing to preserve, so the
  * minted text is used as before. Pure and exported for tests. */
 export function composeCarryTurnText(originalText, mintedCarryText) {
@@ -622,6 +656,9 @@ export function composeCarryTurnText(originalText, mintedCarryText) {
   const marker = leadingTurnOriginMarker(original);
   if (!marker || leadingTurnOriginMarker(minted)) return minted;
   const body = original.replace(/\r\n?/g, '\n').split('\n').slice(1).join('\n').trim();
+  if (body && (minted === body || minted.startsWith(`${body}\n\n`))) {
+    return `${marker}\n${minted}`;
+  }
   return body ? `${marker}\n${body}\n\n${minted}` : `${marker}\n${minted}`;
 }
 
@@ -945,6 +982,76 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
   return { supported: true, reason: null };
 }
 
+/** Read a bounded, complete tail from one transcript under the backend's
+ * isolated root. This is shared by the turn-boundary and launch-activity
+ * probes so neither can accidentally certify another live session. */
+function readIsolatedNativeTranscriptRows({ agent, env = process.env, transcriptPath, home = homedir() }) {
+  if (!nativeTurnVerifierSupport(agent, env).supported || !transcriptPath) return null;
+  let fd;
+  try {
+    const rootDir = nativeTranscriptRoot(agent, env, home);
+    if (!rootDir) return null;
+    const root = realpathSync(rootDir);
+    const path = realpathSync(transcriptPath);
+    const rel = relative(root, path);
+    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return null;
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size === 0) return null;
+    const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
+    const bytes = Buffer.alloc(length);
+    const read = readSync(fd, bytes, 0, length, info.size - length);
+    let tail = bytes.subarray(0, read).toString('utf8');
+    if (!tail.endsWith('\n')) return null; // the newest record is still being written
+    if (info.size > length) tail = tail.slice(tail.indexOf('\n') + 1);
+    return tail.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** A plain launch's marker proves submission. A native task-start or assistant
+ * row AFTER that exact marker proves model activity, including a short turn
+ * that completed before the marker scan returned. PTY output is not used as
+ * execution proof when this isolated transcript is available. */
+function nativeKickoffTurnActivityAfterMarker({
+  agent,
+  env = process.env,
+  transcriptPath,
+  marker,
+  markerLostChars = 0,
+  home = homedir(),
+}) {
+  if (!['codex', 'claude'].includes(agent) || !marker) return { available: false, started: false };
+  const rows = readIsolatedNativeTranscriptRows({ agent, env, transcriptPath, home });
+  if (!rows) return { available: false, started: false };
+  const markerText = markerLostChars > 0 ? marker.slice(markerLostChars) : marker;
+  let markerSeen = false;
+  for (const row of rows) {
+    if (!markerSeen) {
+      let serialized;
+      try { serialized = JSON.stringify(row); }
+      catch { return { available: false, started: false }; }
+      if (serialized.includes(markerText)) markerSeen = true;
+      continue;
+    }
+    if (agent === 'codex') {
+      if (row?.type === 'event_msg' &&
+        ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
+        return { available: true, started: true };
+      }
+      if (row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant') {
+        return { available: true, started: true };
+      }
+    } else if (row?.type === 'assistant') {
+      return { available: true, started: true };
+    }
+  }
+  return { available: markerSeen, started: false };
+}
+
 /**
  * Did the agent's native turn genuinely complete, per THIS transcript?
  *
@@ -962,44 +1069,17 @@ export function nativeTurnCompletedInTranscript({
   home = homedir(),
   nowMs = Date.now(),
 }) {
-  if (!nativeTurnVerifierSupport(agent, env).supported) return false;
-  if (!transcriptPath || !Number.isFinite(receivedAtMs)) return false;
+  if (!Number.isFinite(receivedAtMs)) return false;
+  const rows = readIsolatedNativeTranscriptRows({ agent, env, transcriptPath, home });
+  if (!rows) return false;
   const classify = TURN_ROW_CLASSIFIERS[/** @type {string} */ (agent)];
-  let fd;
-  try {
-    const rootDir = nativeTranscriptRoot(agent, env, home);
-    if (!rootDir) return false;
-    const root = realpathSync(rootDir);
-    const path = realpathSync(transcriptPath);
-    const rel = relative(root, path);
-    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return false;
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const info = fstatSync(fd);
-    if (!info.isFile() || info.size === 0) return false;
-    const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
-    const bytes = Buffer.alloc(length);
-    const read = readSync(fd, bytes, 0, length, info.size - length);
-    let tail = bytes.subarray(0, read).toString('utf8');
-    if (!tail.endsWith('\n')) return false; // the newest record is still being written
-    if (info.size > length) tail = tail.slice(tail.indexOf('\n') + 1);
-    let completed = false;
-    for (const line of tail.split('\n')) {
-      if (!line.trim()) continue;
-      // Deliberately NOT per-line guarded: a malformed row means the tail is
-      // corrupt, and the outer catch then refuses the whole probe. Swallowing it
-      // per line would let a truncated/garbled transcript certify a boundary
-      // from whatever rows happened to survive. Parity with the original.
-      const row = JSON.parse(line);
-      const verdict = classify(row, { receivedAtMs: /** @type {number} */ (receivedAtMs), nowMs });
-      if (verdict === 'turn-completed') completed = true;
-      else if (verdict === 'turn-started') completed = false;
-    }
-    return completed;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
+  let completed = false;
+  for (const row of rows) {
+    const verdict = classify(row, { receivedAtMs: /** @type {number} */ (receivedAtMs), nowMs });
+    if (verdict === 'turn-completed') completed = true;
+    else if (verdict === 'turn-started') completed = false;
   }
+  return completed;
 }
 
 /** Return the newest regular native transcript beneath this session's ISOLATED
@@ -1257,14 +1337,16 @@ const KICKOFF_TURN_START_POLLS = (() => {
 })();
 
 /**
- * Did the model actually begin the kickoff turn? Returns as soon as ANY new pty
- * output appears after the baseline, otherwise reports a stall once the whole
- * budget has elapsed with zero new bytes.
+ * Did the model actually begin the kickoff turn? A post-marker native transcript
+ * row is authoritative when an isolated Codex/Claude transcript is available;
+ * PTY output is only a fallback when native activity cannot be inspected.
+ * @param {{lastOutputAt?: () => number, wait?: (ms: number) => Promise<any>,
+ *   pollMs?: number, polls?: number,
+ *   nativeTurnActivity?: (() => {available: boolean, started: boolean}) | null}} [options]
  *
- * Keyed on "new output since a baseline" rather than "output is quiet NOW",
- * because a healthy short turn ALSO ends quiet — quiet alone would flag every
- * fast kickoff. A turn that died at the sampling layer is distinguishable
- * precisely because it produces nothing whatsoever after the prompt is accepted.
+ * A task-start/assistant row after the unique marker counts even if its PTY
+ * bytes arrived before the post-proof baseline. A marker with no native activity
+ * remains retryable; unsupported transcript formats keep the PTY fallback.
  *
  * Fails SAFE: a disabled or zero-length budget reports `started:true` with
  * `observed:false`, so a caller never takes recovery action on an observation
@@ -1275,15 +1357,35 @@ export async function observeKickoffModelTurnStart({
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   pollMs = KICKOFF_TURN_START_POLL_MS,
   polls = KICKOFF_TURN_START_POLLS,
+  nativeTurnActivity = null,
 } = {}) {
   const budgetMs = Math.max(0, pollMs) * Math.max(0, polls);
+  let nativeAuthority = false;
+  const inspectNative = () => {
+    if (typeof nativeTurnActivity !== 'function') return { available: false, started: false };
+    try {
+      const result = nativeTurnActivity();
+      if (result?.available) nativeAuthority = true;
+      return result ?? { available: false, started: false };
+    } catch {
+      return { available: false, started: false };
+    }
+  };
+  const initialNative = inspectNative();
+  if (initialNative.available && initialNative.started) {
+    return { started: true, observed: true, polls: 0, budgetMs, reason: null };
+  }
   if (!(pollMs > 0) || !(polls > 0)) {
     return { started: true, observed: false, polls: 0, budgetMs: 0, reason: 'observation-disabled' };
   }
   const baseline = Number(lastOutputAt()) || 0;
   for (let poll = 0; poll < polls; poll += 1) {
     await wait(pollMs);
-    if ((Number(lastOutputAt()) || 0) > baseline) {
+    const native = inspectNative();
+    if (native.available && native.started) {
+      return { started: true, observed: true, polls: poll + 1, budgetMs, reason: null };
+    }
+    if (!nativeAuthority && (Number(lastOutputAt()) || 0) > baseline) {
       return { started: true, observed: true, polls: poll + 1, budgetMs, reason: null };
     }
   }
@@ -1292,7 +1394,9 @@ export async function observeKickoffModelTurnStart({
     observed: true,
     polls,
     budgetMs,
-    reason: 'no-model-output-after-kickoff',
+    reason: nativeAuthority
+      ? 'no-native-turn-activity-after-kickoff'
+      : 'no-model-output-after-kickoff',
   };
 }
 
@@ -5757,6 +5861,72 @@ export function injectTurn(sock, text, ownerId) {
 }
 
 /**
+ * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ *
+ * The in-place respawn below re-spawns the CLI with THIS host's env, so whatever
+ * PAPERCUSP_OPERATOR_URL the session was launched with rides into every successor
+ * unexamined. The launcher heals a dead pin only when one of ITS OWN requests fails
+ * (fetchWithResilience); an in-place respawn makes no launcher request, so nothing
+ * ever re-checks the pin. Measured 2026-09-23: a session launched from a staging
+ * console carried http://localhost:3170 through every carry-respawn, and each staging
+ * restart took its MCP tools and its owner-directive capture down with it.
+ *
+ * The pin is replaced only when it REFUSES the connection — a port with nothing
+ * listening. A slow or erroring operator is alive and stays authoritative, so a live
+ * staging pin is never silently moved to green (the rule resolveOmpOperatorUrl in the
+ * launcher also follows). The replacement is the local MCP proxy, and only when it
+ * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
+ * healed, otherwise null. Never throws.
+ *
+ * @param {EnvironmentMap} env
+ * @param {{ fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
+ */
+export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 3_000 } = {}) {
+  try {
+    const pinned = String(env.PAPERCUSP_OPERATOR_URL || '').trim().replace(/\/+$/, '');
+    if (!pinned || env.PAPERCUSP_MCP_PROXY === '0') return null;
+    let pinnedUrl;
+    try {
+      pinnedUrl = new URL(pinned);
+    } catch {
+      return null;
+    }
+    if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(pinnedUrl.hostname)) return null;
+    const proxyPort =
+      Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
+    if (pinnedUrl.port === String(proxyPort)) return null;
+    const proxy = `http://127.0.0.1:${proxyPort}`;
+
+    let refused = false;
+    try {
+      await fetchImpl(`${pinned}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      // undici reports a refused connect as TypeError('fetch failed') whose cause
+      // carries the socket errno. A timeout surfaces as AbortError/TimeoutError and
+      // is NOT refusal: the operator may simply be busy.
+      const code = err?.cause?.code ?? err?.code;
+      refused = code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH';
+    }
+    if (!refused) return null;
+
+    try {
+      const h = await fetchImpl(`${proxy}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!h?.ok) return null;
+    } catch {
+      return null;
+    }
+    env.PAPERCUSP_OPERATOR_URL = proxy;
+    // The new value is a launcher decision, not the caller's pin, so later wakes may
+    // rediscover (psu-launcher.mjs OPERATOR_URL_PROVENANCE_ENV; a literal because the
+    // host cannot import the launcher without an import cycle).
+    env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+    return { from: pinned, to: proxy };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Host `command args` through a managed pty, bridging the user's TTY and
  * exposing the control socket. Returns a Promise that resolves with the child's
  * exit code (the caller maps that to its own exit). The pty + socket live in
@@ -5792,6 +5962,8 @@ export function injectTurn(sock, text, ownerId) {
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
+ * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
+ *   injectable dead-operator-pin heal, run before each in-place respawn
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
@@ -5840,6 +6012,9 @@ export function hostThroughPty(o) {
     // rewriting the shared checkout mid-run — which git-sync would sweep into a
     // commit. Injecting it is what makes the adopting path testable at all.
     hostCodeStalenessFn = hostCodeStaleness,
+    // EI-24091823697677465: injectable dead-pin probe, run before each in-place
+    // respawn. Injected so tests can drive the respawn without real sockets.
+    healOperatorPin = healDeadOperatorPin,
     // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
     // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
     parentPidFn = () => process.ppid,
@@ -6603,6 +6778,7 @@ export function hostThroughPty(o) {
     backoffMs = recycleCarryRetryBackoffMs,
     onDrop = () => {},
     requireInitialOutput = false,
+    verifyKickoffMarkerEcho = false,
     terminateOnSubmitVerifyExhaustion = true,
     freshChildOwnerInputGeneration = null,
   }) => {
@@ -6724,19 +6900,72 @@ export function hostThroughPty(o) {
               : startupFallbackReady
                 ? 'startup-fallback'
                 : 'last-resort';
-          for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
+          const steps = controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env);
+          let markerEchoFailureReason = null;
+          for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+            const step = steps[stepIndex];
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
             const chunks = ptyWriteChunks(step.data);
-            for (let i = 0; i < chunks.length; i++) {
-              try {
-                quotaBlockDetector.observeInput(chunks[i]);
-                child.write(chunks[i]);
-              } catch {
-                /* the child may have exited under us */
+            const marker = stepIndex === 0 && verifyKickoffMarkerEcho
+              ? leadingTurnOriginMarker(text)
+              : null;
+            const echoTap = marker ? makeOutputTap() : null;
+            let echoProof = null;
+            try {
+              for (let i = 0; i < chunks.length; i++) {
+                try {
+                  quotaBlockDetector.observeInput(chunks[i]);
+                  child.write(chunks[i]);
+                } catch {
+                  /* the child may have exited under us */
+                }
+                if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
               }
-              if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
+              if (marker && echoTap) {
+                echoProof = await waitForPtyTextEcho({
+                  read: echoTap.read,
+                  text: marker,
+                  timeoutMs: positiveNumber(
+                    env.PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS,
+                    KICKOFF_MARKER_ECHO_TIMEOUT_MS,
+                  ),
+                  pollMs: positiveNumber(
+                    env.PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_POLL_MS,
+                    KICKOFF_MARKER_ECHO_POLL_MS,
+                  ),
+                  shouldCancel: () => child !== injectChild || freshChildWasInterrupted(),
+                });
+              }
+            } finally {
+              echoTap?.close();
             }
+            if (echoProof?.cancelled) {
+              markerEchoFailureReason = child !== injectChild ? 'superseded' : 'fresh-child-owner-input';
+              break;
+            }
+            if (echoProof && !echoProof.echoed) {
+              appendHostEvent(ownerId, 'launch-kickoff-marker-echo-unconfirmed', {
+                elapsedMs: echoProof.elapsedMs,
+                markerChars: marker.length,
+                reason: echoProof.reason,
+              });
+              markerEchoFailureReason = 'kickoff-marker-echo-unconfirmed';
+              break;
+            }
+            if (echoProof?.echoed) {
+              appendHostEvent(ownerId, 'launch-kickoff-marker-echo-confirmed', {
+                elapsedMs: echoProof.elapsedMs,
+                markerChars: marker.length,
+              });
+            }
+          }
+          if (markerEchoFailureReason === 'superseded') {
+            return { delivered: false, reason: 'superseded', attempts };
+          }
+          if (markerEchoFailureReason) {
+            dropReason = markerEchoFailureReason;
+            break;
           }
           lastMachineTurnSubmittedAtMs = Date.now();
           if (requireInitialOutput) {
@@ -6854,14 +7083,16 @@ export function hostThroughPty(o) {
             ? 'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt'
             : dropReason === 'no-startup-ready-marker'
               ? 'the child never emitted its startup-ready marker'
-              : dropReason === 'submit-verification-exhausted'
-                ? 'submit verification exhausted without observing output after a resubmit'
+                : dropReason === 'kickoff-marker-echo-unconfirmed'
+                  ? 'the exact Codex kickoff marker never appeared in the composer echo'
+                  : dropReason === 'submit-verification-exhausted'
+                    ? 'submit verification exhausted without observing output after a resubmit'
                 : dropReason.startsWith('submit-verification-aborted-')
                   ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
-              : dropReason === 'fresh-child-owner-input'
-                ? 'the owner used the fresh child before its carry prompt was submitted'
-              : dropReason === 'resume-compaction-timeout'
-                ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
+                    : dropReason === 'fresh-child-owner-input'
+                      ? 'the owner used the fresh child before its carry prompt was submitted'
+                      : dropReason === 'resume-compaction-timeout'
+                        ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
               : 'the child never settled to its prompt'
         } ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
@@ -6876,12 +7107,17 @@ export function hostThroughPty(o) {
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
   if (launchKickoff) {
+    const verifyKickoffMarkerEcho =
+      String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
+      !args.some((arg) => arg === 'resume' || arg === 'fork') &&
+      Boolean(leadingTurnOriginMarker(launchKickoff));
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
       const r = await injectTurnAtPrompt({
         text: launchKickoff,
         label,
         requireInitialOutput: true,
+        verifyKickoffMarkerEcho,
         freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
           !args.some((arg) => arg === 'resume' || arg === 'fork')
           ? ownerInputGeneration
@@ -6975,14 +7211,35 @@ export function hostThroughPty(o) {
           }
           return;
         }
-        // WI-2140591: the marker proves the prompt was ACCEPTED, not that the
-        // model ran. Watch for the turn to actually start before claiming
-        // delivery — a sampling-layer give-up leaves the marker in place, the
-        // child alive, and the session idle forever with nobody informed. The
-        // receipt above is already published, so the detached parent is never
-        // delayed by this observation.
+        // The marker proves submission, not execution. When an isolated native
+        // transcript is available, only a task-start/assistant row after this
+        // marker proves the turn ran; PTY output may have arrived before marker
+        // proof returned and must not become a late sampling baseline.
         const readLastOutputAt = () => activity.snapshot().lastOutputAt ?? 0;
-        let turnStart = await observeKickoffModelTurnStart({ lastOutputAt: readLastOutputAt });
+        const kickoffMarker = leadingTurnOriginMarker(launchKickoff);
+        const nativeTurnActivity = kickoffMarker && proof.nativeRef &&
+          nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported
+          ? () => nativeKickoffTurnActivityAfterMarker({
+              agent: env.PAPERCUSP_AGENT,
+              env,
+              transcriptPath: proof.nativeRef,
+              marker: kickoffMarker,
+              markerLostChars: proof.markerTruncated?.lostChars ?? 0,
+            })
+          : null;
+        const configuredPollMs = Number(env.PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS);
+        const kickoffTurnPollMs = configuredPollMs || KICKOFF_TURN_START_POLL_MS;
+        const configuredPolls = Number(env.PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS);
+        const kickoffTurnPolls = Number.isFinite(configuredPolls) && configuredPolls >= 0
+          ? configuredPolls
+          : KICKOFF_TURN_START_POLLS;
+        const observeTurnStart = () => observeKickoffModelTurnStart({
+          lastOutputAt: readLastOutputAt,
+          nativeTurnActivity,
+          pollMs: kickoffTurnPollMs,
+          polls: kickoffTurnPolls,
+        });
+        let turnStart = await observeTurnStart();
         let modelRetried = false;
         if (turnStart.observed && !turnStart.started) {
           modelRetried = true;
@@ -7004,6 +7261,7 @@ export function hostThroughPty(o) {
               text: launchKickoff,
               label: 'launch kickoff (model-turn retry)',
               requireInitialOutput: false,
+              verifyKickoffMarkerEcho,
               terminateOnSubmitVerifyExhaustion: false,
             });
           } catch (error) {
@@ -7011,7 +7269,7 @@ export function hostThroughPty(o) {
               error: String(error?.message ?? error).slice(0, 200),
             });
           }
-          turnStart = await observeKickoffModelTurnStart({ lastOutputAt: readLastOutputAt });
+          turnStart = await observeTurnStart();
           appendHostEvent(ownerId, 'launch-kickoff-model-turn-retry-result', {
             started: turnStart.started,
             polls: turnStart.polls,
@@ -9225,6 +9483,17 @@ export function hostThroughPty(o) {
         freshChildOwnerInputGeneration = systemPromptAddendum
           ? ownerInputGeneration
           : null;
+        // EI-24091823697677465: the successor inherits `env`, so a dead operator pin
+        // must be healed HERE or it outlives every respawn. Best-effort: a probe
+        // failure must never cost the respawn.
+        try {
+          const healed = await healOperatorPin(env);
+          if (healed) {
+            appendHostEvent(ownerId, 'operator-pin-healed', { ...healed, mode: respawnMode });
+          }
+        } catch {
+          /* keep the old pin — the respawn itself matters more */
+        }
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug

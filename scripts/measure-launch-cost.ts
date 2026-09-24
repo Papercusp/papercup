@@ -241,6 +241,9 @@ async function main(): Promise<number> {
       console.log('');
       console.log('overall');
       console.log(renderOverall(overall));
+      if (overall.incompleteCount) {
+        console.log(`INCOMPLETE USAGE: ${overall.incompleteCount} sample(s); numeric totals are known lower bounds, not complete prompt counts.`);
+      }
     }
   }
 
@@ -249,6 +252,10 @@ async function main(): Promise<number> {
     return 1;
   }
   if (cli.target !== null && overall !== null) {
+    if (overall.incompleteCount === undefined || overall.incompleteCount > 0) {
+      console.error('UNKNOWN target result: incomplete usage counts cannot establish a passing launch-cost target.');
+      return 1;
+    }
     const pass = overall.medianTotal <= cli.target;
     const line = `${pass ? 'PASS' : 'FAIL'} median ${n(overall.medianTotal)} vs target ${n(cli.target)} (n=${n(overall.count)})`;
     if (cli.json) console.error(line);

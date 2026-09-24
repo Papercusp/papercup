@@ -150,6 +150,7 @@ import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
 import {
+  CACHE_POLICY_VERSION,
   deferLargeToolsEnabled,
   deferMinToolBytesFromEnv,
   rewriteAnthropicCacheBody,
@@ -1327,6 +1328,7 @@ export interface GatewayStats {
    *  requests that arrived carrying n cache_control markers (the headroom for the opt-in
    *  tools-span breakpoint is observable here). Optional for deploy-skew readers of older gateways. */
   cachePolicy?: {
+    policyVersion?: string;
     enabled: boolean;
     toolsBreakpoint: boolean;
     splitBoundary: boolean;
@@ -3927,6 +3929,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       routingQuality: routingQualitySnapshot(),
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
       cachePolicy: {
+        policyVersion: CACHE_POLICY_VERSION,
         enabled: cachePolicyEnabled,
         toolsBreakpoint: cacheToolsBreakpointEnabled,
         splitBoundary: cacheSplitBoundaryEnabled,

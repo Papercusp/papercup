@@ -43,8 +43,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { summarizeByDay, type DayStats } from '../../launch-cost/launch-cost-metrics';
-import { scanLaunchTranscripts } from '../../launch-cost/scan-launch-transcripts';
+import { median, type DayStats } from '../../launch-cost/launch-cost-metrics';
+import { scanLaunchTranscripts, type ScanReport } from '../../launch-cost/scan-launch-transcripts';
 import { recentWatchdogFires, recordFire } from '../../pot/watchdog';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -95,6 +95,7 @@ export interface LaunchCostLeg {
   key: 'regression' | 'ceiling';
   summary: string;
   detail: string;
+  cohort?: string;
 }
 
 export interface LaunchCostVerdict {
@@ -198,6 +199,76 @@ export function evaluateLaunchCost(
   return verdict;
 }
 
+/** Calendar-window, model/entrypoint comparison over the existing Claude launch scan.
+ * Unknown models, invalid counts and unreadable sources lower coverage; they never
+ * become zero-cost launches. This is input volume, not provider billing or hit rate. */
+export function evaluateLaunchScan(report: ScanReport, opts: {
+  now: number; recentDays?: number; baselineDays?: number;
+  ceilingTokens?: number; regressionPct?: number; minSamples?: number; minCoverage?: number;
+}) {
+  const dayMs = 86_400_000;
+  const recentDays = Math.max(1, Math.floor(opts.recentDays ?? DEFAULT_RECENT_DAYS));
+  const baselineDays = Math.max(1, Math.floor(opts.baselineDays ?? DEFAULT_BASELINE_DAYS));
+  const recentStart = opts.now - recentDays * dayMs;
+  const baselineStart = recentStart - baselineDays * dayMs;
+  const minSamples = opts.minSamples ?? MIN_SAMPLES;
+  const ceiling = opts.ceilingTokens ?? DEFAULT_CEILING_TOKENS;
+  const regression = opts.regressionPct ?? DEFAULT_REGRESSION_PCT;
+  const groups = new Map<string, { recent: number[]; baseline: number[] }>();
+  let unknownSamples = 0;
+  let validSamples = 0;
+  let newest = -Infinity;
+  const recentValues: number[] = [];
+  for (const sample of report.samples) {
+    const time = Date.parse(sample.timestamp);
+    const numbers = [sample.inputTokens, sample.cacheReadTokens, sample.cacheCreationTokens, sample.totalPromptTokens];
+    if (sample.usageCountsComplete !== true || !sample.model || !Number.isFinite(time) || time > opts.now ||
+      numbers.some(n => !Number.isSafeInteger(n) || n < 0) ||
+      sample.totalPromptTokens !== sample.inputTokens + sample.cacheReadTokens + sample.cacheCreationTokens) {
+      unknownSamples++;
+      continue;
+    }
+    if (time < baselineStart) continue;
+    validSamples++;
+    newest = Math.max(newest, time);
+    if (time >= recentStart) recentValues.push(sample.totalPromptTokens);
+    const key = JSON.stringify([sample.model, sample.entrypoint]);
+    const group = groups.get(key) ?? { recent: [], baseline: [] };
+    (time >= recentStart ? group.recent : group.baseline).push(sample.totalPromptTokens);
+    groups.set(key, group);
+  }
+  const unmeasured = ['unreadable', 'undatable', 'no-usage-row'].reduce((n, key) =>
+    n + (report.skippedByReason[key as keyof ScanReport['skippedByReason']] ?? 0), 0);
+  const eligible = validSamples + unknownSamples + unmeasured;
+  const coverage = eligible ? validSamples / eligible : null;
+  const unknown: string[] = [];
+  if (coverage === null || coverage < (opts.minCoverage ?? 0.8)) unknown.push('incomplete-telemetry-coverage');
+  if (newest < recentStart) unknown.push('stale-or-absent-recent-telemetry');
+  const cohorts = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([key, group]) => {
+    const recentMedian = group.recent.length ? median(group.recent) : null;
+    const baselineMedian = group.baseline.length ? median(group.baseline) : null;
+    return { key, recentMedian, baselineMedian, recentSamples: group.recent.length, baselineSamples: group.baseline.length,
+      regressionComparable: group.recent.length >= minSamples && group.baseline.length >= minSamples };
+  });
+  const legs: LaunchCostLeg[] = [];
+  for (const c of cohorts) {
+    if (c.recentSamples < minSamples || c.recentMedian === null) continue;
+    if (ceiling > 0 && c.recentMedian >= ceiling) legs.push({ key: 'ceiling', cohort: c.key,
+      summary: `${c.key} launch input median ${Math.round(c.recentMedian)} exceeds ${ceiling}`,
+      detail: `${c.recentSamples} recent launches in this model/entrypoint cohort exceed the input-volume ceiling; provider cost and cache-miss cause are not inferred.` });
+    if (regression > 0 && c.baselineSamples >= minSamples && c.baselineMedian !== null && c.baselineMedian > 0 &&
+      c.recentMedian / c.baselineMedian - 1 >= regression) legs.push({ key: 'regression', cohort: c.key,
+      summary: `${c.key} launch input grew ${((c.recentMedian / c.baselineMedian - 1) * 100).toFixed(1)}%`,
+      detail: `Pooled recent median ${c.recentMedian} (${c.recentSamples} samples/${recentDays} days), baseline ${c.baselineMedian} (${c.baselineSamples} samples/${baselineDays} days). Model and entrypoint match; account and transport beyond this Claude transcript source are unmeasured.` });
+  }
+  if (!cohorts.some(c => c.recentSamples >= minSamples)) unknown.push('insufficient-recent-cohort-volume');
+  return { cohorts, coverage, validSamples, unknownSamples, unmeasured,
+    recentSamples: cohorts.reduce((n, c) => n + c.recentSamples, 0),
+    recentMedian: recentValues.length ? median(recentValues) : null,
+    // A fleet-level aggregate is descriptive only; it never selects alarm legs.
+    legs: unknown.length ? [] : legs, unknown };
+}
+
 export interface LaunchCostRunResult {
   outcome: 'ok' | 'alerted' | 'debounced' | 'insufficient' | 'error';
   recentMedian: number | null;
@@ -206,6 +277,7 @@ export interface LaunchCostRunResult {
   filesScanned: number;
   filesMeasured: number;
   reason?: string;
+  telemetry?: ReturnType<typeof evaluateLaunchScan>;
 }
 
 export interface LaunchCostCeilingDeps {
@@ -254,7 +326,8 @@ export async function runLaunchCostCeiling(
       since,
     });
 
-    const verdict = evaluateLaunchCost(summarizeByDay(report.samples), {
+    const verdict = evaluateLaunchScan(report, {
+      now: deps.now ?? Date.now(),
       recentDays,
       baselineDays,
       ceilingTokens: opts.ceilingTokens ?? launchCostCeilingTokens(),
@@ -264,19 +337,20 @@ export async function runLaunchCostCeiling(
     const counts: LaunchCostRunResult = {
       ...base,
       recentMedian: verdict.recentMedian,
-      baselineMedian: verdict.baselineMedian,
+      baselineMedian: null,
       recentSamples: verdict.recentSamples,
       filesScanned: report.filesScanned,
       filesMeasured: report.filesMeasured,
+      telemetry: verdict,
     };
 
-    if (verdict.insufficient) return { ...counts, outcome: 'insufficient', reason: verdict.insufficient };
+    if (verdict.unknown.length) return { ...counts, outcome: 'insufficient', reason: verdict.unknown.join('; ') };
     if (verdict.legs.length === 0) return { ...counts, outcome: 'ok' };
 
     // Debounce per LEG, not per run (EI-16071): a level that stays bad must not
     // suppress a DIFFERENT leg crossing for the first time.
     const scopeKey = verdict.legs
-      .map((l) => l.key)
+      .map((l) => `${l.key}:${l.cohort ?? 'legacy'}`)
       .sort()
       .join('+');
     const firedRecently =
@@ -296,7 +370,7 @@ export async function runLaunchCostCeiling(
       '## Measurement',
       `Scanned ${report.filesScanned} transcript file(s), measured ${report.filesMeasured}. ` +
         `Recent window ${recentDays}d (${verdict.recentSamples} launches), baseline ${baselineDays}d ` +
-        `(${verdict.baselineSamples} launches). Re-run by hand with:`,
+        `(per-cohort baseline counts in routine telemetry). Model/entrypoint coverage ${(verdict.coverage! * 100).toFixed(1)}%. Re-run the underlying scan with:`,
       '',
       '    npm run measure:launch-cost -- --target 120000 --require-samples',
       '',

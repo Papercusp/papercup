@@ -9596,7 +9596,7 @@
           "POST"
         ]
       },
-      "description": "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline + hitRatePct, sorted by traffic. ⚠ PER-WORKER: these live in one process's memory and :3070 is a reuseport cluster, so one call reports only the worker that answered it — read `pid`/`clusterSize`, and repeat-call to sample more (`sampledWorkers`). `bypass`>0 means the CACHE_LAYER kill-switch is off (nothing is being cached); `deadline`>0 means callers hit the cachedRead deadline and got the degraded value. A tool absent from `perTool` never called cachedRead at all — which is different from calling it and missing.",
+      "description": "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline, miss reasons, actual factory builds and elapsed build milliseconds. Absent misses combine new/evicted/cleared keys; no key history is retained. buildMs covers buildsCompleted, including failures; builds also includes in-flight work. L2 hits and joined readers do not add factory builds. ⚠ PER-WORKER: record pid/uptime/clusterSize and aggregate distinct workers yourself; this result covers one worker. A tool absent from perTool never called cachedRead in this process lifetime. A low hitRatePct alone does not establish expensive rebuilding.",
       "capabilities": [
         "intel:read"
       ],
@@ -17685,7 +17685,7 @@
           "POST"
         ]
       },
-      "description": "Bulk-pause EVERY active per-session engine loop (loop-su-% routines) workspace-wide, or scoped to one fleet's CURRENT members with `fleetSlug` — the fleet-wide-stand-down primitive routines:group-set cannot reach (loops are never group members). Requires `reason`. ALWAYS stamps a finite auto-resume expiry (default 4h, override with `pauseTtlHours`) — there is no open-ended stand-down — so a broadcast can never strand every loop the way an ad-hoc hand-called routines:set stand-down twice did. Returns the ACTUAL {pausedCount, targets} touched, a checkable number instead of an assertion. Audited + one-call-revertible.",
+      "description": "Bulk-pause active per-session engine loops (loop-su-% routines), or resume loops held by a prior stand-down. Scope to the workspace or one fleet's CURRENT members with `fleetSlug`. `action` defaults to `pause`; both actions require a reason. Pause always stamps a finite auto-resume expiry and returns its `standdownGeneration`. Resume clears only rows carrying the `standdownAll` marker in the requested scope (and optional exact generation), preserving unrelated per-agent pauses. Both operations return the actual targets, are audited, and are one-call-revertible.",
       "capabilities": [
         "operator:write"
       ],
@@ -17703,9 +17703,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Pausing EVERY (or one fleet's) active engine loop at once for a coordinated stand-down (a delicate host restart, a shared-tree operation that must not race concurrent loop wakes) — instead of hand-calling routines:set once per loop, which is how a stand-down silently misses most of the fleet and how it drifts into an unbounded hold with no attributed resume.",
-        "notWhen": "To pause your OWN loop, use loop:end (permanent, no TTL — by design). To pause one specific OTHER loop, routines:set { name, active:false }. To pause a routine GROUP (not engine loops), routines:group-set.",
-        "chaining": "loop:status / fleet:assignments before, to see which loops are active. After `pauseTtlHours` lapses (or an early routines:set { active:true } per routine), a stood-down loop auto-resumes via the SAME routines-engine sweep release-pause-ttl.ts uses — loop:status renders the stand-down banner while it is held."
+        "when": "Pausing every (or one fleet's) active engine loop at once for a coordinated stand-down, or resuming loops paused by this tool. A resume clears only the stand-down markers in scope; ordinary per-agent pauses stay in place.",
+        "notWhen": "To stop your OWN loop permanently, use loop:end. To pause or resume one specific routine, use routines:set. To pause or resume a routine GROUP (not engine loops), use routines:group-set.",
+        "chaining": "loop:status / fleet:assignments before, to see which loops are active. After `pauseTtlHours` lapses, the routines engine auto-resumes a stand-down. Use `action:'resume'` for an earlier bulk resume; pass the returned `standdownGeneration` to resume exactly one pause generation, or omit it to clear every stand-down marker in scope."
       }
     },
     {

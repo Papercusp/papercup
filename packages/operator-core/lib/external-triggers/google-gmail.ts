@@ -353,6 +353,21 @@ function backfillThrottleMs(throttleCount: number): number {
   return Math.min(BACKFILL_THROTTLE_BASE_MS * 2 ** Math.min(throttleCount, 10), BACKFILL_THROTTLE_MAX_MS);
 }
 
+function throttledBackfillState(
+  state: GoogleGmailBackfillState,
+  now: Date,
+  messages = state.messages,
+): GoogleGmailBackfillState {
+  const throttleCount = state.throttleCount + 1;
+  return {
+    ...state,
+    status: 'throttled',
+    messages,
+    throttledUntil: new Date(now.getTime() + backfillThrottleMs(state.throttleCount)).toISOString(),
+    throttleCount,
+  };
+}
+
 async function parseResponse<T>(response: Response, operation: string): Promise<T> {
   const text = await response.text();
   let body: unknown = {};
@@ -1276,14 +1291,7 @@ async function backfillChunk(
       nextPageToken = nonEmpty(body.nextPageToken);
     } catch (cause) {
       if (!isGoogleGmailQuotaError(cause)) throw cause;
-      const throttleCount = state.throttleCount + 1;
-      await persist({
-        ...state,
-        status: 'throttled',
-        messages: state.messages + delivered,
-        throttledUntil: new Date(now.getTime() + backfillThrottleMs(state.throttleCount)).toISOString(),
-        throttleCount,
-      });
+      await persist(throttledBackfillState(state, now, state.messages + delivered));
       return { messages: messages + delivered, gone, pages, state, source: workingSource };
     }
     messages += delivered;
@@ -1360,6 +1368,23 @@ export async function syncGoogleGmailSource(
       // from any other call — messages.get for a message deleted between the
       // history page and its fetch — used to land here too and restarted the
       // backfill from zero every few minutes (EI-23429618437235533).
+      // A quota 403 is different: it does not invalidate the history cursor,
+      // but it must park an active backfill as well. Otherwise this throws to
+      // the poll action before backfillChunk can persist its cooldown, and the
+      // next poll retries the same full-size chunk against the exhausted quota.
+      if (isGoogleGmailQuotaError(cause)) {
+        const backfill = googleGmailBackfillState(workingSource);
+        if (backfill && backfill.status !== 'complete') {
+          const throttled = throttledBackfillState(backfill, now);
+          workingSource = await updateSource(sql, source.workspaceId, source.id, {
+            status: 'connected',
+            cursor: { ...workingSource.cursor, backfill: throttled },
+            lastError: null,
+            connected: true,
+          });
+        }
+        throw cause;
+      }
       if (!isGoogleGmailHistoryExpiredError(cause)) throw cause;
       // The guard above is the type narrowing: it only passes a GoogleGmailApiError.
       const expired = cause as GoogleGmailApiError;

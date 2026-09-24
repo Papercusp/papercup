@@ -324,6 +324,20 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.listWorkspaceWideLoopStanddownOwners).toHaveBeenCalledWith('ws-test', expect.any(Number));
   });
 
+  it('dispatches terminal auditor work again after the workspace-wide stand-down is cleared', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-resumed')]);
+    d.route.mockResolvedValue({ state: 'routed', conversationId: 'audit-after-resume' });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-resumed'], ctx }, d);
+
+    expect(result.receipts).toMatchObject([{ issueId: 'EI-resumed', state: 'routed' }]);
+    expect(d.listWorkspaceWideLoopStanddownOwners).toHaveBeenCalledWith('ws-test', expect.any(Number));
+    expect(d.listScorecards).toHaveBeenCalledOnce();
+    expect(d.reserve).toHaveBeenCalledOnce();
+    expect(d.route).toHaveBeenCalledOnce();
+  });
+
   it('launches a current standard target and maps a replay to a deduped receipt', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-audit-1')]);

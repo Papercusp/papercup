@@ -8,14 +8,95 @@
  * the `catches the real 2026-09-11 step` case firing, that is a genuine regression in the
  * detector and not a stale fixture.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_CEILING_TOKENS,
   evaluateLaunchCost,
+  evaluateLaunchScan,
+  runLaunchCostCeiling,
   MIN_SAMPLES,
 } from './launch-cost-ceiling-action';
-import type { DayStats } from '../../launch-cost/launch-cost-metrics';
+import type { DayStats, LaunchSample } from '../../launch-cost/launch-cost-metrics';
+import type { ScanReport } from '../../launch-cost/scan-launch-transcripts';
+
+const now = Date.parse('2026-09-24T12:00:00Z');
+function launches(model: string | null, ageDays: number, tokens: number, count = 30): LaunchSample[] {
+  const timestamp = new Date(now - ageDays * 86_400_000).toISOString();
+  return Array.from({ length: count }, (_, n) => ({
+    ownerId: 'su-test', sessionId: `${model}-${ageDays}-${n}`, filePath: `/fixture/${model}-${ageDays}-${n}`,
+    timestamp, day: timestamp.slice(0, 10), model, entrypoint: 'cli', cliVersion: 'fixture', cwd: '/fixture',
+    lineNumber: 1, bytesBeforeSample: 0, inputTokens: tokens, cacheCreationTokens: 0,
+    cacheReadTokens: 0, totalPromptTokens: tokens,
+    usageCountsComplete: true,
+  }));
+}
+function scan(samples: LaunchSample[], unreadable = 0): ScanReport {
+  return { root: '/fixture', samples, filesScanned: samples.length + unreadable, filesMeasured: samples.length,
+    skipped: [], skippedByReason: { 'no-usage-row': 0, 'all-below-threshold': 0,
+      'sidechain-only': 0, 'filtered-out': 0, undatable: 0, unreadable } };
+}
+
+describe('launch scan cohort and telemetry guards', () => {
+  it('does not alarm on a changing model mix when each comparable cohort stays flat', () => {
+    const report = scan([
+      ...launches('small', 4, 10000, 90), ...launches('large', 4, 100000, 30),
+      ...launches('small', 1, 10000, 30), ...launches('large', 1, 100000, 90),
+    ]);
+    const result = evaluateLaunchScan(report, { now });
+    expect(result.unknown).toEqual([]);
+    expect(result.legs).toEqual([]);
+    expect(result.cohorts.every(c => c.regressionComparable)).toBe(true);
+  });
+
+  it('detects an injected within-cohort regression and respects existing kill switches', () => {
+    const report = scan([...launches('model', 4, 100000), ...launches('model', 1, 300000)]);
+    expect(evaluateLaunchScan(report, { now }).legs.map(l => l.key)).toEqual(['ceiling', 'regression']);
+    expect(evaluateLaunchScan(report, { now, ceilingTokens: 0, regressionPct: 0 }).legs).toEqual([]);
+  });
+
+  it('reports stale telemetry rather than treating old populated days as recent', () => {
+    const result = evaluateLaunchScan(scan(launches('model', 4, 10000)), { now });
+    expect(result.unknown).toContain('stale-or-absent-recent-telemetry');
+    expect(result.legs).toEqual([]);
+  });
+
+  it('reports low coverage and missing models without manufacturing a cheap or healthy cohort', () => {
+    const report = scan([...launches('model', 1, 10000), ...launches(null, 1, 10000)], 30);
+    const result = evaluateLaunchScan(report, { now });
+    expect(result.coverage).toBeCloseTo(1 / 3);
+    expect(result.unknown).toContain('incomplete-telemetry-coverage');
+    expect(result.unknownSamples).toBe(30);
+  });
+
+  it('requires per-cohort volume and rejects future or contradictory token accounting', () => {
+    const small = evaluateLaunchScan(scan(launches('model', 1, 700000, 19)), { now });
+    expect(small.unknown).toContain('insufficient-recent-cohort-volume');
+    const invalid = launches('model', 1, 10000);
+    invalid.forEach(s => { s.totalPromptTokens = 1; });
+    const result = evaluateLaunchScan(scan([...invalid, ...launches('model', -1, 10000)]), { now });
+    expect(result.validSamples).toBe(0);
+    expect(result.unknownSamples).toBe(60);
+    expect(result.recentMedian).toBeNull();
+  });
+
+  it('treats partial usage counts as unknown even when the numeric lower bound appears healthy', () => {
+    const samples = launches('model', 1, 1000).map(s => ({ ...s, usageCountsComplete: false }));
+    const result = evaluateLaunchScan(scan(samples), { now });
+    expect(result.unknownSamples).toBe(30);
+    expect(result.coverage).toBe(0);
+    expect(result.legs).toEqual([]);
+  });
+
+  it('wires insufficient coverage into the existing routine without sending a false all-clear', async () => {
+    const escalate = vi.fn();
+    const result = await runLaunchCostCeiling({}, { now, scan: async () => scan(launches(null, 1, 10000)),
+      openEscalation: escalate });
+    expect(result.outcome).toBe('insufficient');
+    expect(result.telemetry?.unknown).toContain('incomplete-telemetry-coverage');
+    expect(escalate).not.toHaveBeenCalled();
+  });
+});
 
 /** A day row with only the fields the evaluator reads; the rest are structurally required. */
 function day(d: string, medianTotal: number, count = 40): DayStats {

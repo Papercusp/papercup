@@ -638,6 +638,75 @@ describe('Google Gmail adapter', () => {
     expect(parked.backfill?.status).toBe('throttled');
     expect(listCalls).toBe(1);
   });
+
+  it('persists a pending backfill cool-down when history.list hits quota (EI-24093741482678111)', async () => {
+    let historyCalls = 0;
+    let messageListCalls = 0;
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/history')) {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          return json(
+            { error: { message: "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'" } },
+            403,
+          );
+        }
+        return json({ historyId: 'h-2' });
+      }
+      if (url.pathname.endsWith('/messages') && !/\/messages\//.test(url.pathname)) messageListCalls += 1;
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    const pending = {
+      status: 'pending',
+      pageToken: 'page-9',
+      pages: 1,
+      messages: 5,
+      startedAt: NOW.toISOString(),
+      completedAt: null,
+      throttledUntil: null,
+      throttleCount: 0,
+    };
+
+    await expect(
+      syncGoogleGmailSource(
+        {} as never,
+        source({ historyId: 'h-1', backfill: pending }),
+        'access-token',
+        d.value,
+      ),
+    ).rejects.toMatchObject({ status: 403, operation: 'history_list' });
+
+    expect(d.updates.at(-1)).toEqual(
+      expect.objectContaining({
+        status: 'connected',
+        lastError: null,
+        cursor: expect.objectContaining({
+          historyId: 'h-1',
+          backfill: {
+            ...pending,
+            status: 'throttled',
+            throttledUntil: new Date(NOW.getTime() + 60_000).toISOString(),
+            throttleCount: 1,
+          },
+        }),
+      }),
+    );
+    const persisted = d.updates.at(-1)?.cursor as Record<string, unknown>;
+    const stillParked = await syncGoogleGmailSource(
+      {} as never,
+      source(persisted),
+      'access-token',
+      { ...d.value, now: () => new Date(NOW.getTime() + 30_000) },
+    );
+
+    // Incremental history replay may continue during the backfill cool-down,
+    // but the expensive historical messages.list chunk remains parked.
+    expect(stillParked.backfill).toMatchObject({ status: 'throttled', throttleCount: 1 });
+    expect(historyCalls).toBe(2);
+    expect(messageListCalls).toBe(0);
+  });
 });
 
 describe('buildGoogleGmailRawMessage attachments', () => {

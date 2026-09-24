@@ -12,8 +12,22 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCacheProxy, isCacheableAnthropicPath } from './proxy';
+import { CACHE_POLICY_VERSION } from '@papercusp/operator-core/lib/inference-gateway/cache-policy';
 
 const servers: http.Server[] = [];
+it('publishes the shared policy version and effective options through the existing local health endpoint', async () => {
+  const proxy = track(createCacheProxy({ listenPort: 0, log: () => {} }));
+  await listen(proxy);
+  const response = await request(port(proxy), { path: '/__cache_proxy_health' });
+  const health = JSON.parse(response.body);
+  expect(health.cachePolicy).toMatchObject({
+    policyVersion: CACHE_POLICY_VERSION,
+    enabled: process.env.PAPERCUSP_CACHE_POLICY !== '0',
+    toolsBreakpoint: process.env.PAPERCUSP_CACHE_TOOLS_BREAKPOINT === '1',
+    splitBoundary: process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY !== '0',
+  });
+  expect(proxy.stats.requests).toBe(0);
+});
 function track<T extends http.Server>(s: T): T {
   servers.push(s);
   return s;

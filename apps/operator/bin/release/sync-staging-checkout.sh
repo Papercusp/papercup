@@ -201,6 +201,26 @@ health_sha_matches_target() {
   [[ -n "$health_sha" && -n "$target_sha" && "$target_sha" == "$health_sha"* ]]
 }
 
+# A self-targeted :3170 restart can close the HTTP stream before ptool receives
+# dev:restart's terminal receipt. Treat it as complete only when systemd's
+# MainPID changed and the new listener reports the exact requested source SHA.
+staging_restart_is_observed() {
+  local before_pid="${1:-}" current_pid="${2:-}" health_sha="${3:-}" target_sha="${4:-}"
+  case "$current_pid" in
+    ''|0|*[!0-9]*) return 1 ;;
+  esac
+  if [ -n "$before_pid" ] && [ "$before_pid" != "0" ] && [ "$current_pid" = "$before_pid" ]; then
+    return 1
+  fi
+  health_sha_matches_target "$health_sha" "$target_sha"
+}
+
+staging_sync_process_running() {
+  local process_state
+  process_state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$process_state" ] && [[ "$process_state" != Z* ]]
+}
+
 # --- WI-5710 gate 1: is a process restart actually REQUIRED? ----------------
 #
 # The original script gated everything on `target != current`, i.e. it used
@@ -295,6 +315,10 @@ restart_result_is_accepted() {
       }
     });
   '
+}
+
+restart_result_is_pre_dispatch_refusal() {
+  printf '%s' "${1:-}" | grep -Eiq 'authorization_denied|no-launch-record|restart_withheld'
 }
 
 # True when a dev:restart refusal is a TRANSIENT git-sync coordination refusal
@@ -512,25 +536,85 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
   exit 1
 }
 
+# The ptool result may be lost when this request restarts its own :3170 server.
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
-restart_result="$({
+restart_result_file="$(mktemp)"
+restart_tool_timeout_sec=350
+restart_tool_started_at="$(date +%s)"
+restart_tool_status=0
+restart_verified=0
+# The default ptool endpoint is the older background operator (:9071),
+# whose identity kernel may not yet admit the installer's machine client.
+# The staging operator owns this target and accepts that same static client.
+# Run ptool in the background so this service can observe :3170 restarting. The
+# handler restarts the server that owns its HTTP stream, so a lost receipt is
+# resolved by MainPID + exact-source proof instead of waiting out ptool's 345s
+# client deadline or retrying the mutation.
+(
   cd "$INTEGRATION_ROOT"
-  # The default ptool endpoint is the older background operator (:9071),
-  # whose identity kernel may not yet admit the installer's machine client.
-  # The staging operator owns this target and accepts that same static client.
-  PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json - <<JSON
+  exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -
+) >"$restart_result_file" 2>&1 <<JSON &
 {"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
-} 2>&1)" || {
-  log "FATAL: coordinated dev:restart call failed: ${restart_result:0:500}"
-  exit 1
-}
+restart_tool_pid=$!
+
+while staging_sync_process_running "$restart_tool_pid"; do
+  observed_main_pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)"
+  observed_health_sha="$(staging_health_source_sha || true)"
+  if staging_restart_is_observed "$main_pid" "$observed_main_pid" "$observed_health_sha" "$target"; then
+    # Give the CLI a short chance to flush a normal receipt before closing the
+    # stale client stream. The exact PID + SHA pair is the independent proof.
+    sleep 2
+    if staging_sync_process_running "$restart_tool_pid"; then
+      restart_verified=1
+      log "dev:restart stream stayed open after :$STAGING_PORT restarted; MainPID $observed_main_pid serves exact source $observed_health_sha, so terminating only the ptool client"
+      kill -TERM "$restart_tool_pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$restart_tool_pid" 2>/dev/null || true
+      break
+    fi
+  fi
+
+  restart_tool_elapsed_sec=$(( $(date +%s) - restart_tool_started_at ))
+  if [ "$restart_tool_elapsed_sec" -ge "$restart_tool_timeout_sec" ]; then
+    log "dev:restart client exceeded $restart_tool_timeout_sec s without exact target proof; terminating the ptool client"
+    kill -TERM "$restart_tool_pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$restart_tool_pid" 2>/dev/null || true
+    break
+  fi
+  sleep 2
+done
+
+if wait "$restart_tool_pid"; then
+  restart_tool_status=0
+else
+  restart_tool_status=$?
+fi
+restart_result="$(cat "$restart_result_file" 2>/dev/null || true)"
+rm -f "$restart_result_file"
+
+# Close the race where ptool exits as the new listener becomes ready.
+if [ "$restart_verified" -ne 1 ]; then
+  observed_main_pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)"
+  observed_health_sha="$(staging_health_source_sha || true)"
+  if staging_restart_is_observed "$main_pid" "$observed_main_pid" "$observed_health_sha" "$target"; then
+    restart_verified=1
+  fi
+fi
 
 # ptool exits successfully for a business-level refusal, so inspect the result
 # rather than treating process status as the verdict. A verified coalesce is a
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
-if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
+if [ "$restart_verified" -eq 1 ]; then
+  log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"
+elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result"; then
+  log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:500}"
+  exit 1
+elif [ "$restart_tool_status" -ne 0 ]; then
+  log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding"
+elif ! printf '%s' "$restart_result" | restart_result_is_accepted; then
   # EI-22102474093310851: a git-sync coordination refusal that OUTLASTS the drain
   # above is still transient — git-sync runs continuously on this tree, so the very
   # next 5-minute tick usually gets through. The checkout is ALREADY fast-forwarded
@@ -554,8 +638,9 @@ if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
   fi
   log "FATAL: coordinated dev:restart was refused or returned an invalid result: ${restart_result:0:500}"
   exit 1
+else
+  log "coordinated dev:restart accepted: ${restart_result:0:500}"
 fi
-log "coordinated dev:restart accepted: ${restart_result:0:500}"
 
 last_health_sha=""
 readiness_started_at="$(date +%s)"

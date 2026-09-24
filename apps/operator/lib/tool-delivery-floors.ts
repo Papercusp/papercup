@@ -110,6 +110,12 @@ export const DECLARED_FLOORS: readonly FloorEntry[] = Object.freeze([
     reason: 'a directed question outranks own work; without inbox access a blocked peer waits on an answer that never comes',
   },
   {
+    name: 'coord:whoami',
+    tier: 'prose-mandate',
+    reason:
+      'every watchdog/carry continuation says "Verify with coord:whoami BEFORE acting"; unable to check, a misdelivered continuation is acted on as the wrong lane',
+  },
+  {
     name: 'work_items:claim',
     tier: 'silent-halt-lifecycle',
     reason: 'no code edit without a held work-item; unable to claim, an agent either stalls or edits untracked',
