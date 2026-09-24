@@ -70,6 +70,9 @@ class LaneDb {
   failCommits = 0;
   reserves = 0;
   releases = 0;
+  /** The reserve call (1-based) that is not granted until {@link grantStalled}; 0 = none. */
+  stallReserve = 0;
+  grantStalled: () => void = () => {};
   active = 0;
   maxActive = 0;
   /** Writes in flight per key prefix (`WI`, `EI`, `N`), and the peak of each. */
@@ -82,6 +85,11 @@ class LaneDb {
     this.target = Object.assign(autocommit, {
       reserve: async () => {
         this.reserves++;
+        if (this.reserves === this.stallReserve) {
+          await new Promise<void>((resolve) => {
+            this.grantStalled = resolve;
+          });
+        }
         return this.connection(true);
       },
     }) as unknown as postgres.Sql;
@@ -332,6 +340,40 @@ describe('P-527: snapshot chunks apply on parallel lanes', () => {
     // The replay autocommitted row by row: no batch, no lanes.
     expect(db.count('BEGIN') - beginsBefore).toBe(0);
     expect(db.maxActive).toBe(1);
+    await vi.waitFor(() => expect(db.releases).toBe(db.reserves));
+  });
+
+  it('a batch connection that is never granted: the lane autocommits and the chunk still ends (P-007 run #6)', async () => {
+    const ops = [chunk(setRows(40, 160))];
+    const opts = (db: LaneDb, reserveTimeoutMs: number) => ({
+      applyImpl: sink(db),
+      getTimeoutMs: 0,
+      batchApply: { ...BATCH, snapshotLanes: 4, reserveTimeoutMs },
+    });
+
+    // CONTROL: unbounded, the same stalled grant wedges the chunk (run #6 sat 47 min).
+    const stuckDb = new LaneDb();
+    stuckDb.stallReserve = 2;
+    const stuck = mergeAdmittedLogsIncremental([memLog(ops)], createMergeCursor(), opts(stuckDb, 0));
+    const settled = await Promise.race([
+      stuck.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    expect(settled).toBe(false);
+    stuckDb.grantStalled();
+    await stuck;
+
+    const db = new LaneDb();
+    db.stallReserve = 2;
+    const cursor = createMergeCursor();
+    await mergeAdmittedLogsIncremental([memLog(ops)], cursor, opts(db, 50));
+    expect(db.committed.size).toBe(200);
+    expect(cursor.positions.get(LOG)).toBe(1);
+    expect(cursor.applyFailures?.get(LOG)).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('batch connection not granted'));
+    expect(db.count('BEGIN')).toBe(db.count('COMMIT'));
+    // The grant that comes after the deadline goes straight back to the pool.
+    db.grantStalled();
     await vi.waitFor(() => expect(db.releases).toBe(db.reserves));
   });
 
