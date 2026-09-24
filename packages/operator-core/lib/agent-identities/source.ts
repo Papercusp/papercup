@@ -1,4 +1,5 @@
 /** P-004: source identity views over the existing blueprint loader and file catalog. */
+import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import {
@@ -6,18 +7,21 @@ import {
   BlueprintSourceDocumentSchema,
   blueprintPackageInputs,
   builtinBlueprintPath,
+  compileAgentSpecification,
   modeCatalogFromValidatedSources,
   resolveBuiltinExtends,
   resolveBlueprintSource,
   RunnableBlueprintSchema,
   SU_MODE_DOCUMENTS,
   type ModeCatalogSnapshot,
+  type ResolvedAgentInput,
   slotSpec,
 } from '@papercusp/orchestrator/blueprint';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle } from '../cupboard/blueprint-release';
 import { resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 import {
   availableBlueprintSources,
   INSTALLED_BLUEPRINTS_DIR,
@@ -228,6 +232,137 @@ export async function getSelectedModeCatalog() {
   });
   selectedModeCatalogCache = { fingerprint, value: selected };
   return selected;
+}
+
+export interface ProducedIdentityOutput {
+  contributionId: string;
+  value?: unknown;
+  omission?: { reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string };
+}
+
+/** Pin a set of outputs already produced for one selected identity. The same
+ * compiler validates fixed prompt files, provider output and explicit absences
+ * together; the caller keeps delivering the original values through its sink. */
+export async function bindSelectedIdentityOutputs(input: {
+  identityId: string;
+  /** The SU's static fleet-posture binding currently resolves from the built-in
+   * harness; an unrelated installed catalog shadow is not this session's layer. */
+  sourceTier?: 'builtin' | 'selected';
+  outputs: readonly ProducedIdentityOutput[];
+  scope: Record<string, unknown>;
+  observedAt: string;
+}) {
+  if (input.outputs.length === 0) throw new Error('identity binding needs a produced output or omission');
+  let sourcePath: string | null;
+  if (input.sourceTier === 'builtin') sourcePath = builtinBlueprintPath(input.identityId);
+  else {
+    const identity = await getIdentitySource(input.identityId);
+    if (!identity.ok) {
+      throw new Error('selected identity ' + input.identityId + ' is unavailable: ' +
+        identity.error + ('errors' in identity ? ' ' + JSON.stringify(identity.errors) : ''));
+    }
+    sourcePath = identity.sourcePath;
+  }
+  if (!sourcePath) throw new Error(`selected identity ${input.identityId} is unavailable`);
+  const resolver = input.sourceTier === 'builtin' ? resolveBuiltinExtends : operatorResolveExtends();
+  const raw = parseBlueprintSource(await readFile(sourcePath, 'utf8'));
+  const source = resolveBlueprintSource(raw, { sourcePath, resolve: resolver });
+  if (!source.validation.ok) throw new Error(`selected identity ${input.identityId} is invalid`);
+  const declarations = raw.contributions as Array<{
+    id: string; purpose: string; source: string; inputKind: string; ref: string;
+    producerRef?: string; availability?: string;
+  }> | undefined;
+  const byId = new Map((declarations ?? []).map((entry) => [entry.id, entry]));
+  const supplied = new Set<string>();
+  const settings: Array<{ ref: string; revision: string; value: unknown; producerRef: string }> = [];
+  const closure: ResolvedAgentInput[] = [];
+  const omissions: Array<{ id: string; reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string }> = [];
+  const receipts: Array<{ contributionId: string; producerRef: string; outputRevision: string | null; status: string }> = [];
+  for (const output of input.outputs) {
+    const selected = byId.get(output.contributionId);
+    if (!selected || selected.source !== 'provider' || !selected.producerRef ||
+        !((selected.purpose === 'operational' && selected.inputKind === 'setting') ||
+          (selected.purpose === 'prompt' && selected.inputKind === 'prompt-file'))) {
+      throw new Error('identity ' + input.identityId + ' has no provider contribution ' + output.contributionId);
+    }
+    if (supplied.has(selected.id) || (output.value === undefined) === (output.omission === undefined)) {
+      throw new Error('identity output needs one unique produced value or omission receipt');
+    }
+    supplied.add(selected.id);
+    if (output.omission) {
+      omissions.push({ id: selected.id, ...output.omission });
+      receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
+        outputRevision: null, status: 'omitted:' + output.omission.reason });
+      continue;
+    }
+    let revision: string;
+    if (selected.inputKind === 'prompt-file') {
+      if (typeof output.value !== 'string' || !output.value.trim()) {
+        throw new Error('identity prompt contribution needs non-empty produced text');
+      }
+      revision = createHash('sha256').update(output.value).digest('hex');
+      closure.push({ kind: 'prompt-file', ref: selected.ref, bytes: output.value,
+        contentHash: revision, producerRef: selected.producerRef });
+    } else {
+      revision = createHash('sha256').update(canonicalJson(output.value)).digest('hex');
+      settings.push({ ref: selected.ref, revision, value: output.value,
+        producerRef: selected.producerRef });
+    }
+    receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
+      outputRevision: revision, status: 'bound' });
+  }
+  for (const entry of declarations ?? []) {
+    if (entry.availability === 'optional' && !supplied.has(entry.id)) {
+      omissions.push({ id: entry.id, reason: 'not-requested' });
+    }
+  }
+  const fixedPrompts = (declarations ?? []).filter((entry) =>
+    entry.source === 'fixed' && entry.inputKind === 'prompt-file').map((entry) => {
+    const refParts = entry.ref.split(':');
+    const layerId = refParts[0] === 'mode' ? refParts[1] : refParts[0];
+    const fileName = refParts.at(-1);
+    const layer = source.layers.find((candidate) => candidate.id === layerId);
+    if (!layer?.sourcePath || !fileName) {
+      throw new Error('identity fixed prompt has no resolved source: ' + entry.ref);
+    }
+    return { ref: entry.ref, path: join(dirname(layer.sourcePath), 'prompts', fileName + '.md') };
+  });
+  const artifact = compileAgentSpecification({
+    source: raw,
+    sourcePath,
+    resolve: resolver,
+    promptFiles: fixedPrompts,
+    settings,
+    inputClosure: closure,
+    contributionOmissions: omissions,
+  });
+  return {
+    identityId: input.identityId,
+    sourceRevision: source.layers.at(-1)!.contentHash,
+    specificationRevision: artifact.specificationRevision,
+    contributions: receipts,
+    observedAt: input.observedAt,
+    scope: input.scope,
+  };
+}
+
+/** Compatibility wrapper for an existing operational setting sink. */
+export async function bindSelectedIdentitySetting(input: {
+  identityId: string;
+  contributionId: string;
+  sourceTier?: 'builtin' | 'selected';
+  value?: unknown;
+  omission?: ProducedIdentityOutput['omission'];
+  scope: Record<string, unknown>;
+  observedAt: string;
+}) {
+  const bound = await bindSelectedIdentityOutputs({
+    identityId: input.identityId, sourceTier: input.sourceTier,
+    outputs: [{ contributionId: input.contributionId,
+      ...(input.omission ? { omission: input.omission } : { value: input.value }) }],
+    scope: input.scope, observedAt: input.observedAt,
+  });
+  return { ...bound, ...bound.contributions[0] };
 }
 
 /** Id lookup uses the blueprint resolver, never a separate identity store. */
