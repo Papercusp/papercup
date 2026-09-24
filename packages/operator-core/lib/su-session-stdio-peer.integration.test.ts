@@ -34,7 +34,8 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { processMonotonicClock } from './process-monotonic-clock';
-import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse } from './launch-cost/launch-cost-metrics';
+import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse,
+  inspectCarryRequestPopulation, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import * as dbOrg from '@papercusp/db-org';
 import * as workspaceRegistry from './workspace-registry';
@@ -71,10 +72,28 @@ async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: str
     (frame.params as RpcFrame).threadId === threadId && (frame.params as RpcFrame).name === name &&
     ['ready', 'failed', 'cancelled'].includes(String((frame.params as RpcFrame).status)));
   await vi.waitFor(() => expect(terminal() !== undefined).toBe(true), { timeout: 15_000 });
-  expect((terminal()!.params as RpcFrame).status).toBe('ready');
+  // Native errors may echo a credential or URL. Report only recognized cause
+  // labels; the original frame remains private and never enters assertion output.
+  const detail = JSON.stringify((terminal()!.params as RpcFrame).error ?? null);
+  const causes = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'connection refused', 'connection closed',
+    'timed out', 'Unauthorized', 'Forbidden', '404', '401', '403', '502', '503', 'parse', 'initialize']
+    .filter(label => detail.toLowerCase().includes(label.toLowerCase()));
+  expect((terminal()!.params as RpcFrame).status, `MCP startup causes: ${causes.join(', ') || 'unclassified'}`).toBe('ready');
 }
 
 describe('native JSON-line pipe transport', () => {
+  it('reports a recognized MCP startup cause without echoing private native error text', async () => {
+    const failure = [{ method: 'mcpServer/startupStatus/updated', params: { threadId: 'thread', name: 'fixture',
+      status: 'failed', error: 'HTTP 401 Unauthorized: Bearer PRIVATE_MARKER at https://private.example/secret' } }];
+    const error = await waitForMcpStartup(failure, 'thread', 'fixture').catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('Unauthorized, 401');
+    expect(error.message).not.toMatch(/PRIVATE_MARKER|private\.example|secret/);
+    await expect(waitForMcpStartup([{ method: 'mcpServer/startupStatus/updated', params: {
+      threadId: 'thread', name: 'fixture', status: 'failed', error: 'PRIVATE_UNKNOWN_REASON' } }], 'thread', 'fixture'))
+      .rejects.toThrow('MCP startup causes: unclassified');
+  });
+
   it('shares an immutable process clock locally while refusing a subprocess clock as the same domain', async () => {
     expect(Object.isFrozen(processMonotonicClock)).toBe(true);
     const receipts: SuStdioReceipt[] = [];
@@ -896,11 +915,20 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
         const first = await ingestInteractiveUsage({ adapters, includeIsolationRoots: false });
         expect(first.errors).toEqual([]);
-        const rows = await sql`SELECT session_id, usage_event_key, account_id, cost_usd, cost_source,
+        const rows = await sql<Array<CarryCanonicalUsageRow & { account_id: string | null; cost_usd: number | null;
+          cost_source: string | null; output_tokens: number }>>`SELECT session_id, usage_event_key, account_id, cost_usd, cost_source,
           output_tokens, usage_provenance FROM harness_shared.agent_usage_samples
           WHERE workspace_id = ${workspace}`;
         canonicalSamples = rows.length;
         expect(rows).toHaveLength(usageEvents.length);
+        const population = inspectCarryRequestPopulation({ ownerId: owner,
+          turns: [{ armId: `fixture:${mode}`, threadId, turnId, status: nativeStatus }], gateway: stages, usage: rows });
+        expect(population).toMatchObject({ populationStatus: 'linked', missing: [], violations: [],
+          chargeJoin: 'unavailable', accountingComplete: false, unmatchedGatewayRequestIds: [], unmatchedUsageRows: [],
+          turns: [{ status: nativeStatus, gatewayRequestIds: [timeline.requestId],
+            usageEventKeys: rows.map(row => row.usage_event_key) }] });
+        expect(population.turns[0].upstreamAttempts.map(call => call.responseStatus)).toEqual(
+          timeline.upstreamWrites.calls.map(call => call.responseStatus));
         if (nativeStatus === 'completed') {
           const row = rows[0], event = usageEvents[0];
           expect(row).toMatchObject({ session_id: threadId, account_id: null, cost_source: 'estimated',
