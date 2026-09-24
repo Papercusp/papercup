@@ -94,12 +94,12 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     expect(textOf(sql)).toContain("to_jsonb(a)->'launch_argv' AS launch_argv");
   });
 
-  it('resumable filtering treats a missing pre-611 key as delivered but still excludes pending ports post-611', async () => {
-    const sql = installSql([]);
+  it.each([false, true])('resumable filtering probes port-column availability (present=%s) without whole-row JSON scans', async (present) => {
+    const sql = installSql([]).mockResolvedValueOnce([{ present }]);
     const mod = await import('./adv-sessions');
     await mod.listResumableSessions();
-    const query = textOf(sql);
-    expect(query).toContain("COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'");
-    expect(query).not.toMatch(/\(port_status IS NULL/);
+    expect(textOf(sql)).toContain('pg_attribute');
+    expect(textOf(sql, 1)).toContain(present ? "COALESCE(a.port_status, 'delivered') = 'delivered'" : 'TRUE');
+    expect(textOf(sql, 2)).not.toContain("to_jsonb(a)->>'port_status'");
   });
 });

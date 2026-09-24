@@ -1999,8 +1999,8 @@ const RESUMABLE_SCAN_LIMIT = 300;
  * The candidate pool is every never-ended row (bounded and small — 315 when this was written —
  * and the population whose `started_at` is least trustworthy, since a long-running session's
  * is oldest exactly when its activity is newest) UNION the {@link RESUMABLE_SCAN_LIMIT} most
- * recent ended ones. Measured 198ms against the live table, no slower than the flat scan it
- * replaced (the pre-existing non-sargable `port_status` predicate already forced a full scan).
+ * recent ended ones. Check the optional port column once per read: converting each candidate's
+ * whole row to JSON also serializes large launch payloads just to inspect one status field.
  */
 export async function listResumableSessions(
   limit = 30,
@@ -2013,6 +2013,18 @@ export async function listResumableSessions(
     // without widening the human picker's normal history window.
     const exactResumeId = Number.isSafeInteger(exactId) && Number(exactId) > 0 ? Number(exactId) : -1;
     const { sql } = getOrgPg();
+    // Keep pre-611 rollout compatibility without serializing every row (including launch_spec)
+    // during candidate filtering. Do not cache absence: migration may finish while we are live.
+    const [portColumn] = await sql<Array<{ present: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_attribute
+         WHERE attrelid = to_regclass('harness_shared.adv_sessions')
+           AND attname = 'port_status' AND NOT attisdropped
+      ) AS present
+    `;
+    const deliveredPort = portColumn?.present
+      ? sql`COALESCE(a.port_status, 'delivered') = 'delivered'`
+      : sql`TRUE`;
     const rows = await sql<
       Array<{
         id: number;
@@ -2043,9 +2055,7 @@ export async function listResumableSessions(
             FROM harness_shared.adv_sessions a
            WHERE a.agent IS NOT NULL
              AND a.cwd IS NOT NULL
-             -- to_jsonb(row)->key is parse-safe before migration 611: a missing
-             -- key is NULL, while pending post-migration ports remain hidden.
-             AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+             AND ${deliveredPort}
              AND a.ended_at IS NULL
         UNION
           -- …plus the most recent ended rows. GREATEST(started_at, ended_at) because a row
@@ -2055,7 +2065,7 @@ export async function listResumableSessions(
               FROM harness_shared.adv_sessions a
              WHERE a.agent IS NOT NULL
                AND a.cwd IS NOT NULL
-               AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+               AND ${deliveredPort}
              ORDER BY GREATEST(a.started_at, COALESCE(a.ended_at, a.started_at)) DESC
              LIMIT ${scanLimit}
           ) recent
@@ -2069,18 +2079,10 @@ export async function listResumableSessions(
            WHERE a.id = ${exactResumeId}
              AND a.agent IS NOT NULL
              AND a.cwd IS NOT NULL
-             AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+             AND ${deliveredPort}
       ),
       scored AS (
-        SELECT a.id, a.workspace_id,
-               -- launch_spec was added after the resumable-session surface. Reading
-               -- through to_jsonb keeps this query parse-safe on a pre-migration
-               -- operator; absent launch_spec then correctly means no harness scope.
-               to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
-               a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
-               a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
-               a.launch_argv,
-               a.started_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal,
+        SELECT a.id, a.agent,
                -- GREATEST, not COALESCE: each source is a LOWER BOUND on activity that can be
                -- missing or stale independently, so the newest evidence wins and a session with
                -- no evidence at all degrades to started_at instead of dropping to NULL.
@@ -2105,15 +2107,23 @@ export async function listResumableSessions(
                ROW_NUMBER() OVER (ORDER BY last_active_at DESC) AS global_rn,
                ROW_NUMBER() OVER (PARTITION BY agent ORDER BY last_active_at DESC) AS agent_rn
           FROM scored
+      ),
+      selected AS MATERIALIZED (
+        -- Rank only identity/activity. Hydrating launch payloads before the window
+        -- functions makes every candidate pay for JSON conversion and wide sorting.
+        SELECT id, last_active_at FROM ranked
+         WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor} OR id = ${exactResumeId}
       )
-      SELECT id, workspace_id, harness_slug,
-             plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             launch_argv,
-             started_at, last_active_at, ended_at, exit_code, ended_by, ended_signal
-        FROM ranked
-       WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor} OR id = ${exactResumeId}
-       ORDER BY last_active_at DESC
+      SELECT a.id, a.workspace_id,
+             -- Keep optional launch_spec parse-safe; convert only the selected rows.
+             to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+             a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
+             a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
+             a.launch_argv,
+             a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal
+        FROM selected
+        JOIN harness_shared.adv_sessions a ON a.id = selected.id
+       ORDER BY selected.last_active_at DESC
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {
