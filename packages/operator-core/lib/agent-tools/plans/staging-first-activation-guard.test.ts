@@ -55,13 +55,28 @@ describe('staging-first activation guard', () => {
     ).toBeNull();
   });
 
-  it('allows a narrow deployed-only blocker with a concrete staging limitation', () => {
+  it('refuses to park a mixed source-and-deployed item behind a narrow deployed-only blocker', () => {
     expect(
       stagingFirstBlockerProblem({
         itemId: 'WI-2',
         itemText: 'Implement restart continuity and verify on staging.',
         blockerText:
-          'deployment is required for the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart',
+          'wait for main deployment before the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart',
+        kind: 'gate',
+      }),
+    ).toEqual(expect.objectContaining({
+      code: 'non_final_deployed_main_blocker',
+      detail: expect.stringContaining('Split the source work'),
+    }));
+  });
+
+  it('allows a final-only item to wait for a genuinely deployed-only check', () => {
+    expect(
+      stagingFirstBlockerProblem({
+        itemId: 'WI-2-final',
+        itemText: 'Verify supervisor restart continuity on the deployed host.\nImplementation is done on staging.',
+        blockerText:
+          'wait for main deployment before the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart',
         kind: 'gate',
       }),
     ).toBeNull();
@@ -192,7 +207,7 @@ describe('staging-first activation guard', () => {
   it('honours the narrow exception when its three predicates are in the blocker summary/evidence', () => {
     const base = {
       itemId: 'WI-6',
-      itemText: 'Implement restart continuity.',
+        itemText: 'Verify live forked Corestore recovery.',
       blockerText: 'gate.greenCheckpoint.ownership\nwait for main to turn green before the check',
       kind: 'gate',
     };
@@ -282,6 +297,23 @@ describe('staging-first activation guard', () => {
       `### D-001 — Deployed-only restart continuity\nDate: 2026-08-27\nP-001 is deployed-only because staging cannot exercise the deployed-host supervisor restart.\nRelated: P-001`,
     );
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('rejects a release dependency on a mixed source-and-deployed item despite a narrow exception', () => {
+    const parsed = plan(
+      [
+        '- **P-001** `todo` Verify the green pin, main promotion, and deployed host.',
+        '- **P-002** `blocked` Add and run lifecycle regression tests; verify deployed runtime parity. blocked-by: P-001',
+      ],
+      `### D-001 — Deployed-only parity\nDate: 2026-08-27\nP-002 final parity is deployed-only because staging cannot observe the deployed-host revision.\nRelated: P-002`,
+    );
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({
+        itemId: 'P-002',
+        code: 'non_final_deployed_main_wait',
+        detail: expect.stringContaining('Split the obligations'),
+      }),
+    ]);
   });
 
   it('rejects a strong main wait carried only by a decision linked from the item', () => {

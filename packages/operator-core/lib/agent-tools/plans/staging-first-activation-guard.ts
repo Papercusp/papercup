@@ -63,6 +63,14 @@ const GENERIC_DEPLOY_BLOCKER_RE = /(?:\brelease\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const EXPLICIT_STAGING_ENV_RE = /(?:\bstaging\b|\bcurrent[- ]build\b)/i;
 const LIVE_GATE_OPERATION_RE =
   /(?:green[- ]checkpoint|greenCheckpoint|gate[- ]red|re-?green|tested[/ -]deployed\s+parity|restore(?:d)?\s+(?:the\s+)?(?:tested[/ -]deployed|release)\s+parity)/i;
+// A single blocked status cannot distinguish source work from final deployment
+// verification. Require separate items when the title still promises source work.
+const NON_FINAL_TITLE_RE =
+  /(?:\b(?:implement|build|add|write)\b|\b(?:run|prove)\b.{0,140}\b(?:source|unit|integration|regression)\b)/i;
+
+function hasNonFinalWorkInTitle(text: string): boolean {
+  return NON_FINAL_TITLE_RE.test(text.split(/\n|\s+—\s+note:/i, 1)[0] ?? '');
+}
 
 // A plan slug is an IDENTIFIER, not dependency semantics. A ref such as
 // `p2p-public-release-endgame-2026-09-01#D-047` names a plan decision; the word
@@ -211,6 +219,19 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
   if (!strongGate) return null;
 
   const itemText = input.itemText.trim();
+  const exceptionText = [blockerText, neutralizePlanIdentifiers(input.exceptionText?.trim() ?? '')]
+    .filter(Boolean)
+    .join('\n');
+  if (hasNonFinalWorkInTitle(itemText) && hasNarrowDeployedMainException(exceptionText)) {
+    return {
+      itemId: input.itemId,
+      code: 'non_final_deployed_main_blocker',
+      detail:
+        `${input.itemId} still names source implementation or regression work in its title. ` +
+        `A deployed-only exception cannot park the whole mixed item. Split the source work ` +
+        `from final deployed verification and block only the final item; run source proof on staging/current-build.`,
+    };
+  }
   // A gate-repair item is itself operating the release plane, so it is not
   // ordinary implementation being serialized behind that plane.
   if (LIVE_GATE_OPERATION_RE.test(itemText)) return null;
@@ -219,9 +240,6 @@ export function stagingFirstBlockerProblem(input: StagingFirstBlockerInput): Sta
   // in the submitted blocker fields (ref, nextVerb, summary, evidence). Do not let
   // the work item's title/summary (which may quote the contract or describe this
   // very defect) launder a generic wait.
-  const exceptionText = [blockerText, neutralizePlanIdentifiers(input.exceptionText?.trim() ?? '')]
-    .filter(Boolean)
-    .join('\n');
   if (hasNarrowDeployedMainException(exceptionText)) return null;
 
   return {
@@ -251,6 +269,22 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
 
   for (const item of plan.items) {
     if (isTerminalItemStatus(item.storedStatus)) continue;
+    if (
+      hasNonFinalWorkInTitle(item.text) &&
+      item.blockedBy.some((ref) => {
+        const blocker = plan.items.find((candidate) => candidate.id === ref);
+        return blocker ? DEPLOYED_ENV_RE.test(blocker.text) : false;
+      })
+    ) {
+      problems.push({
+        itemId: item.id,
+        code: 'non_final_deployed_main_wait',
+        detail:
+          `${item.id} combines source work with final deployed verification behind a release-plane dependency. ` +
+          `Split the obligations into separate plan items; block only the final deployed item.`,
+      });
+      continue;
+    }
     if (!hasStrongDeployedGate(relatedGateText(plan, item))) continue;
     if (isFinalLifecycleItem(item)) continue;
     if (hasNarrowDeployedMainException(relatedExceptionText(item, plan.decisions))) continue;
