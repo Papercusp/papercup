@@ -119,9 +119,12 @@ import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from 
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
+  agentReviewPendingAdmissionSql,
   agentReviewNormalExclusionSql,
+  matchesAgentReviewClaimAdmission,
   readAgentReviewState,
   readStructuredOwnerAsk,
+  type AgentReviewClaimAdmission,
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
@@ -5176,6 +5179,8 @@ export async function claimWorkItem(
     forceTakeoverAdmission?: ForceTakeoverAdmission;
     /** EI-226378: scheduler-minted authorization for one exact legacy downgrade marker. */
     legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission;
+    /** Agent-review-only exception for the exact pending review snapshot being picked up. */
+    agentReviewAdmission?: AgentReviewClaimAdmission;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
@@ -5199,6 +5204,9 @@ export async function claimWorkItem(
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
+    const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
+      ? opts.agentReviewAdmission
+      : null;
     // EI-217141: thread only the server-derived current-leader dispatch
     // capability into the issue mutation. Feature-family rows have no
     // assignedBy provenance, so they never mint this exception and keep the
@@ -5236,17 +5244,30 @@ export async function claimWorkItem(
       ...(opts.legacyFleetScopeDowngradeAdmission
         ? { legacyFleetScopeDowngradeAdmission: opts.legacyFleetScopeDowngradeAdmission }
         : {}),
+      ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     prior = wi;
+    const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
+      ? opts.agentReviewAdmission
+      : null;
     const { sql } = getOrgPg();
     const expectedAssignee = opts.expectedAssignee?.trim() || null;
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
+    const admissionFloor = agentReviewAdmission
+      ? sql`(
+          ${admittedWhereSql(sql)}
+          OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
+            payload: 'target.payload',
+            admission: 'target.admission',
+          })}
+        )`
+      : admittedWhereSql(sql);
     const rows = await withPgContentionRetry(() => sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = CASE
@@ -5308,12 +5329,12 @@ export async function claimWorkItem(
              opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
                ? opts.forceTakeoverAdmission
                : null;
-           return forceAdmission
-             ? sql`(
-                   ${admittedWhereSql(sql)}
-                   OR (admission = 'pending' AND taken_by = ${forceAdmission.expectedAssignee})
-                 )`
-             : admittedWhereSql(sql);
+          return forceAdmission
+            ? sql`(
+                  ${admissionFloor}
+                  OR (admission = 'pending' AND taken_by = ${forceAdmission.expectedAssignee})
+                )`
+             : admissionFloor;
          })()}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`);
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
