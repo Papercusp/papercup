@@ -1,5 +1,5 @@
 /**
- * POST /api/internal/hook-log-event — per-hook execution log persist, cap 50.
+ * POST /api/internal/hook-log-event — per-hook execution metadata persist, cap 50.
  * Ported from app/api/internal/hook-log-event/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
@@ -12,13 +12,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 const ti = generated.tokenIndexInHarnessShared;
 const hl = generated.harnessHookLogsInHarnessShared;
 
-const MAX_CONTENT_BYTES = 280 * 1024;
 const HOOK_KEEP = 50;
 const BodySchema = z.object({
   name: z.string().min(1),
   ts: z.number().int().positive(),
   sizeBytes: z.number().int().nonnegative().optional().default(0),
-  content: z.string().optional().default(''),
 });
 
 export default defineTool({
@@ -43,20 +41,16 @@ export default defineTool({
     }
     const { name, sizeBytes } = parsed.data;
     const tsSec = Math.floor(parsed.data.ts);
-    let content = parsed.data.content;
-    if (Buffer.byteLength(content) > MAX_CONTENT_BYTES) {
-      content = content.slice(0, MAX_CONTENT_BYTES) + '\n...[truncated]\n';
-    }
     const logId = `${tsSec}-${name}`;
     const tsMs = tsSec * 1000;
     const ws = activeWorkspaceId();
     await db.insert(hl).values({
-      harnessSlug: slug, logId, name, ts: tsMs, sizeBytes, content, workspaceId: ws,
+      harnessSlug: slug, logId, name, ts: tsMs, sizeBytes, workspaceId: ws,
     }).onConflictDoUpdate({
       target: [hl.harnessSlug, hl.logId],
       set: {
         name: dsql`EXCLUDED.name`, ts: dsql`EXCLUDED.ts`,
-        sizeBytes: dsql`EXCLUDED.size_bytes`, content: dsql`EXCLUDED.content`,
+        sizeBytes: dsql`EXCLUDED.size_bytes`,
         workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });

@@ -75,7 +75,7 @@ describe('repo-file evidence mutation-probe fence', () => {
     const lockStore = await import('../locks/su-lock-store');
     const readQueue = vi.mocked(lockStore.readQueue);
     readQueue.mockImplementationOnce(async () => ({ active_locks: [], waiting: [], completed: [] } as never));
-    readQueue.mockImplementationOnce(async (_pool: unknown, args: { coordinationDomain: string; paths: string[] }) => ({
+    readQueue.mockImplementationOnce(async (_pool, args) => ({
       active_locks: [{
         coordination_domain: args.coordinationDomain,
         path: 'source.ts',
