@@ -229,6 +229,7 @@ describe('P-007: the four verdict cells', () => {
       'launch-preflight-runner',
       'await-blocker-events',
       'await-current-run',
+      'inspect-runner-liveness',
       'recover-expired-runner',
       'repair-code',
       'inspect-terminal-evidence',

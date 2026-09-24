@@ -27,12 +27,15 @@ export function isVitestTestFileArg(arg) {
  * requested file set, so it is removed from routed invocations.
  */
 export function workspaceTestInvocation(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
-  const args = [...argv];
+  // The integration package script uses this same launcher. For explicit files,
+  // test-files.mjs chooses each owner's config; a fixed --config would override it.
+  const integration = argv.includes('--workspace-integration');
+  const args = argv.filter((arg) => arg !== '--workspace-integration');
   const files = args.filter(isVitestTestFileArg);
   if (files.length === 0) {
     return {
       command: 'npx',
-      args: ['vitest', 'run', ...args],
+      args: ['vitest', 'run', ...(integration ? ['--config', 'vitest.integration.config.ts'] : []), ...args],
       cwd: process.cwd(),
       routed: false,
     };

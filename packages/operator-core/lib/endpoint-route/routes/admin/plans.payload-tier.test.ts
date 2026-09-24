@@ -75,6 +75,26 @@ describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078
     expect(H.calls.every((c) => c.body.payloadTier === 'full')).toBe(true);
   });
 
+  it('omits unused descendant history on the actual popup REST path while preserving the document', async () => {
+    const res = await dispatchRead(reqFor('get'), ctxFor('get'));
+    expect(H.calls[0].body).toMatchObject({
+      mode: 'full', includeRaw: true, includeHistory: false, payloadTier: 'full',
+    });
+    expect(await res.json()).toEqual({ ok: true, slug: 'demo', prose: '# Demo', items: [] });
+  });
+
+  it.each(['true', 'false'])('forwards an explicit includeHistory=%s as a boolean', async (value) => {
+    await dispatchRead(reqFor('get', `&includeHistory=${value}`), ctxFor('get'));
+    expect(H.calls[0].body.includeHistory).toBe(value === 'true');
+  });
+
+  it('preserves explicit history selection and leaves other verbs alone', async () => {
+    await dispatchRead(reqFor('get', '&heading=History'), ctxFor('get'));
+    await dispatchRead(reqFor('items'), ctxFor('items'));
+    expect(H.calls[0].body.heading).toBe('History');
+    expect(H.calls[1].body).not.toHaveProperty('includeHistory');
+  });
+
   it('unwraps the single-row get-input-schema bulk response for the admin UI', async () => {
     const res = await dispatchRead(reqFor('get-input-schema'), ctxFor('get-input-schema'));
     const body = await res.json();

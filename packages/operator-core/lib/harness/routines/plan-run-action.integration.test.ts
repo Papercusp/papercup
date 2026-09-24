@@ -12,6 +12,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { projectBlueprintToPg } from '../../blueprint/project-to-pg';
+import { acceptBlueprintPlanRun } from '../../blueprint/operation-admission';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
@@ -149,6 +152,13 @@ beforeEach(async () => {
             ${TEMPLATE_CONTENT}, ${hashPlanContent(TEMPLATE_CONTENT)},
             ${JSON.stringify(ITEMS)}::text::jsonb)
   `;
+  // This fixture predates acceptance BAR adoption. Migration 1111 stamps new
+  // rows post-epoch on INSERT; preserve the legacy cohort the test models.
+  await sql`
+    UPDATE harness_shared.harness_plans
+       SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
+  `;
   // Materialize its schedule → the plan-schedule routine (7b).
   await materializePlanSchedule({
     workspaceId: WS,
@@ -194,6 +204,73 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
+  it('admits one pinned blueprint plan run under concurrent replay and repairs an interrupted receipt update', async () => {
+    const source = {
+      id: 'plan-invocation-fixture', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'run-monitor', version: '1',
+        target: { kind: 'plan', template: {
+          kind: 'plan-template', ref: TEMPLATE, revision: '0',
+          contentHash: hashPlanContent(TEMPLATE_CONTENT),
+        } },
+        inputSchema: { type: 'object', required: ['segment'], additionalProperties: false,
+          properties: { segment: { type: 'string' } } },
+        acceptance: { resultSchema: { type: 'object' } },
+      }],
+    };
+    const blueprint = BlueprintSchema.parse(source);
+    await projectBlueprintToPg(sql, {
+      workspaceId: WS, harnessSlug: HARNESS, blueprint,
+      specification: compileAgentSpecification({ source }),
+    });
+    const request = {
+      workspaceId: WS, harnessSlug: HARNESS, callerId: 'test-principal',
+      operationId: 'run-monitor', requestKey: 'batch-001', input: { segment: 'east' },
+    };
+    const [first, second] = await Promise.all([
+      acceptBlueprintPlanRun(sql, request), acceptBlueprintPlanRun(sql, request),
+    ]);
+    expect(second.instanceSlug).toBe(first.instanceSlug);
+    expect(second.runId).toBe(first.runId);
+    const population = await sql<Array<{ runs: number; instances: number }>>`
+      SELECT
+        (SELECT count(*)::int FROM harness_shared.plan_runs
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+            AND instance_plan_slug = ${first.instanceSlug}) AS runs,
+        (SELECT count(*)::int FROM harness_shared.harness_plans
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+            AND plan_slug = ${first.instanceSlug}) AS instances
+    `;
+    expect(population[0]).toMatchObject({ runs: 1, instances: 1 });
+    const instanceCohort = await sql<Array<{ epoch: number | null; cohort: string | null }>>`
+      SELECT acceptance_bar_epoch AS epoch, acceptance_bar_cohort AS cohort
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.instanceSlug}
+    `;
+    expect(instanceCohort[0]).toMatchObject({ epoch: null, cohort: null });
+
+    // The plan run committed, but the receipt's final target update did not.
+    await sql`
+      UPDATE harness_shared.blueprint_operation_invocations SET target_ref = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND caller_id = 'test-principal' AND operation_id = 'run-monitor'
+         AND request_key = 'batch-001'
+    `;
+    const repaired = await acceptBlueprintPlanRun(sql, request);
+    expect(repaired).toMatchObject({ instanceSlug: first.instanceSlug, runId: first.runId, replayed: true });
+    await expect(acceptBlueprintPlanRun(sql, { ...request, input: { segment: 'west' } }))
+      .rejects.toThrow('reused with different input');
+
+    await sql`
+      UPDATE harness_shared.harness_plans SET version = version + 1
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
+    `;
+    await expect(acceptBlueprintPlanRun(sql, { ...request, requestKey: 'batch-002' }))
+      .rejects.toThrow('plan_run_template_pin_mismatch');
+    expect((await acceptBlueprintPlanRun(sql, request)).runId).toBe(first.runId);
+  });
   it('rejects an invalid executable dependency candidate before the instance and ledger transaction lands', async () => {
     const invalidContent = TEMPLATE_CONTENT.replace('blocked-by: P-001', 'blocked-by: P-404');
     await sql`
@@ -375,12 +452,23 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         minSleepSec: 0,
       });
       const beforeSuccessorWake = (await listRecentDeliveries(wakeOwner)).length;
-      const completed = await completeExecutionWorkItem(root.id, 'email-agent');
+      // EI-24164176252375850 tracks the separate timing warning. This test
+      // asserts assignment and dependency behavior; fail on any other warning.
+      const warn = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+        if (typeof message === 'string' && message.startsWith('[plans:set-status] slow ')) return;
+        throw new Error(`unexpected warning during completion: ${String(message)}`);
+      });
+      let completed: Record<string, unknown>;
+      try {
+        completed = await completeExecutionWorkItem(root.id, 'email-agent');
+        await drainDetached();
+      } finally {
+        warn.mockRestore();
+      }
       expect(completed, JSON.stringify(completed, null, 2)).toMatchObject({
         ok: true,
         finish: { complete: true, planItem: 'done' },
       });
-      await drainDetached();
 
       const rootAfter = await observeWorkItem(root.id, { harness: APP_HARNESS });
       const childAfter = await observeWorkItem(child.id, { harness: APP_HARNESS });

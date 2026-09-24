@@ -59,6 +59,7 @@ describe('the coercion allowlists', () => {
     expect([...PLANS_BOOLEAN_KEYS].sort()).toEqual([
       'actionable',
       'includeArchived',
+      'includeHistory',
       'includeLegacy',
       'needsHuman',
     ]);

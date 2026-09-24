@@ -165,6 +165,8 @@ export interface ScheduledPlanFireOptions {
   trigger?: 'scheduled' | 'manual' | 'event';
   /** Stable decimal token for a durable non-manual fire. */
   runToken?: number | string;
+  /** An operation pin may require this exact plan template revision and content. */
+  expectedTemplate?: { revision: string; contentHash: string };
   /** The resolved, start-gate-validated inputs this run executes with. */
   inputs?: unknown;
   /** Binding/manual override; otherwise inherited from schedule.execution. */
@@ -214,6 +216,7 @@ async function runScheduledPlanFireTx(
     Array<{
       content: string;
       content_hash: string;
+      version: number | string;
       title: string | null;
       items: PlanIndexItem[] | null;
       decisions: PlanIndexDecision[] | null;
@@ -224,7 +227,7 @@ async function runScheduledPlanFireTx(
       acceptance_bar_epoch: number | string | null;
     }>
   >`
-    SELECT content, content_hash, title, items, decisions, schedule, template, template_data, input_schema,
+    SELECT content, content_hash, version, title, items, decisions, schedule, template, template_data, input_schema,
            acceptance_bar_epoch
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
@@ -248,6 +251,11 @@ async function runScheduledPlanFireTx(
     };
   }
   const template = tpl[0];
+  if (opts.expectedTemplate &&
+      (String(template.version) !== opts.expectedTemplate.revision ||
+       template.content_hash !== opts.expectedTemplate.contentHash)) {
+    throw new Error(`plan_run_template_pin_mismatch:${templateSlug}`);
+  }
   if (template.acceptance_bar_epoch != null) {
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(templateSlug, 'pre-start', {
       expectedApplicable: true,

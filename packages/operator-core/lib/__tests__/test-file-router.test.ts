@@ -47,6 +47,7 @@ import {
   DEFAULT_TEST_FILE_LIST_TIMEOUT_MS,
   MAX_TEST_FILE_LIST_TIMEOUT_MS,
   REPO_ROOT,
+  unscopedFocusedRunWarning,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
   // be the LAST comment line immediately above that line (a directive on an
@@ -491,6 +492,26 @@ describe('workspace test launcher — explicit paths use the owning-config guard
       args: ['vitest', 'run', '--passWithNoTests'],
       routed: false,
     });
+  });
+
+  it('uses the integration config for a full suite and the owning-config guard for a focused file', () => {
+    expect(workspaceTestInvocation(['--workspace-integration']).args).toEqual([
+      'vitest', 'run', '--config', 'vitest.integration.config.ts',
+    ]);
+    expect(workspaceTestInvocation([
+      '--workspace-integration', 'lib/release/green-checkpoint-watchdog.integration.test.ts',
+    ])).toMatchObject({
+      routed: true,
+      args: [
+        resolve(REPO_ROOT, 'scripts/test-files.mjs'),
+        'lib/release/green-checkpoint-watchdog.integration.test.ts',
+      ],
+    });
+  });
+
+  it('warns when focused test IDs will be unbindable for harness-scoped proof', () => {
+    expect(unscopedFocusedRunWarning({})).toContain('PAPERCUSP_TEST_RUN_HARNESS');
+    expect(unscopedFocusedRunWarning({ PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' })).toBeNull();
   });
 });
 

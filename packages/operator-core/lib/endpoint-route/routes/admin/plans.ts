@@ -263,7 +263,14 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
   // The admin Edit mode round-trips the whole document through plans:set-content
   // (CAS hashes the exact raw bytes), so the UI needs `raw` — which P-008 drops
   // from plans:get by default. Opt in for the single-plan `get` the editor loads.
-  if (verb === 'get') body.includeRaw = true;
+  if (verb === 'get') {
+    body.includeRaw = true;
+    // PlanDetail's guarded one-shot fetch uses this REST route, rather than
+    // the sync reader in read-dispatch.ts. Both need the complete document,
+    // but neither displays descendant execution history. Keep explicit
+    // opt-ins; the tool also honors heading:History and priorAttemptRefs.
+    if (body.includeHistory == null) body.includeHistory = false;
+  }
   // The UI reads FULL, unshaped payloads. This loopback admin surface has no
   // model-context budget, so — like the @papercusp/sync path in
   // read-dispatch.ts (callPlansReadRaw) — it MUST take the explicit

@@ -63,6 +63,11 @@ export { parseTransformFailure };
 // their public name for every existing caller, exactly as parseTransformFailure is above.
 export { testsExecutedFrom, testsSkippedFrom };
 
+export function unscopedFocusedRunWarning(env = process.env) {
+  if (env.PAPERCUSP_TEST_RUN_HARNESS?.trim()) return null;
+  return 'Focused test run is unscoped: its test_runs IDs cannot be bound as harness-scoped proof. Set PAPERCUSP_TEST_RUN_HARNESS to the target harness (papercusp for this repo).';
+}
+
 /**
  * A governed child that never starts has no test verdict. Keep the reason for
  * that refusal typed all the way to the terminal marker: retryable PG
@@ -2625,6 +2630,11 @@ export async function main(
       ),
     );
     return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+
+  if (!dry) {
+    const scopeWarning = unscopedFocusedRunWarning();
+    if (scopeWarning) console.warn(scopeWarning);
   }
 
   let routes;

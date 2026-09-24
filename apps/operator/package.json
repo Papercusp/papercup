@@ -7,7 +7,7 @@
     "build": "npm --workspace @papercupai/operator-docs run build && npm --workspace @papercusp/operator-vite run build",
     "start": "tsx bin/hono-host.ts",
     "serve": "tsx bin/serve.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration": "node ../../scripts/workspace-test.mjs --workspace-integration",
     "pretest:e2e": "node ../../scripts/ensure-playwright-browsers.mjs",
     "test:e2e": "playwright test",
     "test:e2e:hosted-http1": "playwright test --config playwright.hosted-http1.config.ts",
