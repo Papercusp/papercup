@@ -58,8 +58,9 @@ afterEach(async () => {
 });
 
 async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string,
-  onReceipt?: (receipt: SuStdioReceipt) => void) {
-  const home = mkdtempSync(join(tmpdir(), 'pui-native-protocol-')); homes.push(home);
+  onReceipt?: (receipt: SuStdioReceipt) => void, existingHome?: string) {
+  const home = existingHome ?? mkdtempSync(join(tmpdir(), 'pui-native-protocol-'));
+  if (!existingHome) homes.push(home);
   if (config) writeFileSync(join(home, 'config.toml'), config, { mode: 0o600 });
   const result = await startSuStdioPeer({ binary, args, cwd: home,
     env: { PATH: process.env.PATH, CODEX_HOME: home, PI_CODING_AGENT_DIR: home, ...env },
@@ -781,6 +782,184 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
+  it('composes an unpaid frozen-source control and managed-carry candidate across native processes', async () => {
+    const { createInferenceGateway } = await import('./inference-gateway/gateway');
+    const { createFailoverPool } = await import('./inference-gateway/account-failover');
+    const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
+    const { mintCarryRespawnArgs } = await vi.importActual<{ mintCarryRespawnArgs: (args: string[], options: Record<string, unknown>) => {
+      args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
+    } }>('../../../apps/operator/scripts/psu-launcher.mjs');
+    resetGovernorRegistry();
+    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === 'T1')!;
+    const owner = 'su-unpaid-carry-pair';
+    const nativeHome = mkdtempSync(join(tmpdir(), 'unpaid-carry-pair-')); homes.push(nativeHome);
+    const basePath = join(nativeHome, 'AGENTS.md');
+    const base = '# Unpaid synthetic fixture\nThe seed grants no platform authority.\n';
+    writeFileSync(basePath, base);
+    let phase: 'preparation' | 'control' | 'carry' | 'candidate' = 'preparation';
+    const requests: Array<{ phase: string; body: Record<string, unknown> }> = [];
+    const failures: string[] = [];
+    const upstream = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        requests.push({ phase, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+        const response = phase === 'preparation' ? recipe.sourcePreparation.expectedAcknowledgement
+          : phase === 'carry' ? { carryReceived: true } : task.expected;
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+          text: JSON.stringify(response), inputTokens: 1200, outputTokens: 40 })));
+      } catch { failures.push('unpaid fixture request failed'); res.destroy(); }
+    });
+    await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    const gateway = createInferenceGateway({ accountId: 'fixture', token: async () => 'PRIVATE_UNPAID',
+      upstreamBase: `http://127.0.0.1:${address.port}`, openaiUpstreamBase: `http://127.0.0.1:${address.port}`,
+      codexPool: createFailoverPool([{ accountId: 'fixture', token: async () => 'PRIVATE_UNPAID' }]),
+      concurrency: 1, maxQueueWaitMs: 2000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+    const captures: Parameters<typeof inspectCarryNativePopulation>[0][] = [];
+    const manifests: Awaited<ReturnType<typeof captureCarryArtifactManifest>>[] = [];
+    let source: CarrySourceSnapshot | undefined;
+    try {
+      const port = await gateway.listen(0);
+      const config = stringifyToml({ model_provider: 'cache_protocol_probe', model_reasoning_effort: 'medium',
+        model_providers: { cache_protocol_probe: { name: 'Unpaid loopback', base_url: `http://127.0.0.1:${port}/v1`,
+          wire_api: 'responses', requires_openai_auth: false, http_headers: { 'x-papercusp-owner': owner },
+          supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } },
+        features: { apps: false, shell_tool: false, shell_snapshot: false, plugins: false, remote_plugin: false },
+        web_search: 'disabled',
+      } as Parameters<typeof stringifyToml>[0]);
+      const openNative = async () => {
+        const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
+        const p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config,
+          receipt => receipts.push(receipt), nativeHome);
+        await p.request({ method: 'initialize', params: { clientInfo: { name: 'unpaid_carry_pair', version: '1' } } });
+        const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
+        await recheckCarryRuntimeSnapshot(runtime);
+        p.send({ method: 'initialized', params: {} });
+        return { p, events, receipts, runtime };
+      };
+      const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string) => {
+        const eventStart = live.events.length;
+        const response = await live.p.request({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text }] } });
+        const turnId = String((response.turn as RpcFrame).id);
+        const terminal = () => live.events.find(event => event.method === 'turn/completed' &&
+          (event.params as RpcFrame).threadId === threadId && ((event.params as RpcFrame).turn as RpcFrame).id === turnId);
+        await vi.waitFor(() => expect(terminal() !== undefined).toBe(true), { timeout: 20_000 });
+        expect(((terminal()!.params as RpcFrame).turn as RpcFrame).status, `unpaid native phase ${phase}`).toBe('completed');
+        const threadRead = await live.p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+        const trace = inspectCarryNativeTurn({ threadId, turnId, events: live.events.slice(eventStart), threadRead,
+          allowedMcpCalls: [], expectedInputText: text });
+        expect(trace.status).toBe('verified');
+        return { turnId, threadRead, trace };
+      };
+      const options = { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: nativeHome,
+        approvalPolicy: 'never', sandbox: 'read-only' };
+      const preparation = await openNative();
+      const started = await preparation.p.request({ method: 'thread/start', params: options });
+      const sourceId = String((started.thread as RpcFrame).id);
+      const prepared = await turn(preparation, sourceId, recipe.sourcePreparation.prompt);
+      expect(inspectCarryPreparationResponse(prepared.trace.finalResponse!).matches).toBe(true);
+      source = await captureCompletedCarrySource(preparation.p, sourceId, prepared.turnId);
+      captures.push({ receipts: preparation.receipts, state: preparation.p.receiptState?.(),
+        arms: [{ threadId: sourceId, armId: 'preparation' }] });
+      expect(inspectCarryNativePopulation(captures[0]).status).toBe('closed-peer-reconciled');
+      // Mint from the exact stopped source BEFORE the control creates a newer
+      // rollout. Both arms see the same base pointer; only candidate receives
+      // the managed carry turn. This is explicit app-server delivery, not host
+      // adoption or a measurement of natural first-two startup phases.
+      const carry = mintCarryRespawnArgs(['fork', sourceId], { agent: 'codex', home: nativeHome,
+        codexHome: nativeHome, ownerId: owner, systemPromptAddendum: recipe.seedText });
+      expect(carry.predecessorSessionId).toBe(sourceId);
+      expect(carry.args).toEqual([]);
+      expect(readFileSync(basePath, 'utf8')).not.toContain(recipe.seedText);
+      expect(readFileSync(carry.launchContextPath, 'utf8')).toContain(recipe.seedText);
+      for (const arm of ['control', 'candidate'] as const) {
+        await recheckCarrySourceSnapshot(source);
+        const live = await openNative();
+        const opened = await live.p.request({ method: arm === 'control' ? 'thread/fork' : 'thread/start',
+          params: { ...options, ...(arm === 'control' ? { threadId: sourceId } : {}) } });
+        const thread = opened.thread as RpcFrame, threadId = String(thread.id);
+        expect(threadId).not.toBe(sourceId);
+        expect((thread.turns as RpcFrame[]).map(turn => turn.id)).toEqual(arm === 'control' ? [source.turnId] : []);
+        const configuration = await captureCarryNativeConfiguration(live.p, { threadId, cwd: nativeHome, servers: [] });
+        const sourceFiles = [source, ...source.ancestors];
+        const artifacts = [
+          ...live.runtime.artifacts,
+          ...sourceFiles.map((s, i) => ({ id: `source-${i}`, filePath: s.filePath, maxBytes: s.snapshot.highWaterBytes })),
+          { id: 'base', filePath: basePath, maxBytes: 1024 * 1024 },
+          { id: 'carry', filePath: carry.launchContextPath, maxBytes: 1024 * 1024 },
+          ...[
+            ['driver', './su-session-stdio-peer.integration.test.ts'], ['transport', './su-session-stdio-peer.ts'],
+            ['scanner', './launch-cost/scan-launch-transcripts.ts'], ['recipe-checker', './launch-cost/launch-cost-metrics.ts'],
+            ['launcher', '../../../apps/operator/scripts/psu-launcher.mjs'],
+          ].map(([id, path]) => ({ id, filePath: fileURLToPath(new URL(path, import.meta.url)), maxBytes: 1024 * 1024 })),
+        ];
+        const manifest = await captureCarryArtifactManifest({ protocolRef: 'D017:unpaid-local-T1-pair', configuration, artifacts,
+          dependencyScope: { recipeSha256: recipe.sha256,
+            roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'source', artifactIds: sourceFiles.map((_, i) => `source-${i}`) },
+              { role: 'launcher', artifactIds: ['launcher'] }, { role: 'native-runtime', artifactIds: live.runtime.artifacts.map(a => a.id) },
+              { role: 'task', artifactIds: ['recipe-checker'] }, { role: 'seed', artifactIds: ['carry'] },
+              { role: 'checker', artifactIds: ['recipe-checker'] }],
+            nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
+            unresolved: ['selected JS imports only; transitive scripts and pricing are not censused',
+              'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
+              'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
+        manifests.push(manifest);
+        await recheckCarryArtifactManifest(manifest, live.p);
+        await recheckCarrySourceSnapshot(source);
+        if (arm === 'candidate') {
+          phase = 'carry'; await turn(live, threadId, carry.carryText);
+        }
+        phase = arm;
+        const result = await turn(live, threadId, task.prompt);
+        expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! }).matches).toBe(true);
+        await recheckCarryArtifactManifest(manifest, live.p);
+        await live.p.close(); await live.p.done;
+        captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
+        expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
+        await recheckCarrySourceSnapshot(source);
+      }
+      expect(requests.map(request => request.phase)).toEqual(['preparation', 'control', 'carry', 'candidate']);
+      expect(failures).toEqual([]);
+      // Full isolated gateway lifetime plus all native peers: no per-arm
+      // filtering may hide preparation, failed attempts or a missing process.
+      const org = await createOrgTestDb(), sql = org.adminSql;
+      const workspace = `unpaid-carry-${randomUUID()}`;
+      const dbSpy = vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql } as ReturnType<typeof dbOrg.getOrgPg>);
+      const workspaceSpy = vi.spyOn(workspaceRegistry, 'activeWorkspaceId').mockReturnValue(workspace);
+      try {
+        const adapters = [{ name: 'codex', root: join(nativeHome, 'sessions'), parse: parseCodexChunk,
+          replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+        expect((await ingestInteractiveUsage({ adapters, includeIsolationRoots: false })).errors).toEqual([]);
+        const gatewayCapture = gateway.stats().requestStages!;
+        const evidence = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
+          native: captures, gateway: gatewayCapture });
+        expect(evidence).toMatchObject({ status: 'observations-linked', missing: [], violations: [],
+          accountingComplete: false, admission: 'not-established' });
+        expect(evidence.native.turns.map(turn => turn.armId)).toEqual(['preparation', 'control', 'candidate', 'candidate']);
+        expect(evidence.canonical!.rows).toHaveLength(4);
+        expect(evidence.inheritedUsage).toEqual([]);
+        expect(evidence.population!.turns.flatMap(turn => turn.usageEventKeys)).toHaveLength(4);
+        expect((await ingestInteractiveUsage({ adapters, includeIsolationRoots: false })).samples).toBe(0);
+        for (let omitted = 0; omitted < captures.length; omitted++) {
+          const incomplete = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
+            native: captures.filter((_, index) => index !== omitted), gateway: gatewayCapture });
+          expect(incomplete.status).not.toBe('observations-linked');
+          expect(incomplete.population!.unmatchedGatewayRequestIds.length).toBeGreaterThan(0);
+        }
+        console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, sourceSha256: source.snapshot.sha256,
+          sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
+          captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
+          canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
+      } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org.cleanup(); }
+    } finally {
+      await gateway.close();
+      await new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); });
+      resetGovernorRegistry();
+    }
+  }, 120_000);
+
   it.each(['ok', 'failover', 'http-error', 'incomplete-stream', 'fork', 'fork-http-error'] as const)(
     'joins native turns to gateway HTTP write observations without provider inference (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
@@ -866,6 +1045,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         ]));
         preparingSource = false;
       }
+      const turnEventStart = events.length;
       const response = await p.request({ method: 'turn/start', params: { threadId,
         input: [{ type: 'text', text: task.prompt }] } });
       const turnId = String((response.turn as RpcFrame).id);
@@ -874,10 +1054,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         params: expect.objectContaining({ threadId, turn: expect.objectContaining({ id: turnId, status: nativeStatus }) }),
       })), { timeout: 20_000 });
       const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
-      const trace = inspectCarryNativeTurn({ threadId, turnId, events, threadRead,
+      // Bound action validation to this turn's capture window, retaining any
+      // unexpected events within it. Population closeout uses ALL receipts.
+      const trace = inspectCarryNativeTurn({ threadId, turnId, events: events.slice(turnEventStart), threadRead,
         allowedMcpCalls: [], expectedInputText: task.prompt });
       if (nativeStatus === 'completed') {
-        expect(trace).toMatchObject({ status: 'verified', finalResponse: expectedResponse });
+        expect(trace, JSON.stringify({ missing: trace.missing, violations: trace.violations }))
+          .toMatchObject({ status: 'verified', finalResponse: expectedResponse });
         expect(inspectCarryTaskResponse({ taskId: task.id, response: trace.finalResponse! }).matches).toBe(true);
       } else {
         expect(trace.status).not.toBe('verified');
@@ -934,7 +1117,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // Flush only this test's native process and ingest only its isolated home.
       // This exercises the real canonical writer, not a fabricated billing row.
       const nativeHome = homes.at(-1)!;
-      await p.close();
+      if (source && nativeStatus === 'completed') {
+        const frozen = await captureCompletedCarrySource(p, threadId, turnId);
+        expect(frozen).toMatchObject({ forkedFromId: source.threadId, ancestors: [
+          { threadId: source.threadId, turnId: source.turnId, filePath: source.path, forkedFromId: null },
+        ] });
+        await recheckCarrySourceSnapshot(frozen);
+        const parentBytes = readFileSync(source.path);
+        try {
+          writeFileSync(source.path, Buffer.concat([parentBytes, Buffer.from('{}\n')]));
+          await expect(recheckCarrySourceSnapshot(frozen)).rejects.toThrow();
+        } finally { writeFileSync(source.path, parentBytes); }
+        await recheckCarrySourceSnapshot(frozen);
+      } else await p.close();
       const arms = [...(source ? [{ armId: 'preparation', threadId: source.threadId }] : []),
         { armId: `fixture:${mode}`, threadId }];
       const nativeCapture = { receipts, state: p.receiptState?.(), arms };
@@ -954,15 +1149,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const transcriptPath = String((threadRead.thread as RpcFrame).path);
       const parsed = parseCodexChunk(readFileSync(transcriptPath, 'utf8'));
       const usageEvents = parsed.events ?? [];
-      expect(usageEvents).toHaveLength((forked ? 1 : 0) + (nativeStatus === 'completed' ? 1 : 0));
+      expect(usageEvents).toHaveLength(nativeStatus === 'completed' ? 1 : 0);
       if (nativeStatus === 'completed') {
         expect(usageEvents.at(-1)).toMatchObject({ turnId, inputTotalTokens: 1200,
-          usage: { outputTokens: 40 }, requestOrdinal: forked ? 2 : 1 });
+          usage: { outputTokens: 40 }, requestOrdinal: 1 });
       }
       if (source) {
-        expect(usageEvents[0]).toMatchObject({ turnId: source.turnId, inputTotalTokens: 600,
-          usage: { outputTokens: 20 }, requestOrdinal: 1 });
-        expect(parseCodexChunk(readFileSync(source.path, 'utf8')).events).toHaveLength(1);
+        // Installed native forks retain a parent link; thread/read resolves
+        // inherited turns without copying their token events into child JSONL.
+        expect(parsed.parserState?.predecessorSessionId).toBe(source.threadId);
+        expect(usageEvents.some(event => event.turnId === source!.turnId)).toBe(false);
+        expect(parseCodexChunk(readFileSync(source.path, 'utf8')).events).toMatchObject([
+          { turnId: source.turnId, inputTotalTokens: 600, usage: { outputTokens: 20 }, requestOrdinal: 1 },
+        ]);
       }
       const org = await createOrgTestDb();
       const sql = org.adminSql, workspace = `native-carry-${randomUUID()}`;
@@ -977,7 +1176,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const rows = await sql<Array<CarryCanonicalUsageRow & { account_id: string | null; cost_usd: number | null;
           cost_source: string | null; output_tokens: number }>>`SELECT session_id, usage_event_key, account_id, cost_usd, cost_source,
           output_tokens, usage_provenance FROM harness_shared.agent_usage_samples
-          WHERE workspace_id = ${workspace}`;
+          WHERE workspace_id = ${workspace} ORDER BY id`;
         canonicalSamples = rows.length;
         expect(rows).toHaveLength(usageEvents.length + (source ? 1 : 0));
         const canonicalPopulation = await captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation });
@@ -987,12 +1186,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           ({ session_id, usage_event_key, usage_provenance })));
         const evidence = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
           native: nativeCapture, gateway: stages });
-        const inheritedRows = source ? rows.filter(row => row.session_id === threadId && row.usage_provenance?.turnId === source.turnId) : [];
+        const inheritedRows = source ? rows.filter(row => row.session_id === threadId && row.usage_provenance?.turnId === source!.turnId) : [];
         expect(evidence).toMatchObject({ status: 'observations-linked', violations: [], missing: [],
           native: nativePopulation, canonical: canonicalPopulation, accountingComplete: false, admission: 'not-established' });
         expect(evidence.inheritedUsage).toEqual(inheritedRows.map(({ session_id, usage_event_key, usage_provenance }) =>
           ({ session_id, usage_event_key, usage_provenance })));
-        expect(inheritedRows).toHaveLength(source ? 1 : 0);
+        expect(inheritedRows).toHaveLength(0);
         expect(evidence.captureSha256).toMatch(/^[a-f0-9]{64}$/);
         expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE_NATIVE|From the inherited task state/);
         const population = evidence.population!;
@@ -1005,16 +1204,20 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         expect(currentTurn.upstreamAttempts.map(call => call.responseStatus)).toEqual(
           timeline.upstreamWrites.calls.map(call => call.responseStatus));
         if (source) {
-          const preparationRows = rows.filter(row => row.session_id === source.threadId);
-          expect(preparationRows).toHaveLength(1);
+          const preparationRows = rows.filter(row => row.session_id === source!.threadId);
+          expect(preparationRows).toMatchObject([{ output_tokens: 20, account_id: null, cost_source: 'estimated',
+            usage_provenance: { turnId: source.turnId, inputTotalTokens: 600, grain: 'request' } }]);
           expect(population.turns).toHaveLength(2);
-          expect(population.turns.find(turn => turn.threadId === source.threadId)).toMatchObject({ armId: 'preparation',
+          expect(population.turns.find(turn => turn.threadId === source!.threadId)).toMatchObject({ armId: 'preparation',
             turnId: source.turnId, status: 'completed', usageEventKeys: preparationRows.map(row => row.usage_event_key) });
           expect(new Set(rows.map(row => row.usage_event_key)).size).toBe(rows.length);
-          // The cloned historical sample stays visible, but cannot count as a
-          // new source or arm request. All three partitions conserve the query.
-          expect(population.turns.flatMap(turn => turn.usageEventKeys)).not.toContain(inheritedRows[0].usage_event_key);
+          // Source preparation remains in its own usage partition even
+          // though its inherited turn is visible from the child's native read.
+          expect(currentTurn.usageEventKeys).not.toContain(preparationRows[0].usage_event_key);
           expect(preparationRows.length + inheritedRows.length + currentRows.length).toBe(rows.length);
+          await expect(captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
+            native: { ...nativeCapture, arms: [{ armId: `fixture:${mode}`, threadId }] }, gateway: stages }))
+            .resolves.toMatchObject({ status: 'invalid', canonical: null, population: null, accountingComplete: false });
         }
         if (nativeStatus === 'completed') {
           const row = currentRows[0], event = usageEvents.at(-1)!;
@@ -1069,7 +1272,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       console.log('CARRY_NATIVE_GATEWAY_RECEIPT', JSON.stringify({ mode, threadId, turnId, nativeStatus,
         gatewayRequestId: timeline.requestId, upstreamAttempts: timeline.upstreamWrites.calls.length,
         selectedAccounts: accounts, gatewayOutcome: timeline.outcome, providerInference: false,
-        canonicalUsageSamples: canonicalSamples, inheritedUsageSamples: source ? 1 : 0,
+        canonicalUsageSamples: canonicalSamples, inheritedUsageSamples: 0,
         preparationThreadId: source?.threadId ?? null, canonicalChargeJoin: false, colocatedClockBound: true }));
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
