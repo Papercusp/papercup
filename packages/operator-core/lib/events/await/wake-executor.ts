@@ -40,6 +40,7 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
   statSync,
@@ -59,7 +60,13 @@ import {
 } from '@papercusp/orchestrator/session-launch-dirs';
 import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
-import { fallbackCodexLaunchSpecFromAdvSession, getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
+import {
+  fallbackCodexLaunchSpecFromAdvSession,
+  getAdvSession,
+  claimAdvSessionResume,
+  setAdvSessionPid,
+} from '../../adv-sessions';
+import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../../task-manager/enroll-sync';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   autoWakeAccountRoute,
@@ -305,6 +312,134 @@ const RESUMABLE_AGENT_BINS = new Set(['claude', 'codex', 'omp']);
 export function resolveResumeSpawnBin(bin: string): string {
   if (!RESUMABLE_AGENT_BINS.has(bin)) return bin;
   return resolveAgentBinarySync(bin) ?? bin;
+}
+
+// ── WI-10002854: one live process per session ─────────────────────────────
+//
+// A `resume-headless` turn used to be invisible after spawn. It had no task-ledger
+// row, and its pid never reached the adv-session row, so the row kept the pid of
+// the process that had just died. The next wake therefore read the session as
+// dead and could resume it a second time while the first turn was still running.
+// A terminal relaunch could do the same. On 2026-09-24 that produced two live
+// processes on one coord identity, and only one of them showed in presence.
+
+/**
+ * Whether `argv` is a HEADLESS one-turn resume of `resumeId`, in any of the
+ * shapes resumeCommandFor emits: claude `--resume <id> -p`, omp `-r <id> … -p`,
+ * or codex `exec resume <id>`. The id must be a whole argv token. Pure, so the
+ * park guard is testable without a live process.
+ */
+export function isHeadlessResumeArgv(argv: readonly string[], resumeId: string): boolean {
+  if (!resumeId || !argv.includes(resumeId)) return false;
+  if (argv.includes('-p') || argv.includes('--print')) return true;
+  return argv.includes('exec') && argv.includes('resume');
+}
+
+/** Default oracle: read the live pid's argv from `/proc`. Anything unreadable
+ *  (the pid is gone, or the host has no `/proc`) answers false, which keeps the
+ *  existing liveness ladder unchanged. */
+export function defaultIsHeadlessResumeTurn(pid: number, resumeId: string | null): boolean {
+  if (!resumeId || !Number.isInteger(pid) || pid <= 0) return false;
+  let raw: string;
+  try {
+    raw = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+  } catch {
+    return false;
+  }
+  const argv = raw.split('\0').filter((a) => a.length > 0);
+  return isHeadlessResumeArgv(argv, resumeId);
+}
+
+/** Argv as stored on the ledger row. Leaves out two things: the `--settings`
+ *  payload, because the account route puts ANTHROPIC_AUTH_TOKEN in it, and the
+ *  wake text, which can be large and is already on the delivery row. */
+export function ledgerSafeResumeArgv(bin: string, args: readonly string[], wakeText: string): string[] {
+  const out: string[] = [bin];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--settings' && i + 1 < args.length) {
+      out.push(a, '<redacted>');
+      i++;
+    } else if (a.startsWith('--settings=')) {
+      out.push('--settings=<redacted>');
+    } else if (a === wakeText) {
+      out.push(`<wake-text ${a.length} chars>`);
+    } else {
+      out.push(a.length > 200 ? `${a.slice(0, 200)}…` : a);
+    }
+  }
+  return out;
+}
+
+export interface HeadlessResumeTurnInput {
+  pid: number;
+  advSessionId: number;
+  /** The row's own workspace. The await plane is pinned to the coord workspace,
+   *  so the ambient id cannot be trusted to scope this write. */
+  sessionWorkspaceId: string | null;
+  /** The coordination workspace, which the delivery carries. */
+  deliveryWorkspaceId: string;
+  coordOwnerId: string;
+  agent: string;
+  resumeId: string | null;
+  cwd: string;
+  argv: string[];
+}
+
+export interface HeadlessResumeTurnAccounting {
+  /** Resolves once the pid has been written to the adv-session row. The spawn is
+   *  never blocked on this write. */
+  pidRecorded: Promise<void>;
+  /** Close the ledger row when the child exits. Safe to call more than once. */
+  finish: (exit: ResumeTurnExitRaw) => void;
+}
+
+/**
+ * Record a spawned resume-headless turn in two places: a task-ledger row, which
+ * gives `processes:list` provenance and makes `processes:kill { taskId }` work,
+ * and the pid on its adv-session row, which the next wake and every relaunch read
+ * for liveness.
+ *
+ * `confine:false` keeps the spawn byte-identical: the recorded pid is the agent
+ * CLI itself and not a systemd-run client, so the pid write and the exit tails
+ * both describe the real turn. The trade-off: the turn stays in the spawner's
+ * cgroup and does not get the EI-9748 escape, so it does not survive a bg-host
+ * restart.
+ */
+export function defaultAccountHeadlessResumeTurn(input: HeadlessResumeTurnInput): HeadlessResumeTurnAccounting {
+  const enrolment = beginSyncEnrolment({ class: 'agent-session' }, { confine: false });
+  completeSyncEnrolment(
+    enrolment,
+    {
+      class: 'agent-session',
+      title: `wake resume (headless): ${input.coordOwnerId}`,
+      argv: input.argv,
+      cwd: input.cwd,
+      launchedBy: 'wake-executor:resume-headless',
+      sessionId: input.resumeId,
+      detail: {
+        launchSurface: 'wake-resume-headless',
+        coordOwnerId: input.coordOwnerId,
+        advSessionId: input.advSessionId,
+        agent: input.agent,
+      },
+    },
+    input.pid,
+    { workspaceId: input.sessionWorkspaceId ?? input.deliveryWorkspaceId },
+  );
+  let finished = false;
+  return {
+    pidRecorded: setAdvSessionPid(input.advSessionId, input.pid, undefined, input.sessionWorkspaceId),
+    finish: (exit) => {
+      if (finished) return;
+      finished = true;
+      finishSyncEnrolment(enrolment, {
+        state: exit.signal ? 'killed' : 'exited',
+        exitCode: exit.exitCode,
+        exitReason: exit.signal ?? null,
+      });
+    },
+  };
 }
 
 /** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the
@@ -2184,6 +2319,12 @@ export interface ExecuteWakeDeps {
    *  fire-and-forget (`stdio:'ignore'`, zero capture overhead); delivery still returns
    *  `delivered` the instant a PID is assigned either way. */
   onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void;
+  /** WI-10002854: the task-ledger row and adv-session pid for a spawned
+   *  `resume-headless` turn. Injected for tests; the default writes PG. */
+  accountHeadlessResumeTurn?: (input: HeadlessResumeTurnInput) => HeadlessResumeTurnAccounting;
+  /** WI-10002854: is this live recorded pid a headless resume turn of the same
+   *  session? When it is, the wake parks. It never force-interrupts that turn. */
+  isHeadlessResumeTurn?: (pid: number, resumeId: string | null) => boolean;
   kill?: typeof killPty;
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
@@ -3070,6 +3211,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const isLoopArmed =
     deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
   const forceResume = deps.forceResume ?? ((pid: number) => defaultForceResume(pid, alive));
+  const isHeadlessResumeTurn = deps.isHeadlessResumeTurn ?? defaultIsHeadlessResumeTurn;
+  const accountHeadlessResumeTurn = deps.accountHeadlessResumeTurn ?? defaultAccountHeadlessResumeTurn;
   const claimResume = deps.claimResume ?? claimAdvSessionResume;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
@@ -3480,6 +3623,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           }, TURN_SUBMIT_CR_DELAY_MS).unref?.();
           return { kind: 'delivered', channel: 'pty-inject' };
         }
+      }
+      // WI-10002854: the recorded pid can be a headless turn that an earlier wake
+      // started for this same session and that is still running. It will finish
+      // and exit by itself. Forcing it (the WI-666 SIGINT below) would kill a turn
+      // in progress. A second resume would put two processes on one session. So
+      // park, and deliver once the turn has exited.
+      const liveResumeId =
+        handle.agent === 'omp' ? (fresh?.ompThreadId ?? handle.ompThreadId ?? null) : (fresh?.sessionId ?? handle.sessionId ?? null);
+      if (isHeadlessResumeTurn(pid, liveResumeId)) {
+        return {
+          kind: 'park',
+          reason: `headless resume turn pid ${pid} is still running for this session; parked until it exits`,
+        };
       }
       // WI-666: a warm engine-loop owner is explicitly unattended and its
       // native session is resumable. If its process is alive but no longer
@@ -4021,13 +4177,45 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // Bound to THIS delivery `d` so the handler can attribute a loop-sourced death to
       // its routine. The delivery is still 'delivered' the instant a PID lands — the
       // observation is asynchronous + additive, never on the delivery's hot path.
+      // WI-10002854: the ledger row is assigned synchronously right after the spawn
+      // returns. The child's 'close' can only fire on a later event-loop turn, so
+      // this closure always sees it.
+      let accounting: HeadlessResumeTurnAccounting | null = null;
       const onExit = deps.onResumeTurnExit
-        ? (exit: ResumeTurnExitRaw) =>
-            deps.onResumeTurnExit!(d, resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit)
+        ? (exit: ResumeTurnExitRaw) => {
+            accounting?.finish(exit);
+            deps.onResumeTurnExit!(d, resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit);
+          }
         : undefined;
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
-      if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
-      return { kind: 'error', error: 'headless resume spawn failed' };
+      if (!pid2) return { kind: 'error', error: 'headless resume spawn failed' };
+      // With no exit observer the ledger row is not closed here. The reconciler
+      // closes it once the process identity vanishes.
+      try {
+        accounting = accountHeadlessResumeTurn({
+          pid: pid2,
+          advSessionId: handle.advSessionId,
+          sessionWorkspaceId: fresh?.workspaceId ?? null,
+          deliveryWorkspaceId: sessionDelivery.workspaceId,
+          coordOwnerId: owner ?? d.subscriberId,
+          agent: resumeAgent,
+          resumeId:
+            resumeAgent === 'omp'
+              ? (fresh?.ompThreadId ?? handle.ompThreadId ?? null)
+              : (fresh?.sessionId ?? handle.sessionId ?? null),
+          cwd,
+          argv: ledgerSafeResumeArgv(resume.bin, resume.args, resumeText),
+        });
+        // Write the pid BEFORE reporting delivered. Otherwise the next wake reads
+        // the dead predecessor's pid and resumes the session a second time.
+        // Time-bounded: a stalled datastore must not wedge the delivery.
+        await withWakeTimeout(accounting.pidRecorded, `record resume pid ${pid2}`, 2_000);
+      } catch (err) {
+        console.warn(
+          `[wake-executor] resume-headless accounting failed for pid ${pid2}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return { kind: 'delivered', channel: 'resume-headless' };
     }
 
     try {

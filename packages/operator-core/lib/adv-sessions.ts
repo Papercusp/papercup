@@ -721,8 +721,19 @@ export async function adoptStartingTerminalLaunch(opts: {
  * {@link adoptStartingTerminalLaunch} work at all, since a booting psu races
  * the launcher — has no pid or terminal yet, and fills both in here once the
  * spawn returns. Omitting it must never blank a value another writer set.
+ *
+ * `workspaceId` overrides the ambient workspace (WI-10002854). The wake
+ * executor runs on the await plane, which is pinned to the coordination
+ * workspace (WI-3575), so the ambient id there is not necessarily the one that
+ * owns the row. Without the override that UPDATE matched zero rows and did not
+ * report it.
  */
-export async function setAdvSessionPid(id: number, pid: number | null, terminalBin?: string | null): Promise<void> {
+export async function setAdvSessionPid(
+  id: number,
+  pid: number | null,
+  terminalBin?: string | null,
+  workspaceId?: string | null,
+): Promise<void> {
   try {
     const { sql } = getOrgPg();
     await sql`
@@ -730,7 +741,7 @@ export async function setAdvSessionPid(id: number, pid: number | null, terminalB
          SET pid = ${pid},
              terminal_bin = COALESCE(${terminalBin ?? null}, terminal_bin)
        WHERE id = ${id}
-         AND workspace_id = ${activeWorkspaceId()}
+         AND workspace_id = ${workspaceId || activeWorkspaceId()}
     `;
   } catch (e) {
     warnUnlessMissingTable(e, 'setAdvSessionPid');
