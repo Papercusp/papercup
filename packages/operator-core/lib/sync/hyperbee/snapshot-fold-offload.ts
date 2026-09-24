@@ -19,6 +19,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { SnapshotAbortedError, type SnapshotFoldWindowResult, type SnapshotFoldWorkerLike } from './log-snapshot';
 import { resolveMemoryWatchdogLimitMb } from '../../memory-watchdog';
 import type { PeerLogOp } from './peer-log';
+import type { GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
 import {
   packBlocks,
   unpackBlocks,
@@ -159,7 +160,10 @@ export function snapshotFoldSlotState(): { active: number; waiting: number } {
 
 export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
   private nextId = 1;
-  private readonly pending = new Map<number, { resolve: (r: SnapshotFoldResponse) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<
+    number,
+    { resolve: (r: SnapshotFoldResponse) => void; reject: (e: Error) => void }
+  >();
   private failure: Error | null = null;
   private closed = false;
 
@@ -186,7 +190,9 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     worker.on('error', (err) => {
       const e = err instanceof Error ? err : new Error(String(err));
       const code = (e as { code?: unknown }).code;
-      this.failAll(new Error(`snapshot fold worker failed${typeof code === 'string' ? ` (${code})` : ''}: ${e.message}`));
+      this.failAll(
+        new Error(`snapshot fold worker failed${typeof code === 'string' ? ` (${code})` : ''}: ${e.message}`),
+      );
     });
     worker.on('exit', (code) => {
       if (!this.closed) this.failAll(new Error(`snapshot fold worker exited unexpectedly (code ${code})`));
@@ -200,7 +206,7 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
    * worker cannot start, or with `SnapshotAbortedError` if `signal` aborts while queued.
    */
   static async open(
-    init: { excludeTables: readonly string[] },
+    init: { excludeTables: readonly string[]; governorReceiptFilter?: GovernorReceiptSnapshotFilter },
     opts: { workerPath?: string; maxOldGenerationSizeMb?: number; signal?: AbortSignal } = {},
   ): Promise<SnapshotFoldWorker> {
     const releaseSlot = await acquireSnapshotFoldSlot(opts.signal);
@@ -221,7 +227,11 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
       throw e;
     }
     try {
-      await client.request({ kind: 'init', excludeTables: [...init.excludeTables] });
+      await client.request({
+        kind: 'init',
+        excludeTables: [...init.excludeTables],
+        ...(init.governorReceiptFilter ? { governorReceiptFilter: init.governorReceiptFilter } : {}),
+      });
     } catch (e) {
       await client.close();
       throw e;
@@ -231,11 +241,17 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
 
   async fold(
     blocks: ReadonlyArray<Uint8Array | null>,
-    opts: { skipSnapshotOps?: boolean } = {},
+    opts: { skipSnapshotOps?: boolean; sourceStart?: number } = {},
   ): Promise<SnapshotFoldWindowResult> {
     const { buf, lengths } = packBlocks(blocks);
     const res = await this.request(
-      { kind: 'fold', buf, lengths, ...(opts.skipSnapshotOps ? { skipSnapshotOps: true } : {}) },
+      {
+        kind: 'fold',
+        buf,
+        lengths,
+        ...(opts.skipSnapshotOps ? { skipSnapshotOps: true } : {}),
+        ...(opts.sourceStart !== undefined ? { sourceStart: opts.sourceStart } : {}),
+      },
       [buf],
     );
     if (res.kind !== 'folded') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to fold`);
@@ -268,14 +284,18 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     schema_version: number;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
-  }): Promise<{ blocks: Uint8Array[]; rowCount: number }> {
+  }): Promise<{ blocks: Uint8Array[]; rowCount: number; droppedGovernorReceipts?: number }> {
     const res = await this.request({ kind: 'finish', ...args, excludeTables: [...args.excludeTables] });
     if (res.kind !== 'finished') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to finish`);
     const blocks = unpackBlocks(res.buf, res.lengths).map((b, i) => {
       if (!b) throw new Error(`snapshot fold worker: finish returned an empty chunk at ${i}`);
       return b;
     });
-    return { blocks, rowCount: res.rowCount };
+    return {
+      blocks,
+      rowCount: res.rowCount,
+      ...(res.droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts: res.droppedGovernorReceipts } : {}),
+    };
   }
 
   /** Terminate the thread (releasing its heap). Idempotent. */

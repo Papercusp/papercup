@@ -16,17 +16,13 @@ import { join } from 'node:path';
 import { bootHarnessSubstrate } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestCompleteSnapshot } from '../read-merge';
-import {
-  _resetBootHistoryForTests,
-  _setMirrorForTests,
-  _setPgWriteForTests,
-  listBootHistory,
-} from '../boot-history';
+import { _resetBootHistoryForTests, _setMirrorForTests, _setPgWriteForTests, listBootHistory } from '../boot-history';
 import {
   formatSnapshotFoldProgress,
   SNAPSHOT_COMPACT_EVERY_OPS,
   SNAPSHOT_READ_CONCURRENCY,
   throttleSnapshotFoldProgress,
+  type SnapshotPayload,
 } from '../log-snapshot';
 import type { PeerLogOp } from '../peer-log';
 import { SnapshotFoldWorker } from '../snapshot-fold-offload';
@@ -62,7 +58,10 @@ async function boot(
   slug: string,
   extra: Pick<
     Parameters<typeof bootHarnessSubstrate>[0],
-    'ownCompactionProgressIntervalMs' | 'ownCompactionFoldWorker' | 'ownCompactionFailureBackoffBaseMs'
+    | 'ownCompactionProgressIntervalMs'
+    | 'ownCompactionFoldWorker'
+    | 'ownCompactionFailureBackoffBaseMs'
+    | 'loadOwnCompactionGovernorReceiptKeys'
   > = {},
 ) {
   const handle = await bootHarnessSubstrate({
@@ -73,6 +72,7 @@ async function boot(
     loadRevokedOverride: async () => new Set(),
     applyOverride: async () => true,
     rekeyDepsOverride: null,
+    loadOwnCompactionGovernorReceiptKeys: async () => [],
     ...extra,
   });
   let closed = false;
@@ -218,7 +218,9 @@ describe('a failed compaction backs off, then retries even on an IDLE pot (WI-10
     });
     await appendOps(handle, 0, SNAPSHOT_COMPACT_EVERY_OPS);
     await handle.mergeNow(); // merges the ops AND kicks the compaction off; it fails
-    const failed = await waitFor(() => compactionEvents(slug).find((e) => /^log compaction failed/.test(e.message ?? '')));
+    const failed = await waitFor(() =>
+      compactionEvents(slug).find((e) => /^log compaction failed/.test(e.message ?? '')),
+    );
     expect(failed.message).toMatch(/synthetic worker start failure \(failures=1 nextAttemptInMs=2000\)$/);
 
     await handle.mergeNow(); // idle, inside the backoff
@@ -258,12 +260,49 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     expect(messages[0]).toMatch(
       /^own log compaction anchor: producer=on ownLogLength=0 lastCoversUpTo=0 lastRows=0 threshold=1000 due=false anchor=none$/,
     );
-    expect(messages.some((m) => /^own log compaction started: ownLogLength=1000 lastCoversUpTo=0 threshold=1000 /.test(m))).toBe(true);
-    expect(messages.some((m) => /^own log compaction: coversUpTo=1000 .*elapsedMs=\d+ mergeGateHeld=false$/.test(m))).toBe(true);
+    expect(
+      messages.some((m) => /^own log compaction started: ownLogLength=1000 lastCoversUpTo=0 threshold=1000 /.test(m)),
+    ).toBe(true);
+    expect(
+      messages.some((m) => /^own log compaction: coversUpTo=1000 .*elapsedMs=\d+ mergeGateHeld=false$/.test(m)),
+    ).toBe(true);
     // stdout mirror carries the same rows (the journal is the other durable surface).
     expect(stdout.filter((l) => l.includes(slug) && l.includes('own_log_compaction')).length).toBe(mine.length);
     // Default cadence: a fold this short finishes inside one interval and adds no progress rows.
     expect(messages.some((m) => m.startsWith('own log compaction progress:'))).toBe(false);
+  });
+
+  it('drops only absent pre-census governor receipts and records the measured count (P-530)', async () => {
+    const slug = 'p530-receipt-filter';
+    const { handle } = await boot(slug, {
+      loadOwnCompactionGovernorReceiptKeys: async () => ['papercusp/WI-LIVE'],
+    });
+    const receipt = (hbKey: string): PeerLogOp => ({
+      type: 'put',
+      table: 'engineer-issues',
+      hbKey,
+      value: { payload: { resource_governor: { schemaVersion: 1, state: 'completed' } } },
+      ts: 2_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: '',
+    });
+    await handle.append(receipt('papercusp/WI-DEAD'));
+    await handle.append(receipt('papercusp/WI-LIVE'));
+    await appendOps(handle, 0, SNAPSHOT_COMPACT_EVERY_OPS - 2);
+    await handle.mergeNow();
+
+    const seed = await waitFor(() => findLatestCompleteSnapshot(handle.ownLog));
+    const rows = [] as SnapshotPayload['rows'];
+    for (let i = 0; i < seed.chunkCount; i++) {
+      const op = await handle.ownLog.get(seed.seedIndex + i);
+      rows.push(...((op?.value as SnapshotPayload | undefined)?.rows ?? []));
+    }
+    expect(rows.some((row) => row.hbKey === 'papercusp/WI-DEAD')).toBe(false);
+    expect(rows.some((row) => row.hbKey === 'papercusp/WI-LIVE')).toBe(true);
+    const event = await waitFor(() =>
+      compactionEvents(slug).find((entry) => /^own log compaction: /.test(entry.message ?? '')),
+    );
+    expect(event.message).toContain('droppedGovernorReceipts=1 liveGovernorReceiptKeys=1');
   });
 
   it('reports the fold position while a compaction is running, not only when it ends (WI-10002836)', async () => {

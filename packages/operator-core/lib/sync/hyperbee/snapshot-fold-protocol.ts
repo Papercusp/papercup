@@ -21,16 +21,25 @@
  */
 import {
   buildSnapshotOpsFromRows,
+  governorReceiptSnapshotValueTransform,
   isSnapshotBlock,
   isSnapshotOp,
   SnapshotRowFolder,
   type SnapshotPayload,
 } from './log-snapshot';
+import type { GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
 import type { PeerLogOp } from './peer-log';
 
 export type SnapshotFoldRequest =
-  | { kind: 'init'; id: number; excludeTables: string[] }
-  | { kind: 'fold'; id: number; buf: ArrayBuffer; lengths: number[]; skipSnapshotOps?: boolean }
+  | { kind: 'init'; id: number; excludeTables: string[]; governorReceiptFilter?: GovernorReceiptSnapshotFilter }
+  | {
+      kind: 'fold';
+      id: number;
+      buf: ArrayBuffer;
+      lengths: number[];
+      skipSnapshotOps?: boolean;
+      sourceStart?: number;
+    }
   | { kind: 'inspect'; id: number; buf: ArrayBuffer; lengths: number[] }
   | {
       kind: 'finish';
@@ -58,7 +67,14 @@ export type SnapshotFoldResponse =
       heapUsedBytes?: number;
     }
   | { kind: 'inspected'; id: number; ops: Array<PeerLogOp | null> }
-  | { kind: 'finished'; id: number; buf: ArrayBuffer; lengths: number[]; rowCount: number }
+  | {
+      kind: 'finished';
+      id: number;
+      buf: ArrayBuffer;
+      lengths: number[];
+      rowCount: number;
+      droppedGovernorReceipts?: number;
+    }
   | { kind: 'error'; id: number; message: string };
 
 /**
@@ -151,6 +167,7 @@ export function createSnapshotFoldHandler(
   } = {},
 ): (req: SnapshotFoldRequest) => SnapshotFoldReply {
   let folder: SnapshotRowFolder | null = null;
+  let droppedGovernorReceipts: { dropped: number } | null = null;
 
   const requireFolder = (): SnapshotRowFolder => {
     if (!folder) throw new Error('snapshot fold worker: fold/finish before init (or after finish)');
@@ -160,16 +177,26 @@ export function createSnapshotFoldHandler(
   return (req) => {
     try {
       switch (req.kind) {
-        case 'init':
-          folder = new SnapshotRowFolder({ excludeTables: req.excludeTables });
+        case 'init': {
+          const projection = req.governorReceiptFilter
+            ? governorReceiptSnapshotValueTransform(req.governorReceiptFilter)
+            : null;
+          droppedGovernorReceipts = projection?.stats ?? null;
+          folder = new SnapshotRowFolder({
+            excludeTables: req.excludeTables,
+            ...(projection ? { transformValue: projection.transform } : {}),
+          });
           return { res: { kind: 'ok', id: req.id }, transfer: [] };
+        }
         case 'fold': {
           // Counts are PER REQUEST; the caller totals them per scanned range.
           const f = requireFolder();
           let decodedOps = 0;
           let decodedBytes = 0;
           let skippedSnapshotOps = 0;
-          for (const block of unpackBlocks(req.buf, req.lengths)) {
+          const blocks = unpackBlocks(req.buf, req.lengths);
+          for (let offset = 0; offset < blocks.length; offset++) {
+            const block = blocks[offset];
             if (!block) continue;
             // WI-10002836: the caller normally drops redundant snapshot chunks before
             // sending; this catches any it sent anyway, still without a parse.
@@ -187,7 +214,7 @@ export function createSnapshotFoldHandler(
             // The stored block IS the op's UTF-8 JSON, so its length is the measure the
             // inline fold used to get by re-stringifying every op (a second full pass).
             decodedBytes += block.byteLength;
-            f.add(op, op.value);
+            f.add(op, op.value, req.sourceStart === undefined ? undefined : req.sourceStart + offset);
           }
           const heapUsedBytes = opts.heapUsedBytes?.();
           return {
@@ -226,8 +253,17 @@ export function createSnapshotFoldHandler(
           const rowCount = ops.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
           const packed = packBlocks(ops.map(encodeStoredBlock));
           folder = null; // release the live-key Map before the reply crosses back
+          const dropped = droppedGovernorReceipts?.dropped;
+          droppedGovernorReceipts = null;
           return {
-            res: { kind: 'finished', id: req.id, buf: packed.buf, lengths: packed.lengths, rowCount },
+            res: {
+              kind: 'finished',
+              id: req.id,
+              buf: packed.buf,
+              lengths: packed.lengths,
+              rowCount,
+              ...(dropped !== undefined ? { droppedGovernorReceipts: dropped } : {}),
+            },
             transfer: [packed.buf],
           };
         }

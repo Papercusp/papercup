@@ -17,7 +17,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type OwnLog, type PeerLogOp } from '../peer-log';
-import { produceLogSnapshot, SnapshotAbortedError, SNAPSHOT_READ_CONCURRENCY } from '../log-snapshot';
+import {
+  produceLogSnapshot,
+  SnapshotAbortedError,
+  SNAPSHOT_READ_CONCURRENCY,
+  type SnapshotPayload,
+} from '../log-snapshot';
 import {
   acquireSnapshotFoldSlot,
   SNAPSHOT_FOLD_MAX_CONCURRENT,
@@ -94,7 +99,10 @@ async function rawRange(log: OwnLog, from: number, to: number): Promise<string[]
 
 const NOW = 50_000;
 const inlineOpts = { now: NOW, schemaVersion: CURRENT_SCHEMA_VERSION, maxChunkBytes: 2_048 };
-const offloadOpts = { ...inlineOpts, foldWorker: (init: { excludeTables: readonly string[] }) => SnapshotFoldWorker.open(init) };
+const offloadOpts = {
+  ...inlineOpts,
+  foldWorker: (init: { excludeTables: readonly string[] }) => SnapshotFoldWorker.open(init),
+};
 
 describe('the raw block seam (OwnLog.getRaw / appendRawBatch)', () => {
   it('reads the exact bytes the json session stores, and appends bytes that read back as the op', async () => {
@@ -127,6 +135,58 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
   });
 
+  it('applies the P-530 live-receipt census identically inline and in the worker', async () => {
+    const receipt = (hbKey: string): PeerLogOp => ({
+      type: 'put',
+      table: 'engineer-issues',
+      hbKey,
+      value: { payload: { resource_governor: { schemaVersion: 1, state: 'completed' } } },
+      ts: 20_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: '',
+    });
+    const ops: PeerLogOp[] = [
+      receipt('papercusp/WI-DEAD'),
+      receipt('papercusp/WI-LIVE'),
+      { ...receipt('papercusp/WI-NORMAL'), value: { payload: { real_work: true } } },
+    ];
+    const filter = {
+      maxSourceIndexExclusive: ops.length,
+      liveQualifiedKeys: ['papercusp/WI-LIVE'],
+    };
+    const a = await freshLog();
+    const b = await freshLog();
+    await a.appendBatch(ops);
+    await b.appendBatch(ops);
+
+    const inline = await produceLogSnapshot(a, { ...inlineOpts, governorReceiptFilter: filter });
+    const offloaded = await produceLogSnapshot(b, { ...offloadOpts, governorReceiptFilter: filter });
+
+    expect(offloaded).toEqual(inline);
+    expect(inline.droppedGovernorReceipts).toBe(1);
+    expect(inline.rowCount).toBe(2);
+    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    const rows = Array.from({ length: inline.chunkCount }, (_, i) => i)
+      .map((i) => a.get(inline.coversUpTo + i))
+      .reduce(
+        async (accP, opP) => {
+          const acc = await accP;
+          const op = await opP;
+          return acc.concat((op?.value as SnapshotPayload | undefined)?.rows ?? []);
+        },
+        Promise.resolve([] as SnapshotPayload['rows']),
+      );
+    await expect(rows).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hbKey: 'papercusp/WI-LIVE' }),
+        expect.objectContaining({ hbKey: 'papercusp/WI-NORMAL' }),
+      ]),
+    );
+    await expect(rows).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ hbKey: 'papercusp/WI-DEAD' })]),
+    );
+  });
+
   it('seeded fold: a prior complete set on the log is found by the summary seek and folded in the worker', async () => {
     const a = await freshLog();
     const b = await freshLog();
@@ -146,7 +206,12 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
 
   it('an empty log appends nothing on either path', async () => {
     const log = await freshLog();
-    expect(await produceLogSnapshot(log, offloadOpts)).toEqual({ appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 });
+    expect(await produceLogSnapshot(log, offloadOpts)).toEqual({
+      appended: false,
+      coversUpTo: 0,
+      rowCount: 0,
+      chunkCount: 0,
+    });
   });
 
   it('reports fold progress from the worker path, monotonically, ending at the log length', async () => {
@@ -180,7 +245,10 @@ async function produceLogSnapshotPeek(log: OwnLog): Promise<{ chunkCount: number
 describe('no inline fallback: a worker that cannot run fails the compaction', () => {
   it('open() rejects when the worker script does not exist', async () => {
     await expect(
-      SnapshotFoldWorker.open({ excludeTables: [] }, { workerPath: join(tmpdir(), 'no-such-snapshot-fold.worker.mjs') }),
+      SnapshotFoldWorker.open(
+        { excludeTables: [] },
+        { workerPath: join(tmpdir(), 'no-such-snapshot-fold.worker.mjs') },
+      ),
     ).rejects.toBeTruthy();
   });
 
@@ -210,8 +278,14 @@ describe('the worker state machine (createSnapshotFoldHandler)', () => {
     const folded = handle({ kind: 'fold', id: 3, ...block(op!) }).res;
     expect(folded).toMatchObject({ kind: 'folded', decodedOps: 1, keyCount: 1 });
     const finished = handle({
-      kind: 'finish', id: 4, now: NOW, coversUpTo: 1, author_pubkey: 'k', ts: NOW,
-      schema_version: CURRENT_SCHEMA_VERSION, excludeTables: [],
+      kind: 'finish',
+      id: 4,
+      now: NOW,
+      coversUpTo: 1,
+      author_pubkey: 'k',
+      ts: NOW,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      excludeTables: [],
     });
     expect(finished.res).toMatchObject({ kind: 'finished', rowCount: 1 });
     expect(finished.transfer).toHaveLength(1);
@@ -221,11 +295,19 @@ describe('the worker state machine (createSnapshotFoldHandler)', () => {
   it('inspect returns snapshot metadata without rows, and keeps non-snapshot ops tiny', () => {
     const handle = createSnapshotFoldHandler();
     const snapshotOp = {
-      type: 'put', table: '__snapshot__', hbKey: 'snap', ts: 1, schema_version: CURRENT_SCHEMA_VERSION,
+      type: 'put',
+      table: '__snapshot__',
+      hbKey: 'snap',
+      ts: 1,
+      schema_version: CURRENT_SCHEMA_VERSION,
       value: { coversUpTo: 7, chunkIdx: 0, chunkCount: 2, excludeTables: ['x'], rows: [{ table: 't', hbKey: 'k' }] },
     } as unknown as PeerLogOp;
     const [plain] = history(1);
-    const res = handle({ kind: 'inspect', id: 1, ...packBlocks([encodeStoredBlock(snapshotOp), null, encodeStoredBlock(plain!)]) }).res;
+    const res = handle({
+      kind: 'inspect',
+      id: 1,
+      ...packBlocks([encodeStoredBlock(snapshotOp), null, encodeStoredBlock(plain!)]),
+    }).res;
     expect(res.kind).toBe('inspected');
     const ops = (res as Extract<SnapshotFoldResponse, { kind: 'inspected' }>).ops;
     expect(ops[0]!.value).toEqual({ coversUpTo: 7, chunkIdx: 0, chunkCount: 2, excludeTables: ['x'], rows: [] });
@@ -318,7 +400,10 @@ describe('process-wide fold slots (SNAPSHOT_FOLD_MAX_CONCURRENT)', () => {
 
   it('a worker that cannot start releases its slot', async () => {
     await expect(
-      SnapshotFoldWorker.open({ excludeTables: [] }, { workerPath: join(tmpdir(), 'no-such-snapshot-fold.worker.mjs') }),
+      SnapshotFoldWorker.open(
+        { excludeTables: [] },
+        { workerPath: join(tmpdir(), 'no-such-snapshot-fold.worker.mjs') },
+      ),
     ).rejects.toBeTruthy();
     await vi.waitFor(() => expect(snapshotFoldSlotState()).toEqual({ active: 0, waiting: 0 }));
   });

@@ -25,6 +25,10 @@
 import type { OwnLog, PeerLogOp } from './peer-log';
 // Dependency-free constants module, so this file stays safe to bundle into the fold worker.
 import { SELF_REGENERATING_TABLES } from './seed-excluded-tables';
+import {
+  shouldDropGovernorReceiptSnapshotRow,
+  type GovernorReceiptSnapshotFilter,
+} from './governor-receipt-snapshot-filter';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
@@ -143,8 +147,33 @@ export type SnapshotValueTransform = (
   context: {
     table: string;
     hbKey: string;
+    /** Physical source-log index; absent outside a streaming producer fold. */
+    sourceIndex?: number;
   },
 ) => unknown;
+
+export interface GovernorReceiptSnapshotFilterStats {
+  dropped: number;
+}
+
+/** Reconstitute P-530's serializable filter as the existing value-transform seam. */
+export function governorReceiptSnapshotValueTransform(filter: GovernorReceiptSnapshotFilter): {
+  transform: SnapshotValueTransform;
+  stats: GovernorReceiptSnapshotFilterStats;
+} {
+  const stats: GovernorReceiptSnapshotFilterStats = { dropped: 0 };
+  const liveKeys = new Set(filter.liveQualifiedKeys);
+  return {
+    stats,
+    transform: (value, context) => {
+      if (shouldDropGovernorReceiptSnapshotRow(value, context, filter, liveKeys)) {
+        stats.dropped += 1;
+        return DROP_SNAPSHOT_ROW;
+      }
+      return value;
+    },
+  };
+}
 
 /** Sentinel so a decoded `null`/`undefined` value is still treated as read-once. */
 const NO_DECODED_VALUE = Symbol('no-decoded-value');
@@ -275,7 +304,7 @@ export class SnapshotRowFolder {
   /** Fold ONE op. Must be called in ascending log-index order (see the class note).
    * `decodedValue` is an internal read-once seam used by the producer diagnostics;
    * callers that do not already have the decoded value keep the original behavior. */
-  add(op: PeerLogOp, decodedValue: unknown = NO_DECODED_VALUE): void {
+  add(op: PeerLogOp, decodedValue: unknown = NO_DECODED_VALUE, sourceIndex?: number): void {
     const decoded = decodedValue === NO_DECODED_VALUE ? op.value : decodedValue;
     if (isSnapshotOp(op)) {
       // A PRIOR snapshot expands: its rows (live AND tombstone) fold in as if they
@@ -286,7 +315,7 @@ export class SnapshotRowFolder {
           if (this.excludeTables.has(r.table)) continue;
           const key = `${r.table}::${r.hbKey}`;
           const value = this.transformValue
-            ? this.transformValue(r.value, { table: r.table, hbKey: r.hbKey })
+            ? this.transformValue(r.value, { table: r.table, hbKey: r.hbKey, sourceIndex })
             : r.value;
           if (value === DROP_SNAPSHOT_ROW) {
             // A prior raw op for the same key may already be in the fold. The newest
@@ -303,7 +332,7 @@ export class SnapshotRowFolder {
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
       const rowValue = this.transformValue
-        ? this.transformValue(decoded, { table: op.table, hbKey: op.hbKey })
+        ? this.transformValue(decoded, { table: op.table, hbKey: op.hbKey, sourceIndex })
         : decoded;
       if (rowValue === DROP_SNAPSHOT_ROW) {
         // The key may have an earlier accepted winner. Dropping the latest PUT must
@@ -615,9 +644,11 @@ export type SnapshotFoldStallCallback = (stall: SnapshotFoldStall) => void;
 export function formatSnapshotFoldStall(stall: SnapshotFoldStall): string {
   const phase = stall.phase.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_');
   const core = stall.coreKey?.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_') || 'unknown';
-  return `phase=${phase} core=${core} sourceStart=${stall.sourceStart} sourceEnd=${stall.sourceEnd} ` +
+  return (
+    `phase=${phase} core=${core} sourceStart=${stall.sourceStart} sourceEnd=${stall.sourceEnd} ` +
     `cursor=${stall.processed}/${stall.total} decodedOps=${stall.decodedOps} ` +
-    `decodedBytes=${stall.decodedBytes} stalledForMs=${stall.stalledForMs}`;
+    `decodedBytes=${stall.decodedBytes} stalledForMs=${stall.stalledForMs}`
+  );
 }
 
 /**
@@ -652,11 +683,13 @@ export function throttleSnapshotFoldProgress(
 /** One-line, bounded rendering of a fold position (the progress twin of `formatSnapshotFoldStall`). */
 export function formatSnapshotFoldProgress(progress: SnapshotFoldProgress): string {
   const pct = progress.total <= 0 ? 100 : Math.min(100, Math.floor((progress.processed / progress.total) * 100));
-  return `cursor=${progress.processed}/${progress.total} (${pct}%) sourceStart=${progress.sourceStart} ` +
+  return (
+    `cursor=${progress.processed}/${progress.total} (${pct}%) sourceStart=${progress.sourceStart} ` +
     `decodedOps=${progress.decodedOps} decodedBytes=${progress.decodedBytes}` +
     (progress.skippedSnapshotOps !== undefined ? ` skippedSnapshotOps=${progress.skippedSnapshotOps}` : '') +
     (progress.keyCount !== undefined ? ` keyCount=${progress.keyCount}` : '') +
-    (progress.workerHeapUsedMb !== undefined ? ` workerHeapUsedMb=${progress.workerHeapUsedMb}` : '');
+    (progress.workerHeapUsedMb !== undefined ? ` workerHeapUsedMb=${progress.workerHeapUsedMb}` : '')
+  );
 }
 
 /**
@@ -762,10 +795,7 @@ const PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS = FILTERED_SNAPSHOT_SCAN_STALL_MS * 
  *  - the only table any producer in this tree has ever dropped is `presence`
  *    (`SEED_EXCLUDED_TABLES`), which self-heals within one 30s keep-alive.
  */
-function conflictingSnapshotExclusion(
-  seed: ProducerSnapshotSeed,
-  callerExcluded: ReadonlySet<string>,
-): string | null {
+function conflictingSnapshotExclusion(seed: ProducerSnapshotSeed, callerExcluded: ReadonlySet<string>): string | null {
   for (const chunk of seed.chunks) {
     const recorded = (chunk.value as SnapshotPayload | undefined)?.excludeTables;
     if (!recorded) continue;
@@ -1137,6 +1167,8 @@ export interface ProduceSnapshotResult {
   /** WI-2313 — number of chunk ops appended for this snapshot (≥1 when appended,
    *  0 when nothing was appended). The set occupies `[coversUpTo, coversUpTo + N)`. */
   chunkCount: number;
+  /** P-530 — absent-from-PG legacy governor receipt rows omitted from this set. */
+  droppedGovernorReceipts?: number;
 }
 
 /**
@@ -1197,11 +1229,11 @@ async function foldLogRangeInto(
   const watchdog =
     opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
       ? watchFoldCursor(from, to, {
-        phase: opts.phase ?? 'source-scan',
-        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
-        onStall: opts.onStall,
-        stallMs: opts.stallMs,
-      })
+          phase: opts.phase ?? 'source-scan',
+          ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+          onStall: opts.onStall,
+          stallMs: opts.stallMs,
+        })
       : undefined;
   let decodedOps = 0;
   let decodedBytes = 0;
@@ -1211,7 +1243,8 @@ async function foldLogRangeInto(
     for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
       const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
       const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
-      for (const op of window) {
+      for (let offset = 0; offset < window.length; offset++) {
+        const op = window[offset];
         if (!op) {
           sawHole = true;
           continue;
@@ -1236,7 +1269,7 @@ async function foldLogRangeInto(
           ...(op.epoch != null ? { epoch: op.epoch } : {}),
         });
         decodedBytes += encoded === undefined ? 0 : Buffer.byteLength(encoded, 'utf8');
-        folder.add(op, decodedValue);
+        folder.add(op, decodedValue, start + offset);
       }
       watchdog?.advance(end, decodedOps, decodedBytes);
       opts.onProgress?.({
@@ -1298,6 +1331,8 @@ export async function produceLogSnapshot(
      * worker; every other caller omits it and keeps the inline fold, unchanged.
      */
     foldWorker?: SnapshotFoldWorkerFactory;
+    /** P-530 — current PG receipt census + the pre-census own-log boundary. */
+    governorReceiptFilter?: GovernorReceiptSnapshotFilter;
   },
 ): Promise<ProduceSnapshotResult> {
   if (opts.foldWorker) return produceLogSnapshotOffloaded(ownLog, opts, opts.foldWorker);
@@ -1333,7 +1368,13 @@ export async function produceLogSnapshot(
   // `produceFilteredSnapshotIntoLog`; `excludeTables` is an `Iterable` and there are now
   // three consumers here too.
   const ownExcluded = new Set(opts.excludeTables ?? []);
-  const folder = new SnapshotRowFolder({ excludeTables: ownExcluded });
+  const governorProjection = opts.governorReceiptFilter
+    ? governorReceiptSnapshotValueTransform(opts.governorReceiptFilter)
+    : null;
+  const folder = new SnapshotRowFolder({
+    excludeTables: ownExcluded,
+    ...(governorProjection ? { transformValue: governorProjection.transform } : {}),
+  });
 
   // A prior complete snapshot already represents every op before its anchor.
   // Seed those rows directly and start the streaming fold after the entire
@@ -1361,7 +1402,10 @@ export async function produceLogSnapshot(
           `(correct, but O(history) — see conflictingSnapshotExclusion)`,
       );
     } else {
-      for (const chunk of priorSnapshot.chunks) folder.add(chunk);
+      for (let i = 0; i < priorSnapshot.chunks.length; i++) {
+        const chunk = priorSnapshot.chunks[i]!;
+        folder.add(chunk, chunk.value, priorSnapshot.coversUpTo + i);
+      }
       foldedUpTo = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
     }
   }
@@ -1375,12 +1419,14 @@ export async function produceLogSnapshot(
       phase: 'own-compaction',
       coreKey: ownLog.keyHex,
       onProgress: opts.onProgress,
-      onStall: opts.onStall ?? ((stall) => {
-        console.error(
-          `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
-            `the scan remains live and will not be aborted by this diagnostic`,
-        );
-      }),
+      onStall:
+        opts.onStall ??
+        ((stall) => {
+          console.error(
+            `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
+              `the scan remains live and will not be aborted by this diagnostic`,
+          );
+        }),
       stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
       // Every range folded here is contiguous with what the folder holds: from 0, or
       // from the end of the seed set already added above. See `skipSnapshotOps`.
@@ -1459,7 +1505,13 @@ export async function produceLogSnapshot(
   assertSnapshotAnchorHeld(await ownLog.get(coversUpTo), coversUpTo, snapshotOps.length);
 
   const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
-  return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
+  return {
+    appended: true,
+    coversUpTo,
+    rowCount,
+    chunkCount: snapshotOps.length,
+    ...(governorProjection ? { droppedGovernorReceipts: governorProjection.stats.dropped } : {}),
+  };
 }
 
 /** Throw unless `anchorOp` (read back at `coversUpTo`) is chunk 0 of the set just appended. */
@@ -1491,7 +1543,7 @@ export interface SnapshotFoldWorkerLike {
    */
   fold(
     blocks: ReadonlyArray<Uint8Array | null>,
-    opts?: { skipSnapshotOps?: boolean },
+    opts?: { skipSnapshotOps?: boolean; sourceStart?: number },
   ): Promise<SnapshotFoldWindowResult>;
   /** Decode stored blocks WITHOUT their bulk (a snapshot op keeps its metadata, not its rows). */
   inspect(blocks: ReadonlyArray<Uint8Array | null>): Promise<Array<PeerLogOp | null>>;
@@ -1504,7 +1556,7 @@ export interface SnapshotFoldWorkerLike {
     schema_version: number;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
-  }): Promise<{ blocks: Uint8Array[]; rowCount: number }>;
+  }): Promise<{ blocks: Uint8Array[]; rowCount: number; droppedGovernorReceipts?: number }>;
   close(): Promise<void>;
 }
 
@@ -1520,7 +1572,10 @@ export interface SnapshotFoldWindowResult {
   heapUsedBytes?: number;
 }
 
-export type SnapshotFoldWorkerFactory = (init: { excludeTables: readonly string[] }) => Promise<SnapshotFoldWorkerLike>;
+export type SnapshotFoldWorkerFactory = (init: {
+  excludeTables: readonly string[];
+  governorReceiptFilter?: GovernorReceiptSnapshotFilter;
+}) => Promise<SnapshotFoldWorkerLike>;
 
 type ProduceLogSnapshotOptions = Parameters<typeof produceLogSnapshot>[1];
 
@@ -1559,7 +1614,10 @@ async function produceLogSnapshotOffloaded(
   if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
 
   const excludeTables = [...new Set(opts.excludeTables ?? [])];
-  const worker = await openWorker({ excludeTables });
+  const worker = await openWorker({
+    excludeTables,
+    ...(opts.governorReceiptFilter ? { governorReceiptFilter: opts.governorReceiptFilter } : {}),
+  });
   try {
     const inspectAt = async (index: number): Promise<PeerLogOp | null> => {
       const raw = await getRaw(index);
@@ -1582,12 +1640,14 @@ async function produceLogSnapshotOffloaded(
         phase: 'own-compaction',
         coreKey: ownLog.keyHex,
         onProgress: opts.onProgress,
-        onStall: opts.onStall ?? ((stall) => {
-          console.error(
-            `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
-              `the scan remains live and will not be aborted by this diagnostic`,
-          );
-        }),
+        onStall:
+          opts.onStall ??
+          ((stall) => {
+            console.error(
+              `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
+                `the scan remains live and will not be aborted by this diagnostic`,
+            );
+          }),
         stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
         shouldAbort: opts.shouldAbort,
         skipSnapshotOps,
@@ -1625,7 +1685,7 @@ async function produceLogSnapshotOffloaded(
     }
     coversUpTo = foldedUpTo;
 
-    const { blocks, rowCount } = await worker.finish({
+    const { blocks, rowCount, droppedGovernorReceipts } = await worker.finish({
       now: opts.now,
       coversUpTo,
       author_pubkey: ownLog.keyHex,
@@ -1642,7 +1702,13 @@ async function produceLogSnapshotOffloaded(
     }
     await appendRawBatch(blocks);
     assertSnapshotAnchorHeld(await inspectAt(coversUpTo), coversUpTo, blocks.length);
-    return { appended: true, coversUpTo, rowCount, chunkCount: blocks.length };
+    return {
+      appended: true,
+      coversUpTo,
+      rowCount,
+      chunkCount: blocks.length,
+      ...(droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts } : {}),
+    };
   } finally {
     await worker.close().catch(() => {});
   }
@@ -1662,11 +1728,11 @@ async function foldLogRangeViaWorker(
   const watchdog =
     opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
       ? watchFoldCursor(from, to, {
-        phase: opts.phase ?? 'source-scan',
-        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
-        onStall: opts.onStall,
-        stallMs: opts.stallMs,
-      })
+          phase: opts.phase ?? 'source-scan',
+          ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+          onStall: opts.onStall,
+          stallMs: opts.stallMs,
+        })
       : undefined;
   const readWindow = (start: number): Promise<Array<Uint8Array | null>> => {
     const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
@@ -1706,7 +1772,10 @@ async function foldLogRangeViaWorker(
           return b;
         });
       }
-      const counts = await worker.fold(blocks, { skipSnapshotOps: opts.skipSnapshotOps === true && !sawHole });
+      const counts = await worker.fold(blocks, {
+        skipSnapshotOps: opts.skipSnapshotOps === true && !sawHole,
+        sourceStart: start,
+      });
       decodedOps += counts.decodedOps;
       decodedBytes += counts.decodedBytes;
       skippedSnapshotOps += counts.skippedSnapshotOps ?? 0;
@@ -1722,7 +1791,9 @@ async function foldLogRangeViaWorker(
         decodedBytes,
         ...(opts.skipSnapshotOps ? { skippedSnapshotOps } : {}),
         ...(counts.keyCount !== undefined ? { keyCount: counts.keyCount } : {}),
-        ...(counts.heapUsedBytes !== undefined ? { workerHeapUsedMb: Math.round(counts.heapUsedBytes / 1_048_576) } : {}),
+        ...(counts.heapUsedBytes !== undefined
+          ? { workerHeapUsedMb: Math.round(counts.heapUsedBytes / 1_048_576) }
+          : {}),
       });
     }
   } finally {
