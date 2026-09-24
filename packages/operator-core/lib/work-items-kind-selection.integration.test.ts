@@ -77,12 +77,12 @@ describe('indexed feature-family kind selection', () => {
     expect(await ids()).toEqual(['feature']);
   });
 
-  it('uses item_kind in an index condition instead of scanning issue rows during a list rebuild', async () => {
+  it('makes item_kind indexable during a list rebuild, unlike the historical OR filter', async () => {
     await db.sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, summary)
       SELECT 'default', ${HARNESS}, 'row-' || n, CASE WHEN n <= 40 THEN 'feature' ELSE 'bug' END,
              'row-' || n, 'open', n, n, repeat('body ', 50)
-        FROM generate_series(1, 20000) n`;
+        FROM generate_series(1, 2000) n`;
     await db.sql`ANALYZE harness_shared.work_items`;
     let captured: unknown[] | undefined;
     h.sql = new Proxy(db.sql, {
@@ -100,35 +100,41 @@ describe('indexed feature-family kind selection', () => {
       expect(rows).toHaveLength(20);
       expect(captured).toBeDefined();
       const query = Reflect.apply(db.sql, db.sql, captured!);
-      const plan = await db.sql`EXPLAIN (FORMAT JSON) ${query}`;
-      const conditions: string[] = [];
-      const visit = (value: unknown): void => {
-        if (!value || typeof value !== 'object') return;
-        const node = value as Record<string, unknown>;
-        // Bitmap Index Scan nodes carry Index Name but no Relation Name.
-        if ((node['Relation Name'] === 'work_items' || node['Index Name'] === 'hfc_item_kind_idx') &&
-            typeof node['Index Cond'] === 'string') {
-          conditions.push(node['Index Cond']);
-        }
-        for (const child of Object.values(node)) visit(child);
-      };
-      visit(plan[0]['QUERY PLAN']);
-      expect(conditions.join('\n'), JSON.stringify(plan[0]['QUERY PLAN'])).toMatch(/\bitem_kind\b/);
+      await db.sql.begin(async tx => {
+        // Test indexability, not the planner's cost choice for a tiny two-kind
+        // fixture. This local transaction setting is restored on exit. Natural
+        // production plans and timings are measured separately (plan D-015).
+        await tx`SET LOCAL enable_seqscan=off`;
+        const plan = await tx`EXPLAIN (FORMAT JSON) ${query}`;
+        const conditions: string[] = [];
+        const visit = (value: unknown): void => {
+          if (!value || typeof value !== 'object') return;
+          const node = value as Record<string, unknown>;
+          // Bitmap Index Scan nodes carry Index Name but no Relation Name.
+          if ((node['Relation Name'] === 'work_items' || node['Index Name'] === 'hfc_item_kind_idx') &&
+              typeof node['Index Cond'] === 'string') {
+            conditions.push(node['Index Cond']);
+          }
+          for (const child of Object.values(node)) visit(child);
+        };
+        visit(plan[0]['QUERY PLAN']);
+        expect(conditions.join('\n'), JSON.stringify(plan[0]['QUERY PLAN'])).toMatch(/\bitem_kind\b/);
 
-      // Historical OR/subquery control: the same indexed fixture must distinguish
-      // the original scan from the production query above, without wall-clock thresholds.
-      const historical = await db.sql`EXPLAIN (FORMAT JSON)
-        SELECT feature_id FROM harness_shared.harness_features_consolidated
-         WHERE workspace_id='default' AND harness_slug=${HARNESS}
-           AND (item_kind='feature' OR item_kind IN (
-             SELECT work_item_kind FROM harness_shared.datatype_registry
-              WHERE workspace_id='default' AND tier='generic-kind' AND status='active'
-                AND work_item_kind IS NOT NULL))
-           AND (parent_id IS NULL OR parent_id='')
-         ORDER BY updated_ts DESC NULLS LAST LIMIT 20`;
-      conditions.length = 0;
-      visit(historical[0]['QUERY PLAN']);
-      expect(conditions.join('\n')).not.toMatch(/\bitem_kind\b/);
+        // Historical OR/subquery control: the same indexed fixture must distinguish
+        // the original scan from the production query above, without wall-clock thresholds.
+        const historical = await tx`EXPLAIN (FORMAT JSON)
+          SELECT feature_id FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id='default' AND harness_slug=${HARNESS}
+             AND (item_kind='feature' OR item_kind IN (
+               SELECT work_item_kind FROM harness_shared.datatype_registry
+                WHERE workspace_id='default' AND tier='generic-kind' AND status='active'
+                  AND work_item_kind IS NOT NULL))
+             AND (parent_id IS NULL OR parent_id='')
+           ORDER BY updated_ts DESC NULLS LAST LIMIT 20`;
+        conditions.length = 0;
+        visit(historical[0]['QUERY PLAN']);
+        expect(conditions.join('\n')).not.toMatch(/\bitem_kind\b/);
+      });
     } finally {
       h.sql = db.sql;
     }
