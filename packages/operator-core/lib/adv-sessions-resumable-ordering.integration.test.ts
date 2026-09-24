@@ -224,3 +224,30 @@ describe('listResumableSessions guarantees every backend a place', () => {
     expect(rows.map((r) => r.agent)).toContain('codex');
   });
 });
+
+describe('listResumableSessions exact tracked-row recovery', () => {
+  it('includes one explicitly requested old row without widening the recent-ended scan', async () => {
+    const old = await seedSession({
+      agent: 'claude',
+      owner: 'su-old-explicit',
+      startedMinAgo: 10_000,
+      endedMinAgo: 9_000,
+    });
+    const recent = await seedSession({
+      agent: 'claude',
+      owner: 'su-recent-control',
+      startedMinAgo: 5,
+      endedMinAgo: 1,
+    });
+
+    // scanLimit:1 excludes `old` from the normal candidate pool. exactId must
+    // add only that row while the ordinary global limit still selects `recent`.
+    const rows = await listResumableSessions(1, {
+      perAgentFloor: 0,
+      scanLimit: 1,
+      exactId: old,
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([recent, old]);
+  });
+});

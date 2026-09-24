@@ -31,6 +31,11 @@ describe('adv/sessions resumable — hasArchive must read the stamp with the wri
   it('never passes a workspace slug to readStamp — that matches nothing and silently voids hasArchive', () => {
     expect(src).not.toMatch(/readStamp\([^)]*workspaceId/);
   });
+
+  it('forwards an exact numeric id so an old tracked row can escape the bounded recent window', () => {
+    expect(src).toContain("const requestedId = Number(searchParams.get('id') ?? NaN)");
+    expect(src).toContain('{ exactId }');
+  });
 });
 
 describe('adv/sessions ensure-codex-home — legacy rows remain repairable', () => {

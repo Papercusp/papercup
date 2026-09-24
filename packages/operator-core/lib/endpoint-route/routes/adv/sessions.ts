@@ -1243,8 +1243,11 @@ const resumable = defineTool({
   path: '/adv/sessions/resumable',
   auth: 'public',
   async handler(req) {
-    const limit = Number(new URL(req.url).searchParams.get('limit') ?? 30);
-    const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30);
+    const searchParams = new URL(req.url).searchParams;
+    const limit = Number(searchParams.get('limit') ?? 30);
+    const requestedId = Number(searchParams.get('id') ?? NaN);
+    const exactId = Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : null;
+    const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30, { exactId });
     // Enrich each session with `hasArchive` — whether its transcript exists in the
     // DB session-archive. The archive-at-death lifecycle deletes an ended session's
     // on-disk transcript ~15s after end, so a resumable claude/codex session may
