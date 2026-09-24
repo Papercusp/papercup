@@ -319,7 +319,7 @@ describe('buildRoleLaunchSpec', () => {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
         'id: plain-domain', 'extends: base', 'version: 1.0.0',
-        'slots:', '  - slot: domain', '',
+        'slots:', '  - slot: domain', 'grants: {}', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'PLAIN DOMAIN\n');
       const launch = await compileLaunchSpecificationArtifact({
@@ -351,6 +351,80 @@ describe('buildRoleLaunchSpec', () => {
       expect(url.searchParams.has('superuser')).toBe(false);
       expect(role.promptText).toContain('PLAIN DOMAIN');
       expect(role.specificationArtifact.configuration).not.toHaveProperty('workItem');
+
+      const identityInput = launch.specificationArtifact.inputs.find((entry) =>
+        entry.kind === 'blueprint-layer' && entry.ref === 'plain-domain');
+      expect(identityInput).toBeDefined();
+      if (identityInput?.kind !== 'blueprint-layer') throw new Error('plain-domain source pin missing');
+      const acceptedOperation = {
+        workItemId: 'WI-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+        identity: { ref: 'plain-domain', revision: identityInput!.revision,
+          contentHash: identityInput!.contentHash },
+        stack: ['domain:plain-domain'], requiredTools: ['work_items:get'],
+      };
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1' },
+      });
+      const accepted = await buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070', acceptedOperation,
+      });
+      expect(accepted.acceptedOperation).toEqual(acceptedOperation);
+      expect(accepted.stack).toEqual(['domain:plain-domain']);
+      expect(accepted.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'plain-domain', contentHash: identityInput!.contentHash,
+      }));
+
+      const otherDir = join(dir, '.papercusp', 'blueprints', 'other-domain');
+      mkdirSync(join(otherDir, 'prompts'), { recursive: true });
+      writeFileSync(join(otherDir, 'blueprint.yaml'), [
+        'id: other-domain', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain', 'grants: {}', '',
+      ].join('\n'));
+      writeFileSync(join(otherDir, 'prompts', 'domain.md'), 'OTHER DOMAIN\n');
+      const otherCompiled = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'worker', stack: ['domain:other-domain'],
+        state: { schemaVersion: 1 }, renderStack: true,
+      });
+      const otherInput = otherCompiled.specificationArtifact.inputs.find((entry) =>
+        entry.kind === 'blueprint-layer' && entry.ref === 'other-domain');
+      if (otherInput?.kind !== 'blueprint-layer') throw new Error('other-domain source pin missing');
+      const otherOperation = {
+        workItemId: 'WI-2', operationId: 'read', specificationRevision: 'b'.repeat(64),
+        identity: { ref: 'other-domain', revision: otherInput.revision,
+          contentHash: otherInput.contentHash },
+        stack: ['domain:other-domain'], requiredTools: ['mail:read'],
+      };
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-2' },
+      });
+      const other = await buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-2', operatorBaseUrl: 'http://localhost:3070', acceptedOperation: otherOperation,
+      });
+      expect(accepted.promptText).toContain('PLAIN DOMAIN');
+      expect(accepted.promptText).not.toContain('OTHER DOMAIN');
+      expect(other.promptText).toContain('OTHER DOMAIN');
+      expect(other.promptText).not.toContain('PLAIN DOMAIN');
+      expect(accepted.specificationArtifact.inputs).not.toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'other-domain',
+      }));
+      expect(other.specificationArtifact.inputs).not.toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'plain-domain',
+      }));
+      expect(other.acceptedOperation?.requiredTools).toEqual(['mail:read']);
+      await expect(buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070',
+        stack: ['domain:other'], acceptedOperation,
+      })).rejects.toThrow('identity stack disagrees');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -392,6 +466,96 @@ describe('buildRoleLaunchSpec', () => {
         harnessSlug: 'harness-a', role: 'worker', stack: ['domain:mixed-domain'],
         state: { schemaVersion: 1 }, renderStack: false,
       })).rejects.toThrow(/pinned fixed prompt is absent from the delivered prompt/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts exact selected provider setting and prompt receipts and refuses a changed source', async () => {
+    const { bindSelectedIdentityOutputArtifact } = await import('./agent-identities/source');
+    const dir = mkdtempSync(join(tmpdir(), 'mixed-provider-identity-artifact-'));
+    const id = 'provider-domain';
+    const identityDir = join(dir, '.papercusp', 'blueprints', id);
+    const file = join(identityDir, 'blueprint.yaml');
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      const source = [
+        `id: ${id}`, 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain',
+        'knobs:', '  aiBackend:', '    default:', '      model: selected-provider-model',
+        'contributions:',
+        '  - id: current-brief',
+        '    purpose: operational',
+        '    source: provider',
+        '    refresh: launch',
+        '    inputKind: setting',
+        '    ref: current-brief',
+        '    producerRef: existing.brief', '',
+        '  - id: current-guidance',
+        '    purpose: prompt',
+        '    source: provider',
+        '    refresh: launch',
+        '    inputKind: prompt-file',
+        '    ref: current-guidance',
+        '    producerRef: existing.guidance', '',
+        '    availability: optional', '',
+      ].join('\n');
+      writeFileSync(file, source);
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'PROVIDER DOMAIN\n');
+      const bound = await bindSelectedIdentityOutputArtifact({
+        identityId: id, repoDir: dir,
+        outputs: [
+          { contributionId: 'current-brief', value: { summary: 'Current brief.' } },
+          { contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' },
+        ],
+        scope: { workspace: 'workspace-a', harness: 'harness-a' },
+        observedAt: '2026-09-24T00:00:00.000Z',
+      });
+      const input = {
+        promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
+        harnessSlug: 'harness-a', role: 'worker', stack: [`domain:${id}`],
+        state: { schemaVersion: 1 }, renderStack: true,
+      } as const;
+      await expect(compileLaunchSpecificationArtifact(input))
+        .rejects.toThrow(/producer contributions that need binding/);
+      const launch = await compileLaunchSpecificationArtifact({ ...input,
+        producerBindings: [{ identityId: id, artifact: bound.artifact }],
+      });
+      expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
+        .toBe('selected-provider-model');
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'setting', ref: 'current-brief', value: { summary: 'Current brief.' },
+        producerRef: 'existing.brief',
+      }));
+      expect(launch.promptText.match(/CURRENT GUIDANCE FROM PRODUCER/g)).toHaveLength(1);
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'prompt-file', ref: 'current-guidance', bytes: 'CURRENT GUIDANCE FROM PRODUCER',
+        producerRef: 'existing.guidance',
+      }));
+      expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
+        path: 'contribution.current-brief', decision: 'provider:launch',
+        producerRef: 'existing.brief',
+      }));
+      const omitted = await bindSelectedIdentityOutputArtifact({
+        identityId: id, repoDir: dir,
+        outputs: [
+          { contributionId: 'current-brief', value: { summary: 'Current brief.' } },
+          { contributionId: 'current-guidance', omission: { reason: 'not-requested' } },
+        ],
+        scope: { workspace: 'workspace-a', harness: 'harness-a' },
+        observedAt: '2026-09-24T00:00:01.000Z',
+      });
+      const withoutGuidance = await compileLaunchSpecificationArtifact({ ...input,
+        producerBindings: [{ identityId: id, artifact: omitted.artifact }],
+      });
+      expect(withoutGuidance.promptText).not.toContain('CURRENT GUIDANCE FROM PRODUCER');
+      expect(withoutGuidance.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
+        path: 'contribution.current-guidance', decision: 'omitted:not-requested',
+      }));
+      writeFileSync(file, source.replace('selected-provider-model', 'changed-provider-model'));
+      await expect(compileLaunchSpecificationArtifact({ ...input,
+        producerBindings: [{ identityId: id, artifact: bound.artifact }],
+      })).rejects.toThrow(/source revision changed|does not match selected source/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

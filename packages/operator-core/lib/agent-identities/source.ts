@@ -526,11 +526,16 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
   const entries = await Promise.all(
     page.map(async (entry) => {
       try {
-        const parsed = parseBlueprintSourceDocument(parseBlueprintSource(await readFile(entry.file, 'utf8')));
+        const raw = parseBlueprintSource(await readFile(entry.file, 'utf8'));
+        const parsed = parseBlueprintSourceDocument(raw);
         if (parsed.kind !== 'identity') return { kind: 'blueprint' as const };
         const doc = parsed.document;
-        const selected = await getIdentitySource(entry.id, { repoDir: opts.repoDir });
-        if (!selected.ok || selected.sourcePath !== entry.file) {
+        const approval = await verifiedInstalledModePolicy(entry.id, entry.file, raw);
+        const selected = approval.stale
+          ? { ok: false as const, error: 'mode-approval-stale' }
+          : inspectIdentitySourceWithApproval(raw,
+            { repoDir: opts.repoDir, sourcePath: entry.file }, approval.policyRef);
+        if (!selected.ok) {
           const details = 'errors' in selected && Array.isArray(selected.errors)
             ? selected.errors.map((issue) => `${issue.code}: ${issue.message}`).join('; ') : '';
           return { kind: 'unreadable' as const, value: {

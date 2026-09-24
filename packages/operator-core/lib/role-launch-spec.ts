@@ -176,8 +176,9 @@ import { lintInstructionText, type InstructionLintReport } from './instruction-l
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
-import type { BlueprintSourceDocument, CompiledAgentSpecification, CompositionPromptFileInput, LoadedBlueprint, ResolveExtendsPath, StackDocument } from '@papercusp/orchestrator/blueprint';
+import type { BlueprintSourceDocument, CompiledAgentSpecification, CompositionPromptFileInput, LoadedBlueprint, ResolvedAgentInput, ResolveExtendsPath, StackDocument } from '@papercusp/orchestrator/blueprint';
 import type { Sql } from 'postgres';
+import type { AcceptedOperationWorkerBinding } from './blueprint/operation-worker-binding';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -214,6 +215,8 @@ export interface BuildRoleLaunchSpecInput {
   ttlSec?: number;
   /** Explicit launch-time identity bindings. Omitted selects this role's `roles[].stack` default. */
   stack?: readonly string[] | null;
+  /** Host-resolved accepted operation binding; never copied from a launch request. */
+  acceptedOperation?: AcceptedOperationWorkerBinding | null;
   /**
    * Initial MCP tool-surface size. There is only ONE effective value —
    * 'trimmed' — for EVERY role (trimmed-only-agent-context-launch-2026-08-27
@@ -254,6 +257,7 @@ export interface RoleLaunchSpec {
   promptText: string;
   /** Canonical launch-time identity binding that produced the prompt. */
   stack: string[];
+  acceptedOperation: AcceptedOperationWorkerBinding | null;
   /** Immutable P-038 artifact and the two revision receipts the launched host consumes. */
   specificationArtifact: CompiledAgentSpecification;
   specificationRevision: string;
@@ -323,6 +327,8 @@ export interface LaunchArtifactInput {
   stateRevision?: string | null;
   /** Role prompts need their bound identity documents rendered above the sealed kernel. */
   renderStack?: boolean;
+  /** Exact already-produced component receipts from the existing identity binder. */
+  producerBindings?: readonly { identityId: string; artifact: CompiledAgentSpecification }[];
 }
 
 export interface LaunchArtifactResult {
@@ -455,14 +461,17 @@ type EffectiveLaunchSource = {
   configuration: LoadedBlueprint['blueprint'] | BlueprintSourceDocument;
   resolve?: ResolveExtendsPath;
   pinnedFixedPromptFiles: CompositionPromptFileInput[];
+  providerInputs: ResolvedAgentInput[];
+  contributionOmissions: Array<{ id: string; reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string }>;
 };
 
 async function selectedLaunchCompositionSource(
   source: Awaited<ReturnType<typeof launchCompositionSource>>,
   stack: readonly string[],
   cwd: string,
+  producerBindings: readonly { identityId: string; artifact: CompiledAgentSpecification }[] = [],
 ) : Promise<EffectiveLaunchSource> {
-  const [{ BlueprintSourceDocumentSchema, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
+  const [{ BlueprintSourceDocumentSchema, replayAgentSpecification, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
     { getIdentitySource }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
@@ -473,6 +482,8 @@ async function selectedLaunchCompositionSource(
     source: source.source,
     configuration: source.loaded?.blueprint ?? BlueprintSourceDocumentSchema.parse(source.source),
     pinnedFixedPromptFiles: [],
+    providerInputs: [],
+    contributionOmissions: [],
   });
   if (stack.length === 0) return original();
   const paths = new Map<string, string>();
@@ -483,6 +494,9 @@ async function selectedLaunchCompositionSource(
   }
   const selected = [] as Array<{ id: string; path: string; hash: string }>;
   const pinnedFixedPromptFiles: CompositionPromptFileInput[] = [];
+  const providerInputs: ResolvedAgentInput[] = [];
+  const contributionOmissions: EffectiveLaunchSource['contributionOmissions'] = [];
+  const usedBindings = new Set<string>();
   for (const [index, layer] of stackBindingFromRefs(stack).layers.entries()) {
     const identity = await getIdentitySource(layer.id, { repoDir: cwd });
     if (!identity.ok || !identity.sourcePath ||
@@ -500,10 +514,59 @@ async function selectedLaunchCompositionSource(
         'publisher', 'attestation', 'visibility'].includes(key));
     const contributions = identity.identity.contributions ?? [];
     if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider')) continue;
-    if (contributions.some((entry) => entry.source !== 'fixed' || entry.inputKind !== 'prompt-file')) {
+    if (contributions.some((entry) =>
+      entry.source === 'fixed' && entry.inputKind !== 'prompt-file' ||
+      entry.source === 'provider' && !(
+        entry.purpose === 'operational' && entry.inputKind === 'setting' ||
+        entry.purpose === 'prompt' && entry.inputKind === 'prompt-file'))) {
       throw new Error(`launch stack identity ${JSON.stringify(layer.id)} mixes configuration with producer contributions that need binding`);
     }
-    for (const entry of contributions) {
+    const provided = contributions.filter((entry) => entry.source === 'provider');
+    if (provided.length > 0) {
+      const receipts = producerBindings.filter((binding) => binding.identityId === layer.id);
+      if (receipts.length !== 1) {
+        throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has producer contributions that need binding`);
+      }
+      const receipt = replayAgentSpecification(receipts[0]!.artifact);
+      if (!receipt.inputs.some((entry) => entry.kind === 'blueprint-layer' &&
+          entry.ref === layer.id && entry.contentHash === identity.contentHash)) {
+        throw new Error(`producer binding for ${JSON.stringify(layer.id)} does not match selected source`);
+      }
+      for (const entry of provided) {
+        const matched = receipt.inputs.filter((input) =>
+          (input.kind === 'setting' || input.kind === 'prompt-file') && input.kind === entry.inputKind &&
+          input.ref === entry.ref && input.producerRef === entry.producerRef);
+        if (matched.length === 0 && entry.availability === 'optional') {
+          const omitted = receipt.provenance.filter((pin) =>
+            pin.path === `contribution.${entry.id}` &&
+            pin.sourceRef === `${entry.inputKind}:${entry.ref}` &&
+            pin.producerRef === entry.producerRef &&
+            typeof pin.decision === 'string' &&
+            /^omitted:(ineligible|not-requested|unavailable)$/.test(pin.decision));
+          if (omitted.length === 1) {
+            const reason = omitted[0]!.decision!.slice('omitted:'.length) as EffectiveLaunchSource['contributionOmissions'][number]['reason'];
+            contributionOmissions.push({ id: entry.id, reason,
+              ...(reason === 'unavailable' ? { errorRef: omitted[0]!.sourceRevision } : {}) });
+            continue;
+          }
+        }
+        if (matched.length !== 1) {
+          throw new Error(`producer binding for ${JSON.stringify(layer.id)} lacks ${entry.id}`);
+        }
+        const pin = matched[0]!;
+        if (pin.kind === 'setting') {
+          providerInputs.push({ kind: 'setting', ref: pin.ref, revision: pin.revision,
+            value: pin.value, ...(pin.producerRef ? { producerRef: pin.producerRef } : {}) });
+        } else if (pin.kind === 'prompt-file') {
+          providerInputs.push({ kind: 'prompt-file', ref: pin.ref, contentHash: pin.contentHash,
+            bytes: pin.bytes, ...(pin.producerRef ? { producerRef: pin.producerRef } : {}) });
+        } else {
+          throw new Error(`producer binding for ${JSON.stringify(layer.id)} has an invalid input`);
+        }
+      }
+      usedBindings.add(layer.id);
+    }
+    for (const entry of contributions.filter((candidate) => candidate.source === 'fixed')) {
       const fileName = entry.ref.split(':').at(-1);
       if (!fileName) throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has no fixed prompt source for ${entry.ref}`);
       pinnedFixedPromptFiles.push({ ref: entry.ref,
@@ -513,6 +576,9 @@ async function selectedLaunchCompositionSource(
     paths.set(alias, identity.sourcePath);
     parents.push(alias);
     selected.push({ id: layer.id, path: identity.sourcePath, hash: identity.contentHash });
+  }
+  if (producerBindings.some((binding) => !usedBindings.has(binding.identityId))) {
+    throw new Error('launch producer binding does not name a selected identity with operational contributions');
   }
   if (selected.length === 0) return original();
   const fallback = operatorResolveExtends({ localDirs: [path.join(cwd, '.papercusp', 'blueprints')] });
@@ -535,8 +601,8 @@ async function selectedLaunchCompositionSource(
     }
   }
   return 'merged' in resolved
-    ? { source: raw, resolve, configuration: BlueprintSourceDocumentSchema.parse(resolved.merged), pinnedFixedPromptFiles }
-    : { source: resolved, configuration: resolved.blueprint, pinnedFixedPromptFiles };
+    ? { source: raw, resolve, configuration: BlueprintSourceDocumentSchema.parse(resolved.merged), pinnedFixedPromptFiles, providerInputs, contributionOmissions }
+    : { source: resolved, configuration: resolved.blueprint, pinnedFixedPromptFiles, providerInputs, contributionOmissions };
 }
 
 /** Compile the exact final launch bytes through the one P-038 artifact boundary. */
@@ -550,13 +616,15 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
   const { compileAgentSpecification, specificationPrompt } =
     await import('@papercusp/orchestrator/blueprint');
   const resourceArtifacts: CompiledAgentSpecification[] = [];
-  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd);
+  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd, input.producerBindings);
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
   const compileInput = {
     prompt,
     pinnedFixedPromptFiles: composition.pinnedFixedPromptFiles,
+    inputClosure: composition.providerInputs,
+    contributionOmissions: composition.contributionOmissions,
     mutableState: { ref: 'launch-state-v1', revision: stateRevision, value: state },
   };
   const { resolveSeedPackKey } = await import('./knowledge-packs/seed-pack-key');
@@ -601,6 +669,11 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   const spawnId = randomUUID();
   const featureId = input.featureId?.trim() || null;
   const harnessSlug = input.harnessSlug?.trim() || null;
+  const acceptedOperation = input.acceptedOperation ?? null;
+  if (acceptedOperation && (!harnessSlug || acceptedOperation.workItemId !== featureId ||
+      (input.stack != null && JSON.stringify(input.stack) !== JSON.stringify(acceptedOperation.stack)))) {
+    throw new Error('accepted blueprint operation launch scope or requested identity stack disagrees');
+  }
 
   // Placement deciders get the LIVE model-tier menu in their runtime context
   // (queen-model-tier-selection-2026-06-11): the user's actual tier names,
@@ -739,15 +812,29 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     workspaceId: input.workspaceId,
     harnessSlug,
     role: input.role,
-    stack: input.stack,
+    stack: acceptedOperation?.stack ?? input.stack,
     renderStack: true,
     state: {
       schemaVersion: 1,
       principal: { kind: 'role', role: input.role },
       scope: { workspace: input.workspaceId, harness: harnessSlug, feature: featureId },
       policy: { mcp: 'role-scoped', contextSize },
+      ...(acceptedOperation ? { acceptedOperation: {
+        kind: 'blueprint-operation-worker',
+        workItemId: acceptedOperation.workItemId,
+        operationId: acceptedOperation.operationId,
+        specificationRevision: acceptedOperation.specificationRevision,
+        identity: acceptedOperation.identity,
+        requiredTools: acceptedOperation.requiredTools,
+      } } : {}),
     },
   });
+  if (acceptedOperation && !compiled.specificationArtifact.inputs.some((entry) =>
+    entry.kind === 'blueprint-layer' && entry.ref === acceptedOperation.identity.ref &&
+    entry.revision === acceptedOperation.identity.revision &&
+    entry.contentHash === acceptedOperation.identity.contentHash)) {
+    throw new Error('accepted blueprint worker identity changed during launch composition');
+  }
   if (compiled.resourceArtifacts.length > 0) {
     const { getOrgPg } = await import('@papercusp/db-org');
     await provisionLaunchIdentityResources(compiled, getOrgPg().sql);
@@ -794,6 +881,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     cwd,
     promptText,
     stack: compiled.stack,
+    acceptedOperation,
     specificationArtifact: compiled.specificationArtifact,
     specificationRevision: compiled.specificationRevision,
     stateRevision: compiled.stateRevision,
