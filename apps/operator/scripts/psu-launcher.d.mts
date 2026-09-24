@@ -843,6 +843,15 @@ export function recoverResumeSessionIdentity(session: any, { home }?: {
     ownerId: any;
     advSessionId: number | null;
 } | null;
+/** Exact server read for a psu session found on disk after it fell outside the
+ * bounded resumable window. The local owner index supplies the durable adv id;
+ * the server row supplies the workspace/plan/launch identity a managed fork
+ * requires. Raw/foreign sessions deliberately have no such read. */
+export function exactTrackedResumePath(session: any): string | null;
+/** Merge the exact durable row with the on-disk hit that found it. The disk hit
+ * wins for native id/config dir/cwd because those identify the transcript that
+ * was actually requested; the durable row restores coordination scope. */
+export function rehydrateOutOfWindowTrackedSession(session: any, exactRead: any): any;
 /**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:

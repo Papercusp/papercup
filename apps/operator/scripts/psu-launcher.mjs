@@ -3104,6 +3104,34 @@ export function recoverResumeSessionIdentity(
   });
 }
 
+/** Exact server read for a psu session found on disk after it fell outside the
+ * bounded resumable window. The local owner index supplies the durable adv id;
+ * the server row supplies the workspace/plan/launch identity a managed fork
+ * requires. Raw/foreign sessions deliberately have no such read. */
+export function exactTrackedResumePath(session) {
+  const id = Number(session?.id);
+  if (session?.psuTracked !== true || !Number.isSafeInteger(id) || id <= 0) return null;
+  return `/api/adv/sessions/resumable?id=${encodeURIComponent(String(id))}`;
+}
+
+/** Merge the exact durable row with the on-disk hit that found it. The disk hit
+ * wins for native id/config dir/cwd because those identify the transcript that
+ * was actually requested; the durable row restores coordination scope. */
+export function rehydrateOutOfWindowTrackedSession(session, exactRead) {
+  const path = exactTrackedResumePath(session);
+  if (!path) return null;
+  const tracked = resolveTrackedResumeSession(exactRead?.sessions ?? [], String(session.id));
+  if (!tracked) return null;
+  return {
+    ...tracked,
+    ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+    ...(session.ompThreadId ? { ompThreadId: session.ompThreadId } : {}),
+    ...(session.cwd ? { cwd: session.cwd } : {}),
+    ...(session.configDir ? { configDir: session.configDir } : {}),
+    ...(session.codexHome ? { codexHome: session.codexHome } : {}),
+  };
+}
+
 /**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
@@ -14234,6 +14262,46 @@ async function resumeFlow(args = {}) {
         untracked.id = bornIdentity.advSessionId;
     }
 
+    // WI-10002877: an old psu session can be absent from the bounded resumable
+    // response while its local first-write-wins index still names the exact adv
+    // row. Rehydrate that row before choosing the launch route. Without this,
+    // a consult's pre-pinned --owner-id took the raw fork path, reused the OLD
+    // source CLAUDE_CONFIG_DIR, and wedged at that stale dir's onboarding/trust
+    // dialogs. Measured 2026-09-24: two ranks from source 9aed… failed this way;
+    // a different source succeeded. The managed path below mints a fresh config
+    // dir + forced native id and keeps the fork durable/resumable.
+    const exactPath = exactTrackedResumePath(untracked);
+    if (exactPath) {
+      try {
+        const exactRead = await api(exactPath);
+        const recoveredTracked = rehydrateOutOfWindowTrackedSession(
+          untracked,
+          exactRead,
+        );
+        if (recoveredTracked) {
+          await launchResolvedResume(recoveredTracked, args, { tracked: true });
+          return;
+        }
+      } catch (error) {
+        console.error(
+          `psu: exact tracked-session recovery for #${untracked.id} failed (${error?.message ?? error}).`,
+        );
+      }
+    }
+
+    // A pre-pinned identity is a managed launch contract. Never silently turn
+    // it into a raw native fork when the durable row could not be recovered:
+    // that creates no adv row, reuses stale source config, and gives the caller
+    // a responder id that is not backed by a launch record. Fail this rank fast;
+    // the consult dispatcher can continue its ranked fallback walk truthfully.
+    if (args.fork && args.ownerId && untracked.psuTracked) {
+      console.error(
+        `psu: refusing unmanaged fork ${args.ownerId}: tracked source session ${untracked.sessionId ?? untracked.ompThreadId ?? "?"} ` +
+          `could not recover adv row #${untracked.id ?? "?"}.`,
+      );
+      process.exit(2);
+    }
+
     // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
     //    EXCEPT a psuTracked hit — su-codex-homes (WI-3884) or the claude
@@ -14251,8 +14319,10 @@ async function resumeFlow(args = {}) {
     } else {
       await confirmUntrackedResume(untracked, args);
     }
-    // An untracked session has no adv row to seed a tracked fork from — fork it in
-    // place (claude mints a random id; resumable only by uuid). launchResume handles it.
+    // A genuinely untracked session has no adv row to seed a tracked fork from —
+    // fork it in place (claude mints a random id; resumable only by uuid).
+    // A psuTracked hit with a pre-pinned managed identity was recovered or refused
+    // above; it must never reach this raw fallback.
     // Account re-pin applies here too (a raw resume can be routed through the
     // gateway), but raw sessions remain same-backend: V1 ports require tracked
     // workspace/source identity and server-side authority checks.

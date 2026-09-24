@@ -118,6 +118,14 @@ const gitSubcommand = (args: string[]): string => {
   return index >= 0 ? args[index] : '';
 };
 
+/** Only these read-only commands may be retried after an IPC transport loss.
+ * A mutating Git command stays local while cancellation across sidecar death
+ * cannot prove its child exited before git-sync releases repository locks. */
+const GIT_SIDECAR_SIGNAL_SAFE_READS = new Set([
+  'rev-parse', 'cat-file', 'ls-files', 'ls-tree', 'merge-base', 'rev-list',
+  'for-each-ref',
+]);
+
 /** Network commands whose native progress stream can drive the idle watchdog.
  * Git suppresses progress when stderr is not a TTY unless `--progress` is explicit;
  * git-sync always pipes stderr, so without this flag a healthy multi-GB fetch looks
@@ -307,15 +315,18 @@ export const runGitBounded = async (
     PAPERCUSP_GIT_SYNC_PUSH: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
-  // A live action-level abort must be able to terminate the actual git child.
-  // The sidecar RPC has no cancellation channel, so route signal-bearing runs
-  // through the local bounded spawner; otherwise an expired fire could release
-  // its locks while a sidecar child continued mutating the checkout.
-  if (gitSyncSidecarEnabled() && !options.signal) {
+  // Signal-bearing read-only calls can use the sidecar's process:exec cancellation
+  // channel. If transport is lost, retrying a read cannot race a repository
+  // mutation. Keep mutating calls local until an IPC-loss exit fence is proven.
+  const sidecarSafe = !options.signal || GIT_SIDECAR_SIGNAL_SAFE_READS.has(gitSubcommand(args));
+  if (gitSyncSidecarEnabled() && sidecarSafe) {
     try {
       options.onProgress?.();
-      const result = await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs, env, {
+      const result = await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs,
+        options.signal ? { ...env, GIT_OPTIONAL_LOCKS: '0' } : env, {
         idleTimeoutMs: network ? timeoutMs : undefined,
+        signal: options.signal,
+        onProgress: options.onProgress,
       });
       options.onProgress?.();
       return result;
@@ -325,6 +336,9 @@ export const runGitBounded = async (
       // stating a rate. The shared seam bounds the cadence and carries the
       // cumulative count.
       noteSidecarFallback('git-sync', e);
+      if (options.signal?.aborted) {
+        return { code: -1, stdout: '', stderr: 'git aborted after sidecar transport loss' };
+      }
     }
   }
   return runGitLocalBounded(effectiveArgs, cwd, timeoutMs, hardTimeoutMs, network, options);

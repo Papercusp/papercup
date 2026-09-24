@@ -46,6 +46,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 import { SPAWNER_SOCKET_ENV } from './spawner-socket-path';
+import type { SpawnerCallOpts } from './spawner-ipc-client';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
@@ -83,7 +84,7 @@ export interface GitStdinRunResult {
 let sidecarModulesPromise: Promise<{
   spawnSpawnerSidecar: () => Promise<unknown>;
   getSpawnerIpcClient: () => {
-    call<T>(method: string, params: unknown, opts?: { timeoutMs?: number }): Promise<T>;
+    call<T>(method: string, params: unknown, opts?: SpawnerCallOpts): Promise<T>;
   };
 }> | null = null;
 
@@ -476,9 +477,12 @@ export async function runGitViaSpawnerSidecar(
   cwd: string,
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
-  opts: { idleTimeoutMs?: number } = {},
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal; onProgress?: () => void } = {},
 ): Promise<GitRunResult> {
-  return runCommandViaSpawnerSidecar('git', args, { cwd, timeoutMs, env, idleTimeoutMs: opts.idleTimeoutMs });
+  return runCommandViaSpawnerSidecar('git', args, {
+    cwd, timeoutMs, env, idleTimeoutMs: opts.idleTimeoutMs,
+    signal: opts.signal, onProgress: opts.onProgress,
+  });
 }
 
 /**
@@ -499,25 +503,53 @@ export async function runGitViaSpawnerSidecar(
 export async function runCommandViaSpawnerSidecar(
   command: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number },
+  opts: {
+    cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number;
+    signal?: AbortSignal; onProgress?: () => void;
+  },
 ): Promise<GitRunResult> {
+  const aborted = (): GitRunResult => ({ code: -1, stdout: '', stderr: `${command} aborted before sidecar process start` });
+  if (opts.signal?.aborted) return aborted();
   assertSidecarCircuitClosed();
   const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
-  const res = await getSpawnerIpcClient().call<GitRunResult>(
-    'process:exec',
-    {
-      command,
-      args,
-      cwd: opts.cwd,
-      env: opts.env,
-      timeoutMs: opts.timeoutMs,
-      idleTimeoutMs: opts.idleTimeoutMs,
-    },
-    { timeoutMs: opts.timeoutMs + 35_000 },
-  );
-  noteSidecarSuccess();
-  return res;
+  if (opts.signal?.aborted) return aborted();
+  const client = getSpawnerIpcClient();
+  let requestId: number | undefined;
+  let cancelSent = false;
+  const onAbort = (): void => {
+    if (requestId === undefined || cancelSent) return;
+    cancelSent = true;
+    // This acknowledges a cancel REQUEST only. The process:exec response below
+    // remains the exit receipt; callers must wait for it before releasing locks.
+    void client.call('spawn:cancel', { requestId }, { timeoutMs: 5_000 }).catch(() => {});
+  };
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await client.call<GitRunResult>(
+      'process:exec',
+      {
+        command,
+        args,
+        cwd: opts.cwd,
+        env: opts.env,
+        timeoutMs: opts.timeoutMs,
+        idleTimeoutMs: opts.idleTimeoutMs,
+      },
+      {
+        timeoutMs: opts.timeoutMs + 35_000,
+        onOutputActivity: opts.onProgress,
+        onRequestId: (id) => {
+          requestId = id;
+          if (opts.signal?.aborted) onAbort();
+        },
+      },
+    );
+    noteSidecarSuccess();
+    return res;
+  } finally {
+    opts.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /** True when a sidecar `process:exec` result is the sidecar's own fault, not the child's exit. */
