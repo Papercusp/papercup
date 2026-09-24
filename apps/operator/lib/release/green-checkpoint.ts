@@ -3138,6 +3138,13 @@ export async function activateScheduledCheckpointRunner(
   });
 }
 
+export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint: () => string = randomUUID): string {
+  const token = value?.trim();
+  return token && token !== '1' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(token)
+    ? token
+    : mint();
+}
+
 /** Keep the exact scheduled runner visibly alive through quiet suite phases. */
 export function startScheduledQualificationProgress(
   input: {
@@ -20507,7 +20514,8 @@ if (require.main === module) {
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
   // carries the SAME run identity.
-  const runId = randomUUID();
+  const scheduledRunToken = process.env[CHECKPOINT_SCHEDULED_RUN_ENV]?.trim();
+  const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
   let resolvedCandidateForRun: string | null = null;
 
@@ -20601,7 +20609,7 @@ if (require.main === module) {
         });
     } else {
       const activation = await activateScheduledCheckpointRunner({
-        scheduled: process.env[CHECKPOINT_SCHEDULED_RUN_ENV] === '1',
+        scheduled: Boolean(scheduledRunToken),
         target: gateVerdictTargetFromEnv(),
         attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
         gateFireId,
@@ -20615,7 +20623,7 @@ if (require.main === module) {
         process.exit(1);
       }
       const qualificationProgress = startScheduledQualificationProgress({
-        target: process.env[CHECKPOINT_SCHEDULED_RUN_ENV] === '1' ? gateVerdictTargetFromEnv() : null,
+        target: scheduledRunToken ? gateVerdictTargetFromEnv() : null,
         attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
         gateFireId,
         runId,
