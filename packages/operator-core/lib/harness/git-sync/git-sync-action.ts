@@ -3588,12 +3588,18 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
     // fire-and-forget, never gates the tick, benign to replay past the record step.
     if (outcome.status === 'synced') {
+      emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+    }
+
+    const reconcileCommittedCompletions = async (): Promise<GitSyncActionTimeoutError | undefined> => {
+      if (outcome.status !== 'synced') return undefined;
       // EI-22795123930445264: a completion belongs to the checkout that owns its
       // exact blob identities, which may differ from the bookkeeping harness that
       // accepted the close. Resolve the emitted checkout through symlinks before
       // selecting manifests so a Portal commit can settle Papercusp-owned rows.
       const repositoryRoot = repoPath ? await realpath(repoPath).catch(() => resolve(repoPath)) : null;
-      if (repositoryRoot) {
+      if (!repositoryRoot) return undefined;
+      {
         let lastSettlementProgressAt = 0;
         let settlementProgressWrite = Promise.resolve();
         let settlementTimeout: GitSyncActionTimeoutError | undefined;
@@ -3685,27 +3691,43 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           if (settlementBudgetTimer) clearTimeout(settlementBudgetTimer);
           postLegsLiveness.signal.removeEventListener('abort', abortSettlementOnActionTimeout);
         }
-        // The emitted commit remains independently observable even when completion
-        // settlement timed out; after emitting it, let the outer action handler record
-        // the timeout and end the fire instead of overwriting it with a success marker.
-        emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
-        if (settlementTimeout) throw settlementTimeout;
-      } else {
-        emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+        return settlementTimeout;
       }
-    }
+    };
 
     // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
     // one bridge pass per tick — ingress origin → admission → egress canonical →
     // divergence verdict (all FF-only; origin never forced). Its own checkpoint so
     // a resumed fire that already bridged never re-runs the pass. Kill-switch:
     // FLAGS.GITHUB_BRIDGE (default ON; the per-hive `hiveGit.mode` setting is the
-    // real activation — this leg only exists when the gate resolved 'bridged').
-    if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
-      await guardedPostLegs('git-sync:github-bridge', () =>
-        runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId)),
-      );
+    // real activation — this leg only exists when the gate resolved 'bridged'). Run
+    // origin/staging egress before completion settlement: a large proposed-close
+    // backlog must not hold the remote push behind its bounded bookkeeping pass.
+    let bridgeFailed = false;
+    let bridgeFailure: unknown;
+    try {
+      if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
+        await guardedPostLegs('git-sync:github-bridge', () =>
+          runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId)),
+        );
+      }
+    } catch (error) {
+      bridgeFailed = true;
+      bridgeFailure = error;
     }
+
+    let settlementFailed = false;
+    let settlementFailure: unknown;
+    let settlementTimeout: GitSyncActionTimeoutError | undefined;
+    try {
+      settlementTimeout = await reconcileCommittedCompletions();
+    } catch (error) {
+      settlementFailed = true;
+      settlementFailure = error;
+    }
+    if (bridgeFailed) throw bridgeFailure;
+    if (settlementFailed) throw settlementFailure;
+    if (settlementTimeout) throw settlementTimeout;
 
     // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
     // bootstrap-tick pass per git-sync tick, BEFORE ref-announce (P-202) — a

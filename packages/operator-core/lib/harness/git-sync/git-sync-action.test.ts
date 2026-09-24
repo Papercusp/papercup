@@ -44,6 +44,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
+import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
@@ -63,6 +64,15 @@ vi.mock('../../sync/pot-git/signed-context-store', () => ({
     store_generation: 'sg2-1-' + 'a'.repeat(40),
   }),
 }));
+let bridgeTickOverride: ((input: BridgeTickInput) => Promise<BridgeTickOutcome>) | null = null;
+vi.mock('../../sync/pot-git/github-bridge-tick', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../sync/pot-git/github-bridge-tick')>();
+  return {
+    ...actual,
+    runGithubBridgeTick: (input: BridgeTickInput) =>
+      bridgeTickOverride ? bridgeTickOverride(input) : actual.runGithubBridgeTick(input),
+  };
+});
 // Production now awaits the existing lazy-boot recovery when no serving handle
 // is discoverable. Keep this orchestration suite hermetic: legacy cases that
 // are not about serving recovery should receive the same fast unavailable
@@ -208,6 +218,10 @@ let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';
 vi.mock('./hive-git-mode', () => ({
   getPotGitMode: async () => potGitMode,
 }));
+const fetchRepoPushPermissionMock = vi.fn(async (_owner: string, _repo: string) => true);
+vi.mock('../github-repo-permissions', () => ({
+  fetchRepoPushPermission: (owner: string, repo: string) => fetchRepoPushPermissionMock(owner, repo),
+}));
 
 // Real dirs for the gate's disk checks (path exists / has .git).
 const tmpRoot = mkdtempSync(join(tmpdir(), 'git-sync-action-'));
@@ -316,10 +330,12 @@ vi.mock('./pipeline-events', () => ({
 
 const emitGitSyncLockRetryEventMock = vi.fn();
 const emitGitSyncCommittedEventMock = vi.fn();
+const emitGitSyncEgressedEventMock = vi.fn();
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./git-sync-events')>()),
   emitGitSyncLockRetryEvent: (...a: unknown[]) => emitGitSyncLockRetryEventMock(...a),
   emitGitSyncCommittedEvent: (...a: unknown[]) => emitGitSyncCommittedEventMock(...a),
+  emitGitSyncEgressedEvent: (...a: unknown[]) => emitGitSyncEgressedEventMock(...a),
 }));
 
 const INVOKE_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=merge-resolver';
@@ -391,6 +407,8 @@ let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: str
 let contentFixerClaimResults: boolean[] = [];
 /** Rows returned for the EI-18 + content counters read, including the prior offender signature. */
 let counterRows: Array<{ et: number; lo: string[] | null; ct?: number; cs?: string | null }> = [];
+/** Previous bridge egress watermark returned for the bridge-ordering regression fixture. */
+let bridgePreviousEgressHead: string | null = null;
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
 let rejectUnsafeAtCall: number | null = null;
 let unsafeCallCount = 0;
@@ -414,6 +432,9 @@ const fakeSql = Object.assign(
     }
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
+    if (text.includes('prev_egress_head')) {
+      return Promise.resolve([{ la: null, wb_sha: null, prev_egress_head: bridgePreviousEgressHead }]);
+    }
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
     return Promise.resolve([]);
   },
@@ -801,6 +822,10 @@ beforeEach(() => {
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
   emitGitSyncCommittedEventMock.mockReset();
+  emitGitSyncEgressedEventMock.mockReset();
+  bridgeTickOverride = null;
+  bridgePreviousEgressHead = null;
+  fetchRepoPushPermissionMock.mockReset().mockResolvedValue(true);
   resolveLaunchTargetForEventMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
@@ -938,12 +963,46 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
-  it('bounds a progressing completion-settlement pass and aborts its remaining work', async () => {
+  it('egresses origin/staging before a slow completion-settlement pass times out', async () => {
     const priorBudget = process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
     process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = '35';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const egressSha = 'a'.repeat(40);
+    const localProject = {
+      slug: 'papercup',
+      path: repoDir,
+      hive_slug: 'papercup',
+      github_remote: 'https://github.com/papercusp/papercusp.git',
+    };
+    potGitMode = 'bridged';
+    registryProjects = [localProject];
+    bridgePreviousEgressHead = egressSha;
+    bridgeTickOverride = async (input) => {
+      order.push('bridge-tick');
+      expect(input.githubRemote).toBe(localProject.github_remote);
+      // runGithubBridgeLeg has already captured this entry with an empty
+      // checkout path, so its best-effort remote-tracking refresh stays local
+      // and cannot spawn a real Git process in this orchestration test.
+      registryProjects = [localProject];
+      return {
+        ran: true,
+        egressTarget: 'upstream',
+        ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+        admissions: [],
+        lastAdmitted: null,
+        egress: { pushed: 1, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+        egressHead: egressSha,
+        verdict: { action: 'clear', needsOwner: false, agentActionable: false, agentRemedies: [] },
+        errors: [],
+      } as unknown as BridgeTickOutcome;
+    };
+    emitGitSyncEgressedEventMock.mockImplementationOnce(() => {
+      order.push('egressed');
+    });
     let observedSignal: AbortSignal | undefined;
     reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, { signal, onProgress }) => {
+      order.push('settlement');
       observedSignal = signal;
       // Returned, not awaited: an awaited never-settling promise infers Promise<void>,
       // which the mock's settlement-result return type rejects (TS2345).
@@ -963,13 +1022,24 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         );
       });
     });
-    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    runGitSyncMock.mockImplementationOnce(async () => {
+      // The local checkout path is already captured for local-sync. Suppress
+      // the bridge's independent remote-tracking refresh while keeping its
+      // successful origin/staging egress event observable.
+      registryProjects = [{ ...localProject, path: '' }];
+      return syncedOutcome;
+    });
 
     try {
       await action(ctx);
 
       expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledOnce();
+      expect(order).toEqual(['bridge-tick', 'egressed', 'settlement']);
       expect(observedSignal?.aborted).toBe(true);
+      expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(
+        egressSha,
+        expect.objectContaining({ scope: expect.any(Object) }),
+      );
       expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
         syncedOutcome.headSha,
         expect.objectContaining({ scope: expect.any(Object) }),
