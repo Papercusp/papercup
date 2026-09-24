@@ -98,6 +98,9 @@ export interface CarrySourceSnapshot {
   turnId: string;
   filePath: string;
   snapshot: StableSource;
+  forkedFromId: string | null;
+  /** Native parent links in child-to-root order; file observations, not writer exclusion. */
+  ancestors: Omit<CarrySourceSnapshot, 'ancestors'>[];
 }
 
 /** Complete rows in ONE SQL snapshot for the locally reconciled native scope.
@@ -136,7 +139,7 @@ export async function captureCarryCanonicalUsagePopulation(sql: Sql, input: {
     ingestionCoverage: 'not-established' as const, chargeJoin: 'unavailable' as const, accountingComplete: false as const };
 }
 
-/** Controller closeout for a captured peer and its isolated gateway. Derive
+/** Controller closeout for captured peers sharing one isolated gateway. Derive
  * scope from the raw native receipts, read the canonical population here, and
  * reconcile it without accepting a caller's prefiltered usage array or turn
  * list. This function reads evidence only: it never dispatches inference,
@@ -145,7 +148,7 @@ export async function captureCarryCanonicalUsagePopulation(sql: Sql, input: {
 export async function captureCarryRequestEvidence(sql: Sql, input: {
   workspaceId: string;
   ownerId: string;
-  native: Parameters<typeof inspectCarryNativePopulation>[0];
+  native: Parameters<typeof inspectCarryNativePopulation>[0] | readonly Parameters<typeof inspectCarryNativePopulation>[0][];
   gateway: GatewayRequestTelemetrySnapshot;
   maxRows?: number;
 }) {
@@ -153,7 +156,29 @@ export async function captureCarryRequestEvidence(sql: Sql, input: {
   // callback appending to an array must not rewrite the evidence under a query.
   input = structuredClone(input);
   const captureSha256 = createHash('sha256').update(canonicalJson(input)).digest('hex');
-  const native = inspectCarryNativePopulation(input.native);
+  const captures: readonly Parameters<typeof inspectCarryNativePopulation>[0][] = Array.isArray(input.native)
+    ? input.native : [input.native as Parameters<typeof inspectCarryNativePopulation>[0]];
+  // Preparation must stop before freezing its source, so subsequent arms may
+  // have different native processes. Validate EACH closed receipt stream before
+  // combining its scope. Never concatenate streams or normalize their clocks.
+  const inspected = captures.length > 0 && captures.length <= 128
+    ? captures.map(capture => inspectCarryNativePopulation(capture)) : [];
+  const nativeViolations = new Set(inspected.flatMap(result => result.violations));
+  const nativeMissing = new Set(inspected.flatMap(result => result.missing));
+  if (!inspected.length) nativeViolations.add('native-capture-set-bound');
+  const unique = (values: unknown[], label: string) => {
+    if (new Set(values).size !== values.length) nativeViolations.add(`duplicate-native-${label}-across-peers`);
+  };
+  unique(captures.map(capture => capture.state?.peerId), 'peer');
+  unique(captures.flatMap(capture => capture.arms.map(arm => arm.armId)), 'arm');
+  unique(inspected.flatMap(result => result.threads.map(thread => thread.threadId)), 'thread');
+  unique(inspected.flatMap(result => result.threads.map(thread => thread.sourcePath)), 'source');
+  const native: ReturnType<typeof inspectCarryNativePopulation> = {
+    status: nativeViolations.size ? 'invalid' : nativeMissing.size ? 'incomplete' : 'closed-peer-reconciled',
+    violations: [...nativeViolations], missing: [...nativeMissing],
+    turns: inspected.flatMap(result => result.turns), threads: inspected.flatMap(result => result.threads),
+    accountingComplete: false,
+  };
   const base = { evidenceKind: 'observation-only' as const, captureSha256, native,
     admission: 'not-established' as const, accountingComplete: false as const };
   if (native.status !== 'closed-peer-reconciled') {
@@ -549,8 +574,8 @@ export async function recheckCarryArtifactManifest(
 }
 
 /** Capture an owned native preparation peer at its last completed turn. The
- * native process is stopped before reading its original rollout; the existing
- * bounded JSONL reader supplies the exact bytes/hash. This does not copy or
+ * native process is stopped before reading its rollout and native parent chain;
+ * the existing bounded JSONL reader supplies exact bytes/hashes. This does not copy or
  * rewrite native history, nor prove serving-account identity or tool authority.
  * The returned cut is a snapshot, not a promise that the pathname stays frozen:
  * recheckCarrySourceSnapshot must pass before each comparison arm.
@@ -570,56 +595,88 @@ export async function captureCompletedCarrySource(
   if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_SESSION_PORT_SOURCE_BYTES)) {
     throw new Error('carry source byte cap must be positive and within the existing source limit');
   }
-  const response = await peer.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
-  const thread = record(response.thread), turns = thread?.turns;
-  const last = Array.isArray(turns) ? record(turns.at(-1)) : null;
-  if (thread?.id !== threadId || record(thread.status)?.type !== 'idle' ||
-    !Array.isArray(turns) || turns.filter(turn => record(turn)?.id === turnId).length !== 1 || last?.id !== turnId ||
-    last.status !== 'completed' || last.error != null || !Array.isArray(last.items) ||
-    (last.itemsView !== undefined && last.itemsView !== 'full')) {
-    throw new Error('carry source requires a full, idle, completed final native turn');
+  const chain: Array<{ threadId: string; turnId: string; filePath: string; forkedFromId: string | null }> = [];
+  let nextThreadId: string | null = threadId;
+  while (nextThreadId !== null) {
+    if (chain.length >= 32 || chain.some(source => source.threadId === nextThreadId)) {
+      throw new Error('carry source parent chain is cyclic or exceeds the depth bound');
+    }
+    const response = await peer.request({ method: 'thread/read', params: { threadId: nextThreadId, includeTurns: true } });
+    const thread = record(response.thread), turns = thread?.turns;
+    const last = Array.isArray(turns) ? record(turns.at(-1)) : null;
+    const expectedTurn = chain.length === 0 ? turnId : last?.id;
+    if (thread?.id !== nextThreadId || record(thread.status)?.type !== 'idle' ||
+      typeof expectedTurn !== 'string' || !expectedTurn.trim() ||
+      !Array.isArray(turns) || turns.filter(turn => record(turn)?.id === expectedTurn).length !== 1 || last?.id !== expectedTurn ||
+      last.status !== 'completed' || last.error != null || !Array.isArray(last.items) ||
+      (last.itemsView !== undefined && last.itemsView !== 'full')) {
+      throw new Error('carry source requires a full, idle, completed final native turn');
+    }
+    if (typeof thread.path !== 'string' || !isAbsolute(thread.path) || chain.some(source => source.filePath === thread.path)) {
+      throw new Error('carry source native path is unavailable or duplicated');
+    }
+    const parent = thread.forkedFromId ?? null;
+    if (parent !== null && (typeof parent !== 'string' || !parent.trim())) throw new Error('carry source native parent is malformed');
+    chain.push({ threadId: nextThreadId, turnId: expectedTurn, filePath: thread.path, forkedFromId: parent as string | null });
+    nextThreadId = parent as string | null;
   }
-  if (typeof thread.path !== 'string' || !isAbsolute(thread.path)) throw new Error('carry source native path is unavailable');
   // A successful thread/read is not writer exclusion. Both tracked teardown
   // and its process-exit receipt must finish before the source file is opened.
   await peer.close();
   await peer.done;
-  const snapshot = await readStableLiveJsonl(thread.path, maxBytes);
-  if (!snapshot.completeBytes || snapshot.completeBytes !== snapshot.highWaterBytes) {
-    throw new Error('carry source is empty, short, or ends with a partial record');
-  }
-  let headerCount = 0, lastBoundary: Record<string, unknown> | null = null;
-  let offset = 0, records = 0;
-  while (offset < snapshot.bytes.length) {
-    const end = snapshot.bytes.indexOf(0x0a, offset);
-    const line = snapshot.bytes.subarray(offset, end).toString('utf8');
-    offset = end + 1;
-    const entry = record(JSON.parse(line)), payload = record(entry?.payload);
-    if (!entry || !payload) throw new Error('carry source contains a malformed native record');
-    if (records++ === 0 && entry.type !== 'session_meta') throw new Error('carry source lacks its native header');
-    if (entry.type === 'session_meta') {
-      headerCount++;
-      if (payload.id !== threadId) throw new Error('carry source native header identity mismatch');
+  const captured: CarrySourceSnapshot['ancestors'] = [];
+  let remainingBytes = maxBytes ?? MAX_SESSION_PORT_SOURCE_BYTES;
+  // Chain reads are sequential to enforce one aggregate byte budget. Every
+  // member is still rechecked before use; this does not make the reads atomic.
+  for (const source of chain) {
+    if (remainingBytes <= 0) throw new Error('carry source parent chain exceeds byte cap');
+    const snapshot = await readStableLiveJsonl(source.filePath, remainingBytes);
+    remainingBytes -= snapshot.highWaterBytes;
+    if (!snapshot.completeBytes || snapshot.completeBytes !== snapshot.highWaterBytes) {
+      throw new Error('carry source is empty, short, or ends with a partial record');
     }
-    if (entry.type === 'event_msg' && ['task_started', 'task_complete', 'turn_completed', 'turn_aborted'].includes(String(payload.type))) {
-      lastBoundary = payload;
+    let headerCount = 0, lastBoundary: Record<string, unknown> | null = null;
+    let offset = 0, records = 0;
+    while (offset < snapshot.bytes.length) {
+      const end = snapshot.bytes.indexOf(0x0a, offset);
+      const line = snapshot.bytes.subarray(offset, end).toString('utf8');
+      offset = end + 1;
+      const entry = record(JSON.parse(line)), payload = record(entry?.payload);
+      if (!entry || !payload) throw new Error('carry source contains a malformed native record');
+      if (records++ === 0 && entry.type !== 'session_meta') throw new Error('carry source lacks its native header');
+      if (entry.type === 'session_meta') {
+        headerCount++;
+        if (payload.id !== source.threadId) throw new Error('carry source native header identity mismatch');
+        if ((payload.forked_from_id ?? null) !== source.forkedFromId) throw new Error('carry source native parent identity mismatch');
+      }
+      if (entry.type === 'event_msg' && ['task_started', 'task_complete', 'turn_completed', 'turn_aborted'].includes(String(payload.type))) {
+        lastBoundary = payload;
+      }
     }
+    if (headerCount !== 1 || !lastBoundary || !['task_complete', 'turn_completed'].includes(String(lastBoundary.type)) ||
+      lastBoundary.turn_id !== source.turnId || lastBoundary.error != null ||
+      ['error', 'failed', 'failure'].includes(String(lastBoundary.status ?? ''))) {
+      throw new Error('carry source terminal record does not match the completed native cut');
+    }
+    captured.push({ ...source, snapshot });
   }
-  if (headerCount !== 1 || !lastBoundary || !['task_complete', 'turn_completed'].includes(String(lastBoundary.type)) ||
-    lastBoundary.turn_id !== turnId || lastBoundary.error != null ||
-    ['error', 'failed', 'failure'].includes(String(lastBoundary.status ?? ''))) {
-    throw new Error('carry source terminal record does not match the completed native cut');
-  }
-  return { threadId, turnId, filePath: thread.path, snapshot };
+  return { ...captured[0], ancestors: captured.slice(1) };
 }
 
 /** Source drift is a stop condition, never a reason to silently select a new
  * cutoff or regenerate preparation after comparison results are visible. */
 export async function recheckCarrySourceSnapshot(source: CarrySourceSnapshot): Promise<void> {
   const { readStableLiveJsonl } = await import('../session-port/source');
-  const current = await readStableLiveJsonl(source.filePath, source.snapshot.highWaterBytes);
-  if (current.completeBytes !== current.highWaterBytes || current.completeBytes !== source.snapshot.completeBytes ||
-    current.sha256 !== source.snapshot.sha256) throw new Error('carry source changed after its frozen cut');
+  const chain = [source, ...source.ancestors];
+  if (chain.length > 32 || new Set(chain.map(member => member.threadId)).size !== chain.length ||
+    chain.some((member, index) => member.forkedFromId !== (chain[index + 1]?.threadId ?? null))) {
+    throw new Error('carry source parent chain no longer matches its frozen cut');
+  }
+  for (const member of chain) {
+    const current = await readStableLiveJsonl(member.filePath, member.snapshot.highWaterBytes);
+    if (current.completeBytes !== current.highWaterBytes || current.completeBytes !== member.snapshot.completeBytes ||
+      current.sha256 !== member.snapshot.sha256) throw new Error('carry source changed after its frozen cut');
+  }
 }
 
 /**
