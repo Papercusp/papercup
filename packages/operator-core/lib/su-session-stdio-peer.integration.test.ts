@@ -36,7 +36,7 @@ import { startSuStdioPeer } from './su-session-stdio-peer';
 import { processMonotonicClock } from './process-monotonic-clock';
 import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse,
   inspectCarryRequestPopulation, inspectCarryNativePopulation, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
-import { captureCarryCanonicalUsagePopulation } from './launch-cost/scan-launch-transcripts';
+import { captureCarryCanonicalUsagePopulation, captureCarryRequestEvidence } from './launch-cost/scan-launch-transcripts';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import * as dbOrg from '@papercusp/db-org';
 import * as workspaceRegistry from './workspace-registry';
@@ -906,8 +906,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       // This exercises the real canonical writer, not a fabricated billing row.
       const nativeHome = homes.at(-1)!;
       await p.close();
-      const nativePopulation = inspectCarryNativePopulation({ receipts, state: p.receiptState?.(),
-        arms: [{ armId: `fixture:${mode}`, threadId }] });
+      const nativeCapture = { receipts, state: p.receiptState?.(), arms: [{ armId: `fixture:${mode}`, threadId }] };
+      const nativePopulation = inspectCarryNativePopulation(nativeCapture);
       expect(nativePopulation).toMatchObject({ status: 'closed-peer-reconciled', missing: [], violations: [],
         turns: [{ threadId, turnId, status: nativeStatus }] });
       expect(inspectCarryNativePopulation({ receipts: receipts.slice(0, -1), state: p.receiptState?.(),
@@ -942,8 +942,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           ingestionCoverage: 'not-established', accountingComplete: false });
         expect(canonicalPopulation.rows).toEqual(rows.map(({ session_id, usage_event_key, usage_provenance }) =>
           ({ session_id, usage_event_key, usage_provenance })));
-        const population = inspectCarryRequestPopulation({ ownerId: owner,
-          turns: nativePopulation.turns, gateway: stages, usage: canonicalPopulation.rows });
+        const evidence = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
+          native: nativeCapture, gateway: stages });
+        expect(evidence).toMatchObject({ status: 'observations-linked', inheritedUsage: [], violations: [], missing: [],
+          native: nativePopulation, canonical: canonicalPopulation, accountingComplete: false, admission: 'not-established' });
+        expect(evidence.captureSha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE_NATIVE|From the inherited task state/);
+        const population = evidence.population!;
         expect(population).toMatchObject({ populationStatus: 'linked', missing: [], violations: [],
           chargeJoin: 'unavailable', accountingComplete: false, unmatchedGatewayRequestIds: [], unmatchedUsageRows: [],
           turns: [{ status: nativeStatus, gatewayRequestIds: [timeline.requestId],
@@ -987,6 +992,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(expanded.rows.filter(r => r.usage_event_key === null)).toHaveLength(3);
           expect(inspectCarryRequestPopulation({ ownerId: owner, turns: nativePopulation.turns,
             gateway: stages, usage: expanded.rows })).toMatchObject({ populationStatus: 'invalid', unmatchedUsageRows: [1, 2, 3] });
+          expect(await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
+            native: nativeCapture, gateway: stages })).toMatchObject({ status: 'invalid', inheritedUsage: [],
+            population: { unmatchedUsageRows: [1, 2, 3] }, accountingComplete: false });
           await expect(captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace, native: nativePopulation, maxRows: 3 }))
             .rejects.toThrow('exceeded bound or lost rows');
           await expect(captureCarryCanonicalUsagePopulation(sql, { workspaceId: workspace,

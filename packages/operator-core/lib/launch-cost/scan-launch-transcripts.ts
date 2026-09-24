@@ -25,6 +25,7 @@ import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
 import type { SuStdioPeer } from '../su-session-stdio-peer';
 import type { Sql } from 'postgres';
+import type { GatewayRequestTelemetrySnapshot } from '../inference-gateway/request-stage-telemetry';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat } from '../process-identity';
 
@@ -36,6 +37,7 @@ import {
   utcDay,
   createCarryTrialRecipe,
   inspectCarryNativePopulation,
+  inspectCarryRequestPopulation,
   type CarryCanonicalUsageRow,
   type LaunchSample,
 } from './launch-cost-metrics';
@@ -132,6 +134,57 @@ export async function captureCarryCanonicalUsagePopulation(sql: Sql, input: {
     scope: { workspaceId: scope.workspaceId, sessionIds: sessions, sourcePaths: paths },
     rows: rows.map(r => ({ session_id: r.session_id, usage_event_key: r.usage_event_key, usage_provenance: r.usage_provenance })),
     ingestionCoverage: 'not-established' as const, chargeJoin: 'unavailable' as const, accountingComplete: false as const };
+}
+
+/** Controller closeout for a captured peer and its isolated gateway. Derive
+ * scope from the raw native receipts, read the canonical population here, and
+ * reconcile it without accepting a caller's prefiltered usage array or turn
+ * list. This function reads evidence only: it never dispatches inference,
+ * ingests usage, grants admission or turns missing charges into zero cost.
+ */
+export async function captureCarryRequestEvidence(sql: Sql, input: {
+  workspaceId: string;
+  ownerId: string;
+  native: Parameters<typeof inspectCarryNativePopulation>[0];
+  gateway: GatewayRequestTelemetrySnapshot;
+  maxRows?: number;
+}) {
+  // Freeze before the first await, including the caller's raw capture. A live
+  // callback appending to an array must not rewrite the evidence under a query.
+  input = structuredClone(input);
+  const captureSha256 = createHash('sha256').update(canonicalJson(input)).digest('hex');
+  const native = inspectCarryNativePopulation(input.native);
+  const base = { evidenceKind: 'observation-only' as const, captureSha256, native,
+    admission: 'not-established' as const, accountingComplete: false as const };
+  if (native.status !== 'closed-peer-reconciled') {
+    return { ...base, status: native.status, canonical: null, population: null, inheritedUsage: [],
+      violations: [...native.violations], missing: [...native.missing] };
+  }
+  const canonical = await captureCarryCanonicalUsagePopulation(sql, {
+    workspaceId: input.workspaceId, native, maxRows: input.maxRows,
+  });
+  const usage: CarryCanonicalUsageRow[] = [], inheritedUsage: CarryCanonicalUsageRow[] = [];
+  const violations = new Set<string>(), usageKeys = new Set<string>();
+  for (const [index, row] of canonical.rows.entries()) {
+    // Check the UNION before partitioning. A duplicate key in inherited rows
+    // must not evade the existing current-turn reconciliation validator.
+    if (!row.usage_event_key || !/^[a-f0-9]{64}$/.test(row.usage_event_key) || usageKeys.has(row.usage_event_key)) {
+      violations.add(`invalid-or-duplicate-canonical-key:${index}`);
+    }
+    if (row.usage_event_key) usageKeys.add(row.usage_event_key);
+    const inherited = native.threads.find(thread => thread.threadId === row.session_id)?.inheritedTurnIds;
+    const turnId = row.usage_provenance?.turnId;
+    if (typeof turnId === 'string' && inherited?.includes(turnId)) inheritedUsage.push(row);
+    else usage.push(row); // Unknown provenance stays visible to the join.
+  }
+  const population = inspectCarryRequestPopulation({ ownerId: input.ownerId,
+    turns: native.turns, gateway: input.gateway, usage });
+  for (const violation of population.violations) violations.add(violation);
+  // Keep the helper's supplied-input coverage labels intact. The companion
+  // native/canonical receipts state the narrower coverage actually measured.
+  return { ...base, status: violations.size ? 'invalid' as const : population.missing.length
+    ? 'incomplete' as const : 'observations-linked' as const,
+    canonical, population, inheritedUsage, violations: [...violations], missing: population.missing };
 }
 
 export interface CarryNativeConfigurationScope {
