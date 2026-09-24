@@ -656,3 +656,131 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     expect(loadPsuConnectionStore(storePath).profiles).toEqual([gcpProfile()]);
   });
 });
+
+describe("pui through psu's saved connections (P-017)", () => {
+  it("consumes --connect-program and refuses a program it does not run", () => {
+    expect(
+      parsePsuConnectionArgs(["--connect-program=pui", "--connect=cloud", "workbench"]),
+    ).toMatchObject({
+      transport: { program: "pui", selection: "cloud" },
+      forwardedArgv: ["workbench"],
+    });
+    expect(parsePsuConnectionArgs(["--role=su"]).transport.program).toBe("psu");
+    expect(() => parsePsuConnectionArgs(["--connect-program=bash"])).toThrow(
+      "--connect-program must be one of psu, pui",
+    );
+  });
+
+  it("runs pui on a cloud workspace in its own shell, never reattaching psu's", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [hostedProfile()]);
+    const portal = fakePortal({
+      ...WORKSPACES,
+      "/api/hosted/cli/workspaces/ws-live/terminal": ({ body }) => ({
+        status: 200,
+        body: {
+          ok: true,
+          socketUrl: `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
+          session: (body as { session: string }).session,
+        },
+      }),
+    });
+    const terminals: Array<{ initialInput: string }> = [];
+    const run = (argv: string[]) =>
+      runPsuConnectionFrontController(argv, {
+        home,
+        storePath,
+        interactive: false,
+        fetch: portal.fetch,
+        notice: vi.fn(),
+        async openHostedTerminal(input: { initialInput: string }) {
+          terminals.push(input);
+          return { exit: { code: 0, signal: 0 }, resumed: false };
+        },
+      });
+
+    await expect(
+      run(["--connect-program=pui", "--connect=portal.example.test", "workbench"]),
+    ).resolves.toEqual({ handled: true, argv: ["workbench"], exitCode: 0 });
+    await run(["--connect=portal.example.test", "workbench"]);
+
+    expect(terminals[0]?.initialInput).toBe(
+      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui 'workbench'\r`,
+    );
+    expect(terminals[1]?.initialInput).toBe(
+      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu 'workbench'\r`,
+    );
+    const [pui, psu] = portal.calls
+      .filter((call) => call.url.endsWith("/terminal"))
+      .map((call) => (call.body as { session: string }).session);
+    expect(pui).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(pui).not.toBe(psu);
+  });
+
+  it("runs pui over IAP SSH in a tmux session named for pui", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [gcpProfile()]);
+    const interactive: Array<readonly string[]> = [];
+    await runPsuConnectionFrontController(
+      ["--connect-program=pui", "--connect=cloud", "workbench"],
+      {
+        home,
+        storePath,
+        interactive: false,
+        commandAvailable: () => true,
+        runCommand: async (_command: string, args: readonly string[]) => ({
+          code: args.includes("check") ? 1 : 0,
+          signal: null,
+        }),
+        async runInteractive(_command: string, args: readonly string[]) {
+          interactive.push(args);
+          return { code: 0, signal: null };
+        },
+        async reservePort() {
+          return { port: 45124, async release() {} };
+        },
+        async probeOperator() {},
+        notice: vi.fn(),
+      },
+    );
+    const remote = interactive[0]?.at(-1) ?? "";
+    expect(remote).toMatch(/'papercusp-pui-[0-9a-f]{16}'/);
+    expect(remote).toContain(
+      `'env' 'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'pui' 'workbench'`,
+    );
+  });
+
+  it("offers pui no 'this computer' entry and refuses to fall back to a local launch", async () => {
+    const home = tempHome();
+    const storePath = savedStore(home, [gcpProfile()]);
+    const seen: Array<{ values: string[]; program?: string }> = [];
+    const pick =
+      (answer: string | null) =>
+      async (choices: Array<{ value: string }>, options?: { program?: string }) => {
+        seen.push({ values: choices.map((choice) => choice.value), program: options?.program });
+        return answer;
+      };
+
+    for (const answer of ["local", null]) {
+      await expect(
+        runPsuConnectionFrontController(["--connect-program=pui", "--connect"], {
+          home,
+          storePath,
+          interactive: true,
+          pickConnection: pick(answer),
+        }),
+      ).rejects.toThrow("run pui without --connect to stay on this computer");
+    }
+    await expect(
+      runPsuConnectionFrontController(["--connect-program=pui", "--connect=local"], {
+        home,
+        storePath,
+        interactive: false,
+      }),
+    ).rejects.toThrow("run pui without --connect to stay on this computer");
+    expect(seen[0]).toEqual({
+      values: ["cloud", HOSTED_LOGIN_CHOICE],
+      program: "pui",
+    });
+  });
+});
