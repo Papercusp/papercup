@@ -38,11 +38,17 @@ const cloneCacheObservation = (cache: GatewayCacheObservation): GatewayCacheObse
   instructions: cache.instructions ? { ...cache.instructions } : null,
 });
 
+/** A 185-request Anthropic sample had tool fields up to ~430KB; 512KiB
+ * covered all 184 observed tool/instruction pairs (EI-24114368791898443).
+ * The request parse ceiling remains 2MiB, and larger fields stay explicitly
+ * partial. This does not add observations to the separate CLI-exec path. */
+export const MAX_CACHE_FINGERPRINT_BYTES = 512 * 1024;
+
 /** Fingerprints are diagnostics, never cache keys. A capped digest is explicitly partial. */
 function cacheFingerprint(value: unknown): GatewayCacheFingerprint | null {
   if (value === undefined || value === null) return null;
   const bytes = Buffer.from(JSON.stringify(value));
-  const prefix = bytes.subarray(0, 65_536);
+  const prefix = bytes.subarray(0, MAX_CACHE_FINGERPRINT_BYTES);
   return { sha256: createHash('sha256').update(prefix).digest('hex'), bytes: bytes.length, hashedBytes: prefix.length };
 }
 

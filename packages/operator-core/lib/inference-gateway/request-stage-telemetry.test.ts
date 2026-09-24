@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   GatewayRequestTelemetry,
+  MAX_CACHE_FINGERPRINT_BYTES,
   assertCompleteGatewayRequestTimeline,
   classifyGatewayTelemetryOutcome,
   assessStartupCacheSharing,
@@ -136,12 +137,53 @@ describe('GatewayRequestTelemetry', () => {
     expect(telemetry.snapshotForOwner('su-test').recent[0].cache.tools!.sha256).not.toBe('corrupted-caller-copy');
   });
 
+  it('compares complete representative large tool and instruction blocks', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const body = {
+      tools: [{ name: 'large-tool', description: 't'.repeat(230_000) }],
+      instructions: 'i'.repeat(157_000),
+    };
+    const rows = ['first conversation', 'second conversation'].map((input, index) => {
+      const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ ...body, input })));
+      const cache = span.finish('ok', 200)!.cache;
+      expect(cache.tools!.hashedBytes).toBe(cache.tools!.bytes);
+      expect(cache.instructions!.hashedBytes).toBe(cache.instructions!.bytes);
+      return { authorizationScope: 'same-observed-scope', model: 'same-model', transport: 'bearer-http' as const,
+        tools: cache.tools, instructions: cache.instructions, startedAt: index * 100,
+        availableAt: index * 100 + 50, expiresAt: 1000, cacheReadTokens: null, cacheWriteTokens: null };
+    });
+    expect(assessStartupCacheSharing(rows)).toMatchObject({ comparable: 2, componentGroups: 1,
+      withEarlierEligibleComponentMatch: 1, singleWriteGuaranteed: false });
+  });
+
+  it.each(['tools', 'instructions'] as const)('distinguishes equal-length %s changes after the old 64KiB cutoff', (field) => {
+    const telemetry = new GatewayRequestTelemetry();
+    const rows = ['A', 'B'].map((suffix, index) => {
+      const value = 'x'.repeat(70_000) + suffix;
+      const body = { tools: [{ name: 'stable-tool', description: field === 'tools' ? value : 'stable' }],
+        instructions: field === 'instructions' ? value : 'stable' };
+      const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify(body)));
+      const cache = span.finish('ok', 200)!.cache;
+      return { authorizationScope: 'same-observed-scope', model: 'same-model', transport: 'bearer-http' as const,
+        tools: cache.tools, instructions: cache.instructions, startedAt: index * 100,
+        availableAt: null, expiresAt: null, cacheReadTokens: null, cacheWriteTokens: null };
+    });
+    // The grouping key includes bytes: unequal lengths would hide a truncated-hash bug.
+    expect(rows[0][field]!.bytes).toBe(rows[1][field]!.bytes);
+    expect(rows[0][field]!.sha256).not.toBe(rows[1][field]!.sha256);
+    expect(assessStartupCacheSharing(rows)).toMatchObject({ comparable: 2, componentGroups: 2 });
+  });
+
   it('bounds fingerprint work and does not call partial or missing observations exact', () => {
     const telemetry = new GatewayRequestTelemetry({ recentCapacity: 1 });
     const capped = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
-    capped.setCacheShape(Buffer.from(JSON.stringify({ instructions: 'x'.repeat(100_000) })));
+    const instructions = 'x'.repeat(MAX_CACHE_FINGERPRINT_BYTES + 1);
+    capped.setCacheShape(Buffer.from(JSON.stringify({ instructions })));
     const first = capped.finish('ok', 200)!;
-    expect(first.cache.instructions).toMatchObject({ bytes: 100_002, hashedBytes: 65_536 });
+    expect(first.cache.instructions).toMatchObject({ bytes: Buffer.byteLength(JSON.stringify(instructions)),
+      hashedBytes: MAX_CACHE_FINGERPRINT_BYTES });
     const oversized = telemetry.begin({ provider: 'claude', protocol: 'anthropic-messages' });
     oversized.setCacheShape(Buffer.alloc(2_097_153));
     oversized.recordCacheUsage(Number.NaN, 0, 0);
