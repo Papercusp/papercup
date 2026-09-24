@@ -76,9 +76,9 @@ describe('selected identity recipe reaches its existing consumer', () => {
         harnessSlug: 'identity-resource-harness', isSuperuser: false,
         log: () => {},
       } as never);
-      const runBody = JSON.parse((run as { content: Array<{ text: string }> }).content[0]!.text) as {
+      const runBody = (run as { data: {
         results: Array<{ ok: boolean; id: string; result?: { summary?: unknown } }>;
-      };
+      } }).data;
       expect(runBody.results[0]).toMatchObject({
         ok: true, id: recipeId, result: { summary: 'from selected identity' },
       });
