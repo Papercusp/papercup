@@ -71,7 +71,6 @@ import {
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
   persistCursor,
-  findLatestCompleteSnapshot,
   combineSnapshotApplyMarks,
   snapshotApplyMarkOf,
   snapshotApplyMarks,
@@ -82,9 +81,13 @@ import {
   type MergeApplyFailure,
   type SnapshotApplyMark,
 } from './read-merge';
+import { discoverOwnCompactionAnchor as discoverOwnCompactionAnchorOf } from './own-compaction-anchor';
 import {
-  describeSnapshotSet,
   formatSnapshotFoldProgress,
+  isSeedableForUnfilteredFold,
+  OWN_COMPACTION_ANCHOR_RETRY_BASE_MS,
+  OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS,
+  ownCompactionBackoffMs,
   produceLogSnapshot,
   shouldCompactOwnLog,
   snapshotCompactThreshold,
@@ -2420,18 +2423,44 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let lastOwnCompactionSet: { coversUpTo: number; chunkCount: number } | null = null;
   /** The off-gate periodic compaction, when one is running (`runOwnCompaction`). */
   let ownCompactionInFlight: Promise<void> | null = null;
-  if (snapshotProducerEnabled) {
-    const seed = await findLatestCompleteSnapshot(ownLog).catch(() => null);
-    if (seed) {
-      lastSnapshotCoversUpTo = seed.seedIndex;
-      const size = await describeSnapshotSet(ownLog, seed);
-      if (size) {
-        lastSnapshotRowCount = size.rowEstimate;
-        if (!size.excludesTables) {
-          lastOwnCompactionSet = { coversUpTo: seed.coversUpTo, chunkCount: seed.chunkCount };
-        }
-      }
+  /**
+   * WI-10002836 — whether the cadence anchor above is KNOWN: the latest set was found, or
+   * the scan genuinely reached index 0 without one. Until then the own compaction does not
+   * run; the merge pass retries the discovery instead.
+   *
+   * MEASURED 2026-09-24 on the tower: at 00:45Z and 01:52Z boot logged `lastCoversUpTo=0`
+   * on a log whose newest set was ~48k blocks from the tail. A bounded read timed out under
+   * load, `findLatestCompleteSnapshot` turned that `unreadable` outcome into `null`, and
+   * boot read `null` as "never snapshotted", which armed a fold of all 7.76M ops from 0.
+   * `null` is right for a reader (fold from 0 is correct, just slower). For the producer it
+   * is the wrong answer: "I could not read the tail" means "ask again", not "start over".
+   */
+  let ownCompactionAnchorKnown = false;
+  /** Epoch ms before which the anchor discovery is not retried (0 = no backoff). */
+  let ownCompactionAnchorRetryAt = 0;
+  let ownCompactionAnchorFailures = 0;
+  /**
+   * WI-10002836 — epoch ms before which a FAILED compaction is not re-run (0 = no backoff).
+   * Without it a compaction that fails deterministically (a worker OOM on a live set larger
+   * than its cap) restarts its full fold on the very next merge pass, forever.
+   */
+  let ownCompactionRetryAt = 0;
+  let ownCompactionFailures = 0;
+
+  /** Discover the cadence anchor (own-compaction-anchor.ts). Returns the boot-row token. */
+  async function discoverOwnCompactionAnchor(): Promise<string> {
+    const anchor = await discoverOwnCompactionAnchorOf(ownLog);
+    if (anchor.known) {
+      ownCompactionAnchorKnown = true;
+      lastSnapshotCoversUpTo = anchor.lastCoversUpTo;
+      lastSnapshotRowCount = anchor.lastRows;
+      if (anchor.seedSet) lastOwnCompactionSet = anchor.seedSet;
     }
+    return anchor.outcome;
+  }
+
+  if (snapshotProducerEnabled) {
+    const anchor = await discoverOwnCompactionAnchor();
     // P-005: the cadence anchor this boot will compact against. Without it, a box
     // whose producer is ON but whose log has not grown a threshold since its last set
     // is indistinguishable from one whose producer never ran.
@@ -2443,7 +2472,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         'own_log_compaction',
         `own log compaction anchor: producer=on ownLogLength=${ownLog.length} lastCoversUpTo=${lastSnapshotCoversUpTo} ` +
           `lastRows=${lastSnapshotRowCount} threshold=${threshold} ` +
-          `due=${shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, threshold)}`,
+          `due=${ownCompactionAnchorKnown ? shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, threshold) : 'deferred'} ` +
+          `anchor=${anchor}`,
       );
     } catch {
       // observability must never fail boot
@@ -3381,6 +3411,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * Never rejects: a failure is a boot event, as it was when this ran inline. A
    * failure caused by the engine stopping underneath it is not recorded at all.
    */
+  /**
+   * WI-10002836 — re-run the cadence-anchor discovery that boot could not complete. Runs in
+   * the own-compaction slot, never under the merge gate. Never rejects.
+   */
+  async function retryOwnCompactionAnchor(): Promise<void> {
+    const anchor = await discoverOwnCompactionAnchor();
+    if (!ownCompactionAnchorKnown) {
+      ownCompactionAnchorFailures += 1;
+      const backoffMs = ownCompactionBackoffMs(ownCompactionAnchorFailures, OWN_COMPACTION_ANCHOR_RETRY_BASE_MS);
+      ownCompactionAnchorRetryAt = Date.now() + backoffMs;
+      // One row per doubling, not per attempt, so a long outage stays a handful of rows.
+      if ((ownCompactionAnchorFailures & (ownCompactionAnchorFailures - 1)) !== 0) return;
+    } else {
+      ownCompactionAnchorFailures = 0;
+      ownCompactionAnchorRetryAt = 0;
+    }
+    try {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'own_log_compaction',
+        `own log compaction anchor retry: anchor=${anchor} failures=${ownCompactionAnchorFailures} ` +
+          `lastCoversUpTo=${lastSnapshotCoversUpTo} lastRows=${lastSnapshotRowCount} ` +
+          (ownCompactionAnchorKnown
+            ? `due=${shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))}`
+            : `nextAttemptInMs=${ownCompactionAnchorRetryAt - Date.now()}`),
+      );
+    } catch {
+      // observability must never fail the compaction
+    }
+  }
+
   async function runOwnCompaction(): Promise<void> {
     const startedAt = Date.now();
     const previousCoversUpTo = lastSnapshotCoversUpTo;
@@ -3416,7 +3478,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                 opts.harnessSlug,
                 'own_log_compaction',
                 `own log compaction progress: ${formatSnapshotFoldProgress(progress)} ` +
-                  `heapUsedMb=${Math.round(process.memoryUsage().heapUsed / 1_048_576)} ` +
+                  // The HOST's heap; the fold's own heap is `workerHeapUsedMb` above (WI-10002836).
+                  `mainHeapUsedMb=${Math.round(process.memoryUsage().heapUsed / 1_048_576)} ` +
                   `elapsedMs=${Date.now() - startedAt}`,
               );
             } catch {
@@ -3426,6 +3489,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           { minIntervalMs: opts.ownCompactionProgressIntervalMs ?? OWN_COMPACTION_PROGRESS_INTERVAL_MS },
         ),
       });
+      ownCompactionFailures = 0;
+      ownCompactionRetryAt = 0;
       if (!snap.appended) return;
       lastSnapshotCoversUpTo = snap.coversUpTo;
       lastSnapshotRowCount = snap.rowCount;
@@ -3444,12 +3509,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
     } catch (e) {
       if (stopped || e instanceof SnapshotAbortedError) return;
+      ownCompactionFailures += 1;
+      const backoffMs = ownCompactionBackoffMs(ownCompactionFailures, OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS);
+      ownCompactionRetryAt = Date.now() + backoffMs;
       try {
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
           'own_log_compaction',
-          `log compaction failed after elapsedMs=${Date.now() - startedAt}: ${e instanceof Error ? e.message : String(e)}`,
+          `log compaction failed after elapsedMs=${Date.now() - startedAt}: ${e instanceof Error ? e.message : String(e)} ` +
+            `(failures=${ownCompactionFailures} nextAttemptInMs=${backoffMs})`,
         );
       } catch {
         // observability must never fail the compaction
@@ -3497,10 +3566,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
       });
       if (snap.appended) {
-        // The cadence restarts from this set. It is filtered, so it never becomes
-        // `lastOwnCompactionSet` (the unfiltered compaction cannot seed from it).
+        // The cadence restarts from this set, and the anchor is now known. It excludes
+        // only `SEED_EXCLUDED_TABLES`, which all regenerate (pinned by
+        // seed-excluded-tables.test.ts), so it is also the unfiltered compaction's seed
+        // (WI-10002836). Before, the next compaction had to find a set on its own, and on
+        // a log whose only sets were these it folded the whole history from 0.
         lastSnapshotCoversUpTo = snap.coversUpTo;
         lastSnapshotRowCount = snap.rowCount;
+        ownCompactionAnchorKnown = true;
+        if (isSeedableForUnfilteredFold(SEED_EXCLUDED_TABLES)) {
+          lastOwnCompactionSet = { coversUpTo: snap.coversUpTo, chunkCount: snap.chunkCount };
+        }
       }
 
       // EI-20019309044931698 — flush the just-appended snapshot to SSTs BEFORE the
@@ -4262,15 +4338,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // land during its read (WI-37526) — so the gate bought no safety for this
       // read. The in-flight guard keeps one compaction at a time; the head-snapshot
       // path waits for it so two producers never append concurrently.
-      if (
-        snapshotProducerEnabled &&
-        !ownCompactionInFlight &&
-        !stopped &&
-        shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))
-      ) {
-        ownCompactionInFlight = runOwnCompaction().finally(() => {
-          ownCompactionInFlight = null;
-        });
+      //
+      // WI-10002836: never from an UNKNOWN anchor (retry the discovery instead, in the
+      // same one-at-a-time slot), and never again before a failed run's backoff expires.
+      if (snapshotProducerEnabled && !ownCompactionInFlight && !stopped) {
+        const now = Date.now();
+        if (!ownCompactionAnchorKnown) {
+          if (now >= ownCompactionAnchorRetryAt) {
+            ownCompactionInFlight = retryOwnCompactionAnchor().finally(() => {
+              ownCompactionInFlight = null;
+            });
+          }
+        } else if (
+          now >= ownCompactionRetryAt &&
+          shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo, snapshotCompactThreshold(lastSnapshotRowCount))
+        ) {
+          ownCompactionInFlight = runOwnCompaction().finally(() => {
+            ownCompactionInFlight = null;
+          });
+        }
       }
 
       // ── Merge-refresh (D-002): the revocation refresh now runs at the TOP of

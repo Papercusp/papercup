@@ -7,12 +7,14 @@
  * `worker-scripts-bundled.test.ts` fails if either stops doing so. Under tsx the `.ts`
  * form runs directly (see `snapshotFoldWorkerPath`).
  */
+import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { createSnapshotFoldHandler, type SnapshotFoldRequest } from './snapshot-fold-protocol';
 
 if (!parentPort) throw new Error('snapshot-fold.worker must run as a worker thread');
 const port = parentPort;
-const handle = createSnapshotFoldHandler();
+// WI-10002836: `getHeapStatistics` is per-isolate, so this is the FOLD's heap, not the host's.
+const handle = createSnapshotFoldHandler({ heapUsedBytes: () => getHeapStatistics().used_heap_size });
 port.on('message', (req: SnapshotFoldRequest) => {
   const { res, transfer } = handle(req);
   port.postMessage(res, transfer);

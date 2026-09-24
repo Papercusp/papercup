@@ -155,6 +155,29 @@ export function isSnapshotOp(op: { table?: string } | null | undefined): boolean
 }
 
 /**
+ * The leading bytes of a STORED snapshot block. Both builders construct the op as
+ * `{ type: 'put', table: SNAPSHOT_TABLE_TAG, ... }` and hypercore's `json` encoding is
+ * `JSON.stringify`, so every snapshot block this tree writes starts with exactly this.
+ */
+const SNAPSHOT_BLOCK_PREFIX = new TextEncoder().encode(`{"type":"put","table":"${SNAPSHOT_TABLE_TAG}"`);
+
+/**
+ * WI-10002836 — true when a stored block is a snapshot op, judged from its first bytes
+ * WITHOUT decoding it. A chunk is up to `SNAPSHOT_MAX_CHUNK_BYTES` (4 MiB) of JSON, so a
+ * 256-block window of them is ~1 GiB to parse; this is what lets a contiguous fold skip
+ * them for the cost of a 36-byte compare. A false negative (a legacy block with another
+ * key order) is harmless: the caller decodes it and checks `isSnapshotOp`. A false
+ * positive is impossible, because a block that starts this way IS a snapshot op.
+ */
+export function isSnapshotBlock(block: Uint8Array): boolean {
+  if (block.byteLength < SNAPSHOT_BLOCK_PREFIX.byteLength) return false;
+  for (let i = 0; i < SNAPSHOT_BLOCK_PREFIX.byteLength; i++) {
+    if (block[i] !== SNAPSHOT_BLOCK_PREFIX[i]) return false;
+  }
+  return true;
+}
+
+/**
  * EI-1688 — how long a snapshot keeps a TOMBSTONE row for a deleted key. A snapshot
  * must reconstitute a delete (not omit it) so a later-arriving stale lower-clock PUT
  * that federates past the snapshot horizon loses the merge winner-gate instead of
@@ -568,6 +591,16 @@ export interface SnapshotFoldProgress {
   decodedOps: number;
   /** Approximate UTF-8 bytes represented by those decoded operations. */
   decodedBytes: number;
+  /**
+   * WI-10002836 — prior snapshot ops passed over WITHOUT decoding because the fold had
+   * already folded every op they summarize (`skipSnapshotOps`). Absent on folds that
+   * expand every snapshot op.
+   */
+  skippedSnapshotOps?: number;
+  /** WI-10002836 — live keys in the fold after this window (the real retention bound). */
+  keyCount?: number;
+  /** WI-10002836 — the FOLD's own heap, in MiB, when it runs in a worker thread. */
+  workerHeapUsedMb?: number;
 }
 
 /** Diagnostic emitted when the source cursor has not advanced for `stallMs`. */
@@ -620,7 +653,10 @@ export function throttleSnapshotFoldProgress(
 export function formatSnapshotFoldProgress(progress: SnapshotFoldProgress): string {
   const pct = progress.total <= 0 ? 100 : Math.min(100, Math.floor((progress.processed / progress.total) * 100));
   return `cursor=${progress.processed}/${progress.total} (${pct}%) sourceStart=${progress.sourceStart} ` +
-    `decodedOps=${progress.decodedOps} decodedBytes=${progress.decodedBytes}`;
+    `decodedOps=${progress.decodedOps} decodedBytes=${progress.decodedBytes}` +
+    (progress.skippedSnapshotOps !== undefined ? ` skippedSnapshotOps=${progress.skippedSnapshotOps}` : '') +
+    (progress.keyCount !== undefined ? ` keyCount=${progress.keyCount}` : '') +
+    (progress.workerHeapUsedMb !== undefined ? ` workerHeapUsedMb=${progress.workerHeapUsedMb}` : '');
 }
 
 /**
@@ -638,6 +674,22 @@ interface FoldLogRangeOptions {
   onProgress?: SnapshotFoldProgressCallback;
   onStall?: SnapshotFoldStallCallback;
   stallMs?: number;
+  /**
+   * WI-10002836 — pass over prior snapshot ops instead of expanding them. ONLY valid when
+   * the folder already holds every op below `from` (a fold from 0, or one seeded from the
+   * set that ends at `from`). Then a snapshot at index i summarizes ops below its
+   * `coversUpTo`, which is at most i, all of which this fold has already folded, so
+   * expanding it re-sets every live key to the row it already has.
+   *
+   * MEASURED 2026-09-24 on the tower's papercusp pot: that re-expansion was ~120 GB of
+   * decoding in the last 3.5% of the log (each prior set ~1.9M rows, ~4 GB), and the
+   * 1 GiB windows of 4 MiB chunks drove bg-host to 25 GB and an OOM recycle at 99.5%.
+   *
+   * A null block is a HOLE: an op this fold did not see. After one, snapshot ops are
+   * expanded again, because they re-deliver the rows the hole may have hidden (the
+   * producer twin of the reader's P-008 hole rule in read-merge.ts).
+   */
+  skipSnapshotOps?: boolean;
 }
 
 /**
@@ -1008,7 +1060,7 @@ export async function describeSnapshotSet(
   log: Pick<OwnLog, 'get'>,
   set: { coversUpTo: number; chunkCount: number },
   readBudgetMs: number = FILTERED_SNAPSHOT_SCAN_STALL_MS,
-): Promise<{ rowEstimate: number; excludesTables: boolean } | null> {
+): Promise<{ rowEstimate: number; excludesTables: boolean; excludeTables: string[] } | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const read = Promise.resolve(log.get(set.coversUpTo));
@@ -1024,9 +1076,11 @@ export async function describeSnapshotSet(
     const payload = first.value as SnapshotPayload | undefined;
     if (!payload || payload.coversUpTo !== set.coversUpTo || (payload.chunkIdx ?? 0) !== 0) return null;
     if (!Array.isArray(payload.rows)) return null;
+    const excludeTables = Array.isArray(payload.excludeTables) ? payload.excludeTables.map(String) : [];
     return {
       rowEstimate: payload.rows.length * Math.max(1, set.chunkCount),
-      excludesTables: Array.isArray(payload.excludeTables) && payload.excludeTables.length > 0,
+      excludesTables: excludeTables.length > 0,
+      excludeTables,
     };
   } catch {
     return null;
@@ -1039,6 +1093,33 @@ export async function describeSnapshotSet(
  * Thrown by `produceLogSnapshot` when `shouldAbort()` reports true just before the
  * append: the fold is discarded and nothing is written to the log.
  */
+/** WI-10002836 — first retry delay for a cadence-anchor discovery that came back `unreadable`. */
+export const OWN_COMPACTION_ANCHOR_RETRY_BASE_MS = 60_000;
+/** WI-10002836 — first retry delay after a FAILED own compaction (a full fold is costly). */
+export const OWN_COMPACTION_FAILURE_BACKOFF_BASE_MS = 15 * 60_000;
+/** WI-10002836 — ceiling for both backoffs. */
+export const OWN_COMPACTION_BACKOFF_MAX_MS = 6 * 60 * 60_000;
+
+/** Exponential backoff: `baseMs` after the 1st failure, doubling, capped at `maxMs`. */
+export function ownCompactionBackoffMs(
+  failures: number,
+  baseMs: number,
+  maxMs: number = OWN_COMPACTION_BACKOFF_MAX_MS,
+): number {
+  if (failures <= 0) return 0;
+  return Math.min(maxMs, baseMs * 2 ** Math.min(failures - 1, 30));
+}
+
+/**
+ * WI-10002836 — true when a set that left out `excludeTables` is a complete seed for an
+ * UNFILTERED fold: every table it dropped regenerates on its own (`SELF_REGENERATING_TABLES`).
+ * The same rule `conflictingSnapshotExclusion` applies inside the producer, so a caller
+ * choosing a `priorSnapshotHint` and the producer checking it can never disagree.
+ */
+export function isSeedableForUnfilteredFold(excludeTables: readonly string[]): boolean {
+  return excludeTables.every((t) => SELF_REGENERATING_TABLES.has(t));
+}
+
 export class SnapshotAbortedError extends Error {
   constructor(message: string) {
     super(message);
@@ -1124,12 +1205,21 @@ async function foldLogRangeInto(
       : undefined;
   let decodedOps = 0;
   let decodedBytes = 0;
+  let skippedSnapshotOps = 0;
+  let sawHole = false;
   try {
     for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
       const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
       const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
       for (const op of window) {
-        if (!op) continue;
+        if (!op) {
+          sawHole = true;
+          continue;
+        }
+        if (opts.skipSnapshotOps && !sawHole && isSnapshotOp(op)) {
+          skippedSnapshotOps += 1;
+          continue;
+        }
         // Read the decoded value once, both to fold it and to measure the bounded
         // source volume. This avoids a second getter read on instrumented logs.
         const decodedValue = op.value;
@@ -1158,6 +1248,8 @@ async function foldLogRangeInto(
         total: to,
         decodedOps,
         decodedBytes,
+        ...(opts.skipSnapshotOps ? { skippedSnapshotOps } : {}),
+        keyCount: folder.keyCount,
       });
       // `window` falls out of scope here — the decoded blocks it held are collectable.
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1290,6 +1382,9 @@ export async function produceLogSnapshot(
         );
       }),
       stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+      // Every range folded here is contiguous with what the folder holds: from 0, or
+      // from the end of the seed set already added above. See `skipSnapshotOps`.
+      skipSnapshotOps: true,
     });
 
   await foldRange(foldedUpTo, coversUpTo);
@@ -1389,8 +1484,15 @@ function assertSnapshotAnchorHeld(anchorOp: PeerLogOp | null, coversUpTo: number
  * imported, so this module stays pure: the worker bundle imports THIS file.
  */
 export interface SnapshotFoldWorkerLike {
-  /** Decode + fold stored blocks, in ascending log order. Counts are for THIS call. */
-  fold(blocks: ReadonlyArray<Uint8Array | null>): Promise<{ decodedOps: number; decodedBytes: number }>;
+  /**
+   * Decode + fold stored blocks, in ascending log order. Counts are for THIS call.
+   * `skipSnapshotOps` (WI-10002836) passes over snapshot ops instead of expanding them;
+   * see `FoldLogRangeOptions.skipSnapshotOps` for when that is valid.
+   */
+  fold(
+    blocks: ReadonlyArray<Uint8Array | null>,
+    opts?: { skipSnapshotOps?: boolean },
+  ): Promise<SnapshotFoldWindowResult>;
   /** Decode stored blocks WITHOUT their bulk (a snapshot op keeps its metadata, not its rows). */
   inspect(blocks: ReadonlyArray<Uint8Array | null>): Promise<Array<PeerLogOp | null>>;
   /** Emit the set as stored blocks, byte-identical to what `appendBatch(buildSnapshotOpsFromRows(...))` writes. */
@@ -1404,6 +1506,18 @@ export interface SnapshotFoldWorkerLike {
     excludeTables: readonly string[];
   }): Promise<{ blocks: Uint8Array[]; rowCount: number }>;
   close(): Promise<void>;
+}
+
+/** What one worker `fold` call reports. The optional fields are observability only. */
+export interface SnapshotFoldWindowResult {
+  decodedOps: number;
+  decodedBytes: number;
+  /** Snapshot ops the worker decoded and then passed over (legacy key order; see `isSnapshotBlock`). */
+  skippedSnapshotOps?: number;
+  /** Live keys in the fold after this call. */
+  keyCount?: number;
+  /** The worker isolate's used heap after this call, in bytes (WI-10002836). */
+  heapUsedBytes?: number;
 }
 
 export type SnapshotFoldWorkerFactory = (init: { excludeTables: readonly string[] }) => Promise<SnapshotFoldWorkerLike>;
@@ -1460,7 +1574,10 @@ async function produceLogSnapshotOffloaded(
       get: inspectAt,
     };
 
-    const foldRange = (from: number, to: number): Promise<void> =>
+    // `skipSnapshotOps` is false ONLY for the seed range: that range IS the prior set,
+    // whose rows are the whole point. Every other range continues contiguously from
+    // what the worker already holds (see `FoldLogRangeOptions.skipSnapshotOps`).
+    const foldRange = (from: number, to: number, skipSnapshotOps = true): Promise<void> =>
       foldLogRangeViaWorker(getRaw, worker, from, to, {
         phase: 'own-compaction',
         coreKey: ownLog.keyHex,
@@ -1473,6 +1590,7 @@ async function produceLogSnapshotOffloaded(
         }),
         stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
         shouldAbort: opts.shouldAbort,
+        skipSnapshotOps,
       });
 
     const priorSnapshot = await findLatestProducerSnapshot(summaries, {
@@ -1491,7 +1609,7 @@ async function produceLogSnapshotOffloaded(
         );
       } else {
         const seedEnd = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
-        await foldRange(priorSnapshot.coversUpTo, seedEnd);
+        await foldRange(priorSnapshot.coversUpTo, seedEnd, false);
         foldedUpTo = seedEnd;
       }
     }
@@ -1558,20 +1676,40 @@ async function foldLogRangeViaWorker(
   };
   let decodedOps = 0;
   let decodedBytes = 0;
+  let skippedSnapshotOps = 0;
+  let sawHole = false;
   try {
     let next: Promise<Array<Uint8Array | null>> | null = from < to ? readWindow(from) : null;
     for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
       const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
-      const blocks = await next!;
+      const raw = await next!;
       next = end < to ? readWindow(end) : null;
       if (opts.shouldAbort?.()) {
         throw new SnapshotAbortedError(
           `[snapshot] own compaction aborted mid-fold at ${start}/${to}: the caller is stopping`,
         );
       }
-      const counts = await worker.fold(blocks);
+      // WI-10002836: drop redundant snapshot chunks HERE, by prefix, so they are never
+      // copied into the transfer buffer nor parsed. In index order, so a hole earlier
+      // in the window turns the skip off for every later block.
+      let blocks: Array<Uint8Array | null> = raw;
+      if (opts.skipSnapshotOps) {
+        blocks = raw.map((b) => {
+          if (!b) {
+            sawHole = true;
+            return null;
+          }
+          if (!sawHole && isSnapshotBlock(b)) {
+            skippedSnapshotOps += 1;
+            return null;
+          }
+          return b;
+        });
+      }
+      const counts = await worker.fold(blocks, { skipSnapshotOps: opts.skipSnapshotOps === true && !sawHole });
       decodedOps += counts.decodedOps;
       decodedBytes += counts.decodedBytes;
+      skippedSnapshotOps += counts.skippedSnapshotOps ?? 0;
       watchdog?.advance(end, decodedOps, decodedBytes);
       opts.onProgress?.({
         phase: opts.phase ?? 'source-scan',
@@ -1582,6 +1720,9 @@ async function foldLogRangeViaWorker(
         total: to,
         decodedOps,
         decodedBytes,
+        ...(opts.skipSnapshotOps ? { skippedSnapshotOps } : {}),
+        ...(counts.keyCount !== undefined ? { keyCount: counts.keyCount } : {}),
+        ...(counts.heapUsedBytes !== undefined ? { workerHeapUsedMb: Math.round(counts.heapUsedBytes / 1_048_576) } : {}),
       });
     }
   } finally {

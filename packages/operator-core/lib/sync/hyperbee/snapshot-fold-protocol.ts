@@ -21,6 +21,7 @@
  */
 import {
   buildSnapshotOpsFromRows,
+  isSnapshotBlock,
   isSnapshotOp,
   SnapshotRowFolder,
   type SnapshotPayload,
@@ -29,7 +30,7 @@ import type { PeerLogOp } from './peer-log';
 
 export type SnapshotFoldRequest =
   | { kind: 'init'; id: number; excludeTables: string[] }
-  | { kind: 'fold'; id: number; buf: ArrayBuffer; lengths: number[] }
+  | { kind: 'fold'; id: number; buf: ArrayBuffer; lengths: number[]; skipSnapshotOps?: boolean }
   | { kind: 'inspect'; id: number; buf: ArrayBuffer; lengths: number[] }
   | {
       kind: 'finish';
@@ -45,7 +46,17 @@ export type SnapshotFoldRequest =
 
 export type SnapshotFoldResponse =
   | { kind: 'ok'; id: number }
-  | { kind: 'folded'; id: number; decodedOps: number; decodedBytes: number; keyCount: number }
+  | {
+      kind: 'folded';
+      id: number;
+      decodedOps: number;
+      decodedBytes: number;
+      keyCount: number;
+      /** Snapshot ops decoded and then passed over (`skipSnapshotOps`). */
+      skippedSnapshotOps: number;
+      /** The worker isolate's used heap after this fold, when the shell supplies a probe. */
+      heapUsedBytes?: number;
+    }
   | { kind: 'inspected'; id: number; ops: Array<PeerLogOp | null> }
   | { kind: 'finished'; id: number; buf: ArrayBuffer; lengths: number[]; rowCount: number }
   | { kind: 'error'; id: number; message: string };
@@ -128,7 +139,17 @@ export interface SnapshotFoldReply {
  * testable. `init` → any number of `fold`/`inspect` → `finish` (which releases the fold).
  * Folds must arrive in ascending log-index order — the SnapshotRowFolder contract.
  */
-export function createSnapshotFoldHandler(): (req: SnapshotFoldRequest) => SnapshotFoldReply {
+export function createSnapshotFoldHandler(
+  opts: {
+    /**
+     * WI-10002836 — this isolate's used heap, reported on every `folded` reply. The worker
+     * shell passes `v8.getHeapStatistics().used_heap_size`; it is injected rather than
+     * read here because `process.memoryUsage()` in a direct (main-thread) test would
+     * report the TEST's heap and read as the fold's.
+     */
+    heapUsedBytes?: () => number;
+  } = {},
+): (req: SnapshotFoldRequest) => SnapshotFoldReply {
   let folder: SnapshotRowFolder | null = null;
 
   const requireFolder = (): SnapshotRowFolder => {
@@ -147,17 +168,38 @@ export function createSnapshotFoldHandler(): (req: SnapshotFoldRequest) => Snaps
           const f = requireFolder();
           let decodedOps = 0;
           let decodedBytes = 0;
+          let skippedSnapshotOps = 0;
           for (const block of unpackBlocks(req.buf, req.lengths)) {
             if (!block) continue;
+            // WI-10002836: the caller normally drops redundant snapshot chunks before
+            // sending; this catches any it sent anyway, still without a parse.
+            if (req.skipSnapshotOps && isSnapshotBlock(block)) {
+              skippedSnapshotOps += 1;
+              continue;
+            }
             const op = decodeStoredBlock(block);
+            // A snapshot op in another key order than `isSnapshotBlock` recognizes.
+            if (req.skipSnapshotOps && isSnapshotOp(op)) {
+              skippedSnapshotOps += 1;
+              continue;
+            }
             decodedOps += 1;
             // The stored block IS the op's UTF-8 JSON, so its length is the measure the
             // inline fold used to get by re-stringifying every op (a second full pass).
             decodedBytes += block.byteLength;
             f.add(op, op.value);
           }
+          const heapUsedBytes = opts.heapUsedBytes?.();
           return {
-            res: { kind: 'folded', id: req.id, decodedOps, decodedBytes, keyCount: f.keyCount },
+            res: {
+              kind: 'folded',
+              id: req.id,
+              decodedOps,
+              decodedBytes,
+              keyCount: f.keyCount,
+              skippedSnapshotOps,
+              ...(heapUsedBytes !== undefined ? { heapUsedBytes } : {}),
+            },
             transfer: [],
           };
         }
