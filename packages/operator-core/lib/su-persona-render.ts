@@ -506,6 +506,7 @@ export async function rebuildSuLaunchArtifact(
     promptText: overlaid.promptText,
     promptFile: spec.promptFile,
     cwd: spec.cwd,
+    workspaceId: record.workspaceId,
     harnessSlug: record.harnessSlug,
     role: 'su',
     stack: spec.stack,

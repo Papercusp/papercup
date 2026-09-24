@@ -15,20 +15,20 @@ Description=Run kopia snapshots every 30 minutes
 # fires on wall-clock boundaries regardless of manager restarts and catches up a
 # run missed while the system was down.
 #
-# The EI-10730 hot-loop (OnUnitActiveSec=5min vs a 5-7min run => back-to-back
-# runs pinning pg_dump ACCESS SHARE locks, which wedged the release pipeline 9h)
-# CANNOT recur with OnCalendar: systemd never QUEUES a start for an
-# already-active oneshot — if a 30-min boundary passes mid-run it is simply
-# skipped and the next run is the first boundary AFTER the unit goes idle, so
-# there is always a real inter-run gap. This preserves the wall-clock cadence
-# across manager restarts. D-001 additionally guards
-# cross-unit/manual overlap and defers scheduled work when host PSI is unsafe.
+# OnCalendar preserves the wall-clock cadence across manager restarts, but it
+# does not prevent an immediate reactivation when a run exceeds its interval:
+# on this host's systemd 255, a missed calendar elapse is due as soon as the
+# target becomes inactive. DeferReactivation= was added in systemd 257, so it is
+# unavailable here. Route through a short dispatcher instead; it queues the
+# long-running worker with --no-block and exits before the next calendar tick.
+# D-001 additionally guards cross-unit/manual overlap and defers scheduled work
+# when host PSI is unsafe.
 OnCalendar=*:0/30
 Persistent=true
 RandomizedDelaySec=20
 AccuracySec=15s
 OnBootSec=2min
-Unit=kopia-snapshots.service
+Unit=papercusp-nonblocking-trigger@kopia-snapshots.service
 
 [Install]
 WantedBy=timers.target

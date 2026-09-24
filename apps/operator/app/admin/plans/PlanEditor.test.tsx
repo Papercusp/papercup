@@ -13,21 +13,22 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 // Perf-marks: spy the interaction-timing hooks so the "close the plan-popup-open
 // timing on body render" wiring (P-001) is asserted, keeping the real registry.
-const { endInteractionSpy } = vi.hoisted(() => ({ endInteractionSpy: vi.fn() }));
+const { endInteractionSpy, phaseSpy } = vi.hoisted(() => ({ endInteractionSpy: vi.fn(), phaseSpy: vi.fn() }));
 vi.mock('@/app/_components/perf/perf-marks', () => ({
   endInteraction: endInteractionSpy,
   beginInteraction: vi.fn(),
+  markInteractionPhase: phaseSpy,
   PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
 }));
 // Vditor-backed; stub both surfaces to plain DOM that echoes the key props.
 // PlanDocumentView fires onParsed via a ref callback (mimicking the real "after
 // Vditor.preview" call) so handleParsed's decorators + the endInteraction hook run.
 vi.mock('@papercusp/ui-primitives', () => ({
-  PlanDocumentView: ({ value, outline, onParsed }: { value: string; outline: unknown; onParsed?: (root: HTMLElement) => void }) => (
+  PlanDocumentView: ({ value, outline, onParsed, onRenderPhase }: { value: string; outline: unknown; onParsed?: (root: HTMLElement) => void; onRenderPhase?: (phase: string) => void }) => (
     <div
       data-testid="preview"
       data-outline={String(outline)}
-      ref={(node) => { if (node) onParsed?.(node); }}
+      ref={(node) => { if (node) { onRenderPhase?.('content-ready'); onRenderPhase?.('renderer-ready'); onRenderPhase?.('preview-rendered'); onParsed?.(node); } }}
     >{value}</div>
   ),
 }));
@@ -67,7 +68,7 @@ vi.mock('./plan-renderers-ir', () => ({
 
 import PlanEditor from './PlanEditor';
 
-afterEach(() => { cleanup(); endInteractionSpy.mockClear(); });
+afterEach(() => { cleanup(); endInteractionSpy.mockClear(); phaseSpy.mockClear(); });
 
 describe('PlanEditor (decorated plan markdown surface)', () => {
   it('renders the static preview in read-only mode (default)', () => {
@@ -90,6 +91,11 @@ describe('PlanEditor (decorated plan markdown surface)', () => {
     // begin ran, so this call is safe here — we only assert the wiring fires.
     render(<PlanEditor value="# Hello plan" slug="p" />);
     expect(endInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
+    expect(phaseSpy.mock.calls).toEqual([
+      ['plan-popup-open', 'content-ready'],
+      ['plan-popup-open', 'renderer-ready'],
+      ['plan-popup-open', 'preview-rendered'],
+    ]);
   });
 
   it('renders the editor surface when readOnly is false', () => {

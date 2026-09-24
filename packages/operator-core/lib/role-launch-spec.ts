@@ -177,6 +177,7 @@ import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import type { CompiledAgentSpecification, LoadedBlueprint, StackDocument } from '@papercusp/orchestrator/blueprint';
+import type { Sql } from 'postgres';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -310,6 +311,8 @@ export interface LaunchArtifactInput {
   promptText: string;
   promptFile?: string | null;
   cwd: string;
+  /** Resource-bearing identities need this exact launch scope. */
+  workspaceId?: string | null;
   harnessSlug?: string | null;
   role: string;
   /** null/omitted selects `roles[].stack`; [] explicitly selects no optional layers. */
@@ -329,6 +332,19 @@ export interface LaunchArtifactResult {
   specificationRevision: string;
   stateRevision: string;
   compositionSource: 'blueprint' | 'compatibility';
+  /** Selected component resources, compiled without provisioning for preview. */
+  resourceArtifacts: CompiledAgentSpecification[];
+}
+
+/** Provision only after the caller has chosen an actual launch or activation.
+ * Identity previews compile and pin resources without writing to their stores. */
+export async function provisionLaunchIdentityResources(result: LaunchArtifactResult, sql: Sql): Promise<void> {
+  if (result.resourceArtifacts.length === 0) return;
+  const { provisionBlueprintPackages, blueprintPackageProvisioners } = await import('./blueprint/compile-packages');
+  const provisioners = blueprintPackageProvisioners(sql);
+  for (const artifact of result.resourceArtifacts) {
+    await provisionBlueprintPackages(artifact, provisioners);
+  }
 }
 
 function stableLaunchState(value: unknown): unknown {
@@ -438,15 +454,47 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
     : [...input.stack];
   const state = { ...input.state, stack };
   const stateRevision = input.stateRevision?.trim() || launchStateRevision(state);
-  const { compileAgentSpecification, specificationPrompt } = await import('@papercusp/orchestrator/blueprint');
+  const { compileAgentSpecification, specificationPrompt, stackBindingFromRefs, validateAgentInputClosure } =
+    await import('@papercusp/orchestrator/blueprint');
+  const { compileSelectedIdentityResources } = await import('./agent-identities/source');
+  const resourceArtifacts: CompiledAgentSpecification[] = [];
+  for (const layer of stackBindingFromRefs(stack).layers) {
+    const resource = await compileSelectedIdentityResources({
+      identityId: layer.id, repoDir: input.cwd,
+      workspaceId: input.workspaceId ?? '', harnessSlug: input.harnessSlug ?? '',
+    });
+    if (resource) resourceArtifacts.push(resource);
+  }
+  const resourceInputs = validateAgentInputClosure(resourceArtifacts.flatMap((artifact) =>
+    artifact.inputs.filter((entry) => entry.kind === 'package' || entry.kind === 'capability-provider')));
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
-  const specificationArtifact = compileAgentSpecification({
-    source: source.source,
+  const compileInput = {
     prompt,
+    inputClosure: resourceInputs,
     mutableState: { ref: 'launch-state-v1', revision: stateRevision, value: state },
-  });
+  };
+  const { resolveSeedPackKey } = await import('./knowledge-packs/seed-pack-key');
+  const harnessResources = source.loaded && (
+    source.loaded.blueprint.bundles.length > 0 ||
+    (source.loaded.blueprint.grants?.requires.length ?? 0) > 0 ||
+    (source.loaded.blueprint.grants?.optional.length ?? 0) > 0 ||
+    Boolean(resolveSeedPackKey(source.loaded.blueprint).packId)
+  );
+  let specificationArtifact: CompiledAgentSpecification;
+  if (harnessResources && source.loaded) {
+    if (!input.workspaceId?.trim() || !input.harnessSlug?.trim()) {
+      throw new Error('harness resource bundles need an explicit workspace and harness scope');
+    }
+    const { compileBlueprintWithPackages } = await import('./blueprint/compile-packages');
+    specificationArtifact = await compileBlueprintWithPackages(source.loaded, {
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, input: compileInput,
+    });
+    resourceArtifacts.push(specificationArtifact);
+  } else {
+    specificationArtifact = compileAgentSpecification({ source: source.source, ...compileInput });
+  }
   return {
     promptText: specificationPrompt(specificationArtifact),
     stack,
@@ -454,6 +502,7 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
     specificationRevision: specificationArtifact.specificationRevision,
     stateRevision,
     compositionSource: source.compositionSource,
+    resourceArtifacts,
   };
 }
 
@@ -600,6 +649,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     promptText,
     promptFile,
     cwd,
+    workspaceId: input.workspaceId,
     harnessSlug,
     role: input.role,
     stack: input.stack,
@@ -611,6 +661,10 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
       policy: { mcp: 'role-scoped', contextSize },
     },
   });
+  if (compiled.resourceArtifacts.length > 0) {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    await provisionLaunchIdentityResources(compiled, getOrgPg().sql);
+  }
   promptText = compiled.promptText;
 
   // 3. Signed role-scoped MCP URL — same param set + signing key the

@@ -62,6 +62,11 @@ export async function callPlansReadRaw(
   sp.set('superuser', '1');
   sp.set('client', ADMIN_UI_CLIENT_ID);
   const b: Record<string, unknown> = { ...body };
+  // PlanDetail needs the complete document/CAS fields, but does not display
+  // descendant execution history. That fresh enrichment lives outside the
+  // plan-body cache and otherwise delays even a warm popup read. Keep an
+  // explicit history request intact; MCP/agent reads do not use this seam.
+  if (verb === 'get' && b.includeHistory == null) b.includeHistory = false;
   // /adv shows the ACTIVE workspace's plans. The cross-plan `list` verb defaults
   // to the workspace-wide listing (workspace-data-isolation-leaks F-A1) instead
   // of the harness:'all' wildcard (→ papercup/papercusp-workspace), which leaked

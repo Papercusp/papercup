@@ -16,7 +16,7 @@
  * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
-import { recordInteractionMs } from "../perf-report";
+import { recordInteractionMs, recordMeasure } from "../perf-report";
 import { waitForAppMount } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
@@ -146,10 +146,11 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     //    rather than a truthful-but-meaningless 0. So try rows in order until
     //    one genuinely opens, and measure that one; only report a perf verdict
     //    for a sample that actually measured the interaction.
-    const candidates = await browser.execute((maxRows) => {
+    const candidates = await browser.execute(({ maxRows, requestedSlug }) => {
       return Array.from(
         document.querySelectorAll<HTMLElement>('[data-testid^="plans-pane-row-"]'),
       )
+        .filter((el) => !requestedSlug || el.getAttribute('data-testid') === `plans-pane-row-${requestedSlug}`)
         .slice(0, maxRows)
         .map((el) => ({
           slug: (el.getAttribute("data-testid") ?? "").replace(
@@ -160,7 +161,7 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
             el.querySelector(".plans-pane__row-harness")?.textContent?.trim() ??
             null,
         }));
-    }, MAX_ROWS_TO_TRY);
+    }, { maxRows: MAX_ROWS_TO_TRY, requestedSlug: process.env.PAPERCUSP_PERF_PLAN_SLUG ?? null });
 
     const attempts: string[] = [];
     let opened: { slug: string; harness: string | null } | null = null;
@@ -442,6 +443,28 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     // Record BEFORE the asserts — `expect` throws on a breach, and a breach is
     // exactly the observation the release gate exists to catch.
     recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
+    const phases = await browser.execute((name) =>
+      performance.getEntriesByType('measure')
+        .filter((entry) => entry.name.startsWith(`${name}:phase:`))
+        .map((entry) => ({ key: entry.name, value: Math.round(entry.duration) })),
+      INTERACTION_NAME,
+    );
+    console.log('[perf] plan-popup phases (cumulative click-to-phase ms)', JSON.stringify(phases));
+    const resources = await browser.execute((name) => {
+      const measure = performance.getEntriesByName(name, 'measure').at(-1);
+      if (!measure) return [];
+      return (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+        .filter((entry) => entry.startTime >= measure.startTime && entry.startTime < measure.startTime + measure.duration)
+        .map((entry) => ({
+          path: new URL(entry.name, location.href).pathname,
+          startMs: Math.round(entry.startTime - measure.startTime),
+          durationMs: Math.round(entry.duration),
+        }));
+    }, INTERACTION_NAME);
+    console.log('[perf] plan-popup scenario and resources', JSON.stringify({ opened, resources }));
+    for (const phase of phases) {
+      recordMeasure({ ...phase, unit: 'ms', budget: null, ok: true });
+    }
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(PLAN_POPUP_OPEN_BUDGET_MS);
   });

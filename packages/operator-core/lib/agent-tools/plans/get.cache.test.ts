@@ -277,6 +277,27 @@ describe('plans:get — cache wiring', () => {
     await run({ slug: 'alpha', heading: 'Decisions' });
     expect(M.history).not.toHaveBeenCalled();
   });
+  it('can omit unused history without losing full document fields or poisoning subsequent full reads', async () => {
+    const full = await run({ slug: 'alpha', mode: 'full', includeRaw: true });
+    const { history: _history, ...document } = full.results[0];
+    M.history.mockClear();
+    const bodyOnly = await run({ slug: 'alpha', mode: 'full', includeRaw: true, includeHistory: false });
+    expect(bodyOnly.results[0]).toEqual(document);
+    expect(bodyOnly.results[0].raw).toBeTruthy();
+    expect(bodyOnly.results[0].version).toBe(1);
+    expect(M.history).not.toHaveBeenCalled();
+    const again = await run({ slug: 'alpha', mode: 'full', includeRaw: true });
+    expect(again.results[0].history).toEqual(_history);
+    expect(M.history).toHaveBeenCalledOnce();
+    expect(M.readPlanBySlug).toHaveBeenCalledOnce();
+  });
+
+  it('still honors explicit history requests when the UI default omits incidental history', async () => {
+    await run({ slug: 'alpha', heading: 'History', includeHistory: false });
+    await run({ slug: 'alpha', priorAttemptRefs: ['WI-child#checkpoint'], includeHistory: false });
+    expect(M.history).toHaveBeenCalledTimes(2);
+    expect(M.historyRefs).toHaveBeenCalledOnce();
+  });
   it('recovers a missing harness from an exact slug before reading the plan', async () => {
     M.planHarnessesForSlugs.mockResolvedValueOnce(new Map([['alpha', ['recovered-harness']]]));
 

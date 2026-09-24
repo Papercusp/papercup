@@ -181,6 +181,10 @@ const argsSchema = z
       .describe(
         "Return only the body of the section whose heading matches (case-insensitive), plus identity + the CAS baseline (contentHash/version) so you can edit what you just read — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Deliberately NOT the ## Now block, promotePolicy, or frontmatter.raw: EI-19478970139996135 measured those at 73% of a heading read, shipping the same prose three times over. `sectionIndex` comes back ONLY when the heading MISSES, which is when you need it to find the one you meant. Overrides mode.",
       ),
+    includeHistory: z
+      .boolean()
+      .optional()
+      .describe('Include descendant work history on a full plan read (default true). Body-only UI readers may set false. An explicit History heading or priorAttemptRefs still retrieves the requested history.'),
     includeRaw: z
       .boolean()
       .optional()
@@ -1225,7 +1229,7 @@ export default defineTool({
     if (
       historyOnly ||
       args.priorAttemptRefs?.length ||
-      (mode === 'full' && !args.heading && !requestedDecisionIds && !requestedItemIds)
+      (args.includeHistory !== false && mode === 'full' && !args.heading && !requestedDecisionIds && !requestedItemIds)
     ) {
       const historyResults = env.results as Array<Record<string, unknown>>;
       for (const [index, result] of historyResults.entries()) {

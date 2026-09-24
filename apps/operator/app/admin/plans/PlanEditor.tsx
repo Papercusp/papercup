@@ -28,7 +28,7 @@ import {
   MarkdownEditor,
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
-import { endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+import { endInteraction, markInteractionPhase, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import type { PlanItem } from './plans-api';
 import { decoratePromotedBlock, decoratePlanItemBadges, decoratePlanItemTestBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
 import {
@@ -194,6 +194,7 @@ export default function PlanEditor({
           outline={outline}
           showJump={false}
           showFrontmatter={false}
+          onRenderPhase={(phase) => markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, phase)}
           onParsed={handleParsed}
         />
       </div>

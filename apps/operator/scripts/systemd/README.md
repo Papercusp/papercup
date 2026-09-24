@@ -1143,6 +1143,7 @@ underlying mountpoint directory when the volume is absent.
 ```bash
 cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
 for f in papercusp-db-backup.timer papercusp-db-backup.service papercusp-db-backup-alert.service \
+         papercusp-nonblocking-trigger@.service \
          kopia-snapshots.timer kopia-snapshots.service \
          kopia-healthcheck.timer kopia-healthcheck.service \
          kopia-home-snapshot.timer kopia-home-snapshot.service; do
@@ -1156,6 +1157,9 @@ ln -sf "$(pwd)/kopia-home-snapshot.sh" ~/.config/kopia/home-snapshot.sh
 ln -sf "$(pwd)/kopia-healthcheck.sh" ~/.config/kopia/healthcheck.sh
 ln -sf "$(pwd)/kopia-protected-snapshot.sh" ~/.config/kopia/kopia-protected-snapshot.sh
 systemctl --user daemon-reload
+# Re-arm active timers after changing their targets; this restarts only the timer
+# units and leaves any in-flight backup worker alone.
+systemctl --user try-restart papercusp-db-backup.timer kopia-snapshots.timer
 systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer \
   kopia-healthcheck.timer kopia-home-snapshot.timer
 ```

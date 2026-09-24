@@ -651,6 +651,12 @@ describe('Kopia managed entrypoint contract', () => {
   const dbService = readFileSync(join(systemdDir, 'papercusp-db-backup.service'), 'utf8');
   const dbScript = readFileSync(join(systemdDir, 'papercusp-db-backup.sh'), 'utf8');
   const timer = readFileSync(join(systemdDir, 'kopia-snapshots.timer'), 'utf8');
+  const dbTimer = readFileSync(join(systemdDir, 'papercusp-db-backup.timer'), 'utf8');
+  const nonblockingTrigger = readFileSync(
+    join(systemdDir, 'papercusp-nonblocking-trigger@.service'),
+    'utf8',
+  );
+  const systemdReadme = readFileSync(join(systemdDir, 'README.md'), 'utf8');
   const healthcheck = readFileSync(join(systemdDir, 'kopia-healthcheck.sh'), 'utf8');
 
   it('routes every managed path through the same guard', () => {
@@ -668,6 +674,33 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotScript).not.toContain('snapshot-all.lock');
     expect(homeScript).not.toContain('home-snapshot.lock');
     expect(hotService).toContain('ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup');
+  });
+
+  it('keeps long-running calendar backup workers behind a nonblocking dispatcher', () => {
+    expect(timer).toContain('OnCalendar=*:0/30');
+    expect(timer).toContain('Unit=papercusp-nonblocking-trigger@kopia-snapshots.service');
+    expect(timer).not.toContain('Unit=kopia-snapshots.service');
+    expect(dbTimer).toContain('OnCalendar=hourly');
+    expect(dbTimer).toContain('Unit=papercusp-nonblocking-trigger@papercusp-db-backup.service');
+    expect(dbTimer).not.toContain('Unit=papercusp-db-backup.service');
+    expect(nonblockingTrigger).toContain('Type=oneshot');
+    expect(nonblockingTrigger).toContain(
+      'ExecStart=/usr/bin/systemctl --user start --no-block %i.service',
+    );
+    expect(systemdReadme).toContain('papercusp-nonblocking-trigger@.service');
+
+    const installStart = systemdReadme.indexOf('## Install (one-time, on a fresh machine)');
+    const installEnd = systemdReadme.indexOf('\nYou must still recreate', installStart);
+    const install = systemdReadme.slice(installStart, installEnd);
+    const reloadAt = install.indexOf('systemctl --user daemon-reload');
+    const rearmAt = install.indexOf(
+      'systemctl --user try-restart papercusp-db-backup.timer kopia-snapshots.timer',
+    );
+    const enableAt = install.indexOf('systemctl --user enable --now papercusp-db-backup.timer');
+    expect(reloadAt).toBeGreaterThanOrEqual(0);
+    expect(rearmAt).toBeGreaterThan(reloadAt);
+    expect(enableAt).toBeGreaterThan(rearmAt);
+    expect(install).not.toMatch(/systemctl --user (?:try-)?restart (?:papercusp-db-backup|kopia-snapshots)\.service/);
   });
 
   it('bounds the hot snapshot with the proven daily parallelism and memory envelope', () => {

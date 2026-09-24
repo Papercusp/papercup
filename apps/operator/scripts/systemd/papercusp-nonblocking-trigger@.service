@@ -1,0 +1,9 @@
+[Unit]
+Description=Nonblocking dispatcher for Papercusp backup service %i.service
+
+[Service]
+Type=oneshot
+# Keep calendar timers attached to this short unit. A long-running target can
+# be reactivated immediately after completion when its next calendar elapse
+# passed while it was active (systemd 255; DeferReactivation needs v257+).
+ExecStart=/usr/bin/systemctl --user start --no-block %i.service

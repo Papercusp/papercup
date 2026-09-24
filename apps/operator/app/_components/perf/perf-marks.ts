@@ -137,9 +137,34 @@ export function beginInteraction(name: PerfInteractionName | string): void {
   if (!p) return;
   try {
     p.clearMarks?.(name + START_SUFFIX);
+    for (const entry of p.getEntriesByType('measure')) {
+      if (entry.name.startsWith(`${name}:phase:`)) p.clearMeasures?.(entry.name);
+    }
     p.mark(name + START_SUFFIX);
   } catch {
     /* never break the interaction we are trying to measure */
+  }
+}
+
+/** Cumulative click-to-phase time; leaves the total interaction start intact.
+ * First observation wins so background rerenders cannot overwrite first paint.
+ * A new begin clears these diagnostics, keeping them bounded to one interaction.
+ */
+export function markInteractionPhase(name: string, phase: string): number | null {
+  const p = perf();
+  if (!p) return null;
+  try {
+    const starts = p.getEntriesByName(name + START_SUFFIX, 'mark');
+    const start = starts[starts.length - 1];
+    if (!start || p.now() - start.startTime > STALE_START_MS) return null;
+    const phaseName = `${name}:phase:${phase}`;
+    const previous = latestMeasureDuration(p, phaseName);
+    if (previous !== null) return Math.round(previous);
+    p.measure(phaseName, name + START_SUFFIX);
+    const duration = latestMeasureDuration(p, phaseName);
+    return duration === null ? null : Math.round(duration);
+  } catch {
+    return null;
   }
 }
 

@@ -1,0 +1,22 @@
+# WI-10003011: Diodon stays alive but loses clipboard history after a
+# Zeitgeist restart (reproduced 2026-09-24). Replace the transient service and
+# XDG autostart with one supervised user service whose lifecycle follows the
+# history engine. Keep Diodon's existing Zeitgeist database untouched.
+[Unit]
+Description=Diodon clipboard history (follows Zeitgeist)
+BindsTo=zeitgeist.service
+PartOf=zeitgeist.service graphical-session.target
+After=zeitgeist.service graphical-session.target
+# The user manager can linger after logout. A background Zeitgeist activation
+# must not launch this GTK client until a graphical DISPLAY has been imported.
+ConditionEnvironment=DISPLAY
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/diodon
+Restart=on-failure
+RestartSec=2s
+Slice=app.slice
+
+[Install]
+WantedBy=graphical-session.target

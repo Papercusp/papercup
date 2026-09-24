@@ -50,6 +50,17 @@ beforeEach(() => {
   H.nextHttpFailure = null;
 });
 
+describe('plan document UI read cost', () => {
+  it('omits unrendered descendant history by default and preserves explicit callers', async () => {
+    await callPlansRead('get', { slug: 'p', mode: 'full', includeRaw: true });
+    expect(H.calls[0].body).toMatchObject({ includeHistory: false, includeRaw: true, mode: 'full' });
+    await callPlansRead('get', { slug: 'p', mode: 'full', includeHistory: true });
+    expect(H.calls[1].body.includeHistory).toBe(true);
+    await callPlansRead('list', {});
+    expect(H.calls[2].body).not.toHaveProperty('includeHistory');
+  });
+});
+
 describe('callPlansRead error propagation (WI-2147274)', () => {
   it('preserves the structured validation message from the HTTP tool dispatcher', async () => {
     H.nextHttpFailure = {

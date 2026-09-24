@@ -31,7 +31,8 @@
  * rung 3 of CLAUDE.md's derive/pin/attest ladder: reconcile against the runtime.
  *
  * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf`
- * drop-ins only. Root-owned system units installed by `sudo install` (per the README's
+ * drop-ins, plus the Diodon/zeitgeist lifecycle on a host with an active graphical
+ * session. Root-owned system units installed by `sudo install` (per the README's
  * user-manager-watchdog section) are a different mechanism and are NOT covered here.
  *
  * Usage:
@@ -39,7 +40,8 @@
  *   node scripts/check-systemd-dropins-installed.mjs --list    # print the measured population
  */
 import { execFileSync } from 'node:child_process';
-import { readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync, lstatSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -85,6 +87,14 @@ function userSystemdAvailable() {
 function showProperty(unit, property) {
   const out = systemctlUser(['show', unit, `--property=${property}`, '--value']);
   return out === null ? null : out.trim();
+}
+
+function installedSymlink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink() && existsSync(path);
+  } catch {
+    return false;
+  }
 }
 
 /** Collect tracked drop-ins as { unit, confPath, confName }. */
@@ -180,6 +190,42 @@ if (missing.length > 0) {
       `   raised TimeoutStartSec before activation.\n`,
   );
   process.exit(1);
+}
+
+// WI-10003011: Diodon can remain running yet stop recording after Zeitgeist
+// restarts. The unit dependency makes the client restart too; this host check
+// catches an absent link, stale loaded unit, or a revived competing XDG
+// autostart before the next user session silently loses clipboard history.
+if (existsSync('/usr/bin/diodon') && showProperty('graphical-session.target', 'ActiveState') === 'active') {
+  const service = 'diodon-managed.service';
+  const servicePath = join(homedir(), '.config', 'systemd', 'user', service);
+  const autostartPath = join(homedir(), '.config', 'autostart', 'diodon-autostart.desktop');
+  const issues = [];
+  if (!installedSymlink(servicePath)) issues.push(`missing installed service symlink: ${servicePath}`);
+  if (!installedSymlink(autostartPath)) issues.push(`missing XDG autostart override symlink: ${autostartPath}`);
+  else if (!/^Hidden=true$/m.test(readFileSync(autostartPath, 'utf8')))
+    issues.push('XDG autostart override does not disable the competing Diodon launch');
+  if (showProperty(service, 'FragmentPath') !== servicePath) issues.push('managed Diodon unit file is not loaded');
+  if (showProperty(service, 'UnitFileState') !== 'enabled') issues.push('managed Diodon unit is not enabled');
+  if (showProperty(service, 'ActiveState') !== 'active') issues.push('managed Diodon unit is not active');
+  if (showProperty(service, 'NeedDaemonReload') !== 'no') issues.push('managed Diodon unit needs daemon-reload');
+  if (showProperty(service, 'Restart') !== 'on-failure') issues.push('managed Diodon crash recovery is disabled');
+  if (showProperty('zeitgeist.service', 'Restart') !== 'on-failure')
+    issues.push('Zeitgeist crash recovery is disabled');
+  for (const [unit, property, value] of [
+    [service, 'BindsTo', 'zeitgeist.service'],
+    [service, 'PartOf', 'zeitgeist.service'],
+    [service, 'After', 'zeitgeist.service'],
+    ['zeitgeist.service', 'Wants', service],
+  ]) {
+    if (!(showProperty(unit, property) ?? '').split(/\s+/).includes(value))
+      issues.push(`${unit} does not have ${property}=${value}`);
+  }
+  if (issues.length > 0) {
+    console.error(`❌ Diodon/zeitgeist lifecycle is not installed or active:\n  - ${issues.join('\n  - ')}`);
+    process.exit(1);
+  }
+  console.log('✓ Diodon/zeitgeist lifecycle check: managed service active and autostart override installed.');
 }
 
 console.log(

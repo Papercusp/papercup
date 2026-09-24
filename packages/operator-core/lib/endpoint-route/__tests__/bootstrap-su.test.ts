@@ -117,7 +117,9 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   specificationRevision: 'a'.repeat(64),
   stateRevision: input.stateRevision ?? 'b'.repeat(64),
   compositionSource: 'compatibility' as const,
+  resourceArtifacts: [],
 }));
+const provisionLaunchIdentityResourcesMock = vi.fn(async () => {});
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
@@ -279,6 +281,8 @@ vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
   compileLaunchSpecificationArtifact: (...args: unknown[]) =>
     compileLaunchSpecificationArtifactMock(...(args as [any])),
+  provisionLaunchIdentityResources: (...args: unknown[]) =>
+    provisionLaunchIdentityResourcesMock(...(args as [any])),
 }));
 vi.mock('../../agent-launch-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-launch-core')>()),

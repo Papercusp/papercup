@@ -199,8 +199,15 @@ describe('buildRoleLaunchSpec', () => {
   it('loads a real blueprint roles[].stack default and lets an explicit stack override it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'role-launch-blueprint-'));
     const identityDir = join(dir, '.papercusp', 'blueprints', 'fixture-domain');
+    const recipeDir = join(dir, 'home', 'recipes', 'launch-recipe');
     mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+    mkdirSync(recipeDir, { recursive: true });
     mkdirSync(join(dir, '.papercusp'), { recursive: true });
+    vi.stubEnv('PAPERCUSP_HOME', join(dir, 'home'));
+    writeFileSync(join(recipeDir, 'recipe.json'), JSON.stringify({
+      id: 'launch-recipe', title: 'Launch recipe', script: 'return 1',
+    }));
+    writeFileSync(join(recipeDir, 'listing.json'), JSON.stringify({ version: '1.0.0' }));
     writeFileSync(
       join(identityDir, 'blueprint.yaml'),
       [
@@ -209,6 +216,10 @@ describe('buildRoleLaunchSpec', () => {
         'description: Fixture domain identity.',
         'slots:',
         '  - slot: domain',
+        'bundles:',
+        '  - kind: recipe',
+        '    ref: launch-recipe',
+        '    version: 1.0.0',
         '',
       ].join('\n'),
     );
@@ -217,7 +228,7 @@ describe('buildRoleLaunchSpec', () => {
       join(dir, '.papercusp', 'blueprint.yaml'),
       [
         'id: fixture-pot',
-        'extends: fixture-domain',
+        'extends: base',
         'kind: pot',
         'version: 1.0.0',
         'description: Runnable fixture pot.',
@@ -241,6 +252,7 @@ describe('buildRoleLaunchSpec', () => {
       const fromDefault = await compileLaunchSpecificationArtifact({
         promptText: 'ROLE KERNEL',
         cwd: dir,
+        workspaceId: 'fixture-workspace',
         harnessSlug: 'fixture',
         role: 'worker',
         state: { schemaVersion: 1 },
@@ -254,10 +266,15 @@ describe('buildRoleLaunchSpec', () => {
       expect(fromDefault.specificationArtifact.configuration.roles?.[0]?.stack).toEqual([
         'domain:fixture-domain',
       ]);
+      expect(fromDefault.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'package', packageKind: 'recipe', ref: 'launch-recipe',
+      }));
+      expect(fromDefault.resourceArtifacts).toHaveLength(1);
 
       const explicitEmpty = await compileLaunchSpecificationArtifact({
         promptText: 'ROLE KERNEL',
         cwd: dir,
+        workspaceId: 'fixture-workspace',
         harnessSlug: 'fixture',
         role: 'worker',
         stack: [],
@@ -267,7 +284,9 @@ describe('buildRoleLaunchSpec', () => {
       expect(explicitEmpty.compositionSource).toBe('blueprint');
       expect(explicitEmpty.stack).toEqual([]);
       expect(explicitEmpty.promptText).toBe('ROLE KERNEL');
+      expect(explicitEmpty.resourceArtifacts).toEqual([]);
     } finally {
+      vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
     }
   });

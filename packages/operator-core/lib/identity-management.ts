@@ -12,6 +12,7 @@ import {
   SLOT_SPECS,
 } from '@papercusp/orchestrator/blueprint';
 import { listIdentitySources, getIdentitySource } from './agent-identities/source';
+import { provisionLaunchIdentityResources } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import {
   IDENTITY_HISTORY_LIMIT,
@@ -427,6 +428,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       nudge: { queued: false, reason: null },
     };
   }
+  await provisionLaunchIdentityResources(rebuilt.artifact, sql);
   const nextRecord: SuLaunchSpecRecord = {
     ...record,
     stack: rebuilt.artifact.stack,

@@ -14,13 +14,11 @@ Description=Run the Papercusp DB-backup health probe hourly (EI-10733)
 # OnCalendar=hourly + Persistent survives manager restarts and catches up a run
 # missed while the system was down.
 #
-# The EI-10730 hot-loop (OnUnitActiveSec measures from run START, so a run that
-# overruns its interval releases the queued start the instant it deactivates =>
-# a silent back-to-back HOT LOOP — the bug that made kopia-snapshots run
-# continuously and wedged the release pipeline 9h) does NOT apply to OnCalendar:
-# systemd never QUEUES a start for an already-active oneshot, it simply picks
-# the next wall-clock boundary once the unit is idle. And this probe is fast
-# regardless.
+# OnCalendar does not queue a second start while this target is active, but on
+# systemd 255 an elapsed calendar event can trigger immediately after an
+# overlong target becomes inactive. This probe is expected to stay fast; do not
+# rely on OnCalendar alone as an overrun guard. Long backup jobs use the
+# nonblocking dispatcher so they cannot hold their calendar timer active.
 OnCalendar=hourly
 Persistent=true
 RandomizedDelaySec=60

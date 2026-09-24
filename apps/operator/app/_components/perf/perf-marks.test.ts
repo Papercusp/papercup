@@ -14,6 +14,7 @@ import {
   endInteraction,
   getLatestMeasure,
   clearInteraction,
+  markInteractionPhase,
 } from "./perf-marks";
 import { DESKTOP_PERF_BUDGETS } from "@papercusp/operator-core/lib/system-health/desktop-perf-budgets";
 
@@ -78,6 +79,34 @@ describe("PERF_INTERACTIONS registry", () => {
       expect(d).toBeGreaterThanOrEqual(0);
       expect(performance.getEntriesByName(name, "measure")).toHaveLength(1);
     }
+  });
+});
+
+describe('interaction phases', () => {
+  it('retains the original total start and records each phase only once', () => {
+    beginInteraction(NAME);
+    const start = performance.getEntriesByName(START)[0]!.startTime;
+    expect(markInteractionPhase(NAME, 'content-ready')).toBeGreaterThanOrEqual(0);
+    markInteractionPhase(NAME, 'content-ready');
+    const phases = performance.getEntriesByName(`${NAME}:phase:content-ready`);
+    expect(phases).toHaveLength(1);
+    expect(phases[0]!.startTime).toBe(start);
+    expect(endInteraction(NAME)).not.toBeNull();
+    expect(performance.getEntriesByName(NAME)[0]!.startTime).toBe(start);
+    expect(markInteractionPhase(NAME, 'after-end')).toBeNull();
+  });
+
+  it('does not credit cancelled, stale, or unrelated renders and clears old phases on reopen', () => {
+    expect(markInteractionPhase(NAME, 'content-ready')).toBeNull();
+    beginInteraction(NAME);
+    markInteractionPhase(NAME, 'content-ready');
+    clearInteraction(NAME);
+    expect(markInteractionPhase(NAME, 'renderer-ready')).toBeNull();
+    beginInteraction(NAME);
+    expect(performance.getEntriesByName(`${NAME}:phase:content-ready`)).toHaveLength(0);
+    const start = performance.getEntriesByName(START)[0]!;
+    vi.spyOn(performance, 'now').mockReturnValue(start.startTime + STALE_START_MS + 1);
+    expect(markInteractionPhase(NAME, 'content-ready')).toBeNull();
   });
 });
 
