@@ -88,8 +88,14 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
         } | null;
       };
     };
-    if (evt?.type === 'session_meta' && typeof evt.payload?.forked_from_id === 'string') {
-      parserState.predecessorSessionId = evt.payload.forked_from_id;
+    if (evt?.type === 'session_meta') {
+      // Only a source header establishes that this is the beginning of a session.
+      // A resumed parser without prefix evidence must not label a later request as startup.
+      parserState.contextGeneration ??= 0;
+      parserState.requestOrdinal ??= 0;
+      if (typeof evt.payload?.forked_from_id === 'string' && evt.payload.forked_from_id) {
+        parserState.predecessorSessionId = evt.payload.forked_from_id;
+      }
     }
     if (evt?.type === 'compacted' || evt.payload?.type === 'context_compacted') {
       parserState.contextGeneration = (parserState.contextGeneration ?? 0) + 1;
@@ -122,6 +128,10 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     const written = count(u.cache_write_input_tokens);
     const output = count(u.output_tokens);
     if (input + cached + written + output === 0) continue; // compaction/reset notification, not a request
+    // Without cumulative identity, duplicate notifications cannot be distinguished
+    // from requests. Keep accounting them by source line, but retire startup certainty.
+    if (!fingerprint) delete parserState.requestOrdinal;
+    else if (parserState.requestOrdinal !== undefined) parserState.requestOrdinal++;
     const usage: TranscriptDelta = { turns: 1, inputTokens: Math.max(0, input - cached - written),
       cacheReadTokens: cached, cacheCreationTokens: written, outputTokens: output };
     if (typeof u.cache_write_input_tokens !== 'number' || !Number.isFinite(u.cache_write_input_tokens) || u.cache_write_input_tokens < 0) usage.cacheCreationUnreported = true;
@@ -130,6 +140,8 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       uncachedInputKnown: !usage.cacheCreationUnreported,
       sourceId: fingerprint ? `cumulative:${parserState.contextGeneration ?? 0}:${fingerprint}` : `line:${lineOffset}`,
       contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId,
+      requestOrdinal: parserState.requestOrdinal,
+      cacheReadKnown: typeof u.cached_input_tokens === 'number' && Number.isSafeInteger(u.cached_input_tokens) && u.cached_input_tokens >= 0,
       turnId: parserState.turnId });
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;

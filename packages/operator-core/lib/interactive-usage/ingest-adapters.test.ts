@@ -105,6 +105,31 @@ describe('parseCodexChunk (P-015)', () => {
     expect(parsed.parserState?.model).toBeUndefined();
   });
 
+  it('counts startup requests across serialized chunks without counting duplicate/reset notifications', () => {
+    const header = codexLine({ type: 'session_meta', payload: { forked_from_id: 'parent' } });
+    const first = parseCodexChunk(header + turnCtx + tokenCount(700000, 0, 1));
+    expect(first.events?.[0]).toMatchObject({ requestOrdinal: 1, contextGeneration: 0, predecessorSessionId: 'parent' });
+    const second = parseCodexChunk(tokenCount(700000, 0, 1) + tokenCount(0, 0, 0) + tokenCount(690000, 2816, 2),
+      JSON.parse(JSON.stringify(first.parserState)));
+    expect(second.events).toHaveLength(1);
+    expect(second.events?.[0]).toMatchObject({ requestOrdinal: 2, contextGeneration: 0 });
+    const third = parseCodexChunk(codexLine({ type: 'compacted' }) + tokenCount(90000, 8000, 3), second.parserState);
+    expect(third.events?.[0]).toMatchObject({ requestOrdinal: 3, contextGeneration: 1 });
+    const partial = parseCodexChunk(turnCtx + tokenCount(700000, 0, 1));
+    expect(partial.events?.[0].requestOrdinal).toBeUndefined();
+    expect(partial.events?.[0].contextGeneration).toBeUndefined();
+  });
+
+  it('does not certify startup ordinals without request identity or missing cache reads as reported zero', () => {
+    const header = codexLine({ type: 'session_meta', payload: {} });
+    const event = JSON.parse(tokenCount(700000, 0, 1));
+    delete event.payload.info.last_token_usage.cached_input_tokens;
+    expect(parseCodexChunk(header + codexLine(event)).events?.[0].cacheReadKnown).toBe(false);
+    delete event.payload.info.total_token_usage;
+    const uncertain = parseCodexChunk(header + codexLine(event) + tokenCount(690000, 2816, 2));
+    expect(uncertain.events?.map(row => row.requestOrdinal)).toEqual([undefined, undefined]);
+  });
+
   it('does not treat empty or invalid cumulative metadata as a request identity', () => {
     for (const total of [{}, { unrelated: 1 }, { input_tokens: -1 }, { input_tokens: 'bad' }]) {
       const event = JSON.parse(tokenCount(1000, 600, 40));

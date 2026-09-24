@@ -24,7 +24,7 @@ describe('token report source coverage (real PostgreSQL)', () => {
            cache_read_tokens,cache_creation_tokens,usage_provenance)
           VALUES (${ws},${ordinal},${ordinal},'interactive','openai','openai:test','default','gpt-6-sol','native-fork',
             ${cached},NULL,${JSON.stringify({ grain: 'request', adapter: 'codex', sourceFile: '/fixture/fork', fileGeneration: 0,
-              requestOrdinal: ordinal, inputTotalTokens: input, contextGeneration: generation, predecessorSessionId: 'parent' })}::jsonb)`;
+              requestOrdinal: ordinal, inputTotalTokens: input, contextGeneration: generation, predecessorSessionId: 'parent', cacheReadSource: 'reported' })}::jsonb)`;
       }
     }
     const rows = await readCarryHealth(sql, workspace, 0, 4);
@@ -34,6 +34,11 @@ describe('token report source coverage (real PostgreSQL)', () => {
     expect(renderCarryHealth(rows)).toContain('1 source groups; 0 incomplete; 1 cold inherited startup; 1 oversized startup immediately compacted');
     const partial = await readCarryHealth(sql, workspace, 2, 4);
     expect(evaluateCarryStartup(partial[0].observations)).toMatchObject({ state: 'unknown', signals: [] });
+    await sql`UPDATE harness_shared.agent_usage_samples SET usage_provenance = usage_provenance - 'cacheReadSource'
+      WHERE workspace_id=${workspace}`;
+    const missingRead = await readCarryHealth(sql, workspace, 0, 4);
+    expect(evaluateCarryStartup(missingRead[0].observations)).toMatchObject({
+      signals: ['oversized-startup-immediately-compacted'], unknown: ['startup-cache-read-unknown'] });
     expect(await readCarryHealth(sql, workspace, 4, 5)).toEqual([]);
   });
 

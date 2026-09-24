@@ -12,6 +12,7 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
+const isCurrentSourceAuditResponder = vi.fn();
 const closeSourceAuditConsults = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
 const gateEnabled = vi.fn();
@@ -44,6 +45,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
     ...real,
     listScorecards: (...a: unknown[]) => listScorecards(...a),
     recordGradingAudit: (...a: unknown[]) => recordGradingAudit(...a),
+    isCurrentSourceAuditResponder: (...a: unknown[]) => isCurrentSourceAuditResponder(...a),
   };
 });
 vi.mock('../../harness/improvements/capture-core', () => ({
@@ -239,6 +241,7 @@ beforeEach(() => {
     issueId: 'EI-CARD',
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
   });
+  isCurrentSourceAuditResponder.mockReset().mockResolvedValue(true);
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   readRunningGeneration.mockReset().mockResolvedValue(null);
@@ -399,6 +402,22 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       'EI-CARD',
       expect.objectContaining({ dispatchReservation: activeReservation }),
     );
+  });
+
+  it('refuses a prior cascade answerer before filing when the consult moved to another auditor', async () => {
+    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+    isCurrentSourceAuditResponder.mockResolvedValue(false);
+
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-stale-answerer', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(false);
+    expect((res as { error?: string }).error).toContain('different active consult answerer');
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-stale-answerer');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {

@@ -187,7 +187,8 @@ export async function readCarryHealth(sql: Sql, workspaceId: string, from: numbe
       COALESCE(jsonb_agg(jsonb_build_object(
         'requestOrdinal', usage_provenance->'requestOrdinal',
         'inputTotalTokens', usage_provenance->'inputTotalTokens',
-        'cacheReadTokens', cache_read_tokens, 'cacheWriteTokens', cache_creation_tokens,
+        'cacheReadTokens', CASE WHEN usage_provenance->>'cacheReadSource' = 'reported' THEN cache_read_tokens END,
+        'cacheWriteTokens', cache_creation_tokens,
         'contextGeneration', usage_provenance->'contextGeneration',
         'predecessorSessionId', usage_provenance->'predecessorSessionId'
       )) FILTER (WHERE usage_provenance->>'requestOrdinal' IN ('1', '2', '3')), '[]'::jsonb) AS observations

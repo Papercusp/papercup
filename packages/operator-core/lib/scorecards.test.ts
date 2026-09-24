@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
@@ -17,6 +17,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       statements.push({ text, values });
+      if (text.includes('FROM harness_shared.consult_state')) return [];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
@@ -49,7 +50,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       }),
     ).resolves.toBe(true);
 
-    const write = statements[0]!;
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
     expect(write.text).toContain("payload->'observation'->'retracted' IS NULL");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'stampedAt' = ?");
@@ -61,6 +62,73 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(write.values).toContain('grading-audit:EI-TARGET');
     expect(write.values).toContain('2026-09-20T04:02:01.600Z');
     expect(write.values).toContain(JSON.stringify(settled));
+  });
+
+  it('refuses atomic settlement when the consult cascade has moved to another answerer', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      if (text.includes('FROM harness_shared.consult_state')) {
+        return [{ answering_owner_id: 'su-current-answerer' }];
+      }
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const expected = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-20T04:02:01.584Z',
+      dispatchReservation: { key: 'grading-audit:EI-TARGET', reservedAt: '2026-09-20T04:02:01.600Z' },
+    };
+    const settled = {
+      state: 'passed' as const,
+      metaRubricRef: expected.metaRubricRef,
+      stampedAt: expected.stampedAt,
+      auditIssueId: 'EI-AUDIT',
+      auditor: 'su-stale-answerer',
+      auditedAt: '2026-09-20T04:05:00.000Z',
+    };
+
+    await expect(
+      settlePendingGradingAuditAtomically('EI-TARGET', expected, settled, {
+        resolveWorkspace: async () => 'ws-test',
+        transact,
+      }),
+    ).resolves.toBe(false);
+    expect(statements[0]?.text).toContain('FOR UPDATE');
+    expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.work_items'))).toBe(false);
+  });
+
+  it('recognizes only the current answering identity on an active source-audit consult', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    let activeRows: Array<{ answering_owner_id: string | null }> = [
+      { answering_owner_id: 'su-current-answerer' },
+    ];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      if (!text.includes('FROM harness_shared.consult_state')) return [];
+      return activeRows;
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const deps = { resolveWorkspace: async () => 'ws-test', transact };
+    const reservation = { key: 'grading-audit:EI-TARGET', reservedAt: '2026-09-20T04:02:01.600Z' };
+
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-current-answerer', deps)).resolves.toBe(true);
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-stale-answerer', deps)).resolves.toBe(false);
+    expect(statements[0]?.text).toContain("routing->'cascade'->>'reservationReservedAt' = ?");
+    expect(statements[0]?.values).toEqual([
+      'ws-test',
+      'EI-TARGET',
+      'grading-audit:EI-TARGET',
+      '2026-09-20T04:02:01.600Z',
+    ]);
+
+    // A direct launch fallback has no active consult cursor, so it remains on
+    // the dispatcher's existing single-task idempotency path.
+    activeRows = [];
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-fallback-auditor', deps)).resolves.toBe(true);
   });
 
   it('refuses to settle after the dispatch reservation epoch changes', async () => {

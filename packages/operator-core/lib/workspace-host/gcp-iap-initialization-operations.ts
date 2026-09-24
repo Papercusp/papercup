@@ -10,6 +10,7 @@ import {
   encodeWorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostBootstrapReadinessOptions,
   type WorkspaceHostBootstrapReadinessResult,
+  type WorkspaceHostBootstrapReportedStatus,
   type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
@@ -429,6 +430,50 @@ export class GcpIapWorkspaceHostBootstrapNotReadyError extends Error {
   }
 }
 
+/**
+ * Reads the bootstrap's own lifecycle report out of band (WI-10002837), or null when there is
+ * none yet. It never goes through SSH: the workspace key is authorized only after `harden-os`
+ * installs packages, so a host that dies there is unreachable by the probe that waits on it.
+ */
+export type GcpIapWorkspaceHostBootstrapStatusSource =
+  () => Promise<WorkspaceHostBootstrapReportedStatus | null>;
+
+/**
+ * The bootstrap reported that it exited with a failure. The script is gone, so the conduit will
+ * never appear: waiting out the rest of the readiness budget (up to twenty minutes) would only
+ * delay a verdict that is already final (WI-10002837).
+ */
+export class GcpIapWorkspaceHostBootstrapFailedError extends Error {
+  readonly exitCode: number;
+  readonly phase: string | null;
+  readonly reportedError: string | null;
+  readonly probes: number;
+  readonly waitedMs: number;
+
+  constructor(input: {
+    exitCode: number;
+    phase: string | null;
+    error: string | null;
+    probes: number;
+    waitedMs: number;
+  }) {
+    const where = input.phase ? `in phase ${input.phase}` : 'before its first phase';
+    const why = input.error
+      ? `: ${input.error}`
+      : ' (stopped by set -e; the serial console has the full log)';
+    super(
+      `Workspace host bootstrap failed with exit code ${input.exitCode} ${where}${why}. ` +
+        `Reported after ${Math.round(input.waitedMs / 1000)}s and ${input.probes} readiness probe(s).`,
+    );
+    this.name = 'GcpIapWorkspaceHostBootstrapFailedError';
+    this.exitCode = input.exitCode;
+    this.phase = input.phase;
+    this.reportedError = input.error;
+    this.probes = input.probes;
+    this.waitedMs = input.waitedMs;
+  }
+}
+
 /** Real process runner with bounded output and secret-safe failures. */
 export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIapWorkspaceHostInitializationCommandRunner {
   private readonly spawn: typeof nodeSpawn;
@@ -574,6 +619,7 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly bootstrapStatus: GcpIapWorkspaceHostBootstrapStatusSource | undefined;
 
   constructor(
     profile: GcpIapWorkspaceHostInitializationProfile,
@@ -584,9 +630,12 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
      * provision is a gate nobody re-verifies.
      */
     timing: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+    /** The bootstrap's out-of-band report; omitted = wait on the conduit probe alone. */
+    bootstrapStatus?: GcpIapWorkspaceHostBootstrapStatusSource,
   ) {
     this.profile = profile;
     this.runner = runner;
+    this.bootstrapStatus = bootstrapStatus;
     this.now = timing.now ?? (() => Date.now());
     this.sleep =
       timing.sleep ??
@@ -644,6 +693,20 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
       }
       if (result.exitCode === PROBE_EXIT_NOT_READY) answered = true;
 
+      // Read only after a probe missed: a ready conduit is the authority and costs no extra call.
+      // Only `failed` is final. `running`/`succeeded` keep the wait on the probe, because the
+      // conduit, not the report, is what the next step actually needs.
+      const reported = await this.readBootstrapStatus();
+      if (reported?.state === 'failed') {
+        throw new GcpIapWorkspaceHostBootstrapFailedError({
+          exitCode: reported.exitCode,
+          phase: reported.phase,
+          error: reported.error,
+          probes,
+          waitedMs: this.now() - startedAt,
+        });
+      }
+
       const elapsedMs = this.now() - startedAt;
       // Checked AFTER a probe and BEFORE sleeping: a budget smaller than one interval must still
       // get one real observation, and we must never sleep past the deadline just to re-probe.
@@ -659,6 +722,20 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
       }
       await options.onWaiting?.({ elapsedMs, timeoutMs, probes });
       await this.sleep(pollIntervalMs);
+    }
+  }
+
+  /**
+   * An unreadable report reads as "no report". The report only shortens a wait on a script that
+   * already exited; a transient Compute API error must never fail a bootstrap that is still
+   * healthy, and without the report the gate is exactly what it was before WI-10002837.
+   */
+  private async readBootstrapStatus(): Promise<WorkspaceHostBootstrapReportedStatus | null> {
+    if (!this.bootstrapStatus) return null;
+    try {
+      return await this.bootstrapStatus();
+    } catch {
+      return null;
     }
   }
 

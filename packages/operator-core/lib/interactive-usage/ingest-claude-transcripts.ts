@@ -162,6 +162,7 @@ export interface TranscriptUsageEvent {
   predecessorSessionId?: string;
   /** Unique usage observations since an observed native session header; absent for partial sources. */
   requestOrdinal?: number;
+  cacheReadKnown?: boolean;
 }
 
 export function transcriptEventTime(value: unknown): number | null {
@@ -732,6 +733,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               accountSource: 'unavailable', triggerSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
               requestOrdinal: event.requestOrdinal ?? null,
+              cacheReadSource: event.cacheReadKnown === true ? 'reported' : event.cacheReadKnown === false ? 'unreported' : 'unavailable',
               ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
                 byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
                 legacyFingerprint: opts.historical.legacyFingerprint,

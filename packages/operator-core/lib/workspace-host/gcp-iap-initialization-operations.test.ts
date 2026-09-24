@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS,
   GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+  GcpIapWorkspaceHostBootstrapFailedError,
   GcpIapWorkspaceHostBootstrapNotReadyError,
   GcpIapWorkspaceHostInitializationOperations,
   NodeGcpIapWorkspaceHostInitializationCommandRunner,
@@ -529,5 +530,60 @@ describe('GCP IAP workspace-host bootstrap readiness gate', () => {
 
     expect(result.probes).toBe(1);
     expect(runner.commands).toHaveLength(1);
+  });
+
+  it('fails fast on the bootstrap reporting failure, instead of waiting out the budget (WI-10002837)', async () => {
+    // A host that died in harden-os never authorizes the controller key, so every probe is a 255.
+    const runner = scriptedRunner([255], 'Permission denied (publickey).');
+    const timing = virtualTiming();
+    const reports = [
+      { state: 'running' as const },
+      { state: 'failed' as const, exitCode: 100, phase: 'harden-os', error: 'apt-get install failed' },
+    ];
+    const bootstrapStatus = vi.fn(async () => reports.shift() ?? null);
+
+    const error = await new GcpIapWorkspaceHostInitializationOperations(PROFILE, runner, timing, bootstrapStatus)
+      .awaitBootstrapReady({ pollIntervalMs: 10_000, timeoutMs: 1_200_000 })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GcpIapWorkspaceHostBootstrapFailedError);
+    const failed = error as GcpIapWorkspaceHostBootstrapFailedError;
+    expect(failed).toMatchObject({ exitCode: 100, phase: 'harden-os', probes: 2, waitedMs: 10_000 });
+    expect(failed.message).toContain('harden-os');
+    expect(failed.message).toContain('apt-get install failed');
+    expect(timing.slept).toEqual([10_000]);
+  });
+
+  it('keeps the probe as the authority: running, succeeded and unreadable reports never end the wait', async () => {
+    const runner = scriptedRunner([1, 1, 1, 0]);
+    const timing = virtualTiming();
+    const reports: Array<() => Promise<unknown>> = [
+      async () => ({ state: 'running' }),
+      async () => {
+        throw new Error('compute 503');
+      },
+      async () => ({ state: 'succeeded' }),
+    ];
+    const bootstrapStatus = vi.fn(() => (reports.shift() ?? (async () => null))()) as never;
+
+    const result = await new GcpIapWorkspaceHostInitializationOperations(PROFILE, runner, timing, bootstrapStatus)
+      .awaitBootstrapReady({ pollIntervalMs: 10_000, timeoutMs: 600_000 });
+
+    expect(result).toMatchObject({ probes: 4, readyImmediately: false });
+    // Read once per MISSED probe, never after the one that found the conduit.
+    expect(bootstrapStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not read the report at all when the first probe finds the conduit', async () => {
+    const bootstrapStatus = vi.fn(async () => null);
+
+    await new GcpIapWorkspaceHostInitializationOperations(
+      PROFILE,
+      scriptedRunner([0]),
+      virtualTiming(),
+      bootstrapStatus,
+    ).awaitBootstrapReady();
+
+    expect(bootstrapStatus).not.toHaveBeenCalled();
   });
 });
