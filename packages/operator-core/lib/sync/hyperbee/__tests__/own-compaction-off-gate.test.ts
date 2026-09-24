@@ -215,7 +215,7 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     const mine = pgRows.filter((r) => r.harnessSlug === slug && r.kind === 'own_log_compaction');
     const messages = mine.map((r) => r.message ?? '');
     expect(messages[0]).toMatch(
-      /^own log compaction anchor: producer=on ownLogLength=0 lastCoversUpTo=0 lastRows=0 threshold=1000 due=false$/,
+      /^own log compaction anchor: producer=on ownLogLength=0 lastCoversUpTo=0 lastRows=0 threshold=1000 due=false anchor=none$/,
     );
     expect(messages.some((m) => /^own log compaction started: ownLogLength=1000 lastCoversUpTo=0 threshold=1000 /.test(m))).toBe(true);
     expect(messages.some((m) => /^own log compaction: coversUpTo=1000 .*elapsedMs=\d+ mergeGateHeld=false$/.test(m))).toBe(true);
@@ -256,7 +256,9 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     }
     const progress = progressAt.map((i) => mine[i]!.message ?? '');
     expect(progress[0]).toMatch(
-      /^own log compaction progress: cursor=\d+\/\d+ \(\d+%\) sourceStart=0 decodedOps=\d+ decodedBytes=\d+ heapUsedMb=\d+ elapsedMs=\d+$/,
+      // WI-10002836: the fold's OWN heap (worker isolate) and live-key count ride on every
+      // row, beside the host's; the 02:38Z OOM could not be attributed without them.
+      /^own log compaction progress: cursor=\d+\/\d+ \(\d+%\) sourceStart=0 decodedOps=\d+ decodedBytes=\d+ skippedSnapshotOps=0 keyCount=\d+ workerHeapUsedMb=\d+ mainHeapUsedMb=\d+ elapsedMs=\d+$/,
     );
     const cursors = progress.map((m) => Number(/cursor=(\d+)\//.exec(m)![1]));
     // Monotonic: the anchor-convergence re-fold never reports a position behind an earlier one.
