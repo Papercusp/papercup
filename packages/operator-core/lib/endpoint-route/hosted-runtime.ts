@@ -3,6 +3,7 @@
 import {
   withHostedServiceContext,
   withTenantContext,
+  withWorkspace,
   type VerifiedTenantServerContext,
 } from '@papercusp/db-org';
 import {
@@ -36,6 +37,7 @@ import { createHostedBrowserRoutes, type HostedBrowserRouteDependencies } from '
 import { ALL_ROUTES } from './routes';
 import { createWorkOsWebhookRoute } from './routes/auth/workos-webhook';
 import { HostedWorkspaceConnectorGateway, PostgresHostedWorkspaceConnectorStore } from './hosted-workspace-connector';
+import { PostgresHostedCliStore } from './routes/hosted-cli';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import {
   HostedProviderDelegationManager,
@@ -86,6 +88,13 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/revoke',
+  'POST /hosted/cli/device/code',
+  'GET /hosted/cli/device',
+  'POST /hosted/cli/device/decision',
+  'POST /hosted/cli/device/token',
+  'GET /hosted/cli/workspaces',
+  'POST /hosted/cli/workspaces/:workspaceId/terminal',
+  'POST /hosted/cli/logout',
   'GET /hosted/auth/sign-in',
   'GET /hosted/auth/callback',
   'POST /hosted/auth/logout',
@@ -444,6 +453,13 @@ export async function createHostedRuntime(
     identityDirectory,
     connectorGateway,
     providerDelegationManager,
+    // psu CLI sign-in reads the org's workspaces with the same control-plane privilege the
+    // first-workspace door uses; the organization always comes from the verified CLI token.
+    cliStore: new PostgresHostedCliStore(
+      runService,
+      (fn) => withWorkspace(configuration.controlPlaneWorkspaceId, fn),
+      configuration.controlPlaneWorkspaceId,
+    ),
     routes: [...ALL_ROUTES, webhookRoute, ...hostedBrowser.routes],
     staticAllowlist: [
       ...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST,

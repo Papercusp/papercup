@@ -49,6 +49,7 @@ import {
   type HostedProviderDelegationManagerFactory,
 } from './routes/hosted-provider-delegation';
 import { createHostedWorkspaceConnectorRoutes, HOSTED_WORKSPACE_CONNECTOR_ROUTES } from './routes/hosted-workspace-connector';
+import { createHostedCliRoutes, HOSTED_CLI_ROUTES, type HostedCliStore } from './routes/hosted-cli';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -86,6 +87,11 @@ export interface HostedControlPlaneConfig {
   readonly randomBytes?: (size: number) => Uint8Array;
   readonly connectorGateway?: HostedWorkspaceConnectorGateway;
   readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
+  /**
+   * psu CLI sign-in + terminal tickets (WI-10002874). Mounted only beside a connector gateway,
+   * which is what the terminal route issues tickets through.
+   */
+  readonly cliStore?: HostedCliStore;
   /** Audit hook for refused sign-ins. Never called on success. */
   readonly onSignInDenied?: (denial: {
     reason: HostedIdentityBindingDenialReason;
@@ -147,6 +153,19 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
     controlPlaneWorkspaceId,
   });
 
+  const cliRoutes = config.cliStore && config.connectorGateway
+    ? createHostedCliRoutes({
+        publicOrigin: config.publicOrigin,
+        controlPlaneWorkspaceId,
+        store: config.cliStore,
+        membershipAuthority,
+        connectorGateway: config.connectorGateway,
+        resolvePrincipal,
+        ...(config.clock ? { clock: config.clock } : {}),
+        ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),
+      })
+    : [];
+
   const plane = createHostedControlPlane({
     hostedAuth: {
       provider: config.provider,
@@ -164,6 +183,7 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
           ...(config.routes ?? []),
           ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : []),
           ...(config.providerDelegationManager ? createHostedProviderDelegationRoutes(config.providerDelegationManager) : []),
+          ...cliRoutes,
         ] }
       : {}),
     ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager
@@ -171,6 +191,7 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
           ...(config.staticAllowlist ?? []),
           ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : []),
           ...(config.providerDelegationManager ? HOSTED_PROVIDER_DELEGATION_ROUTES : []),
+          ...(cliRoutes.length > 0 ? HOSTED_CLI_ROUTES : []),
         ] }
       : {}),
   });

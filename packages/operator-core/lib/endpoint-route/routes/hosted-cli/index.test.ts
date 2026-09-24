@@ -1,0 +1,248 @@
+import { describe, expect, it } from 'vitest';
+import { createHostedPrincipal, type HostedPermission } from '../../../auth/hosted-principal';
+import type { HostedPrincipalResolver } from '../../../auth/hosted-principal-resolver';
+import { createHostedCliRoutes, HOSTED_CLI_ROUTES, normalizeUserCode, sanitizeClientLabel } from './index';
+import type { HostedCliStore, HostedCliToken, HostedCliWorkspace } from './store';
+
+const ORIGIN = 'https://app.papercusp.com';
+
+/** In-memory store with the SQL store's semantics: hash-only, single consumption, org-scoped listing. */
+function memoryStore(workspaces: Record<string, HostedCliWorkspace[]>) {
+  const grants = new Map<string, {
+    userCode: string; clientLabel: string; state: string; userId?: string; organizationId?: string;
+    expiresAt: Date; lastPolledAt?: Date;
+  }>();
+  const tokens = new Map<string, HostedCliToken & { revoked: boolean }>();
+  const store: HostedCliStore = {
+    async createGrant(input) {
+      if ([...grants.values()].some((g) => g.userCode === input.userCode)) return false;
+      grants.set(input.deviceCodeHash, { userCode: input.userCode, clientLabel: input.clientLabel, state: 'pending', expiresAt: input.expiresAt });
+      return true;
+    },
+    async findPendingGrant(userCode, now) {
+      const grant = [...grants.values()].find((g) => g.userCode === userCode && g.state === 'pending' && g.expiresAt > now);
+      return grant ? { userCode, clientLabel: grant.clientLabel, expiresAt: grant.expiresAt } : null;
+    },
+    async decideGrant(input) {
+      const grant = [...grants.values()].find((g) => g.userCode === input.userCode && g.state === 'pending');
+      if (!grant) return false;
+      grant.state = input.decision;
+      if (input.decision === 'approved') Object.assign(grant, { userId: input.userId, organizationId: input.organizationId });
+      return true;
+    },
+    async exchangeGrant(input) {
+      const grant = grants.get(input.deviceCodeHash);
+      if (!grant || grant.state === 'consumed') return { status: 'invalid' };
+      if (grant.expiresAt <= input.now) return { status: 'expired' };
+      if (grant.state === 'denied') return { status: 'denied' };
+      if (grant.state === 'pending') {
+        const last = grant.lastPolledAt;
+        grant.lastPolledAt = input.now;
+        return { status: last && input.now.getTime() - last.getTime() < input.minPollIntervalMs ? 'slow_down' : 'pending' };
+      }
+      grant.state = 'consumed';
+      const token = { id: input.token.id, userId: grant.userId!, organizationId: grant.organizationId!, clientLabel: grant.clientLabel, expiresAt: input.token.expiresAt, revoked: false };
+      tokens.set(input.token.tokenHash, token);
+      return { status: 'issued', token };
+    },
+    async resolveToken(hash, now) {
+      const token = tokens.get(hash);
+      return token && !token.revoked && token.expiresAt > now ? token : null;
+    },
+    async revokeToken(id) {
+      const token = [...tokens.values()].find((t) => t.id === id && !t.revoked);
+      if (token) token.revoked = true;
+      return Boolean(token);
+    },
+    async listWorkspaces(organizationId) {
+      return workspaces[organizationId] ?? [];
+    },
+  };
+  return { store, grants, tokens };
+}
+
+function signedInResolver(organizationId: string | null): HostedPrincipalResolver {
+  return async () => organizationId
+    ? { ok: true, principal: principal(organizationId, ['workspace:view']), session: {} as never, membership: {} as never }
+    : { ok: false, reason: 'session_cookie_missing' };
+}
+
+function principal(organizationId: string, permissions: HostedPermission[]) {
+  return createHostedPrincipal({
+    workspaceId: 'control-plane', userId: 'user-1', activeOrganizationId: organizationId,
+    sessionId: 'hs-1', sessionVersion: 1, permissions,
+  });
+}
+
+function setup(options: { permissions?: HostedPermission[]; signedIn?: boolean } = {}) {
+  const memory = memoryStore({
+    'org-a': [{
+      id: 'ws-a', displayName: 'Avi test', state: 'active', hostId: 'host-a',
+      connector: { state: 'active', routeLabel: 'host-a', transport: 'websocket', generation: 3, heartbeatAt: null },
+    }],
+    'org-b': [{
+      id: 'ws-b', displayName: 'Other tenant', state: 'active', hostId: 'host-b',
+      connector: { state: 'active', routeLabel: 'host-b', transport: 'websocket', generation: 1, heartbeatAt: null },
+    }],
+  });
+  const tickets: unknown[] = [];
+  let now = new Date('2026-09-24T04:00:00Z');
+  let counter = 0;
+  const routes = createHostedCliRoutes({
+    publicOrigin: ORIGIN,
+    controlPlaneWorkspaceId: 'control-plane',
+    store: memory.store,
+    membershipAuthority: {
+      resolveActive: async ({ userId, organizationId }) => ({
+        userId, organizationId, role: 'owner', permissionVersion: 1,
+        permissions: new Set(options.permissions ?? ['workspace:view', 'workspace:operate']),
+      }) as never,
+    },
+    connectorGateway: {
+      issueSessionTicket: async (input) => {
+        tickets.push(input);
+        return { ticket: `ht_${'t'.repeat(43)}`, binding: { ...input, kind: 'session', expiresAt: new Date(now.getTime() + 60_000) } } as never;
+      },
+    },
+    resolvePrincipal: signedInResolver(options.signedIn === false ? null : 'org-a'),
+    clock: () => now,
+    // Deterministic but distinct draws so user codes and tokens never collide within a test.
+    randomBytes: (size) => Buffer.alloc(size, (counter += 1) % 251),
+  });
+  const route = (method: string, path: string) => routes.find((r) => r.method === method && r.path === path)!;
+  const call = (method: string, path: string, init: RequestInit & { params?: Record<string, string>; principal?: unknown } = {}) =>
+    route(method, path).handler(new Request(`${ORIGIN}/api${path}`, init), { params: init.params ?? {}, principal: init.principal ?? null } as never) as Promise<Response>;
+  return { memory, tickets, routes, call, advance: (ms: number) => { now = new Date(now.getTime() + ms); } };
+}
+
+async function signIn(t: ReturnType<typeof setup>, organizationId = 'org-a') {
+  const code = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: JSON.stringify({ clientLabel: 'laptop' }) })).json();
+  const decided = await t.call('POST', '/hosted/cli/device/decision', {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'content-type': 'application/json' },
+    body: JSON.stringify({ userCode: code.userCode, decision: 'approve' }),
+    principal: principal(organizationId, ['workspace:view']),
+  });
+  expect(decided.status).toBe(200);
+  const token = await (await t.call('POST', '/hosted/cli/device/token', { method: 'POST', body: JSON.stringify({ deviceCode: code.deviceCode }) })).json();
+  return { code, token };
+}
+
+describe('hosted psu CLI routes', () => {
+  it('publishes exactly the routes it builds, with the access tier each declares', () => {
+    const { routes } = setup();
+    expect(routes.map((r) => `${r.method} ${r.path}`)).toEqual(HOSTED_CLI_ROUTES.map((r) => `${r.method} ${r.path}`));
+    for (const entry of HOSTED_CLI_ROUTES) {
+      const built = routes.find((r) => r.method === entry.method && r.path === entry.path)!;
+      expect(built.auth === 'public').toBe(entry.access === 'public');
+    }
+  });
+
+  it('signs a CLI in through a browser approval and hands out the token exactly once', async () => {
+    const t = setup();
+    const code = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: '{}' })).json();
+    expect(code.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    expect(code.verificationUriComplete).toBe(`${ORIGIN}/api/hosted/cli/device?user_code=${code.userCode}`);
+    expect([...t.memory.grants.keys()][0]).not.toContain(code.deviceCode); // hash-only
+
+    const poll = () => t.call('POST', '/hosted/cli/device/token', { method: 'POST', body: JSON.stringify({ deviceCode: code.deviceCode }) });
+    expect(await (await poll()).json()).toMatchObject({ error: 'authorization_pending' });
+    expect(await (await poll()).json()).toMatchObject({ error: 'slow_down' });
+
+    const page = await t.call('GET', `/hosted/cli/device`, { headers: {}, params: {} });
+    expect(page.status).toBe(200);
+    const approve = await t.call('POST', '/hosted/cli/device/decision', {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+      body: `user_code=${code.userCode.toLowerCase().replace('-', '')}&decision=approve`,
+      principal: principal('org-a', ['workspace:view']),
+    });
+    expect(approve.status).toBe(200);
+    expect(approve.headers.get('x-frame-options')).toBe('DENY');
+
+    t.advance(5_000);
+    const issued = await (await poll()).json();
+    expect(issued).toMatchObject({ ok: true, tokenType: 'Bearer', organizationId: 'org-a', userId: 'user-1' });
+    expect(issued.accessToken).toMatch(/^pct_[A-Za-z0-9_-]{43}$/);
+    expect(await (await poll()).json()).toMatchObject({ error: 'invalid_grant' });
+  });
+
+  it('refuses a cross-origin approval and reports a denied grant to the CLI', async () => {
+    const t = setup();
+    const code = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: '{}' })).json();
+    const forged = await t.call('POST', '/hosted/cli/device/decision', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ userCode: code.userCode, decision: 'approve' }),
+      principal: principal('org-a', ['workspace:view']),
+    });
+    expect(forged.status).toBe(403);
+    await t.call('POST', '/hosted/cli/device/decision', {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ userCode: code.userCode, decision: 'deny' }),
+      principal: principal('org-a', ['workspace:view']),
+    });
+    const polled = await t.call('POST', '/hosted/cli/device/token', { method: 'POST', body: JSON.stringify({ deviceCode: code.deviceCode }) });
+    expect(await polled.json()).toMatchObject({ error: 'access_denied' });
+  });
+
+  it('sends a signed-out visitor to sign-in and back to the same code', async () => {
+    const t = setup({ signedIn: false });
+    const response = await t.call('GET', '/hosted/cli/device', {});
+    expect(response.status).toBe(303);
+    const location = new URL(response.headers.get('location')!);
+    expect(location.origin + location.pathname).toBe(`${ORIGIN}/api/hosted/auth/sign-in`);
+    expect(location.searchParams.get('returnTo')).toBe('/api/hosted/cli/device');
+  });
+
+  it('lists only the token organization\'s workspaces and issues a terminal ticket on its own session', async () => {
+    const t = setup();
+    const { token } = await signIn(t);
+    const auth = { authorization: `Bearer ${token.accessToken}` };
+    const listed = await (await t.call('GET', '/hosted/cli/workspaces', { headers: auth })).json();
+    expect(listed.workspaces.map((w: { id: string }) => w.id)).toEqual(['ws-a']);
+    expect(listed.workspaces[0].reachable).toBe(true);
+
+    const other = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
+      method: 'POST', headers: auth, body: '{}', params: { workspaceId: 'ws-b' },
+    });
+    expect(other.status).toBe(404);
+
+    const opened = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
+      method: 'POST', headers: auth, body: JSON.stringify({ session: 'resume-me' }), params: { workspaceId: 'ws-a' },
+    });
+    const body = await opened.json();
+    expect(body.socketUrl).toBe(`wss://app.papercusp.com/api/hosted/connectors/socket?ticket=ht_${'t'.repeat(43)}`);
+    expect(t.tickets[0]).toMatchObject({
+      organizationId: 'org-a', customerWorkspaceId: 'ws-a', hostId: 'host-a', routeLabel: 'host-a', generation: 3,
+      userId: 'user-1', audience: 'workspace-operator', transport: 'websocket',
+      hostedSessionId: `cli.${token.tokenId}.resume-me`,
+    });
+  });
+
+  it('re-derives permissions per request: a view-only member cannot open a terminal', async () => {
+    const t = setup({ permissions: ['workspace:view'] });
+    const { token } = await signIn(t);
+    const denied = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
+      method: 'POST', headers: { authorization: `Bearer ${token.accessToken}` }, body: '{}', params: { workspaceId: 'ws-a' },
+    });
+    expect(denied.status).toBe(403);
+    expect(t.tickets).toHaveLength(0);
+  });
+
+  it('signs a CLI out: the token stops working', async () => {
+    const t = setup();
+    const { token } = await signIn(t);
+    const auth = { authorization: `Bearer ${token.accessToken}` };
+    expect((await t.call('POST', '/hosted/cli/logout', { method: 'POST', headers: auth })).status).toBe(200);
+    expect((await t.call('GET', '/hosted/cli/workspaces', { headers: auth })).status).toBe(401);
+  });
+
+  it('normalizes typed codes and display labels', () => {
+    expect(normalizeUserCode(' bcdf ghjk ')).toBe('BCDF-GHJK');
+    expect(normalizeUserCode('short')).toBeNull();
+    expect(sanitizeClientLabel('host\n\u0007name')).toBe('host name');
+    expect(sanitizeClientLabel('')).toBe('psu');
+  });
+});
