@@ -158,7 +158,14 @@ import {
   ownerChatTurnText,
   OWNER_CHAT_TURN_ORIGIN,
 } from '../../agent-tools/coordination/owner-chat-turn';
-import type { ResumeTurnExitRaw } from './resume-turn-outcome';
+import {
+  analyzeClaudeResumeTranscriptFile,
+  appendClaudeToolReferencesToSeed,
+  CLAUDE_TOOL_REFERENCE_POISON_TURNS,
+  isMissingClaudeToolReferenceError,
+} from '../../claude-resume-tool-references.mjs';
+import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
+import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
@@ -1948,6 +1955,39 @@ function inboxNotifierIdentity(workspaceId: string): AgentIdentity {
   } as AgentIdentity;
 }
 
+/** Durable owner + fleet notice for a resume incarnation quarantined by the
+ * missing-tool-reference detector. The roster/end marker remains the liveness
+ * authority; this message explains why the member's claims are returning. */
+async function notifyPoisonedResumeSession(
+  delivery: DeliveryWork,
+  context: ResumeTurnContext,
+  error: string,
+  send: typeof sendMessage,
+): Promise<void> {
+  try {
+    await send(inboxNotifierIdentity(delivery.workspaceId), {
+      to: [delivery.subscriberId],
+      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      body:
+        `The Claude transcript recorded at least ${CLAUDE_TOOL_REFERENCE_POISON_TURNS} consecutive assistant turns ` +
+        `rejected because a Papercusp tool_reference was absent from the resumed tool list. Wake retries for this ` +
+        `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        `Last provider evidence: ${error}`,
+      category: 'event',
+      extra: {
+        auto: true,
+        event_key: delivery.eventKey,
+        wake_delivery_id: delivery.id,
+        adv_session_id: context.advSessionId,
+        terminal_status: 'poisoned',
+        poison_reason: context.poisonReason,
+      },
+    });
+  } catch (e) {
+    console.warn(`[wake-executor] poisoned-resume notification failed for ${delivery.subscriberId}: ${(e as Error)?.message ?? e}`);
+  }
+}
+
 /**
  * Degrade a would-be DROP to a coord inbox notification (P-001,
  * wake-delivery-degradation-fix-2026-07-09). Per the events:await
@@ -2319,7 +2359,9 @@ export interface ExecuteWakeDeps {
    *  `delivered` on spawn, so a later death is otherwise invisible). Absent ⇒ today's
    *  fire-and-forget (`stdio:'ignore'`, zero capture overhead); delivery still returns
    *  `delivered` the instant a PID is assigned either way. */
-  onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void;
+  onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void;
+  /** Injected detector/quarantine seam for repeated unavailable Claude tool references. */
+  quarantineToolReferenceSession?: typeof quarantineRepeatedClaudeToolReferenceFailures;
   /** WI-10002854: the task-ledger row and adv-session pid for a spawned
    *  `resume-headless` turn. Injected for tests; the default writes PG. */
   accountHeadlessResumeTurn?: (input: HeadlessResumeTurnInput) => HeadlessResumeTurnAccounting;
@@ -3267,7 +3309,29 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
   const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
+  const quarantineToolReferenceSession =
+    deps.quarantineToolReferenceSession ?? quarantineRepeatedClaudeToolReferenceFailures;
   const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
+  let claudeResumeTranscriptPath: string | null = null;
+  const refreshClaudeResumeTranscript = async (
+    ownerId: string | null | undefined,
+    sessionId: string | null | undefined,
+  ) => {
+    if (!ownerId || !sessionId) return null;
+    try {
+      const files = await collectSessionFiles({
+        sourceKind: 'claude',
+        sessionId,
+        sessionRoot: sessionClaudeConfigDir(ownerId),
+      });
+      const transcript = files.find((file) => file.rel.startsWith('projects/') && file.rel.endsWith(`${sessionId}.jsonl`));
+      if (!transcript) return null;
+      claudeResumeTranscriptPath = transcript.abs;
+      return analyzeClaudeResumeTranscriptFile(transcript.abs);
+    } catch {
+      return null;
+    }
+  };
 
   try {
     // EI-203843: this is deliberately the first delivery decision. A queued
@@ -3546,6 +3610,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     // ── adv-session handle ───────────────────────────────────────────────
     const fresh = await getSession(handle.advSessionId).catch(() => null);
+    const sessionAgent = fresh?.agent ?? handle.agent;
+    const sessionOwner = fresh?.coordOwnerId ?? d.subscriberId;
+    const sessionId = fresh?.sessionId ?? handle.sessionId;
+    const claudeTranscriptAnalysis = sessionAgent === 'claude'
+      ? await refreshClaudeResumeTranscript(sessionOwner, sessionId)
+      : null;
+    const priorPoison = lifecycle?.poisoned;
+    if (
+      priorPoison && priorPoison.advSessionId === handle.advSessionId &&
+      (!fresh || priorPoison.startedAt === fresh.startedAt)
+    ) {
+      return {
+        kind: 'drop',
+        reason: `Claude session incarnation ${handle.advSessionId} is quarantined: ${priorPoison.reason}`,
+      };
+    }
     // The await/delivery plane is intentionally pinned to DEFAULT_COORD_WORKSPACE
     // (WI-3575), so d.workspaceId is the coordination workspace, not necessarily
     // the agent's tenant. A process-exit resume must re-export the persisted
@@ -3569,6 +3649,36 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     } else {
       const p = await presence(d.subscriberId).catch(() => null);
       isAlive = Boolean(p && !p.stale && !p.revoked);
+    }
+
+    // A live interactive transcript has no detached-child exit callback. Check
+    // the saved assistant-turn streak before injecting another wake; if the
+    // threshold is reached, quarantine this exact incarnation instead.
+    if (isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.poisoned && claudeResumeTranscriptPath) {
+      const poisonContext: ResumeTurnContext = {
+        advSessionId: handle.advSessionId,
+        ownerId: sessionOwner,
+        sessionId,
+        startedAt: fresh?.startedAt ?? null,
+        workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
+        agent: 'claude',
+        transcriptPath: claudeResumeTranscriptPath,
+      };
+      const quarantine = await quarantineToolReferenceSession(
+        poisonContext,
+        claudeTranscriptAnalysis.lastMissingToolReferenceEvidence ?? 'unavailable Papercusp tool reference',
+      );
+      if (quarantine.poisoned) {
+        const reason = `Claude session quarantined after ${quarantine.turns} consecutive unavailable tool-reference turns`;
+        const poisonedContext = { ...poisonContext, poisoned: true, poisonReason: reason };
+        await notifyPoisonedResumeSession(
+          sessionDelivery,
+          poisonedContext,
+          claudeTranscriptAnalysis.lastMissingToolReferenceEvidence ?? 'unavailable Papercusp tool reference',
+          sendCoordMessage,
+        );
+        return { kind: 'drop', reason };
+      }
     }
 
     const text = tagWakeText(
@@ -4144,6 +4254,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         } catch (e) {
           console.warn(`[wake-executor] claude rematerialize check failed: ${(e as Error)?.message ?? e}`);
         }
+        const analysis = await refreshClaudeResumeTranscript(owner, sid);
+        const inheritedToolSeed = process.env.PAPERCUSP_TOOLS;
+        if (analysis?.toolReferences.length && inheritedToolSeed?.trim()) {
+          env.PAPERCUSP_TOOLS = appendClaudeToolReferencesToSeed(inheritedToolSeed, analysis.toolReferences);
+        }
       }
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
     }
@@ -4182,10 +4297,41 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // returns. The child's 'close' can only fire on a later event-loop turn, so
       // this closure always sees it.
       let accounting: HeadlessResumeTurnAccounting | null = null;
+      const resumeTurnContext: ResumeTurnContext = {
+        advSessionId: handle.advSessionId,
+        ownerId: fresh?.coordOwnerId ?? d.subscriberId,
+        sessionId: fresh?.sessionId ?? handle.sessionId ?? null,
+        startedAt: fresh?.startedAt ?? null,
+        workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
+        agent: resumeAgent,
+        transcriptPath: resumeAgent === 'claude' ? claudeResumeTranscriptPath : null,
+      };
       const onExit = deps.onResumeTurnExit
         ? (exit: ResumeTurnExitRaw) => {
             accounting?.finish(exit);
-            deps.onResumeTurnExit!(d, resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit);
+            const observedExit = resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' as const } : exit;
+            void (async () => {
+              let context = resumeTurnContext;
+              const errorText = [observedExit.stderrTail, observedExit.stdoutTail].filter(Boolean).join('\n');
+              if (resumeAgent === 'claude' && isMissingClaudeToolReferenceError(errorText)) {
+                try {
+                  const quarantine = await quarantineToolReferenceSession(context, errorText);
+                  if (quarantine.poisoned) {
+                    const poisonReason =
+                      `quarantined after ${quarantine.turns} consecutive unavailable Papercusp tool-reference turns`;
+                    context = {
+                      ...context,
+                      poisoned: true,
+                      poisonReason,
+                    };
+                    await notifyPoisonedResumeSession(d, context, errorText, sendCoordMessage);
+                  }
+                } catch (error) {
+                  console.warn(`[wake-executor] tool-reference poison detector failed: ${(error as Error)?.message ?? error}`);
+                }
+              }
+              deps.onResumeTurnExit!(d, observedExit, context);
+            })();
           }
         : undefined;
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
