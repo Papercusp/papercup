@@ -288,3 +288,51 @@ sidecar, transport loss must not cause an unsafe local retry or premature
 repository-lock release while the remote child may still run. Descendant
 termination, profiler overhead and comparable launch/loop benchmarks also remain
 open. No speedup or final P-003 acceptance is claimed.
+
+## P-005 resumable-session reads
+
+`listResumableSessions` filtered candidates by converting each complete
+`adv_sessions` row to JSON to read optional `port_status`. That conversion also
+serialized the launch payload. The scored/ranked stages then carried full
+metadata and converted the row again to recover the optional harness scope.
+
+The existing query now checks `pg_attribute` once per call, uses the direct
+status column when present, and accepts legacy rows when the column is absent.
+Absence is not cached, so a completed rollout is observed on the next call.
+Ranking carries only identity, backend and activity; metadata is hydrated after
+selection. No table, index, feature flag or parallel cache was added.
+
+Bounded read-only live probes on September 24 separated these costs:
+
+| Probe | Observed execution time |
+|---|---:|
+| Recent-300 filter using whole-row JSON | 2275.154, 1830.139 ms |
+| Equivalent direct-column filter, interleaved | 16.263, 15.200, 14.832 ms |
+| Full original listing | 2918.519 ms |
+| Direct filtering with metadata still before ranking | 1194.302, 938.348 ms |
+| Direct filtering with metadata after selection | 79.435 ms |
+
+These are exploratory `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` executions on a
+changing live population, not paired production percentiles. A separate
+single-statement snapshot compared the complete original and revised results
+with `EXCEPT ALL` in both directions: 37 rows each, zero differing rows.
+The broad picker scope is deliberately cross-workspace.
+
+The existing database integration suite now exercises pending/failed ports in
+every candidate arm, cross-workspace results, a genuinely absent port column
+followed by its return, exact-id recovery, activity ordering and per-backend
+floors. An eight-reader burst returns the same fixture rows. The retained
+1000-row fixture has 16384 payload characters per row; 100 alternating calls
+per filter measured p50 13.490 ms (legacy) and 0.803 ms (direct) in the final
+run. That benchmark isolates candidate filtering, not the complete HTTP route.
+
+At 07:59:28Z, all 75 tests across the four focused `adv-sessions` suites passed,
+zero skipped, at `30b6cf0d98` with local changes. Scoped typechecking found no
+diagnostics in the changed files; 26 diagnostics remained elsewhere in the
+import graph. `git diff --check` passed. An earlier new benchmark fixture failed
+because a JSON constructor needed an explicit text cast; it was fixed before
+the final run.
+
+P-005 remains open for coordination/orientation and Learning/roster stage
+profiling, complete current-build acceptance, and the plan's controlled full
+workload evidence. No shipment or whole-plan completion is asserted here.
