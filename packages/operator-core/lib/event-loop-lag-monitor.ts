@@ -18,6 +18,7 @@
  * when p95 lag crosses a threshold, so a healthy host is silent.
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
 
@@ -477,6 +478,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let profiling = false;
   let lastProfileAt = 0;
   let stopped = false;
+  const profileLifetime = new AbortController();
 
   // P-002: heap-snapshot-on-high-RSS state. WI-3255: full V8 heap snapshots
   // pause the live loop while V8 serializes the heap, and on multi-GB bg-hosts
@@ -553,7 +555,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         } catch {
           on = false; // a flag-read failure must never break lag monitoring
         }
-        if (!on) return;
+        if (!on || stopped) return;
         // WI-5820 SAFETY CAP — checked here, INSIDE the gate, so a host with the
         // profiler disabled never emits a confusing "skipped" line about work it
         // was never going to do. A window this saturated is the regime where the
@@ -578,6 +580,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           maxProfiles,
           trigger: s,
           log,
+          signal: profileLifetime.signal,
         }).catch(() => {});
       })().finally(() => {
         if (!stopped) profiling = false;
@@ -708,6 +711,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   const handle: LagMonitorHandle = {
     stop() {
       stopped = true;
+      profileLifetime.abort();
       timer.stop();
       h.disable();
       if (_liveRead === read) _liveRead = null;
@@ -733,9 +737,12 @@ export async function captureCpuProfile(args: {
   maxProfiles: number;
   trigger: { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number };
   log: (line: string, detail: Record<string, number | string>) => void;
+  /** Owner shutdown cancels setup, sampling and artifact publication. */
+  signal?: AbortSignal;
 }): Promise<string | null> {
-  const { durationMs, maxProfiles, trigger, log } = args;
+  const { durationMs, maxProfiles, trigger, log, signal } = args;
   try {
+    signal?.throwIfAborted();
     const os = await import('node:os');
     const path = await import('node:path');
     const fs = await import('node:fs/promises');
@@ -759,20 +766,34 @@ export async function captureCpuProfile(args: {
     };
 
     const session = new inspector.Session();
+    signal?.throwIfAborted();
     session.connect();
     try {
       await session.post('Profiler.enable');
+      signal?.throwIfAborted();
       await session.post('Profiler.start');
-      await new Promise((r) => setTimeout(r, durationMs));
+      // Abort clears the duration timer; finally disconnects the native sampler.
+      // Stopping only the monitor interval left this work alive after shutdown.
+      await delay(durationMs, undefined, { signal });
       const { profile } = (await session.post('Profiler.stop')) as { profile: unknown };
+      signal?.throwIfAborted();
       // Reserve one slot before the write. A post-write-only prune briefly made
       // maxProfiles + 1 artifacts observable and allowed another capture/test to
       // race through that overflow window.
       await pruneCpuProfiles(maxProfiles - 1);
+      signal?.throwIfAborted();
       // Timestamp without Date.now-in-name collisions: epoch ms + pid.
       const stamp = `${Date.now()}-pid${process.pid}-p95_${Math.round(trigger.p95Ms)}ms`;
       const file = path.join(dir, `loop-saturation-${stamp}.cpuprofile`);
-      await fs.writeFile(file, JSON.stringify(profile));
+      try {
+        await fs.writeFile(file, JSON.stringify(profile), { signal });
+        signal?.throwIfAborted();
+      } catch (error) {
+        // writeFile cancellation can leave partial bytes. Never publish them as
+        // a loadable CPU profile, including abort just after the write resolves.
+        await fs.rm(file, { force: true }).catch(() => {});
+        throw error;
+      }
       log('[event-loop-lag] captured CPU profile of the saturated loop — load in DevTools/speedscope', {
         p95Ms: trigger.p95Ms,
         maxMs: trigger.maxMs,

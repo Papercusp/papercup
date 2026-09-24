@@ -250,6 +250,93 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
     expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toHaveLength(2);
   });
 
+  it('does not start CPU profiling when a pending gate resolves after monitor stop', async () => {
+    const dir = tmp('stop-pending-gate');
+    let resolveGate!: (enabled: boolean) => void;
+    const gate = vi.fn(() => new Promise<boolean>((resolve) => { resolveGate = resolve; }));
+    handle = startEventLoopLagMonitor({
+      intervalMs: 30,
+      profileTriggerP95Ms: 0,
+      profileOnSaturation: gate,
+      profileDurationMs: 50,
+      profileDir: dir,
+      heapSamplingOnHighRss: false,
+      heapSnapshotOnHighRss: false,
+      log: vi.fn(),
+    });
+    await vi.waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+    handle.stop();
+    resolveGate(true);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Even preparing the artifact directory means profiling outlived its owner.
+    await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('cancels a CPU capture promptly without publishing a partial profile', async () => {
+    const dir = tmp('cancel-capture');
+    const controller = new AbortController();
+    const log = vi.fn();
+    const capture = captureCpuProfile({
+      durationMs: 2000,
+      dir,
+      maxProfiles: 2,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 },
+      log,
+      signal: controller.signal,
+    });
+    await vi.waitFor(async () => expect((await fs.stat(dir)).isDirectory()).toBe(true));
+    // Let the capture pass its asynchronous directory setup and arm the sampler.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    controller.abort();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      expect(await Promise.race([
+        capture,
+        new Promise<string>((resolve) => { deadline = setTimeout(() => resolve('still recording'), 500); }),
+      ])).toBeNull();
+    } finally {
+      clearTimeout(deadline);
+      await capture; // drain even on the old-source failure
+    }
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('monitor stop cancels its active capture without publishing an artifact', async () => {
+    const dir = tmp('stop-active-capture');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 30,
+      profileTriggerP95Ms: 0,
+      profileOnSaturation: true,
+      profileDurationMs: 200,
+      profileDir: dir,
+      heapSamplingOnHighRss: false,
+      heapSnapshotOnHighRss: false,
+      log,
+    });
+    await vi.waitFor(async () => expect((await fs.stat(dir)).isDirectory()).toBe(true));
+    handle.stop();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toEqual([]);
+    expect(log.mock.calls.some(([line]) => String(line).includes('captured CPU profile'))).toBe(false);
+  });
+
+  it('an already cancelled capture never prepares an artifact directory', async () => {
+    const dir = tmp('already-cancelled');
+    const controller = new AbortController();
+    controller.abort();
+    expect(await captureCpuProfile({
+      durationMs: 2000,
+      dir,
+      maxProfiles: 2,
+      trigger: { p50Ms: 1, p95Ms: 700, p99Ms: 800, maxMs: 900 },
+      log: vi.fn(),
+      signal: controller.signal,
+    })).toBeNull();
+    await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('is INERT by default: no capture under saturation when profileOnSaturation is off', async () => {
     const dir = tmp('off');
     const log = vi.fn();
