@@ -263,7 +263,7 @@ function makeFakeSql(opts: {
     calls.push({ text, values });
     if (text.includes('INSERT INTO harness_shared.cloud_resource_obligations')) {
       if (opts.insertReturnsRow ?? true) return Promise.resolve([{ id: 42, inserted: true }]);
-      return Promise.resolve([]); // ON CONFLICT DO NOTHING — no row
+      return Promise.resolve([]); // Same-incarnation conflict is a no-op; the following SELECT finds it.
     }
     if (text.includes('SELECT id FROM harness_shared.cloud_resource_obligations')) {
       return Promise.resolve(opts.existingIdOnConflict !== undefined ? [{ id: opts.existingIdOnConflict }] : []);
