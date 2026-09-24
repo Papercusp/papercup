@@ -32,10 +32,10 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 
 // apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
@@ -161,6 +161,123 @@ describe('sync-staging-checkout.sh argument parsing', () => {
     expect(r.stderr).toContain('unknown argument: --not-an-option');
     expect(r.stderr).toContain('Usage: sync-staging-checkout.sh');
     expect(r.stdout).toBe('');
+  });
+});
+
+describe('sync-staging-checkout.sh migration restart preflight (EI-24180437038891110)', () => {
+  it.each([
+    ['scripts/lint-migrations.mjs', ['scripts/lint-migrations.mjs']],
+    ['scripts/check-migration-forward-compat.mjs', [
+      'scripts/lint-migrations.mjs', 'scripts/check-migration-forward-compat.mjs',
+    ]],
+  ])('refuses the restart when %s fails in the target checkout', (failedLint, expectedRuns) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-migration-preflight-'));
+    try {
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      const trace = join(root, 'lint-trace');
+      writeFileSync(join(bin, 'node'), [
+        '#!/bin/sh',
+        'printf "%s\\n" "$1" >> "$TRACE_FILE"',
+        '[ "$1" != "$FAILED_LINT" ]',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const r = runFn(['preflight_staging_migrations'],
+        'log() { printf "%s\\n" "$*"; }\npreflight_staging_migrations', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+          FAILED_LINT: failedLint, PATH: `${bin}:${process.env.PATH}` },
+      });
+      expect(r.status).toBe(1);
+      expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(expectedRuns);
+      expect(r.stdout).toContain('keeping the current fixture.service process');
+
+      const script = readFileSync(SCRIPT_PATH, 'utf8');
+      const preflight = script.indexOf('\npreflight_staging_migrations\n');
+      expect(preflight).toBeGreaterThan(script.indexOf('if [ "$restart_required" = 0 ]; then'));
+      expect(preflight).toBeLessThan(script.indexOf('prebuilding proof-bound host bundle'));
+      expect(preflight).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('staging schema preparation before cutover (EI-24180022773715880)', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'staging-schema-'));
+    mkdirSync(join(root, 'apps/operator'), { recursive: true });
+    mkdirSync(join(root, 'packages/operator-core/lib'), { recursive: true });
+    writeFileSync(join(root, 'package.json'), '{"type":"module"}');
+    writeFileSync(join(root, 'apps/operator/tsconfig.json'), '{"compilerOptions":{"target":"ES2022"}}');
+    symlinkSync(join(__dirname, '../../../../node_modules'), join(root, 'node_modules'));
+    writeFileSync(join(root, 'packages/operator-core/lib/db-boot-migrate.ts'), `
+      import { appendFileSync, watch, existsSync } from 'node:fs';
+      export async function applyPendingMigrationsNow(options) {
+        appendFileSync(process.env.TRACE_FILE, JSON.stringify(options) + '\\n');
+        if (process.env.FIXTURE_RESULT === 'wait') {
+          await new Promise(resolve => {
+            const watcher = watch(process.cwd(), () => {
+              if (existsSync('release-backup')) { watcher.close(); resolve(); }
+            });
+            console.log('fixture-rendezvous-waiting');
+          });
+          return { applied: 1, failed: [] };
+        }
+        if (process.env.FIXTURE_RESULT === 'throw') throw new Error('snapshot admission refused');
+        return JSON.parse(process.env.FIXTURE_RESULT);
+      }
+    `);
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it.each(['null', '{"applied":0,"failed":[{"file":"pending.sql","error":"guard refused"}]}', 'throw'])(
+    'never requests restart when guarded preparation returns %s', (result) => {
+      const r = runFn(['prepare_staging_schema'],
+        'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+          env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: result },
+        });
+      expect(r.status).toBe(1);
+      expect(r.stdout).toContain('keeping the current fixture.service process');
+      expect(r.stdout).not.toContain('restart-requested');
+      expect(JSON.parse(readFileSync(join(root, 'trace'), 'utf8'))).toEqual({
+        sqlDir: join(root, 'libs/papercusp/libs/db/sql'), broadcast: false,
+      });
+    },
+  );
+
+  it('keeps the old host until the guarded backup wait settles, then permits cutover', async () => {
+    const child = spawn('bash', ['-c', [
+      'set -euo pipefail',
+      'source <(sed -n "/^prepare_staging_schema()/,/^}/p" "$SYNC_SCRIPT")',
+      'log() { printf "%s\\n" "$*"; }',
+      'prepare_staging_schema',
+      'echo restart-requested',
+    ].join('\n')], { env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, STAGING_ROOT: root,
+      UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: 'wait' } });
+    let output = '';
+    const closed = new Promise<number | null>((resolve) => child.on('close', resolve));
+    const waiting = new Promise<void>((resolve, reject) => {
+      child.stdout.on('data', (data) => {
+        output += String(data);
+        if (output.includes('fixture-rendezvous-waiting')) resolve();
+      });
+      child.on('error', reject);
+      child.on('exit', () => { if (!output.includes('fixture-rendezvous-waiting')) reject(new Error(output)); });
+    });
+    try {
+      await waiting;
+      expect(output).not.toContain('restart-requested');
+      writeFileSync(join(root, 'release-backup'), 'released');
+      expect(await closed).toBe(0);
+      expect(output.indexOf('target schema prepared:')).toBeLessThan(output.indexOf('restart-requested'));
+    } finally {
+      child.kill('SIGKILL');
+    }
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const prepare = script.indexOf('\nprepare_staging_schema\n');
+    expect(prepare).toBeGreaterThan(script.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash'));
+    expect(prepare).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
   });
 });
 
@@ -711,7 +828,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     // Advancing the checkout while keeping the old process would serve a NEW
     // SPA against an OLD server. The defer must therefore precede the build.
     const deferIdx = script.indexOf('deferring sync —');
-    const buildIdx = script.indexOf('bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
     expect(deferIdx).toBeGreaterThan(-1);
     expect(script.indexOf('staging_live_client_count "$STAGING_PORT"')).toBeGreaterThan(-1);
     if (buildIdx > -1) expect(deferIdx).toBeLessThan(buildIdx);
@@ -750,7 +867,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
 
   it('fails before advancing when the coordinated restart mechanism is unavailable', () => {
     const ptoolGateIdx = script.indexOf('coordinated dev:restart seam cannot run');
-    const buildIdx = script.indexOf('bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
     expect(ptoolGateIdx).toBeGreaterThan(-1);
     expect(buildIdx).toBeGreaterThan(-1);
     expect(ptoolGateIdx).toBeLessThan(buildIdx);

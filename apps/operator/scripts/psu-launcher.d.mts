@@ -188,6 +188,7 @@ export function parseArgs(argv: any): {
     agent: null;
     role: null;
     stack: never[];
+    selectedIdentityRevision: null;
     feature: null;
     workspace: null;
     harness: null;
@@ -2377,20 +2378,21 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
     forward?: undefined;
     auto?: undefined;
 }>;
-/** Pick the role. Interactively, 'su' (plain engineer) is the ONLY selectable
- *  choice — the pipeline roles (planner/worker/etc.) are deliberately NOT
- *  offered here (psu-su-only-interactive-picker-2026-06-30): they're meant for
- *  automated/scripted spawning (`psu --role=<role> --no-picker`, what the
- *  harness pipeline actually uses), not for a human to pick by hand. That flag
- *  path is untouched — it resolves `role` BEFORE this function is ever called
- *  (see the `args.role || null` check at the call site) and still reaches
- *  `roleFlow` exactly as before. The fixed SU choice needs no server metadata:
- *  fetching aggregate options here silently blocks the first local prompt on
- *  harness/account/model/fleet discovery (WI-2146951). Keep the caller's return
- *  shape with an empty roles list; scripted roles resolve their own metadata. */
+/** SU is the interactive execution tier. Identity is selected once the
+ * workspace/harness is known; scripted --role keeps its existing route. */
 export function pickRole(): Promise<{
     role: string;
     roles: never[];
+}>;
+/** Catalog rows are already source-validated by the operator. Preserve
+ * unusable entries as disabled choices with the actual failure reason. */
+export function identityPickerChoices(page: any): {
+    name: string;
+    value: string;
+}[];
+export function pickIdentity(workspace: any, harness: any): Promise<{
+    stack: string[];
+    selectedIdentityRevision: any;
 }>;
 export function usePtyHost({ env, stdin, stdout, }?: {
     env?: NodeJS.ProcessEnv | undefined;
@@ -3368,6 +3370,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     model?: any;
     persona_tier?: any;
     context_size?: any;
+    selected_identity_revision?: any;
     stack?: any[] | undefined;
     su_role?: any;
     profile?: any;
@@ -3674,8 +3677,9 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * Idempotent and non-destructive: a healthy home is left byte-identical and the
  * call reports `repaired: false`.
  */
-export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
+export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, model, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean | undefined;
+    model?: null | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: string | undefined;
     env?: NodeJS.ProcessEnv | undefined;
@@ -3753,7 +3757,7 @@ export const PUI_TUI_ORIGIN: "pui";
  * discoverable place to document it. The `--` escape hatch remains available
  * for backend-native flags that psu intentionally does not own.
  */
-export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)\n  --role=<role>                      Launch a role-scoped session\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --model-source=<source>            Codex provenance: explicit|inherited|configured-default\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --recovery-authorize               Locally authorize one exact diagnostic argv\n  --recovery-reason=<text>           Required authorization reason\n  --recovery-ttl=<seconds>           Grant lifetime (default 300, max 900)\n  --recovery-max-runtime=<seconds>   Command deadline (default 60, max 300)\n  --recovery-grant=<uuid>            Consume a signed one-use recovery grant\n  --                                 Forward remaining arguments to the backend\n\nRemote hosts (run psu on another machine; every other option is forwarded to it):\n  --connect[=<name>[/<workspace>]]   Run on a saved remote host (picker when omitted)\n  --connect-list                     List saved remote hosts and cloud workspaces\n  --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)\n  --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer\n  --connect-session=<key>            Reattach a specific cloud workspace shell\n  --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with\n                                     --connect-project, --connect-zone,\n                                     --connect-instance and --connect-user\n  --connect-remove=<name>            Forget a saved remote host\n\nValues may use either --name=value or (where supported) --name value form.\n";
+export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)\n  --role=<role>                      Launch a role-scoped session\n  --stack=<slot:id>                  Select an identity component (repeatable)\n  --identity-revision=<sha256>       Require the selected stack source revision\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --model-source=<source>            Codex provenance: explicit|inherited|configured-default\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --recovery-authorize               Locally authorize one exact diagnostic argv\n  --recovery-reason=<text>           Required authorization reason\n  --recovery-ttl=<seconds>           Grant lifetime (default 300, max 900)\n  --recovery-max-runtime=<seconds>   Command deadline (default 60, max 300)\n  --recovery-grant=<uuid>            Consume a signed one-use recovery grant\n  --                                 Forward remaining arguments to the backend\n\nRemote hosts (run psu on another machine; every other option is forwarded to it):\n  --connect[=<name>[/<workspace>]]   Run on a saved remote host (picker when omitted)\n  --connect-list                     List saved remote hosts and cloud workspaces\n  --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)\n  --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer\n  --connect-session=<key>            Reattach a specific cloud workspace shell\n  --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with\n                                     --connect-project, --connect-zone,\n                                     --connect-instance and --connect-user\n  --connect-remove=<name>            Forget a saved remote host\n\nValues may use either --name=value or (where supported) --name value form.\n";
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";

@@ -4283,10 +4283,10 @@ export function makeHeadlessCodexModelChoiceStateMachine({
   const startedAt = clock();
   let phase = enabled ? 'watching' : 'disabled';
   let observed = '';
-  const snapshot = (action = 'none') => ({ action, phase, active: phase === 'watching' });
+  const snapshot = (action = 'none') => ({ action, phase, active: phase === 'watching' || phase === 'await-existing' });
   return {
     observe(chunk, at = clock()) {
-      if (phase !== 'watching') return snapshot();
+      if (phase !== 'watching' && phase !== 'await-existing') return snapshot();
       if (at - startedAt >= windowMs) {
         phase = 'expired';
         observed = '';
@@ -4294,6 +4294,14 @@ export function makeHeadlessCodexModelChoiceStateMachine({
       }
       observed = `${observed}${String(chunk ?? '')}`.slice(-HEADLESS_CODEX_MODEL_CHOICE_BUFFER_CHARS);
       const visible = stripAnsi(observed).replace(/[\s\u00a0]+/g, '');
+      if (phase === 'await-existing') {
+        if (/›2\.Useexistingmodel/i.test(visible)) {
+          phase = 'complete';
+          observed = '';
+          return snapshot('confirm-existing');
+        }
+        return snapshot();
+      }
       if (!/Meet/i.test(visible) || !/1\.Trynewmodel/i.test(visible) || !/2\.Useexistingmodel/i.test(visible)) {
         return snapshot();
       }
@@ -4303,14 +4311,14 @@ export function makeHeadlessCodexModelChoiceStateMachine({
         return snapshot('confirm-existing');
       }
       if (/›1\.Trynewmodel/i.test(visible)) {
-        phase = 'complete';
+        phase = 'await-existing';
         observed = '';
         return snapshot('select-existing');
       }
       return snapshot();
     },
     complete() {
-      if (phase === 'watching') {
+      if (phase === 'watching' || phase === 'await-existing') {
         phase = 'complete';
         observed = '';
       }
@@ -6425,6 +6433,10 @@ export function hostThroughPty(o) {
   let childStartupOutput = '';
   let childStartupReady = false;
   let childPromptReady = false;
+  // A first composer can appear before Codex's delayed model offer. Keep the
+  // per-child choice watcher until a real turn is submitted, not merely until
+  // the first ready frame is painted.
+  let activeHeadlessCodexModelChoice = null;
   let childStartupFirstOutputAt = 0;
   // EI-24141825238362808: the child's own bracketed-paste mode, tracked over ALL
   // output (not only startup) so turn text is framed only while the TUI has it on.
@@ -7143,6 +7155,7 @@ export function hostThroughPty(o) {
                 try {
                   quotaBlockDetector.observeInput(chunks[i]);
                   child.write(chunks[i]);
+                  if (chunks[i].includes('\r')) activeHeadlessCodexModelChoice?.complete();
                 } catch {
                   /* the child may have exited under us */
                 }
@@ -7194,6 +7207,9 @@ export function hostThroughPty(o) {
             break;
           }
           lastMachineTurnSubmittedAtMs = Date.now();
+          // The submit CR has reached this child. Do not answer a model menu
+          // painted during the asynchronous proof wait as a startup choice.
+          activeHeadlessCodexModelChoice?.complete();
           if (requireInitialOutput) {
             // WI-10002745: record which readiness gate authorized this first
             // write, timed from when the text bytes were written. A kickoff
@@ -7288,6 +7304,7 @@ export function hostThroughPty(o) {
             dropReason = verificationFailure;
             break;
           }
+          activeHeadlessCodexModelChoice?.complete();
           return { delivered: true, attempts };
         }
         // Deferred: the child is still mid-boot / mid-turn. Retry until the
@@ -8621,8 +8638,14 @@ export function hostThroughPty(o) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
             sink.write(step.data);
+            if ((msg.mode === 'turn' || msg.mode === 'reset') && step.data.includes('\r')) {
+              activeHeadlessCodexModelChoice?.complete();
+            }
           }
-          if (msg.mode === 'turn' || msg.mode === 'reset') lastMachineTurnSubmittedAtMs = Date.now();
+          if (msg.mode === 'turn' || msg.mode === 'reset') {
+            lastMachineTurnSubmittedAtMs = Date.now();
+            activeHeadlessCodexModelChoice?.complete();
+          }
           machineTurnSubmitted = machineTurn;
         } finally {
           if (machineTurn) {
@@ -8846,6 +8869,18 @@ export function hostThroughPty(o) {
     const headlessCodexModelChoice = makeHeadlessCodexModelChoiceStateMachine({
       enabled: headlessCodexModelChoiceEnabled(env),
     });
+    activeHeadlessCodexModelChoice = headlessCodexModelChoice;
+    let codexModelChoiceConfirmTimer = null;
+    const confirmExistingModel = (selection) => {
+      if (codexModelChoiceConfirmTimer) clearTimeout(codexModelChoiceConfirmTimer);
+      codexModelChoiceConfirmTimer = null;
+      try {
+        child.write('\r');
+        appendHostEvent(ownerId, 'headless-codex-model-choice-kept-existing', { selection });
+      } catch {
+        /* child-exit teardown owns a vanished pty */
+      }
+    };
     if (headlessClaudeOnboarding.isActive()) {
       headlessClaudeOnboardingExpiryTimer = setTimeout(() => {
         const result = headlessClaudeOnboarding.expire();
@@ -8864,17 +8899,25 @@ export function hostThroughPty(o) {
     child.onData((d) => {
       const raw = typeof d === 'string' ? d : String(d);
       const codexModelChoice = headlessCodexModelChoice.observe(raw);
-      if (codexModelChoice.action === 'select-existing' || codexModelChoice.action === 'confirm-existing') {
+      if (codexModelChoice.action === 'select-existing') {
         try {
-          // The first row offers a model switch. Move to the second row before
-          // confirming so a managed launch retains its configured model.
-          child.write(codexModelChoice.action === 'select-existing' ? '\x1b[B\r' : '\r');
-          appendHostEvent(ownerId, 'headless-codex-model-choice-kept-existing', {
-            selection: codexModelChoice.action,
-          });
+          // Wait for Codex to repaint the selected second row. Sending Arrow
+          // and Enter in one PTY write can submit the still-selected first row.
+          const offeredChild = child;
+          child.write('\x1b[B');
+          codexModelChoiceConfirmTimer = setTimeout(() => {
+            if (child !== offeredChild ||
+                headlessCodexModelChoice.status().phase !== 'await-existing') return;
+            // A lost redraw must not strand a headless launch indefinitely.
+            headlessCodexModelChoice.complete();
+            confirmExistingModel('fallback-after-arrow');
+          }, 2_000);
+          codexModelChoiceConfirmTimer.unref?.();
         } catch {
           /* child-exit teardown owns a vanished pty */
         }
+      } else if (codexModelChoice.action === 'confirm-existing') {
+        confirmExistingModel('repaint-confirmed');
       }
       if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
       childBracketedPaste = bracketedPasteModeAfter(childBracketedPaste, childBracketedPasteTail, raw);
@@ -8957,9 +9000,8 @@ export function hostThroughPty(o) {
         // the full expiry window even when no wizard is present.
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }
-      // Once Codex has painted its real ready footer, a later model offer is
-      // no longer a launch-time choice for this child.
-      if (childStartupReady) headlessCodexModelChoice.complete();
+      // Codex can paint a composer before the model offer. Submission, above,
+      // disarms the watcher; a ready frame alone does not.
       if (!childPromptReady) {
         childPromptReady = freshChildPromptReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }

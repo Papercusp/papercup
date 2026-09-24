@@ -252,6 +252,8 @@ Launch context:
   --agent=<claude|omp|codex>         Backend to launch
   --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)
   --role=<role>                      Launch a role-scoped session
+  --stack=<slot:id>                  Select an identity component (repeatable)
+  --identity-revision=<sha256>       Require the selected stack source revision
   --workspace=<slug>                 Workspace context
   --harness=<slug>                   Harness context
   --feature=<id>                     Feature context
@@ -782,6 +784,7 @@ export function parseArgs(argv) {
     agent: null,
     role: null,
     stack: [],
+    selectedIdentityRevision: null,
     feature: null,
     workspace: null,
     harness: null,
@@ -1058,6 +1061,8 @@ export function parseArgs(argv) {
     else if (a.startsWith("--role=")) out.role = a.slice("--role=".length);
     else if (a === "--stack") pendingStack = true;
     else if (a.startsWith("--stack=")) out.stack.push(a.slice("--stack=".length));
+    else if (a.startsWith("--identity-revision="))
+      out.selectedIdentityRevision = a.slice("--identity-revision=".length);
     else if (a === "--feature") pendingFeature = true;
     else if (a.startsWith("--feature="))
       out.feature = a.slice("--feature=".length);
@@ -8580,26 +8585,58 @@ export async function chooseResumeAccount(session, args) {
 /** Sentinel for the "no feature" picker row (optional-feature roles). */
 const NO_FEATURE = "<no-feature>";
 
-/** Pick the role. Interactively, 'su' (plain engineer) is the ONLY selectable
- *  choice — the pipeline roles (planner/worker/etc.) are deliberately NOT
- *  offered here (psu-su-only-interactive-picker-2026-06-30): they're meant for
- *  automated/scripted spawning (`psu --role=<role> --no-picker`, what the
- *  harness pipeline actually uses), not for a human to pick by hand. That flag
- *  path is untouched — it resolves `role` BEFORE this function is ever called
- *  (see the `args.role || null` check at the call site) and still reaches
- *  `roleFlow` exactly as before. The fixed SU choice needs no server metadata:
- *  fetching aggregate options here silently blocks the first local prompt on
- *  harness/account/model/fleet discovery (WI-2146951). Keep the caller's return
- *  shape with an empty roles list; scripted roles resolve their own metadata. */
+/** SU is the interactive execution tier. Identity is selected once the
+ * workspace/harness is known; scripted --role keeps its existing route. */
 export async function pickRole() {
+  return { role: "su", roles: [] };
+}
+
+/** Catalog rows are already source-validated by the operator. Preserve
+ * unusable entries as disabled choices with the actual failure reason. */
+export function identityPickerChoices(page) {
+  const choices = [{ name: "SU  — default identity", value: "su" }];
+  for (const identity of page.identities || []) {
+    for (const slot of identity.slots || []) {
+      const ref = `${slot.slot}:${identity.id}`;
+      choices.push({
+        name: `${identity.id}  ·  ${slot.slot}  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}`,
+        value: ref,
+        ...(slot.cardinality && /^[a-f0-9]{64}$/.test(identity.sourceRevision || "")
+          ? {} : { disabled: "unsupported slot or source revision unavailable" }),
+      });
+    }
+  }
+  for (const entry of page.unreadable || []) {
+    choices.push({ name: `${entry.id}  ·  invalid: ${entry.error}`, value: `invalid:${entry.id}`,
+      disabled: entry.error });
+  }
+  if (page.nextAfter) choices.push({ name: "Load more identities…", value: "__next__" });
+  return choices;
+}
+
+export async function pickIdentity(workspace, harness) {
   const { select } = await import("@inquirer/prompts");
-  const role = await select({
-    message: "Role",
-    choices: [
-      { name: "su  — engineer collaborator (full SU catalog)", value: "su" },
-    ],
-  });
-  return { role, roles: [] };
+  let after = null;
+  for (;;) {
+    const query = new URLSearchParams({ identities: "1", limit: "30" });
+    if (workspace) query.set("workspace", workspace);
+    if (harness) query.set("harness", harness);
+    if (after) query.set("after", after);
+    const page = await api(`/api/agent-mcp/console/bootstrap-su/options?${query}`);
+    const choice = await select({ message: "Identity", default: "su", choices: identityPickerChoices(page) });
+    if (choice === "su") return { stack: [], selectedIdentityRevision: null };
+    if (choice === "__next__") {
+      if (!page.nextAfter || page.nextAfter === after) throw new Error("identity catalog cursor did not advance");
+      after = page.nextAfter;
+      continue;
+    }
+    const identity = (page.identities || []).find((entry) =>
+      entry.slots?.some((slot) => `${slot.slot}:${entry.id}` === choice));
+    if (!identity || !/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")) {
+      throw new Error("selected identity has no validated source revision");
+    }
+    return { stack: [choice], selectedIdentityRevision: identity.sourceRevision };
+  }
 }
 
 /** Role sessions support claude, omp, and codex interactively. codex
@@ -11250,6 +11287,13 @@ export function runWrapper(options) {
             ownerId,
             env.CODEX_HOME || null,
             env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+            {
+              model: detectRespawnModelSpec(args, {
+                ownerId,
+                agent: env.PAPERCUSP_AGENT,
+                configDir: env.CLAUDE_CONFIG_DIR || null,
+              }),
+            },
           ),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
         // re-render the base persona instead of inheriting the predecessor's file,
@@ -12357,6 +12401,7 @@ async function launchResume(
         session.id ?? null,
         {
           requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+          model: resumeModel || lastActiveModelFor(session) || null,
         },
       );
       // An exact resume reuses an older per-session CODEX_HOME. If that home
@@ -12650,6 +12695,8 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   argv.push(selections.plan ? `--plan=${selections.plan}` : "--no-plan");
   if (args.profile) argv.push(`--profile=${args.profile}`);
   for (const ref of args.stack || []) argv.push(`--stack=${ref}`);
+  if (args.selectedIdentityRevision)
+    argv.push(`--identity-revision=${args.selectedIdentityRevision}`);
   if (args.contextSize) argv.push(`--context-size=${args.contextSize}`);
   // P-005: MUST be re-emitted here — this record is what lands on
   // adv_sessions.launch_argv, and the compaction watchdog reads the limit back OFF
@@ -12742,6 +12789,8 @@ export function freshSuBootstrapBody(
     // free-text append surface. Omitted for a plain su launch ⇒ byte-identical.
     ...(args.suRole ? { su_role: args.suRole } : {}),
     ...(args.stack?.length ? { stack: [...args.stack] } : {}),
+    ...(args.selectedIdentityRevision
+      ? { selected_identity_revision: args.selectedIdentityRevision } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
     // context-trimming-tiers P-017: explicit persona tier; omitted ⇒ server auto-select.
     ...(args.personaTier ? { persona_tier: args.personaTier } : {}),
@@ -13941,6 +13990,7 @@ export async function ensureCodexHomeViaOperator(
   advSessionId,
   {
     requireGatewayProvider = false,
+    model = null,
     fetchImpl = fetch,
     // A resume can inherit a stale PAPERCUSP_HONO_PORT from the judge/runtime.
     // Resolve the runtime route only when repair is actually needed; explicit
@@ -13982,14 +14032,19 @@ export async function ensureCodexHomeViaOperator(
           "content-type": "application/json",
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
-        body: JSON.stringify({ owner, advSessionId, requireGatewayProvider }),
+        body: JSON.stringify({
+          owner,
+          advSessionId,
+          requireGatewayProvider,
+          ...(model ? { model } : {}),
+        }),
       },
     );
     const r = await res.json().catch(() => null);
     if (!r?.ok) return null;
     if (r.repaired) {
       console.error(
-        "psu: repaired this session's codex home config/hooks identity in place (rollouts and prompts were preserved).",
+        "psu: repaired this session's codex home config/hooks/instructions in place (existing rollouts were preserved).",
       );
     }
     return r;
@@ -15270,6 +15325,11 @@ async function main() {
     if (!args.contextSize) args.contextSize = SU_CONTEXT_SIZE;
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
+    if (!args.stack?.length && role === "su") {
+      const identity = await pickIdentity(workspace, harness);
+      args.stack = identity.stack;
+      args.selectedIdentityRevision = identity.selectedIdentityRevision;
+    }
     const plan = p.needPlan
       ? planValue(await pickPlan(workspace, harness))
       : p.plan;

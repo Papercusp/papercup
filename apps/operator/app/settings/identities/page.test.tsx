@@ -17,10 +17,14 @@ const H = vi.hoisted(() => ({
   queryKeys: new Set<string>(),
   initialQuery: new Map<string, string>(),
   sync: new Map<string, Record<string, unknown>>(),
+  queryArgs: new Map<string, unknown>(),
 }));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) => H.sync.get(queryName),
+  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
+    H.queryArgs.set(queryName, args);
+    return H.sync.get(queryName);
+  },
   useSyncMutate: () => H.mutate,
 }));
 
@@ -93,6 +97,7 @@ const identity = {
   sourceId: "research-steward",
   tier: "built-in",
   version: "0.1.0",
+  sourceRevision: "a".repeat(64),
   description: "Research and documentation stewardship",
   slots: [{ slot: "domain", cardinality: "exclusive" as const }],
   sourcePath: "/blueprints/research-steward/blueprint.yaml",
@@ -110,7 +115,10 @@ function surface(
   const applied = revision("a");
   return {
     identities: [identity],
-    unreadable: [],
+    unreadable: [] as Array<{ id: string; error: string }>,
+    catalogAfter: null,
+    catalogNextAfter: null as string | null,
+    catalogScanned: 1,
     session: {
       ownerId: "su-target",
       agent: "codex",
@@ -218,12 +226,27 @@ beforeEach(() => {
   H.queryKeys.clear();
   H.initialQuery.clear();
   H.sync.clear();
+  H.queryArgs.clear();
   seed();
 });
 
 afterEach(cleanup);
 
 describe("IdentitySettingsPage", () => {
+  it("pages the catalog and keeps invalid sources visible with their reasons", () => {
+    const first = surface();
+    first.catalogNextAfter = "research-steward";
+    first.unreadable = [{ id: "broken-identity", error: "attestation-missing" }];
+    H.sync.set("identities.surface", { data: [first], loading: false, error: null,
+      invalidate: H.invalidate });
+    render(<IdentitySettingsPage />);
+    expect(screen.getByLabelText("Invalid identity broken-identity").textContent)
+      .toContain("attestation-missing");
+    expect(screen.getByText("Source revision")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(H.queryArgs.get("identities.surface")).toEqual({ ownerId: "su-target",
+      after: "research-steward", limit: 30 });
+  });
   it("renders the installed library and labels only the host-acknowledged identity Applied", () => {
     render(<IdentitySettingsPage />);
 

@@ -155,6 +155,17 @@ afterEach(async () => {
 });
 
 describe("plans:get — lifecycle signals are scoped to the plan row's workspace", () => {
+  it.each(["acceptance-alpha", null])("reuses the source snapshot's measured acceptance ref %s", async (ref) => {
+    M.readPlanBySlug.mockImplementationOnce(async (slug: string) => {
+      const fixture = M.planFixture(slug);
+      return { ...fixture, row: { ...fixture.row, activeAcceptanceRubricRef: ref } };
+    });
+    await run({ slug: "alpha" });
+    expect(M.readPlanBySlug).toHaveBeenCalledWith("alpha",
+      expect.objectContaining({ prefetchAcceptance: true }), expect.any(Object));
+    expect(signalsOfLastCall()).toMatchObject({ acceptanceRubricRef: ref });
+  });
+
   it("passes row.workspaceId to the signal lookup, NOT the legacy default constant", async () => {
     // Guard the guard: the fixture workspace must differ from the constant, or the
     // assertion below could not tell the fix from the regression.

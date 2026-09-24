@@ -260,6 +260,8 @@ interface LaunchHeader {
   type: string | null;
   workspaceId: unknown;
   harnessSlug: unknown;
+  hasAcceptedOperation: boolean;
+  acceptedOperation: unknown;
 }
 const LAUNCH_HEADER_MEMO_MAX = 512;
 const launchHeaderMemo = pinModuleState('@papercusp/operator-core.identity-launch-header-memo', () =>
@@ -276,12 +278,16 @@ function resolveLaunchHeader(
     launch_spec_type?: string | null;
     launch_spec_workspace_id?: unknown;
     launch_spec_harness_slug?: unknown;
+    launch_spec_has_accepted_operation?: boolean | null;
+    launch_spec_accepted_operation?: unknown;
   } | undefined,
-): Pick<LaunchHeader, 'type' | 'workspaceId' | 'harnessSlug'> {
+): Pick<LaunchHeader, 'type' | 'workspaceId' | 'harnessSlug' | 'hasAcceptedOperation' | 'acceptedOperation'> {
   const read = {
     type: row?.launch_spec_type ?? null,
     workspaceId: row?.launch_spec_workspace_id ?? null,
     harnessSlug: row?.launch_spec_harness_slug ?? null,
+    hasAcceptedOperation: row?.launch_spec_has_accepted_operation === true,
+    acceptedOperation: row?.launch_spec_accepted_operation ?? null,
   };
   if (row?.adv_session_id == null || row.adv_session_xmin == null) return read;
   const sessionId = String(row.adv_session_id);
@@ -354,6 +360,8 @@ export async function readControlAnchorKernelState(
         launch_spec_type?: string | null;
         launch_spec_workspace_id?: unknown;
         launch_spec_harness_slug?: unknown;
+        launch_spec_has_accepted_operation?: boolean | null;
+        launch_spec_accepted_operation?: unknown;
       }
     | undefined;
   let controlReadFailed = false;
@@ -368,10 +376,13 @@ export async function readControlAnchorKernelState(
       launch_spec_type?: string | null;
       launch_spec_workspace_id?: unknown;
       launch_spec_harness_slug?: unknown;
+      launch_spec_has_accepted_operation?: boolean | null;
+      launch_spec_accepted_operation?: unknown;
     }>>`
       SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
              a.id AS adv_session_id, a.launch_header_known,
              a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,
+             a.launch_spec_has_accepted_operation, a.launch_spec_accepted_operation,
              a.launch_spec_xmin AS adv_session_xmin
         FROM (
           SELECT control_state, control_generation, workspace_id
@@ -387,7 +398,11 @@ export async function readControlAnchorKernelState(
                  CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
                       ELSE s.launch_spec->'workspaceId' END AS launch_spec_workspace_id,
                  CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
-                      ELSE s.launch_spec->'harnessSlug' END AS launch_spec_harness_slug
+                      ELSE s.launch_spec->'harnessSlug' END AS launch_spec_harness_slug,
+                 CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
+                      ELSE s.launch_spec ? 'acceptedOperation' END AS launch_spec_has_accepted_operation,
+                 CASE WHEN s.id::text = ${knownId} AND s.xmin::text = ${knownXmin} THEN NULL
+                      ELSE s.launch_spec->'acceptedOperation' END AS launch_spec_accepted_operation
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
            ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
@@ -468,6 +483,8 @@ export async function readControlAnchorKernelState(
           isObject: launchHeader.type === 'object',
           workspaceId: launchHeader.workspaceId,
           harnessSlug: launchHeader.harnessSlug,
+          hasAcceptedOperation: launchHeader.hasAcceptedOperation,
+          acceptedOperation: launchHeader.acceptedOperation,
           load: () => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId),
         }) } : {}),
     ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null

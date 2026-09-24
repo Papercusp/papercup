@@ -60,6 +60,16 @@ import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs'
 // @ts-expect-error — same plain-Node .mjs CLI, no declaration file.
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
+// Tests of main() are harness-scoped even when a caller invokes test:file without
+// the optional scope env. Otherwise its unscoped-run warning trips fail-on-console
+// before the router behavior under test can be asserted.
+const callerHarness = process.env.PAPERCUSP_TEST_RUN_HARNESS;
+beforeEach(() => { process.env.PAPERCUSP_TEST_RUN_HARNESS = 'papercusp'; });
+afterEach(() => {
+  if (callerHarness === undefined) delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
+  else process.env.PAPERCUSP_TEST_RUN_HARNESS = callerHarness;
+});
+
 describe('test-files router', () => {
   it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
     expect(testFileRunTimeoutMs({})).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
@@ -150,6 +160,18 @@ describe('test-files router', () => {
       expect(route.cwd).toBe(REPO_ROOT);
       expect(route.config).toBeNull();
       expect(route.requested).toBe(file);
+    }
+  });
+
+  it('refuses packaged WebdriverIO specs before the root Vitest fallback', async () => {
+    const file = 'tools/perf-test/wdio/specs/plan-popup-open.perf.spec.ts';
+    expect(() => discoverTestRoute(file)).toThrow(/run npm run test:wdio --prefix tools\/perf-test\/wdio/);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await main(['--dry', file])).not.toBe(0);
+      expect(errorSpy.mock.calls.map((call) => String(call[0])).join('\n')).toContain('TEST_FILE_ROUTE_ERROR');
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

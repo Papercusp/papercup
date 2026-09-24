@@ -95,6 +95,21 @@ describe('native requests through the shared PUI card correlator', () => {
     await expect(pending).resolves.toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Which features?': 'Search, Offline' } } });
   });
 
+  it('answers a wrapped Claude native question as a choice card instead of a generic MCP permission', async () => {
+    const f = fixture();
+    const pending = f.cards.handleClaude('mcp__papercusp-su__tools_invoke', {
+      name: 'AskUserQuestion', args: { questions: [{ question: 'Keep or change?', multiSelect: false,
+        options: [{ label: 'Keep' }, { label: 'Change' }] }] },
+    }, 'turn', { signal: new AbortController().signal, toolUseID: 'wrapped-question', requestId: 'wrapped-request' });
+    expect(f.events.at(-1)).toMatchObject({ type: 'card', phase: 'opened',
+      card: { prompt: 'Keep or change?', presentation: { kind: 'radio' } } });
+    expect(openedChoiceLabels(f.events)).toEqual(['Keep', 'Change', 'Type a different answer']);
+    expect(f.answer({ picks: ['1'] }).ok).toBe(true);
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny',
+      message: expect.stringContaining('"Keep or change?":"Change"') });
+    expect(f.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+  });
+
   it('cancels only the aborted Claude request and leaves a concurrent permission answerable', async () => {
     const f = fixture(); const aborted = new AbortController();
     const first = f.cards.handleClaude('Bash', { command: 'first' }, 'turn', {

@@ -35,6 +35,8 @@ const db = vi.hoisted(() => {
       launch_spec_type: skipped ? null : typeOf(spec),
       launch_spec_workspace_id: skipped ? null : header.workspaceId ?? null,
       launch_spec_harness_slug: skipped ? null : header.harnessSlug ?? null,
+      launch_spec_has_accepted_operation: skipped ? null : Object.prototype.hasOwnProperty.call(header, 'acceptedOperation'),
+      launch_spec_accepted_operation: skipped ? null : header.acceptedOperation ?? null,
     };
   };
   // The guard's first comparison is `(s.id::text = ${knownId} AND s.xmin::text = ${knownXmin})`.
@@ -514,7 +516,7 @@ describe('P-005 grants reach actual execution boundaries', () => {
     const pin = {
       kind: 'capability-provider' as const, ref: classRef, providerPackage: 'mail-provider',
       providerVersion: '1.0.0', conformanceRunId: 'run-a', registryRevision: 'registry-a',
-      verbBindings: { send: 'mail:send' },
+      verbBindings: { send: 'mail:send', read: 'mail:read' },
     };
     const artifact = compileAgentSpecification({
       source: {
@@ -528,8 +530,8 @@ describe('P-005 grants reach actual execution boundaries', () => {
       launch_spec: { workspaceId: 'ws-a', harnessSlug: 'sales', ...revision, specificationArtifact: artifact },
     });
     const policy: IdentityGrantPolicy = {
-      policyRevision: 'policy-a', potSlug: 'sales', ceilings: [{ allowCapabilities: ['mail:send'] }],
-      protectedAdditions: [], tools: new Map([['mail:send', ['mail:send']]]),
+      policyRevision: 'policy-a', potSlug: 'sales', ceilings: [{ allowCapabilities: ['mail:send', 'mail:read'] }],
+      protectedAdditions: [], tools: new Map([['mail:send', ['mail:send']], ['mail:read', ['mail:read']]]),
       bindings: [{
         classRef, providerPackage: pin.providerPackage, providerVersion: pin.providerVersion,
         conformanceRunId: pin.conformanceRunId, registryRevision: pin.registryRevision, verbBindings: pin.verbBindings,
@@ -540,10 +542,10 @@ describe('P-005 grants reach actual execution boundaries', () => {
     return { row, policy, revision };
   }
 
-  function tool(fn: ProjectedTool['fn']): ProjectedTool {
+  function tool(fn: ProjectedTool['fn'], name = 'mail:send'): ProjectedTool {
     return {
       pluginName: 'fixture', description: 'fixture', inputSchema: { type: 'object' },
-      capabilities: [], expose: { mcp: { name: 'mail:send' } }, fn,
+      capabilities: [], expose: { mcp: { name } }, fn,
     };
   }
 
@@ -627,6 +629,37 @@ describe('P-005 grants reach actual execution boundaries', () => {
     expect(refused.ok).toBe(false);
     expect(refused.error?.message).toContain('provider-unbound');
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('permits one accepted operation tool and blocks another permitted-by-identity tool at direct and nested dispatch', async () => {
+    const f = grantedRow();
+    const acceptedOperation = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+      specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+    };
+    const row = { ...f.row, launch_spec: { ...f.row.launch_spec, acceptedOperation } };
+    grants.read.mockResolvedValue(f.policy);
+    for (let i = 0; i < 8; i++) db.rows.push([row]);
+    const send = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'sent' }] }));
+    const read = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'read' }] }));
+    const allowed = await dispatchProjectedTool(tool(send), 'mail:send', {}, ctx(), {
+      kernelEnforcement: controlAnchorKernelResolver,
+    });
+    expect(allowed.ok).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
+    for (const kernelBoundary of ['dispatch', 'indirect-dispatch'] as const) {
+      const refused = await dispatchProjectedTool(tool(read, 'mail:read'), 'mail:read', {}, ctx({ kernelBoundary }), {
+        kernelEnforcement: controlAnchorKernelResolver,
+      });
+      expect(refused.ok).toBe(false);
+      expect(refused.error?.message).toContain('outside-ceiling');
+    }
+    expect(read).not.toHaveBeenCalled();
+    installControlAnchorKernelResolver();
+    const spawn = vi.fn(async () => ({ stdout: '', stderr: '', code: 0, killed: false }));
+    const native = wrapOperatorKernelSpawn(spawn, ctx(), ['mail:send']);
+    await expect(native('sh', ['-c', 'true'])).rejects.toThrow('outside-ceiling');
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('refuses native shell execution even when the caller supplies a granted capability label', async () => {

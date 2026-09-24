@@ -35,6 +35,13 @@ describe('identities.surface named query', () => {
     expect(H.readSurface).not.toHaveBeenCalled();
   });
 
+  it('passes a bounded catalog cursor through the existing surface resolver', async () => {
+    await resolveNamedQueryV2('identities.surface', { ownerId: 'su-target', after: 'identity-a', limit: 20 });
+    expect(H.readSurface).toHaveBeenCalledWith({ workspaceId: 'ws-test', ownerId: 'su-target',
+      after: 'identity-a', limit: 20 });
+    await expect(resolveNamedQueryV2('identities.surface', { after: 'x', limit: 101 })).rejects.toBeTruthy();
+  });
+
   it('invalidates for every table that contributes activation truth', () => {
     for (const table of [
       'harness_shared.adv_sessions',

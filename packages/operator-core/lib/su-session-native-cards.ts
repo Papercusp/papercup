@@ -67,6 +67,17 @@ export class SuNativeCards {
     const deny = (message = 'The PUI response was declined or cancelled') => ({ behavior: 'deny' as const, message });
     try {
       if (options.signal.aborted) return deny();
+      // A deferred MCP wrapper can carry a native AskUserQuestion request. It
+      // cannot execute that client-local tool, so ask through the same PUI card
+      // and return the owner's answer to Claude as the denied wrapper result.
+      // Otherwise the owner sees a generic "Allow tools_invoke?" permission
+      // whose raw JSON offers no way to choose an answer.
+      if (toolName === 'mcp__papercusp-su__tools_invoke' && input.name === 'AskUserQuestion') {
+        const answered = await this.handleClaude('AskUserQuestion', record(input.args), turnId, options);
+        if (!answered || answered.behavior !== 'allow') return answered ?? deny();
+        const answers = record(record(answered).updatedInput).answers;
+        return deny(`PUI owner answered AskUserQuestion: ${JSON.stringify(answers)}. The MCP wrapper cannot execute this native tool; continue using the recorded answer without asking again.`);
+      }
       if (toolName !== 'AskUserQuestion') {
         const prompt = [options.title || `Allow ${toolName}?`, options.description, options.decisionReason,
           JSON.stringify(input, null, 2)].filter(Boolean).join('\n');

@@ -544,7 +544,10 @@ export async function checkIdentityGrantKernel(
   // reads before and after resolution, so a cache hit never loads the body.
   const lazy = isLazyIdentityLaunchRecord(rawRecord) ? rawRecord : null;
   let record: Record<string, unknown> | null = lazy
-    ? (lazy.isObject ? { workspaceId: lazy.workspaceId, harnessSlug: lazy.harnessSlug } : null)
+    ? (lazy.isObject ? {
+        workspaceId: lazy.workspaceId, harnessSlug: lazy.harnessSlug,
+        ...(lazy.hasAcceptedOperation ? { acceptedOperation: lazy.acceptedOperation } : {}),
+      } : null)
     : object(rawRecord);
   let version = state.identityLaunchRecordVersion;
   const applied = state.activation?.applied ?? state.appliedRevision;
@@ -628,6 +631,23 @@ export async function checkIdentityGrantKernel(
     );
   }
   const toolName = resolveMcpName(request.toolName)?.expose.mcp?.name ?? request.toolName;
+  // The accepted operation's requested tools are a further ceiling carried by
+  // the host-owned launch receipt. Tool arguments and nested dispatch cannot
+  // alter this list. An empty list deliberately permits no operation tools.
+  if ('acceptedOperation' in record) {
+    const accepted = object(record.acceptedOperation);
+    const tools = accepted?.requiredTools;
+    if (accepted?.kind !== 'blueprint-operation-worker' ||
+        typeof accepted.workItemId !== 'string' || !accepted.workItemId ||
+        typeof accepted.specificationRevision !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(accepted.specificationRevision) ||
+        !Array.isArray(tools) || !tools.every((name) => typeof name === 'string' && name.length > 0) ||
+        !tools.includes(toolName)) {
+      return denyUnlessRecoveryDoor(
+        request, 'outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision,
+      );
+    }
+  }
   for (const specification of [artifact, current]) {
     const envelope = resolveIdentityGrantEnvelope({
       specification, appliedSpecificationRevision: specification.specificationRevision, ...policy,

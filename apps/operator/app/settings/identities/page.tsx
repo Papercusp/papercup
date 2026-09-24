@@ -38,6 +38,7 @@ interface IdentitySummary {
   sourceId: string;
   tier: string;
   version?: string | null;
+  sourceRevision?: string | null;
   description?: string | null;
   slots: Array<{ slot: string; cardinality: "exclusive" | "additive" | null }>;
   sourcePath: string;
@@ -78,6 +79,9 @@ interface ArtifactHistoryEntry extends Revision {
 interface IdentitySurface {
   identities: IdentitySummary[];
   unreadable: Array<{ id: string; error: string }>;
+  catalogAfter: string | null;
+  catalogNextAfter: string | null;
+  catalogScanned: number;
   session: null | {
     ownerId: string;
     agent: string;
@@ -295,14 +299,22 @@ export default function IdentitySettingsPage() {
     [rosterQuery.data],
   );
   const effectiveAgentId = agentId || agents[0]?.ownerId || "";
+  const [catalogAfter, setCatalogAfter] = useState<string | null>(null);
+  const [catalogHistory, setCatalogHistory] = useState<Array<string | null>>([]);
+  useEffect(() => {
+    setCatalogAfter(null);
+    setCatalogHistory([]);
+  }, [effectiveAgentId]);
   const identityQuery = useSyncQuery<IdentitySurface>({
     queryName: "identities.surface",
-    args: effectiveAgentId ? { ownerId: effectiveAgentId } : {},
+    args: { ...(effectiveAgentId ? { ownerId: effectiveAgentId } : {}),
+      ...(catalogAfter ? { after: catalogAfter } : {}), limit: 30 },
   });
   const surface = identityQuery.data?.[0] ?? null;
   const identities = surface?.identities ?? [];
   const selected =
     identities.find((identity) => identity.id === identityId) ??
+    identities.find((identity) => identity.id === "papercusp-engineer") ??
     identities[0] ??
     null;
   const requestedSlot = slotFilter === "all" ? "" : slotFilter;
@@ -519,7 +531,7 @@ export default function IdentitySettingsPage() {
                 type="search"
                 value={search}
                 onChange={(event) => void setSearch(event.target.value)}
-                placeholder="Search identities…"
+                placeholder="Search this page…"
                 aria-label="Search installed identities"
               />
             </label>
@@ -579,10 +591,31 @@ export default function IdentitySettingsPage() {
               })}
               {visible.length === 0 && (
                 <div className="pc-identities__empty">
-                  <strong>No identities match</strong>
-                  <span>Clear the search or choose another slot.</span>
+                  <strong>No selectable identities match on this page</strong>
+                  <span>Clear the search, choose another slot, or load the next page.</span>
                 </div>
               )}
+              {(surface?.unreadable ?? []).map((row) => (
+                <div key={`invalid:${row.id}`} className="pc-identities__identity pc-identities__identity--invalid"
+                  role="status" aria-label={`Invalid identity ${row.id}`}>
+                  <strong>{row.id}</strong>
+                  <small>Invalid source: {row.error}</small>
+                </div>
+              ))}
+            </div>
+            <div className="pc-identities__catalog-pages" aria-label="Identity catalog pages">
+              <Button variant="ghost" disabled={catalogHistory.length === 0 || identityQuery.loading}
+                onClick={() => {
+                  setCatalogAfter(catalogHistory.at(-1) ?? null);
+                  setCatalogHistory(catalogHistory.slice(0, -1));
+                }}>Previous</Button>
+              <span>Page {catalogHistory.length + 1}</span>
+              <Button variant="ghost" disabled={!surface?.catalogNextAfter || identityQuery.loading}
+                onClick={() => {
+                  if (!surface?.catalogNextAfter) return;
+                  setCatalogHistory([...catalogHistory, catalogAfter]);
+                  setCatalogAfter(surface.catalogNextAfter);
+                }}>Load more</Button>
             </div>
           </div>
 
@@ -608,6 +641,10 @@ export default function IdentitySettingsPage() {
                   <div>
                     <dt>Version</dt>
                     <dd>{selected.version || "unversioned"}</dd>
+                  </div>
+                  <div>
+                    <dt>Source revision</dt>
+                    <dd><code>{shortRevision(selected.sourceRevision)}</code></dd>
                   </div>
                   <div>
                     <dt>Source id</dt>
@@ -952,22 +989,6 @@ export default function IdentitySettingsPage() {
             lands; no placeholder write is exposed now.
           </p>
         </section>
-      )}
-
-      {surface?.unreadable && surface.unreadable.length > 0 && (
-        <details className="pc-identities__unreadable">
-          <summary>
-            {surface.unreadable.length} identity source
-            {surface.unreadable.length === 1 ? "" : "s"} could not be read
-          </summary>
-          <ul>
-            {surface.unreadable.map((row) => (
-              <li key={row.id}>
-                <code>{row.id}</code>: {row.error}
-              </li>
-            ))}
-          </ul>
-        </details>
       )}
 
       <style>{`

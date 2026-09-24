@@ -8,6 +8,7 @@ import { collectChildOutput } from '@papercusp/operator-core/lib/child-output';
 const WRAPPER = resolve(__dirname, '..', 'systemd', 'papercusp-script-snapshot.sh');
 const DB_UNIT = resolve(__dirname, '..', 'systemd', 'papercusp-db-backup.service');
 const HEALTH_UNIT = resolve(__dirname, '..', 'systemd', 'papercup-backup-health.service');
+const STAGING_DROPIN = resolve(__dirname, '..', 'systemd', 'papercup-staging-sync.service.d', '50-script-snapshot.conf');
 
 async function writeExecutable(path: string, body: string) {
   await writeFile(path, body);
@@ -44,6 +45,55 @@ async function waitForFile(path: string) {
 }
 
 describe('papercusp-script-snapshot.sh', () => {
+  it('routes staging sync and its mutable setup script through the shared snapshot launcher', async () => {
+    const dropin = await readFile(STAGING_DROPIN, 'utf8');
+    expect(dropin).toContain('ExecStart=\nExecStart=/usr/bin/bash ');
+    expect(dropin).toMatch(/ExecStart=.*papercusp-script-snapshot\.sh .*sync-staging-checkout\.sh/);
+    const script = await readFile(resolve(__dirname, '../../bin/release/sync-staging-checkout.sh'), 'utf8');
+    expect(script).toMatch(/bash "\$INTEGRATION_ROOT\/apps\/operator\/scripts\/systemd\/papercusp-script-snapshot\.sh" \\\n\s+"\$INTEGRATION_ROOT\/apps\/operator\/bin\/release\/setup-release-checkout\.sh"/);
+  });
+
+  it.each([false, true])('distinguishes lazy source mutation with snapshot=%s', async (snapshot) => {
+    const dir = await mkdtemp(join(tmpdir(), 'staging-script-live-edit-'));
+    try {
+      const target = join(dir, 'sync.sh');
+      const ready = join(dir, 'ready');
+      const release = join(dir, 'release');
+      expect(spawnSync('mkfifo', [release]).status).toBe(0);
+      await writeExecutable(target, [
+        '#!/usr/bin/env bash',
+        'printf ready > "$READY_FILE"',
+        'read -r token < "$RELEASE_PIPE"',
+        '# padding beyond the parser buffer\n'.repeat(10000),
+        'echo ORIGINAL',
+      ].join('\n'));
+      const child = spawn('bash', snapshot ? [WRAPPER, target] : [target], {
+        cwd: dir, env: { ...process.env, TMPDIR: dir, READY_FILE: ready, RELEASE_PIPE: release },
+      });
+      const output = collectChildOutput(child);
+      const finished = new Promise<number | null>((done, reject) => {
+        child.once('error', reject);
+        child.once('close', done);
+      });
+      try {
+        await waitForFile(ready);
+        await writeExecutable(target, '#!/usr/bin/env bash\necho MUTATED\n');
+        await writeFile(release, 'resume\n');
+        const status = await finished;
+        if (snapshot) {
+          expect(status).toBe(0);
+          expect(output.stdout.text().trim()).toBe('ORIGINAL');
+        } else {
+          expect(output.stdout.text()).not.toContain('ORIGINAL');
+        }
+      } finally {
+        child.kill('SIGKILL');
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the systemd ExecStart wrapper executable', async () => {
     expect((await stat(WRAPPER)).mode & 0o111).toBe(0o111);
   });

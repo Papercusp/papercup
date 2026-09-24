@@ -48,6 +48,9 @@ export interface LazyIdentityLaunchRecord {
    */
   readonly workspaceId: unknown;
   readonly harnessSlug: unknown;
+  /** Small operation policy read beside the row version, including presence. */
+  readonly hasAcceptedOperation: boolean;
+  readonly acceptedOperation: unknown;
   /**
    * Read the full record. Called at most once per preflight, and only on an
    * identity-resolution cache miss. A throw propagates to the kernel resolver,
@@ -64,6 +67,8 @@ export function lazyIdentityLaunchRecord(
     isObject: fields.isObject,
     workspaceId: fields.workspaceId,
     harnessSlug: fields.harnessSlug,
+    hasAcceptedOperation: fields.hasAcceptedOperation,
+    acceptedOperation: fields.acceptedOperation,
     load: fields.load,
   };
 }

@@ -508,6 +508,24 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
   });
 
+  it('turns a deferred tools_invoke AskUserQuestion into a PUI choice card', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const pending = p.options()!.canUseTool!('mcp__papercusp-su__tools_invoke', {
+      name: 'AskUserQuestion', args: { questions: [{ question: 'Keep or change?', multiSelect: false,
+        options: [{ label: 'Keep' }, { label: 'Change' }] }] },
+    }, { signal: new AbortController().signal, toolUseID: 'wrapped-question', requestId: 'wrapped-request' });
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const [card] = openCards(engine);
+    expect(card).toMatchObject({ prompt: 'Keep or change?', presentation: { kind: 'radio' } });
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner');
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(pending).resolves.toMatchObject({ behavior: 'deny',
+      message: expect.stringContaining('"Keep or change?":"Change"') });
+    expect(openCards(engine)).toHaveLength(0);
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+  });
+
   it('returns a native denial when a PUI permission is declined and cancels questions on interrupt', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;

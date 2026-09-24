@@ -395,6 +395,17 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
     throw new Error(`requested test file is outside the repository: ${absolute}`);
   }
 
+  // These specs belong to the packaged Tauri/WebdriverIO runner. Letting the
+  // repository-root Vitest config collect one produces a false test failure
+  // ("describe is not defined") before the desktop interaction is exercised.
+  const normalized = rootRelative.split(sep).join('/');
+  if (normalized.startsWith('tools/perf-test/wdio/specs/') && /\.spec\.[cm]?[jt]sx?$/.test(normalized)) {
+    throw new Error(
+      `packaged desktop WebdriverIO spec ${rootRelative} has no test:file route; ` +
+        'run npm run test:wdio --prefix tools/perf-test/wdio against the packaged Tauri app',
+    );
+  }
+
   const nonWorkspaceRoute = nonWorkspaceVitestRoute(rootRelative, absolute, root);
   if (nonWorkspaceRoute) return nonWorkspaceRoute;
 

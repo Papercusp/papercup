@@ -21,6 +21,7 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
+  deleteFleet,
   getFleet,
   getFleetHeadcountTarget,
   claimFleetHeadcountAttempt,
@@ -32,6 +33,8 @@ import {
   setFleetLaunchTransaction,
   updateFleetMeta,
 } from './agent-fleets-store';
+import { latestFleetMembership } from './fleet-membership-store';
+import { fleetSlugOfAgent } from './fleet-transition-events';
 
 const WS = 'ws-flguard';
 const WINDOW = 60_000;
@@ -92,10 +95,91 @@ beforeAll(async () => {
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
+  // Minimal canonical append-only membership ledger for deleteFleet's teardown
+  // test. The production projection trigger/view is not needed here: the test
+  // exercises the latest-fact writer directly, which is the source those
+  // projections read.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.fleet_membership_events (
+      id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'default',
+      owner_id     text NOT NULL,
+      owner_label  text,
+      fleet_slug   text,
+      fleet_role   text,
+      event        text NOT NULL DEFAULT 'join',
+      at           timestamptz NOT NULL DEFAULT now()
+    )
+  `);
 }, 90_000);
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+describe('deleteFleet membership retirement', () => {
+  it('appends leave facts for current members but preserves membership history', async () => {
+    const slug = 'deleted-drain-fleet';
+    await insertFleet(slug);
+    const membership = async (
+      ownerId: string,
+      fleetSlug: string | null,
+      fleetRole: string | null,
+      event: string,
+    ) => rootSql.unsafe(
+      `INSERT INTO harness_shared.fleet_membership_events
+         (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event)
+       VALUES ($1, $2, $2, $3, $4, $5)`,
+      [WS, ownerId, fleetSlug, fleetRole, event],
+    );
+
+    await membership('leader-live', slug, 'leader', 'lead');
+    await membership('member-live', slug, 'member', 'join');
+    await membership('member-left', slug, 'member', 'join');
+    await membership('member-left', null, null, 'leave');
+    await membership('member-moved', slug, 'member', 'join');
+    await membership('member-moved', 'other-fleet', 'member', 'join');
+
+    await expect(deleteFleet(WS, slug, rootSql)).resolves.toBe(true);
+
+    const latest = await rootSql.unsafe(
+      `SELECT DISTINCT ON (owner_id) owner_id, fleet_slug, event
+         FROM harness_shared.fleet_membership_events
+        WHERE workspace_id = $1
+        ORDER BY owner_id, id DESC`,
+      [WS],
+    ) as unknown as Array<{ owner_id: string; fleet_slug: string | null; event: string }>;
+    expect(Object.fromEntries(latest.map((row) => [row.owner_id, [row.fleet_slug, row.event]]))).toEqual({
+      'leader-live': [null, 'leave'],
+      'member-live': [null, 'leave'],
+      'member-left': [null, 'leave'],
+      'member-moved': ['other-fleet', 'join'],
+    });
+
+    const history = await rootSql.unsafe(
+      `SELECT DISTINCT owner_id
+         FROM harness_shared.fleet_membership_events
+        WHERE workspace_id = $1 AND fleet_slug = $2
+        ORDER BY owner_id`,
+      [WS, slug],
+    ) as unknown as Array<{ owner_id: string }>;
+    expect(history.map((row) => row.owner_id)).toEqual([
+      'leader-live',
+      'member-left',
+      'member-live',
+      'member-moved',
+    ]);
+    await expect(getFleet(WS, slug, rootSql)).resolves.toBeNull();
+    await expect(latestFleetMembership(WS, 'member-live', rootSql)).resolves.toEqual({
+      fleetSlug: null,
+      fleetRole: null,
+    });
+    await expect(fleetSlugOfAgent(WS, 'member-live', {
+      fleetOfAgent: async (workspaceId, ownerId) =>
+        (await latestFleetMembership(workspaceId, ownerId, rootSql))?.fleetSlug ?? null,
+    })).resolves.toBeNull();
+    await expect(deleteFleet(WS, slug, rootSql)).resolves.toBe(false);
+  });
 });
 
 /**

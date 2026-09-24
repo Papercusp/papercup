@@ -12,7 +12,7 @@
  * The `sql?` seam lets a caller thread a transaction (e.g. an atomic leadership transfer)
  * or a per-file test schema, mirroring agent-fleets-store.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
 /** The human-readable event label recorded on a membership fact (does not affect the
@@ -52,9 +52,9 @@ export function deriveFleetMembershipEvent(
  */
 export async function appendFleetMembershipEvent(
   input: FleetMembershipInput,
-  sql?: Sql,
+  sql?: Sql | TransactionSql,
 ): Promise<void> {
-  const s = pg(sql);
+  const s = sql ?? getOrgPg().sql;
   const event = input.event ?? deriveFleetMembershipEvent(input.fleetSlug, input.fleetRole);
   await s`
     INSERT INTO harness_shared.fleet_membership_events

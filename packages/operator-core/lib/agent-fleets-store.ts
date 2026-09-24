@@ -14,6 +14,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { appendFleetMembershipEvent } from './fleet-membership-store';
 import {
   allocateNextSchemeName,
   schemeByName,
@@ -1125,10 +1126,57 @@ export async function deleteFleet(
   sql?: Sql,
 ): Promise<boolean> {
   const s = pg(sql);
-  const rows = (await s.unsafe(
-    `DELETE FROM harness_shared.agent_fleets WHERE workspace_id = $1 AND fleet_slug = $2 RETURNING fleet_slug`,
-    [workspaceId, fleetSlug],
-  )) as unknown as Array<{ fleet_slug: string }>;
+  const rows = (await s.begin(async (tx) => {
+    const deleted = (await tx.unsafe(
+      `DELETE FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2
+        RETURNING fleet_slug`,
+      [workspaceId, fleetSlug],
+    )) as unknown as Array<{ fleet_slug: string }>;
+    if (deleted.length === 0) return deleted;
+
+    // Membership history is append-only and fleet-membership-store owns writes.
+    // A registry deletion must append leave facts for owners whose latest fact
+    // still names this fleet; otherwise fleet_assignment and fleetSlugOfAgent
+    // keep projecting the deleted slug and fleet:* emitters can wake stale
+    // sessions indefinitely.
+    const currentMembers = (await tx.unsafe(
+      `WITH candidate_owners AS (
+         SELECT DISTINCT workspace_id, owner_id
+           FROM harness_shared.fleet_membership_events
+          WHERE workspace_id = $1 AND fleet_slug = $2
+       ),
+       latest_memberships AS (
+         SELECT DISTINCT ON (e.workspace_id, e.owner_id)
+                e.workspace_id, e.owner_id, e.owner_label, e.fleet_slug
+           FROM harness_shared.fleet_membership_events e
+           JOIN candidate_owners c
+             ON c.workspace_id = e.workspace_id
+            AND c.owner_id = e.owner_id
+          ORDER BY e.workspace_id, e.owner_id, e.id DESC
+       )
+       SELECT owner_id, owner_label
+         FROM latest_memberships
+        WHERE fleet_slug = $2`,
+      [workspaceId, fleetSlug],
+    )) as unknown as Array<{ owner_id: string; owner_label: string | null }>;
+    for (const member of currentMembers) {
+      await appendFleetMembershipEvent(
+        {
+          workspaceId,
+          ownerId: member.owner_id,
+          ownerLabel: member.owner_label,
+          fleetSlug: null,
+          fleetRole: null,
+          event: 'leave',
+        },
+        tx,
+      );
+    }
+    return deleted;
+  })) as unknown as Array<{ fleet_slug: string }>;
+  // All current members leave in the same transaction as registry deletion.
+  // Historical membership remains available through fleetEverMembers.
   // Archive (not delete) the directory card — remote projections need the
   // signed archived record to stop resolving members/scopes (D-006/H10).
   if (rows.length > 0) refreshDirectoryCard(workspaceId, fleetSlug, { archived: true, sql });

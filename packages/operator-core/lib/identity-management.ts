@@ -58,6 +58,9 @@ export interface IdentitySurface {
   ownerId: string | null;
   identities: Awaited<ReturnType<typeof listIdentitySources>>['identities'];
   unreadable: Awaited<ReturnType<typeof listIdentitySources>>['unreadable'];
+  catalogAfter: string | null;
+  catalogNextAfter: string | null;
+  catalogScanned: number;
   session: null | {
     ownerId: string;
     agent: string;
@@ -118,6 +121,8 @@ function historyArtifact(
 export async function readIdentitySurface(input: {
   workspaceId: string;
   ownerId?: string | null;
+  after?: string | null;
+  limit?: number;
   sql?: Sql;
 }): Promise<IdentitySurface> {
   const sql = input.sql ?? getOrgPg().sql;
@@ -140,7 +145,8 @@ export async function readIdentitySurface(input: {
   const repoDir = record?.harnessSlug
     ? await resolveProjectDir(record.harnessSlug, input.workspaceId).catch(() => null)
     : null;
-  const catalog = await listIdentitySources({ ...(repoDir ? { repoDir } : {}), limit: 100 });
+  const catalog = await listIdentitySources({ ...(repoDir ? { repoDir } : {}),
+    after: input.after?.trim() || undefined, limit: input.limit ?? 30 });
   const events = ownerId
     ? await sql<TransitionRow[]>`
         SELECT phase, source, specification_revision, state_revision,
@@ -174,6 +180,9 @@ export async function readIdentitySurface(input: {
     ownerId,
     identities: catalog.identities,
     unreadable: catalog.unreadable,
+    catalogAfter: input.after?.trim() || null,
+    catalogNextAfter: catalog.nextAfter,
+    catalogScanned: catalog.scanned,
     session:
       row && record
         ? {

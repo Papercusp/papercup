@@ -186,7 +186,8 @@ vi.mock('../../auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('../../workspace-registry', () => ({
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
   activeWorkspaceId: () => 'default',
   readRegistry: () => ({
     current: 'default',
@@ -1267,6 +1268,32 @@ describe('bootstrap-su', () => {
     expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ profile: 'generic' }));
   });
 
+  it('refuses a selected identity source that changed after the picker choice', async () => {
+    const revision = 'a'.repeat(64);
+    const selection = { agent: 'claude', stack: ['domain:research-steward'],
+      selected_identity_revision: revision };
+    const missing = await callPost({ ...selection, selected_identity_revision: 'not-a-hash' });
+    expect(missing.status).toBe(400);
+    compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+      promptText: input.promptText, stack: input.stack ?? [],
+      specificationArtifact: { inputs: [] },
+      specificationRevision: 'b'.repeat(64), stateRevision: input.stateRevision ?? 'c'.repeat(64),
+      compositionSource: 'compatibility', resourceArtifacts: [],
+    }));
+    const stale = await callPost(selection);
+    expect(stale.status).toBe(500);
+    expect((await stale.json()).error).toContain('source revision changed after picker selection');
+    compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+      promptText: input.promptText, stack: input.stack ?? [],
+      specificationArtifact: { inputs: [{ kind: 'blueprint-layer', ref: 'research-steward',
+        contentHash: revision }] },
+      specificationRevision: 'b'.repeat(64), stateRevision: input.stateRevision ?? 'c'.repeat(64),
+      compositionSource: 'compatibility', resourceArtifacts: [],
+    }));
+    const exact = await callPost(selection);
+    expect(exact.status).toBe(200);
+  });
+
   it('options (no harness) lists the active-workspace harnesses', async () => {
     const res = await callGet();
     expect(res.status).toBe(200);
@@ -1307,6 +1334,19 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.harness).toBe('papercup');
     expect(json.plans).toEqual([{ slug: 'plan-a' }]);
+  });
+
+  it('options?identities pages the source catalog and retains invalid-entry reasons', async () => {
+    const first = await (await callGet('?identities=1&limit=1')).json();
+    expect(first.status, JSON.stringify(first)).toBe('ok');
+    expect(first.scanned).toBe(1);
+    expect(first.nextAfter).toEqual(expect.any(String));
+    expect(first.identities).toEqual(expect.any(Array));
+    expect(first.unreadable).toEqual(expect.any(Array));
+    const second = await (await callGet(`?identities=1&limit=1&after=${encodeURIComponent(first.nextAfter)}`)).json();
+    expect(second.status).toBe('ok');
+    expect(second.scanned).toBe(1);
+    expect(second.nextAfter).not.toBe(first.nextAfter);
   });
 
   it('options lists workspaces + the active one', async () => {

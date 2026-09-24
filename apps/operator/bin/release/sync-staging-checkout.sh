@@ -95,6 +95,59 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
+# A migration is applied during the next host boot, before :3170 can bind. Run
+# the same source lints against the checkout we are about to serve while the old
+# process is still alive. In particular, forward-compat catches an unacknowledged
+# index change that the host's per-file preapply guard would otherwise discover
+# only after the coordinated restart stopped the old process.
+preflight_staging_migrations() {
+  log "checking staging migration safety before restarting $UNIT"
+  if ! (
+    cd "$STAGING_ROOT" &&
+    node scripts/lint-migrations.mjs &&
+    node scripts/check-migration-forward-compat.mjs
+  ); then
+    log "FATAL: staging migration lint failed; keeping the current $UNIT process"
+    return 1
+  fi
+}
+
+# Complete the pinned target's migrations while the old API is still serving.
+# Reuse the guarded boot/candidate runner: a backup-held rendezvous waits HERE,
+# not after systemd has stopped the healthy process. A backup beginning after
+# this returns is safe too: boot sees the applied target set and takes its
+# existing no-pending path without applying new files outside the rendezvous.
+prepare_staging_schema() {
+  log "preparing the target schema while the current $UNIT process keeps serving"
+  if ! (
+    cd "$STAGING_ROOT" &&
+    PAPERCUSP_INTEGRATION_ROOT="$STAGING_ROOT" \
+      TSX_TSCONFIG_PATH="$STAGING_ROOT/apps/operator/tsconfig.json" \
+      node --import tsx --input-type=module - <<'JS'
+import { resolve } from 'node:path';
+import { applyPendingMigrationsNow } from './packages/operator-core/lib/db-boot-migrate.ts';
+  try {
+    const result = await applyPendingMigrationsNow({
+      sqlDir: resolve('libs/papercusp/libs/db/sql'),
+      broadcast: false,
+    });
+    if (!result || result.failed.length > 0) {
+      console.error('[staging-sync] target schema preparation failed:', JSON.stringify(result));
+      process.exit(1);
+    }
+    console.log('[staging-sync] target schema prepared:', JSON.stringify(result));
+    process.exit(0);
+  } catch (error) {
+    console.error('[staging-sync] target schema preparation failed:', error);
+    process.exit(1);
+  }
+JS
+  ); then
+    log "FATAL: staging schema preparation failed; keeping the current $UNIT process"
+    return 1
+  fi
+}
+
 # Request-only hono-host startup applies pending migrations before binding :3170.
 # A migration can therefore keep the port unbound for several minutes even
 # though the coordinated restart succeeded. Keep the readiness wait generous
@@ -460,7 +513,8 @@ fi
 if [ "$checkout_needs_advance" = 1 ]; then
   log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
   PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
-    bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
+    bash "$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
+      "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
       --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
 else
   log "isolated checkout already at ${target:0:10}; repairing only the stale running generation"
@@ -474,6 +528,8 @@ if [ "$restart_required" = 0 ]; then
   exit 0
 fi
 
+preflight_staging_migrations
+
 # Build the expensive host graph while the old process is still serving.
 # The staging-only freshness proof lets systemd's later ExecStartPre verify
 # and reuse these exact bytes in milliseconds; any source/output drift falls
@@ -484,6 +540,8 @@ if [[ ! -f "$STAGING_BUNDLE_SCRIPT" ]]; then
 fi
 log "prebuilding proof-bound host bundle before stopping $UNIT"
 PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"
+
+prepare_staging_schema
 
 # EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
 # up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`
