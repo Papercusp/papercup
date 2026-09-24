@@ -170,3 +170,58 @@ Remaining for P-001: read back the new Infra metric on the current running build
 bind operational evidence to `AUTO-BAR-R-1-P-001@1`, then close with evidence.
 P-002..P-009, controlled before/after workloads, independent final acceptance,
 the sustained observation and final shipment remain open.
+
+## P-002 current-build compatibility verification
+
+The existing fixes in EI-24045346484356708 (search) and EI-24022555028936462
+(hook schema) were reused. No replacement search or reporting implementation
+was added. At HEAD `8dc662ace4`, the named schema-contract and search integration
+files were clean before/after the real test router: **6 + 53 tests passed**, zero
+skipped. Durable runs: **19214023**, **19214026**. The wider shared tree was dirty.
+
+One additional regression in the existing `activity/activity.integration.test.ts`
+parses a generation-bearing `glance_stale` payload, invokes the real report
+handler against isolated Postgres, verifies its stored activity row and checks
+the payload forwarded to the mocked bundle builder. The suite's **21 tests
+passed** at `a9e70782dc445de8678ce6d6440b509edcd7d0a3`, named file clean, durable
+run **19214046**. This extends the earlier schema-only guard through the write
+and bundle-dispatch path.
+
+The actual staging serving tool accepted both a glance-only payload and one
+with the returned generation plus `glance_stale:true`. The latter returned
+`ok:true`, activity id `6229328`; tool invocation **29298348** records
+`port-3170`, build `8dc662ace4`, status `ok`, duration 34ms. This is a single
+compatibility result, not a latency percentile. The installed hook source's
+generation/glance-stale construction was read directly.
+
+**The green release runtime remains different:** contemporaneous installed
+hook invocations **29298345** and **29298520** on `port-3070`, build
+`80521d598f`, still report `invalid-input`. P-002 must not claim deployed hook
+compatibility until the corrected build reaches that serving plane.
+
+Staging session search returned two results for `performance audit` (invocation
+**29298514**, `port-3170`, `8dc662ace4`, 3100ms). Its bundle contains the bounded
+50,000-row compact-token fill. An equivalent index-only primary query for the
+same dictionary terms selected **Bitmap Index Scan: session_turns_tsv_idx**.
+The existing integration tests cover primary/fill separation, literal-token
+recall, full primary result sets, and coverage-graded behavior.
+
+A second bounded diagnostic around a scoped `performance producer overdue`
+search observed highlighted index-only statement **-5382584474920240673**
+advance once (31.117ms accumulated execution delta), along with other shared
+traffic. Its recorded SQL ends with `AND text_tsv @@ q.andq` and has no
+substring OR arm. The old statement **3939267458425839640** also advanced in
+these windows; the ledger is shared across hosts, so its increment cannot be
+attributed to this staging call. This confirms coexistence, not elimination of
+the old deployed query. Final serving-runtime evidence remains required.
+
+## Acceptance contract repair
+
+The plan's generated acceptance rubric lacked METHOD and structured checks for
+all nine criteria. A concrete amendment is saved on **WI-10002801,
+thread-post:1142917**, with exact apply payload and preview approval JSON.
+It preserves the original outcomes, falsifiers, scope and evidence planes,
+adds runnable checks and pins the existing clause proof layers. The preview
+confirms no transition to manual-only proof. A live, eligible independent
+reviewer was asked to countersign the full method text as well as the hashes;
+the amendment is not yet applied. Source completion is not final certification.
