@@ -1711,6 +1711,86 @@ passed, log `/tmp/p007-layout-typecheck-20260924.log`. Source is superproject
 `a48f6294fb`, ui-primitives `8713ca5d25` plus the two local file edits.
 The next native run must verify that the served SPA includes this experiment.
 
+#### Layout experiment activated and measured — 18:29Z
+
+The layout edit committed as ui-primitives `4bfdeb7`, included in superproject
+`bd4a524d6e`. Maintained staging sync completed at 18:28:37Z with that exact
+health SHA. The disk SPA index SHA256 is
+`4e6c749f0bec1b86a1c34509af0ab150e323bc44bb2c0fee2db15d3d00fe5f58`.
+An initial byte-equality preflight failed: `host-spa.ts` injects bootstrap
+globals into served HTML (49,935 bytes versus the 38,729-byte disk file).
+Both reference `index-f6e25fef.js`; the served `src-3571ba8d.js` is byte-identical
+to the built asset and contains the layout-effect implementation.
+
+The same release shell and pinned plan version75/hash above measured
+**3112ms / 1500ms**, receipt `perfrun-1790274593311-ntni06`, log
+`/tmp/p007-native-layout-20260924.log`. Phases: mounted429, request637,
+response2276, content2294, data2295, renderer2948, preview3106. The user's
+desktop preference digest remained unchanged. Preparation now begins before
+the parent data-ready mark, but async renderer readiness still adds654ms.
+The request interval was1639ms. This is a failed experiment for total latency,
+not evidence of a speedup. A new `styles-ready` phase separates the CSS await
+from the JS import; acceptance and the total timing endpoint remain unchanged.
+
+#### Browser queue attribution — 18:39–18:43Z
+
+These are Chromium diagnostics on staging `bd4a524d6e`, not native acceptance.
+A fresh browser must open `/adv?opcv=plans&ws=papercusp-workspace`: visiting
+`/?opcv=plans` first redirects and drops the sidebar parameter. That initial
+attempt timed out without a profile; the corrected route opened the pinned plan.
+
+The first CPU/trace capture measured3117ms. `request-started` preceded
+`ResourceSendRequest` by1189.54ms; HTTP headers then arrived1215.43ms after
+network request start. Files: `/tmp/p007-chromium-20260924.cpuprofile`,
+`/tmp/p007-chromium-20260924.trace.json`, and the distilled
+`/tmp/p007-chromium-profile-20260924.log`. Profiling startup itself took524ms
+before the click; this run is diagnostic and does not establish a distribution.
+
+The existing `installOriginSchedulerFetch` wraps plan GETs. A second diagnostic
+wrapped its existing scheduler's `run` callback to timestamp queue admission
+without changing the scheduler policy. Its before-click snapshot reported
+browser-http, limit2, inFlight2, queued7 (six foreground, one background).
+The plan GET waited307ms before its callback began and took26ms inside the
+callback; total popup1025ms. Log `/tmp/p007-origin-queue-20260924.log` contains
+the snapshot, per-request timestamps and phases. This directly measures a queue
+contribution in the browser. It does not establish the native IPC profile or
+justify changing concurrency limits. Next native diagnostics should include
+the existing scheduler snapshot alongside the CSS/JS split.
+
+#### Native scheduler counterevidence — 18:46–18:48Z
+
+The existing WDIO spec now logs the public `window.__sync_metrics__.snapshot()`
+scheduler before clicking and after rendering, plus phases/scheduler on an
+unfinished attempt. No scheduler setting or timing budget changes. The first
+native attempt timed out without a measure; `/tmp/p007-native-scheduler-20260924.log`
+is **UNMEASURABLE**, with no timing receipt. Before-click limit24, queued0 and
+inFlight2 were observed; that alone cannot attribute the later timeout.
+
+The next run exercised the completed diagnostics and measured **2482ms / 1500ms**,
+receipt `perfrun-1790275714275-dq4kyx`, log
+`/tmp/p007-native-scheduler-timeout-20260924.log`. Before/after snapshots both
+had limit24, queued0, inFlight0. Foreground `waitMsTotal` grew13852→13853ms
+across ten admissions, so the origin scheduler's foreground queue cannot
+account for the roughly1100ms request interval in this run. The snapshot's
+`profile` string still says browser-http despite limit24; the numeric limit is
+the actual configured cap, not an inference from that label.
+
+Cumulative phases: mounted386, request568, response1667, content1684,
+data1685, renderer2305, preview2475. Renderer readiness added621ms. Staging
+still served `bd4a524d6e`, before the CSS phase diagnostic. Native IPC queueing,
+server work, and webview readiness remain to be distinguished; browser queue
+findings must not be generalized to these native runs.
+
+The server ledger supplies a further boundary: invocation29449924 at
+18:48:32.050Z is the matching `plans:get` for the pinned slug, modefull,
+client`pc-admin-plans-ui`, serving build`bd4a524d6e`; duration850ms, statusok.
+The 18:47 timeout attempt's matching invocation29449772 completed in1189ms.
+`dispatch-stack.ts` creates `startedAt` before dispatch gates/handler and records
+`Date.now()-startedAt` before awaiting the invocation sink. These are dispatch
+durations, not database-only or handler-only timings. The850ms accounts for a
+substantial part of the successful native attempt's1099ms request interval;
+it does not yet identify the expensive server stage.
+
 ### P-006 exact-clause audit follow-up
 
 The old audit `EI-24158603642923031` reported a risk-floor replay disagreement
