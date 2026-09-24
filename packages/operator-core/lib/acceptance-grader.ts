@@ -350,7 +350,18 @@ export type AcceptanceGraderTerminalFailureCode =
    * diagnostics — which is exactly why `allowLauncherQuotaDrop` must stay
    * opt-in while this signal can always be trusted.
    */
-  | 'launch_kickoff_not_persisted';
+  | 'launch_kickoff_not_persisted'
+  /**
+   * WI-10002903 (second leg): psu-pty-host's OWN terminal receipt says it gave
+   * up delivering the launch kickoff (`psu-pty-host: launch kickoff DROPPED for
+   * … (<reason> within <N>ms over <K> attempt(s))`) for any non-quota reason,
+   * and the log shows no first-turn progress. The drop can land AFTER
+   * `capability:launch-agent` returned its receipt, so the structured
+   * `launch_kickoff_not_persisted` signal above cannot see it; the host process
+   * stays kernel-live and a live-task guard would dedupe to it forever. Log
+   * derived, so it is opt-in (`allowLauncherKickoffDrop`) like its siblings.
+   */
+  | 'launch_kickoff_dropped';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -382,6 +393,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowGatewayErrorWithoutFooter = false,
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
+    allowLauncherKickoffDrop = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -423,6 +435,12 @@ export async function detectAcceptanceGraderTerminalFailure(
      * why this stays opt-in rather than always-on.
      */
     allowLauncherWalledPoolRefusal?: boolean;
+    /**
+     * WI-10002903: recognize psu-pty-host's non-quota `launch kickoff DROPPED`
+     * receipt as terminal when the log shows no first-turn progress. Forwarded
+     * verbatim to the classifier; opt-in for the same frozen-evidence reason.
+     */
+    allowLauncherKickoffDrop?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -440,6 +458,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
+      allowLauncherKickoffDrop,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -461,6 +480,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
+      allowLauncherKickoffDrop,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -495,6 +515,7 @@ export function classifyAcceptanceGraderTerminalFailure(
     allowGatewayErrorWithoutFooter = false,
     allowLauncherQuotaDrop = false,
     allowLauncherWalledPoolRefusal = false,
+    allowLauncherKickoffDrop = false,
   }: {
     allowStandaloneWeeklyLimit?: boolean;
     allowInferenceGatewayError?: boolean;
@@ -511,6 +532,13 @@ export function classifyAcceptanceGraderTerminalFailure(
      * brief can quote launcher diagnostics in its frozen evidence.
      */
     allowLauncherWalledPoolRefusal?: boolean;
+    /**
+     * WI-10002903: psu-pty-host's non-quota `launch kickoff DROPPED` receipt
+     * (e.g. "the child never settled to its prompt"). Terminal only when the log
+     * also shows no first-turn progress, so a judge whose kickoff did land is
+     * never retired. Opt-in: frozen evidence may quote launcher diagnostics.
+     */
+    allowLauncherKickoffDrop?: boolean;
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
@@ -558,6 +586,26 @@ export function classifyAcceptanceGraderTerminalFailure(
     };
   }
 
+  // WI-10002903 (second leg): the same host-owned receipt for every NON-quota
+  // reason ("the child never settled to its prompt", "never emitted its
+  // startup-ready marker", …). The host has given up: the judge never received
+  // its brief and never will, yet the PTY stays kernel-live, so a live-task
+  // guard deduped to it for the whole reservation (observed 07:39Z on
+  // EI-24118203560334206). The quota variant is excluded here so it keeps its
+  // dedicated code and backoff above, and a log that shows any first-turn
+  // progress is never retired on this signal alone.
+  const launcherKickoffDrop = allowLauncherKickoffDrop
+    ? normalized.match(
+        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\((?!submit verification aborted \(quota-blocked\))[^\n]{1,240}? within \d+ms over \d+ attempt\(s\)\)$/im,
+      )
+    : null;
+  if (launcherKickoffDrop && !hasAcceptanceGraderFirstTurnProgress(normalized)) {
+    return {
+      code: 'launch_kickoff_dropped',
+      evidence: launcherKickoffDrop[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
   // EI-22978598482930667: the launcher's walled-pool refusal (exit 78) is the
   // OTHER half of the same quota wall, and it is the only terminal receipt that
   // carries a machine-readable recovery instant. Match only as far as the
@@ -602,6 +650,22 @@ export function classifyAcceptanceGraderTerminalFailure(
 }
 
 /**
+ * True when a normalized judge log shows ANY sign the judge entered its first
+ * turn: a platform tool it would call, an MCP/tool-use trace, a thinking/working
+ * spinner, or a transcript bullet. Shared by the startup-stall and kickoff-drop
+ * classifiers so neither can retire a judge that actually started.
+ */
+function hasAcceptanceGraderFirstTurnProgress(normalized: string): boolean {
+  return (
+    /scorecards:emit|rubrics:get|plans:get|work_items:get|papercusp(?:\.tools:invoke|\/tools:invoke)|\bmcp__|PostToolUse hook|\btool(?:_use| call| invocation)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:Thinking|Working)\s*(?:\(|·)/.test(normalized) ||
+    /^\s*[•└├]\s+/m.test(normalized)
+  );
+}
+
+/**
  * Candidate-only classifier for the exact Claude startup wedge observed in
  * EI-21646725695632868. Duration is deliberately owned by
  * `detectAcceptanceGraderTerminalFailure`; this pure helper only says whether
@@ -615,13 +679,7 @@ export function classifyAcceptanceGraderStartupStall(rawLog: string): Acceptance
   const connecting = normalized.match(/(?:^|\n)\s*\/rc\s+connecting(?:…|\.{3})/i);
   if (!connecting) return null;
 
-  const hasFirstTurnProgress =
-    /scorecards:emit|rubrics:get|plans:get|work_items:get|papercusp(?:\.tools:invoke|\/tools:invoke)|\bmcp__|PostToolUse hook|\btool(?:_use| call| invocation)\b/i.test(
-      normalized,
-    ) ||
-    /\b(?:Thinking|Working)\s*(?:\(|·)/.test(normalized) ||
-    /^\s*[•└├]\s+/m.test(normalized);
-  if (hasFirstTurnProgress) return null;
+  if (hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
 
   const overload = normalized.match(/the MCP proxy is overloaded; retrying[^\n]{0,160}/i);
   const evidence = [connecting[0], overload?.[0]]
