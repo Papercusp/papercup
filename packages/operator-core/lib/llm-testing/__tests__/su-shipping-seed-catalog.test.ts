@@ -100,12 +100,18 @@ describe('buildShippingSeedCatalog — the offered set is the SHIPPED set (D-019
       .filter(([, t]) => t === 'full')
       .map(([name]) => name);
 
-    // Not an invariant of the artifact — if the seed ever ships nothing full
-    // this assertion is vacuous, and saying so is the point.
-    expect(seedFull.length).toBeGreaterThan(0);
+    // The generated artifact currently may spend its whole byte budget on
+    // compact definitions. Promote one real shipped name in this test so the
+    // full-fidelity branch remains exercised without changing production policy.
+    const promoted = seedFull.length > 0 ? seedFull : ['tools:invoke'];
+    expect(artifactSeed).toEqual(expect.arrayContaining(promoted));
+    const deliveryTiers = {
+      ...(CLAUDE_TOOL_DELIVERY as { tiers: Record<string, string> }).tiers,
+      ...Object.fromEntries(promoted.map((name) => [name, 'full'])),
+    };
 
-    const full = await buildShippingSeedCatalog('full');
-    const compact = await buildShippingSeedCatalog('compact');
+    const full = await buildShippingSeedCatalog('full', deliveryTiers);
+    const compact = await buildShippingSeedCatalog('compact', deliveryTiers);
     const byCanonical = (built: Awaited<ReturnType<typeof buildShippingSeedCatalog>>) =>
       new Map(
         built.catalog.tools.map((t) => [
@@ -116,7 +122,7 @@ describe('buildShippingSeedCatalog — the offered set is the SHIPPED set (D-019
     const fullByName = byCanonical(full);
     const compactByName = byCanonical(compact);
 
-    for (const name of seedFull) {
+    for (const name of promoted) {
       const f = fullByName.get(name);
       const c = compactByName.get(name);
       if (!f || !c) continue; // absent from the live registry; coverage covers that

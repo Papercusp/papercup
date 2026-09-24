@@ -68,9 +68,14 @@ beforeEach(() => {
   h.sql.mockReset().mockImplementation(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const query = parts.join('?');
     if (!query.includes('FROM harness_shared.session_briefs')) throw new Error(`unexpected policy I/O: ${query}`);
-    // The current control-anchor query reads the brief and the recorded launch
-    // identity together, binding the same owner/workspace pair in both subqueries.
-    expect(values).toEqual(['su-policy', 'ws-policy', 'su-policy', 'ws-policy']);
+    // The current control-anchor query reads the brief and launch identity
+    // together. Four cache-header comparisons are null on this fresh fixture;
+    // both subqueries remain bound to the same owner/workspace pair.
+    expect(values).toEqual([
+      'su-policy', 'ws-policy',
+      ...Array(8).fill(null),
+      'su-policy', 'ws-policy',
+    ]);
     return [{ control_state: h.state, control_generation: 7, workspace_id: 'ws-policy' }];
   });
   installControlAnchorKernelResolver(); // same installation as events/index at tool bootstrap

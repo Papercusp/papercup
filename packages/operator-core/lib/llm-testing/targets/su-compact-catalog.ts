@@ -235,14 +235,19 @@ export interface ShippingSeedCatalog {
  * `tier:'full'` remains the uniform all-full control arm: that is the contrast
  * D-008 asks for, and it is what the compact arm is judged against.
  */
-export async function buildShippingSeedCatalog(tier: 'full' | 'compact'): Promise<ShippingSeedCatalog> {
+export async function buildShippingSeedCatalog(
+  tier: 'full' | 'compact',
+  deliveryTiersOverride?: Readonly<Record<string, string>>,
+): Promise<ShippingSeedCatalog> {
   const live = await loadLiveDefinitions();
   const mod = (await import(
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore -- generated .mjs artifact, no type declarations by design
     '../../../../../apps/operator/scripts/tool-delivery.generated.mjs'
   )) as { CLAUDE_TOOL_DELIVERY?: { tiers?: Record<string, string> } };
-  const tiers = mod.CLAUDE_TOOL_DELIVERY?.tiers;
+  // A controlled tier map lets the D-046 regression exercise a full seed tool
+  // even when the current generated artifact happens to ship all tools compact.
+  const tiers = deliveryTiersOverride ?? mod.CLAUDE_TOOL_DELIVERY?.tiers;
   if (!tiers || Object.keys(tiers).length === 0) {
     throw new Error(
       'su shipping-seed catalog: tool-delivery.generated.mjs exposed no CLAUDE_TOOL_DELIVERY.tiers. ' +

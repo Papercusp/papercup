@@ -170,12 +170,12 @@ describe('stall-escalation-ladder wiring status — live source', () => {
     expect(moduleHeader(source), 'stall-escalation-ladder.ts lost its module header').not.toBe('');
   });
 
-  it('is imported by exactly one production file — release-actions.ts', () => {
-    // The DOUBLE-WIRE half of the guard. A second production call site notifies the owner
-    // twice per rung. If a second consumer is ever genuinely correct, this expectation is
-    // the place to make that decision deliberately, with a reason.
+  it('has one notification consumer and one read-only projection consumer', () => {
+    // release-actions owns the notification decision. git-pipeline-stats uses
+    // highestRungCrossed only to project whether a threshold has been crossed;
+    // that pure read cannot notify twice. A third importer needs a new review.
     const importers = productionImporters();
-    expect(importers).toEqual(['lib/harness/routines/release-actions.ts']);
+    expect(importers).toEqual(['lib/git-pipeline-stats.ts', 'lib/harness/routines/release-actions.ts']);
   });
 
   it('does not advertise itself as unwired while it has production importers', () => {
