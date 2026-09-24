@@ -64,7 +64,7 @@ import {
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { buildLaunchSpec, compileLaunchSpecificationArtifact } from '../../../role-launch-spec';
+import { buildLaunchSpec, compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../../../role-launch-spec';
 import { SU_TIER_ROLES, isSuTierRole, resolveSuRoleAddendum } from '../../../su-role-addendum';
 import {
   blockingInstructionConflicts,
@@ -2727,6 +2727,7 @@ export const bootstrapSu = defineTool({
         promptText,
         promptFile: spec.promptFile,
         cwd,
+        workspaceId: workspace,
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
@@ -2738,6 +2739,9 @@ export const bootstrapSu = defineTool({
           instructionPrecedence: precedence,
         },
       });
+      if (launchArtifact.resourceArtifacts.length > 0) {
+        await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql);
+      }
       promptText = launchArtifact.promptText;
     } catch (e: any) {
       return jsonRes({ status: 'error', error: `compile su launch artifact: ${e?.message ?? e}` }, 500);
