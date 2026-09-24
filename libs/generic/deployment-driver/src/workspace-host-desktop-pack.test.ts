@@ -27,6 +27,7 @@ import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_CURL_STALL_GUARD,
   WORKSPACE_HOST_STATE_ROOT,
 } from './workspace-host-bootstrap';
 
@@ -74,7 +75,7 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     // Several of these packages RECOMMEND a display manager. A workspace host must
     // never acquire a login screen as a side effect of opting into agent desktops.
     const script = render();
-    const installs = script.match(/apt-get install[^\n]*/g) ?? [];
+    const installs = script.match(/^retry \d+ apt_install[^\n]*/gm) ?? [];
     expect(installs.length).toBeGreaterThan(0);
     for (const line of installs) expect(line).toContain('--no-install-recommends');
   });
@@ -83,18 +84,33 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     // Without --error-on=any a failed index fetch is a warning and exit 0; the pack then
     // died one command later on a "missing" package that was merely unreachable.
     const script = render();
-    expect(script).toContain('retry 10 apt-get update -qq --error-on=any');
-    const installs = script.match(/^.*apt-get install[^\n]*/gm) ?? [];
-    expect(installs.length).toBeGreaterThan(0);
-    for (const line of installs) expect(line).toMatch(/^retry \d+ apt-get install/);
-    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt-get update'));
+    expect(script).toContain('retry 10 apt_update -qq --error-on=any');
+    const installs = script.match(/^.*apt_install -y[^\n]*/gm) ?? [];
+    expect(installs.length).toBe(3);
+    for (const line of installs) expect(line).toMatch(/^retry \d+ apt_install/);
+    expect(script.indexOf('retry() {')).toBeLessThan(script.indexOf('retry 10 apt_update'));
+  });
+
+  it('wall-clock bounds every networked apt call and stall-guards every download (WI-10002863)', () => {
+    // One apt-get update ran ~30 min on avi-test's first boot; apt's own timeouts never ended it.
+    const script = render();
+    expect(script.indexOf('apt_update() {')).toBeGreaterThan(-1);
+    expect(script.indexOf('apt_update() {')).toBeLessThan(script.indexOf('retry 10 apt_update'));
+    const unbounded = script
+      .split('\n')
+      .filter((line) => !/^\s*#/.test(line))
+      .filter((line) => /\bapt-get (update|install)\b/.test(line) && !/^apt_(update|install)\(\) \{/.test(line));
+    expect(unbounded).toEqual([]);
+    const downloads = script.split('\n').filter((line) => /^curl\b/.test(line));
+    expect(downloads).toHaveLength(2);
+    for (const line of downloads) expect(line).toContain(WORKSPACE_HOST_CURL_STALL_GUARD);
   });
 
   it('ships a usable desktop floor: a terminal for the openbox menu and a root painter (WI-10002863)', () => {
     // Measured on avi-test r43: openbox's stock menu executes x-terminal-emulator, which
     // nothing provided, and the root stayed black, so Watch could not tell "empty" from "dead".
     const script = render();
-    const install = script.match(/^retry \d+ apt-get install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
+    const install = script.match(/^retry \d+ apt_install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
     expect(install.split(' ')).toEqual(expect.arrayContaining(['xterm', 'x11-xserver-utils']));
     expect(script).toContain('command -v x-terminal-emulator >/dev/null 2>&1 || fail x-stack');
     expect(script).toContain('command -v xsetroot  >/dev/null 2>&1 || fail x-stack');
@@ -103,7 +119,7 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
   it('ships an XFCE session from named components and attests the binaries it execs (WI-10002863)', () => {
     // Owner chose XFCE. A metapackage would pull a display manager onto a headless host.
     const script = render();
-    const install = script.match(/^retry \d+ apt-get install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
+    const install = script.match(/^retry \d+ apt_install -y --no-install-recommends (?!"\$KASM_DEB").*$/m)?.[0] ?? '';
     const packages = install.split(' ');
     expect(packages).toEqual(expect.arrayContaining([
       'xfce4-session', 'xfwm4', 'xfce4-panel', 'xfdesktop4', 'xfce4-terminal', 'dbus-bin',
@@ -122,7 +138,7 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     const check = script.indexOf(`= '${fingerprint}' ]`);
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(script.indexOf('mv "$MOZ_KEY.tmp" "$MOZ_KEY"'));
-    expect(script.indexOf('mv "$MOZ_KEY.tmp" "$MOZ_KEY"')).toBeLessThan(script.indexOf('retry 5 apt-get install -y --no-install-recommends firefox'));
+    expect(script.indexOf('mv "$MOZ_KEY.tmp" "$MOZ_KEY"')).toBeLessThan(script.indexOf('retry 5 apt_install -y --no-install-recommends firefox'));
     expect(script).toContain('deb [signed-by=$MOZ_KEY] https://packages.mozilla.org/apt mozilla main');
     // Ubuntu's stub has epoch 1, so without a 1000 pin apt prefers it over Mozilla's build.
     expect(script).toContain("printf 'Package: *\\nPin: origin packages.mozilla.org\\nPin-Priority: 1000\\n'");
@@ -313,7 +329,7 @@ describe('P-012 — the KasmVNC artifact is pinned and verified before use', () 
   it('checks the digest BEFORE dpkg touches the file', () => {
     const script = render();
     const verify = script.indexOf('sha256sum -c');
-    const install = script.indexOf('apt-get install -y --no-install-recommends "$KASM_DEB"');
+    const install = script.indexOf('apt_install -y --no-install-recommends "$KASM_DEB"');
     expect(verify).toBeGreaterThan(-1);
     expect(install).toBeGreaterThan(-1);
     // Ordering is the whole property: verifying afterwards means a substituted package
