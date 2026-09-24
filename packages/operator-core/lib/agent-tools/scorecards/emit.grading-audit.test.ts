@@ -12,6 +12,7 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
+const markGradingAuditAwaitingReemit = vi.fn();
 const isCurrentSourceAuditResponder = vi.fn();
 const closeSourceAuditConsults = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
@@ -45,12 +46,17 @@ vi.mock('../../scorecards', async (importOriginal) => {
     ...real,
     listScorecards: (...a: unknown[]) => listScorecards(...a),
     recordGradingAudit: (...a: unknown[]) => recordGradingAudit(...a),
+    markGradingAuditAwaitingReemit: (...a: unknown[]) => markGradingAuditAwaitingReemit(...a),
     isCurrentSourceAuditResponder: (...a: unknown[]) => isCurrentSourceAuditResponder(...a),
   };
 });
 vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...a: unknown[]) => captureImprovement(...a),
 }));
+// Keep scorecard writes inside the unit tier: these push notifications are
+// database-backed in production and are covered by their own integration tests.
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: (...args: unknown[]) => readRunningGeneration(...args),
 }));
@@ -252,6 +258,7 @@ beforeEach(() => {
     issueId: 'EI-CARD',
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
   });
+  markGradingAuditAwaitingReemit.mockReset().mockResolvedValue(true);
   isCurrentSourceAuditResponder.mockReset().mockResolvedValue(true);
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
@@ -389,13 +396,32 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     getIssue.mockResolvedValue(GRADED_CARD);
   });
 
-  it('refuses a second auditor without the active dispatch lease before filing a card', async () => {
+  it('identifies an omitted active dispatch lease before filing a card', async () => {
     getIssue.mockResolvedValue(gradedCardWithReservation());
 
     const res = await emitScorecard(auditArgs, { createdBy: 'su-second-auditor', ctxHarness: 'papercusp' });
 
     expect(res.ok).toBe(false);
-    expect((res as { error?: string }).error).toContain('active dispatch reservation');
+    expect((res as { code?: string }).code).toBe('grading_audit_reservation_missing');
+    expect((res as { error?: string }).error).toContain('gradingAuditReservation is missing');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('identifies a mismatched active dispatch lease before filing a card', async () => {
+    getIssue.mockResolvedValue(gradedCardWithReservation());
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        gradingAuditReservation: { ...activeReservation, reservedAt: '2026-09-23T18:00:01.000Z' },
+      },
+      { createdBy: 'su-stale-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(false);
+    expect((res as { code?: string }).code).toBe('grading_audit_reservation_mismatch');
+    expect((res as { error?: string }).error).toContain('does not match its current active dispatch reservation');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -457,6 +483,28 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('a failing rating settles the subject as failed', async () => {
     await emitScorecard({ ...auditArgs, ratings: FAIL_RATINGS }, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it('keeps the subject pending when unknown audit ratings cannot establish a verdict', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          're-runnable-evidence': { rating: 'unknown', evidence: 'the evaluator build could not verify this' },
+          'degenerate-distribution': { rating: 'unknown', evidence: 'the evaluator build could not verify this' },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      gradingAuditRecorded: false,
+      gradingAuditError: expect.stringContaining('remains pending'),
+    });
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+    expect(closeSourceAuditConsults).not.toHaveBeenCalled();
   });
 
   it('refuses a same-rubric non-author emit for a pending subject audit and teaches the grading-integrity shape', async () => {
@@ -705,12 +753,20 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('requires re-emitting a legacy card when a newer evaluator revision changes its rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     const currentCard = replayConsistencyGradedCard();
+    const reservation = {
+      key: 'grading-audit:EI-CARD',
+      reservedAt: '2026-09-24T11:38:02.124Z',
+    };
     const { evaluatorRevision: _currentRevision, ...legacyRecipe } = RERUN_RECIPE;
     getIssue.mockResolvedValue({
       ...currentCard,
       payload: {
         observation: {
           ...currentCard.payload.observation,
+          gradingAudit: {
+            ...currentCard.payload.observation.gradingAudit,
+            dispatchReservation: reservation,
+          },
           rerunRecipe: legacyRecipe,
           ratings: {
             falsifiability: { rating: 'pass', evidence: 'recorded under the earlier targeting rule' },
@@ -735,7 +791,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     });
 
     const res = await emitScorecard(
-      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { ...auditArgs, gradingAuditReservation: reservation, ratings: REPLAY_SPLIT_RATINGS },
       { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
       { dispatchTool },
     );
@@ -743,6 +799,11 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
     expect((res as { error?: string }).error).toContain('changed from 1 to 2');
     expect((res as { error?: string }).error).toContain('re-emit the target card');
+    expect(markGradingAuditAwaitingReemit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ state: 'pending', dispatchReservation: reservation }),
+      expect.objectContaining({ reason: expect.stringContaining('changed from 1 to 2') }),
+    );
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -924,11 +985,12 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 });
 
 describe('pure halves (P-013)', () => {
-  it('auditVerdictFromRatings: any fail-vocabulary rating fails; unknown/custom never fail silently', () => {
+  it('auditVerdictFromRatings: failures dominate; unknown/custom/empty ratings cannot pass', () => {
     expect(auditVerdictFromRatings({ a: { rating: 'pass' }, b: { rating: 'exemplary' } })).toBe('passed');
     expect(auditVerdictFromRatings({ a: { rating: 'pass' }, b: { rating: 'severe' } })).toBe('failed');
-    expect(auditVerdictFromRatings({ a: { rating: 'unknown' } })).toBe('passed');
-    expect(auditVerdictFromRatings({})).toBe('passed');
+    expect(auditVerdictFromRatings({ a: { rating: 'pass' }, b: { rating: 'unknown' } })).toBeNull();
+    expect(auditVerdictFromRatings({ a: { rating: 'custom-unmapped' } })).toBeNull();
+    expect(auditVerdictFromRatings({})).toBeNull();
   });
 
   it('needsGradingAudit: standard+terminal only, never the meta-rubric itself (one level, no regress)', () => {
