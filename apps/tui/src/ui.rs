@@ -12,7 +12,7 @@ use crate::models::{
 use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
@@ -50,11 +50,51 @@ pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 160;
 /// instead of squeezing a rail beside the four-row composer.
 pub(crate) const SURFACE_B_MIN_HEIGHT: u16 = 24;
 
+/// The smallest supported terminal (PUBLIC_RELEASE_UX.md "Below 80 columns or
+/// 20 rows"). Below it the whole screen is the blocking too-small view.
+pub(crate) const MIN_COLS: u16 = 80;
+pub(crate) const MIN_ROWS: u16 = 20;
+
+pub(crate) fn too_small(cols: u16, rows: u16) -> bool {
+    cols < MIN_COLS || rows < MIN_ROWS
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
-    draw_frame(f, app);
+    let area = f.area();
+    if too_small(area.width, area.height) {
+        draw_too_small(f);
+    } else {
+        draw_frame(f, app);
+    }
     // Colour-disabled mode (NO_COLOR, P-013) clears the finished frame, so it
     // holds whichever branch below painted it and however a site named a colour.
     Theme::finish_frame(f.buffer_mut());
+}
+
+/// The stable blocking view below the supported size: one instruction instead
+/// of clipped controls. `App::on_key` holds every key but quit while it shows,
+/// so nothing the owner cannot see changes underneath it, and a resize back
+/// resumes the surface and draft exactly as they were.
+fn draw_too_small(f: &mut Frame) {
+    let area = f.area();
+    let message = format!(
+        "Terminal too small — resize to at least {MIN_COLS}×{MIN_ROWS}. \
+         Your session and draft are safe."
+    );
+    let height = area.height.min(4);
+    let text_area = Rect {
+        y: area.y + area.height.saturating_sub(height) / 2,
+        height,
+        ..area
+    };
+    f.render_widget(Block::default().style(Theme::panel()), area);
+    f.render_widget(
+        Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .style(Theme::panel()),
+        text_area,
+    );
 }
 
 fn draw_frame(f: &mut Frame, app: &App) {

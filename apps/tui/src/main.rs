@@ -1149,6 +1149,10 @@ async fn run<B: Backend>(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // The starting geometry; every later change arrives as Event::Resize.
+    if let Ok(size) = terminal.size() {
+        app.viewport = (size.width, size.height);
+    }
     app.require_session_setup = true;
     app.su_launch_fleet = launch_fleet;
     app.su_launch_seat = launch_seat;
