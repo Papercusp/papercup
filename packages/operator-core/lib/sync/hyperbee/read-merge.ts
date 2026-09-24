@@ -140,6 +140,19 @@ export function resetCursorPersistWarnThrottleForTests(): void {
  *  via `IncrementalMergeOpts.maxWinnersEntries`. */
 export const DEFAULT_MAX_WINNERS_ENTRIES = 500_000;
 
+/**
+ * P-007 run #7: one live eviction iterator per `winners` map (see `recordWinner`). A
+ * fresh `keys().next()` walks every deleted slot at the front of V8's ordered hash
+ * table, and at the 500k cap that table holds up to about half a million of them
+ * between rehashes. Measured on node 25: 50 us per eviction, against about 1 us when
+ * one iterator is reused (.papercusp/scratch/p007/lru-evict-bench.mjs). A snapshot set
+ * past the cap evicts once per row. A live Map iterator visits entries in insertion
+ * order, skips deleted ones and sees later appends, and every entry it has passed was
+ * deleted, so its next key is always the map's oldest. Keyed by the Map, so a cursor
+ * whose map is replaced starts a fresh iterator.
+ */
+const winnersEvictors = new WeakMap<Map<string, WinnerMeta>, Iterator<string>>();
+
 /** `await` point that defers to the macrotask queue (setImmediate), letting
  *  timers/IO/HTTP run between merge chunks. */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -1908,8 +1921,15 @@ function recordWinner(
   cursor.winners.set(groupKey, meta);
   if (cap <= 0) return;
   let evicted = 0;
+  let evictor = winnersEvictors.get(cursor.winners);
   while (cursor.winners.size > cap) {
-    const oldest = cursor.winners.keys().next().value;
+    let next = evictor?.next();
+    if (!next || next.done) {
+      evictor = cursor.winners.keys();
+      winnersEvictors.set(cursor.winners, evictor);
+      next = evictor.next();
+    }
+    const oldest = next.value;
     if (oldest === undefined) break; // defensive: size>cap but iterator empty can't happen, but never loop forever
     cursor.winners.delete(oldest);
     evicted++;
