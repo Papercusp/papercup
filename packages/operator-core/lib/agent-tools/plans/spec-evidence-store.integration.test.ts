@@ -1935,3 +1935,102 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     expect(listed).toHaveLength(0);
   });
 });
+
+/**
+ * WI-10002889 / R-1 (review-system-rework-reduction-2026-09-23). A draft->active promotion that
+ * leaves behavior, falsifier, layers and BAR pin byte-identical still appends a revision (the
+ * lifecycle is part of the content hash, so the promotion stays auditable). Before the fix that
+ * revision stranded EVERY binding at the draft revision: observed on this plan, where D-019's
+ * activation audit promoted 31 AUTO-BAR clauses and all of their proof had to be re-run.
+ */
+describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => {
+  async function bindAtCurrent(evidenceRef: string, testRunId: number, coverageEvidenceRef: number) {
+    const bound = await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'coverage-census',
+      evidenceRef,
+      sourceFingerprint: 'git:abc123',
+      coverageEvidenceRef,
+      testRunId,
+      actorId: 'su-test',
+    });
+    expect(bound.status).toBe('created');
+    return Number((bound as { id: number }).id);
+  }
+
+  async function liveRefsAt(revision: number): Promise<string[]> {
+    return (
+      await db.sql<{ evidence_ref: string }[]>`
+        SELECT evidence_ref FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'
+           AND spec_revision = ${revision} AND retracted_at IS NULL
+         ORDER BY evidence_ref`
+    ).map((row) => row.evidence_ref);
+  }
+
+  it('re-attaches the work-item and carries live (not retracted) bindings onto the promoted revision', async () => {
+    await specs.setSpecClause(clause({ lifecycleStatus: 'draft' }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+    const withdrawn = await bindAtCurrent('surface:POST /events', external.testRunId, external.coverageEvidenceRef);
+    expect(
+      (await evidenceStore.retractSpecEvidence({
+        harnessSlug: HARNESS, bindingId: withdrawn, reason: 'bound run was never executed', actorId: RETRACTOR,
+      })).status,
+    ).toBe('retracted');
+
+    const promoted = await specs.setSpecClause(clause({ expectedRevision: 1, lifecycleStatus: 'active' }));
+    // A promotion is still a new immutable revision, not an in-place mutation.
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
+    const [edge] = await db.sql<{ spec_fingerprint: string }[]>`
+      SELECT spec_fingerprint FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND spec_revision = 2`;
+    expect(edge?.spec_fingerprint).toBe((promoted as { contentHash: string }).contentHash);
+  });
+
+  it('does NOT carry proof across a substantive edit, even one that also changes lifecycle', async () => {
+    await specs.setSpecClause(clause({ lifecycleStatus: 'draft' }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const edited = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      lifecycleStatus: 'active',
+      behavior: 'Acknowledged event 42 is not replayed after reconnect, even across a restart.',
+    }));
+    expect(edited).toMatchObject({ status: 'revised', revision: 2 });
+    expect(edited).not.toHaveProperty('evidenceCarriedForward');
+    expect(await liveRefsAt(2)).toEqual([]);
+    // The prior proof is kept at its own revision, not deleted.
+    expect(await liveRefsAt(1)).toEqual(['surface:GET /events']);
+  });
+
+  it('does not carry onto a non-enforceable lifecycle (active -> superseded)', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const retired = await specs.setSpecClause(clause({ expectedRevision: 1, lifecycleStatus: 'superseded' }));
+    expect(retired).toMatchObject({ status: 'revised', revision: 2 });
+    expect(await liveRefsAt(2)).toEqual([]);
+  });
+
+  it('differsOnlyInLifecycle answers false for any other change', () => {
+    const draft = clause({ lifecycleStatus: 'draft' });
+    const draftHash = specs.specClauseContentHash(draft);
+    expect(specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active' }), 'draft', null, draftHash)).toBe(true);
+    expect(
+      specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active', requiredTestLayers: ['unit'] }), 'draft', null, draftHash),
+    ).toBe(false);
+    expect(
+      specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active', mutationRequired: false }), 'draft', null, draftHash),
+    ).toBe(false);
+  });
+});
