@@ -582,6 +582,24 @@ export interface MergeCursor {
    * every hole below c. Absent means no hole.
    */
   snapshotHole?: Map<string, number>;
+  /**
+   * P-524 (p2p-join-catchup-speed-2026-09-23 D-009 (b)): what the key seeks on this cursor
+   * have already read, per `keySeekMemoKey(log, miss)`. See {@link KeySeekMemo}. In memory
+   * only, so a new cursor seeks again.
+   */
+  keySeeks?: Map<string, KeySeekMemo>;
+}
+
+/**
+ * P-524: `[bottom, top)` of one log was read in full by earlier key seeks without finding
+ * this device's key row for one (pot, epoch); a later seek reads only what lies outside it.
+ * `found` means a seek applied the row (or found a newer version already folded), so no
+ * further seek runs for that key on this cursor.
+ */
+export interface KeySeekMemo {
+  found: boolean;
+  bottom: number;
+  top: number;
 }
 
 /**
@@ -2494,6 +2512,57 @@ export interface IncrementalMergeOpts {
   storedOrderPrefetchWindow?: number;
   /** Budget for one window's look-ahead reads. Default `STORED_ORDER_PEEK_TIMEOUT_MS`. */
   storedOrderPeekTimeoutMs?: number;
+  /**
+   * P-524: seek this device's epoch key ahead on a log when an apply could not decrypt
+   * for want of it (see {@link EpochKeySeek}). Absent ⇒ today's behavior exactly.
+   */
+  keySeek?: EpochKeySeek;
+}
+
+/**
+ * P-524 (p2p-join-catchup-speed-2026-09-23 D-009 (b)): one (pot, epoch) the apply sink's
+ * decrypt gate deferred an op for, because this device holds no key for it yet.
+ */
+export interface EpochKeyMiss {
+  potId: string;
+  epoch: number;
+}
+
+/**
+ * P-524: key before content for a fresh joiner.
+ *
+ * A device's wrapped epoch-key rows are appended when it is admitted, so for a fresh
+ * joiner they sit after the newest snapshot set and after nearly all content. Folding in
+ * log order, the joiner reaches content first, and every encrypted row defers into the
+ * bounded PendingEpochContent buffer, overflows it and is re-folded later (P-007 run #1
+ * applied nothing across 438 of 1,053 set chunks).
+ *
+ * With this option, a key miss makes the fold look ahead on THAT log for this device's
+ * key row and apply it (and nothing else) before it reads on. The content cursor does not
+ * move: later content decrypts because the key is now in PG, and the op that missed
+ * drains through the existing key-applied hook after the pass.
+ */
+export interface EpochKeySeek {
+  /** Misses the apply sink recorded since the last call; the call consumes them. */
+  takeMisses(): readonly EpochKeyMiss[];
+  /** True when `env` (a plain op or an expanded set row) is this device's key row for `miss`. */
+  suppliesKey(env: OpEnvelope, miss: EpochKeyMiss): boolean;
+  /** Op reads one seek may spend. Default {@link KEY_SEEK_MAX_OPS}. */
+  maxOps?: number;
+  /** Wall-clock one seek may spend. Default {@link KEY_SEEK_MAX_MS}. */
+  maxMs?: number;
+}
+
+/** P-524: op reads one key seek may spend before it gives up. */
+export const KEY_SEEK_MAX_OPS = 500_000;
+/**
+ * P-524: wall-clock one key seek may spend. A seek does not touch the replication-liveness
+ * sample (boot touches it from `onCursorAdvance`), so this stays under its 60s staleness.
+ */
+export const KEY_SEEK_MAX_MS = 45_000;
+
+function keySeekMemoKey(keyHex: string, miss: EpochKeyMiss): string {
+  return `${keyHex}|${miss.potId}|${miss.epoch}`;
 }
 
 export interface IncrementalMergeResult {
@@ -2661,6 +2730,121 @@ async function peekAndSeedStoredOrder(args: {
   }
 }
 
+type KeySeekResult =
+  | { kind: 'found'; at: number; reads: number }
+  | { kind: 'absent'; reads: number }
+  | { kind: 'gave-up'; at: number; reads: number; why: string };
+
+/** P-524: this device's key row for `miss` in `op` (a plain op, or a set chunk's rows), if any. */
+function keyRowIn(op: PeerLogOp, keyHex: string, seek: EpochKeySeek, miss: EpochKeyMiss): OpEnvelope | null {
+  if (isSnapshotOp(op)) {
+    for (const row of snapshotRows(op)) {
+      const env = snapshotRowToEnvelope(row, keyHex);
+      if (seek.suppliesKey(env, miss)) return env;
+    }
+    return null;
+  }
+  const env = toEnvelope(op, keyHex);
+  return seek.suppliesKey(env, miss) ? env : null;
+}
+
+/**
+ * P-524 (p2p-join-catchup-speed-2026-09-23 D-009 (b)): look for this device's key row for
+ * `miss` on `log` over `[floor, log.length)` and apply it through the fold's own apply
+ * path, outside any batch, so it has committed before the next content op resolves its key.
+ *
+ * Reads top down. A device's key row is written at its admission, shortly before it joins,
+ * so it sits near the tail; and a peer log has one writer, so the first match is the newest
+ * version. Set chunks are searched row by row, because rows are sorted by table and content
+ * tables that sort before `hive-epoch-keys` come first inside a set too. Skips what an
+ * earlier seek on this cursor already read (`cursor.keySeeks`). Gives up at the op or time
+ * budget, or at a read that does not resolve. Never moves `cursor.positions`.
+ */
+async function seekEpochKey(args: {
+  cursor: MergeCursor;
+  log: AdmittedLog;
+  floor: number;
+  miss: EpochKeyMiss;
+  seek: EpochKeySeek;
+  apply: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
+  scope: string;
+  getTimeoutMs: number;
+  applyTimeoutMs: number;
+  maxWinnersEntries: number;
+  onWinnersEvicted?: (evictedCount: number, size: number) => void;
+}): Promise<KeySeekResult> {
+  const { cursor, log, floor, miss, seek } = args;
+  const memoKey = keySeekMemoKey(log.keyHex, miss);
+  const memos = (cursor.keySeeks ??= new Map());
+  const length = log.length;
+  const prior = memos.get(memoKey);
+  // A range read before a truncation, or wholly below the floor, says nothing about this seek.
+  const memo = prior && prior.top <= length && prior.top > floor ? prior : undefined;
+  const segments: Array<[number, number]> = memo
+    ? [
+        [memo.top, length],
+        [floor, memo.bottom],
+      ]
+    : [[floor, length]];
+  const maxOps = seek.maxOps ?? KEY_SEEK_MAX_OPS;
+  const maxMs = seek.maxMs ?? KEY_SEEK_MAX_MS;
+  const read = scanBackwardWindowed(log, floor, args.getTimeoutMs);
+  const startedAt = Date.now();
+  let reads = 0;
+  // `[covered, length)` has been read in full. Reads run top down and the top segment ends
+  // where the memo's range begins, so this stays one range.
+  let covered = length;
+  const remember = (found: boolean): void => {
+    memos.set(memoKey, { found, bottom: covered, top: length });
+  };
+  for (let s = 0; s < segments.length; s++) {
+    const [lo, hi] = segments[s];
+    for (let i = hi - 1; i >= lo; i--) {
+      if (reads >= maxOps || Date.now() - startedAt >= maxMs) {
+        remember(false);
+        const why = reads >= maxOps ? `the ${maxOps}-read budget is spent` : `the ${maxMs}ms budget is spent`;
+        return { kind: 'gave-up', at: i, reads, why };
+      }
+      reads++;
+      const got = await read(i);
+      if (got.kind !== 'op') {
+        remember(false);
+        const why = got.kind === 'unavailable' ? 'a read did not resolve in time' : 'a read failed';
+        return { kind: 'gave-up', at: i, reads, why };
+      }
+      const env = got.op ? keyRowIn(got.op, log.keyHex, seek, miss) : null;
+      if (env) {
+        const groupKey = `${env.table}::${env.hbKey}`;
+        const prev = cursor.winners.get(groupKey);
+        // A newer version already folded leaves nothing for this seek to add.
+        if (!(prev && isStaleAgainst(env, prev))) {
+          const outcome = await applyRecordingWinner(
+            cursor,
+            groupKey,
+            env,
+            args.apply,
+            args.scope,
+            args.applyTimeoutMs,
+            args.maxWinnersEntries,
+            args.onWinnersEvicted,
+          );
+          if (outcome.kind !== 'applied') {
+            remember(false); // `covered` is above this row, so the next seek retries it
+            return { kind: 'gave-up', at: i, reads, why: `the key row did not apply (${outcome.kind}: ${outcome.reason})` };
+          }
+        }
+        covered = i;
+        remember(true);
+        return { kind: 'found', at: i, reads };
+      }
+      covered = i;
+    }
+    if (s === 0 && memo) covered = memo.bottom;
+  }
+  remember(false);
+  return { kind: 'absent', reads };
+}
+
 export async function mergeAdmittedLogsIncremental(
   logs: AdmittedLog[],
   cursor: MergeCursor,
@@ -2709,6 +2893,9 @@ async function mergeIncrementalPass(
   const prefetchWindow = Math.max(1, opts?.storedOrderPrefetchWindow ?? STORED_ORDER_PREFETCH_WINDOW);
   const peekTimeoutMs = opts?.storedOrderPeekTimeoutMs ?? STORED_ORDER_PEEK_TIMEOUT_MS;
   let storedOrderSkips = 0;
+  // P-524: optional key-before-content seek; at most one seek per (log, pot, epoch) per pass.
+  const keySeek = opts?.keySeek;
+  const keySeeksThisPass = new Set<string>();
 
   let applied = 0;
   let decoded = 0;
@@ -2814,6 +3001,60 @@ async function mergeIncrementalPass(
       if (firstDeferredPos >= pos) firstDeferredPos = -1;
       holdCursorHere({ kind: 'retryable', reason: `batch transaction lost: ${reason}` }, 'read-merge batch');
       return false;
+    };
+    // P-524: a miss recorded before this log's fold (another log's, or the post-pass
+    // drain's) is not this log's to seek.
+    keySeek?.takeMisses();
+    /**
+     * P-524: after an apply, seek this device's key for each (pot, epoch) that apply could
+     * not decrypt. Commits the open batch first, so its row locks are not held across the
+     * seek. False when that commit lost the batch; the caller then ends the pass, as for any
+     * lost batch.
+     */
+    const seekMissedKeys = async (): Promise<boolean> => {
+      if (!keySeek) return true;
+      const misses = keySeek.takeMisses();
+      if (misses.length === 0) return true;
+      let settled = false;
+      for (const miss of misses) {
+        const memoKey = keySeekMemoKey(log.keyHex, miss);
+        if (keySeeksThisPass.has(memoKey) || cursor.keySeeks?.get(memoKey)?.found) continue;
+        keySeeksThisPass.add(memoKey);
+        if (!settled) {
+          if (!(await settleBatch(pos + 1))) return false;
+          settled = true;
+        }
+        const startedAt = Date.now();
+        const r = await seekEpochKey({
+          cursor,
+          log,
+          floor: pos,
+          miss,
+          seek: keySeek,
+          apply,
+          scope: `${cursorTag}${log.keyHex}`,
+          getTimeoutMs,
+          applyTimeoutMs,
+          maxWinnersEntries,
+          onWinnersEvicted,
+        });
+        const took = `${r.reads} read(s) in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+        const what = `${cursorTag}P-524 key seek: log ${log.keyHex.slice(0, 12)} pot ${miss.potId} epoch ${miss.epoch}`;
+        if (r.kind === 'found') {
+          console.info(`[read-merge] ${what}: applied this device's key row from #${r.at} (${took}); folding on from #${pos}.`);
+        } else if (r.kind === 'gave-up') {
+          console.warn(
+            `[read-merge] ${what}: GAVE UP at #${r.at} after ${took}: ${r.why}. Content for this epoch ` +
+              `defers as before; the next pass resumes the seek below what it has read.`,
+          );
+        } else if (r.reads > 0) {
+          console.info(
+            `[read-merge] ${what}: no key row for this device in [#${pos}, #${log.length}) (${took}); ` +
+              `content for this epoch defers until one arrives.`,
+          );
+        }
+      }
+      return true;
     };
     // P-008: the snapshot set this pass is crossing on this log, so a long APPLY is
     // visible while it runs (start, every SNAPSHOT_SET_PROGRESS_LOG_MS, done) and a
@@ -3107,6 +3348,11 @@ async function mergeIncrementalPass(
             retryable = true;
             break;
           }
+          // P-524: a row this device cannot decrypt yet makes the fold fetch its key first.
+          if (!(await seekMissedKeys())) {
+            retryable = true;
+            break;
+          }
           if (outcome.kind === 'applied') {
             if (outcome.changed) applied++;
           } else {
@@ -3145,6 +3391,8 @@ async function mergeIncrementalPass(
         await settleBatch(pos + 1);
         break;
       }
+      // P-524: an op this device cannot decrypt yet makes the fold fetch its key first.
+      if (!(await seekMissedKeys())) break;
       if (outcome.kind === 'applied') {
         if (outcome.changed) applied++;
       } else {
