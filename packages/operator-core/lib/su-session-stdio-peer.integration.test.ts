@@ -38,7 +38,7 @@ import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telem
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
 import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
-  captureCarryArtifactManifest, recheckCarryArtifactManifest, captureCarryRuntimeSnapshot,
+  captureCarryArtifactManifest, recheckCarryArtifactManifest, captureCarryRuntimeSnapshot, recheckCarryRuntimeSnapshot,
   type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
@@ -223,6 +223,26 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it('observes the installed native runtime before opening a thread without provider inference', async () => {
+    // This fixture observes only the idle core runtime. Freeze its launch
+    // without optional shell/plugin startup work; the default native startup
+    // was measured spawning git/git-remote-http while the census ran. This
+    // configuration is fixture-only, never a production policy change.
+    const p = await peer('codex', ['app-server', '-c', 'features.shell_snapshot=false', '-c', 'features.shell_tool=false',
+      '-c', 'features.plugins=false', '-c', 'features.remote_plugin=false']);
+    await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_runtime_inventory_test', version: '1' } } });
+    // No thread or inference request. Thread startup legitimately spawns
+    // transient children; a frozen live PID tree is not a run admission gate.
+    const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
+    expect(runtime.rootPid).toBe(p.pid());
+    expect(runtime.processes.some(process => process.pid === p.pid())).toBe(true);
+    expect(runtime.processes.some(process => /\/codex$/.test(process.executable))).toBe(true);
+    expect(runtime.artifacts.some(a => /\/codex$/.test(a.filePath))).toBe(true);
+    expect(runtime.processes.every(p => p.mappedFiles.includes(p.executable))).toBe(true);
+    await recheckCarryRuntimeSnapshot(runtime);
+    expect(runtime.evidenceKind).toBe('observation-only');
+  }, 30_000);
+
   it.each([false, true])('does not mistake accepted output-limit configuration for native enforcement (configured %s)', async configured => {
     const requests: Array<Record<string, unknown>> = [], events: RpcFrame[] = [];
     const requestedLimit = 16;
@@ -526,13 +546,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         if (readSource) await waitForMcpStartup(events, threadId, serverName);
         const nativeConfig = await captureCarryNativeConfiguration(p, { threadId, cwd: homes.at(-1)!,
           servers: readSource ? [{ name: serverName, tools: [toolName], authStatus: 'bearerToken' }] : [] });
-        const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
-        expect(runtime.processes.some(process => /\/codex$/.test(process.executable))).toBe(true);
         const manifest = await captureCarryArtifactManifest({
           protocolRef: 'installed-native-loopback-fixture:no-provider-inference', configuration: nativeConfig,
-          runtime,
           artifacts: [
-            ...runtime.artifacts,
+            // This is the launched peer's executable, not an assertion that a
+            // wrapper's subprocesses or dynamic dependencies were censused.
+            { id: 'peer-executable', filePath: `/proc/${p.pid()}/exe`, maxBytes: 512 * 1024 * 1024 },
             { id: 'task-and-checker', filePath: fileURLToPath(import.meta.url), maxBytes: 1024 * 1024 },
             { id: 'transport', filePath: fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url)), maxBytes: 1024 * 1024 },
             { id: 'capture', filePath: fileURLToPath(new URL('./launch-cost/scan-launch-transcripts.ts', import.meta.url)), maxBytes: 1024 * 1024 },

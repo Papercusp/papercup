@@ -199,15 +199,16 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
   const readProc = async (path: string): Promise<string> => {
     const file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
     try {
-      const buffer = Buffer.alloc(2 * 1024 * 1024 + 1);
+      const maxBytes = 2 * 1024 * 1024, buffer = Buffer.alloc(64 * 1024), chunks: Buffer[] = [];
       let bytes = 0;
-      while (bytes < buffer.length) {
-        const chunk = await file.read(buffer, bytes, buffer.length - bytes, bytes);
+      while (bytes <= maxBytes) {
+        const chunk = await file.read(buffer, 0, Math.min(buffer.length, maxBytes + 1 - bytes), bytes);
         if (!chunk.bytesRead) break;
         bytes += chunk.bytesRead;
+        if (bytes > maxBytes) throw new Error('carry runtime proc record exceeds bound');
+        chunks.push(Buffer.from(buffer.subarray(0, chunk.bytesRead)));
       }
-      if (bytes === buffer.length) throw new Error('carry runtime proc record exceeds bound');
-      return buffer.subarray(0, bytes).toString('utf8');
+      return Buffer.concat(chunks, bytes).toString('utf8');
     } finally { await file.close(); }
   };
   const boot = (await readProc('/proc/sys/kernel/random/boot_id')).trim();
@@ -224,31 +225,43 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
       if (!identity || parentPid === null || (parent !== null && parentPid !== parent)) {
         throw new Error('carry runtime process identity or parent changed');
       }
-      const executable = await readlink(`/proc/${pid}/exe`);
+      const processName = before.slice(before.indexOf('(') + 1, before.lastIndexOf(')')).replace(/[^a-zA-Z0-9_. -]/g, '?').slice(0, 32);
+      const executable = await readlink(`/proc/${pid}/exe`).catch(() => { throw new Error(`carry runtime process disappeared or executable unreadable: ${processName}`); });
       if (!isAbsolute(executable) || executable.endsWith(' (deleted)')) throw new Error('carry runtime executable unavailable');
       const mappedFiles = new Set<string>();
+      const mappedIdentities = new Map<string, { ino: bigint; major: bigint; minor: bigint }>();
       const maps = await readProc(`/proc/${pid}/maps`);
       if (!maps.trim() || !maps.endsWith('\n')) throw new Error('carry runtime mappings incomplete');
       for (const line of maps.trimEnd().split('\n')) {
         const match = /^([0-9a-f]+)-([0-9a-f]+)\s+([r-][w-][x-][ps])\s+[0-9a-f]+\s+([0-9a-f]+):([0-9a-f]+)\s+(\d+)(?:\s+(.*))?$/i.exec(line);
         if (!match) throw new Error('carry runtime mapping invalid');
         const path = match[7];
-        if (!path || path.startsWith('[')) continue; // anonymous/kernel mappings are not disk artifacts
+        // Node 25 maps the kernel io_uring object under this pseudo-name.
+        // It is neither a pathname nor an omitted disk dependency. Keep this
+        // exact rather than swallowing arbitrary unrecognized/deleted files.
+        if (!path || path.startsWith('[') || path === 'anon_inode:[io_uring]') continue;
         if (!isAbsolute(path) || path.endsWith(' (deleted)') || /\\[0-7]{3}/.test(path)) {
           throw new Error('carry runtime mapped pathname unavailable or ambiguous');
         }
-        if (mappedFiles.has(path)) continue;
-        const file = await stat(path, { bigint: true });
-        const major = ((file.dev >> 8n) & 0xfffn) | ((file.dev >> 32n) & 0xfffff000n);
-        const minor = (file.dev & 0xffn) | ((file.dev >> 12n) & 0xffffff00n);
-        if (!file.isFile() || file.ino !== BigInt(match[6]) || major !== BigInt(`0x${match[4]}`) ||
-          minor !== BigInt(`0x${match[5]}`)) throw new Error('carry runtime mapped file replaced');
+        let identity = mappedIdentities.get(path);
+        if (!identity) {
+          const file = await stat(path, { bigint: true });
+          if (!file.isFile()) throw new Error('carry runtime mapped file is non-regular');
+          identity = { ino: file.ino, major: ((file.dev >> 8n) & 0xfffn) | ((file.dev >> 32n) & 0xfffff000n),
+            minor: (file.dev & 0xffn) | ((file.dev >> 12n) & 0xffffff00n) };
+          mappedIdentities.set(path, identity);
+        }
+        // A pathname can occur in several mappings. Validate every mapping's
+        // identity before deduplicating; an older inode must not hide behind
+        // a newer mapping with the same pathname.
+        if (identity.ino !== BigInt(match[6]) || identity.major !== BigInt(`0x${match[4]}`) ||
+          identity.minor !== BigInt(`0x${match[5]}`)) throw new Error('carry runtime mapped file replaced');
         mappedFiles.add(path);
       }
       if (!mappedFiles.has(executable)) throw new Error('carry runtime executable absent from mappings');
       for (const path of mappedFiles) files.add(path);
       if (files.size > 256) throw new Error('carry runtime artifact population exceeds bound');
-      const threads = await readdir(`/proc/${pid}/task`);
+      const threads = await readdir(`/proc/${pid}/task`).catch(() => { throw new Error(`carry runtime process disappeared or tasks unreadable: ${processName}`); });
       if (!threads.length || threads.length > 512 || threads.some(tid => !/^[1-9]\d*$/.test(tid))) {
         throw new Error('carry runtime thread population invalid or exceeds bound');
       }
@@ -276,7 +289,7 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
   };
   const before = await observe(), after = await observe();
   if ((await readProc('/proc/sys/kernel/random/boot_id')).trim() !== boot || canonicalJson(before) !== canonicalJson(after)) {
-    throw new Error('carry runtime tree or mappings changed during observation');
+    throw new Error(`carry runtime tree or mappings changed during observation (${before.processes.map(p => basename(p.executable)).join(',')} -> ${after.processes.map(p => basename(p.executable)).join(',')})`);
   }
   return before;
 }
@@ -285,8 +298,9 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
  * a transient child/mapping or an authenticated provider-send event. */
 export async function recheckCarryRuntimeSnapshot(snapshot: CarryRuntimeSnapshot): Promise<void> {
   snapshot = structuredClone(snapshot);
-  if (canonicalJson(await captureCarryRuntimeSnapshot(snapshot.rootPid)) !== canonicalJson(snapshot)) {
-    throw new Error('carry runtime changed after capture');
+  const current = await captureCarryRuntimeSnapshot(snapshot.rootPid);
+  if (canonicalJson(current) !== canonicalJson(snapshot)) {
+    throw new Error(`carry runtime changed after capture (${snapshot.processes.map(p => basename(p.executable)).join(',')} -> ${current.processes.map(p => basename(p.executable)).join(',')})`);
   }
 }
 
@@ -302,7 +316,6 @@ export async function captureCarryArtifactManifest(input: {
   protocolRef: string;
   artifacts: readonly CarryArtifactInput[];
   configuration: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>;
-  runtime?: CarryRuntimeSnapshot;
 }) {
   input = structuredClone(input);
   const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -327,14 +340,6 @@ export async function captureCarryArtifactManifest(input: {
   if (!config || !nonblank(config.threadId) || !isAbsolute(config.cwd) ||
     !/^[a-f0-9]{64}$/.test(config.configSha256) || !/^[a-f0-9]{64}$/.test(config.toolInventorySha256)) {
     throw new Error('carry manifest requires a native configuration observation');
-  }
-  if (input.runtime) {
-    await recheckCarryRuntimeSnapshot(input.runtime);
-    for (const required of input.runtime.artifacts) {
-      if (!input.artifacts.some(a => a.id === required.id && a.filePath === required.filePath && a.maxBytes === required.maxBytes)) {
-        throw new Error('carry manifest is missing an observed runtime artifact');
-      }
-    }
   }
   const artifacts = [];
   for (const artifact of [...input.artifacts].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
@@ -368,10 +373,8 @@ export async function captureCarryArtifactManifest(input: {
         resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) });
     } finally { await fh.close(); }
   }
-  if (input.runtime) await recheckCarryRuntimeSnapshot(input.runtime);
   const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
-    protocolRef: input.protocolRef, configuration: config, artifacts,
-    ...(input.runtime ? { runtime: input.runtime } : {}) };
+    protocolRef: input.protocolRef, configuration: config, artifacts };
   return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
 }
 
@@ -391,7 +394,7 @@ export async function recheckCarryArtifactManifest(
   }
   await recheckCarryNativeConfiguration(peer, manifest.configuration);
   const current = await captureCarryArtifactManifest({ protocolRef: manifest.protocolRef,
-    configuration: manifest.configuration, runtime: manifest.runtime,
+    configuration: manifest.configuration,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
   if (current.sha256 !== sha256) throw new Error('carry artifacts changed after manifest freeze');
 }
