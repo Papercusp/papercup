@@ -2537,7 +2537,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     );
     try {
       await started;
-      await vi.advanceTimersByTimeAsync(30);
+      // Outlive both action deadlines and the 15s DB-cleanup budget: neither
+      // timeout is a child-exit receipt, and leases must still be renewed.
+      await vi.advanceTimersByTimeAsync(20_100);
       expect(childSignal.aborted).toBe(true);
       expect(returned).toBe(false);
       expect(releasedResources()).toEqual([]);

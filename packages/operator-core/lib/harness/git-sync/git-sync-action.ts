@@ -365,8 +365,8 @@ function createGitSyncActionLivenessGuard(opts: {
       kind,
       kind === 'idle' ? opts.idleTimeoutMs : opts.hardTimeoutMs,
     );
-    // Abort first.  The callback then stops the heartbeat and releases locks;
-    // every in-flight `run` observes the same reason and rejects immediately.
+    // Abort first. Guarded awaits reject immediately, but the owning action
+    // must drain any started Git executions before stopping its lease heartbeat.
     controller.abort(timeoutError);
     timeoutCleanup = Promise.resolve()
       .then(() => opts.onTimeout(timeoutError!))
@@ -3130,50 +3130,59 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const activityStartedAt = Date.now();
   const stopLockHeartbeat =
     lock.state === 'acquired' ? startLockHeartbeat(cd, slug, [...acquired], lockOwner) : async () => {};
+  // The cancellation race bounds setup/metadata awaits, not OS process lifetime.
+  // Reuse runGitSync's runner seam to track actual Git work independently of
+  // the pipeline promise, which can be rejected by that race before child exit.
+  const activeGitExecutions = new Set<Promise<unknown>>();
   // Timeout cleanup is single-flight. The timer callback and the owning finally
   // block can race: whichever notices expiry first must stop the heartbeat before
   // releasing the leases, while a late callback must never release a second time.
   let lockCleanup: Promise<void> | null = null;
   const cleanupLocks = (): Promise<void> => {
     if (lockCleanup) return lockCleanup;
-    lockCleanup = new Promise<void>((resolve) => {
-      let finished = false;
-      const finish = (): void => {
-        if (finished) return;
-        finished = true;
-        if (timer) clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        console.warn(
-          `[git-sync] ${slug}: lock cleanup exceeded ${GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS}ms; ` +
-            'the resource TTL remains the final backstop',
-        );
-        finish();
-      }, GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS);
-      timer.unref?.();
-      void (async () => {
-        try {
-          await stopLockHeartbeat();
-        } catch (error) {
+    lockCleanup = (async () => {
+      // Keep renewing leases throughout SIGTERM/SIGKILL and exit verification.
+      // The cleanup budget below bounds DB cleanup only; it cannot certify exit.
+      while (activeGitExecutions.size > 0) await Promise.allSettled([...activeGitExecutions]);
+      await new Promise<void>((resolve) => {
+        let finished = false;
+        const finish = (): void => {
+          if (finished) return;
+          finished = true;
+          if (timer) clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
           console.warn(
-            `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `[git-sync] ${slug}: lock cleanup exceeded ${GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS}ms; ` +
+              'the resource TTL remains the final backstop',
           );
-        }
-        if (lock.state === 'acquired') {
+          finish();
+        }, GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS);
+        timer.unref?.();
+        void (async () => {
           try {
-            await releaseAll(cd, lockOwner, acquired);
+            await stopLockHeartbeat();
           } catch (error) {
             console.warn(
-              `[git-sync] ${slug}: lock release cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+              `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
             );
           }
-        }
-        finish();
-      })();
-    });
+          if (lock.state === 'acquired') {
+            try {
+              await releaseAll(cd, lockOwner, acquired);
+            } catch (error) {
+              console.warn(
+                `[git-sync] ${slug}: lock release cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+          finish();
+        })();
+      });
+    })();
     return lockCleanup;
   };
   let timeoutActivity: Promise<void> | null = null;
@@ -3206,8 +3215,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     idleTimeoutMs: gitSyncActionIdleTimeoutMs(),
     hardTimeoutMs: gitSyncActionHardTimeoutMs(),
     onTimeout: async (error) => {
-      // Start lock cleanup immediately after aborting any active git child. The
-      // metadata write is best-effort and runs in parallel with lease cleanup.
+      // Record expiry promptly; cleanup itself fences on active Git settlement.
       const activity = recordTimeoutActivity(error);
       await cleanupLocks();
       await activity;
@@ -3366,6 +3374,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       runGitSync(slug, {
         repoPath,
         config: cfg,
+        runGit: async (args, cwd) => {
+          liveness.assertActive();
+          const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+            signal: liveness.signal,
+            onProgress: () => {
+              liveness.touch();
+              enqueueActivityHeartbeat();
+            },
+          });
+          activeGitExecutions.add(execution);
+          try {
+            return await execution;
+          } finally {
+            activeGitExecutions.delete(execution);
+          }
+        },
         beforePush: gate.hiveGitMode
           ? async (args, cwd) => {
               // F6/D-022 covers independent submodule origins too. Resolve a live
