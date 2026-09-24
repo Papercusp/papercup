@@ -104,6 +104,34 @@ describe('papercusp-script-snapshot.sh', () => {
     expect(`${result.stdout ?? ''}${result.stderr ?? ''}`).toBe('');
   });
 
+  it('keeps a sourced adjacent helper available and frozen during a long setup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-adjacent-helper-'));
+    try {
+      const target = join(dir, 'setup-release-checkout.sh');
+      const helper = join(dir, 'dependency-generation.sh');
+      const ready = join(dir, 'ready');
+      const release = join(dir, 'release');
+      expect(spawnSync('mkfifo', [release]).status).toBe(0);
+      await writeExecutable(helper, 'SNAPSHOT_VALUE=ORIGINAL\n');
+      await writeExecutable(target, [
+        '#!/usr/bin/env bash',
+        'printf ready > "$READY_FILE"',
+        'read -r token < "$RELEASE_PIPE"',
+        'source "$(dirname "${BASH_SOURCE[0]}")/dependency-generation.sh"',
+        'printf "%s\\n" "$SNAPSHOT_VALUE"',
+      ].join('\n'));
+      const run = runWrapper(dir, [target], { READY_FILE: ready, RELEASE_PIPE: release });
+      await waitForFile(ready);
+      await writeExecutable(helper, 'SNAPSHOT_VALUE=MUTATED\n');
+      await writeFile(release, 'resume\n');
+      const result = await run;
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('ORIGINAL');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a long-running target on the pre-edit byte snapshot', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-test-'));
     try {
