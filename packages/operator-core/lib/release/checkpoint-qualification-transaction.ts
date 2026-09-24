@@ -1105,7 +1105,6 @@ export function settleQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
-  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const candidate = input.candidate?.trim() || null;
   const runId = input.runId?.trim() || null;
   if (current.candidate && candidate && current.candidate !== candidate) {
@@ -1114,6 +1113,9 @@ export function settleQualificationTransaction(
   if (current.runId && runId && current.runId !== runId) {
     return { status: 'conflict', transaction: current };
   }
+  // A late result from another candidate/run must stay a conflict even after the first
+  // result settled. Otherwise a replay against a terminal row looks like an exact duplicate.
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const outcome = classifyQualificationVerdict(input);
   if (outcome.kind === 'pre-suite-no-verdict') {
     return waitQualificationTransaction(current, {

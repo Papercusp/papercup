@@ -110,6 +110,12 @@ describe('logical checkpoint qualification transaction', () => {
       attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 600,
     }).transaction;
     expect(recordQualificationRunnerProgress(terminal, { ...input, nowMs: 700 }).status).toBe('terminal');
+    expect(settleQualificationTransaction(terminal, {
+      attemptId: 'attempt-1', runId: 'run-other', reason: 'advanced', green: true, nowMs: 700,
+    }).status).toBe('conflict');
+    expect(settleQualificationTransaction(terminal, {
+      attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 700,
+    }).status).toBe('terminal');
   });
   it('creates one normalized durable identity and reuses the same attempt idempotently', () => {
     const current = begin();

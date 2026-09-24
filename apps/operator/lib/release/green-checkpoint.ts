@@ -1120,6 +1120,8 @@ export interface CheckpointDeps {
     payload: unknown;
     cancelSiblingKeysFor?: string[];
   }): Promise<void>;
+  /** Production defers green/red wakes until the exact terminal result is durable. */
+  flushTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
   /** EI-13992/WI-41490: apply pending migrations from the exact prepared candidate to
    *  the live dev PG the suite is about to run against, BEFORE dependency materialization
    *  and again before runGreen — breaks the
@@ -3338,6 +3340,7 @@ export async function emitTerminalCheckpointResult(
     writeHuman(result: CheckpointResult): void;
     writeMarker(line: string): void;
     emitInconclusive(result: CheckpointResult): Promise<void>;
+    emitTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
     retire(result: CheckpointResult): Promise<void>;
   },
 ): Promise<void> {
@@ -3347,6 +3350,7 @@ export async function emitTerminalCheckpointResult(
   deps.writeMarker(
     `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(terminal)}`,
   );
+  await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
     terminal.candidateSource !== "pinned" &&
@@ -3355,6 +3359,58 @@ export async function emitTerminalCheckpointResult(
     await deps.emitInconclusive(terminal);
   }
   await deps.retire(terminal);
+}
+
+type CheckpointEvent = Parameters<NonNullable<CheckpointDeps['emitEvent']>>[0];
+
+/** The production emitter buffers verdict wakes until the producer records its result. */
+export function createCheckpointTerminalEventBuffer(
+  emit: (event: CheckpointEvent) => Promise<void>,
+  warn: (message: string) => void,
+): {
+  emit(event: CheckpointEvent): Promise<void>;
+  flush(result: CheckpointResult, recorded: boolean): Promise<void>;
+} {
+  const pending = new Map<string, CheckpointEvent>();
+  return {
+    async emit(event) {
+      if (event.key === 'release:green' || event.key.startsWith('release:green:') ||
+          event.key === 'green-checkpoint:red' || event.key.startsWith('green-checkpoint:red:')) {
+        const payload = event.payload as Record<string, unknown> | null;
+        const sha = typeof payload?.sha === 'string' ? payload.sha : '';
+        const runId = typeof payload?.runId === 'string' ? payload.runId : '';
+        pending.set(`${event.key}:${sha}:${runId}`, event);
+        return;
+      }
+      await emit(event);
+    },
+    async flush(result, recorded) {
+      const events = [...pending.values()];
+      pending.clear();
+      if (!recorded) {
+        if (events.length) warn(`withheld ${events.length} terminal wake(s): exact checkpoint result was not recorded`);
+        return;
+      }
+      const validShas = new Set([
+        result.candidate,
+        result.advancedTo,
+        result.repairQueue?.repairHead,
+      ].filter((sha): sha is string => typeof sha === 'string' && sha.length > 0));
+      for (const event of events) {
+        const payload = event.payload as Record<string, unknown> | null;
+        if (!payload || typeof payload.sha !== 'string' || !validShas.has(payload.sha) ||
+            (result.runId && payload.runId !== result.runId)) {
+          warn(`withheld ${event.key}: terminal event identity does not match recorded result`);
+          continue;
+        }
+        try {
+          await emit(event);
+        } catch (error) {
+          warn(`${event.key} emit failed after terminal record: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    },
+  };
 }
 
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
@@ -17428,6 +17484,13 @@ export function realCheckpointDeps(
     );
   };
   const repairTarget = gateVerdictTargetFromEnv();
+  const terminalEvents = createCheckpointTerminalEventBuffer(
+    async ({ key, summary, payload, cancelSiblingKeysFor }) => {
+      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+    },
+    (message) => console.warn(`${orchestratorStdoutTag()} ${message}`),
+  );
   // P-008: did ANY branch record a disposition on this tick? The terminal handler writes a
   // derived one only when this is still false, so a branch-recorded disposition (which
   // carries the measured sentence a projection cannot reconstruct) always wins. One
@@ -18207,17 +18270,8 @@ export function realCheckpointDeps(
     // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
     // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
-    async emitEvent({ key, summary, payload, cancelSiblingKeysFor }) {
-      const { emitAwaitedEvent } =
-        await import("@papercusp/operator-core/lib/events/await/engine");
-      await emitAwaitedEvent({
-        key,
-        summary,
-        payload,
-        source: "green-checkpoint",
-        cancelSiblingKeysFor,
-      });
-    },
+    emitEvent: terminalEvents.emit,
+    flushTerminalEvents: terminalEvents.flush,
     // EI-13992: real wiring for the migration-currency preflight (see
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process
@@ -20359,6 +20413,7 @@ if (require.main === module) {
   };
 
   let stopQualificationProgress: (() => Promise<void>) | undefined;
+  let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
   const emitResult = async (r: CheckpointResult): Promise<void> => {
     await stopQualificationProgress?.();
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
@@ -20378,6 +20433,9 @@ if (require.main === module) {
       writeMarker: (line) => console.log(line),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
       emitInconclusive: emitInconclusiveVerdict,
+      emitTerminalEvents: async (result, recorded) => {
+        await flushTerminalEvents?.(result, recorded);
+      },
       // Retire here because every terminal path funnels through this seam. Best-effort cleanup
       // preserves the prior contract: a marker that cannot be cleared ages out by freshness.
       retire: async (result) => {
@@ -20812,6 +20870,7 @@ if (require.main === module) {
         prewarmedDependencyGeneration,
         gateFireId,
       );
+      flushTerminalEvents = checkpointDeps.flushTerminalEvents;
       runGreenCheckpoint(cfg, checkpointDeps, {
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
