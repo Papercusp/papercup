@@ -1594,3 +1594,83 @@ these marks and its newer UI bundle index hashes to
 the maintained staging sync was activating at this write. The next native
 measurement must pin the same visible plan and record that served build identity.
 P-007 and overall shipment remain open.
+
+### P-007 request/response split on the served staging UI
+
+The maintained staging sync completed and `/api/health` returned 200. The
+served staging UI index hashed to
+`6a2421698ff114c5da0b20afa4905200065664aca7f56fad0e80d3c472413c58`
+and its compiled assets contain the new `request-started` / `response-ready`
+marks. The release GUI artifact remained binary
+`e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`;
+its private `PAPERCUSP_HOME` was refreshed from the new live :3170 discovery
+advertisement (PID2063159, health200). The real desktop preference digest
+remained unchanged.
+
+For the same visible `papercusp/goal-agent-behavior-feedback-2026-09-06`
+plan, the official packaged WDIO popup spec measured **2919ms** against
+**1500ms**, staging receipt `perfrun-1790271276438-mkc1da`, log
+`/tmp/p007-native-v2-request-response-20260924.log`:
+
+| cumulative click-to-phase | milliseconds |
+| --- | ---: |
+| detail mounted | 449 |
+| plan request started | 635 |
+| response JSON ready | 2082 |
+| data state ready | 2106 |
+| content ready | 2743 |
+| renderer ready | 2750 |
+| preview rendered | 2913 |
+
+The request through parsed JSON took **1447ms**; React data state followed
+24ms later. Content readiness added 637ms after data state, and preview
+rendering added roughly 170ms. Resource-timing entries were absent under the
+native custom protocol. Three later direct loopback GETs for the same plan,
+`mode=full`, returned HTTP200 with 194163 bytes each; their tool-wall times
+were **765/245/409ms**. They were sequential warm reads through a different
+transport and do not by themselves assign the native delay to backend or IPC.
+The popup remains over budget; a ten-run PASS is unsupported.
+
+The staging sync needed roughly eleven minutes before the API bound :3170:
+unit start13:22:04 EDT, health200 by13:33:18. Its PID stayed stable and a
+ten-second sample advanced **9.97 CPU seconds** while process state was R.
+This measures CPU-active startup but not which code path consumed it; no
+generic host-load cause is claimed. The service eventually recovered.
+**EI-24165259633128552** is assigned for root-cause profiling and a startup
+regression guard; P-007 work could proceed once the API was healthy.
+
+### P-007 REST reader coverage correction — 2026-09-24
+
+The previous `includeHistory:false` optimization covered `callPlansReadRaw`,
+the live-query reader. The actual popup uses `fetchPlan` → REST `dispatchRead`
+in `endpoint-route/routes/admin/plans.ts`, which independently prepared the
+tool request and still requested descendant history. The earlier claim that
+the popup's body-read optimization was active was therefore incomplete.
+The running REST endpoint returned a `history` field (10553 serialized chars)
+for `goal-agent-behavior-feedback-2026-09-06`, version75, content hash
+`b93fd310da29722b856fb4f7281e866af7fc0fbf94722ee0e74bca4c563cfbb0`.
+
+The existing REST reader now defaults `includeHistory` to false for `get`,
+preserving full payloads, raw bytes and explicit opt-ins. The existing query
+boolean allowlist now converts `includeHistory=true/false` to booleans.
+Explicit History headings remain forwarded (the real tool's existing cache
+tests cover their precedence). Other read verbs are unchanged.
+
+Before the fix, the new REST route tests failed three cases: missing default
+omission, explicit true, and explicit false. Control log:
+`/tmp/p007-rest-history-control-20260924.log`. After the fix, REST route,
+live reader and real tool cache suites passed 47 tests. The combined run also
+caught the existing coercion allowlist expectation, which needed the newly
+supported key; after updating that expectation, its 9 tests passed. Zero
+skipped across these 56 cases. Logs:
+`/tmp/p007-rest-history-tests-20260924.log` and
+`/tmp/p007-rest-history-coercion-tests-20260924.log`. The four changed source/test
+files passed scoped typecheck (`/tmp/p007-rest-history-tsc-20260924.log`) on
+`6325d8e8b7` plus local edits. This guards the actual popup route, which the
+earlier live-reader-only test missed.
+
+A small paired tool-wall check on the same version/hash returned milliseconds
+`true:851, false:190, false:32, true:133`. Both false reads omitted history;
+both true reads retained it. This is a warm server diagnostic, not a native
+latency acceptance result. Staging still served the pre-fix REST reader at
+the time of this check; native performance remains open.
