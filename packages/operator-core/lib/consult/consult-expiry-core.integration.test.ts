@@ -151,11 +151,12 @@ async function seedConsult(opts: {
 
 /** A routing snapshot with a real selection menu (selection.selected is what
  * the 844 cascade drives off). */
-function menuSnapshot(owners: string[]) {
+function menuSnapshot(owners: string[], answeringOwnerIds: string[] = []) {
   return {
     selection: {
       selected: owners.map((o, i) => ({
         ownerId: o,
+        ...(answeringOwnerIds[i] ? { answeringOwnerId: answeringOwnerIds[i] } : {}),
         via: 'floor' as const,
         score: 0.9 - i * 0.1,
         similarity: 0.8 - i * 0.1,
@@ -332,6 +333,43 @@ describe('sweepExpiredConsults', () => {
     expect(seenKeys[0]).toBe(seenKeys[1]);
   });
 
+  it('does not expire a due snapshot after another writer refreshes the TTL', async () => {
+    const refreshedExpiry = new Date(NOW.getTime() + 30 * 60_000).toISOString();
+    const refreshedAt = new Date(NOW.getTime() + 1_000).toISOString();
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: PAST,
+      routing: menuSnapshot(['resp-1']),
+    });
+    const { deps } = makeDeps();
+    deps.notifyRequester = async () => {
+      // Model a concurrent reply/advance that refreshes the row after the due
+      // SELECT but before the expiry sweep's compare-and-set writes.
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET expires_at = ${refreshedExpiry}::timestamptz,
+               updated_at = ${refreshedAt}::timestamptz
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    };
+
+    const result = await sweepExpiredConsults(deps);
+    const [row] = await rootSql<Array<{
+      state: string;
+      expires_at: string;
+      closed_at: string | null;
+      cascade_digest: unknown;
+    }>>`
+      SELECT state, expires_at, closed_at, cascade_digest
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+
+    expect(result).toMatchObject({ expired: 0, advanced: 0 });
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.closed_at).toBeNull();
+    expect(new Date(row.expires_at).toISOString()).toBe(refreshedExpiry);
+    expect(row.cascade_digest).toEqual([]);
+  });
+
   it('sweeps across workspaces, stamping each emit with the ROW workspace', async () => {
     const otherWs = 'ws-consult-expiry-2';
     const foreign = await seedConsult({
@@ -479,10 +517,10 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       latency: 'hard-blocked',
       expiresAt: FUTURE,
       updatedAt: routedAt,
-      routing: menuSnapshot(['resp-1', 'resp-2']),
+      routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
-    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; responderId: string; routedAt: string }>> = [];
+    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; answeringOwnerId: string; routedAt: string }>> = [];
     deps.findSilentResponders = async (rows) => {
       detectorCalls.push(rows);
       return new Set([id]);
@@ -495,7 +533,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(detectorCalls[0]).toContainEqual({
       workspaceId: WS,
       conversationId: id,
-      responderId: 'resp-1',
+      answeringOwnerId: 'resp-1-fork',
       routedAt,
     });
     const row = await cascadeRow(id);
@@ -520,15 +558,15 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       latency: 'hard-blocked',
       expiresAt: FUTURE,
       updatedAt: routedAt,
-      routing: menuSnapshot(['resp-1', 'resp-2']),
+      routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
     deps.findSilentResponders = consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: null }),
       resolveSessionStates: async () =>
         new Map([
-          ['resp-1', { sessionState: 'parked' }],
-          ['resp-2', { sessionState: 'parked' }],
+          ['resp-1-fork', { sessionState: 'parked' }],
+          ['resp-2-fork', { sessionState: 'parked' }],
         ]),
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
@@ -548,6 +586,85 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     });
     expect(reachCalls).toHaveLength(1);
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
+  });
+
+  it('does not treat a parked knowledge source as silent while its forked answerer is live', async () => {
+    const routedAt = new Date(NOW.getTime() - 60_000).toISOString();
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: FUTURE,
+      updatedAt: routedAt,
+      routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    const livenessSubjects: string[][] = [];
+    const presenceReads: string[] = [];
+    const threadReads: string[] = [];
+    const livenessByOwner = new Map([
+      ['resp-1', { sessionState: 'parked' }],
+      ['resp-1-fork', { sessionState: 'live' }],
+    ]);
+    deps.findSilentResponders = consultExpiryFindSilentResponders({
+      getPresence: async (ownerId) => {
+        presenceReads.push(ownerId);
+        return { lastActiveAt: new Date(NOW.getTime() - 30_000).toISOString() };
+      },
+      resolveSessionStates: async (subjects) => {
+        livenessSubjects.push(subjects.map((subject) => subject.ownerId));
+        return new Map(subjects.map(({ ownerId }) => [
+          ownerId,
+          livenessByOwner.get(ownerId) ?? { sessionState: 'unknown' },
+        ]));
+      },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => {
+          threadReads.push(parent.ref);
+          return { thread_id: `thread-${parent.ref}` } as never;
+        },
+        listRecentPosts: async () => ({ total: 0 }),
+      }),
+      now: () => NOW,
+    });
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(livenessSubjects.flat()).toContain('resp-1-fork');
+    expect(livenessSubjects.flat()).not.toContain('resp-1');
+    expect(presenceReads).toContain('resp-1-fork');
+    expect(presenceReads).not.toContain('resp-1');
+    expect(threadReads).not.toContain(id);
+    expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([]);
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder',
+      closed_at: null,
+      responder_id: 'resp-1',
+      cascade_cursor: 0,
+    });
+  });
+
+  it('does not infer a fork failure from the source when the answerer identity is unstamped', async () => {
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: FUTURE,
+      updatedAt: PAST,
+      routing: menuSnapshot(['resp-1']),
+    });
+    const { deps } = makeDeps({ withReach: true });
+    const detectorRows: string[] = [];
+    deps.findSilentResponders = async (rows) => {
+      detectorRows.push(...rows.map((row) => row.conversationId));
+      return new Set([id]);
+    };
+
+    await sweepExpiredConsults(deps);
+
+    expect(detectorRows).not.toContain(id);
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder',
+      closed_at: null,
+      responder_id: 'resp-1',
+      cascade_cursor: 0,
+    });
   });
 
   it('a due row with menu remaining ADVANCES instead of expiring: cursor+responder move under a fresh window, digest records the expiry, next selectee woken — NO park emit', async () => {
@@ -770,7 +887,7 @@ describe('P-005 requester alert — real message writer and PG replay boundary',
     const id = await seedConsult({
       latency, requesterId: 'req-alert', workspaceId: ws,
       expiresAt: early ? FUTURE : PAST, updatedAt: PAST,
-      ...(early ? { routing: menuSnapshot(['resp-1', 'resp-2']) } : {}),
+      ...(early ? { routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']) } : {}),
     });
     const first = makeDeps({ withReach: true });
     first.deps.findSilentResponders = async () => new Set([id]);
@@ -822,13 +939,17 @@ describe('P-005 requester alert — real message writer and PG replay boundary',
   });
 
   it.each(['unknown', 'missing', 'throws'])('never invents an early stall from %s liveness', async (mode) => {
-    const id = await seedConsult({ expiresAt: FUTURE, updatedAt: PAST });
+    const id = await seedConsult({
+      expiresAt: FUTURE,
+      updatedAt: PAST,
+      routing: menuSnapshot(['resp-1'], ['resp-1-fork']),
+    });
     const { deps, alerts } = makeDeps();
     deps.findSilentResponders = consultExpiryFindSilentResponders({
       getPresence: async () => null,
       resolveSessionStates: async () => {
         if (mode === 'throws') throw new Error('oracle unavailable');
-        return mode === 'missing' ? new Map() : new Map([['resp-1', { sessionState: 'unknown' }]]);
+        return mode === 'missing' ? new Map() : new Map([['resp-1-fork', { sessionState: 'unknown' }]]);
       },
       getThreadStore: () => { throw new Error('unknown is not evidence of an empty consult'); },
       now: () => NOW,
@@ -908,7 +1029,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
   it('keeps an early silent review consult open when its cascade menu is exhausted', async () => {
     // The responder re-parked after routing, but the 30-minute review window
     // has not reached P-014's half-TTL conversion point yet.
-    const routing = { policy: 'rubric-vetting', ...menuSnapshot(['resp-1']) };
+    const routing = { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['resp-1-fork']) };
     const id = await seedReview({
       routing,
       createdMin: -3,

@@ -191,8 +191,8 @@ export function consultExpiryDispatch(
  * expiry window. Three observations are safe enough to advance as an implicit
  * decline when the consult thread is still empty:
  *
- *  - the selected owner became active after routing and re-parked; or
- *  - the owner is still live or parked after one hard-blocked expiry window.
+ *  - the answering session became active after routing and re-parked; or
+ *  - the answering session is still live or parked after one hard-blocked expiry window.
  *    This is the continuously-busy or queued-but-never-picked-up case: a queued
  *    wake can sit behind unrelated work for the four-hour `proceed` window even
  *    though no consult turn was picked up; or
@@ -214,13 +214,13 @@ export function consultExpiryFindSilentResponders(
 
     const checkedAtMs = (deps.now ? deps.now() : new Date()).getTime();
 
-    const responderIds = [...new Set(rows.map((row) => row.responderId))];
+    const answeringOwnerIds = [...new Set(rows.map((row) => row.answeringOwnerId))];
     const [presenceEntries, verdicts] = await Promise.all([
       Promise.all(
-        responderIds.map(async (ownerId) => [ownerId, await deps.getPresence(ownerId)] as const),
+        answeringOwnerIds.map(async (ownerId) => [ownerId, await deps.getPresence(ownerId)] as const),
       ),
       deps.resolveSessionStates(
-        responderIds.map((ownerId) => ({ ownerId })),
+        answeringOwnerIds.map((ownerId) => ({ ownerId })),
         { hydratePerId: true },
       ),
     ]);
@@ -238,11 +238,11 @@ export function consultExpiryFindSilentResponders(
     const silent = new Set<string>();
     await Promise.all(
       rows.map(async (row) => {
-        const lastActiveAt = presenceByOwner.get(row.responderId)?.lastActiveAt;
+        const lastActiveAt = presenceByOwner.get(row.answeringOwnerId)?.lastActiveAt;
         const activeMs = lastActiveAt == null ? Number.NaN : Date.parse(String(lastActiveAt));
         const routedMs = Date.parse(row.routedAt);
         if (!Number.isFinite(routedMs)) return;
-        const sessionState = verdicts.get(row.responderId)?.sessionState;
+        const sessionState = verdicts.get(row.answeringOwnerId)?.sessionState;
         const terminalAfterRoute = DEAD_RESPONDER_STATES.has(sessionState ?? '');
         const reparkedAfterRoute =
           sessionState === 'parked' && Number.isFinite(activeMs) && activeMs > routedMs;

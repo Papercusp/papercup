@@ -37,7 +37,7 @@
  */
 import type { Sql } from 'postgres';
 import { consultParkKey } from './get-feedback-core';
-import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
 
@@ -52,6 +52,7 @@ export interface DueConsultRow {
   requester_id: string;
   responder_id: string | null;
   state: string;
+  expires_at: string | Date | null;
   is_due: boolean;
   /** PostgreSQL returns timestamptz as Date under the normal postgres-js client. */
   updated_at: unknown;
@@ -113,14 +114,27 @@ export interface ReviewWorkItemRequest {
   routing: unknown;
 }
 
-/** Row-local evidence for a responder that woke after routing, re-parked, and
- * left the consult thread empty. `routedAt` is the current selection timestamp
- * (`updated_at`), not the whole-consult `created_at`. */
+/** Row-local evidence for the answering session that woke after routing,
+ * re-parked, and left the consult thread empty. On a fork this differs from
+ * consult_state.responder_id, which names the knowledge-source owner. `routedAt`
+ * is the current selection timestamp (`updated_at`), not the whole-consult
+ * `created_at`. */
 export interface SilentResponderCandidate {
   workspaceId: string;
   conversationId: string;
-  responderId: string;
+  answeringOwnerId: string;
   routedAt: string;
+}
+
+/** Missing or malformed cursor identity is not evidence that the source
+ * responder is silent. Fail closed and let the configured expiry window run. */
+function currentAnsweringOwnerId(routing: unknown, cursor: number): string | null {
+  try {
+    const ownerId = selectionFromRouting(routing)[cursor]?.answeringOwnerId;
+    return typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ExpirySweepDeps {
@@ -208,7 +222,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   // guards below stand in for row locks (see module doc).
   const due = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id,
-           state, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
+           state, expires_at, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
            updated_at, latency_contract, question, routing, cascade_cursor, cascade_digest,
            exchanges_used,
            COALESCE(
@@ -234,13 +248,17 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   // across workspaces; a failure fails closed for the early leg only.
   let silentResponderIds = new Set<string>();
   const earlyCandidates = due
-    .filter((row) => row.is_due !== true && row.state === 'awaiting_responder' && row.responder_id != null)
-    .map((row) => ({
-      workspaceId: row.workspace_id,
-      conversationId: row.conversation_id,
-      responderId: row.responder_id!,
-      routedAt: timestampToIso(row.updated_at),
-    }));
+    .flatMap((row) => {
+      if (row.is_due === true || row.state !== 'awaiting_responder' || row.responder_id == null) return [];
+      const answeringOwnerId = currentAnsweringOwnerId(row.routing, row.cascade_cursor);
+      if (!answeringOwnerId) return [];
+      return [{
+        workspaceId: row.workspace_id,
+        conversationId: row.conversation_id,
+        answeringOwnerId,
+        routedAt: timestampToIso(row.updated_at),
+      }];
+    });
   if (deps.findSilentResponders && earlyCandidates.length > 0) {
     try {
       silentResponderIds = new Set(await deps.findSilentResponders(earlyCandidates));
@@ -314,6 +332,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           routing: row.routing,
           cascadeCursor: row.cascade_cursor,
           digest: row.cascade_digest,
+          expectedState: row.state,
+          expectedExpiresAt: row.expires_at,
           event: makeDigestEntry(
             row.responder_id ?? '(unrouted)',
             // D-002: nothing is woken any more, so a no-pickup is a FAILED
@@ -390,6 +410,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
          WHERE workspace_id = ${row.workspace_id}
            AND conversation_id = ${row.conversation_id}
            AND closed_at IS NULL
+           AND state = ${row.state}
+           AND cascade_cursor = ${row.cascade_cursor}
+           AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+           AND expires_at < ${nowIso}::timestamptz
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       if (terminal.length === 0) return terminal;
@@ -529,6 +553,8 @@ async function convertReviewConsult(
            AND state = 'awaiting_responder'
            AND exchanges_used = 0
            AND cascade_cursor = ${row.cascade_cursor}
+           AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+           AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       if (terminal.length === 0) return terminal;
