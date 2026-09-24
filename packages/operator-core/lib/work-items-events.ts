@@ -595,6 +595,17 @@ export interface SettledEventsDeps {
   dispatchActionable?: typeof assignAndWakeActionableWorkItems;
 }
 
+/** The terminal work-item row carries this token until its matching done fire
+ * is durably latched. Both family projections already return payload. */
+export const WORK_ITEM_COMPLETION_EVENT_INTENT_KEY = '_completionEventIntentId';
+
+export function completionEventIntentIdOf(wi: WorkItem): string | null {
+  const payload = wi.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const value = (payload as Record<string, unknown>)[WORK_ITEM_COMPLETION_EVENT_INTENT_KEY];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 async function defaultDispatchActionable(
   ...args: Parameters<typeof assignAndWakeActionableWorkItems>
 ): ReturnType<typeof assignAndWakeActionableWorkItems> {
@@ -1071,6 +1082,37 @@ async function emitFixDuplicateSettledNotify(
   }
 }
 
+/** Share the id-scoped done payload and audience between normal settlement
+ * and source reconciliation. A caller may await this unswallowed event write. */
+export async function emitWorkItemDoneEvent(
+  wi: WorkItem,
+  deps: Pick<SettledEventsDeps, 'emit' | 'getItem'> = {},
+): Promise<void> {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const getItem = deps.getItem ?? getWorkItem;
+  const notifyDone = new Set<string>();
+  if (wi.assignedBy && wi.assignedBy !== wi.assignee) notifyDone.add(wi.assignedBy);
+  if (wi.parent) {
+    const parent = await getItem(wi.parent, wi.harness ?? undefined).catch(() => null);
+    if (parent?.assignee && parent.assignee !== wi.assignee) notifyDone.add(parent.assignee);
+  }
+  const completionIntentId = completionEventIntentIdOf(wi);
+  await emit({
+    key: `work-item:done:${wi.id}`,
+    summary: `${wi.id} settled → ${wi.state}: ${wi.title}`,
+    payload: workItemEventPayload({
+      id: wi.id,
+      state: wi.state,
+      kind: wi.kind,
+      harness: wi.harness,
+      title: wi.title,
+      ...(completionIntentId ? { completionIntentId } : {}),
+    }),
+    to: [...notifyDone],
+    source: 'work-items',
+  });
+}
+
 /**
  * Fire the settled-item events for `wi` (which has ALREADY transitioned to a
  * settled state). Never throws.
@@ -1118,25 +1160,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
 
   // ── work-item:done — the children-done / delegated-work signal ────────
   try {
-    const notifyDone = new Set<string>();
-    if (wi.assignedBy && wi.assignedBy !== wi.assignee) notifyDone.add(wi.assignedBy);
-    if (wi.parent) {
-      const parent = await getItem(wi.parent, wi.harness ?? undefined).catch(() => null);
-      if (parent?.assignee && parent.assignee !== wi.assignee) notifyDone.add(parent.assignee);
-    }
-    await emit({
-      key: `work-item:done:${wi.id}`,
-      summary: `${wi.id} settled → ${wi.state}: ${wi.title}`,
-      payload: workItemEventPayload({
-        id: wi.id,
-        state: wi.state,
-        kind: wi.kind,
-        harness: wi.harness,
-        title: wi.title,
-      }),
-      to: [...notifyDone],
-      source: 'work-items',
-    });
+    await emitWorkItemDoneEvent(wi, { emit, getItem });
   } catch (e) {
     failSoft(`settled done-event for ${wi.id}`, e);
   }
