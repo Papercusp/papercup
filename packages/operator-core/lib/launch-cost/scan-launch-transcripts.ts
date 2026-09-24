@@ -36,6 +36,8 @@ export type SkipReason =
   | 'no-usage-row'
   /** Usage rows existed but every one sat at or below the `minPromptTokens` floor. */
   | 'all-below-threshold'
+  /** No qualifying sample and at least one incomplete usage row: size cannot be established. */
+  | 'incomplete-usage'
   /** The only qualifying rows were sub-agent turns and sidechains were excluded. */
   | 'sidechain-only'
   /** A sample was found but excluded by a caller filter (day window, model, owner prefix). */
@@ -148,6 +150,7 @@ export async function measureTranscriptFile(
 
   let sawUsageRow = false;
   let sawBelowThreshold = false;
+  let sawIncompleteUsage = false;
   let sawSidechainOnly = false;
   let found: { entry: unknown; lineNumber: number; bytesBefore: number } | null = null;
   let readError: string | null = null;
@@ -181,6 +184,7 @@ export async function measureTranscriptFile(
         continue;
       }
       sawUsageRow = true;
+      if (usage.usageCountsComplete !== true) sawIncompleteUsage = true;
       if (usage.totalPromptTokens <= minPromptTokens) {
         sawBelowThreshold = true;
         bytesConsumed += lineBytes;
@@ -208,6 +212,7 @@ export async function measureTranscriptFile(
   if (readError) return { skip: { filePath, reason: 'unreadable', detail: readError } };
   if (!found) {
     if (sawSidechainOnly) return { skip: { filePath, reason: 'sidechain-only' } };
+    if (sawIncompleteUsage) return { skip: { filePath, reason: 'incomplete-usage' } };
     if (sawBelowThreshold) return { skip: { filePath, reason: 'all-below-threshold' } };
     if (sawUsageRow) return { skip: { filePath, reason: 'all-below-threshold' } };
     return { skip: { filePath, reason: 'no-usage-row' } };
@@ -250,6 +255,7 @@ export async function measureTranscriptFile(
 const EMPTY_SKIP_CENSUS: Record<SkipReason, number> = {
   'no-usage-row': 0,
   'all-below-threshold': 0,
+  'incomplete-usage': 0,
   'sidechain-only': 0,
   'filtered-out': 0,
   undatable: 0,

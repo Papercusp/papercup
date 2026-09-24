@@ -34,7 +34,7 @@ function launches(model: string | null, ageDays: number, tokens: number, count =
 function scan(samples: LaunchSample[], unreadable = 0): ScanReport {
   return { root: '/fixture', samples, filesScanned: samples.length + unreadable, filesMeasured: samples.length,
     skipped: [], skippedByReason: { 'no-usage-row': 0, 'all-below-threshold': 0,
-      'sidechain-only': 0, 'filtered-out': 0, undatable: 0, unreadable } };
+      'sidechain-only': 0, 'filtered-out': 0, 'incomplete-usage': 0, undatable: 0, unreadable } };
 }
 
 describe('launch scan cohort and telemetry guards', () => {

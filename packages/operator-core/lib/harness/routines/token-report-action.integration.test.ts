@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { readTokenReportAggregation, readUsageHealth, evaluateUsageHealth } from './token-report-action';
+import { readTokenReportAggregation, readUsageHealth, evaluateUsageHealth, readCarryHealth, renderCarryHealth } from './token-report-action';
+import { evaluateCarryStartup } from '../../launch-cost/launch-cost-metrics';
 
 let org: OrgTestDb;
 const WS = 'cache-report-coverage';
@@ -13,6 +14,29 @@ beforeAll(async () => {
 afterAll(async () => { await org?.cleanup(); });
 
 describe('token report source coverage (real PostgreSQL)', () => {
+  it('detects carry regressions from scoped ordered request provenance while preserving partial windows as unknown', async () => {
+    const sql = org.adminSql;
+    const workspace = 'carry-health-ledger';
+    for (const ws of [workspace, 'other-carry-workspace']) {
+      for (const [ordinal, input, cached, generation] of [[3, 90205, 7936, 1], [1, 691102, 0, 0], [2, 690650, 2816, 0]]) {
+        await sql`INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id,ts,event_ts,source,provider,bucket_key,model_class,model,session_id,
+           cache_read_tokens,cache_creation_tokens,usage_provenance)
+          VALUES (${ws},${ordinal},${ordinal},'interactive','openai','openai:test','default','gpt-6-sol','native-fork',
+            ${cached},NULL,${JSON.stringify({ grain: 'request', adapter: 'codex', sourceFile: '/fixture/fork', fileGeneration: 0,
+              requestOrdinal: ordinal, inputTotalTokens: input, contextGeneration: generation, predecessorSessionId: 'parent' })}::jsonb)`;
+      }
+    }
+    const rows = await readCarryHealth(sql, workspace, 0, 4);
+    expect(rows).toHaveLength(1);
+    expect(evaluateCarryStartup(rows[0].observations)).toMatchObject({ state: 'regression',
+      signals: ['cold-inherited-startup', 'oversized-startup-immediately-compacted'], firstTwoUncachedInput: null });
+    expect(renderCarryHealth(rows)).toContain('1 source groups; 0 incomplete; 1 cold inherited startup; 1 oversized startup immediately compacted');
+    const partial = await readCarryHealth(sql, workspace, 2, 4);
+    expect(evaluateCarryStartup(partial[0].observations)).toMatchObject({ state: 'unknown', signals: [] });
+    expect(await readCarryHealth(sql, workspace, 4, 5)).toEqual([]);
+  });
+
   it('detects tier and model-provenance contradictions from the scoped ledger', async () => {
     const sql = org.adminSql;
     const workspace = 'cache-accounting-health';

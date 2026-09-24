@@ -16,6 +16,7 @@ import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { PRESENCE_INLINE_GLANCE_TOKEN_BUDGET } from '../../agent-tools/coordination/presence-cost';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { evaluateCarryStartup, type CarryStartupObservation } from '../../launch-cost/launch-cost-metrics';
 
 /** Coord identity for the report broadcast (mirrors git-sync / service-health). */
 const TOKEN_REPORT_IDENTITY: AgentIdentity = {
@@ -172,6 +173,51 @@ export async function readTokenReportAggregation(
   `;
 }
 
+export interface CarryHealthRow {
+  cohort: string;
+  observations: CarryStartupObservation[];
+}
+
+/** Extend the existing report over the request ledger. No transcript crawl or second schedule.
+ * Window cuts and pre-instrumentation sources stay visible as unknown source groups.
+ */
+export async function readCarryHealth(sql: Sql, workspaceId: string, from: number, to: number): Promise<CarryHealthRow[]> {
+  return sql<CarryHealthRow[]>`
+    SELECT provider || ':' || COALESCE(model, '(unknown)') || ':' || source AS cohort,
+      COALESCE(jsonb_agg(jsonb_build_object(
+        'requestOrdinal', usage_provenance->'requestOrdinal',
+        'inputTotalTokens', usage_provenance->'inputTotalTokens',
+        'cacheReadTokens', cache_read_tokens, 'cacheWriteTokens', cache_creation_tokens,
+        'contextGeneration', usage_provenance->'contextGeneration',
+        'predecessorSessionId', usage_provenance->'predecessorSessionId'
+      )) FILTER (WHERE usage_provenance->>'requestOrdinal' IN ('1', '2', '3')), '[]'::jsonb) AS observations
+    FROM harness_shared.agent_usage_samples
+    WHERE workspace_id = ${workspaceId} AND ts >= ${from} AND ts < ${to}
+      AND usage_provenance->>'adapter' = 'codex' AND usage_provenance->>'grain' = 'request'
+    GROUP BY 1, session_id, usage_provenance->>'sourceFile', usage_provenance->>'fileGeneration'
+    ORDER BY 1
+  `;
+}
+
+export function renderCarryHealth(rows: CarryHealthRow[]): string {
+  if (!rows.length) return '**Codex carry startup health:** unknown — no request observations.';
+  const cohorts = new Map<string, { sources: number; unknown: number; cold: number; compacted: number }>();
+  for (const row of rows) {
+    const result = evaluateCarryStartup(row.observations);
+    const count = cohorts.get(row.cohort) ?? { sources: 0, unknown: 0, cold: 0, compacted: 0 };
+    count.sources++;
+    count.unknown += Number(result.unknown.length > 0);
+    count.cold += Number(result.signals.includes('cold-inherited-startup'));
+    count.compacted += Number(result.signals.includes('oversized-startup-immediately-compacted'));
+    cohorts.set(row.cohort, count);
+  }
+  return ['**Codex carry startup health** (provisional: first two requests ≥600k input, ≤10% read reuse; immediate compaction = request 3):',
+    ...[...cohorts].map(([key, count]) => `- ${key}: ${count.sources} source groups; ` +
+      `${count.unknown} incomplete; ${count.cold} cold inherited startup; ${count.compacted} oversized startup immediately compacted.`),
+    'Unknown write counts are not zero. These structural signals do not establish a remote cache-miss cause or matched-task savings.',
+  ].join('\n');
+}
+
 export interface UsageHealthRow {
   cohort: string;
   samples: string;
@@ -260,7 +306,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
      GROUP BY 1
   `;
 
-  const [curSrc, prevSrc, curModel, prevModel, curRole, prevRole, curVol, prevVol, usageHealth] = await Promise.all([
+  const [curSrc, prevSrc, curModel, prevModel, curRole, prevRole, curVol, prevVol, usageHealth, carryHealth] = await Promise.all([
     agg('source', now - windowMs, now),
     agg('source', now - 2 * windowMs, now - windowMs),
     agg('model_class', now - windowMs, now),
@@ -270,6 +316,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
     presenceVol(now - windowMs, now),
     presenceVol(now - 2 * windowMs, now - windowMs),
     readUsageHealth(sql, ctx.workspaceId, now - windowMs, now),
+    readCarryHealth(sql, ctx.workspaceId, now - windowMs, now),
   ]);
 
   const tot = (rows: AggRow[]): { tok: number; usd: number } => ({
@@ -292,6 +339,7 @@ registerSystemAction('token-weekly-report', async (ctx: SystemActionCtx) => {
     renderDim('role', curRole, byKey(prevRole)),
     renderPresenceVolume(curVol, prevVol),
     renderUsageHealth(usageHealth, now),
+    renderCarryHealth(carryHealth),
     `Acceptance tracking (token-usage-reduction-audit-2026-06-09 P-013): target ≥40% weekly cache-read+write reduction vs the 2026-06-09 baseline (235 MTok read + 170 MTok write interactive; ~122 MTok fleet).`,
   ].join('\n\n');
 

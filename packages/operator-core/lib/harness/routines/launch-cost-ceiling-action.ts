@@ -237,7 +237,7 @@ export function evaluateLaunchScan(report: ScanReport, opts: {
     (time >= recentStart ? group.recent : group.baseline).push(sample.totalPromptTokens);
     groups.set(key, group);
   }
-  const unmeasured = ['unreadable', 'undatable', 'no-usage-row'].reduce((n, key) =>
+  const unmeasured = ['unreadable', 'undatable', 'no-usage-row', 'incomplete-usage'].reduce((n, key) =>
     n + (report.skippedByReason[key as keyof ScanReport['skippedByReason']] ?? 0), 0);
   const eligible = validSamples + unknownSamples + unmeasured;
   const coverage = eligible ? validSamples / eligible : null;

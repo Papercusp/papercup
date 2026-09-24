@@ -288,6 +288,47 @@ export function diagnoseCarryUsage(
   };
 }
 
+export type CarryStartupObservation = CarryUsageObservation & {
+  requestOrdinal: number | null;
+  predecessorSessionId: string | null;
+};
+
+/** Provisional structural guard, not a savings verdict or a remote cache-cause diagnosis.
+ * Ordinals come from a witnessed source header, never the first row in a report window.
+ */
+export function evaluateCarryStartup(observations: readonly CarryStartupObservation[]) {
+  const ordered = [...observations].sort((a, b) => (a.requestOrdinal ?? Infinity) - (b.requestOrdinal ?? Infinity));
+  const first = ordered.filter(row => row.requestOrdinal === 1 || row.requestOrdinal === 2);
+  const count = (n: number | null): n is number => n !== null && Number.isSafeInteger(n) && n >= 0;
+  const startupKnown = first.length === 2 && first[0].requestOrdinal === 1 && first[1].requestOrdinal === 2 &&
+    first.every(row => count(row.inputTotalTokens) && row.contextGeneration === 0) &&
+    first[0].predecessorSessionId === first[1].predecessorSessionId;
+  const history = startupKnown ? Boolean(first[0].predecessorSessionId) : null;
+  const diagnosis = diagnoseCarryUsage(ordered, history);
+  const readKnown = startupKnown && first.every(row => count(row.cacheReadTokens) && row.cacheReadTokens <= row.inputTotalTokens!);
+  const large = startupKnown && first.every(row => row.inputTotalTokens! >= 600_000);
+  // This is read reuse, not uncached input: unreported write counts remain unknown.
+  const coldFork = history === true && large && readKnown &&
+    first.every(row => row.cacheReadTokens! / row.inputTotalTokens! <= 0.1);
+  const third = ordered.filter(row => row.requestOrdinal === 3);
+  const immediateCompaction = history === true && large && third.length === 1 &&
+    third[0].contextGeneration === 1 && count(third[0].inputTotalTokens) &&
+    third[0].predecessorSessionId === first[0].predecessorSessionId &&
+    third[0].inputTotalTokens < Math.min(...first.map(row => row.inputTotalTokens!));
+  const unknown: string[] = [];
+  if (!startupKnown) unknown.push('startup-prefix-unavailable');
+  if (!readKnown) unknown.push('startup-cache-read-unknown');
+  if (third.length !== 1 || !count(third[0].contextGeneration) || !count(third[0].inputTotalTokens)) {
+    unknown.push('third-request-unavailable');
+  }
+  const signals = [...(coldFork ? ['cold-inherited-startup'] : []),
+    ...(immediateCompaction ? ['oversized-startup-immediately-compacted'] : [])];
+  return { state: signals.length ? 'regression' : unknown.length ? 'unknown' : 'ok', signals, unknown,
+    firstTwoTotalInput: startupKnown ? diagnosis.firstTwoTotalInput : null,
+    firstTwoUncachedInput: startupKnown ? diagnosis.firstTwoUncachedInput : null,
+    cacheMissCause: diagnosis.cacheMissCause };
+}
+
 export interface CarryTaskEvaluation {
   /** Stable workload identity shared ONLY by the control/candidate pair. */
   taskId: string;

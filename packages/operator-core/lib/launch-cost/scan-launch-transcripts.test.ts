@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -57,6 +59,25 @@ function usageEntry(overrides: Record<string, unknown> = {}) {
 }
 
 describe('measureTranscriptFile — the streaming guarantee', () => {
+  it('the real CLI refuses a passing target on partial usage and accepts the fully reported control', async () => {
+    const path = await writeTranscript('su-cli', 'session-cli', [usageEntry({
+      message: { model: 'claude-model', usage: { input_tokens: 2000 } },
+    })]);
+    const cli = fileURLToPath(new URL('../../../../scripts/measure-launch-cost.ts', import.meta.url));
+    const run = () => spawnSync(process.execPath, ['--import', 'tsx', cli, '--root', root, '--target', '1000000'], {
+      encoding: 'utf8', timeout: 15000,
+    });
+    const partial = run();
+    expect(partial.status).toBe(1);
+    expect(partial.stderr).toContain('UNKNOWN target result');
+    expect(partial.stdout).toContain('known lower bounds');
+    expect(partial.stdout).not.toContain('PASS median');
+    await writeFile(path, JSON.stringify(usageEntry()) + '\n');
+    const complete = run();
+    expect(complete.status).toBe(0);
+    expect(complete.stdout).toContain('PASS median');
+  });
+
   it('finds a usage row that sits far past any bounded read window', async () => {
     // ⚠ THE LOAD-BEARING TEST OF THIS FILE.
     // A real psu transcript opens with a ~580 KB system-prompt entry on ONE line. Any reader
@@ -141,11 +162,20 @@ describe('measureTranscriptFile — typed skips, never silent drops', () => {
 
   it('reports all-below-threshold when every usage row is under the floor', async () => {
     const filePath = await writeTranscript('su-a', 'session-a', [
-      { type: 'assistant', timestamp: '2026-09-18T06:30:00.000Z', message: { usage: { input_tokens: 40 } } },
+      { type: 'assistant', timestamp: '2026-09-18T06:30:00.000Z', message: { usage: {
+        input_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      } } },
     ]);
     expect(await measureTranscriptFile(filePath, { root })).toEqual({
       skip: { filePath, reason: 'all-below-threshold' },
     });
+  });
+
+  it('does not classify incomplete small counts as proven below the launch threshold', async () => {
+    const filePath = await writeTranscript('su-incomplete', 'session-incomplete', [
+      { type: 'assistant', timestamp: '2026-09-18T06:30:00.000Z', message: { usage: { input_tokens: 40 } } },
+    ]);
+    expect(await measureTranscriptFile(filePath, { root })).toEqual({ skip: { filePath, reason: 'incomplete-usage' } });
   });
 
   it('reports sidechain-only when the only large turns are sub-agent turns', async () => {

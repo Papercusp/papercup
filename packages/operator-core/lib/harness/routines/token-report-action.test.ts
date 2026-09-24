@@ -10,11 +10,16 @@
  * levers.
  */
 import { describe, it, expect } from 'vitest';
-import { renderPresenceVolume, renderDim, evaluateUsageHealth, renderUsageHealth, type UsageHealthRow, type AggRow } from './token-report-action';
+import { renderPresenceVolume, renderDim, evaluateUsageHealth, renderUsageHealth, renderCarryHealth, type UsageHealthRow, type AggRow } from './token-report-action';
 
 type Vol = { tool: string; calls: string; bytes: string | null; avg_bytes: string | null };
 
 describe('usage accounting health detectors', () => {
+  it('keeps uninstrumented carry sources unknown in the scheduled report', () => {
+    expect(renderCarryHealth([])).toContain('unknown');
+    expect(renderCarryHealth([{ cohort: 'openai:model:interactive', observations: [] }]))
+      .toContain('1 source groups; 1 incomplete; 0 cold inherited startup');
+  });
   const row: UsageHealthRow = { cohort: 'anthropic:model:interactive', samples: '30', timed_requests: '30',
     unknown_model: '0', unknown_writes: '0', unknown_tiers: '0', tier_mismatches: '0',
     model_provenance_mismatches: '0', newest_event: '1000000' };

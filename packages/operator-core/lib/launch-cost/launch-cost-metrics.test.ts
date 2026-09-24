@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
   diagnoseCarryUsage,
+  evaluateCarryStartup,
+  type CarryStartupObservation,
   evaluateCarryTaskPairs,
   type CarryTaskEvaluation,
   extractLaunchUsage,
@@ -15,6 +17,43 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry startup recurrence detectors (P-009)', () => {
+  const rows = (): CarryStartupObservation[] => [
+    { requestOrdinal: 1, inputTotalTokens: 691102, cacheReadTokens: 0, cacheWriteTokens: null, contextGeneration: 0, predecessorSessionId: 'parent' },
+    { requestOrdinal: 2, inputTotalTokens: 690650, cacheReadTokens: 2816, cacheWriteTokens: null, contextGeneration: 0, predecessorSessionId: 'parent' },
+    { requestOrdinal: 3, inputTotalTokens: 90205, cacheReadTokens: 7936, cacheWriteTokens: null, contextGeneration: 1, predecessorSessionId: 'parent' },
+  ];
+  it('detects measured cold inheritance and immediate compaction without inventing write counts or causes', () => {
+    expect(evaluateCarryStartup(rows().reverse())).toMatchObject({ state: 'regression',
+      signals: ['cold-inherited-startup', 'oversized-startup-immediately-compacted'], unknown: [],
+      firstTwoTotalInput: 1381752, firstTwoUncachedInput: null, cacheMissCause: 'undetermined' });
+  });
+  it('does not alarm on fresh large workloads or cheap short-lived sessions with low reuse', () => {
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, predecessorSessionId: null }))).signals).toEqual([]);
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, inputTotalTokens: 50000 }))).state).toBe('ok');
+    expect(evaluateCarryStartup(rows().slice(0, 2).map(row => ({ ...row, inputTotalTokens: 50000 }))))
+      .toMatchObject({ state: 'unknown', signals: [], unknown: ['third-request-unavailable'] });
+  });
+  it('distinguishes a warm inherited prefix from cold reads and late compaction from immediate compaction', () => {
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, cacheReadTokens: row.inputTotalTokens! * 0.99 | 0 }))).signals)
+      .toEqual(['oversized-startup-immediately-compacted']);
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, contextGeneration: 0 }))).signals)
+      .toEqual(['cold-inherited-startup']);
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, requestOrdinal: row.requestOrdinal === 3 ? 30 : row.requestOrdinal }))).signals)
+      .toEqual(['cold-inherited-startup']);
+  });
+  it('fails closed for partial prefixes, duplicate requests, impossible reads, and inconsistent lineage', () => {
+    for (const input of [[], rows().slice(1), [rows()[0], ...rows()],
+      rows().map(row => ({ ...row, requestOrdinal: null })),
+      rows().map((row, i) => ({ ...row, predecessorSessionId: i === 0 ? 'other' : row.predecessorSessionId }))]) {
+      expect(evaluateCarryStartup(input)).toMatchObject({ state: 'unknown', signals: [], firstTwoTotalInput: null });
+    }
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, cacheReadTokens: 999999 }))).signals)
+      .toEqual(['oversized-startup-immediately-compacted']);
+    expect(evaluateCarryStartup(rows().map(row => ({ ...row, contextGeneration: null }))).state).toBe('unknown');
+  });
+});
 
 describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => {
   const cohort = (): CarryTaskEvaluation[] => Array.from({ length: 20 }, (_, n) => ['control', 'candidate'].map(arm => ({
