@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
+import { replayAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
 
 const memory = vi.hoisted(() => ({
@@ -63,6 +64,15 @@ describe('selected identity knowledge at launch', () => {
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'package', packageKind: 'knowledge-pack', ref: packId,
       }));
+      expect((await compile()).specificationRevision).toBe(launch.specificationRevision);
+      const replayed = replayAgentSpecification(JSON.parse(JSON.stringify(launch.specificationArtifact)));
+      expect(replayed.specificationRevision).toBe(launch.specificationRevision);
+      expect(replayed.inputs).toContainEqual(expect.objectContaining({
+        kind: 'package', packageKind: 'knowledge-pack', ref: packId,
+        value: expect.objectContaining({ items: [expect.objectContaining({
+          id: 'mail', text: 'Use the selected mail rule.',
+        })] }),
+      }));
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'setting', ref: 'bundle-scope',
         value: expect.objectContaining({ memoryTarget: { kind: 'hive', slug: 'sales' },
@@ -81,6 +91,8 @@ describe('selected identity knowledge at launch', () => {
       writeFileSync(factFile, '---\nid: mail\ntitle: Mail rule\nkind: reference\napplies_to: [any]\n---\n\nChanged mail rule.\n');
       const changed = await compile();
       expect(changed.specificationRevision).not.toBe(launch.specificationRevision);
+      expect(replayAgentSpecification(JSON.parse(JSON.stringify(launch.specificationArtifact))))
+        .toEqual(replayed);
       await expect(provisionLaunchIdentityResources(changed, {} as never))
         .rejects.toThrow(/knowledge pack conflicts with scoped memory/);
       expect(memory.rows).toHaveLength(1);
