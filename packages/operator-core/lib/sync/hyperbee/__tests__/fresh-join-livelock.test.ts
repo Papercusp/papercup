@@ -14,6 +14,7 @@ import {
 } from '../read-merge';
 import { DeferralEvictionReFold } from '../eviction-refold';
 import { PendingEpochContent } from '../pending-epoch-content';
+import { drainQueuedEpochContent, type DrainedEpoch } from '../hive-epoch-op-gate';
 import type { OwnLog, PeerLogOp } from '../peer-log';
 import type { OpEnvelope } from '../op-envelope-types';
 
@@ -542,5 +543,112 @@ describe('P-522 (b): DeferralEvictionReFold and rewindMergeCursor', () => {
     expect(cursor.winners.size).toBe(0);
     expect(cursor.snapshotApplyThrough.get('a')).toBe(20);
     expect(cursor.snapshotScans.has('a')).toBe(true);
+  });
+});
+
+describe('D-016: a dropped deferral owes a re-fold only when its blocker clears, from its own position', () => {
+  /**
+   * P-007 run #5's shape. The seeded set holds `cut` rows under an epoch this device never
+   * gets a key for (a removed member's content), more of them than the buffer holds, so the
+   * buffer is never empty at a pass start and the coarse floor stays at the set start. The
+   * tail holds plain ops, then epoch-0 content whose key is the last op. The pass loop is
+   * boot.ts's: drops are consumed at the top, the re-fold settles, floors are marked, the
+   * fold runs, and the key-applied drain runs after it.
+   */
+  async function runJoin(opts: { policy: 'coarse' | 'd016'; maxPasses: number }) {
+    const log = memLog('d1'.repeat(32));
+    const prefix: PeerLogOp[] = [];
+    for (let i = 0; i < 30; i++) prefix.push(op('plain', `P${i}`, { i }, T0 + i));
+    for (let i = 0; i < 8; i++) prefix.push(op('cut', `X${i}`, { i }, T0 + 100 + i));
+    await log.appendBatch!(prefix);
+    const setAt = log.length;
+    await produceLogSnapshot(log, { now: T0 + 1_000, schemaVersion: 1, maxChunkBytes: 400 });
+    const setEnd = log.length;
+    const tail: PeerLogOp[] = [];
+    for (let i = 0; i < 30; i++) tail.push(op('plain', `Q${i}`, { i }, T0 + 2_000 + i));
+    const contentAt = setEnd + tail.length;
+    for (let i = 0; i < 10; i++) tail.push(op('content', `C${i}`, { i }, T0 + 3_000 + i));
+    // Another device's epoch-1 key row: it fires the drain hook, but this device still has no key.
+    tail.push(op('keys', 'epoch1:other', { wrapped: 'o' }, T0 + 4_000));
+    tail.push(op('keys', 'epoch0:device', { wrapped: 'k' }, T0 + 5_000));
+    await log.appendBatch!(tail);
+    const oracle = await fullReplay(log);
+    const expected = Object.fromEntries(Object.entries(oracle).filter(([k]) => !k.startsWith('cut::')));
+
+    const pending = new PendingEpochContent(5);
+    const refold = new DeferralEvictionReFold();
+    const drainQueue: DrainedEpoch[] = [];
+    const pg: Pg = new Map();
+    let keyPresent = false;
+    const applyImpl = async (env: OpEnvelope): Promise<boolean> => {
+      if (env.table === 'cut') {
+        pending.defer(env, 'pot', 1);
+        return false;
+      }
+      if (env.table === 'content' && !keyPresent) {
+        pending.defer(env, 'pot', 0);
+        return false;
+      }
+      if (env.table === 'keys') {
+        if (env.hbKey === 'epoch0:device') keyPresent = true;
+        drainQueue.push({ potHomeSlug: 'pot', epoch: env.hbKey === 'epoch0:device' ? 0 : 1 });
+      }
+      pg.set(`${env.table}::${env.hbKey}`, env.value);
+      return true;
+    };
+
+    let cursor = createMergeCursor();
+    const rewoundTo: number[] = [];
+    let passes = 0;
+    for (; passes < opts.maxPasses; passes++) {
+      const action = refold.settle(cursor);
+      if (action.kind === 'reset') cursor = createMergeCursor();
+      if (action.kind === 'rewound') for (const m of action.moved) rewoundTo.push(m.floor);
+      await seedCursorFromSnapshots([log], cursor, { getTimeoutMs: 0 });
+      refold.markFloors(cursor, pending.size() > 0 || pending.dropped.holdsSourceless);
+      const before = new Map(cursor.positions);
+      await mergeAdmittedLogsIncremental([log], cursor, {
+        getTimeoutMs: 0,
+        maxOpsPerPass: 12,
+        applyImpl: applyImpl as never,
+      });
+      refold.noteFold([log], cursor, before);
+      await drainQueuedEpochContent({
+        pending,
+        drainQueue,
+        applyImpl,
+        hasEpochKey: async (_pot, epoch) => epoch === 0 && keyPresent,
+      });
+      // boot.ts consumes these at the top of the next pass; the same point in this loop.
+      if (opts.policy === 'coarse') {
+        if (pending.consumeEvictionSignal()) refold.noteEviction();
+      } else {
+        const owed = pending.dropped.takeOwed();
+        if (owed) refold.noteOwed(owed);
+      }
+      const atTail = cursor.positions.get(log.keyHex) === log.length;
+      if (atTail && !refold.isOwed && isDeepStrictEqual(Object.fromEntries(pg), expected)) break;
+    }
+    return { pg: Object.fromEntries(pg), expected, passes, setAt, setEnd, contentAt, rewoundTo, pending };
+  }
+
+  it('CONTROL (the P-522 coarse policy): every crossing evicts a cut row and rewinds to the set start again', async () => {
+    const r = await runJoin({ policy: 'coarse', maxPasses: 60 });
+    expect(r.rewoundTo.length).toBeGreaterThanOrEqual(3);
+    expect(r.rewoundTo.every((floor) => floor === r.setAt)).toBe(true);
+    expect(r.passes).toBe(60);
+  });
+
+  it('D-016: one re-fold, from the first evicted content op in the tail, and the join converges', async () => {
+    const r = await runJoin({ policy: 'd016', maxPasses: 60 });
+    expect(r.pg).toEqual(r.expected);
+    expect(r.rewoundTo).toHaveLength(1);
+    // The fold read content from contentAt; the first op the buffer dropped sits at or after it.
+    expect(r.rewoundTo[0]).toBeGreaterThanOrEqual(r.contentAt);
+    expect(r.passes).toBeLessThan(60);
+    // The cut rows' drops stay recorded, with their set-chunk positions, and owe nothing.
+    expect(r.pending.hasEvicted('pot', 1)).toBe(true);
+    expect(r.pending.dropped.holdsSourceless).toBe(false);
+    expect(r.pending.dropped.takeOwed()).toBeNull();
   });
 });

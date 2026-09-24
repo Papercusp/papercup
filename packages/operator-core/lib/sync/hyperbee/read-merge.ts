@@ -37,6 +37,7 @@ import { encodeHlc } from '@papercusp/locks-core';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { logIfStageStalls } from './stage-stall-log';
+import { runWithDeferralSource, type DeferralSource } from './deferral-source';
 import {
   isSnapshotOp,
   SNAPSHOT_COMPACT_EVERY_OPS,
@@ -2084,6 +2085,8 @@ async function applyRecordingWinner(
   maxWinnersEntries: number = DEFAULT_MAX_WINNERS_ENTRIES,
   onWinnersEvicted?: (evictedCount: number, size: number) => void,
   batch?: { fold: FoldBatch; pos: number },
+  /** D-016: the log position being applied, stamped on any deferral the apply makes. */
+  source?: DeferralSource,
 ): Promise<MergeApplyOutcome> {
   const ident = opIdent(groupKey, env);
   let outcome: MergeApplyOutcome;
@@ -2106,7 +2109,13 @@ async function applyRecordingWinner(
         // Queue time is safe backpressure, not a slow PG write. Start both the
         // named-stage clock and the hard apply timeout only after admission.
         markStarted();
-        return logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => run(env)));
+        // D-016: entered here, after admission, so the source is this op's and never that
+        // of whichever apply released the admission slot.
+        return logIfStageStalls(
+          scope,
+          `merge-apply (${groupKey})`,
+          Promise.resolve().then(() => runWithDeferralSource(source, () => run(env))),
+        );
       });
       physical = { started, result };
       pending.set(ident, physical);
@@ -2994,6 +3003,8 @@ async function seekEpochKey(args: {
             args.applyTimeoutMs,
             args.maxWinnersEntries,
             args.onWinnersEvicted,
+            undefined,
+            { keyHex: log.keyHex, position: i },
           );
           if (outcome.kind !== 'applied') {
             remember(false); // `covered` is above this row, so the next seek retries it
@@ -3297,6 +3308,7 @@ async function mergeIncrementalPass(
             maxWinnersEntries,
             onWinnersEvicted,
             { fold: lane, pos },
+            { keyHex: log.keyHex, position: pos },
           );
           if (lane.failed) {
             halt.reason ??= 'lost';
@@ -3652,6 +3664,7 @@ async function mergeIncrementalPass(
             maxWinnersEntries,
             onWinnersEvicted,
             batchAt(pos),
+            { keyHex: log.keyHex, position: pos },
           );
           // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
           if (batch?.failed) {
@@ -3696,6 +3709,7 @@ async function mergeIncrementalPass(
         maxWinnersEntries,
         onWinnersEvicted,
         batchAt(pos),
+        { keyHex: log.keyHex, position: pos },
       );
       // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
       if (batch?.failed) {

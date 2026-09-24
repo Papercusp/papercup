@@ -96,7 +96,9 @@ describe('selected identity producer output binding', () => {
   it('binds the same source revision selected by the installed mode catalog', async () => {
     const catalog = await getSelectedModeCatalog();
     const goal = catalog.entries.find((entry) => entry.id === 'goal');
+    const definition = (await getSelectedModeDefinitions(['goal'])).get('goal');
     expect(goal).toBeDefined();
+    expect(definition).toBeDefined();
     const receipt = await bindSelectedIdentityOutputs({
       identityId: 'su.mode-goal',
       outputs: [
@@ -108,6 +110,8 @@ describe('selected identity producer output binding', () => {
       observedAt,
     });
     expect(receipt.sourceRevision).toBe(goal!.sourceHash);
+    expect(receipt.definitionRevision).toBe(definition!.contractRevision);
+    expect(receipt.catalogRevision).toBe(catalog.revision);
   });
 
   it('pins one already-produced kickoff and an explicit absent portfolio with the fixed GOAL definition', async () => {

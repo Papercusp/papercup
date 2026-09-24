@@ -1282,6 +1282,32 @@ export async function dispatchPendingGradingAudits(
           }
         }
 
+        // EI-24126420100989264: a FRESH launch can return a task id and an
+        // unconfirmed kickoff, then exit before the repair receipt is formed.
+        // The dedupe path checks task-manager state above; omitting the same
+        // check here let an already-exited startup failure be reported as
+        // `launched`. A terminal task row is conclusive; a running task with
+        // agentStarted:null remains unconfirmed, not a fabricated failure.
+        if (!terminalFailure && !result.data?.deduped && taskId && kickoffNotPersisted && launchData?.agentStarted !== true) {
+          const freshTask = await readTask(taskId);
+          const freshTaskFailed = freshTask && (
+            freshTask.state === 'killed' ||
+            freshTask.state === 'timed_out' ||
+            freshTask.state === 'stranded' ||
+            freshTask.state === 'ended_unobserved' ||
+            (freshTask.state === 'exited' && freshTask.exitCode != null && freshTask.exitCode !== 0)
+          );
+          if (freshTaskFailed) {
+            terminalFailure = {
+              code: 'task_receipt_not_live',
+              evidence:
+                `fresh launch task is terminal before first-turn confirmation: ` +
+                `state=${freshTask.state}, exitCode=${String(freshTask.exitCode ?? 'unreported')}` +
+                (freshTask.exitReason ? `, exitReason=${freshTask.exitReason}` : ''),
+            };
+          }
+        }
+
         if (terminalFailure) {
           if (!taskId) {
             await releaseReservation(await quotaBackoffFor(terminalFailure, logPath));

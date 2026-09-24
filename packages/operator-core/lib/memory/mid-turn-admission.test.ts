@@ -15,6 +15,7 @@ import {
   type MidTurnAdmissionStore,
 } from './mid-turn-admission';
 import { MemoryTimeoutError, runWithTrackedMemoryTimeouts, withMemoryTimeout } from './op-deadline';
+import { coalesceEmbedFn } from '../../../../libs/generic/memory/src/embed-coalesce';
 
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -59,6 +60,42 @@ function sharedStore(capacity = MID_TURN_MEMORY_MAX_HOLDERS) {
 const workerState = (): MidTurnAdmissionLocalState => ({ inFlight: false });
 
 describe('mid-turn host admission — independent worker realms', () => {
+  it('retains the host slot after coalesced cancellation until non-cooperative inference settles', async () => {
+    const shared = sharedStore(1);
+    const state = workerState();
+    const raw = deferred<number[]>();
+    let upstream!: AbortSignal;
+    const embed = coalesceEmbedFn((_text, signal) => {
+      upstream = signal!;
+      return raw.promise;
+    });
+    const lifetime = new AbortController();
+    const result = await guardMidTurnMemoryAdmission({
+      ownerId: 'worker-a', state, store: shared.store, trackRun: runWithTrackedMemoryTimeouts,
+    }, async () => {
+      try {
+        await withMemoryTimeout(embed('q', lifetime.signal), 'search', 5, lifetime);
+      } catch (error) {
+        expect(error).toBeInstanceOf(MemoryTimeoutError);
+      }
+      return 'fail-soft';
+    });
+    expect(result).toEqual({ admitted: true, value: 'fail-soft' });
+    expect(upstream.aborted).toBe(true);
+    expect(state.inFlight).toBe(true);
+    expect(shared.active.size).toBe(1);
+    const next = vi.fn(async () => 'must-not-run');
+    await expect(guardMidTurnMemoryAdmission({
+      ownerId: 'worker-b', state: workerState(), store: shared.store,
+    }, next)).resolves.toEqual({ admitted: false, reason: 'at_capacity' });
+    expect(next).not.toHaveBeenCalled();
+    raw.resolve([1]);
+    await vi.waitFor(() => {
+      expect(state.inFlight).toBe(false);
+      expect(shared.active.size).toBe(0);
+    });
+  });
+
   it('admits at most two workers host-wide, then admits the next after release', async () => {
     const shared = sharedStore(2);
     const holdA = deferred();

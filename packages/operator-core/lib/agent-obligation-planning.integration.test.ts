@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
-import { setMode } from './modes/store';
+import { getModes, setMode } from './modes/store';
 import { defaultAgentObligationReaderDeps, projectAgentTurnStartObligationBrief, readAgentObligationAgenda } from './agent-obligation-reader';
 import {
   buildTurnStartOrientationBlock, ORIENTATION_CURSOR_SURFACE,
@@ -17,6 +17,7 @@ import {
 import { drainDetached } from './detached-imports';
 import { recordScoutTick } from './scout/tick-ledger';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
+import modeGetTool from './agent-tools/mode/get';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-planning-${RUN}`;
@@ -111,7 +112,11 @@ describe('production planning-needed consumer', () => {
       effortUpdates: async () => [], openChecks: async () => [], planDecisions: async () => undefined,
       lockTransitions: async () => undefined, coupledPeers: async () => null,
       inbox: async () => ({ count: 0, newest: [] }), announcedGates: async () => [], openAsks: async () => null,
-      modes: async () => [], authorityVerdict: async () => null, loopArmed: async () => true,
+      modes: async () => (await getModes(WS, OWNER, fx.admin)).map((row) => ({
+        axisKey: row.axisKey, mode: row.mode, reason: row.reason, setBy: row.setBy,
+        setBySelf: row.setBy === OWNER, ownerDirected: row.ownerDirected,
+        impliedBy: row.impliedBy?.mode ?? null,
+      })), authorityVerdict: async () => null, loopArmed: async () => true,
       loopFireWithheld: async () => false, improvementTriage: async () => null,
       executableFrontier: async () => null, obligations: async () => brief,
       neverDropFacts: async () => [], toolSurface: async () => null, carryBlindWindow: async () => null,
@@ -202,6 +207,26 @@ describe('production planning-needed consumer', () => {
         WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}`;
       expect(identityRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
         status: 'bound', deliveryToken: receipts.at(-1)?.offered,
+        practice: { identityId: 'su.practice', contributions: expect.arrayContaining([
+          expect.objectContaining({ contributionId: 'turn-start-orientation', status: 'bound' }),
+        ]) },
+      });
+      const modeGet = await modeGetTool.handler({ agent: OWNER, contracts: true }, {
+        isSuperuser: true, uiClientId: OWNER, workspaceId: WS,
+      } as never);
+      const modeGetData = (modeGet as unknown as { data: { ok: boolean; modes: Array<{
+        mode: string; definitionRevision?: string; sourceRevision?: string;
+      }> } }).data;
+      expect(modeGetData.ok).toBe(true);
+      const goalDefinition = modeGetData.modes.find((mode) => mode.mode === 'goal');
+      expect(goalDefinition?.definitionRevision).toEqual(expect.any(String));
+      expect(identityRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY]?.goal).toMatchObject({
+        identityId: 'su.mode-goal', sourceRevision: goalDefinition?.sourceRevision,
+        definitionRevision: goalDefinition?.definitionRevision,
+        contributions: expect.arrayContaining([
+          expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound' }),
+          expect.objectContaining({ contributionId: 'goal-obligations', status: 'bound' }),
+        ]),
       });
       expect(serverErrors).toEqual([]);
     } finally {

@@ -17,9 +17,9 @@
  * than it measured, and the difference is invisible at the call site.
  */
 
-import { createReadStream } from 'node:fs';
+import { constants as fsConstants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { opendir } from 'node:fs/promises';
+import { opendir, open, realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
@@ -163,6 +163,108 @@ export async function recheckCarryNativeConfiguration(
 ): Promise<void> {
   const current = await captureCarryNativeConfiguration(peer, snapshot);
   if (canonicalJson(current) !== canonicalJson(snapshot)) throw new Error('carry native configuration changed after capture');
+}
+
+export interface CarryArtifactInput {
+  /** Stable role/name in the predeclared recipe, not an inferred dependency. */
+  id: string;
+  filePath: string;
+  maxBytes: number;
+}
+
+/** Freeze the declared file set alongside its native configuration observation.
+ * Reuses the existing canonical serializer and configuration capture. This is
+ * an artifact binding, NOT a complete dependency census, approval, provider
+ * identity, output-limit receipt, or permission to send a charged request.
+ * Callers must enumerate the binary, task/recipe, checker, pricing, launcher,
+ * instruments and their dependencies before freezing the controller manifest.
+ * File contents (including private configuration) never leave this function.
+ */
+export async function captureCarryArtifactManifest(input: {
+  protocolRef: string;
+  artifacts: readonly CarryArtifactInput[];
+  configuration: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>;
+}) {
+  input = structuredClone(input);
+  const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  if (!nonblank(input.protocolRef) || !Array.isArray(input.artifacts) || !input.artifacts.length ||
+    input.artifacts.length > 256 || new Set(input.artifacts.map(a => a.id)).size !== input.artifacts.length ||
+    input.artifacts.some(a => !nonblank(a.id) || !isAbsolute(a.filePath) ||
+      !Number.isSafeInteger(a.maxBytes) || a.maxBytes <= 0)) {
+    throw new Error('carry manifest requires a protocol and a bounded unique artifact set');
+  }
+  const observed = input.configuration;
+  if (!observed || !Array.isArray(observed.servers) || observed.servers.some(server =>
+    !nonblank(server.name) || !nonblank(server.authStatus) || !Array.isArray(server.tools) ||
+    server.tools.some(tool => !nonblank(tool)) || new Set(server.tools).size !== server.tools.length) ||
+    new Set(observed.servers.map(server => server.name)).size !== observed.servers.length) {
+    throw new Error('carry manifest requires a complete native configuration scope');
+  }
+  // Copy only the observation schema; never propagate caller-added raw config
+  // or artifact contents into the serializable evidence artifact.
+  const config = { threadId: observed.threadId, cwd: observed.cwd, configSha256: observed.configSha256,
+    toolInventorySha256: observed.toolInventorySha256,
+    servers: observed.servers.map(({ name, authStatus, tools }) => ({ name, authStatus, tools })) };
+  if (!config || !nonblank(config.threadId) || !isAbsolute(config.cwd) ||
+    !/^[a-f0-9]{64}$/.test(config.configSha256) || !/^[a-f0-9]{64}$/.test(config.toolInventorySha256)) {
+    throw new Error('carry manifest requires a native configuration observation');
+  }
+  const artifacts = [];
+  for (const artifact of [...input.artifacts].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+    // Legitimate executable links are resolved and bound, so later retargeting
+    // fails even if both destinations contain identical bytes. O_NONBLOCK keeps
+    // a substituted FIFO from hanging before the regular-file check.
+    const resolvedPath = await realpath(artifact.filePath);
+    const fh = await open(resolvedPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    try {
+      const before = await fh.stat({ bigint: true });
+      if (!before.isFile() || before.size <= 0n || before.size > BigInt(artifact.maxBytes)) {
+        throw new Error(`carry artifact ${artifact.id} is empty, non-regular or oversized`);
+      }
+      const identity = (s: typeof before) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].map(String);
+      const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+      let bytes = 0;
+      while (true) {
+        const read = await fh.read(buffer, 0, Math.min(buffer.length, artifact.maxBytes - bytes + 1), bytes);
+        if (!read.bytesRead) break;
+        bytes += read.bytesRead;
+        if (bytes > artifact.maxBytes) throw new Error(`carry artifact ${artifact.id} exceeded its byte bound`);
+        hash.update(buffer.subarray(0, read.bytesRead));
+      }
+      const after = await fh.stat({ bigint: true });
+      if (BigInt(bytes) !== before.size || canonicalJson(identity(before)) !== canonicalJson(identity(after)) ||
+        await realpath(artifact.filePath) !== resolvedPath ||
+        canonicalJson(identity(await stat(resolvedPath, { bigint: true }))) !== canonicalJson(identity(before))) {
+        throw new Error(`carry artifact ${artifact.id} changed during capture`);
+      }
+      artifacts.push({ id: artifact.id, filePath: artifact.filePath, maxBytes: artifact.maxBytes,
+        resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) });
+    } finally { await fh.close(); }
+  }
+  const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
+    protocolRef: input.protocolRef, configuration: config, artifacts };
+  return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
+}
+
+/** Re-read the same declared population; never update a frozen manifest to
+ * accommodate drift. Like native configuration snapshots, equal observations
+ * cannot rule out transient changes between reads; execution still requires
+ * source/writer exclusion and independent admission checks.
+ */
+export async function recheckCarryArtifactManifest(
+  manifest: Awaited<ReturnType<typeof captureCarryArtifactManifest>>,
+  peer: SuStdioPeer,
+): Promise<void> {
+  manifest = structuredClone(manifest);
+  const { sha256, ...body } = manifest;
+  if (createHash('sha256').update(canonicalJson(body)).digest('hex') !== sha256) {
+    throw new Error('carry artifact manifest binding is invalid');
+  }
+  await recheckCarryNativeConfiguration(peer, manifest.configuration);
+  const current = await captureCarryArtifactManifest({ protocolRef: manifest.protocolRef,
+    configuration: manifest.configuration,
+    artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
+  if (current.sha256 !== sha256) throw new Error('carry artifacts changed after manifest freeze');
 }
 
 /** Capture an owned native preparation peer at its last completed turn. The

@@ -316,6 +316,13 @@ export async function bindSelectedIdentityOutputs(input: {
   const raw = parseBlueprintSource(await readFile(sourcePath, 'utf8'));
   const source = resolveBlueprintSource(raw, { sourcePath, resolve: resolver });
   if (!source.validation.ok) throw new Error(`selected identity ${input.identityId} is invalid`);
+  const selectedModeId = input.sourceTier !== 'builtin' && input.identityId.startsWith('su.mode-')
+    ? input.identityId.slice('su.mode-'.length) : null;
+  const selectedMode = selectedModeId
+    ? (await getSelectedModeDefinitions([selectedModeId])).get(selectedModeId) : undefined;
+  if (selectedModeId && (!selectedMode || selectedMode.sourceRevision !== source.layers.at(-1)!.contentHash)) {
+    throw new Error(`selected mode ${selectedModeId} definition does not match the identity source`);
+  }
   const declarations = raw.contributions as Array<{
     id: string; purpose: string; source: string; inputKind: string; ref: string;
     producerRef?: string; availability?: string;
@@ -364,6 +371,13 @@ export async function bindSelectedIdentityOutputs(input: {
       omissions.push({ id: entry.id, reason: 'not-requested' });
     }
   }
+  const definitionContributionId = (raw.mode as { definitionContributionId?: string } | undefined)
+    ?.definitionContributionId;
+  const selectedPromptRef = selectedMode
+    ? declarations?.find((entry) => entry.id === definitionContributionId)?.ref : undefined;
+  if (selectedMode && !selectedPromptRef) {
+    throw new Error(`selected mode ${selectedModeId} has no fixed definition contribution`);
+  }
   const fixedPrompts = (declarations ?? []).filter((entry) =>
     entry.source === 'fixed' && entry.inputKind === 'prompt-file').map((entry) => {
     const refParts = entry.ref.split(':');
@@ -373,7 +387,9 @@ export async function bindSelectedIdentityOutputs(input: {
     if (!layer?.sourcePath || !fileName) {
       throw new Error('identity fixed prompt has no resolved source: ' + entry.ref);
     }
-    return { ref: entry.ref, path: join(dirname(layer.sourcePath), 'prompts', fileName + '.md') };
+    return { ref: entry.ref, path: join(dirname(layer.sourcePath), 'prompts', fileName + '.md'),
+      ...(selectedMode && entry.ref === selectedPromptRef
+        ? { bytes: selectedMode.contract, contentHash: selectedMode.definitionHash } : {}) };
   });
   const artifact = compileAgentSpecification({
     source: raw,
@@ -387,6 +403,8 @@ export async function bindSelectedIdentityOutputs(input: {
   return {
     identityId: input.identityId,
     sourceRevision: source.layers.at(-1)!.contentHash,
+    ...(selectedMode ? { definitionRevision: selectedMode.contractRevision,
+      catalogRevision: selectedMode.catalogRevision } : {}),
     specificationRevision: artifact.specificationRevision,
     contributions: receipts,
     observedAt: input.observedAt,

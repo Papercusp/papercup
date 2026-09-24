@@ -52,6 +52,9 @@ export interface HiveRekeyBootDeps {
   epochEncrypt: EpochEncryptCapability;
   /** The shared deferral buffer — the drain hook (`onEpochKeyApplied`) calls `drainEpoch`. */
   pending: PendingEpochContent;
+  /** D-016: whether this device resolves the epoch key now (a read; it never mints). The
+   *  drain releases ops evicted under that epoch only when this says yes. */
+  hasEpochKey: (potId: string, epoch: number) => Promise<boolean>;
   /**
    * P-524: inject into the merge options (`keySeek`) so a key miss fetches this device's
    * key row ahead of content. Absent when this box has no member device identity: a
@@ -237,7 +240,19 @@ export async function buildHiveRekeyBootDeps(opts: {
       memberProvider: memberProvider != null,
       bundledProvider: bundledProvider != null,
     });
-    return { potHomeSlug, epochGate, epochEncrypt, pending, ...(seeker ? { keySeek: seeker.keySeek } : {}) };
+    const hasEpochKey = (potId: string, epoch: number): Promise<boolean> =>
+      provider.keyForEpoch(potId, epoch).then(
+        () => true,
+        () => false,
+      );
+    return {
+      potHomeSlug,
+      epochGate,
+      epochEncrypt,
+      pending,
+      hasEpochKey,
+      ...(seeker ? { keySeek: seeker.keySeek } : {}),
+    };
   } catch (e) {
     throwRekeyBootUnavailable(opts, 'compose confirmed Hive dependencies', e);
   }

@@ -151,7 +151,7 @@ type Row = { id: string; text: string; kind?: string; metadata?: Record<string, 
 const mockBackend = (rows: Row[], availability: { ok: boolean; reason?: string } = { ok: true }) => ({
   name: 'fake',
   available: vi.fn(async () => availability),
-  search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
+  search: vi.fn(async (_q: string, opts: { scope: string | readonly string[]; signal?: AbortSignal }) => {
     const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
     return scopes.flatMap((scope) => rows.map((r) => ({ ...r, scope })));
   }),
@@ -169,7 +169,7 @@ it('cancels upstream search when the existing injection phase deadline expires',
   let started!: () => void;
   const didStart = new Promise<void>((resolve) => { started = resolve; });
   backend.search.mockImplementation((_query, opts) => {
-    upstream = (opts as { signal: AbortSignal }).signal;
+    upstream = opts.signal!;
     started();
     return new Promise((_resolve, reject) => {
       upstream.addEventListener('abort', () => reject(upstream.reason), { once: true });

@@ -1464,6 +1464,98 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('retries a fresh unconfirmed launch when its task-manager row is already terminal', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-fresh-task-exited')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: {
+            agentStarted: null,
+            tasks: [
+              {
+                taskId: 'task-codex-state-db',
+                logPath: '/tmp/codex-state-db.log',
+                kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' },
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: {
+            agentStarted: true,
+            tasks: [{ taskId: 'task-codex-fallback', logPath: '/tmp/codex-fallback.log' }],
+          },
+        }),
+      );
+    d.getTask.mockResolvedValueOnce({ state: 'exited', exitCode: 1 } as Awaited<ReturnType<GetTask>>);
+    const killTask = vi.fn(async (taskId: string) => ({
+      ok: false as const,
+      taskId,
+      action: 'kill',
+      error: 'not_live' as const,
+    }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-fresh-task-exited'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => "Codex couldn't start because its local database appears to be damaged: failed to open state DB at ~/.papercusp/su-codex-homes/session-30285/state_5.sqlite: pool timed out while waiting for an open connection",
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(d.getTask).toHaveBeenCalledWith('task-codex-state-db');
+    expect(killTask).toHaveBeenCalledWith('task-codex-state-db', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-codex-state-db'], codes: ['task_receipt_not_live'] },
+    });
+  });
+
+  it('keeps a fresh kickoff timeout unconfirmed while the task-manager row is still running', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-still-starting')]);
+    d.launch.mockResolvedValueOnce(
+      launchResult({
+        deduped: false,
+        launch: {
+          agentStarted: null,
+          tasks: [
+            {
+              taskId: 'task-still-starting',
+              logPath: '/tmp/still-starting.log',
+              kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' },
+            },
+          ],
+        },
+      }),
+    );
+    d.getTask.mockResolvedValueOnce({ state: 'running' } as Awaited<ReturnType<GetTask>>);
+    const killTask = vi.fn();
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-still-starting'], ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail: () => '', terminalLogMaxRechecks: 0 },
+    );
+
+    expect(d.getTask).toHaveBeenCalledWith('task-still-starting');
+    expect(killTask).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({ state: 'launched' });
+    expect(result.receipts[0]).not.toHaveProperty('terminalRecovery');
+  });
+
   // WI-10002903 (second leg): psu-pty-host dropped the kickoff AFTER the launch
   // receipt returned, so the receipt carried no failure and the PTY stayed
   // ledger-live. The live-task guard must retire it instead of deduping to it

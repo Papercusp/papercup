@@ -170,4 +170,43 @@ describe('orchestrate:inspect', () => {
       error: { code: 'recipe_not_found', path: 'recipe.id' },
     });
   });
+
+  it('reports pinned read steps separately from uncertain writes and foreground lifecycle', async () => {
+    const readTool = {
+      expose: { mcp: { name: 'coord:presence' } }, effect: 'read',
+    };
+    const writeTool = {
+      expose: { mcp: { name: 'mail:send' } }, effect: 'write', idempotent: false,
+    };
+    const inspected = {
+      ...checked,
+      staticCalls: [
+        { tool: 'coord:presence', args: { fleet: 'orch-unify' }, dynamicArgs: false },
+        { tool: 'mail:send', args: { body: 'hello' }, dynamicArgs: false },
+      ],
+    };
+    const result = await inspectOrchestration(
+      { script: { source: 'await tools.coord.presence({ fleet: "orch-unify" }); await tools.mail.send({ body: "hello" });' } },
+      {} as UnifiedToolContext,
+      {
+        inspectScript: vi.fn().mockResolvedValue(inspected),
+        projectedTools: [readTool, writeTool] as never,
+      },
+    );
+    expect(payload(result)).toMatchObject({
+      ok: true,
+      normalized: {
+        execution: { lifecycle: 'foreground' },
+        durability: {
+          replayCandidate: false,
+          durableExecutionAvailable: false,
+          steps: [
+            { tool: 'coord:presence', effect: 'read', replay: 'read-only' },
+            { tool: 'mail:send', effect: 'write', replay: 'uncertain' },
+          ],
+          diagnostics: [{ code: 'uncertain-effect' }],
+        },
+      },
+    });
+  });
 });

@@ -37,6 +37,13 @@
  * invalidation hangs off).
  */
 
+import {
+  currentDeferralSource,
+  DroppedDeferrals,
+  runWithDeferralSource,
+  type DeferralSource,
+} from './deferral-source';
+
 /** One deferred cross-member content op + the author device it is waiting to see ∈ members. */
 export interface DeferredMemberContentOp {
   /** The author's VERIFIED source-log device pubkey (base64) — the membership grain this op
@@ -57,6 +64,8 @@ export interface DeferredMemberContentOp {
   seq: number;
   /** TTL deadline (ms). Evicted once `now >= expiresAt`. */
   expiresAt: number;
+  /** D-016: the log position the fold read this op at. Absent outside a fold apply. */
+  source?: DeferralSource;
 }
 
 /** One deferred cross-member content op whose source-log identity has not resolved yet. */
@@ -70,6 +79,8 @@ export interface DeferredSourceLogContentOp {
   reapply: () => Promise<void>;
   seq: number;
   expiresAt: number;
+  /** D-016: the log position the fold read this op at. Absent outside a fold apply. */
+  source?: DeferralSource;
 }
 
 /** Default hard cap on total deferred ops. The race is rare + brief, so this is a safety
@@ -116,16 +127,26 @@ export class PendingMembershipContent {
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
   private total = 0;
-  /** WI-3852 (F2 of WI-898): set true whenever `sweepExpired` or `evictOldest` drops a
-   *  deferral. Unlike pending-epoch-content, this class stores a `reapply` CLOSURE per entry
-   *  (not raw op bytes) — but the doc comments above still promise "the op's bytes stay in
-   *  the peer log, so a later re-fold re-encounters (and, for a real member, re-defers) it",
-   *  which is only true if a re-fold actually runs. There is NO steady-state re-fold in
-   *  production (`createMergeCursor` only resets at boot / log-set change / an explicit
-   *  `forceReFold`) — without this signal a TTL-expired or capacity-evicted deferral for a
-   *  genuine member (the race just ran long) is unreachable until the NEXT process restart.
-   *  Consumed (and cleared) by boot.ts's merge loop every pass to trip `forceReFold`. */
-  private evictedSinceCheck = false;
+  /** WI-3852 + D-016: every deferral `sweepExpired` or `evictOldest` drops, recorded under
+   *  its blocker (`device:<pubkey>` or `sourceLog:<key>`). The op's bytes stay in the peer
+   *  log, but only a re-fold reads them again, and that helps only once the blocker clears:
+   *  the author is admitted ({@link drainForDevices}) or its source log resolves
+   *  ({@link drainForSourceLogKeys}). Those drains release the record, and boot.ts rewinds
+   *  to the owed positions. Content from a device that is never admitted owes nothing. */
+  readonly dropped = new DroppedDeferrals();
+  /** D-016: TTL expiry is paused while the fold is catching up. See {@link holdExpiry}. */
+  private expiryHeld = false;
+
+  /**
+   * D-016: pause (`true`) or resume TTL expiry. boot.ts holds it while the fold has not
+   * settled. A catching-up fold is far behind the log, so an author's member row may be
+   * just ahead of the content waiting on it, and a wall-clock TTL would drop that content
+   * minutes before the row arrives. The size cap still bounds the buffer while held. Once
+   * the fold settles, the next sweep drops whatever outlived its TTL.
+   */
+  holdExpiry(held: boolean): void {
+    this.expiryHeld = held;
+  }
 
   constructor(
     private readonly maxPending: number = DEFAULT_MAX_PENDING_MEMBER_CONTENT,
@@ -148,6 +169,7 @@ export class PendingMembershipContent {
     }
     const id = memberOpIdentity(input);
     if (bucket.has(id)) return false; // already pending (re-fold / re-drain)
+    const source = currentDeferralSource();
     bucket.set(id, {
       authorDevice: input.authorDevice,
       tableTag: input.tableTag,
@@ -157,6 +179,7 @@ export class PendingMembershipContent {
       reapply: input.reapply,
       seq: this.seqCounter++,
       expiresAt: now + this.ttlMs,
+      ...(source ? { source } : {}),
     });
     this.total++;
     if (this.total > this.maxPending) this.evictOldest();
@@ -178,6 +201,7 @@ export class PendingMembershipContent {
     }
     const id = memberOpIdentity(input);
     if (bucket.has(id)) return false;
+    const source = currentDeferralSource();
     bucket.set(id, {
       sourceLogKey: input.sourceLogKey,
       tableTag: input.tableTag,
@@ -187,6 +211,7 @@ export class PendingMembershipContent {
       reapply: input.reapply,
       seq: this.seqCounter++,
       expiresAt: now + this.ttlMs,
+      ...(source ? { source } : {}),
     });
     this.total++;
     if (this.total > this.maxPending) this.evictOldest();
@@ -202,6 +227,7 @@ export class PendingMembershipContent {
     this.sweepExpired(now);
     const out: DeferredMemberContentOp[] = [];
     for (const device of devices) {
+      this.dropped.release(`device:${device}`);
       const bucket = this.buckets.get(device);
       if (!bucket || bucket.size === 0) continue;
       this.buckets.delete(device);
@@ -220,6 +246,7 @@ export class PendingMembershipContent {
     this.sweepExpired(now);
     const out: DeferredSourceLogContentOp[] = [];
     for (const sourceLogKey of sourceLogKeys) {
+      this.dropped.release(`sourceLog:${sourceLogKey}`);
       const bucket = this.sourceLogBuckets.get(sourceLogKey);
       if (!bucket || bucket.size === 0) continue;
       this.sourceLogBuckets.delete(sourceLogKey);
@@ -233,23 +260,27 @@ export class PendingMembershipContent {
    *  empty) so genuine non-member content expires even if no member ever joins to drain it.
    *  Returns the count evicted. */
   sweepExpired(now: number): number {
+    if (this.expiryHeld) return 0;
     // Every entry gets the same ttlMs from a non-decreasing `now`, so each bucket expires in
     // insertion order: pop expired heads and stop at the first live one (P-523).
-    const sweep = <T extends { expiresAt: number }>(buckets: Map<string, Map<string, T>>): number => {
+    const sweep = <T extends { expiresAt: number; source?: DeferralSource }>(
+      buckets: Map<string, Map<string, T>>,
+      kind: 'device' | 'sourceLog',
+    ): number => {
       let n = 0;
       for (const [key, bucket] of buckets) {
         for (const [id, d] of bucket) {
           if (d.expiresAt > now) break;
           bucket.delete(id);
+          this.dropped.note(`${kind}:${key}`, d.source, 'expired');
           n++;
         }
         if (bucket.size === 0) buckets.delete(key);
       }
       return n;
     };
-    const removed = sweep(this.buckets) + sweep(this.sourceLogBuckets);
+    const removed = sweep(this.buckets, 'device') + sweep(this.sourceLogBuckets, 'sourceLog');
     this.total -= removed;
-    if (removed > 0) this.evictedSinceCheck = true;
     return removed;
   }
 
@@ -263,12 +294,11 @@ export class PendingMembershipContent {
     return this.buckets.size + this.sourceLogBuckets.size;
   }
 
-  /** WI-3852: read-and-clear whether `sweepExpired`/`evictOldest` have dropped anything since
-   *  the last call. See the field doc above for why this exists. */
+  /** Read and clear whether `sweepExpired`/`evictOldest` have dropped anything since the last
+   *  call (observability; it shares {@link dropped}'s counts, so boot.ts reads those instead). */
   consumeEvictionSignal(): boolean {
-    const v = this.evictedSinceCheck;
-    this.evictedSinceCheck = false;
-    return v;
+    const { evicted, expired } = this.dropped.takeDropCounts();
+    return evicted + expired > 0;
   }
 
   /** Drop the globally-oldest deferral to honour `maxPending`. The op's bytes remain in the peer
@@ -295,12 +325,14 @@ export class PendingMembershipContent {
       }
     }
     if (oldestKey === null || oldestKind === null) return;
-    const buckets: Map<string, Map<string, unknown>> = oldestKind === 'device' ? this.buckets : this.sourceLogBuckets;
+    const buckets: Map<string, Map<string, { source?: DeferralSource }>> =
+      oldestKind === 'device' ? this.buckets : this.sourceLogBuckets;
     const bucket = buckets.get(oldestKey)!;
-    bucket.delete(bucket.keys().next().value!);
+    const [id, head] = bucket.entries().next().value!;
+    bucket.delete(id);
     this.total--;
     if (bucket.size === 0) buckets.delete(oldestKey);
-    this.evictedSinceCheck = true;
+    this.dropped.note(`${oldestKind}:${oldestKey}`, head.source, 'evicted');
   }
 }
 
@@ -315,7 +347,8 @@ export async function reapplyDrainedMemberContent(
   let reapplied = 0;
   for (const entry of entries) {
     try {
-      await entry.reapply();
+      // D-016: a re-defer keeps the entry's own log position, not the draining apply's.
+      await runWithDeferralSource(entry.source, () => entry.reapply());
       reapplied++;
     } catch {
       // best-effort — the op's bytes stay in the peer log; a later fold/drain re-defers it.

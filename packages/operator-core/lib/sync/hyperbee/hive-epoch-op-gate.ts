@@ -26,6 +26,7 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { LocalWriteOp } from './boot';
 import type { EpochEncryptCapability } from './outbox-drain';
 import type { PendingEpochContent } from './pending-epoch-content';
+import { runWithDeferralSource } from './deferral-source';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
 import { BASELINE_EPOCH, getEpochGeneration } from './hive-epoch-state';
@@ -478,6 +479,12 @@ export async function drainQueuedEpochContent(deps: {
    * that looks exactly like a successful drain. Defaults to a console.warn naming the op.
    */
   onReapplyError?: (op: OpEnvelope, err: unknown) => void;
+  /**
+   * D-016: whether THIS device resolves the epoch key now. The drain hook fires for any
+   * device's key row, so a drain alone does not prove the key is local. Consulted only when
+   * ops of that epoch were evicted and none of the drained ones decrypted.
+   */
+  hasEpochKey?: (potId: string, epoch: number) => Promise<boolean>;
 }): Promise<number> {
   if (deps.drainQueue.length === 0) return 0;
   // Take + clear: a later pass re-queues on the next key apply. Snapshot so a re-apply
@@ -485,9 +492,14 @@ export async function drainQueuedEpochContent(deps: {
   const toDrain = deps.drainQueue.splice(0);
   let reapplied = 0;
   for (const { potHomeSlug, epoch } of toDrain) {
+    let decrypted = false;
     for (const deferred of deps.pending.drainEpoch(potHomeSlug, epoch)) {
       try {
-        if (await deps.applyImpl(deferred.op)) reapplied++;
+        // D-016: a re-defer keeps the op's own log position.
+        if (await runWithDeferralSource(deferred.source, () => deps.applyImpl(deferred.op))) {
+          reapplied++;
+          decrypted = true;
+        }
       } catch (err) {
         // best-effort — a re-apply failure must not abort the merge pass — but it is
         // reported, never swallowed (see onReapplyError).
@@ -505,6 +517,19 @@ export async function drainQueuedEpochContent(deps: {
           // reporting must never abort the drain
         }
       }
+    }
+    // D-016: ops of this epoch evicted while its key was missing owe a re-read, but only
+    // once this device can decrypt them. A decrypted re-apply proves it; otherwise ask.
+    if (deps.pending.hasEvicted(potHomeSlug, epoch)) {
+      let keyLocal = decrypted;
+      if (!keyLocal && deps.hasEpochKey) {
+        try {
+          keyLocal = await deps.hasEpochKey(potHomeSlug, epoch);
+        } catch {
+          keyLocal = false; // a failed probe keeps the record for the next key row
+        }
+      }
+      if (keyLocal) deps.pending.releaseEpoch(potHomeSlug, epoch);
     }
   }
   return reapplied;

@@ -37,6 +37,7 @@
  * a key row, not an admission).
  */
 import type { OpEnvelope } from './op-envelope-types';
+import { currentDeferralSource, DroppedDeferrals, type DeferralSource } from './deferral-source';
 
 /** One deferred content op + the (hive, epoch) key it is waiting on. */
 export interface DeferredContentOp {
@@ -46,6 +47,8 @@ export interface DeferredContentOp {
   epoch: number;
   /** Insertion order — for deterministic FIFO drain + oldest-first eviction. */
   seq: number;
+  /** D-016: the log position the fold read this op at. Absent outside a fold apply. */
+  source?: DeferralSource;
 }
 
 /** Default cap on the TOTAL deferred ops held across all (hive, epoch) buckets.
@@ -73,14 +76,12 @@ export class PendingEpochContent {
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
   private total = 0;
-  /** WI-3852 (F2 of WI-898): set true whenever `evictOldest` drops a deferral. There is NO
-   *  steady-state re-fold in production (`createMergeCursor` only runs at boot / log-set
-   *  change / an explicit `forceReFold`, per boot.ts) — without this signal an evicted
-   *  deferral's ciphertext sits unreachable in the peer log until the NEXT process restart,
-   *  contradicting this class's own "a later re-fold re-defers it" contract. Consumed (and
-   *  cleared) by boot.ts's merge loop every pass to trip `forceReFold`, so an eviction is
-   *  recovered by the very next merge pass instead of waiting on a restart. */
-  private evictedSinceCheck = false;
+  /** WI-3852 + D-016: every deferral `evictOldest` drops, recorded under its (hive, epoch)
+   *  bucket key. An evicted op's ciphertext stays in the peer log, but nothing re-reads it
+   *  unless the fold moves back to it. That is worth doing only once the epoch key is local
+   *  (before that it would only defer again), so boot.ts releases the record when this
+   *  device resolves the key ({@link releaseEpoch}) and rewinds to the owed positions. */
+  readonly dropped = new DroppedDeferrals();
 
   constructor(private readonly maxPending: number = DEFAULT_MAX_PENDING) {}
 
@@ -100,7 +101,8 @@ export class PendingEpochContent {
     }
     const id = opIdentity(op);
     if (bucket.has(id)) return false; // already pending (re-fold)
-    bucket.set(id, { op, potId, epoch, seq: this.seqCounter++ });
+    const source = currentDeferralSource();
+    bucket.set(id, { op, potId, epoch, seq: this.seqCounter++, ...(source ? { source } : {}) });
     this.total++;
     if (this.total > this.maxPending) this.evictOldest();
     return true;
@@ -122,6 +124,17 @@ export class PendingEpochContent {
     return [...bucket.values()].sort((a, b) => a.seq - b.seq);
   }
 
+  /** D-016: whether evicted deferrals are recorded against (potId, epoch). */
+  hasEvicted(potId: string, epoch: number): boolean {
+    return this.dropped.has(bucketKey(potId, epoch));
+  }
+
+  /** D-016: this device now holds the epoch-N key for `potId`, so the ops evicted while it
+   *  was missing would decrypt if read again. Their positions become owed to the fold. */
+  releaseEpoch(potId: string, epoch: number): void {
+    this.dropped.release(bucketKey(potId, epoch));
+  }
+
   /** Total deferred ops (observability / tests). */
   size(): number {
     return this.total;
@@ -132,21 +145,17 @@ export class PendingEpochContent {
     return this.buckets.size;
   }
 
-  /** WI-3852: read-and-clear whether `evictOldest` has dropped anything since the last call.
-   *  The caller (boot.ts's merge loop) polls this once per pass and, on true, sets
-   *  `forceReFold` so the evicted op's bytes (still in the peer log) are re-encountered and
-   *  re-deferred (or, if its key has since arrived, actually decrypted) by the very next
-   *  pass — closing the "no recovery short of a process restart" gap. */
+  /** Read and clear whether `evictOldest` has dropped anything since the last call
+   *  (observability; it shares {@link dropped}'s counts, so boot.ts reads those instead). */
   consumeEvictionSignal(): boolean {
-    const v = this.evictedSinceCheck;
-    this.evictedSinceCheck = false;
-    return v;
+    const { evicted, expired } = this.dropped.takeDropCounts();
+    return evicted + expired > 0;
   }
 
   /** Drop the globally-oldest deferral to honour `maxPending`. The op's ciphertext
    *  remains in the peer log, so a later re-fold re-defers it — dropping is safe
    *  back-pressure, not data loss (as long as that later re-fold actually happens —
-   *  see `consumeEvictionSignal`). */
+   *  see `dropped`). */
   private evictOldest(): void {
     let oldestKey: string | null = null;
     let oldestSeq = Infinity;
@@ -160,10 +169,11 @@ export class PendingEpochContent {
     }
     if (oldestKey === null) return;
     const bucket = this.buckets.get(oldestKey)!;
-    bucket.delete(bucket.keys().next().value!);
+    const [id, head] = bucket.entries().next().value!;
+    bucket.delete(id);
     this.total--;
     if (bucket.size === 0) this.buckets.delete(oldestKey);
-    this.evictedSinceCheck = true;
+    this.dropped.note(oldestKey, head.source, 'evicted');
   }
 }
 

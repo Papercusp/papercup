@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -36,7 +37,7 @@ import { inspectCarryNativeTurn, inspectCarrySourceRead } from './launch-cost/la
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
 import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
-  recheckCarryNativeConfiguration, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
+  captureCarryArtifactManifest, recheckCarryArtifactManifest, type CarrySourceSnapshot } from './launch-cost/scan-launch-transcripts';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -523,6 +524,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         if (readSource) await waitForMcpStartup(events, threadId, serverName);
         const nativeConfig = await captureCarryNativeConfiguration(p, { threadId, cwd: homes.at(-1)!,
           servers: readSource ? [{ name: serverName, tools: [toolName], authStatus: 'bearerToken' }] : [] });
+        const manifest = await captureCarryArtifactManifest({
+          protocolRef: 'installed-native-loopback-fixture:no-provider-inference', configuration: nativeConfig,
+          artifacts: [
+            // This is the launched peer's executable, not an assertion that a
+            // wrapper's subprocesses or dynamic dependencies were censused.
+            { id: 'peer-executable', filePath: `/proc/${p.pid()}/exe`, maxBytes: 512 * 1024 * 1024 },
+            { id: 'task-and-checker', filePath: fileURLToPath(import.meta.url), maxBytes: 1024 * 1024 },
+            { id: 'transport', filePath: fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url)), maxBytes: 1024 * 1024 },
+            { id: 'capture', filePath: fileURLToPath(new URL('./launch-cost/scan-launch-transcripts.ts', import.meta.url)), maxBytes: 1024 * 1024 },
+          ],
+        });
+        expect(manifest.evidenceKind).toBe('observation-only');
+        expect(manifest.configuration.threadId).toBe(threadId);
         const response = await p.request({ method: 'turn/start', params: {
           threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
         } });
@@ -552,7 +566,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           const metadata = JSON.parse((call.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
           expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
         }
-        await recheckCarryNativeConfiguration(p, nativeConfig);
+        await recheckCarryArtifactManifest(manifest, p);
         return { threadId, turnId, threadRead, rpcWrite: writes[0], completed: completed[0] };
       };
       let sourceCompleted: SuStdioReceipt | undefined;

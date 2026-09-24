@@ -1,7 +1,10 @@
 import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
+import type { ProjectedTool } from '@papercusp/tooldef';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
 import { inspectScriptContract } from './contract-preflight';
+import { inspectDurability } from './durability-inspection';
 import {
   orchestrationPolicyFailure,
   orchestrationSourceArgsSchema,
@@ -27,6 +30,7 @@ export async function inspectOrchestration(
   deps: {
     recipes?: SavedRecipeAdapter;
     inspectScript?: typeof inspectScriptContract;
+    projectedTools?: readonly ProjectedTool[];
   } = {},
 ): Promise<ToolResult> {
   const policyFailure = orchestrationPolicyFailure(args);
@@ -71,6 +75,15 @@ export async function inspectOrchestration(
     ctx,
   });
   if (!checked.ok) return dataResult(checked);
+  const durability = await inspectDurability({
+    script: script.source,
+    bindings: checked.contract.bindings,
+    calls: checked.staticCalls,
+    tools: deps.projectedTools ?? listAllProjectedTools(),
+    ...(args.recipe && typeof continuation?.recipe === 'object' && continuation.recipe !== null
+      ? { recipeRevision: (continuation.recipe as { revision: string }).revision }
+      : {}),
+  });
 
   return dataResult({
     ok: true,
@@ -89,6 +102,7 @@ export async function inspectOrchestration(
       requirements: checked.contract.requirements,
       manifest: checked.manifest,
       replay: checked.contract.replay,
+      durability,
       portability: checked.contract.portability,
       execution: {
         requestedMode: args.execution?.mode ?? 'server',

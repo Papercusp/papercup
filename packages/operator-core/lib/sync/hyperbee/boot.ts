@@ -3753,9 +3753,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // the evicted op without waiting on a restart. P-522: it is paid below once the fold
       // has settled, as a rewind to the deferral floors (see `evictionReFold`).
       // Both signals are read every pass, so neither can stay latched behind the other.
-      const epochEvicted = rekeyDeps?.pending.consumeEvictionSignal() ?? false;
-      const memberEvicted = pendingMemberContent.consumeEvictionSignal();
-      if (epochEvicted || memberEvicted) evictionReFold.noteEviction();
+      // D-016: a drop owes the re-fold only once its blocker has cleared (the buffers release
+      // it when the epoch key or the author's member row applies), and it is paid from the
+      // drop's own log position. Every drop is logged, owed or not, so a re-fold is traceable.
+      for (const [label, drops] of [
+        ['epoch', rekeyDeps?.pending.dropped],
+        ['member', pendingMemberContent.dropped],
+      ] as const) {
+        if (!drops) continue;
+        const { evicted, expired } = drops.takeDropCounts();
+        if (evicted + expired > 0) {
+          console.warn(
+            `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] D-016 ${label} deferrals dropped: ` +
+              `evicted=${evicted} expired=${expired}; blockers still pending=${drops.blockerCount}`,
+          );
+        }
+        const owed = drops.takeOwed();
+        if (!owed) continue;
+        evictionReFold.noteOwed(owed);
+        console.warn(
+          `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] D-016 ${label} blocker cleared: ` +
+            `${owed.drops} dropped op(s) owe a re-fold from ` +
+            ([...owed.floors].map(([k, p]) => `${k.slice(0, 12)}@${p}`).join(', ') || 'no recorded position') +
+            (owed.sourceless ? ' (some had no position: coarse floors)' : ''),
+        );
+      }
+      // D-016: a catching-up fold must not expire member content by wall clock (see holdExpiry).
+      pendingMemberContent.holdExpiry(!evictionReFold.isSettled);
 
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
@@ -3989,7 +4013,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
       // P-522: the deferral floors, taken after seeding so they are where this pass's fold
       // starts.
-      evictionReFold.markFloors(mergeCursor, deferralBuffersHold());
+      // D-016: an unreleased drop with no recorded position still depends on the coarse floors.
+      evictionReFold.markFloors(
+        mergeCursor,
+        deferralBuffersHold() ||
+          (rekeyDeps?.pending.dropped.holdsSourceless ?? false) ||
+          pendingMemberContent.dropped.holdsSourceless,
+      );
 
       // P-004 + EI-20317490590418053: sample liveness AFTER durable/snapshot
       // seeding, so the detector sees the cursor position the merge will really
@@ -4415,6 +4445,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             pending: rekeyDeps.pending,
             drainQueue: epochDrainQueue,
             applyImpl: mergeOpts.applyImpl,
+            hasEpochKey: rekeyDeps.hasEpochKey,
           });
         } catch (e) {
           recordBootEvent(
