@@ -234,6 +234,69 @@ describe('learning.observations + summary real-PG contract', () => {
     }
   }, 120_000);
 
+  it('measures fresh-client and eight-reader summary latency with complete result parity', async () => {
+    let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;
+    const recordingSql = postgres(db.url, {
+      max: 1,
+      debug: (_connection, query, parameters) => { captured = { query, parameters }; },
+    });
+    try {
+      await readLearningObservationsSummaryFromStore(
+        recordingSql, workspaceId,
+        buildLearningObservationsPredicate(normalizeLearningObservationsArgs({})),
+      );
+    } finally {
+      await recordingSql.end();
+    }
+    expect(captured).toBeDefined();
+    const currentQuery = captured!.query;
+    const legacyQuery = currentQuery.replace(
+      /(scoped AS MATERIALIZED\s*\(\s*SELECT)/i,
+      `$1 issue_id AS id, COALESCE(title, '') AS title, body, created_at,
+        ARRAY(SELECT jsonb_array_elements_text(CASE
+          WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
+          THEN payload->'observation'->'refs' ELSE '[]'::jsonb END)) AS refs,`,
+    );
+    expect(legacyQuery).not.toBe(currentQuery);
+    const canonical = (rows: readonly object[]) => rows.map((row) => JSON.stringify(row)).sort();
+    const expected = canonical(await sql.unsafe(currentQuery, captured!.parameters));
+    const measurements: Array<{
+      variant: 'legacy' | 'current'; round: number;
+      freshClientMs: number; burstMs: number; readerMs: number[];
+    }> = [];
+    // Connection-cold, NOT database/OS-cache-cold: the fixture has already been
+    // loaded and read. Alternate order to avoid assigning warm-up to one version.
+    for (let round = 0; round < 4; round += 1) {
+      const order = round % 2 === 0 ? ['legacy', 'current'] as const : ['current', 'legacy'] as const;
+      for (const variant of order) {
+        const client = postgres(db.url, { max: 8, prepare: false });
+        const query = variant === 'legacy' ? legacyQuery : currentQuery;
+        try {
+          const firstStarted = performance.now();
+          const first = await client.unsafe(query, captured!.parameters);
+          const freshClientMs = performance.now() - firstStarted;
+          expect(canonical(first)).toEqual(expected);
+          const burstStarted = performance.now();
+          const readers = await Promise.all(Array.from({ length: 8 }, async () => {
+            const started = performance.now();
+            const rows = await client.unsafe(query, captured!.parameters);
+            return { rows, ms: performance.now() - started };
+          }));
+          const burstMs = performance.now() - burstStarted;
+          for (const reader of readers) expect(canonical(reader.rows)).toEqual(expected);
+          measurements.push({ variant, round, freshClientMs, burstMs, readerMs: readers.map((r) => r.ms) });
+        } finally {
+          await client.end();
+        }
+      }
+    }
+    console.info('OBSERVATION_SUMMARY_CONCURRENCY', JSON.stringify({
+      rows: ROWS, concurrency: 8, roundsPerVariant: 4,
+      cacheState: 'fresh connection pool; warmed database/OS caches; no application cache',
+      measurements,
+    }));
+  }, 120_000);
+
   it.each([
     { q: `body ${DEEP}` },
     { q: 'context:plan-deep/P-005' },
