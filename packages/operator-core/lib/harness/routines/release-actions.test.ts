@@ -50,13 +50,19 @@ const readStoredQualification = vi.hoisted(() =>
   vi.fn(
     async (
       ..._a: unknown[]
-    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string } }> => ({ status: 'none' }),
+    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string; currentPhysicalRunner?: unknown; outcome?: unknown } }> => ({ status: 'none' }),
   ),
 );
+const beginStoredQualification = vi.hoisted(() => vi.fn());
+const recordStoredQualificationScheduledFire = vi.hoisted(() => vi.fn());
+const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
+  beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
+  recordStoredQualificationScheduledFire: (...a: unknown[]) => recordStoredQualificationScheduledFire(...a),
+  probeRunnerLiveness: (...a: unknown[]) => probeRunnerLiveness(...a),
 }));
 
 const readLiveReleaseCertification = vi.hoisted(() => vi.fn());
@@ -1268,6 +1274,16 @@ beforeEach(() => {
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
   readStoredQualification.mockClear();
   readStoredQualification.mockResolvedValue({ status: 'none' });
+  beginStoredQualification.mockReset();
+  beginStoredQualification.mockResolvedValue({
+    status: 'updated', transaction: { attemptId: 'scheduled-attempt', phase: 'ready', currentPhysicalRunner: null, outcome: { kind: 'pending' } },
+  });
+  recordStoredQualificationScheduledFire.mockReset();
+  recordStoredQualificationScheduledFire.mockResolvedValue({
+    status: 'updated', transaction: { attemptId: 'scheduled-attempt', phase: 'ready', currentPhysicalRunner: null, outcome: { kind: 'pending' } },
+  });
+  probeRunnerLiveness.mockReset();
+  probeRunnerLiveness.mockReturnValue('unknown');
   // EI-21363817573800034: admission defaults to CLEAR for every test, so the guard is invisible
   // to the ~136 cases that predate it. Reset globally (not just in the admission describe): a
   // held/unknown value leaking forward silently stops the suite from spawning, which surfaces as
@@ -2477,6 +2493,10 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       status: 'present',
       transaction: { phase: 'running', attemptId: 'attempt-transported' },
     });
+    recordStoredQualificationScheduledFire.mockResolvedValueOnce({
+      status: 'updated',
+      transaction: { phase: 'running', attemptId: 'attempt-transported', currentPhysicalRunner: null, outcome: { kind: 'pending' } },
+    });
     spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
 
     await getSystemAction('green-checkpoint')!(ctx);
@@ -2493,6 +2513,28 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(args.at(-1)).toContain('attempt-transported');
     expect(args.at(-1)).toContain('ws-42');
     expect(args.at(-1)).toContain('my-harness');
+  });
+
+  it('joins one live qualification runner without spawning another gate suite', async () => {
+    const transaction = {
+      phase: 'running', attemptId: 'attempt-live', candidate: 'candidate-live', repairHead: 'repair-live',
+      runId: 'run-live', outcome: { kind: 'pending' }, currentPhysicalRunner: { id: 'runner-live', unit: 'unit-live' },
+    };
+    readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction });
+    recordStoredQualificationScheduledFire.mockResolvedValueOnce({ status: 'updated', transaction });
+    probeRunnerLiveness.mockReturnValueOnce('live');
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(beginStoredQualification).not.toHaveBeenCalled();
+    expect(recordStoredQualificationScheduledFire).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }), 'attempt-live',
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'skipped-joined-attempt',
+      detail: expect.objectContaining({ attemptId: 'attempt-live', runnerId: 'runner-live' }),
+    }));
   });
 
   it('WI-4310: checkpoint child receives a bounded dedicated DB pool override', async () => {
