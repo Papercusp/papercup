@@ -13,9 +13,13 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { configureCoordLog, resetCoordLog, coordWorkspaceId } from '../agent-tools/coordination/log';
 import { readInbox } from '../agent-tools/coordination/messages';
 import { tableNameFromChangedEvent, tagsForTableChange } from '../events/cache-eca-rule';
-import { cachedRead, __setCachedReadEnabledForTests } from './cached-read';
 import { installOperatorCache, resetOperatorCacheForTests } from './instance';
 import { getWorkItemDetail, listWorkItems } from '../work-items';
+
+// mutation-probe.sh substitutes a copied module at its original relative path
+// inside an isolated repo mirror. Ordinary suite runs use the real module.
+const { cachedRead, __setCachedReadEnabledForTests }: typeof import('./cached-read') =
+  await import(process.env.PAPERCUSP_CACHE_READ_PROBE ?? './cached-read');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, workspace: '' }));
 vi.mock('@papercusp/db-org', async original => ({
