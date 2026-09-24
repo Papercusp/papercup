@@ -1791,6 +1791,57 @@ durations, not database-only or handler-only timings. The850ms accounts for a
 substantial part of the successful native attempt's1099ms request interval;
 it does not yet identify the expensive server stage.
 
+### P-007 continuation: fixture corrections and main-thread attribution
+
+On 2026-09-24 at 19:31–19:33Z, the current native fixture finally emitted
+the required request, response and styles phases. The unchanged release shell
+is `e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`;
+the private packaged SPA was refreshed from staging and its index hashes to
+`0827ecc7a9deb38bae87fd90a4c6f4a9c185e5785382315a24e6d658831ed3c5`.
+The plan remains `goal-agent-behavior-feedback-2026-09-06`, version75,
+content hash `b93fd310da29722b856fb4f7281e866af7fc0fbf94722ee0e74bca4c563cfbb0`.
+Staging API `b8d4fc9b8b` was PID2562881.
+
+Several intervening attempts were invalid setup evidence, not latency results.
+The native client reads the private **default** `endpoint-ipc.json`; refreshing
+only `endpoint-ipc.3170.json` left it pointed at a dead process. A maintained
+WDIO preflight now checks the default record's live PID, matching port and Unix
+socket. Five runner unit tests pass, including a real socket fixture with stale,
+wrong-port and dead-PID counterexamples; runner typecheck passes. The initial
+`.pc-opchat` diagnostic was also wrong: the actual selector is `.op-chat-sidebar`.
+Finally, a copied packaged SPA has no HTTP bootstrap workspace injection. The
+runner now accepts an explicit workspace before document mount and searches
+for its pinned row through the existing `plq` control. The apparent seven-row
+plans-list defect was retracted: explicit workspace requests return the pinned
+plan. `EI-24172206815197035` is dropped; it is not cache-corruption evidence.
+
+`/tmp/p007-native-styles-current-20260924.log` measured2720ms but lacked the
+new phases because the packaged SPA was still the older snapshot. It does not
+measure the CSS diagnostic. Expected phases can now be required before the
+runner records or publishes a timing.
+
+The valid scoped run measured **3220ms**, receipt
+`perfrun-1790278279684-g52hre`, in
+`/tmp/p007-native-styles-scoped-20260924.log`. Content-ready2461ms preceded
+styles-ready3044ms; JS-ready followed at3045ms. A second, optional microtask
+diagnostic distinguishes CSS transfer from synchronous main-thread delay:
+content-ready1170ms, queued microtask1757ms, styles1758ms, renderer1759ms,
+preview1936ms, total **1944ms**. Receipt `perfrun-1790278412546-bgcamk`, log
+`/tmp/p007-native-styles-microtask-20260924.log`. The queued microtask itself
+waited587ms, so calling this delay a CSS download would be wrong. It is main-thread
+work after the layout effect starts; the expensive commit/layout operation is
+still unidentified. Request-start561ms to response1150ms remains a separate589ms.
+No 1500ms acceptance or shipment claim is supported.
+
+The staging sync incident is separately fixed under `EI-24170757950252845`:
+launcher stderr no longer contaminates its JSON receipt, and scheduled but
+unobserved restarts enter the existing bounded wait, requiring a new PID and
+exact source before success. The project Vitest suite passes65 tests, zero
+skipped, including actual shell-fragment tests for mixed streams and pending
+success/old-PID/wrong-source/refusal cases. Log
+`/tmp/p007-staging-pending-final-tests-20260924.log`. Completion was recorded
+as proposed pending commit identity settlement, not shipment.
+
 ### P-006 exact-clause audit follow-up
 
 The old audit `EI-24158603642923031` reported a risk-floor replay disagreement
