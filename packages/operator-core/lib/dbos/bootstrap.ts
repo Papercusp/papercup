@@ -303,6 +303,7 @@ async function startDbosOnce(): Promise<void> {
             workspaceId: event.workspaceId,
             deleteOp: event.resource.deleteOp,
             resourceId: event.resource.providerId,
+            incarnationId: event.resource.incarnationId,
           },
         );
       },

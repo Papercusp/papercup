@@ -314,6 +314,11 @@ export interface WorkspaceHostResourceRef {
   target: WorkspaceHostProviderTarget;
   kind: WorkspaceHostResourceKind;
   providerId: string;
+  /**
+   * Provider-issued identity for this allocation, distinct from its reusable address. For
+   * example, GCE assigns a fresh numeric instance id whenever a VM name is recreated.
+   */
+  incarnationId?: string;
   parentProviderId?: string;
   region?: string;
   zone?: string;
@@ -450,6 +455,8 @@ export interface WorkspaceHostReconcileRequest extends WorkspaceHostApplyRequest
 export interface WorkspaceHostDestroyConfirmation {
   hostId: string;
   providerResourceId: string;
+  /** The exact provider incarnation confirmed absent, when the provider exposes one. */
+  incarnationId?: string;
   confirmedAbsentAt: string;
   source: "provider-read";
   providerRequestId?: string;

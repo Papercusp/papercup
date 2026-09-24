@@ -95,6 +95,7 @@ export interface CloudResourceObligationRow {
   provider: string;
   resourceKind: string;
   resourceId: string;
+  incarnationId?: string;
   projectId: string;
   /**
    * Location (migration 1168) — what makes a row ADDRESSABLE, not merely named. GCP deletes
@@ -125,6 +126,8 @@ export interface CloudResourceObligationRecordInput {
   provider: 'gcp';
   resourceKind: string;
   resourceId: string;
+  /** Immutable provider allocation identity; required for GCP VMs, whose names are reusable. */
+  incarnationId?: string;
   projectId?: string;
   /** Zonal kinds (vm, disk) MUST supply this or the row is born unreclaimable. */
   zone?: string;
@@ -153,6 +156,7 @@ function toRow(raw: Record<string, unknown>): CloudResourceObligationRow {
     provider: String(raw.provider),
     resourceKind: String(raw.resource_kind),
     resourceId: String(raw.resource_id),
+    incarnationId: String(raw.incarnation_id ?? ''),
     projectId: String(raw.project_id ?? ''),
     zone: String(raw.zone ?? ''),
     region: String(raw.region ?? ''),
@@ -185,19 +189,54 @@ export async function recordCloudResourceObligation(
   requireNonEmpty(input.workspaceId, 'workspaceId');
   requireNonEmpty(input.resourceKind, 'resourceKind');
   requireNonEmpty(input.resourceId, 'resourceId');
+  const incarnationId = input.incarnationId?.trim() ?? '';
+  if (input.resourceKind === 'vm') requireNonEmpty(incarnationId, 'incarnationId');
   const graceMs = input.graceMs ?? CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new Error('graceMs must be a non-negative safe integer');
   const rows = await sql<{ id: number; inserted: boolean }[]>`
     INSERT INTO harness_shared.cloud_resource_obligations
-      (workspace_id, provider, resource_kind, resource_id, project_id, zone, region,
+      (workspace_id, provider, resource_kind, resource_id, incarnation_id, project_id, zone, region,
        parent_resource_id, host_id, purpose, created_by_owner_id, source_work_item_id, grace_ms)
     VALUES
-      (${input.workspaceId}, ${input.provider}, ${input.resourceKind}, ${input.resourceId},
+      (${input.workspaceId}, ${input.provider}, ${input.resourceKind}, ${input.resourceId}, ${incarnationId},
        ${input.projectId ?? ''}, ${input.zone ?? ''}, ${input.region ?? ''},
        ${input.parentResourceId ?? ''}, ${input.hostId ?? ''},
        ${input.purpose ?? ''}, ${input.createdByOwnerId ?? ''},
        ${input.sourceWorkItemId ?? ''}, ${graceMs})
-    ON CONFLICT (workspace_id, provider, resource_kind, resource_id) DO NOTHING
+    ON CONFLICT (workspace_id, provider, resource_kind, resource_id) DO UPDATE
+       SET incarnation_id = EXCLUDED.incarnation_id,
+           project_id = EXCLUDED.project_id,
+           zone = EXCLUDED.zone,
+           region = EXCLUDED.region,
+           parent_resource_id = EXCLUDED.parent_resource_id,
+           host_id = EXCLUDED.host_id,
+           purpose = EXCLUDED.purpose,
+           created_by_owner_id = EXCLUDED.created_by_owner_id,
+           source_work_item_id = EXCLUDED.source_work_item_id,
+           created_at = CASE
+             WHEN cloud_resource_obligations.incarnation_id = ''
+              AND cloud_resource_obligations.closed_at IS NULL
+             THEN cloud_resource_obligations.created_at
+             ELSE now()
+           END,
+           grace_ms = EXCLUDED.grace_ms,
+           teardown_owed = true,
+           closed_at = NULL,
+           closed_reason = '',
+           last_escalated_at = CASE
+             WHEN cloud_resource_obligations.incarnation_id = ''
+              AND cloud_resource_obligations.closed_at IS NULL
+             THEN cloud_resource_obligations.last_escalated_at
+             ELSE NULL
+           END,
+           escalation_work_item_id = CASE
+             WHEN cloud_resource_obligations.incarnation_id = ''
+              AND cloud_resource_obligations.closed_at IS NULL
+             THEN cloud_resource_obligations.escalation_work_item_id
+             ELSE ''
+           END,
+           updated_at = now()
+     WHERE cloud_resource_obligations.incarnation_id IS DISTINCT FROM EXCLUDED.incarnation_id
     RETURNING id, true AS inserted
   `;
   if (rows.length > 0) return { id: Number(rows[0]!.id), created: true };
@@ -207,6 +246,7 @@ export async function recordCloudResourceObligation(
        AND provider = ${input.provider}
        AND resource_kind = ${input.resourceKind}
        AND resource_id = ${input.resourceId}
+       AND incarnation_id = ${incarnationId}
   `;
   if (existing.length === 0) throw new Error('cloud resource obligation upsert raced past both the insert and the read');
   return { id: Number(existing[0]!.id), created: false };
@@ -221,6 +261,7 @@ export interface CloudResourceCreatedEventLike {
   readonly resource: {
     readonly kind: string;
     readonly providerId: string;
+    readonly incarnationId?: string;
     readonly parentProviderId?: string;
     /**
      * WI-10001673: `WorkspaceHostResourceRef` has carried these all along
@@ -286,6 +327,7 @@ export function createCloudResourceObligationObserver(
       provider: 'gcp',
       resourceKind: event.resource.kind,
       resourceId: event.resource.providerId,
+      ...(event.resource.incarnationId ? { incarnationId: event.resource.incarnationId } : {}),
       ...(event.resource.parentProviderId ? { projectId: event.resource.parentProviderId } : {}),
       ...(event.resource.zone ? { zone: event.resource.zone } : {}),
       ...(event.resource.region ? { region: event.resource.region } : {}),
@@ -313,10 +355,12 @@ export async function closeCloudResourceObligation(
     provider: string;
     resourceKind: string;
     resourceId: string;
+    incarnationId?: string;
     reason: string;
   },
-): Promise<{ closed: boolean }> {
+): Promise<{ closed: boolean; staleIncarnation?: boolean }> {
   requireNonEmpty(input.reason, 'reason');
+  const incarnationId = input.incarnationId?.trim() ?? '';
   const rows = await sql<{ id: number }[]>`
     UPDATE harness_shared.cloud_resource_obligations
        SET closed_at = now(), closed_reason = ${input.reason}, teardown_owed = false, updated_at = now()
@@ -324,10 +368,25 @@ export async function closeCloudResourceObligation(
        AND provider = ${input.provider}
        AND resource_kind = ${input.resourceKind}
        AND resource_id = ${input.resourceId}
+       AND (incarnation_id = ${incarnationId}
+         OR (${incarnationId} <> '' AND incarnation_id = ''))
        AND closed_at IS NULL
      RETURNING id
   `;
-  return { closed: rows.length > 0 };
+  if (rows.length > 0) return { closed: true };
+  if (incarnationId) {
+    const current = await sql<{ incarnation_id: string }[]>`
+      SELECT incarnation_id FROM harness_shared.cloud_resource_obligations
+       WHERE workspace_id = ${input.workspaceId}
+         AND provider = ${input.provider}
+         AND resource_kind = ${input.resourceKind}
+         AND resource_id = ${input.resourceId}
+    `;
+    if (current.length > 0 && current[0]!.incarnation_id && current[0]!.incarnation_id !== incarnationId) {
+      return { closed: false, staleIncarnation: true };
+    }
+  }
+  return { closed: false };
 }
 
 /**
@@ -347,6 +406,7 @@ export interface CloudResourceDestroyedEventLike {
      */
     readonly deleteOp: string;
     readonly providerId: string;
+    readonly incarnationId?: string;
   };
   /** From the live apply context — one provider serves many workspaces. */
   readonly workspaceId: string;
@@ -382,7 +442,7 @@ export interface CloudResourceObligationCloseObserverBinding {
  */
 export function createCloudResourceObligationCloseObserver(
   binding: CloudResourceObligationCloseObserverBinding,
-): (event: CloudResourceDestroyedEventLike) => Promise<{ closed: boolean }> {
+): (event: CloudResourceDestroyedEventLike) => Promise<{ closed: boolean; staleIncarnation?: boolean }> {
   return async (event) => {
     const resourceKind = cloudResourceKindForDeleteOp(event.resource.deleteOp);
     if (!resourceKind) {
@@ -397,9 +457,10 @@ export function createCloudResourceObligationCloseObserver(
       provider: binding.provider ?? 'gcp',
       resourceKind,
       resourceId: event.resource.providerId,
+      ...(event.resource.incarnationId ? { incarnationId: event.resource.incarnationId } : {}),
       reason: event.reason ?? 'provider confirmed destroy',
     });
-    if (!result.closed) binding.onUnmatched?.(event);
+    if (!result.closed && !result.staleIncarnation) binding.onUnmatched?.(event);
     return result;
   };
 }
