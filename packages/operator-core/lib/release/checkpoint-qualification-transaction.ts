@@ -8,6 +8,7 @@
  * physical runner, blockers, and evidence machine-readable across processes.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
@@ -25,6 +26,21 @@ export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
 /** Transported into a detached checkpoint so its verdict settles the exact logical attempt. */
 export const CHECKPOINT_QUALIFICATION_ATTEMPT_ENV = 'PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID';
+/** The scheduled wrapper reserves this attempt before spawn; the CLI activates that same runner. */
+export const CHECKPOINT_SCHEDULED_RUN_ENV = 'PAPERCUSP_CHECKPOINT_SCHEDULED_RUN';
+
+export function checkpointPidIdentity(pid: number): string | null {
+  try {
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (!bootId || commandEnd < 0) return null;
+    const startTicks = stat.slice(commandEnd + 2).trim().split(/\s+/)[19];
+    return startTicks && /^\d+$/.test(startTicks) ? `${bootId}:${startTicks}` : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * What a caller has PROVED about a runner's process. 'unknown' is not a soft 'dead': every
@@ -43,8 +59,19 @@ export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => Runn
  * that ceiling cannot still have a living owner, whatever it claims.
  */
 export const QUALIFICATION_OWNER_ABANDONED_MS = 3 * 60 * 60 * 1_000;
+/** Three missed one-minute runner heartbeats warrant investigation, never a second runner. */
+export const QUALIFICATION_PROGRESS_STALE_MS = 3 * 60_000;
 
 const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
+  if (runner.pid != null) {
+    try {
+      process.kill(runner.pid, 0);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'unknown';
+    }
+    const observed = checkpointPidIdentity(runner.pid);
+    return !observed || !runner.pidIdentity ? 'unknown' : observed === runner.pidIdentity ? 'live' : 'dead';
+  }
   const unit = runner.unit?.trim();
   // Rows written before `unit` existed cannot be falsified — say so rather than guessing.
   if (!unit) return 'unknown';
@@ -141,6 +168,10 @@ export interface QualificationPhysicalRunner {
    * this field existed have none, and those must keep their pre-existing (lease-only) behaviour.
    */
   unit?: string | null;
+  pid?: number | null;
+  pidIdentity?: string | null;
+  heartbeatAtMs?: number;
+  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering';
 }
 
 export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
@@ -154,6 +185,7 @@ export type QualificationSafeNextAction =
   | { code: 'await-blocker-events'; reason: string; waitEvents: string[] }
   | { code: 'await-current-run'; reason: string; waitEvents: string[] }
   | { code: 'recover-expired-runner'; reason: string; waitEvents: string[] }
+  | { code: 'inspect-runner-liveness'; reason: string; waitEvents: string[] }
   | { code: 'repair-code'; reason: string; waitEvents: string[] }
   | { code: 'inspect-terminal-evidence'; reason: string; waitEvents: string[] }
   | { code: 'read-release-control'; reason: string; waitEvents: string[] };
@@ -171,6 +203,12 @@ export interface CheckpointQualificationState {
     expiresAtMs: number;
     expired: boolean;
   } | null;
+  runnerHealth: {
+    state: 'none' | 'progressing' | 'stalled' | 'dead';
+    liveness: RunnerLiveness;
+    phase: QualificationPhysicalRunner['phase'] | null;
+    progressAgeMs: number | null;
+  };
   blockers: QualificationBlocker[];
   phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
   clocks: {
@@ -342,6 +380,8 @@ function isPhysicalRun(value: unknown): value is QualificationPhysicalRun {
     Number.isFinite(run.reservedAtMs) &&
     Number.isFinite(run.leaseExpiresAtMs) &&
     Number.isFinite(run.endedAtMs) &&
+    (run.pid == null || (Number.isInteger(run.pid) && run.pid > 0)) &&
+    (run.pidIdentity == null || typeof run.pidIdentity === 'string') &&
     Array.isArray(run.evidenceRefs) &&
     run.evidenceRefs.every((ref) => typeof ref === 'string') &&
     isQualificationOutcome(run.outcome)
@@ -392,7 +432,11 @@ export function qualificationPhaseDurations(
   };
 }
 
-export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.now()): CheckpointQualificationState {
+export function projectCheckpointQualificationState(
+  raw: unknown,
+  nowMs = Date.now(),
+  runnerLiveness: RunnerLiveness = 'unknown',
+): CheckpointQualificationState {
   const owner = { kind: 'routine' as const, id: 'system:green-checkpoint' as const };
   const emptyClocks = {
     lastScheduledAtMs: null,
@@ -410,6 +454,7 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       outcome: null,
       owner,
       lease: null,
+      runnerHealth: { state: 'none', liveness: 'unknown', phase: null, progressAgeMs: null },
       blockers: [],
       phaseDurationsMs: {},
       clocks: emptyClocks,
@@ -435,6 +480,7 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       outcome: null,
       owner,
       lease: null,
+      runnerHealth: { state: 'none', liveness: 'unknown', phase: null, progressAgeMs: null },
       blockers: [],
       phaseDurationsMs: {},
       clocks: emptyClocks,
@@ -460,6 +506,16 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
         expired: nowMs >= (runner.leaseExpiresAtMs ?? runner.reservedAtMs),
       }
     : null;
+  const progressAgeMs = runner
+    ? Math.max(0, nowMs - (runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs))
+    : null;
+  const runnerHealth: CheckpointQualificationState['runnerHealth'] = {
+    state: !runner ? 'none' : runnerLiveness === 'dead' ? 'dead'
+      : progressAgeMs != null && progressAgeMs > QUALIFICATION_PROGRESS_STALE_MS ? 'stalled' : 'progressing',
+    liveness: runner ? runnerLiveness : 'unknown',
+    phase: runner?.phase ?? null,
+    progressAgeMs,
+  };
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
   if (transaction.outcome.kind === 'green') {
@@ -480,10 +536,16 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       reason: 'the terminal code outcome is inconclusive; inspect evidence before a successor',
       waitEvents: [],
     };
-  } else if (runner && lease?.expired) {
+  } else if (runner && runnerLiveness === 'dead') {
     safeNextAction = {
       code: 'recover-expired-runner',
-      reason: 'the physical-run lease expired without a terminal result',
+      reason: 'the exact physical runner was proved dead without a terminal result',
+      waitEvents: [],
+    };
+  } else if (runner && (lease?.expired || runnerHealth.state === 'stalled')) {
+    safeNextAction = {
+      code: 'inspect-runner-liveness',
+      reason: 'the runner missed progress or its deadline; preserve single flight until exact process liveness is proved',
       waitEvents: [],
     };
   } else if (runner) {
@@ -514,6 +576,7 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
     outcome: transaction.outcome,
     owner,
     lease,
+    runnerHealth,
     blockers: transaction.blockers,
     phaseDurationsMs: qualificationPhaseDurations(transaction, nowMs),
     clocks: {
@@ -640,6 +703,9 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
       !Number.isFinite(row.currentPhysicalRunner.reservedAtMs) ||
       (row.currentPhysicalRunner.leaseExpiresAtMs != null &&
         !Number.isFinite(row.currentPhysicalRunner.leaseExpiresAtMs)) ||
+      (row.currentPhysicalRunner.pid != null &&
+        (!Number.isInteger(row.currentPhysicalRunner.pid) || row.currentPhysicalRunner.pid <= 0)) ||
+      (row.currentPhysicalRunner.pidIdentity != null && typeof row.currentPhysicalRunner.pidIdentity !== 'string') ||
       !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
       row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string'))
   )
@@ -876,6 +942,10 @@ export function reserveQualificationRunner(
     evidenceRefs?: readonly string[];
     leaseDurationMs: number;
     unit?: string | null;
+    pid?: number | null;
+    pidIdentity?: string | null;
+    /** false reserves the scheduled launch; true attaches the real CLI process. */
+    started?: boolean;
     /**
      * What the caller PROVED about the incumbent runner's process. Default 'unknown' keeps the
      * historical lease-only behaviour, so this can never loosen the lock on its own.
@@ -887,33 +957,56 @@ export function reserveQualificationRunner(
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
-  /**
-   * A lease is evidence of INTENT, never of life. Until this carried a liveness term, a runner that
-   * died without settling (crash, OOM, `systemd` stop, an aborted pre-suite phase) kept the whole
-   * gate wedged for the remainder of its 3h lease, and every scheduled fire in that window returned
-   * `conflict` and was skipped — which surfaces as `writer-starved`, i.e. a gate that looks red but
-   * has in fact rendered no verdict at all. Only a PROVEN-dead incumbent is reclaimed; 'unknown'
-   * (no unit recorded, or an unreadable probe) still waits the lease out, so the failure mode of a
-   * broken probe is the old behaviour rather than two runners on one candidate.
-   */
-  const liveRunner =
-    current.currentPhysicalRunner &&
-    nowMs < (current.currentPhysicalRunner.leaseExpiresAtMs ?? current.currentPhysicalRunner.reservedAtMs) &&
-    input.incumbentLiveness !== 'dead';
-  if (liveRunner && current.currentPhysicalRunner!.id !== input.runnerId) {
+  const incumbent = current.currentPhysicalRunner;
+  if (incumbent?.id === input.runnerId) {
+    if (
+      (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
+      (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
+      (current.runId && input.runId && current.runId !== input.runId.trim()) ||
+      (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
+    ) return { status: 'conflict', transaction: current };
+    if (input.started !== true && input.pid == null && !input.unit) {
+      return { status: 'idempotent', transaction: current };
+    }
+    const evidenceRefs = uniqueStrings([...incumbent.evidenceRefs, ...(input.evidenceRefs ?? [])]);
+    return {
+      status: 'updated',
+      transaction: {
+        ...current,
+        updatedAtMs: nowMs,
+        candidate: input.candidate?.trim() || current.candidate,
+        repairHead: input.repairHead?.trim() || current.repairHead,
+        runId: input.runId?.trim() || current.runId,
+        lastStartedAtMs: input.started === true ? nowMs : current.lastStartedAtMs,
+        lastProgressAtMs: input.started === true ? nowMs : current.lastProgressAtMs,
+        currentPhysicalRunner: {
+          ...incumbent,
+          candidate: input.candidate?.trim() || incumbent.candidate,
+          leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
+          evidenceRefs,
+          unit: input.unit?.trim() || incumbent.unit,
+          pid: input.pid ?? incumbent.pid,
+          pidIdentity: input.pidIdentity ?? incumbent.pidIdentity,
+          heartbeatAtMs: nowMs,
+          phase: input.started === true ? 'materializing' : incumbent.phase,
+        },
+        evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
+      },
+    };
+  }
+  // A lease timeout alone cannot prove death. Unknown or live ownership keeps single flight.
+  if (incumbent && input.incumbentLiveness !== 'dead') {
     return { status: 'conflict', transaction: current };
   }
-  if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId)
-    return { status: 'idempotent', transaction: current };
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
   // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
   // overran, a reclaimed one is a runner that DIED. Collapsing them would hide exactly the signal
   // that makes a recurring vanish diagnosable.
   const displacedOutcome: QualificationOutcome = {
     kind: 'pre-suite-no-verdict',
-    reason: input.incumbentLiveness === 'dead' ? 'runner-vanished' : 'deadline-exceeded',
+    reason: 'runner-vanished',
   };
-  const expiredRuns = current.currentPhysicalRunner
+  const expiredRuns = incumbent
     ? consumedRunner(current, displacedOutcome, nowMs)
     : (current.consumedPhysicalRuns ?? []);
   return {
@@ -925,8 +1018,7 @@ export function reserveQualificationRunner(
       repairHead: input.repairHead?.trim() || current.repairHead,
       runId: input.runId?.trim() || current.runId,
       phase: 'running',
-      lastStartedAtMs: nowMs,
-      lastProgressAtMs: nowMs,
+      ...(input.started === false ? {} : { lastStartedAtMs: nowMs, lastProgressAtMs: nowMs }),
       phaseEnteredAtMs:
         current.phase === 'running' && !current.currentPhysicalRunner
           ? (current.phaseEnteredAtMs ?? current.updatedAtMs)
@@ -941,9 +1033,48 @@ export function reserveQualificationRunner(
         leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
         evidenceRefs,
         unit: input.unit?.trim() || null,
+        pid: input.pid ?? null,
+        pidIdentity: input.pidIdentity ?? null,
+        heartbeatAtMs: nowMs,
+        phase: input.started === false ? 'launching' : 'materializing',
       },
       consumedPhysicalRuns: expiredRuns,
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
+    },
+  };
+}
+
+/** Progress belongs to the exact active runner. A scheduler tick cannot call this transition. */
+export function recordQualificationRunnerProgress(
+  current: CheckpointQualificationTransaction,
+  input: {
+    attemptId: string;
+    runnerId: string;
+    runId: string;
+    phase: NonNullable<QualificationPhysicalRunner['phase']>;
+    pidIdentity?: string | null;
+    nowMs?: number;
+  },
+): QualificationTransition {
+  const runner = current.currentPhysicalRunner;
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (current.attemptId !== input.attemptId || current.phase !== 'running' ||
+      !runner || runner.id !== input.runnerId || !current.runId || current.runId !== input.runId ||
+      !runner.pidIdentity || !input.pidIdentity || runner.pidIdentity !== input.pidIdentity) {
+    return { status: 'conflict', transaction: current };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  if (nowMs < (runner.heartbeatAtMs ?? 0) ||
+      (nowMs === runner.heartbeatAtMs && input.phase === runner.phase)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      lastProgressAtMs: nowMs,
+      currentPhysicalRunner: { ...runner, heartbeatAtMs: nowMs, phase: input.phase },
     },
   };
 }
@@ -1453,6 +1584,16 @@ export function reserveStoredQualificationRunner(
           ...input,
           incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
         })
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
+}
+
+export function recordStoredQualificationRunnerProgress(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recordQualificationRunnerProgress>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current ? recordQualificationRunnerProgress(current, input)
       : { status: 'unreadable', error: 'missing attempt' },
   );
 }

@@ -1371,6 +1371,104 @@ describe('dispatchPendingGradingAudits', () => {
     expect(secondRetryKey).toMatch(/^grading-audit:EI-dead-receipt:recovery:[a-f0-9]{16}$/);
     expect(secondRetryKey).not.toBe(firstRetryKey);
   });
+
+  // WI-10002903: a headless judge whose kickoff was never submitted idles at an
+  // empty composer with no terminal log text. The launcher's own receipt is the
+  // only signal, so the dispatcher must treat it as a failed launch rather than
+  // report 'launched' and hold the reservation for the full TTL.
+  it('retires a judge whose launch receipt says the kickoff was never submitted, and relaunches once', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-silent-kickoff')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: {
+            agentStarted: null,
+            tasks: [
+              {
+                taskId: 'task-silent',
+                logPath: '/tmp/silent.log',
+                kickoffProof: {
+                  persisted: false,
+                  reason: 'kickoff-not-submitted:headless-claude-composer-not-ready',
+                },
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: {
+            agentStarted: true,
+            tasks: [{ taskId: 'task-retry', logPath: '/tmp/retry.log', kickoffProof: { persisted: true } }],
+          },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({
+      ok: false as const,
+      taskId,
+      action: 'kill',
+      error: 'not_live' as const,
+    }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-silent-kickoff'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => 'no terminal model error was logged',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-silent', expect.anything());
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-silent'], codes: ['launch_kickoff_not_persisted'] },
+    });
+  });
+
+  it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-late-marker')]);
+    d.launch.mockResolvedValueOnce(
+      launchResult({
+        deduped: false,
+        launch: {
+          agentStarted: true,
+          tasks: [
+            {
+              taskId: 'task-late',
+              logPath: '/tmp/late.log',
+              kickoffProof: { persisted: false, reason: 'native-turn-marker-timeout' },
+            },
+          ],
+        },
+      }),
+    );
+    const killTask = vi.fn();
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-late-marker'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => 'no terminal model error was logged',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({ state: 'launched' });
+    expect(result.receipts[0]).not.toHaveProperty('terminalRecovery');
+  });
 });
 
 // EI-22978598482930667. Measured over the WHOLE grading-audit log population on

@@ -827,9 +827,11 @@ export const BG_HOST_COMMITTED_HOT_PATHS = Object.freeze([
   'packages/operator-core/lib/harness/git-sync',
   'packages/operator-core/lib/events',
   'packages/operator-core/lib/agent-tools/loop',
+  'packages/operator-core/lib/red-queen',
+  'packages/operator-core/lib/release/routine-engine-liveness.ts',
 ]);
 const BG_HOST_COMMITTED_HOT_PATH_SOURCE_PATHS = Object.freeze(
-  BG_HOST_COMMITTED_HOT_PATHS.map((path) => `:(glob)${path}/**/*.ts`),
+  BG_HOST_COMMITTED_HOT_PATHS.map((path) => path.endsWith('.ts') ? path : `:(glob)${path}/**/*.ts`),
 );
 
 /** Pathspec exclusions for the COMMITTED-change read only. A test-only commit does not change the

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   beginQualificationTransaction,
+  checkpointPidIdentity,
+  configureRunnerLivenessProber,
+  probeRunnerLiveness,
   QUALIFICATION_OWNER_ABANDONED_MS,
   reserveQualificationRunner,
   type CheckpointQualificationTransaction,
@@ -43,6 +46,17 @@ const runningWithRunner = (unit: string | null): CheckpointQualificationTransact
 
 // Well inside the 3h lease: without a liveness term every case below would be a `conflict`.
 const DURING_LEASE = 1_000 + 60_000;
+
+it('proves a scheduled CLI runner by PID boot/start identity, including recycled and unknown cases', () => {
+  configureRunnerLivenessProber(null);
+  const identity = checkpointPidIdentity(process.pid);
+  expect(identity).toMatch(/^[0-9a-f-]+:\d+$/);
+  const current = runningWithRunner(null).currentPhysicalRunner!;
+  const runner = { ...current, pid: process.pid, pidIdentity: identity };
+  expect(probeRunnerLiveness(runner)).toBe('live');
+  expect(probeRunnerLiveness({ ...runner, pidIdentity: `${identity}-recycled` })).toBe('dead');
+  expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).toBe('unknown');
+});
 
 describe('reserveQualificationRunner — a lease is not proof of life', () => {
   it('RECLAIMS a lease whose runner was proved dead, even though the lease has hours left', () => {
@@ -109,7 +123,7 @@ describe('reserveQualificationRunner — a lease is not proof of life', () => {
     }).status).toBe('conflict');
   });
 
-  it('still honours an EXPIRED lease regardless of liveness', () => {
+  it('does not treat an expired lease as proof that an unknown runner is dead', () => {
     const current = runningWithRunner('unit.service');
     expect(reserveQualificationRunner(current, {
       attemptId: 'attempt-1',
@@ -117,7 +131,7 @@ describe('reserveQualificationRunner — a lease is not proof of life', () => {
       leaseDurationMs: LEASE_MS,
       incumbentLiveness: 'unknown',
       nowMs: 1_000 + LEASE_MS + 1,
-    }).status).toBe('updated');
+    }).status).toBe('conflict');
   });
 });
 

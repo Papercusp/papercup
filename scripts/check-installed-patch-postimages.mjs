@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -291,6 +292,6 @@ function main() {
   process.exitCode = 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main();
 }

@@ -95,6 +95,7 @@ import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
 import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  CHECKPOINT_SCHEDULED_RUN_ENV,
   beginStoredQualification,
   classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
@@ -102,6 +103,7 @@ import {
   readStoredQualification,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationVerdict,
+  reserveStoredQualificationRunner,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
@@ -2297,6 +2299,23 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     });
     return;
   }
+  // Reserve the physical slot BEFORE the child starts. A second scheduler fire sees this
+  // placeholder and joins/fails closed; the child replaces it with its measured PID identity.
+  const reserved = await reserveStoredQualificationRunner(ctx, {
+    attemptId: qualificationAttemptId,
+    runnerId: gateFireId,
+    leaseDurationMs: CHECKPOINT_SCOPE_RUNTIME_MAX_SEC * 1_000,
+    started: false,
+    evidenceRefs: [`gate-fire:${gateFireId}`],
+  });
+  if (reserved.status !== 'updated' && reserved.status !== 'idempotent') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-qualification-conflict',
+      detail: withGateFireId({ reason: reserved.status, attemptId: qualificationAttemptId }),
+    });
+    return;
+  }
   const r = await runScript(
     root,
     'apps/operator/lib/release/green-checkpoint.ts',
@@ -2309,6 +2328,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     {
       ...routing.extraEnv,
       [GATE_FIRE_ID_ENV]: gateFireId,
+      [CHECKPOINT_SCHEDULED_RUN_ENV]: '1',
       ...(ctx.routineId && ctx.workflowId
         ? {
             [ROUTINE_FIRE_ROUTINE_ID_ENV]: ctx.routineId,

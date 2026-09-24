@@ -4396,9 +4396,9 @@ const CLAUDE_RESUME_COMPACTION_DONT_ASK_RE =
 
 function claudeStandaloneComposerPromptVisible(visible) {
   return String(visible ?? '')
-    .split('\n')
+    .split(/[\r\n]/)
     .map((line) => line.trim())
-    .some((line) => /^(?:❯|>|╰─>)\s*$/u.test(line));
+    .some((line) => /^(?:❯|>|╰─>)(?:\s*Try\s+["“][^"”]+["”])?\s*$/u.test(line));
 }
 
 function claudeResumeCompactionMenuVisible(visible) {
