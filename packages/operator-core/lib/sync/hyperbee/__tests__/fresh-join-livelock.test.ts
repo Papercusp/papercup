@@ -1,0 +1,457 @@
+import { isDeepStrictEqual } from 'node:util';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { produceLogSnapshot } from '../log-snapshot';
+import {
+  createMergeCursor,
+  mergeAdmittedLogsIncremental,
+  rewindMergeCursor,
+  seedCursorFromSnapshots,
+  SNAPSHOT_SEED_DEFER_MAX_MS,
+  SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS,
+  type AdmittedLog,
+  type MergeCursor,
+} from '../read-merge';
+import { DeferralEvictionReFold } from '../eviction-refold';
+import { PendingEpochContent } from '../pending-epoch-content';
+import type { OwnLog, PeerLogOp } from '../peer-log';
+import type { OpEnvelope } from '../op-envelope-types';
+
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-522 (WI-10002899): the fresh-join livelock found by
+ * P-007 run #1 on the Mac VM. Two halves, each pinned here against the behaviour it
+ * replaced:
+ *
+ *  (a) A fresh log whose seed scan runs out of budget used to start folding at 0. Once
+ *      positioned, only the P-004 jump can reach a set, and the jump refuses a skipped
+ *      range older than half the tombstone horizon, so the seed was lost for good.
+ *  (b) A content-deferral eviction used to reset the cursor on the very next pass. A
+ *      joiner whose epoch key sits near the tail defers more than the buffer holds on
+ *      every pass, so it restarted forever and never reached the key.
+ */
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+const T0 = 1_700_000_000_000;
+
+function op(table: string, hbKey: string, value: unknown, ts: number): PeerLogOp {
+  return { type: 'put', table, hbKey, value, ts, schema_version: 1, author_pubkey: 'tower' };
+}
+
+interface CountingLog extends OwnLog {
+  reads: number[];
+}
+
+function memLog(keyHex: string): CountingLog {
+  const ops: PeerLogOp[] = [];
+  const log: CountingLog = {
+    reads: [],
+    get keyHex() {
+      return keyHex;
+    },
+    get length() {
+      return ops.length;
+    },
+    async append(o: PeerLogOp) {
+      ops.push(o);
+    },
+    async appendBatch(batch: PeerLogOp[]) {
+      ops.push(...batch);
+    },
+    async get(i: number) {
+      log.reads.push(i);
+      return ops[i] ?? null;
+    },
+  };
+  return log;
+}
+
+/** Every get costs a macrotask, so a small scan budget really runs out (a remote link). */
+function slowView(log: CountingLog): AdmittedLog {
+  return {
+    keyHex: log.keyHex,
+    get length() {
+      return log.length;
+    },
+    get: async (i) => {
+      await new Promise<void>((r) => setImmediate(r));
+      return log.get(i);
+    },
+  };
+}
+
+type Pg = Map<string, unknown>;
+
+async function fullReplay(log: AdmittedLog): Promise<Record<string, unknown>> {
+  const pg: Pg = new Map();
+  await mergeAdmittedLogsIncremental([log], createMergeCursor(), {
+    getTimeoutMs: 0,
+    maxOpsPerPass: 0,
+    applyImpl: (async (env: OpEnvelope) => {
+      pg.set(`${env.table}::${env.hbKey}`, env.value);
+      return true;
+    }) as never,
+  });
+  return Object.fromEntries(pg);
+}
+
+/**
+ * A tower log shaped like 5b00878b: an OLD prefix (August), a complete set produced 15
+ * days later (so the prefix is past half the tombstone horizon), then a tail.
+ */
+async function towerWithOldPrefix(keyHex: string, prefixOps: number, tailOps: number) {
+  const log = memLog(keyHex);
+  const batch: PeerLogOp[] = [];
+  for (let i = 0; i < prefixOps; i++) batch.push(op('queue', `P${i % 40}`, { i }, T0 + i));
+  await log.appendBatch!(batch);
+  const setAt = log.length;
+  await produceLogSnapshot(log, { now: T0 + 15 * DAY, schemaVersion: 1, maxChunkBytes: 700 });
+  const tail: PeerLogOp[] = [];
+  for (let i = 0; i < tailOps; i++) tail.push(op('queue', `T${i % 20}`, { i }, T0 + 15 * DAY + 1 + i));
+  await log.appendBatch!(tail);
+  return { log, setAt };
+}
+
+describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of folding it from 0', () => {
+  /** Boot's pass order: seed (budgeted), then fold (budgeted). Returns the passes run. */
+  async function joinPasses(view: AdmittedLog, cursor: MergeCursor, pg: Pg, seedDeferMaxMs?: number) {
+    const applyImpl = (async (env: OpEnvelope) => {
+      pg.set(`${env.table}::${env.hbKey}`, env.value);
+      return true;
+    }) as never;
+    let passes = 0;
+    while (passes < 400) {
+      await seedCursorFromSnapshots([view], cursor, {
+        getTimeoutMs: 0,
+        scanBudgetMs: 2,
+        ...(seedDeferMaxMs !== undefined ? { seedDeferMaxMs } : {}),
+      });
+      const r = await mergeAdmittedLogsIncremental([view], cursor, { getTimeoutMs: 0, maxOpsPerPass: 100, applyImpl });
+      passes++;
+      if (r.caughtUp && cursor.positions.get(view.keyHex) === view.length) break;
+    }
+    return passes;
+  }
+
+  it('the held log seeds at the complete set once the resumed scan finds it, and never folds a prefix op', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { log, setAt } = await towerWithOldPrefix('e1'.repeat(32), 600, 1_500);
+    const view = slowView(log);
+    const oracle = await fullReplay(log);
+    log.reads.length = 0;
+
+    const cursor = createMergeCursor();
+    const pg: Pg = new Map();
+    const passes = await joinPasses(view, cursor, pg);
+
+    expect(passes).toBeGreaterThan(1); // the budget really cut the scan short at least once
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0); // released once conclusive
+    expect(Math.min(...log.reads)).toBeGreaterThanOrEqual(setAt); // no op below the set was read
+    expect(Object.fromEntries(pg)).toEqual(oracle);
+  });
+
+  it('CONTROL (the pre-P-522 behaviour, seedDeferMaxMs 0): the same join folds from 0 and the seed is lost for good', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { log, setAt } = await towerWithOldPrefix('e2'.repeat(32), 600, 1_500);
+    const view = slowView(log);
+    const oracle = await fullReplay(log);
+    log.reads.length = 0;
+
+    const cursor = createMergeCursor();
+    const pg: Pg = new Map();
+    await joinPasses(view, cursor, pg, 0);
+
+    // It replayed the whole prefix op by op: the jump was refused (prefix older than half
+    // the tombstone horizon), so the set it scanned for bought nothing.
+    const foldedPrefix = new Set(log.reads.filter((i) => i < setAt));
+    expect(foldedPrefix.size).toBe(setAt);
+    expect(Object.fromEntries(pg)).toEqual(oracle); // correct, just the slow way
+  });
+
+  it('a held log is skipped by the fold (it gets no position and the pass is not caught up)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { log } = await towerWithOldPrefix('e3'.repeat(32), 300, 1_500);
+    const view = slowView(log);
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([view], cursor, { getTimeoutMs: 0, scanBudgetMs: 1 });
+    expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true);
+    log.reads.length = 0;
+    const r = await mergeAdmittedLogsIncremental([view], cursor, {
+      getTimeoutMs: 0,
+      applyImpl: (async () => true) as never,
+    });
+    expect(cursor.positions.has(log.keyHex)).toBe(false);
+    expect(log.reads).toEqual([]);
+    expect(r.caughtUp).toBe(false);
+  });
+
+  it('a CONCLUSIVE "no complete set" folds from 0 at once (nothing is held)', async () => {
+    const log = memLog('e4'.repeat(32));
+    await log.appendBatch!(Array.from({ length: 200 }, (_, i) => op('queue', `N${i % 10}`, { i }, T0 + i)));
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([log], cursor, { getTimeoutMs: 0 });
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
+    expect(cursor.positions.has(log.keyHex)).toBe(false); // unpositioned but NOT held
+    await mergeAdmittedLogsIncremental([log], cursor, { getTimeoutMs: 0, applyImpl: (async () => true) as never });
+    expect(cursor.positions.get(log.keyHex)).toBe(200);
+  });
+
+  it('a tail op that READS as null (the version gate dropped it) is conclusive: an old peer folds from 0 at once, not held', async () => {
+    const log = memLog('e6'.repeat(32));
+    await log.appendBatch!(Array.from({ length: 50 }, (_, i) => op('queue', `V${i % 10}`, { i }, T0 + i)));
+    await produceLogSnapshot(log, { now: T0 + 100, schemaVersion: 1 });
+    // An old build's version gate drops the newer-schema snapshot op: it reads as null.
+    const gated: AdmittedLog = {
+      keyHex: log.keyHex,
+      get length() {
+        return log.length;
+      },
+      get: async (i) => (i >= 50 ? null : log.get(i)),
+    };
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([gated], cursor, { getTimeoutMs: 0 });
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
+    // Still conclusive when the unreadable memo answers the next pass.
+    await seedCursorFromSnapshots([gated], cursor, { getTimeoutMs: 0 });
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
+    await mergeAdmittedLogsIncremental([gated], cursor, { getTimeoutMs: 0, applyImpl: (async () => true) as never });
+    expect(cursor.positions.get(log.keyHex)).toBe(log.length);
+  });
+
+  it('a scan stuck on an UNREADABLE block gives up after the shorter bound and folds from 0', async () => {
+    expect(SNAPSHOT_SEED_DEFER_MAX_MS).toBe(30 * 60_000);
+    expect(SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS).toBe(3 * 60_000);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = memLog('e5'.repeat(32));
+    await log.appendBatch!(Array.from({ length: 100 }, (_, i) => op('queue', `G${i % 10}`, { i }, T0 + i)));
+    // The tail block never answers: every scan is `unreadable`, never conclusive.
+    const view: AdmittedLog = {
+      keyHex: log.keyHex,
+      get length() {
+        return log.length;
+      },
+      get: (i) => (i === log.length - 1 ? new Promise<PeerLogOp | null>(() => {}) : log.get(i)),
+    };
+    const cursor = createMergeCursor();
+    const opts = { getTimeoutMs: 5 }; // default seedDeferMaxMs (30 min)
+    await seedCursorFromSnapshots([view], cursor, opts);
+    expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true);
+
+    const start = Date.now();
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValue(start + SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS - 1_000); // still inside the bound
+    await seedCursorFromSnapshots([view], cursor, opts);
+    expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true);
+    now.mockReturnValue(start + SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS + 1);
+    await seedCursorFromSnapshots([view], cursor, opts);
+    expect(cursor.snapshotSeedPending?.has(log.keyHex) ?? false).toBe(false);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(true);
+    await mergeAdmittedLogsIncremental([view], cursor, {
+      getTimeoutMs: 5,
+      maxOpsPerPass: 10,
+      applyImpl: (async () => true) as never,
+    });
+    expect(cursor.positions.get(log.keyHex)).toBe(10); // folding from 0
+  });
+});
+
+describe('P-522 (b): a deferral eviction re-folds only once the fold has settled, and only back to the floor', () => {
+  /**
+   * A joiner whose epoch key is the LAST op of the tower log (the VM device's wrapped-key
+   * rows were written at 03:56Z, near the tail). Content ops defer until the key applies,
+   * through the real PendingEpochContent with a tiny cap, and drain after the pass, as
+   * boot.ts does. `policy` is what an eviction triggers.
+   */
+  async function runJoin(opts: {
+    policy: 'next-pass-reset' | 'settled-rewind';
+    seeded: boolean;
+    maxPasses: number;
+  }) {
+    const log = memLog(opts.seeded ? 'f1'.repeat(32) : 'f2'.repeat(32));
+    const content: PeerLogOp[] = [];
+    for (let i = 0; i < 60; i++) content.push(op('content', `C${i % 25}`, { i }, T0 + i));
+    await log.appendBatch!(content);
+    let setAt = 0;
+    if (opts.seeded) {
+      setAt = log.length;
+      await produceLogSnapshot(log, { now: T0 + 1_000, schemaVersion: 1, maxChunkBytes: 400 });
+      const more: PeerLogOp[] = [];
+      for (let i = 0; i < 40; i++) more.push(op('content', `D${i % 15}`, { i }, T0 + 2_000 + i));
+      await log.appendBatch!(more);
+    }
+    await log.append(op('keys', 'epoch0:device', { wrapped: 'k' }, T0 + 5_000));
+    const oracle = await fullReplay(log);
+
+    const pending = new PendingEpochContent(5);
+    const refold = new DeferralEvictionReFold();
+    const pg: Pg = new Map();
+    let keyPresent = false;
+    const applyImpl = async (env: OpEnvelope): Promise<boolean> => {
+      if (env.table === 'content' && !keyPresent) {
+        pending.defer(env, 'pot', 0);
+        return false; // what the epoch gate returns on a defer
+      }
+      if (env.table === 'keys') keyPresent = true;
+      pg.set(`${env.table}::${env.hbKey}`, env.value);
+      return true;
+    };
+
+    let cursor = createMergeCursor();
+    let minPositionAfterSeed = Infinity;
+    let rewinds = 0;
+    let passes = 0;
+    for (; passes < opts.maxPasses; passes++) {
+      const evicted = pending.consumeEvictionSignal();
+      if (opts.policy === 'next-pass-reset') {
+        if (evicted) cursor = createMergeCursor();
+      } else {
+        if (evicted) refold.noteEviction();
+        const action = refold.settle(cursor);
+        if (action.kind === 'reset') cursor = createMergeCursor();
+        if (action.kind === 'rewound') rewinds++;
+      }
+      await seedCursorFromSnapshots([log], cursor, { getTimeoutMs: 0 });
+      refold.markFloors(cursor, pending.size() > 0);
+      const pos = cursor.positions.get(log.keyHex);
+      if (pos !== undefined) minPositionAfterSeed = Math.min(minPositionAfterSeed, pos);
+      const before = new Map(cursor.positions);
+      await mergeAdmittedLogsIncremental([log], cursor, {
+        getTimeoutMs: 0,
+        maxOpsPerPass: 12,
+        applyImpl: applyImpl as never,
+      });
+      refold.noteFold([log], cursor, before);
+      if (keyPresent) for (const d of pending.drainEpoch('pot', 0)) await applyImpl(d.op);
+      if (keyPresent && pending.size() === 0 && cursor.positions.get(log.keyHex) === log.length && !refold.isOwed) {
+        if (isDeepStrictEqual(Object.fromEntries(pg), oracle)) break;
+      }
+    }
+    return { pg: Object.fromEntries(pg), oracle, passes, keyPresent, setAt, minPositionAfterSeed, rewinds };
+  }
+
+  it('CONTROL (the pre-P-522 behaviour): resetting on the next pass livelocks; the fold never reaches the key', async () => {
+    const r = await runJoin({ policy: 'next-pass-reset', seeded: false, maxPasses: 60 });
+    expect(r.keyPresent).toBe(false);
+    expect(r.pg).not.toEqual(r.oracle);
+  });
+
+  it('the settled rewind reaches the key, re-reads the evicted ops and converges to the full-replay state', async () => {
+    const r = await runJoin({ policy: 'settled-rewind', seeded: false, maxPasses: 60 });
+    expect(r.keyPresent).toBe(true);
+    expect(r.rewinds).toBeGreaterThanOrEqual(1);
+    expect(r.pg).toEqual(r.oracle);
+    expect(r.passes).toBeLessThan(20);
+  });
+
+  it('CONTROL (pre-P-522) with a snapshot seed: the reset re-seeds and re-applies the set forever', async () => {
+    const r = await runJoin({ policy: 'next-pass-reset', seeded: true, maxPasses: 60 });
+    expect(r.keyPresent).toBe(false);
+    expect(r.pg).not.toEqual(r.oracle);
+  });
+
+  it('under a seeded cursor the rewind never goes below the seed, and the join converges', async () => {
+    const r = await runJoin({ policy: 'settled-rewind', seeded: true, maxPasses: 60 });
+    expect(r.setAt).toBeGreaterThan(0);
+    expect(r.minPositionAfterSeed).toBeGreaterThanOrEqual(r.setAt);
+    expect(r.rewinds).toBeGreaterThanOrEqual(1);
+    expect(r.pg).toEqual(r.oracle);
+  });
+});
+
+describe('P-522 (b): DeferralEvictionReFold and rewindMergeCursor', () => {
+  const K = 'ab'.repeat(32);
+  const lengthOf = (n: number): AdmittedLog => ({ keyHex: K, length: n, get: async () => null });
+
+  it('an owed re-fold waits while the fold is still advancing, then rewinds to the floor', () => {
+    const refold = new DeferralEvictionReFold();
+    const cursor = createMergeCursor();
+    cursor.positions.set(K, 100);
+    refold.markFloors(cursor, false); // floor 100
+    refold.noteEviction();
+    cursor.positions.set(K, 150);
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 100]])); // advanced, not at length
+    expect(refold.settle(cursor)).toEqual({ kind: 'none' });
+    expect(cursor.positions.get(K)).toBe(150);
+
+    refold.markFloors(cursor, true); // owed: floors frozen
+    expect(refold.floorOf(K)).toBe(100);
+    cursor.positions.set(K, 1_000);
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 150]])); // at length: settled
+    expect(refold.settle(cursor)).toEqual({ kind: 'rewound', moved: [{ keyHex: K, floor: 100 }] });
+    expect(cursor.positions.get(K)).toBe(100);
+    expect(refold.isOwed).toBe(false);
+  });
+
+  it('a log the pass could not move (a read stall or an apply hold) counts as settled', () => {
+    const refold = new DeferralEvictionReFold();
+    const cursor = createMergeCursor();
+    cursor.positions.set(K, 40);
+    refold.markFloors(cursor, false);
+    refold.noteEviction();
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 40]]));
+    expect(refold.settle(cursor).kind).toBe('rewound');
+  });
+
+  it('a replaced cursor pays the debt (it re-reads from its seeds); its floors start over', () => {
+    const refold = new DeferralEvictionReFold();
+    const a = createMergeCursor();
+    a.positions.set(K, 10);
+    refold.markFloors(a, false);
+    refold.noteEviction();
+    refold.noteIdle();
+    const b = createMergeCursor();
+    expect(refold.settle(b)).toEqual({ kind: 'none' });
+    expect(refold.isOwed).toBe(false);
+  });
+
+  it('deferrals buffered across a cursor replacement leave no trustworthy floor: an eviction then asks for a reset', () => {
+    const refold = new DeferralEvictionReFold();
+    const a = createMergeCursor();
+    refold.markFloors(a, false);
+    const b = createMergeCursor();
+    b.positions.set(K, 500);
+    refold.markFloors(b, true); // replaced while the buffers still hold deferrals
+    refold.noteEviction();
+    refold.noteIdle();
+    expect(refold.settle(b)).toEqual({ kind: 'reset' });
+    // Once the buffers drain at a pass start the floors are exact again.
+    refold.markFloors(b, false);
+    refold.noteEviction();
+    refold.noteIdle();
+    expect(refold.settle(b).kind).toBe('rewound');
+  });
+
+  it('a log positioned while floors are frozen gets its first position as its floor', () => {
+    const refold = new DeferralEvictionReFold();
+    const cursor = createMergeCursor();
+    refold.markFloors(cursor, false);
+    refold.noteEviction();
+    cursor.positions.set(K, 7_000); // seeded at a set this pass
+    refold.markFloors(cursor, true);
+    expect(refold.floorOf(K)).toBe(7_000);
+  });
+
+  it('rewindMergeCursor moves only backward, drops winners, and keeps the log-describing state', () => {
+    const cursor = createMergeCursor();
+    cursor.positions.set('a', 50);
+    cursor.positions.set('b', 5);
+    cursor.winners.set('queue::X', { ts: 1, type: 'put', src: 'a' } as never);
+    cursor.snapshotApplyThrough = new Map([['a', 20]]);
+    cursor.snapshotScans = new Map([['a', { scannedTo: 60, set: null }]]);
+    const moved = rewindMergeCursor(
+      cursor,
+      new Map([
+        ['a', 20],
+        ['b', 30],
+      ]),
+    );
+    expect(moved).toEqual(['a']);
+    expect(cursor.positions.get('a')).toBe(20);
+    expect(cursor.positions.get('b')).toBe(5); // never forward
+    expect(cursor.winners.size).toBe(0);
+    expect(cursor.snapshotApplyThrough.get('a')).toBe(20);
+    expect(cursor.snapshotScans.has('a')).toBe(true);
+  });
+});

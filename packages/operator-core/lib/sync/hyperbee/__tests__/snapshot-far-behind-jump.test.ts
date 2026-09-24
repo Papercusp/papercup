@@ -154,7 +154,7 @@ describe('P-004 R-4 — the reader finds a complete set at any distance from the
     expect(Math.min(...log.prefetches.map(([s]) => s))).toBeGreaterThanOrEqual(snapAt - 256);
   });
 
-  it('a seed scan that runs out of its time budget RESUMES where it stopped (the fold is never held behind it)', async () => {
+  it('a seed scan that runs out of its time budget RESUMES where it stopped (P-522: the log is held, not folded from 0, meanwhile)', async () => {
     const log = memLog('a3'.repeat(32));
     await log.append(put('A', { v: 1 }, 1));
     await log.append(put('B', { v: 2 }, 2));
@@ -173,6 +173,7 @@ describe('P-004 R-4 — the reader finds a complete set at any distance from the
       },
     };
     log.reads.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cursor = createMergeCursor();
     let calls = 0;
     while (!cursor.positions.has(log.keyHex) && calls < 5_000) {
@@ -181,6 +182,8 @@ describe('P-004 R-4 — the reader finds a complete set at any distance from the
     }
     expect(calls).toBeGreaterThan(1); // the budget really cut the scan short
     expect(cursor.positions.get(log.keyHex)).toBe(2);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed pending'))).toBe(true);
+    expect(cursor.snapshotSeedPending?.size ?? 0).toBe(0);
     // Resume, not restart: every index above the set was read exactly once across all calls.
     const seen = new Map<number, number>();
     for (const i of log.reads) seen.set(i, (seen.get(i) ?? 0) + 1);
