@@ -489,6 +489,31 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('settles a pending receipt only after a new PID serves the exact target', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
+    const result = JSON.stringify({ ok: false, target: 'staging', restartScheduled: true,
+      restartObserved: false, stagingReadiness: { outcome: 'not-observed', activeState: 'deactivating' } });
+    const verify = (pid: string, sha: string, receipt = result) => runFn(
+      ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal',
+        'restart_refusal_is_transient_git_sync', 'health_sha_matches_target', 'staging_restart_is_observed'],
+      [
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_health_source_sha() { printf "%s" "$TEST_SHA"; }',
+        'systemctl() { printf "%s" "$TEST_PID"; }',
+        'sleep() { :; }',
+        tail,
+      ].join('\n'),
+      { env: { restart_verified: '0', restart_tool_status: '0', restart_pending: '0',
+        restart_result: receipt, restart_diagnostics: '', main_pid: '100', target: 'abcdef123456',
+        UNIT: 'fixture.service', READINESS_TIMEOUT_SEC: '1', TEST_PID: pid, TEST_SHA: sha } },
+    );
+    expect(verify('101', 'abcdef1234').status).toBe(0);
+    expect(verify('100', 'abcdef1234').status).toBe(1);
+    expect(verify('101', 'deadbeef').status).toBe(1);
+    expect(verify('101', 'abcdef1234', JSON.stringify({ ok: false, reason: 'restart_withheld' })).status).toBe(1);
+  });
+
   const accepted = (result: unknown) => runFn(
     ['restart_result_is_accepted'],
     'restart_result_is_accepted',
