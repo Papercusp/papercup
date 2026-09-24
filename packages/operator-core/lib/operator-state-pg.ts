@@ -194,7 +194,11 @@ type StateTable =
   // allowed to ANSWER a consult (D-004) plus the stage-2 recency half-life
   // (consult-expert-routing-2026-09-22 P-005 / D-001 §2). Read on the dispatch
   // critical path, so an empty/absent row degrades to the owner-stated seed.
-  | 'operator_consult_expert_routing';
+  | 'operator_consult_expert_routing'
+  // Migration 1210 — the Settings choice of embedding device, auto|cuda|cpu
+  // (memory-reduction-2026-09-24 P-008 / D-008). Read at boot by every process
+  // that embeds; a concrete PAPERCUSP_EMBED_DEVICE host override outranks it.
+  | 'operator_embed_device';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

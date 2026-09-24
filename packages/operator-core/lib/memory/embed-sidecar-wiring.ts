@@ -50,6 +50,7 @@ import {
   type RerankSidecarModel,
 } from './embed-sidecar-server';
 import { verifySidecarFitness } from '../process-supervision/sidecar-spawn-shared';
+import { ensureEmbedDeviceSettingLoaded } from './embed-device-setting';
 
 /** Injectable seams (tests swap the env read + the spawn side effect). */
 export interface SidecarWiringDeps {
@@ -217,12 +218,18 @@ export async function buildSidecarAwareEmbedder(
     // harrier are asymmetric dual-encoders, so kind picks their task prompt
     // (both sides of this fallback match what the sidecar does server-side,
     // by construction).
-    fallback:
-      model === 'gemma'
-        ? () => buildGemmaEmbedder({ kind })
+    //
+    // The in-process engine reads the Settings device choice (Auto/GPU/CPU)
+    // once per process before its first model build — the sidecar does the
+    // same at its own boot (plan memory-reduction-2026-09-24 D-008).
+    fallback: async () => {
+      await ensureEmbedDeviceSettingLoaded();
+      return model === 'gemma'
+        ? buildGemmaEmbedder({ kind })
         : model === 'harrier'
-          ? () => buildHarrierEmbedder({ kind })
-          : () => buildLocalEmbedder(),
+          ? buildHarrierEmbedder({ kind })
+          : buildLocalEmbedder();
+    },
   });
 }
 
