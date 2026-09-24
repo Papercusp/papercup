@@ -2,7 +2,7 @@
  * by each host worker. This is a database-boundary test, not a host-process test.
  * The inbox factory is the production readInbox over the real coordination log.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { Cache } from '@papercusp/cache';
 import { createInvalidationBus } from '@papercusp/sync/server';
@@ -15,9 +15,22 @@ import { readInbox } from '../agent-tools/coordination/messages';
 import { tableNameFromChangedEvent, tagsForTableChange } from '../events/cache-eca-rule';
 import { cachedRead, __setCachedReadEnabledForTests } from './cached-read';
 import { installOperatorCache, resetOperatorCacheForTests } from './instance';
+import { getWorkItemDetail, listWorkItems } from '../work-items';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, workspace: '' }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
+vi.mock('../workspace-registry', async original => ({
+  ...(await original<typeof import('../workspace-registry')>()),
+  activeWorkspaceId: () => h.workspace,
+}));
 
 let org: OrgTestDb;
 const WS = 'cache-freshness-integration';
+const FOREIGN_WS = 'cache-freshness-foreign';
+const HARNESS = 'cache-freshness';
 let now = 0;
 const workers: ReturnType<typeof makeWorker>[] = [];
 
@@ -37,18 +50,37 @@ function makeWorker() {
       return [];
     },
   });
-  return { cache, bus, async inbox(owner: string) {
+  // Reads are awaited serially: the injected request scope models one worker's
+  // active request, while the cache/listener instances remain independent.
+  return { cache, bus, async inbox(owner: string, workspace = WS) {
+    h.workspace = workspace;
     installOperatorCache(cache);
     return cachedRead({ workspaceId: coordWorkspaceId() }, {
       tool: 'coord:inbox', key: { owner }, tags: ['coord_event_log'], hardTtlMs: 100,
     }, () => readInbox(owner));
+  }, async detail(id: string, workspace = WS) {
+    h.workspace = workspace;
+    installOperatorCache(cache);
+    return cachedRead({ workspaceId: workspace }, {
+      tool: 'work_items:get', key: { id, harness: HARNESS, detail: true },
+      // Same dependencies as the production detail handler; retain broad tags.
+      tags: ['work_items', `work_items:${id}`, 'coord_links', 'coord_threads', 'coord_thread_posts'],
+      hardTtlMs: 100,
+    }, () => getWorkItemDetail(id, HARNESS));
+  }, async list(workspace = WS) {
+    h.workspace = workspace;
+    installOperatorCache(cache);
+    return cachedRead({ workspaceId: workspace }, {
+      tool: 'work_items:list', key: { harness: HARNESS, kind: 'feature' },
+      tags: ['work_items'], hardTtlMs: 100,
+    }, () => listWorkItems({ harness: HARNESS, kind: 'feature' }));
   } };
 }
 
-async function seed(id: string, to: string[]) {
+async function seed(id: string, to: string[], workspace = WS) {
   await org.adminSql.begin(async tx => {
-    await tx`SELECT set_config('app.workspace_id', ${WS}, true)`;
-    const log = new PgCoordLog({ getSql: () => tx as unknown as Sql, getWorkspaceId: () => WS, ensureSchema: async () => {} });
+    await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+    const log = new PgCoordLog({ getSql: () => tx as unknown as Sql, getWorkspaceId: () => workspace, ensureSchema: async () => {} });
     await log.appendLine('messages', 'freshness-writer', {
       msg_id: id, kind: 'message', from: 'freshness-writer', to,
       summary: id, ts: new Date().toISOString(),
@@ -59,7 +91,9 @@ const ids = (rows: Awaited<ReturnType<typeof readInbox>>) => rows.map(row => row
 
 beforeAll(async () => {
   org = await createOrgTestDb();
-  configureCoordLog(new PgCoordLog({ getSql: () => org.adminSql, getWorkspaceId: () => WS, ensureSchema: async () => {} }));
+  h.sql = org.adminSql;
+  h.workspace = WS;
+  configureCoordLog(new PgCoordLog({ getSql: () => org.adminSql, getWorkspaceId: () => h.workspace, ensureSchema: async () => {} }));
   setFlagOverridesForTest({ 'papercusp-cache-layer': true });
   __setCachedReadEnabledForTests(true);
   workers.push(makeWorker(), makeWorker());
@@ -103,5 +137,68 @@ describe('cached inbox freshness over independent PG listeners', () => {
     expect(ids(await worker.inbox('alice'))).not.toContain('before-reconnect');
     await worker.bus.start();
     expect(ids(await worker.inbox('alice'))).toContain('before-reconnect');
+  });
+
+  it('keeps identical recipient keys and broadcasts isolated by workspace on both workers', async () => {
+    for (const worker of workers) expect(await worker.inbox('alice', FOREIGN_WS)).toEqual([]);
+    await seed('local-tenant-guard', ['alice']);
+    await seed('foreign-direct', ['alice'], FOREIGN_WS);
+    await seed('foreign-broadcast', ['*'], FOREIGN_WS);
+    for (const worker of workers) {
+      await expect.poll(async () => ids(await worker.inbox('alice', FOREIGN_WS)))
+        .toEqual(expect.arrayContaining(['foreign-direct', 'foreign-broadcast']));
+      const local = ids(await worker.inbox('alice'));
+      expect(local).toContain('local-tenant-guard');
+      expect(local).not.toContain('foreign-direct');
+      expect(local).not.toContain('foreign-broadcast');
+      expect(ids(await worker.inbox('alice', FOREIGN_WS))).not.toContain('local-tenant-guard');
+    }
+  });
+
+  it('refreshes real work-item lists and details after row and thread commits without tenant reuse', async () => {
+    for (const workspace of [WS, FOREIGN_WS]) {
+      // The migrated table's PK is (harness_slug, feature_id), not workspace.
+      // Reusing the local lookup key in the foreign workspace must return null.
+      const id = workspace === WS ? 'F-freshness' : 'F-foreign';
+      await org.adminSql.begin(async tx => {
+        await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+        await tx`INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts)
+          VALUES (${workspace}, ${HARNESS}, ${id}, 'feature', ${workspace}, 'open', 1000, 1000)`;
+      });
+    }
+    for (const worker of workers) {
+      expect((await worker.detail('F-freshness'))?.title).toBe(WS);
+      expect(await worker.detail('F-freshness', FOREIGN_WS)).toBeNull();
+      expect((await worker.detail('F-foreign', FOREIGN_WS))?.title).toBe(FOREIGN_WS);
+      expect((await worker.list()).map(row => row.title)).toEqual([WS]);
+      expect((await worker.list(FOREIGN_WS)).map(row => row.title)).toEqual([FOREIGN_WS]);
+    }
+    await org.adminSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${WS}, true)`;
+      await tx`UPDATE harness_shared.work_items SET title='updated local', updated_ts=2000
+        WHERE workspace_id=${WS} AND feature_id='F-freshness' AND harness_slug=${HARNESS}`;
+    });
+    for (const worker of workers) {
+      await expect.poll(async () => (await worker.detail('F-freshness'))?.title).toBe('updated local');
+      await expect.poll(async () => (await worker.list()).map(row => row.title)).toEqual(['updated local']);
+      expect(await worker.detail('F-freshness', FOREIGN_WS)).toBeNull();
+      expect((await worker.detail('F-foreign', FOREIGN_WS))?.title).toBe(FOREIGN_WS);
+      expect((await worker.list(FOREIGN_WS)).map(row => row.title)).toEqual([FOREIGN_WS]);
+      expect((await worker.detail('F-freshness'))?.posts).toEqual([]);
+    }
+    await org.adminSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${WS}, true)`;
+      await tx`INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref)
+        VALUES (${WS}, 'freshness-thread', 'feature', ${HARNESS + '#F-freshness'})`;
+      await tx`INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body)
+        VALUES (${WS}, 'freshness-thread', 'freshness-writer', 'new detail dependency')`;
+    });
+    for (const worker of workers) {
+      await expect.poll(async () => (await worker.detail('F-freshness'))?.posts.map(post => post.body))
+        .toEqual(['new detail dependency']);
+      expect(await worker.detail('F-freshness', FOREIGN_WS)).toBeNull();
+      expect((await worker.detail('F-foreign', FOREIGN_WS))?.posts).toEqual([]);
+    }
   });
 });
