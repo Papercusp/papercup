@@ -35,6 +35,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import { agendaClearedExclusionSql } from './owner-directive-agenda';
 import {
+  alsoSentToNote,
   directiveDisplayText,
   directiveNeedsSummary,
   OWNER_DIRECTIVE_SUMMARY_MAX,
@@ -43,6 +44,7 @@ import {
 } from './owner-directive-display';
 
 export {
+  alsoSentToNote,
   directiveDisplayText,
   directiveNeedsSummary,
   OWNER_DIRECTIVE_SUMMARY_MAX,
@@ -106,6 +108,13 @@ export interface OwnerDirectiveRow {
   reopenReason?: string | null;
   /** The disposition the reopen cleared, kept so an undone wrong close stays auditable. */
   reopenedFrom?: string | null;
+  /**
+   * D-004(1) of directive-ownership-clarity-2026-09-23: how many OTHER sessions
+   * hold an OPEN directive with this row's exact (trimmed) text. Computed by
+   * listOwnerDirectives over the whole open set, never over the returned page;
+   * undefined on reads that do not compute it (getOwnerDirective, writes).
+   */
+  otherSessionCopies?: number;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -155,6 +164,8 @@ interface RawRow {
   reopened_by?: string | null;
   reopen_reason?: string | null;
   reopened_from?: string | null;
+  // Only listOwnerDirectives selects it.
+  other_session_copies?: string | number | null;
 }
 
 function rowOf(r: RawRow): OwnerDirectiveRow {
@@ -180,6 +191,7 @@ function rowOf(r: RawRow): OwnerDirectiveRow {
     reopenedBy: r.reopened_by ?? null,
     reopenReason: r.reopen_reason ?? null,
     reopenedFrom: r.reopened_from ?? null,
+    ...(r.other_session_copies != null ? { otherSessionCopies: Number(r.other_session_copies) } : {}),
   };
 }
 
@@ -390,8 +402,20 @@ export async function listOwnerDirectives(
   // 'default' is matched alongside the canonical workspace for the same reason
   // readHeldWorkItems does: legacy/unscoped writers land rows under 'default'.
   const states = opts.state == null ? null : [...(Array.isArray(opts.state) ? opts.state : [opts.state])];
+  // other_session_copies (D-004(1) of directive-ownership-clarity-2026-09-23) is a
+  // correlated count over the WHOLE open set, so it is exact however small `limit`
+  // is. The outer table stays unaliased: agendaClearedExclusionSql names it as
+  // harness_shared.owner_directives, which an alias would make unresolvable.
   const rows = await s<RawRow[]>`
-    SELECT * FROM harness_shared.owner_directives
+    SELECT *,
+           (SELECT count(DISTINCT sib.recorded_by)
+              FROM harness_shared.owner_directives AS sib
+             WHERE (sib.workspace_id = ${ws} OR sib.workspace_id = 'default')
+               AND sib.dispositioned_at IS NULL
+               AND sib.recorded_by IS DISTINCT FROM harness_shared.owner_directives.recorded_by
+               AND btrim(sib.verbatim_text, E' \\t\\r\\n') = btrim(harness_shared.owner_directives.verbatim_text, E' \\t\\r\\n')
+           ) AS other_session_copies
+      FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        ${opts.open === true ? s`AND dispositioned_at IS NULL` : opts.open === false ? s`AND dispositioned_at IS NOT NULL` : s``}
        ${agendaClearedExclusionSql(s, opts.viewerOwnerId)}
@@ -601,7 +625,7 @@ export function renderOwnerDirectiveRow(
       `not an action assignment for this session. Full text: orders:get #${row.id}`
     );
   }
-  return `  • #${row.id} [FOR THIS SESSION] — ${age} old, recorded by ${shortOwner(row.recordedBy)}: ${directiveDisplayText(row)}`;
+  return `  • #${row.id} [FOR THIS SESSION] — ${age} old, recorded by ${shortOwner(row.recordedBy)}: ${directiveDisplayText(row)}${alsoSentToNote(row.otherSessionCopies)}`;
 }
 
 export const OWNER_DIRECTIVES_BLOCK_HEADER =

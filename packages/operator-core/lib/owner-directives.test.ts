@@ -99,6 +99,17 @@ describe('renderOwnerDirectiveRow', () => {
     expect(ownerView).toContain(peer.verbatimText);
     expect(ownerView).not.toContain('[FYI');
   });
+
+  it('D-004(1): an own row whose text is open in other sessions says "also sent to N other sessions"', () => {
+    const own = row({ otherSessionCopies: 3 });
+    expect(renderOwnerDirectiveRow(own, NOW, own.recordedBy)).toContain(
+      "(also sent to 3 other sessions; each copy is its own addressee's to close)",
+    );
+    expect(renderOwnerDirectiveRow(row({ otherSessionCopies: 1 }), NOW, own.recordedBy)).toContain('also sent to 1 other session;');
+    // Negative controls: a unique row and an uncomputed count both render no note.
+    expect(renderOwnerDirectiveRow(row({ otherSessionCopies: 0 }), NOW, own.recordedBy)).not.toContain('also sent to');
+    expect(renderOwnerDirectiveRow(row(), NOW, own.recordedBy)).not.toContain('also sent to');
+  });
 });
 
 describe('renderOwnerDirectivesBlock', () => {
