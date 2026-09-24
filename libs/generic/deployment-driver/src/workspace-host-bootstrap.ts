@@ -230,6 +230,27 @@ export const WORKSPACE_HOST_BOOTSTRAP_NATIVE_RUNTIME_APT_PACKAGES = [
 ] as const;
 
 /**
+ * Wall-clock bounds for every networked apt call a host script makes. They are argv-compatible
+ * with `apt-get update` / `apt-get install`, so a call site reads `retry 5 apt_install -y …`.
+ * `apt_install` fetches under the bound and installs from the local cache without one, because
+ * killing dpkg mid-configure leaves a state every later attempt refuses. Exit 124 (timed out)
+ * is an ordinary failure to the caller's `retry`.
+ */
+export const WORKSPACE_HOST_APT_UPDATE_TIMEOUT_SEC = 180;
+export const WORKSPACE_HOST_APT_FETCH_TIMEOUT_SEC = 600;
+export const APT_BOUNDED_HELPER_LINES: readonly string[] = [
+  `apt_update() { timeout -k 30 ${WORKSPACE_HOST_APT_UPDATE_TIMEOUT_SEC} apt-get update "$@"; }`,
+  `apt_install() { timeout -k 30 ${WORKSPACE_HOST_APT_FETCH_TIMEOUT_SEC} apt-get install --download-only "$@" && apt-get install "$@"; }`,
+];
+
+/**
+ * curl has no default timeout at all, so the same stalled connection hangs a download forever.
+ * A speed floor (not a total `--max-time`) aborts a stall without capping a large artifact on a
+ * slow link; curl's `--retry` treats that abort as transient.
+ */
+export const WORKSPACE_HOST_CURL_STALL_GUARD = '--connect-timeout 20 --speed-limit 1024 --speed-time 60';
+
+/**
  * Complete apt contract for the generated Ubuntu 24.04 bootstrap.
  *
  * Publication checks should compare their derived provider set against this
@@ -1631,7 +1652,7 @@ function agentNodeRuntimeInstallLines(): string[] {
     'tmp="$target/.node-install"',
     'rm -rf "$tmp"',
     'mkdir -p "$tmp" "$target"',
-    `curl -fsSL --retry 3 -o "$tmp/node.tar.gz" "https://nodejs.org/dist/v${version}/$dir.tar.gz"`,
+    `curl -fsSL --retry 3 ${WORKSPACE_HOST_CURL_STALL_GUARD} -o "$tmp/node.tar.gz" "https://nodejs.org/dist/v${version}/$dir.tar.gz"`,
     // The pin is the trust boundary: a swapped upstream tarball fails here rather than executing.
     'printf "%s  %s\\n" "$sum" "$tmp/node.tar.gz" | sha256sum -c - >/dev/null',
     'tar -xzf "$tmp/node.tar.gz" -C "$target" --strip-components=1 "$dir/bin" "$dir/lib"',
@@ -1728,7 +1749,7 @@ function localInferenceRuntimeInstallLines(
     '  *) die "unsupported architecture for the local-inference runtime: $(uname -m)";;',
     'esac',
     // The upstream artifact is zstd-compressed and stock Ubuntu 24.04 ships no unzstd.
-    'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive retry 5 apt-get install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
+    'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive retry 5 apt_install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
     // MEASURED on canary-11 (2026-09-03): a GCE startup-script runs as root with NO $HOME, and the
     // ollama CLI PANICS at construction when it is unset — `envconfig.Models()` (config.go:120) is
     // reached from `NewCLI()` before any subcommand runs, so EVERY ollama CLI call dies instantly:
@@ -1745,7 +1766,7 @@ function localInferenceRuntimeInstallLines(
     // boots a runtime that cannot serve. Requiring the runner too makes a broken tree self-heal.
     `if [[ "$(HOME="$OLLAMA_CLI_HOME" /usr/local/bin/ollama --version 2>/dev/null | tr -d '\\r')" != "ollama version is ${version}" || ! -x /usr/local/lib/ollama/llama-server ]]; then`,
     '  OLLAMA_TMP="$WORK_DIR/ollama.tar.zst"',
-    `  curl -fsSL --retry 3 --proto "=https" --tlsv1.2 -o "$OLLAMA_TMP" "https://github.com/ollama/ollama/releases/download/v${version}/ollama-linux-$OLLAMA_ARCH.tar.zst" || die "local-inference runtime download failed"`,
+    `  curl -fsSL --retry 3 ${WORKSPACE_HOST_CURL_STALL_GUARD} --proto "=https" --tlsv1.2 -o "$OLLAMA_TMP" "https://github.com/ollama/ollama/releases/download/v${version}/ollama-linux-$OLLAMA_ARCH.tar.zst" || die "local-inference runtime download failed"`,
     // The pin is the trust boundary — this is a ROOT install. Verified BEFORE extraction, which
     // is also why the artifact is downloaded to disk rather than streamed through tar: a stream
     // would have to extract the bytes in order to hash them.
@@ -1896,7 +1917,7 @@ function hostModelHardenLines(
         'export DEBIAN_FRONTEND=noninteractive',
         // `--error-on=any`: without it an unreachable archive is only a `W:` line and exit 0, so the
         // failure surfaced one command later as `E: Unable to locate package minisign` (WI-10002837).
-        'retry 10 apt-get update -qq --error-on=any || die "package index refresh failed after 10 attempts: the Ubuntu archive is unreachable from this host"',
+        'retry 10 apt_update -qq --error-on=any || die "package index refresh failed after 10 attempts: the Ubuntu archive is unreachable from this host"',
       ],
       tail: [
         'ufw default deny incoming',
@@ -2226,6 +2247,13 @@ export function buildWorkspaceHostBootstrap(
     // boot, the host re-ran the same bootstrap fine minutes later), and a single try turned that
     // blip into a dead host. Logs go to stderr so a caller's `>/dev/null` cannot hide them.
     'retry() { local max="$1" attempt=1; shift; until "$@"; do (( attempt >= max )) && return 1; log "attempt $attempt/$max failed, retrying in $(( attempt * 5 ))s: $*" >&2; sleep $(( attempt * 5 )); attempt=$(( attempt + 1 )); done; }',
+    // WI-10002863, measured on avi-test 2026-09-24: ONE `apt-get update` ran ~30 min on a first
+    // boot (06:44:59 -> ~07:14:40Z) and apt's own Acquire timeouts never ended it, so `retry` had
+    // no failure to retry and the controller's 1200s bootstrap wait expired first. Every networked
+    // apt call is therefore wall-clock bounded. The install FETCHES under the bound
+    // (`--download-only`, safe to kill) and then unpacks from the local cache unbounded, so the
+    // bound can never interrupt dpkg mid-configure and wedge every later attempt.
+    ...(hostModel === 'ubuntu-release-bundle' ? APT_BOUNDED_HELPER_LINES : []),
     ...statusReportLines(statusChannel),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`,
@@ -2250,7 +2278,7 @@ export function buildWorkspaceHostBootstrap(
     // dnf layer in the image, traced name-by-name in infra/images/bootc/RPM-EQUIVALENCE.md.
     ...(hostModel === 'ubuntu-release-bundle'
       ? [
-          `retry 5 apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")} || die "runtime package install failed after 5 attempts"`,
+          `retry 5 apt_install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")} || die "runtime package install failed after 5 attempts"`,
         ]
       : []),
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
@@ -2461,8 +2489,8 @@ export function buildWorkspaceHostBootstrap(
     '  exit "$status"',
     "}",
     "trap cleanup EXIT",
-    'curl --fail --silent --show-error --location --proto "=https" --tlsv1.2 "$BUNDLE_URL" --output "$BUNDLE_PATH"',
-    'curl --fail --silent --show-error --location --proto "=https" --tlsv1.2 "$SIGNATURE_URL" --output "$SIGNATURE_PATH"',
+    `curl --fail --silent --show-error --location --retry 3 ${WORKSPACE_HOST_CURL_STALL_GUARD} --proto "=https" --tlsv1.2 "$BUNDLE_URL" --output "$BUNDLE_PATH"`,
+    `curl --fail --silent --show-error --location --retry 3 ${WORKSPACE_HOST_CURL_STALL_GUARD} --proto "=https" --tlsv1.2 "$SIGNATURE_URL" --output "$SIGNATURE_PATH"`,
     'printf "%s  %s\\n" "$BUNDLE_SHA256" "$BUNDLE_PATH" | sha256sum --check --strict -',
     'printf "%s" "$SIGNING_PUBLIC_KEY_B64" | base64 --decode > "$PUBLIC_KEY_PATH"',
     'printf "%s  %s\\n" "$SIGNING_KEY_SHA256" "$PUBLIC_KEY_PATH" | sha256sum --check --strict -',
