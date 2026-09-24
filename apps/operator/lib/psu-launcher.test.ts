@@ -9473,6 +9473,44 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(out.carryText).toContain("sessions:read");
   });
 
+  it("preserves large-carry continuity and exact recovery without copying predecessor history into context", () => {
+    const codexHome = join(home, "codex-large-carry");
+    const sessions = join(codexHome, "sessions", "2026", "09", "21");
+    mkdirSync(sessions, { recursive: true });
+    const predecessor = "0123abcd-1234-5678-9abc-def012345678";
+    const rollout = join(sessions, `rollout-2026-09-21T12-00-00-${predecessor}.jsonl`);
+    const history = JSON.stringify({ type: "response_item", payload: { text: "old history ".repeat(100000) } }) + "\n";
+    writeFileSync(rollout, history, { mode: 0o600 });
+    const base = "# Required instructions\nNever cross an authorization boundary.\n";
+    writeFileSync(join(codexHome, "AGENTS.md"), base, { mode: 0o600 });
+    const continuity = [
+      "# Carry document",
+      "Pending owner directive: finish the existing task; route:self.",
+      "Work item: WI-example. Decision: preserve the approved approach.",
+      "Evidence: exact request ledger reference. Unknown: provider cache expiry.",
+      "Next: verify the pending test result before repeating any action.",
+      "saved evidence\n".repeat(5000).trimEnd(),
+    ].join("\n\n");
+    const out = mintCarryRespawnArgs(["--dangerously-bypass-hook-trust", "fork", predecessor], {
+      systemPromptAddendum: continuity,
+      ownerId: "su-large-carry",
+      home,
+      agent: "codex",
+      codexHome,
+    });
+    const agents = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
+    expect(agents.startsWith(base)).toBe(true);
+    expect(agents).toContain(out.launchContextPath);
+    expect(agents).not.toContain(continuity);
+    expect(out.carryText).toContain(continuity);
+    expect(out.carryText).toContain(codexCarryLineageMarker(predecessor));
+    expect(readFileSync(out.launchContextPath, "utf8")).toBe(`${out.carryText}\n`);
+    expect(readFileSync(rollout, "utf8")).toBe(history);
+    expect(out.args).toEqual(["--dangerously-bypass-hook-trust"]);
+    expect(agents + out.carryText).not.toContain("old history ");
+    expect((agents + out.carryText).split("# Carry document")).toHaveLength(2);
+  });
+
   it("uses an unresolved lineage marker and a blank-thread fallback when no Codex rollout exists", () => {
     const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });

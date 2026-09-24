@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, sy
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
+import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
@@ -67,6 +68,138 @@ describe('managed-pty integration evidence isolation', () => {
     expect(PSU_PTY_DIR).toBe(process.env.PAPERCUSP_PSU_PTY_DIR);
     expect(PSU_PTY_DIR).not.toBe(liveDir);
   });
+});
+
+describe('plain launch kickoff turn-start proof', () => {
+  it('does not resend a kickoff whose native turn completed before marker proof returned', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-fast-kickoff-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeFile = join(codexHome, 'sessions', '2026', '09', '23', 'rollout.jsonl');
+    const countFile = join(root, 'kickoff-count.txt');
+    const ownerId = `su-fast-kickoff-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧';
+    const kickoff = `${marker}\nBEGIN_FAST_KICKOFF`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('BEGIN_FAST_KICKOFF')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
+      "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
+      "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),5000);',
+    ].join('');
+    let done;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome,
+          NATIVE_FILE: nativeFile,
+          COUNT_FILE: countFile,
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        nativePersistenceTimeoutMs: 2_000,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+
+      const deadline = Date.now() + 3_000;
+      while (!existsSync(countFile) && Date.now() < deadline) await sleep(10);
+      expect(captured()).toContain('KICKOFF_COUNT_1');
+      await sleep(400); // enough for the bounded one-poll retry path to expose a duplicate
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+      expect(readFileSync(countFile, 'utf8').trim().split(/\r?\n/)).toEqual(['1']);
+      expect(readFileSync(nativeFile, 'utf8')).toContain('task_complete');
+      const output = captured();
+      expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeGreaterThanOrEqual(0);
+      expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeLessThan(output.indexOf('KICKOFF_COUNT_1'));
+    } finally {
+      await done?.catch(() => undefined);
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it('does not submit a fresh Codex kickoff when the composer echo lost leading marker bytes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-truncated-marker-'));
+    const codexHome = join(root, 'codex-home');
+    const submitFile = join(root, 'submitted.txt');
+    const ownerId = `su-truncated-marker-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:fedcba9876543210⟧';
+    const kickoff = `${marker}\nBEGIN_TRUNCATED_ECHO`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoed=false;process.stdout.write('62% context left\\n');",
+      "process.stdin.on('data',d=>{input+=d;if(!echoed&&input.includes('BEGIN_TRUNCATED_ECHO')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input.slice(34)+'\\n');}if(d.includes('\\r')){require('fs').appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),2000);',
+    ].join('');
+    let done;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome,
+          SUBMIT_FILE: submitFile,
+          PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '150',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+
+      await vi.waitFor(() => expect(captured()).toContain('COMPOSER_ECHO:'), { timeout: 2_000 });
+      await sleep(300); // the bounded marker proof must time out before any CR is sent
+      const output = captured();
+      expect(output).toContain(marker.slice(34));
+      expect(output).not.toContain(`COMPOSER_ECHO:${marker}`);
+      expect(existsSync(submitFile)).toBe(false);
+      await rawInject(sock, 'QUIT\\n');
+      expect(await done).toBe(0);
+      expect(existsSync(submitFile)).toBe(false);
+    } finally {
+      await done?.catch(() => undefined);
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
 
 describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331)', () => {
@@ -284,6 +417,26 @@ describe('session-port managed seed + native persistence helpers', () => {
     // An empty mint never erases the operator's prompt.
     expect(composeCarryTurnText(original, '')).toBe(original);
     expect(composeCarryTurnText(original, undefined)).toBe(original);
+  });
+
+  it('delivers an identical carry body only once while retaining provenance and lineage', () => {
+    const marker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
+    const body = '# Carry document\n\nPending directive: preserve the owner choice.\n\n' + 'saved evidence\n'.repeat(5000).trimEnd();
+    const lineage = '⟦codex-carry-lineage predecessor:0123abcd-1234-5678-9abc-def012345678⟧';
+    const minted = `${body}\n\n${lineage}`;
+    const composed = composeCarryTurnText(`${marker}\n${body}`, minted);
+    expect(composed).toBe(`${marker}\n${minted}`);
+    expect(leadingTurnOriginMarker(composed)).toBe(marker);
+    expect(composed.split('# Carry document')).toHaveLength(2);
+    expect(composeCarryTurnText(`${marker}\n${body}`, body)).toBe(`${marker}\n${body}`);
+  });
+
+  it('retains a distinct continuation body even if the mint contains a similar substring', () => {
+    const marker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
+    const body = 'Keep the pending owner directive';
+    for (const minted of [`# Carry\n\n${body}`, `${body} with more context`, `${body}\nchanged`]) {
+      expect(composeCarryTurnText(`${marker}\n${body}`, minted)).toBe(`${marker}\n${body}\n\n${minted}`);
+    }
   });
 
   // WI-10002745: the PTY child is the psu launcher, which prints its banner and
@@ -789,8 +942,8 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let b='';process.stdout.write('62% context left\\n');",
-        "process.stdin.on('data',d=>{b+=d;if(!b.includes('BEGIN_PROOF_KICKOFF'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
+        "let b='',echoed=false;process.stdout.write('62% context left\\n');",
+        "process.stdin.on('data',d=>{b+=d;if(!b.includes('BEGIN_PROOF_KICKOFF'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
         'setTimeout(()=>process.exit(2),5000);',
       ].join('');
       let done;
@@ -808,6 +961,9 @@ describe('hostThroughPty real round-trip', () => {
             KICKOFF_MARKER: marker,
             [KICKOFF_PROOF_PATH_ENV]: proofPath,
             [KICKOFF_PROOF_TOKEN_ENV]: token,
+            // This test checks parent-receipt publication, so give the
+            // separate composer-echo gate its own bounded fixture window.
+            PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
             PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
             PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
@@ -824,9 +980,11 @@ describe('hostThroughPty real round-trip', () => {
           kickoff,
           onExit: () => undefined,
         });
-        const deadline = Date.now() + 5_000;
+        const deadline = Date.now() + 8_000;
         while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
         expect(captured()).toContain('KICKOFF_RECEIVED');
+        expect(captured()).toContain(`COMPOSER_ECHO:${marker}`);
+        expect(captured().indexOf(`COMPOSER_ECHO:${marker}`)).toBeLessThan(captured().indexOf('KICKOFF_RECEIVED'));
         expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
           token,
           persisted: true,
@@ -2142,6 +2300,84 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
 
       await rawInject(sock, 'QUIT\n');
       await done;
+    },
+    25_000,
+  );
+});
+
+describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465)', () => {
+  // The child prints the operator URL it was started with, so the successor's env is
+  // observable. Measured 2026-09-23: a staging-console pin (http://localhost:3170)
+  // rode through every in-place respawn and took the session's MCP down with each
+  // staging restart. The heal under test runs with its REAL default (no injection),
+  // so the refusal is recognised from a genuine refused socket.
+  const childCode =
+    "process.stdout.write('BOOT:'+process.env.PAPERCUSP_OPERATOR_URL+'\\n');" +
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+    "if(line==='QUIT'){process.exit(0);}}});" +
+    'setTimeout(()=>process.exit(0),15000);';
+
+  it(
+    'a pin that REFUSES connections is replaced by the live MCP proxy in the respawned child',
+    async () => {
+      const proxy = createServer((req, res) => {
+        res.writeHead(req.url === '/api/health' ? 200 : 404);
+        res.end('ok');
+      });
+      await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));
+      const proxyPort = (proxy.address() as net.AddressInfo).port;
+      const freed = createServer();
+      await new Promise<void>((r) => freed.listen(0, '127.0.0.1', r));
+      const deadPort = (freed.address() as net.AddressInfo).port;
+      await new Promise<void>((r) => freed.close(() => r()));
+
+      const ownerId = `su-pinheal-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const { captured, io } = fakeIo();
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        TERM: 'xterm-256color',
+        PAPERCUSP_OPERATOR_URL: `http://localhost:${deadPort}`,
+        PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      };
+      delete env.PAPERCUSP_PSU_REEXEC;
+      delete env.PAPERCUSP_PSU_REEXEC_PPID;
+      delete env.PAPERCUSP_MCP_PROXY;
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env,
+        ownerId,
+        io,
+        bridgeTty: false,
+        hostCodeStalenessFn: () => ({ stale: false }),
+        mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
+        onExit: () => {},
+      });
+      try {
+        await sleep(600);
+        // CALIBRATION: the first child really did start on the dead pin, so the
+        // assertion below observes a change made at the respawn, not at launch.
+        expect(captured()).toContain(`BOOT:http://localhost:${deadPort}`);
+        expect(captured()).not.toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
+
+        await controlInject(sock, 'recycle', '');
+        await sleep(2500);
+
+        expect(captured()).toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
+        expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+        expect(events).toContain('"kind":"operator-pin-healed"');
+
+        await rawInject(sock, 'QUIT\n');
+        await done;
+      } finally {
+        await new Promise<void>((r) => proxy.close(() => r()));
+      }
     },
     25_000,
   );
