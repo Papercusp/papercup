@@ -422,7 +422,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    "Bounded read-only SQL/EXPLAIN or relation description in operator Postgres. Tenant reads need scope unless `allowUnscoped`; pass `positiveControlSql` for zero-row absence claims. PostgreSQL regex repetition is limited to 255; use `left()`/`substring()` for larger excerpts. Rubrics use `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
+    "Bounded read-only SQL/EXPLAIN or relation description in operator Postgres. Tenant reads need scope unless `allowUnscoped`; pass `positiveControlSql` for zero-row absence claims. PostgreSQL regex repetition is limited to 255. Rubrics use `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:
@@ -430,7 +430,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. Rubrics: `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. `dbos.workflow_status` uses BIGINT epoch-ms `created_at`/`updated_at`; compare `(extract(epoch from now()) * 1000)::bigint` and existing `name`/`updated_at`. For absence, use a known-positive row-returning `positiveControlSql`, not an ungrouped scalar `count(*)`: it returns a row even when no source rows match. Raw `harness_shared.work_items`: `state` maps to table `status`, `id` maps to `feature_id`, completion uses `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`; set `allowUnboundedJsonSearch: true` deliberately.",
+      "Use `describe` before guessing schema. Rubrics: `rubrics:list`, `rubrics:get`, or `rubrics:search`; raw schema is `harness_shared.harness_plans`. `dbos.workflow_status` uses BIGINT epoch-ms `created_at`/`updated_at`; compare `(extract(epoch from now()) * 1000)::bigint` and existing `name`/`updated_at`. For absence, use a known-positive row-returning `positiveControlSql`, not an ungrouped scalar `count(*)`: it returns a row even when no source rows match. Raw `harness_shared.work_items`: `state` maps to table `status`, `id` maps to `feature_id`, completion uses `completion_ref` / `terminal_completion_ref`; describe `harness_shared.work_items` first. Alias duplicate columns and tighten truncated queries. For larger excerpts use `left(text, n)` or `substring(text from start for n)`. Avoid unbounded JSON-text LIKE/ILIKE; prefer indexed predicates or `activity:tool-log`/`dev:telemetry`; set `allowUnboundedJsonSearch: true` deliberately.",
     returns:
       'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
       `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +
