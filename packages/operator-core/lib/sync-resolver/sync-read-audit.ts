@@ -548,13 +548,14 @@ export async function measureSyncReadPayloadsViaRest(opts: {
       const res = await doFetch(url, { headers: { Authorization: `Bearer ${opts.token}` } });
       const text = await res.text();
       const ms = Date.now() - started;
+      const bytes = Buffer.byteLength(text, 'utf8');
       if (!res.ok) {
         // An errored fetch is never judged over-budget (its bytes are an error
         // body), but it still carries the ceilings so a reader can see what it
         // WOULD have been held to.
         measured.push({
           name,
-          bytes: text.length,
+          bytes,
           ms,
           rows: null,
           overBudget: false,
@@ -574,7 +575,7 @@ export async function measureSyncReadPayloadsViaRest(opts: {
       } catch {
         /* non-JSON body — keep rows null, still measure bytes */
       }
-      measured.push({ name, bytes: text.length, ms, rows, ...evaluateBudget(name, text.length, ms) });
+      measured.push({ name, bytes, ms, rows, ...evaluateBudget(name, bytes, ms) });
     } catch (err) {
       measured.push({
         name,
@@ -642,9 +643,9 @@ function finishReport(
  *   rest-query:143  body = await serializeJsonResponse(responseValue, itemCount)
  *   rest-query:94   the response is NOT compressed (loopback desktop sidecar)
  *
- * So the REST path's `text.length` and this function's `body.length` measure the
- * same string. `version` is a 13-digit epoch, so its contribution is length-stable
- * across runs.
+ * Both paths measure UTF-8 bytes, not JavaScript string length (UTF-16 code
+ * units). Non-ASCII payloads must face the same byte budget as ASCII payloads.
+ * `version` is a 13-digit epoch, so its contribution is length-stable across runs.
  *
  * ⚠ THAT EQUIVALENCE IS REASONED FROM THE SOURCE, NOT MEASURED HERE. Before you
  * trust a number this function produced, calibrate it against
@@ -703,7 +704,7 @@ export async function measureSyncReadPayloadsInProcess(opts: {
       }
       const rowCount = Array.isArray(resolved) ? resolved.length : 1;
       const body = await serializeJsonResponse({ rows: resolved, version: String(Date.now()) }, rowCount);
-      const bytes = body.length;
+      const bytes = Buffer.byteLength(body, 'utf8');
       measured.push({
         name,
         bytes,
