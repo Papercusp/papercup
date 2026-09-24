@@ -1126,7 +1126,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.session_briefs',
       'harness_shared.session_identity_activation_events',
     ],
-    argsSchema: z.object({ ownerId: z.string().trim().min(1).max(200).optional() }).optional(),
+    argsSchema: z.object({
+      ownerId: z.string().trim().min(1).max(200).optional(),
+      after: z.string().trim().min(1).max(200).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }).optional(),
     resolve: async (rawArgs) => {
       const [{ activeWorkspaceId }, { readIdentitySurface }] = await Promise.all([
         import('../workspace-registry'),
@@ -1135,6 +1139,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [await readIdentitySurface({
         workspaceId: activeWorkspaceId(),
         ownerId: (rawArgs as { ownerId?: string } | undefined)?.ownerId ?? null,
+        ...((rawArgs as { after?: string } | undefined)?.after
+          ? { after: (rawArgs as { after: string }).after } : {}),
+        ...((rawArgs as { limit?: number } | undefined)?.limit
+          ? { limit: (rawArgs as { limit: number }).limit } : {}),
       })];
     },
   },
