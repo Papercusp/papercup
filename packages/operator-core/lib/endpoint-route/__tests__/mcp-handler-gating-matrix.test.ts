@@ -1903,7 +1903,7 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
 
     const res = await callTool(
       'tools:invoke',
-      { name: 'rubrics:get', args: { rubricRef: NESTED_RUBRIC_ID } },
+      { name: 'rubrics:get', args: { rubricRef: NESTED_RUBRIC_ID, detail: 'full' } },
       scoped('ws-test'),
       { format: 'json' },
     );
