@@ -2768,6 +2768,53 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   });
 
+  // PUI-BASELINE (P-001) counterexample, never a release journey. It runs only
+  // with PUI_CAPTURE_BASELINE=1 and PUI_BIN naming a binary built from the
+  // pre-fix source:
+  //   git archive 7b87064faa apps/tui apps/pui-companion-proto | tar -x -C "$D"
+  //   (cd "$D/apps/tui" && CARGO_TARGET_DIR="$D/target" cargo build --locked)
+  // That binary launched a deferred native pane (defer_spawn) with no attached
+  // engine, so the first draft never reached an SU command or an engine and no
+  // reply could stream. The launch trace is what tells that apart from a slow
+  // or silent engine. Against the current binary this test must FAIL; that is
+  // its calibration, and the journey below is the fixed behaviour.
+  test.runIf(process.env.PUI_CAPTURE_BASELINE === '1')(
+    'PUI-BASELINE: a pre-fix first submit launches a deferred native pane and never reaches an engine',
+    async ({ onTestFailed }) => {
+      const prompt = `PUI-BASELINE-${Date.now()}`;
+      const pane = new PuiPane(bin, operatorPort, home);
+      onTestFailed(() => console.info('PUI_BASELINE_FAILURE', JSON.stringify({ binarySha256, launchRequests,
+        traffic: sessionTraffic, commandPosts: commandPosts.length, engineRequests: scriptedEngine.requests.length,
+        nativeTerminalLaunches: nativeTerminalLaunch.mock.calls.length, ...pane.failureEvidence() })));
+      try {
+        // The pre-fix key path: the global Agent Chat action, leave the
+        // restored composer, then type through PUI's own composer.
+        await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+        pane.write('o');
+        await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
+        pane.escape();
+        await pane.waitFor('i type · v speak');
+        pane.write('i');
+        pane.write(prompt);
+        pane.enter();
+        await vi.waitFor(() => {
+          expect(sessionTraffic.some((entry) => entry.path === '/api/adv/sessions/launch-su')).toBe(true);
+        }, { timeout: 30_000, interval: 250 });
+        // Give an attached engine every chance to answer before judging silence.
+        await new Promise((resolve) => setTimeout(resolve, 15_000));
+        expect(pane.screen()).toContain(prompt);
+        expect(sessionTraffic).toEqual(expect.arrayContaining([
+          expect.objectContaining({ method: 'POST', path: '/api/adv/sessions/launch-su', status: 200,
+            deferSpawn: true, attachedEngine: false, nativeSessionPresent: false }),
+        ]));
+        expect(commandPosts).toHaveLength(0);
+        expect(scriptedEngine.requests).toHaveLength(0);
+        expect(pane.screen()).not.toContain(scriptedEngine.successText);
+        console.info('PUI_BASELINE_COUNTEREXAMPLE', JSON.stringify({ binary: bin, binarySha256, prompt, launchRequests,
+          traffic: sessionTraffic, nativeTerminalLaunches: nativeTerminalLaunch.mock.calls.length, screen: pane.screen() }));
+      } finally { await pane.stop().catch(() => {}); }
+    }, 120_000);
+
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
     const prompt = '  PUI exact Unicode draft λ 雪  ';
     const pane = new PuiPane(bin, operatorPort, home);
