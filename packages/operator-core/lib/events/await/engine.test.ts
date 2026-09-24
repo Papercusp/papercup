@@ -38,6 +38,7 @@ const h = vi.hoisted(() => ({
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
     recordKeyFire: vi.fn(async () => {}),
+    reconcileFiredWakeDeliveries: vi.fn(async () => 0),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
     claimSpecificOnceAwaits: vi.fn(async (ids: number[]): Promise<AwaitRow[]> =>
@@ -48,7 +49,7 @@ const h = vi.hoisted(() => ({
   executeWake: vi.fn(
     async (
       _delivery: DeliveryWork,
-      _deps: { onResumeTurnExit?: (delivery: DeliveryWork, exit: unknown) => void },
+      _deps: { onResumeTurnExit?: (delivery: DeliveryWork, exit: unknown, context?: unknown) => void },
     ): Promise<unknown> => ({ kind: 'delivered', channel: 'resume' }),
   ),
   // EI-16559: the REAL degradeToInboxOrDrop calls sendMessage under the hood; the
@@ -62,6 +63,7 @@ const h = vi.hoisted(() => ({
     }),
   ),
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
+  fetchPresenceFleet: vi.fn(async () => new Map<string, { fleetSlug: string; fleetRole: string }>()),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
   listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
@@ -81,6 +83,8 @@ const h = vi.hoisted(() => ({
   compose: {
     bumpNode: vi.fn(),
     claimDueComposedRoots: vi.fn(async () => []),
+    reconcileComposedRoot: vi.fn(async () => ({ delivered: false, settled: false })),
+    reconcileComposedRoots: vi.fn(async () => ({ roots: 0, deliveries: 0 })),
     findRootAnchor: vi.fn(),
     insertComposedRootDelivery: vi.fn(),
     loadTreeLeaves: vi.fn(),
@@ -92,6 +96,7 @@ const h = vi.hoisted(() => ({
 vi.mock('./store', () => h.store);
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
+vi.mock('../../agent-tools/coordination/presence-fleet', () => ({ fetchPresenceFleet: h.fetchPresenceFleet }));
 vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEventKeySubscribers: h.listEventKeySubscribers }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
@@ -908,6 +913,50 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       attempts: 8,
       last_error: 'resume-turn-death:agent_crash',
     });
+  });
+
+  it('drops the terminal delivery and notifies the fleet when resume detects a poisoned session', async () => {
+    const poisoned = workRow({ id: 95, subscriberId: 'su-owner', eventKey: 'inbox:wake', attempts: 1 });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([poisoned]);
+    h.fetchPresenceFleet.mockResolvedValueOnce(new Map([['su-owner', { fleetSlug: 'drain-fleet', fleetRole: 'member' }]]));
+    h.executeWake.mockImplementationOnce(async (d, deps) => {
+      deps.onResumeTurnExit?.(
+        d,
+        {
+          exitCode: 1,
+          signal: null,
+          stdoutTail: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+          stderrTail: '',
+        },
+        {
+          advSessionId: 77,
+          ownerId: 'su-owner',
+          sessionId: 'native-77',
+          startedAt: '2026-09-24T10:00:00.123Z',
+          workspaceId: 'ws-test',
+          agent: 'claude',
+          transcriptPath: '/tmp/native-77.jsonl',
+          poisoned: true,
+          poisonReason: 'three consecutive unavailable tool references',
+        },
+      );
+      return { kind: 'delivered', channel: 'resume-headless' };
+    });
+
+    await pumpWakeDeliveries('ws-test');
+
+    await vi.waitFor(() => expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(
+      95,
+      'three consecutive unavailable tool references',
+    ));
+    await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+    expect(h.store.reopenDeliveredAfterResumeDeath).not.toHaveBeenCalled();
+    const sendCall = h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[]; summary: string; body: string; extra: Record<string, unknown> }];
+    const message = sendCall?.[1];
+    expect(message.to).toEqual(['@fleet:drain-fleet', 'su-owner']);
+    expect(message.summary).toContain('quarantined');
+    expect(message.body).toContain('work-item claims');
+    expect(message.extra).toMatchObject({ adv_session_id: 77, terminal_status: 'poisoned' });
   });
 
   it('does not reopen a timeout-only delivery after detached death', async () => {
