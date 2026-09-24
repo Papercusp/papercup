@@ -390,7 +390,8 @@ function createGitSyncActionLivenessGuard(opts: {
         idleCheck = null;
         expire('idle');
       });
-      idleCheck.unref?.();
+      // Keep the one-shot verdict runnable even when a stalled await produces
+      // no events before the hard deadline. stop/touch still cancel it.
     }, opts.idleTimeoutMs);
     idleTimer.unref?.();
   };
