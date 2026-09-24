@@ -17,6 +17,7 @@ import type { PlanPlacementProviderInput } from '../../../agent-obligation-provi
 import { projectAgentObligationAgenda } from '../../../agent-obligations';
 import { compileGoalPlanPlacement } from '../../../goal-launch-settings';
 import type { GoalPortfolioBrief, GoalLaunchResolution } from '../../../goal-launch-settings';
+import { DEFAULT_CLAIM_SPEC } from '../../../scheduler/claim-spec';
 import { SU_RUBRIC } from '../../rubrics/su';
 
 export const S33_CASES = [
@@ -42,10 +43,16 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
     plan: { harness: 'papercusp', slug: PLAN, ambiguousMatches: 1 },
     status: 'ready', itemStatuses: ['todo'], actionableItemId: 'P-001',
     source: working ? {
-      claims: [{ itemId: 'P-001', ownerId: 'su-live-peer', fleetSlug: 'agenda-fixture-fleet', holderLive: true }],
+      goalHolderOwnerIds: [OWNER],
+      claims: [{
+        itemId: 'P-001', ownerId: 'su-live-peer', fleetSlug: 'agenda-fixture-fleet',
+        holderLive: true, workItemId: 'WI-93302', expiresAt: '2026-09-13T20:20:00.000Z',
+      }],
       fleet: {
-        slug: 'agenda-fixture-fleet', leaderOwnerId: 'su-independent', leaderLive: true,
-        liveMembers: 1, target: 1, launchTransaction: { state: 'verified' },
+        slug: 'agenda-fixture-fleet', controlState: 'active',
+        leaderOwnerId: 'su-independent', leaderLive: true, liveMembers: 1, target: 1,
+        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: PLAN } } },
+        launchTransaction: { state: 'verified' },
       },
     } : {},
     now: new Date(NOW),

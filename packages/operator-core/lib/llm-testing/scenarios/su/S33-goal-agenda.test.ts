@@ -42,8 +42,11 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     const { s33: _alias, ...wire } = payload;
     const retained = captureToolResultEvidence('coord:orient', JSON.stringify(wire), false);
     expect(retained.truncated).toBe(false);
-    expect(JSON.parse(retained.output).obligationObservation.goalId).toBe('goal-agenda-fixture');
-    expect(retained.output).not.toMatch(/s33|isolated|phase|test world/i);
+    const retainedWire = JSON.parse(retained.output);
+    expect(retainedWire.obligationObservation.goalId).toBe('goal-agenda-fixture');
+    expect(retainedWire).not.toHaveProperty('s33');
+    // The public sourceGeneration intentionally contains "s33" in this fixture.
+    expect(retained.output).not.toMatch(/isolated|phase|test world/i);
   });
 
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {

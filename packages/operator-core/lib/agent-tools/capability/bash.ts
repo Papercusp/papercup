@@ -848,38 +848,40 @@ export default defineTool({
       // behavior. So say it instead of fixing it — the caller keeps sovereignty
       // over the command, and stops needing to know the heap requirement by heart.
       const heapNote = typecheckHeapLaunchWarning(command) ?? '';
+      const payload = {
+        ok: true,
+        bash_id: job.id,
+        task_id: job.taskId,
+        status: 'running',
+        cwd,
+        log_path: job.logPath,
+        // WI-6677: state the deadline at LAUNCH. It is enforced by SIGTERM/SIGKILL,
+        // so a caller who needs longer must know now — not discover it as an
+        // unexplained death two hours in.
+        timeout_ms: job.timeoutMs,
+        deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+        ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
+        advice:
+          `Background shell started. Preserve durable task_id "${job.taskId}" across carry. ` +
+          `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
+          `(or { bash_id: "${job.id}" } in this launching context). ` +
+          `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
+          `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
+          `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if the shell job needs longer. ` +
+          `All descendants in this task's confined service share that deadline; use a dedicated service launcher ` +
+          `when a descendant needs a separate lifetime.` +
+          bufferingNote +
+          selfRedirectLaunchNote +
+          heapNote,
+      };
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              bash_id: job.id,
-              task_id: job.taskId,
-              status: 'running',
-              cwd,
-              log_path: job.logPath,
-              // WI-6677: state the deadline at LAUNCH. It is enforced by SIGTERM/SIGKILL,
-              // so a caller who needs longer must know now — not discover it as an
-              // unexplained death two hours in.
-              timeout_ms: job.timeoutMs,
-              deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
-              ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
-              advice:
-                `Background shell started. Preserve durable task_id "${job.taskId}" across carry. ` +
-                `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
-                `(or { bash_id: "${job.id}" } in this launching context). ` +
-                `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
-                `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
-                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if the shell job needs longer. ` +
-                `All descendants in this task's confined service share that deadline; use a dedicated service launcher ` +
-                `when a descendant needs a separate lifetime.` +
-                bufferingNote +
-                selfRedirectLaunchNote +
-                heapNote,
-            }),
+            text: JSON.stringify(payload),
           },
         ],
+        ...(ctx.codeMode ? { structuredContent: payload } : {}),
       };
     }
 
