@@ -270,15 +270,113 @@ sweep_lock_repo_root() {
   git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true
 }
 
+mutation_probe_local_green_operator() {
+  node - <<'NODE'
+const { readFileSync } = require('node:fs');
+const { homedir } = require('node:os');
+const { join } = require('node:path');
+const env = process.env;
+function validPort(raw) {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^\d+$/.test(value)) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? value : null;
+}
+
+let base = '';
+let resolved = false;
+const configuredBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
+  ? env.PAPERCUSP_OPERATOR_BASE.trim()
+  : '';
+if (configuredBase) {
+  base = configuredBase;
+  resolved = true;
+}
+if (!resolved) {
+  const selfPort = validPort(env.PAPERCUSP_HONO_PORT);
+  if (selfPort) {
+    const targetPort = validPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? '3070') ?? '3070';
+    const proxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+      ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+      : '';
+    base = proxyBase && selfPort === targetPort
+      ? proxyBase
+      : 'http://127.0.0.1:' + selfPort;
+    resolved = true;
+  } else if (Object.prototype.hasOwnProperty.call(env, 'PAPERCUSP_OPERATOR_URL')) {
+    base = env.PAPERCUSP_OPERATOR_URL ?? '';
+    resolved = true;
+  }
+}
+if (!resolved) {
+  try {
+    const discovery = JSON.parse(readFileSync(join(homedir(), '.papercusp', 'operator.json'), 'utf8'));
+    if (typeof discovery?.httpUrl === 'string' && discovery.httpUrl) base = discovery.httpUrl;
+    else if (discovery?.port) base = 'http://127.0.0.1:' + discovery.port;
+  } catch {
+    // A missing operator.json is the ptool dev-box default.
+  }
+  if (!base) base = 'http://127.0.0.1:3070';
+}
+
+try {
+  const endpoint = new URL(base);
+  const local = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(endpoint.hostname);
+  const port = endpoint.port || (endpoint.protocol === 'https:' ? '443' : '80');
+  process.exit(local && ['3070', '9071'].includes(port) ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+mutation_probe_ptool_timeout() {
+  local detail
+  detail="$(tr '\n' ' ' < "$1" 2>/dev/null)"
+  printf '%s' "$detail" | grep -Eiq -- '(-32001.*timed out|timed out.*-32001|ETIMEDOUT)'
+}
+
+# ptool's -32001 formatter says a connected call may already have executed.
+# Retry only these reads and the same-lock heartbeat extensions: each heartbeat
+# extends the existing lock identified below, then the existing ownership check
+# verifies the returned lock id. Do not add arbitrary writes to this allowlist.
+mutation_probe_fallback_safe_tool() {
+  case "$1" in
+    coord:presence|locks:queue|locks:list|locks:heartbeat|locks:heartbeat_resource) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 ptool_json() {
   # Surface the tool's own stderr on failure (WI-10002758). Discarding it
   # turned a crisp dispatch refusal (e.g. projection_invalid) into the opaque
   # "could not ..." the caller prints, which hid a probe that could never run.
   local tool="$1" args="$2" projection="$3" result err_file rc
+  local fallback_err_file fallback_result fallback_rc temp_dir
   command -v ptool >/dev/null 2>&1 || { log "ptool $tool: ptool is not on PATH"; return 1; }
   err_file="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-ptool.XXXXXX")" || return 1
   result="$(printf '%s' "$args" | ptool "$tool" --json - --projection "$projection" 2>"$err_file")"
   rc=$?
+  if [ "$rc" -ne 0 ] &&
+    mutation_probe_fallback_safe_tool "$tool" &&
+    mutation_probe_local_green_operator &&
+    mutation_probe_ptool_timeout "$err_file"; then
+    temp_dir="$TMPDIR"
+    [ -n "$temp_dir" ] || temp_dir=/tmp
+    fallback_err_file="$(mktemp "$temp_dir/mutation-probe-ptool-fallback.XXXXXX")" || fallback_err_file=""
+    if [ -n "$fallback_err_file" ]; then
+      fallback_result="$(printf '%s' "$args" | ptool "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
+      fallback_rc=$?
+      if [ "$fallback_rc" -eq 0 ] && [ -n "$fallback_result" ]; then
+        log "ptool $tool timed out on local :3070/:9071; recovered once through staging :3170"
+        rm -f "$err_file" "$fallback_err_file"
+        printf '%s' "$fallback_result"
+        return 0
+      fi
+      log "ptool $tool staging :3170 fallback failed (exit $fallback_rc): $(tail -c 600 "$fallback_err_file" | tr '\n' ' '); primary timeout: $(tail -c 600 "$err_file" | tr '\n' ' ')"
+      rm -f "$fallback_err_file"
+    fi
+  fi
   if [ "$rc" -ne 0 ] || [ -z "$result" ]; then
     log "ptool $tool failed (exit $rc): $(tail -c 600 "$err_file" | tr '\n' ' ')"
     rm -f "$err_file"
