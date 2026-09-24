@@ -169,6 +169,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(args[0]).toBe('tsx');
     expect(args[1]).toContain('apps/operator/bin/spawner-sidecar.ts');
     expect(opts.env?.PAPERCUSP_SPAWNER_IPC_SOCKET).toBe('/tmp/spawner-sidecar.sock');
+    expect(opts.env?.PAPERCUSP_SPAWNER_SCOPE_UNIT).toMatch(/^pc-[0-9a-z]{4,64}\.scope$/);
     expect(isSpawnerSidecarRunning()).toBe(true);
     expect(getSpawnerSidecarProcess()).toBe(child);
     expect(child.unref).toHaveBeenCalledOnce();

@@ -29,6 +29,8 @@ import {
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
 import { managedSpawn } from '../task-manager/managed-spawn';
+import { newTaskId, scopeUnitForTask } from '../task-manager/types';
+import { SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 
 // This package is ESM (type:module), where `__dirname` is undefined. Derive the
 // module dir from import.meta (the substrate EI-1612 fix) so the sidecar script
@@ -338,6 +340,10 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel,
   // mirroring the substrate sidecar's spawn shape (harmless here — the spawner
   // sidecar talks over the Unix socket, not the handle channel).
+  const taskId = newTaskId();
+  // This is a launch identity, not a scope guessed from inherited membership.
+  // The server only advertises it if /proc confirms confinement actually worked.
+  env[SPAWNER_SCOPE_ENV] = scopeUnitForTask(taskId);
   const managed = await managedSpawn(
     cmd,
     args,
@@ -349,6 +355,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       detail: { socketPath: resolvedSocket },
     },
     {
+      taskId,
       spawnOptions: {
         env,
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

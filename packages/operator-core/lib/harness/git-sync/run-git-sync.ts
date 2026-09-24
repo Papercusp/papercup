@@ -119,10 +119,8 @@ const gitSubcommand = (args: string[]): string => {
   return index >= 0 ? args[index] : '';
 };
 
-/** Only these read-only commands may be retried after an IPC transport loss.
- * A mutating Git command stays local while cancellation across sidecar death
- * cannot prove its child exited before git-sync releases repository locks. */
-const GIT_SIDECAR_SIGNAL_SAFE_READS = new Set([
+/** These read-only commands need no optional Git locks while offloaded. */
+const GIT_SIDECAR_READ_ONLY_COMMANDS = new Set([
   'rev-parse', 'cat-file', 'ls-files', 'ls-tree', 'merge-base', 'rev-list',
   'for-each-ref',
 ]);
@@ -343,15 +341,16 @@ export const runGitBounded = async (
     PAPERCUSP_GIT_SYNC_PUSH: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
-  // Signal-bearing read-only calls can use the sidecar's process:exec cancellation
-  // channel. If transport is lost, retrying a read cannot race a repository
-  // mutation. Keep mutating calls local until an IPC-loss exit fence is proven.
-  const sidecarSafe = !options.signal || GIT_SIDECAR_SIGNAL_SAFE_READS.has(gitSubcommand(args));
-  if (gitSyncSidecarEnabled() && sidecarSafe) {
+  // Cancellable calls bind dispatch to a verified server/connection and retain
+  // this promise through transport recovery until child exit is proven. Only a
+  // failure BEFORE dispatch rejects into local fallback; a lost execution result
+  // resolves as unknown and must never replay a mutation.
+  const readOnly = GIT_SIDECAR_READ_ONLY_COMMANDS.has(gitSubcommand(args));
+  if (gitSyncSidecarEnabled()) {
     try {
       options.onProgress?.();
       const result = await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs,
-        options.signal ? { ...env, GIT_OPTIONAL_LOCKS: '0' } : env, {
+        options.signal && readOnly ? { ...env, GIT_OPTIONAL_LOCKS: '0' } : env, {
         idleTimeoutMs: network ? timeoutMs : undefined,
         signal: options.signal,
         onProgress: options.onProgress,

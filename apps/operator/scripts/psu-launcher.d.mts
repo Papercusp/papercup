@@ -3694,6 +3694,11 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
     launchFreshSuImpl?: typeof launchFreshSu | undefined;
     reportLaunchFailureImpl?: typeof reportSessionPortLaunchFailure | undefined;
 }): Promise<void>;
+/** Require the signed role-scoped MCP config produced by bootstrap-role.
+ * OMP's per-session config copies these exact bytes; passing an omitted field
+ * directly to readFileSync turns a server/client contract mismatch into the
+ * opaque Node error "The path argument must be of type string". */
+export function requireOmpRoleMcpJsonPath(res: any): string;
 /** True when an --agent value can't back a role session (claude/omp/codex can). */
 export function agentInvalidForRole(agent: any): boolean;
 /** which/where <bin> → absolute path or null — the exact gate for psu's bare-name

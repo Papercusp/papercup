@@ -26,7 +26,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: {} }),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
+vi.mock('../../papercusp-root', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  papercuspPathForWorkspace: () => '/tmp/papercusp-ws',
+}));
 vi.mock('../../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));
 vi.mock('../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({
@@ -44,6 +47,12 @@ vi.mock('../coordination/identity', () => ({
     workspaceId: 'ws-test',
     userId: null,
   }),
+}));
+
+const identityReceipt = { marker: 'goal-component-bound' };
+const bindIdentityMock = vi.fn(async (_input: unknown) => identityReceipt);
+vi.mock('../../agent-identities/source', () => ({
+  bindSelectedIdentityOutputs: (input: unknown) => bindIdentityMock(input),
 }));
 
 /** Every side effect, in the order it happened — property (1) is an ORDER claim. */
@@ -271,6 +280,35 @@ describe('goals:start — the happy path', () => {
     // Free-form prose must never ride the greeting one-liner.
     const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(cmd).not.toContain('Ship a paid app');
+  });
+
+  it('pins the exact successful kickoff through the selected GOAL component without changing delivery', async () => {
+    const metadata = vi.fn();
+    const res = await (goalsStart as unknown as {
+      handler: (a: unknown, c: unknown) => Promise<unknown>;
+    }).handler(ARGS, { ...(ctx as object), metadata });
+    expect(isError(res)).toBe(false);
+    const env = (spawnConsoleMock.mock.calls[0][0] as {
+      envelope: { env: Record<string, string> };
+    }).envelope.env;
+    expect(metadata).toHaveBeenCalledTimes(1);
+    const receipt = metadata.mock.calls[0]![0].identityContributions;
+    expect(receipt).toBe(identityReceipt);
+    expect(bindIdentityMock).toHaveBeenCalledTimes(1);
+    const binding = bindIdentityMock.mock.calls[0]![0] as {
+      identityId: string;
+      outputs: Array<{ contributionId: string; value?: unknown; omission?: { reason: string } }>;
+    };
+    expect(binding.identityId).toBe('su.mode-goal');
+    expect(binding.outputs[0]).toMatchObject({ contributionId: 'current-mode-state', value: { ok: true } });
+    expect(binding.outputs[1]).toEqual({
+      contributionId: 'goal-kickoff', value: env.PAPERCUSP_KICKOFF_PROMPT,
+    });
+    expect(binding.outputs[2]).toEqual({
+      contributionId: 'goal-portfolio', omission: { reason: 'not-requested' },
+    });
+    expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain(dataOf(res).id as string);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
 
   it('reads goal history in the production handler and injects it into the kickoff env', async () => {
@@ -628,6 +666,16 @@ describe('the kickoff brief', () => {
     expect(brief).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z');
     expect(brief).toContain('Queue: total=3; terminal=1; in-flight=1');
     expect(brief).toContain('1. Delegate the next worklist item.');
+  });
+
+  it('reuses portfolio text already produced by the launch resolver', () => {
+    const rendered = 'GOAL PORTFOLIO SNAPSHOT — exactly one producer output';
+    const brief = buildGoalKickoffBrief({
+      goalId: 'g-1', title: 't',
+      portfolio: {} as GoalPortfolioBrief,
+      renderedPortfolio: rendered,
+    });
+    expect(brief).toContain(rendered);
   });
 
   it('puts current goal authority before the bounded own/descendant history', () => {

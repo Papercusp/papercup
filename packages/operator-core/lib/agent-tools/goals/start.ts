@@ -149,6 +149,8 @@ export function buildGoalKickoffBrief(opts: {
   budgetWindowSec?: number | null;
   /** P-012: server-composed live portfolio projection; omitted for legacy/tests. */
   portfolio?: GoalPortfolioBrief | null;
+  /** The producer output when the launch sink has already rendered the portfolio. */
+  renderedPortfolio?: string | null;
   /** Fixed-budget goal-own + descendant continuity, newest authority first. */
   history?: GoalHistoryContext | null;
   /** Injectable for tests; defaults to the moment the brief is written. */
@@ -178,6 +180,9 @@ export function buildGoalKickoffBrief(opts: {
   const spendVisibility =
     'SPEND VISIBILITY — use `goals:pots { goalId }` for measured child-fleet spend. No reliable interactive-session attribution source is exposed; do not invent per-session actuals.';
   const writtenAt = (opts.writtenAt ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const portfolioBlock = opts.renderedPortfolio === undefined
+    ? opts.portfolio ? renderGoalPortfolioBrief(opts.portfolio) : null
+    : opts.renderedPortfolio;
   return [
     `You are in GOAL mode on goal \`${opts.goalId}\`, started by the owner at ${writtenAt}`,
     '(the moment THIS brief was written — if that is not roughly now, it reached you late).',
@@ -193,7 +198,7 @@ export function buildGoalKickoffBrief(opts: {
       ? `CEILING — ${ceiling} declared. Do not quietly exceed it.`
       : 'CEILING — none declared. Flag before any large spend.',
     spendVisibility,
-    ...(opts.portfolio ? ['', renderGoalPortfolioBrief(opts.portfolio)] : []),
+    ...(portfolioBlock ? ['', portfolioBlock] : []),
     ...(opts.history ? ['', renderGoalHistoryContext(opts.history)] : []),
     '',
     'Your mode contract governs how to run this, including the mandatory kickoff question.',
@@ -204,6 +209,42 @@ export function buildGoalKickoffBrief(opts: {
   ]
     .filter((l) => l !== '')
     .join('\n');
+}
+
+/** Attach a receipt for the exact launch text after a successful spawn. The
+ * existing kickoff environment variable remains the delivery sink. */
+export async function recordGoalLaunchIdentityBinding(
+  input: {
+    goalId: string; ownerId: string; workspaceId: string;
+    kickoff: string; portfolio: string | null; modeState: unknown;
+  },
+  metadata?: (data: Record<string, unknown>) => void,
+  binder?: typeof import('../../agent-identities/source').bindSelectedIdentityOutputs,
+): Promise<void> {
+  if (!metadata) return;
+  try {
+    const bind = binder ?? (await import('../../agent-identities/source')).bindSelectedIdentityOutputs;
+    const receipt = await bind({
+      identityId: 'su.mode-goal',
+      sourceTier: 'selected',
+      outputs: [
+        { contributionId: 'current-mode-state', value: input.modeState },
+        { contributionId: 'goal-kickoff', value: input.kickoff },
+        input.portfolio
+          ? { contributionId: 'goal-portfolio', value: input.portfolio }
+          : { contributionId: 'goal-portfolio', omission: { reason: 'not-requested' } },
+      ],
+      scope: { workspace: input.workspaceId, goal: input.goalId, ownerId: input.ownerId },
+      observedAt: new Date().toISOString(),
+    });
+    metadata({ identityContributions: receipt });
+  } catch (error) {
+    metadata({ identityContributions: {
+      identityId: 'su.mode-goal', status: 'unavailable',
+      errorRef: 'goals:start:identity-binding-failed',
+      detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    } });
+  }
 }
 
 export const GOAL_HISTORY_CONTEXT_HEADING = 'GOAL HISTORY — own and bounded descendant evidence';
@@ -827,19 +868,23 @@ export default defineTool({
     // consumes it only here, immediately before the holder brief is rendered.
     const { readGoalHistoryContext } = await import('../../prior-attempt-context');
     const history = await readGoalHistoryContext(id);
+    const portfolio = goalLaunch.goalBrief?.portfolio ?? null;
+    const portfolioText = portfolio ? renderGoalPortfolioBrief(portfolio) : null;
+    const kickoff = buildGoalKickoffBrief({
+      goalId: id,
+      title: args.title,
+      killCriterion: args.killCriterion,
+      budgetCents: args.budgetCents,
+      body: args.body ?? null,
+      standing: args.standing ?? false,
+      budgetWindowSec: args.budgetWindowSec ?? null,
+      portfolio,
+      renderedPortfolio: portfolioText,
+      history,
+    });
     const env = {
       ...base.env,
-      PAPERCUSP_KICKOFF_PROMPT: buildGoalKickoffBrief({
-        goalId: id,
-        title: args.title,
-        killCriterion: args.killCriterion,
-        budgetCents: args.budgetCents,
-        body: args.body ?? null,
-        standing: args.standing ?? false,
-        budgetWindowSec: args.budgetWindowSec ?? null,
-        portfolio: goalLaunch.goalBrief?.portfolio ?? null,
-        history,
-      }),
+      PAPERCUSP_KICKOFF_PROMPT: kickoff,
     };
     const label = `goal · ${args.title.slice(0, 40)}`;
 
@@ -865,6 +910,10 @@ export default defineTool({
           'nothing was left behind, so retrying is safe.',
       );
     }
+
+    await recordGoalLaunchIdentityBinding({
+      goalId: id, ownerId, workspaceId, kickoff, portfolio: portfolioText, modeState: modeRes,
+    }, ctx.metadata);
 
     // ── 3.5 the drain lane's puller (P-001) ───────────────────────────────
     // A lane needs a MEMBER, not just a spec. Spawned LAST on purpose: every

@@ -45,8 +45,9 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
-import { SPAWNER_SOCKET_ENV } from './spawner-socket-path';
+import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-path';
 import type { SpawnerCallOpts } from './spawner-ipc-client';
+import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
@@ -83,6 +84,10 @@ export interface GitStdinRunResult {
  */
 let sidecarModulesPromise: Promise<{
   spawnSpawnerSidecar: () => Promise<unknown>;
+  SpawnerIpcClient: new (socketPath?: string) => {
+    call<T>(method: string, params: unknown, opts?: SpawnerCallOpts): Promise<T>;
+    close(): void;
+  };
   getSpawnerIpcClient: () => {
     call<T>(method: string, params: unknown, opts?: SpawnerCallOpts): Promise<T>;
   };
@@ -91,11 +96,11 @@ let sidecarModulesPromise: Promise<{
 function loadSidecarModules(): NonNullable<typeof sidecarModulesPromise> {
   if (!sidecarModulesPromise) {
     sidecarModulesPromise = (async () => {
-      const [{ spawnSpawnerSidecar }, { getSpawnerIpcClient }] = await Promise.all([
+      const [{ spawnSpawnerSidecar }, { getSpawnerIpcClient, SpawnerIpcClient }] = await Promise.all([
         import('./spawner-sidecar-spawn'),
         import('./spawner-ipc-client'),
       ]);
-      return { spawnSpawnerSidecar, getSpawnerIpcClient } as never;
+      return { spawnSpawnerSidecar, getSpawnerIpcClient, SpawnerIpcClient } as never;
     })().catch((e) => {
       // Never cache a failed load — a transient failure must not permanently
       // pin every future call onto the local-spawn fallback.
@@ -464,10 +469,10 @@ export function resetSidecarFallbackStatsForTest(): void {
 }
 
 /**
- * Execute `git <args>` inside the spawner sidecar. Rejects if the sidecar is
- * unreachable — every caller is expected to fall back to a local spawn (and to
- * report it via {@link noteSidecarFallback}), so a sidecar problem degrades
- * performance rather than breaking git.
+ * Execute `git <args>` inside the spawner sidecar. A pre-dispatch failure
+ * rejects for local fallback. Signal-bearing calls retain their lifetime on
+ * transport loss: they drain before resolving, and a lost result is unknown,
+ * never permission to replay. See runCommandViaSpawnerSidecar.
  *
  * The sidecar owns the real kill-timeout; the client timeout is deliberately
  * slack so it cannot race a legitimate timeout RESPONSE coming back.
@@ -491,10 +496,11 @@ export async function runGitViaSpawnerSidecar(
  * command. For non-git spawns on a request host (systemctl / ps in the systemd
  * probe) that would otherwise fork from the big process.
  *
- * Same contract as {@link runGitViaSpawnerSidecar}: REJECTS on any transport
- * problem (circuit open, sidecar unreachable, IPC failure) so the caller falls
- * back to a local spawn and reports it via {@link noteSidecarFallback}; a child
- * that ran and exited non-zero RESOLVES with its code. `code: -1` with stderr
+ * A pre-dispatch problem (circuit open, sidecar unreachable, missing containment)
+ * rejects for local fallback via {@link noteSidecarFallback}. Signal-bearing
+ * calls recover after dispatch without rejecting into a possible duplicate
+ * mutation; calls without a signal retain the legacy transport-error contract.
+ * A child that ran and exited non-zero resolves with its code. `code: -1` with stderr
  * starting `spawner sidecar ` is the sidecar's OWN infrastructure fault (handoff /
  * admission / could-not-spawn, see sidecar-exec-process.ts) —
  * {@link isSidecarInfrastructureFault} names it so callers can fall back instead
@@ -511,10 +517,16 @@ export async function runCommandViaSpawnerSidecar(
   const aborted = (): GitRunResult => ({ code: -1, stdout: '', stderr: `${command} aborted before sidecar process start` });
   if (opts.signal?.aborted) return aborted();
   assertSidecarCircuitClosed();
-  const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
+  const { spawnSpawnerSidecar, getSpawnerIpcClient, SpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
   if (opts.signal?.aborted) return aborted();
-  const client = getSpawnerIpcClient();
+  const socketPath = resolveSpawnerSocketPath();
+  // A drain revokes one connection. Give a cancellable command its own so it
+  // cannot abort other calls multiplexed through the host's shared client.
+  const isolated = opts.signal ? new SpawnerIpcClient(socketPath) : null;
+  const client = isolated ?? getSpawnerIpcClient();
+  let fence: { serverGeneration: string; connectionId: string } | undefined;
+  let containment: SidecarContainment | undefined;
   let requestId: number | undefined;
   let cancelSent = false;
   const onAbort = (): void => {
@@ -526,6 +538,18 @@ export async function runCommandViaSpawnerSidecar(
   };
   opts.signal?.addEventListener('abort', onAbort, { once: true });
   try {
+    if (isolated) {
+      const preflight = await client.call<{
+        processExecFence?: typeof fence;
+        processExecContainment?: SidecarContainment | null;
+      }>('spawn:cancel', {}, { timeoutMs: 5000 });
+      fence = preflight.processExecFence;
+      containment = preflight.processExecContainment ?? undefined;
+      if (!fence?.serverGeneration || !fence.connectionId || !containment || !sidecarContainmentCurrent(containment)) {
+        throw new Error('sidecar execution containment unavailable before dispatch');
+      }
+      if (opts.signal?.aborted) return aborted();
+    }
     const res = await client.call<GitRunResult>(
       'process:exec',
       {
@@ -535,6 +559,7 @@ export async function runCommandViaSpawnerSidecar(
         env: opts.env,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,
+        ...(fence ? { fence } : {}),
       },
       {
         timeoutMs: opts.timeoutMs + 35_000,
@@ -547,8 +572,39 @@ export async function runCommandViaSpawnerSidecar(
     );
     noteSidecarSuccess();
     return res;
+  } catch (error) {
+    // Before dispatch a rejection is safe for local fallback. Afterwards keep
+    // the caller's repository lease until this exact execution cannot run.
+    if (!isolated || !fence || !containment || requestId === undefined) throw error;
+    isolated.close();
+    const unknownResult = (): GitRunResult => ({
+      code: -1, stdout: '',
+      stderr: 'sidecar execution outcome unavailable after verified process exit; command was not replayed',
+    });
+    let nextWarning = 0;
+    for (;;) {
+      const recovery = new SpawnerIpcClient(socketPath);
+      try {
+        const drained = await recovery.call<{ exitConfirmed: boolean; result: GitRunResult | null }>(
+          'process:drain', { ...fence, requestId }, { timeoutMs: 0 },
+        );
+        if (drained.exitConfirmed === true) return drained.result ?? unknownResult();
+      } catch {
+        // A reconnect may reach a newer server. Only the old kernel identity
+        // and scope, never the new server or a kill acknowledgement, can settle it.
+      } finally {
+        recovery.close();
+      }
+      if (await reapDeadSidecar(containment)) return unknownResult();
+      if (Date.now() >= nextWarning) {
+        console.error('[spawner-sidecar] process exit remains unverified; retaining caller lease', { requestId, fence });
+        nextWarning = Date.now() + 60_000;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+    }
   } finally {
     opts.signal?.removeEventListener('abort', onAbort);
+    isolated?.close();
   }
 }
 

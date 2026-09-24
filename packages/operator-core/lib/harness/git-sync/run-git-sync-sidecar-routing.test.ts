@@ -42,15 +42,35 @@ describe('git-sync signal-bearing sidecar routing', () => {
     expect(progress).toHaveBeenCalledTimes(3);
   });
 
-  it('keeps a mutating Git command local while sidecar transport loss could strand its child', async () => {
+  it('routes a mutating command with its cancellation signal and normal lock policy', async () => {
+    sidecar.run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const signal = new AbortController().signal;
+    const result = await runGitBounded(['update-ref', 'refs/test', 'object-id'], '/tmp', 5000, { signal });
+    expect(result.code).toBe(0);
+    expect(sidecar.run).toHaveBeenCalledOnce();
+    const [, , , env, opts] = sidecar.run.mock.calls[0];
+    expect(env.GIT_OPTIONAL_LOCKS).toBe(process.env.GIT_OPTIONAL_LOCKS);
+    expect(opts.signal).toBe(signal);
+  });
+
+  it.each(['unknown-outcome', 'preflight-unavailable'])('handles %s without replaying ambiguous mutations', async (kind) => {
     const repo = mkdtempSync(join(tmpdir(), 'git-sync-sidecar-route-'));
     try {
       execFileSync('git', ['init', '-q', repo]);
-      const result = await runGitBounded(['update-ref', 'refs/test', 'invalid-object-id'], repo, 5000, {
+      execFileSync('git', ['-C', repo, 'config', 'test.once', 'original']);
+      if (kind === 'unknown-outcome') {
+        sidecar.run.mockResolvedValue({ code: -1, stdout: '', stderr: 'sidecar execution outcome unavailable after verified process exit; command was not replayed' });
+      } else {
+        sidecar.run.mockRejectedValue(new Error('sidecar execution containment unavailable before dispatch'));
+      }
+      const result = await runGitBounded(['config', 'test.once', 'modified'], repo, 5000, {
         signal: new AbortController().signal,
       });
-      expect(result.code).not.toBe(0);
-      expect(sidecar.run).not.toHaveBeenCalled();
+      expect(result.code).toBe(kind === 'unknown-outcome' ? -1 : 0);
+      expect(execFileSync('git', ['-C', repo, 'config', 'test.once'], { encoding: 'utf8' }).trim())
+        .toBe(kind === 'unknown-outcome' ? 'original' : 'modified');
+      expect(sidecar.run).toHaveBeenCalledOnce();
+      expect(sidecar.fallback).toHaveBeenCalledTimes(kind === 'unknown-outcome' ? 0 : 1);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

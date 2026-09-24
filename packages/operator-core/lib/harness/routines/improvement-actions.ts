@@ -747,8 +747,9 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     });
     try {
       const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });
-      if (fired && typeof fired === 'object' && fired.durableSpawn) durableSpawns.push(fired.durableSpawn);
-      if (dispatchId) {
+      const durableSpawn = fired && typeof fired === 'object' ? fired.durableSpawn : undefined;
+      if (durableSpawn) durableSpawns.push(durableSpawn);
+      if (dispatchId && !durableSpawn) {
         const spawnedRunId = fired && typeof fired === 'object' ? (fired.spawnedRunId ?? null) : null;
         await ledger.recordFireResult(dispatchId, { ok: true, spawnedRunId });
       }
