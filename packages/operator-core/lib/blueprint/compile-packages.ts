@@ -240,6 +240,7 @@ export interface BlueprintPackageScope {
 
 export interface BlueprintPackageProvisioners {
   recipe: (pin: ResolvedPackageInput, scope: BlueprintPackageScope) => Promise<void>;
+  rubric: (pin: ResolvedPackageInput, scope: BlueprintPackageScope) => Promise<void>;
   knowledge: (pin: ResolvedPackageInput, scope: BlueprintPackageScope) => Promise<void>;
 }
 
@@ -278,7 +279,8 @@ export async function provisionBlueprintPackages(
   // Fully validate before any side effect. Rubrics are attached as immutable input
   // values; interpreting their criteria does not require rewriting the rubric store.
   for (const pin of pins) {
-    if ((pin.packageKind === 'recipe' || pin.packageKind === 'knowledge-pack') && (!pin.value || typeof pin.value !== 'object')) {
+    if ((pin.packageKind === 'recipe' || pin.packageKind === 'rubric' || pin.packageKind === 'knowledge-pack') &&
+        (!pin.value || typeof pin.value !== 'object')) {
       throw new CompositionCompilerError('input-invalid', 'bundle lacks its parsed content', pin.ref);
     }
     if (pin.packageKind === 'knowledge-pack' &&
@@ -296,6 +298,7 @@ export async function provisionBlueprintPackages(
   }
   for (const pin of pins) {
     if (pin.packageKind === 'recipe') await provisioners.recipe(pin, target);
+    else if (pin.packageKind === 'rubric') await provisioners.rubric(pin, target);
     else if (pin.packageKind === 'knowledge-pack') await provisioners.knowledge(pin, target);
   }
 }
@@ -319,6 +322,10 @@ export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisio
         authorRole: 'blueprint-bundle', createdBy: 'blueprint-package:' + pin.contentHash,
         createOnly: true,
       });
+    },
+    async rubric(pin, scope) {
+      const { provisionPinnedRubric } = await import('../rubrics');
+      await provisionPinnedRubric(pin.value as import('../cupboard/rubric-store').RubricSeedSource, scope.workspaceId);
     },
     async knowledge(pin, scope) {
       const { classifyPackInstall, applyPackInstall } = await import('../knowledge-packs/manage');
