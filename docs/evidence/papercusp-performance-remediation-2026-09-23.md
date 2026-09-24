@@ -1674,3 +1674,50 @@ A small paired tool-wall check on the same version/hash returned milliseconds
 both true reads retained it. This is a warm server diagnostic, not a native
 latency acceptance result. Staging still served the pre-fix REST reader at
 the time of this check; native performance remains open.
+
+### P-007 active REST fix and visual preparation experiment
+
+Git-sync committed the REST fix in `a48f6294fb`. The maintained staging sync
+waited for its active-client deferral ceiling, then built and restarted :3170.
+Before the next native run, health reported that exact source and REST omitted
+history. The pinned plan stayed at version75 with the hash recorded above.
+The same release shell and private discovery root attached to PID1321809.
+
+The native popup still failed: **2330ms / 1500ms**, receipt
+`perfrun-1790273512555-7dpmg5`, log
+`/tmp/p007-native-rest-history-20260924.log`. Cumulative phases were
+mounted374, request544, response1535, data1555, content2124, renderer2133,
+preview2321. The request interval was991ms; data-to-preview-preparation added
+569ms. The real desktop preference digest and the plan revision/hash were
+unchanged before/after. One before/after sample does not establish a speedup
+distribution; this result still falsifies acceptance.
+
+The next source experiment starts the shared `PlanDocumentView` visual
+preparation in a layout effect rather than a passive effect. This starts asset
+preparation before the initial empty-preview paint; it preserves asynchronous
+asset loading, real render completion, cancellation, and the existing timer
+end. The hypothesis is that this removes part of the measured post-commit gap;
+native impact is not yet verified.
+
+The new React lifecycle guard observed false before the source change: the host
+finished its visual commit before preview preparation began. Its first fixture
+also unmounted before the asynchronous preview drained, disturbing the next
+test; the fixture now awaits completion before cleanup. Final shared suite:
+14 pass, including render completion and cancellation, log
+`/tmp/p007-layout-final-tests-20260924.log`. Operator PlanEditor/PlanDetail:
+19 pass, log `/tmp/p007-layout-tests-20260924.log` (that earlier combined run
+also records the fixture failure). Zero skipped. Full ui-primitives typecheck
+passed, log `/tmp/p007-layout-typecheck-20260924.log`. Source is superproject
+`a48f6294fb`, ui-primitives `8713ca5d25` plus the two local file edits.
+The next native run must verify that the served SPA includes this experiment.
+
+### P-006 exact-clause audit follow-up
+
+The old audit `EI-24158603642923031` reported a risk-floor replay disagreement
+across evaluator builds. Current evaluator `6325d8e8b7` remeasured the unchanged
+bindings11632/11630 and passed their exact-clause adequacy. New card
+`EI-24166847672168490` received independent **PASS** via
+`EI-24167243921891262`, auditor `role-7c9f52e2-d775-4696-a737-1b6d8723b182`,
+at2026-09-24T18:07:59.863Z. Historical failed records remain intact. This is
+exact `PERF-P-006@1` test adequacy; combined prose/budget/sustained acceptance
+and whole-P-006 closure remain open.
