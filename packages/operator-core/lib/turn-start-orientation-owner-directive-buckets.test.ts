@@ -279,6 +279,25 @@ describe('P-007 owner-directive buckets', () => {
     });
   });
 
+  // directive-ownership-clarity-2026-09-23 D-004(1): identical text pasted into N
+  // sessions stays N rows; each line says how many OTHER sessions also hold it.
+  describe('D-004(1) — "also sent to N other sessions"', () => {
+    it('the YOURS line and a peer group both carry the note, so a text match is never read as ownership', () => {
+      const [mine] = lines(directive({ alsoSentTo: 2 }));
+      expect(mine).toContain("(also sent to 2 other sessions; each copy is its own addressee's to close)");
+      // The close instruction still names THIS id only.
+      expect(mine).toContain('orders:disposition { id: 17, status, note }');
+
+      const [peer] = lines(directive({ id: 42, recordedBy: PEER, addressedToMe: false, alsoSentTo: 1 }));
+      expect(peer).toContain('owner directive #42: "green the gate before you refactor it" (also sent to 1 other session;');
+    });
+
+    it('a unique directive, or one whose count was not computed, carries no note (control)', () => {
+      expect(lines(directive({ alsoSentTo: 0 }))[0]).not.toContain('also sent to');
+      expect(lines(directive())[0]).not.toContain('also sent to');
+    });
+  });
+
   /**
    * PERMANENT CONTROL — proves these assertions are sensitive to the field the
    * whole split turns on. A renderer that stopped reading `addressedToMe` would
