@@ -35,6 +35,7 @@
  */
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
+import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
@@ -199,6 +200,9 @@ const runGitLocalBounded = (
     // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
     const child = spawn('git', args, {
       cwd,
+      // Referenced and awaited: this creates a group for cancellation, not an
+      // independent job. Helpers must exit before the owning leases release.
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         LC_ALL: 'C',
@@ -208,11 +212,13 @@ const runGitLocalBounded = (
       },
     });
     const out = collectChildOutput(child);
+    const groupLifetime = processGroupLifetime(child, (message) => out.stderr.append(`\ngit ${message}`));
     let settled = false;
     let terminating = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let idleCheck: ReturnType<typeof setImmediate> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
     let removeAbortListener = (): void => {};
     const reportProgress = (): void => {
       try {
@@ -231,9 +237,10 @@ const runGitLocalBounded = (
       if (settled) return;
       settled = true;
       clearTimers();
+      if (killTimer) clearTimeout(killTimer);
       removeAbortListener();
       reportProgress();
-      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+      resolve({ code: terminating ? -1 : code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
     const terminate = (reason: string): void => {
       if (settled || terminating) return;
@@ -242,11 +249,11 @@ const runGitLocalBounded = (
       out.stderr.append(
         `${out.stderr.peek() ? '\n' : ''}git ${args.join(' ')} ${reason} — killed by the git-sync hang guard`,
       );
-      // WI-1416: SIGTERM first (git traps it and cleans its lock files), SIGKILL
-      // after a grace, and a last-resort resolve if `close` never fires.
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
-      setTimeout(() => finish(-1), 20_000).unref?.();
+      // SIGTERM permits Git lock-file cleanup. Escalate against the same group,
+      // but never equate sending a signal or exhausting a grace with actual exit.
+      groupLifetime.signal('SIGTERM');
+      killTimer = setTimeout(() => groupLifetime.signal('SIGKILL'), 10_000);
+      killTimer.unref?.();
     };
     const armIdleTimer = (): void => {
       if (!progressAware || settled || terminating) return;
@@ -294,9 +301,13 @@ const runGitLocalBounded = (
     }
     child.on('error', (e) => {
       out.stderr.append(String(e));
-      finish(-1);
+      // A failed spawn has no child to drain. Other errors are not exit proof.
+      if (child.pid === undefined) finish(-1);
     });
-    child.on('close', (code) => finish(code ?? -1));
+    child.on('close', async (code) => {
+      await groupLifetime.waitForExit();
+      finish(code ?? -1);
+    });
   });
 
 export const runGitBounded = async (
@@ -305,6 +316,7 @@ export const runGitBounded = async (
   timeoutMs: number,
   options: GitRunExecutionOptions = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> => {
+  if (options.signal?.aborted) return { code: -1, stdout: '', stderr: 'git aborted before spawn' };
   // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
   // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
   // is DETERMINISTIC regardless of the host's LANG — the non-FF detection + other output

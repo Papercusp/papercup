@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SpawnOptions } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const fixture = vi.hoisted(() => ({ script: '', onOutput: () => {} }));
+const fixture = vi.hoisted(() => ({ script: '', output: '', onOutput: () => {}, child: null as ChildProcess | null }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
@@ -10,7 +12,8 @@ vi.mock('node:child_process', async (importOriginal) => {
     // Exercise the real local runner and OS pipes without contacting a remote.
     spawn: (_command: string, _args: string[], options: SpawnOptions) => {
       const child = actual.spawn(process.execPath, ['-e', fixture.script], options);
-      child.stderr?.on('data', () => fixture.onOutput());
+      fixture.child = child;
+      child.stderr?.on('data', (chunk) => { fixture.output += String(chunk); fixture.onOutput(); });
       return child;
     },
   };
@@ -19,8 +22,82 @@ vi.mock('../../fleet/git-via-sidecar', () => ({ gitSidecarEnabled: () => false }
 
 import { runGitBounded } from './run-git-sync';
 
-beforeEach(() => { fixture.onOutput = () => {}; });
-afterEach(() => { vi.unstubAllEnvs(); });
+beforeEach(() => { fixture.onOutput = () => {}; fixture.child = null; fixture.output = ''; });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+describe('local Git cancellation lifetime', () => {
+  it('does not spawn when cancellation precedes the command', async () => {
+    fixture.script = "process.stderr.write('should not run');";
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runGitBounded(['commit'], tmpdir(), 5000, { signal: controller.signal });
+    expect(result.code).toBe(-1);
+    expect(fixture.child).toBeNull();
+  });
+
+  it.skipIf(process.platform === 'win32')('waits for an ignored-stdio helper and cancels the whole command group', async () => {
+    const helper = "process.on('SIGTERM', () => {}); process.send(process.pid); setInterval(() => {}, 1000);";
+    fixture.script = `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], {stdio:['ignore','ignore','ignore','ipc']}); child.on('message', pid => { process.stderr.write(String(pid)); child.disconnect(); }); setInterval(() => {}, 1000);`;
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    fixture.onOutput = ready;
+    const controller = new AbortController();
+    const result = runGitBounded(['commit'], tmpdir(), 30_000, { signal: controller.signal });
+    let helperPid = 0;
+    try {
+      await started;
+      const parent = fixture.child!;
+      helperPid = Number(fixture.output);
+      expect(helperPid).toBeGreaterThan(0);
+      expect(alive(helperPid)).toBe(true);
+      controller.abort();
+      const returned = await result;
+      expect(returned.code).toBe(-1);
+      expect(alive(parent.pid!)).toBe(false);
+      expect(alive(helperPid)).toBe(false);
+    } finally {
+      controller.abort();
+      if (helperPid && alive(helperPid)) process.kill(helperPid, 'SIGKILL');
+      await result;
+      if (helperPid) await vi.waitFor(() => expect(alive(helperPid)).toBe(false));
+    }
+  }, 30_000);
+
+  it.skipIf(process.platform === 'win32')('keeps successful parent completion pending until its helper exits', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'local-git-helper-'));
+    const release = join(dir, 'release');
+    const helper = `process.send(process.pid); setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(release)})) process.exit(0); }, 5);`;
+    fixture.script = `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], {stdio:['ignore','ignore','ignore','ipc']}); child.on('message', pid => { process.stderr.write(String(pid)); child.disconnect(); process.exit(0); });`;
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    fixture.onOutput = ready;
+    let settled = false;
+    const result = runGitBounded(['commit'], tmpdir(), 5000).then((value) => { settled = true; return value; });
+    let helperPid = 0;
+    try {
+      await started;
+      helperPid = Number(fixture.output);
+      await vi.waitFor(() => expect(alive(fixture.child!.pid!)).toBe(false));
+      expect(alive(helperPid)).toBe(true);
+      expect(settled).toBe(false);
+      await writeFile(release, 'done');
+      expect((await result).code).toBe(0);
+      expect(alive(helperPid)).toBe(false);
+    } finally {
+      await writeFile(release, 'done');
+      if (helperPid && alive(helperPid)) process.kill(helperPid, 'SIGKILL');
+      await result;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('local Git output-idle guard', () => {
   it('reads queued child progress before expiring an idle timer after a parent-loop stall', async () => {

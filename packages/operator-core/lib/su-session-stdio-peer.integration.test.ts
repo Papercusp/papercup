@@ -25,6 +25,8 @@ vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
+import { inspectCarryNativeTurn } from './launch-cost/launch-cost-metrics';
+import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 
 const peers: SuStdioPeer[] = [];
 const homes: string[] = [];
@@ -116,6 +118,61 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it('cross-checks completed native item receipts against persisted history without provider inference', async () => {
+    const events: RpcFrame[] = [];
+    let requests = 0;
+    const server = createServer(async (req, res) => {
+      for await (const _chunk of req) { /* drain the local fixture request */ }
+      requests++;
+      // Existing production SSE serializer, scripted local text only. These
+      // zero fixture counters are never recorded as real provider usage.
+      const body = codexCliResponsesBody({ model: 'gpt-6-sol', text: '{"offline":true}', inputTokens: 0, outputTokens: 0 });
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(codexCliResponsesCompletionSse(body));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    let p: SuStdioPeer | undefined;
+    try {
+      const overrides = {
+        model_provider: 'cache_protocol_probe',
+        'model_providers.cache_protocol_probe.name': 'Local protocol fixture',
+        'model_providers.cache_protocol_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
+        'model_providers.cache_protocol_probe.wire_api': 'responses',
+        'model_providers.cache_protocol_probe.requires_openai_auth': false,
+        'model_providers.cache_protocol_probe.supports_websockets': false,
+        'model_providers.cache_protocol_probe.request_max_retries': 0,
+        'model_providers.cache_protocol_probe.stream_max_retries': 0,
+        'features.apps': false, 'features.shell_tool': false, web_search: 'disabled',
+      };
+      p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
+        ['-c', `${key}=${JSON.stringify(value)}`])], {}, frame => events.push(frame));
+      await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_trace_test', version: '1' } } });
+      p.send({ method: 'initialized', params: {} });
+      const start = await p.request({ method: 'thread/start', params: {
+        model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
+      } });
+      const threadId = String((start.thread as RpcFrame).id);
+      const response = await p.request({ method: 'turn/start', params: {
+        threadId, input: [{ type: 'text', text: 'Offline native receipt fixture.' }],
+      } });
+      const turnId = String((response.turn as RpcFrame).id);
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        method: 'turn/completed', params: expect.objectContaining({ threadId,
+          turn: expect.objectContaining({ id: turnId, status: 'completed' }) }),
+      })), { timeout: 20_000 });
+      const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+      expect(inspectCarryNativeTurn({ threadId, turnId, events, threadRead, allowedMcpCalls: [] }),
+        JSON.stringify({ threadRead, terminal: events.find(frame => frame.method === 'turn/completed') }))
+        .toEqual({ status: 'verified', violations: [], missing: [], finalResponse: '{"offline":true}', mcpItemIds: [] });
+      expect(requests).toBe(1);
+    } finally {
+      try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
+      finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+    }
+  }, 90_000);
+
   it.each(['invalid-request', 'retryable-http', 'incomplete-stream'] as const)(
     'Codex preserves native turn metadata and disables retries for %s without provider inference', async (failure) => {
     const requests: Array<Record<string, unknown>> = [];

@@ -309,6 +309,19 @@ export function run() {
 });
 
 describe('bounded awaited process-group runners', () => {
+  it.each([
+    'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+    'packages/operator-core/lib/fleet/sidecar-exec-process.ts',
+  ])('classifies %s as an explicit awaited-group exemption without blinding new sites', (path) => {
+    const runner = readFileSync(join(REPO_ROOT, path), 'utf8');
+    expect(spawnTriggers(path, runner).detachedNotFalse).toBe(true);
+    expect(check(NEW, runner)).toBe(true);
+    expect(allow.get(path)).toContain('processGroupLifetime');
+    expect(check(path, runner)).toBe(false);
+    // The local and IPC real-process suites verify exit-before-settlement;
+    // this pins only the static guard's classification and path isolation.
+  });
+
   const oddsmith = 'packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts';
   const source = readFileSync(join(REPO_ROOT, oddsmith), 'utf8');
 
