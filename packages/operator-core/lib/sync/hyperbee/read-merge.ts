@@ -546,11 +546,12 @@ export interface MergeCursor {
   /**
    * p2p-join-catchup-speed P-522 (WI-10002899): FRESH logs held out of the fold
    * because their snapshot-seed scan has not concluded yet (keyHex → when the
-   * first inconclusive scan held it). The fold skips a held log that has no
-   * position, and `seedCursorFromSnapshots` releases it once the scan concludes
-   * or `SNAPSHOT_SEED_DEFER_MAX_MS` has passed. See `holdFreshSeed`.
+   * first inconclusive scan held it, and when the hold last logged its progress).
+   * The fold skips a held log that has no position, and `seedCursorFromSnapshots`
+   * releases it once the scan concludes or `SNAPSHOT_SEED_DEFER_MAX_MS` has passed.
+   * See `holdFreshSeed`.
    */
-  snapshotSeedPending?: Map<string, number>;
+  snapshotSeedPending?: Map<string, { sinceMs: number; progressLoggedAtMs: number }>;
   /**
    * P-004: logs whose DURABLE apply-failure state is unknown. The PG cursor load
    * failed and the log was pinned at 0 (the F4 rule: an unreadable durable cursor
@@ -1287,12 +1288,12 @@ export const SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS = 3 * 60_000;
  */
 function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number, scan: SnapshotScanAnswer): boolean {
   if (maxMs <= 0) return false;
-  const pending = (cursor.snapshotSeedPending ??= new Map<string, number>());
+  const pending = (cursor.snapshotSeedPending ??= new Map());
   const now = Date.now();
-  const since = pending.get(keyHex);
+  const held = pending.get(keyHex);
   const stuckMaxMs = Math.min(maxMs, SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS);
-  if (since === undefined) {
-    pending.set(keyHex, now);
+  if (held === undefined) {
+    pending.set(keyHex, { sinceMs: now, progressLoggedAtMs: now });
     // console.info, not warn: a fresh joiner's scan routinely needs more than one pass.
     // Only the give-up below is an anomaly.
     console.info(
@@ -1302,25 +1303,44 @@ function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number, scan:
     );
     return true;
   }
+  const heldSec = Math.round((now - held.sinceMs) / 1000);
   if (scan.unreadable) {
     // An unmemoized scan (maxLookback > 0) keeps no per-block record; the hold's age stands in.
-    const stuckForMs = scan.stuckForMs ?? now - since;
+    const stuckForMs = scan.stuckForMs ?? now - held.sinceMs;
     if (stuckForMs >= stuckMaxMs) {
       console.warn(
         `[read-merge] P-522 snapshot seed GAVE UP: log ${keyHex.slice(0, 12)} scan stuck on unreadable block ` +
-          `#${scan.stuckAtIndex ?? '?'} for ${Math.round(stuckForMs / 1000)}s (held ${Math.round((now - since) / 1000)}s); ` +
-          `folding it from 0.`,
+          `#${scan.stuckAtIndex ?? '?'} for ${Math.round(stuckForMs / 1000)}s (held ${heldSec}s); folding it from 0.`,
       );
       return false;
     }
   }
-  if (now - since < maxMs) return true;
+  if (now - held.sinceMs < maxMs) {
+    // P-007 run #2 gave up with no record of how far the scan had got. Say so while holding.
+    if (now - held.progressLoggedAtMs >= SNAPSHOT_SEED_PROGRESS_LOG_MS) {
+      held.progressLoggedAtMs = now;
+      const memo = cursor.snapshotScans?.get(keyHex);
+      const reach =
+        memo?.resumeBelow !== undefined
+          ? `scanned down to #${memo.resumeBelow} of ${memo.scannedTo}`
+          : `nothing below #${memo?.scannedTo ?? 0} scanned yet`;
+      const stuck =
+        scan.unreadable && scan.stuckAtIndex !== undefined
+          ? `; stopped on unreadable #${scan.stuckAtIndex} for ${Math.round((scan.stuckForMs ?? 0) / 1000)}s`
+          : '';
+      console.info(`[read-merge] P-522 snapshot seed scan: log ${keyHex.slice(0, 12)} held ${heldSec}s, ${reach}${stuck}.`);
+    }
+    return true;
+  }
   console.warn(
     `[read-merge] P-522 snapshot seed GAVE UP: log ${keyHex.slice(0, 12)} scan still inconclusive after ` +
-      `${Math.round((now - since) / 1000)}s; folding it from 0.`,
+      `${heldSec}s; folding it from 0.`,
   );
   return false;
 }
+
+/** P-522: how often a held fresh log reports its seed scan's progress (info). */
+const SNAPSHOT_SEED_PROGRESS_LOG_MS = 60_000;
 
 /**
  * P-004 — when may a positioned cursor skip `[pos, seedIndex)`?

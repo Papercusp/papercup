@@ -287,7 +287,7 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
     // one scan read then missed its 5 s bound, and the 3-min UNREADABLE bound, measured from
     // the start of the hold (239 s), gave up at once. The joiner folded 7.76M ops from 0.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const { log, setAt } = await towerWithOldPrefix('e7'.repeat(32), 600, 1_500);
     const { view, hangOnce } = hangingOnceView(log, true);
     const cursor = createMergeCursor();
@@ -305,6 +305,11 @@ describe('P-522 (a): an inconclusive fresh seed scan holds the log instead of fo
     expect(cursor.snapshotScans?.get(log.keyHex)?.unreadableAtLength).toBeDefined(); // it WAS unreadable
     expect(cursor.snapshotSeedPending?.has(log.keyHex)).toBe(true); // ...and still held
     expect(warn.mock.calls.some((c) => String(c[0]).includes('P-522 snapshot seed GAVE UP'))).toBe(false);
+    // The hold reports how far the scan got, and the block it stopped on (run #2 had neither).
+    const progress = info.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('P-522 snapshot seed scan:'));
+    expect(progress).toHaveLength(1);
+    expect(progress[0]).toContain(`scanned down to #${resumeBelow}`);
+    expect(progress[0]).toContain(`stopped on unreadable #${resumeBelow! - 1}`);
 
     clock.offset += SNAPSHOT_UNREADABLE_RETRY_MS + 1_000; // the block now reads on the retry
     for (let pass = 0; pass < 400 && !cursor.positions.has(log.keyHex); pass++) {
