@@ -192,8 +192,12 @@ describe('CLAIM B — the bar contract snapshot grades adequacy UNSCOPED', () =>
 describe('rubrics:amend routes the approval object to a surface the reviewer can read (R-7)', () => {
   /** The `chaining` guidance string, parsed from its single source of truth. */
   function chainingGuidance(text: string): string {
-    const match = /\bchaining:\s*\n?\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/.exec(text);
-    return match ? match[1]! : '';
+    const match = /\bchaining:\s*((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?:\s*\+\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))*)/.exec(text);
+    return match
+      ? [...match[1]!.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g)]
+          .map((literal) => literal[1] ?? literal[2] ?? '')
+          .join('')
+      : '';
   }
 
   // The claim is about the ROUTE, not the word: the guidance should still NAME
@@ -223,6 +227,11 @@ describe('rubrics:amend routes the approval object to a surface the reviewer can
     const fixture = `chaining:\n      "amend { dryRun:true } → reviewer reads work_items:get { id:'<id>', payloadTier:'full' } → work_items:comment → amend { approvalRef:'thread-post:<id>' }",`;
     const chaining = chainingGuidance(fixture);
     expect(chaining).toMatch(PAYLOAD_TIER_ROUTE_RE);
+  });
+
+  it('checks every concatenated guidance fragment', () => {
+    const fixture = `chaining:\n      "Safe first fragment. " + "Reviewer reads work_items:get { payloadTier:'full' }",`;
+    expect(chainingGuidance(fixture)).toMatch(PAYLOAD_TIER_ROUTE_RE);
   });
 
   // seeAlso advertises the route in prose, with no braces, so PAYLOAD_TIER_ROUTE_RE

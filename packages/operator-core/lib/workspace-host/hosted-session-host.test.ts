@@ -9,6 +9,7 @@ import {
   HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
   HOSTED_HOST_SESSION_IDLE_MS,
   HostedWorkspaceHostSessionAdapter,
+  hostedWorkspacePtySpawnSpec,
   SafeRootFileService,
   type HostedDesktopBackend,
   type HostedDesktopDialInput,
@@ -22,6 +23,11 @@ import {
 } from '../desktop/desktop-lifecycle';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { HOSTED_WORKSPACE_MAX_MESSAGE_BYTES } from '../endpoint-route/hosted-workspace-session';
+import {
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS,
+  WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
+} from '@papercusp/deployment-driver';
 
 type RelayEnvelope = Extract<HostedHostOutboundEnvelope, { type: 'relay' }>;
 
@@ -128,6 +134,29 @@ function harness(root: string, files?: SafeRootFileService) {
   const relay = (channelId: string, payload: unknown) => adapter.accept({ type: 'relay', channelId, payload });
   return { adapter, sent, ptys, audit, open, relay };
 }
+
+describe('hosted customer PTY identity', () => {
+  it('uses pinned loopback SSH into the workspace account with a clean remote environment', () => {
+    const spec = hostedWorkspacePtySpawnSpec({
+      scope: {} as never,
+      hostedSessionId: 'hosted-1',
+      workspaceRoot: '/srv/papercusp/workspaces',
+      cols: 80,
+      rows: 24,
+    });
+    expect(spec.command).toBe('/usr/bin/ssh');
+    expect(spec.args).toContain(WORKSPACE_HOST_HOSTED_PTY_SSH_KEY);
+    expect(spec.args).toContain(`UserKnownHostsFile=${WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS}`);
+    expect(spec.args).toContain('StrictHostKeyChecking=yes');
+    expect(spec.args).toContain('127.0.0.1');
+    expect(spec.args).toContain(DEFAULT_WORKSPACE_HOST_WORKSPACE_USER);
+    expect(spec.args.at(-1)).toContain('exec env -i HOME=');
+    expect(spec.args.at(-1)).toContain('PATH=/usr/local/bin:/usr/bin:/bin');
+    expect(spec.args.at(-1)).not.toContain('/var/lib/papercusp');
+    expect(spec.inheritEnv).toBe(false);
+    expect(spec.env).toEqual({ HOME: '/', PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'xterm-256color' });
+  });
+});
 
 describe('HostedWorkspaceHostSessionAdapter', () => {
   it('binds one PTY to an exact browser principal/session and resumes it across channels', async () => {
