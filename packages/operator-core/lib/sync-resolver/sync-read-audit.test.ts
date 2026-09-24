@@ -7,7 +7,8 @@
 // payload/latency budget runs on demand via measureSyncReadPayloadsViaRest
 // against a running operator, not here.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import * as syncResolver from './index';
 import { knownQueryNamesV2, getRegistryEntryV2, isRegisteredV2 } from './index';
 import {
   SYNC_QUERY_FIXTURES,
@@ -19,6 +20,7 @@ import {
   buildLiveFixtureMap,
   evaluateBudget,
   measureSyncReadPayloadsViaRest,
+  measureSyncReadPayloadsInProcess,
 } from './sync-read-audit';
 
 describe('sync-read audit — registry coverage guard (P-008)', () => {
@@ -144,6 +146,41 @@ describe('sync-read audit — budget evaluation', () => {
 });
 
 describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fake fetch)', () => {
+  it('measures UTF-8 response bytes and catches a multibyte-only budget violation on both paths', async () => {
+    const rows = [{ title: '界'.repeat(PAYLOAD_BUDGET_BYTES / 2) }];
+    const body = JSON.stringify({ rows, version: String(Date.now()) });
+    const expectedBytes = (await new Response(body).arrayBuffer()).byteLength;
+    expect(body.length).toBeLessThan(PAYLOAD_BUDGET_BYTES);
+    expect(expectedBytes).toBeGreaterThan(PAYLOAD_BUDGET_BYTES);
+    const fixtures = { 'workItems.stats': { harnessSlug: 'papercusp' } };
+    const resolve = vi.spyOn(syncResolver, 'resolveNamedQueryV2').mockResolvedValue(rows);
+    try {
+      const reports = [
+        await measureSyncReadPayloadsViaRest({
+          baseUrl: 'http://x', token: 't', fixtures,
+          fetchImpl: (async () => new Response(body)) as typeof fetch,
+        }),
+        await measureSyncReadPayloadsInProcess({ fixtures }),
+      ];
+      for (const report of reports) {
+        expect(report.measured[0]).toMatchObject({ bytes: expectedBytes, overBytes: true });
+        expect(report.violations.map((row) => row.name)).toEqual(['workItems.stats']);
+      }
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
+  it('also records UTF-8 bytes for unsuccessful HTTP bodies', async () => {
+    const body = 'échec 🚫';
+    const expectedBytes = (await new Response(body).arrayBuffer()).byteLength;
+    const report = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://x', token: 't', fixtures: { 'workItems.stats': {} },
+      fetchImpl: (async () => new Response(body, { status: 500 })) as typeof fetch,
+    });
+    expect(report.measured[0]).toMatchObject({ bytes: expectedBytes, error: 'HTTP 500', overBytes: false });
+  });
+
   it('ranks by bytes desc, flags non-allowlisted violations, skips null fixtures', async () => {
     // Fake operator: featuresConsolidated.bySlug small (ok), a synthetic fat query
     // over budget (violation), codeRecipes fat-but-allowlisted.
