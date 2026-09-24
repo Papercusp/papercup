@@ -66,4 +66,22 @@ describe('orders:list — ownership on every row', () => {
     expect(body.directives[0]).toMatchObject({ id: 268, mine: true, addressedTo: 'su-mine' });
     expect(body.directives.filter((d) => d.mine).map((d) => d.id)).toEqual([268]);
   });
+
+  it('D-004(1): a row whose text is open in other sessions carries alsoSentTo + the note; a unique row carries neither', async () => {
+    h.listOwnerDirectives.mockResolvedValue([
+      { ...row(268, 'su-mine'), otherSessionCopies: 2 },
+      { ...row(270, 'su-mine'), verbatimText: 'something only I was told', otherSessionCopies: 0 },
+    ]);
+
+    const r = (await tool.handler({ open: true } as never, CTX)) as { content: Array<{ text: string }> };
+    const body = JSON.parse(r.content[0]!.text) as { directives: Array<Record<string, unknown>> };
+
+    expect(body.directives[0]).toMatchObject({
+      id: 268,
+      alsoSentTo: 2,
+      alsoSentNote: "(also sent to 2 other sessions; each copy is its own addressee's to close)",
+    });
+    expect(body.directives[1]).not.toHaveProperty('alsoSentTo');
+    expect(body.directives[1]).not.toHaveProperty('alsoSentNote');
+  });
 });

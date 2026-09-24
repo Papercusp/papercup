@@ -285,4 +285,45 @@ describe('owner-directive disposition + summary read-back', () => {
     // A quote too short to be specific never matches.
     expect(await findCapturedTwin({ workspaceId, recordedBy: 'su-readback-test', verbatimText: 'okay pause' }, db.adminSql)).toBeNull();
   });
+
+  // directive-ownership-clarity-2026-09-23 D-004(1): identical text pasted into N
+  // sessions stays N rows, and each row counts the OTHER sessions holding an open copy.
+  it('D-004(1): the same text in three sessions is three rows, each counting the other open sessions', async () => {
+    const pasted = 'Another agent ran into similar issues and wrote this report and plan';
+    const paste = async (recordedBy: string, turnRef: string) =>
+      (
+        await recordOwnerDirective(
+          { workspaceId, sessionRef: `session-${recordedBy}`, sourceTurnRef: turnRef, verbatimText: pasted, recordedBy, capturedByHook: true },
+          db.adminSql,
+        )
+      ).id;
+    const a = await paste('su-paste-a', 'turn-a');
+    const b = await paste('su-paste-b', 'turn-b');
+    const c = await paste('su-paste-c', 'turn-c');
+    // A second capture in session A (with trailing whitespace) is A's own twin, not another session.
+    const a2 = await paste('su-paste-a', 'turn-a2');
+    await db.adminSql`UPDATE harness_shared.owner_directives SET verbatim_text = verbatim_text || E'\n' WHERE id = ${a2}`;
+
+    expect(new Set([a, b, c, a2]).size).toBe(4);
+    const copies = async () =>
+      new Map(
+        (await listOwnerDirectives({ workspaceId, open: true, limit: 200 }, db.adminSql))
+          .filter((r) => [a, b, c, a2].includes(r.id))
+          .map((r) => [r.id, r.otherSessionCopies]),
+      );
+    expect(await copies()).toEqual(new Map([[a, 2], [b, 2], [c, 2], [a2, 2]]));
+
+    // A CLOSED copy can no longer be closed by mistake, so it stops counting.
+    await dispositionOwnerDirective({ id: c, status: 'done', note: 'C handled its copy', dispositionedBy: 'su-paste-c' }, db.adminSql);
+    expect(await copies()).toEqual(new Map([[a, 1], [b, 1], [a2, 1]]));
+
+    // The count is over the whole open set, not the returned page: a one-row page
+    // (B's own row, fetched first for viewer B) still counts A's copy outside it.
+    const page = await listOwnerDirectives({ workspaceId, open: true, limit: 1, viewerOwnerId: 'su-paste-b' }, db.adminSql);
+    expect(page.map((r) => [r.id, r.otherSessionCopies])).toEqual([[b, 1]]);
+    // Calibration: an unrelated row carries 0, never undefined, so "no note" is a measured zero.
+    const other = await capture('turn-unrelated', 'a directive nobody else received');
+    const all = await listOwnerDirectives({ workspaceId, open: true, limit: 200 }, db.adminSql);
+    expect(all.find((r) => r.id === other)?.otherSessionCopies).toBe(0);
+  });
 });

@@ -11,6 +11,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
+  alsoSentToNote,
   directiveNeedsSummary,
   listOwnerDirectives,
   OWNER_DIRECTIVE_STATES,
@@ -89,6 +90,11 @@ export default defineTool({
               addressedTo: r.recordedBy,
               open: r.dispositionedAtMs == null,
               state: ownerDirectiveState(r),
+              // D-004(1): the same text open for other sessions is THEIR directive,
+              // counted over the whole open set (not this page) by the store read.
+              ...((r.otherSessionCopies ?? 0) > 0
+                ? { alsoSentTo: r.otherSessionCopies, alsoSentNote: alsoSentToNote(r.otherSessionCopies).trim() }
+                : {}),
               ...(clearedByMe.has(r.id)
                 ? { clearedFromYourAgenda: true, clearedNote: 'Cleared from YOUR banner only (orders:clear) — still open for its addressee.' }
                 : {}),
