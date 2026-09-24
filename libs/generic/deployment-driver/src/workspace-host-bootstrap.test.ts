@@ -40,6 +40,8 @@ import {
   WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE,
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
+  WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
+  WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS,
   buildWorkspaceHostBootstrap,
   evaluateWorkspaceHostNativeDependencyCoverage,
   normalizeWorkspaceHostSoname,
@@ -53,6 +55,7 @@ import {
 // installer stages exactly what the probe asks for, which only means something if both sides
 // read the same constant.
 import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from './workspace-host-agent-authentication';
+import { WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML } from './workspace-host-agent-home';
 import {
   deriveWorkspaceHostCanonicalArtifactUrls,
   WORKSPACE_HOST_ARTIFACT_ORIGIN,
@@ -237,6 +240,19 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     }
     const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
+  it('gives the customer native OMP and the credential-free local model without the agent home', () => {
+    const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+    const resolve = script.indexOf('AGENT_RUNTIME_OMP="$(runuser');
+    const publish = script.indexOf('install -m 0755 -o root -g root -- "$AGENT_RUNTIME_OMP" /usr/local/bin/omp');
+    expect(resolve).toBeGreaterThan(-1);
+    expect(publish).toBeGreaterThan(resolve);
+    expect(script).toContain('[[ "$AGENT_RUNTIME_OMP" == "$AGENT_HOME/.local/bin/omp" && -f "$AGENT_RUNTIME_OMP" && ! -L "$AGENT_RUNTIME_OMP" ]]');
+    expect(script).toContain(Buffer.from(WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML).toString('base64'));
+    expect(script).toContain('runuser -u "$WORKSPACE_USER" -- env HOME="/home/$WORKSPACE_USER"');
+    expect(script).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME"');
+    expect(buildWorkspaceHostBootstrap(input())).not.toContain('customer OMP model registry install failed');
   });
 
   /**
@@ -1386,6 +1402,27 @@ describe('buildWorkspaceHostBootstrap', () => {
       expect(keyInstalled).toBeGreaterThan(-1);
       expect(keyInstalled).toBeLessThan(hardened);
       expect(hardened).toBeLessThan(reloaded);
+    });
+
+    it('keeps the hosted PTY private key with the service and grants only loopback customer SSH', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const keyReset = script.indexOf('base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"');
+      const keyAppend = script.indexOf('restrict,pty,from="127.0.0.1"');
+      const sshReload = script.indexOf('systemctl reload-or-restart ssh');
+      expect(keyReset).toBeGreaterThan(-1);
+      expect(keyAppend).toBeGreaterThan(keyReset);
+      expect(keyAppend).toBeLessThan(sshReload);
+      expect(script).toContain(`HOSTED_PTY_SSH_KEY='${WORKSPACE_HOST_HOSTED_PTY_SSH_KEY}'`);
+      expect(script).toContain(`HOSTED_PTY_KNOWN_HOSTS='${WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS}'`);
+      expect(script).toContain('runuser -u "$SERVICE_USER" -- ssh-keygen -y -f "$HOSTED_PTY_SSH_KEY"');
+      expect(script).toContain('ssh_host_ed25519_key.pub');
+      expect(script).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r "$HOSTED_PTY_SSH_KEY"');
+      expect(script).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT/embedded-pg"');
+      expect(script).toContain('runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt');
+      expect(script).toContain('/var/lib/papercusp/embedded-pg');
+      expect(script).toContain('/home/papercusp-agent');
+      expect(script).toContain('hosted customer PTY loopback authentication or isolation failed');
+      expect(spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' }).status).toBe(0);
     });
 
     // p046-canary-08: bootstrap aborted in phase:harden-os with
