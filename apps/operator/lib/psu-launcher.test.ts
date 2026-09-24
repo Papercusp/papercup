@@ -9638,23 +9638,18 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     });
   });
 
-  it("recreates a missing Codex AGENTS.md instead of retrying the carry forever", () => {
+  it("refuses a carry with no restored SU instructions", () => {
     const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });
 
-    const out = mintCarryRespawnArgs(["--dangerously-bypass-hook-trust"], {
+    expect(() => mintCarryRespawnArgs(["--dangerously-bypass-hook-trust"], {
       systemPromptAddendum: "recovered carry",
       ownerId: "su-codex-missing-agents",
       home,
       agent: "codex",
       codexHome,
-    });
-
-    expect(out.args).toEqual(["--dangerously-bypass-hook-trust"]);
-    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(out.launchContextPath);
-    expect(out.carryText).toContain("recovered carry");
-    expect(readFileSync(out.launchContextPath, "utf8")).toContain("recovered carry");
-    expect(readFileSync(join(codexHome, ".papercusp-carry-base-AGENTS.md"), "utf8")).toBe("");
+    })).toThrow(/restored non-empty AGENTS\.md base/);
+    expect(existsSync(join(codexHome, "AGENTS.md"))).toBe(false);
   });
 
   it.each([
