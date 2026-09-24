@@ -1,4 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+const hostedDb = vi.hoisted(() => ({
+  run: null as null | ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>),
+  calls: [] as Array<{ query: string; values: unknown[] }>,
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withHostedServiceContext: async (callback: (sql: unknown) => Promise<unknown>) => {
+    if (!hostedDb.run) throw new Error('hosted service SQL test double was not initialized');
+    return callback(hostedDb.run as never);
+  },
+}));
+
 import {
   assertWorkspaceHostSecretIsolation,
   parseWorkspaceHostCredentialReference,
@@ -10,6 +23,7 @@ import {
   hostedBringUpInitialization,
   hostedConnectorRouteLabel,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  revokeHostedWorkspaceConnectorsForDestroyedHost,
   workspaceHostBringUpOperationIds,
   type HostedConnectorEnrollmentDependencies,
 } from './hosted-bring-up';
@@ -96,6 +110,44 @@ describe('hosted bring-up (D-401)', () => {
     });
     // The initialize/desktop-pack admission guard for operation ids.
     for (const id of Object.values(ids)) expect(id).toMatch(/^[a-z0-9][a-z0-9._:-]{0,159}$/i);
+  });
+});
+
+describe('hosted workspace offboarding connector cleanup', () => {
+  it('selects connector bindings by host and revokes the persisted credential', async () => {
+    const binding = {
+      control_workspace_id: 'papercusp-workspace',
+      organization_id: 'org-1',
+      customer_workspace_id: 'customer-ws-1',
+      host_id: 'host-1',
+      route_label: 'alpha',
+      generation: 4,
+      transport: 'websocket' as const,
+      state: 'active' as const,
+    };
+    hostedDb.calls = [];
+    hostedDb.run = async (strings, ...values) => {
+      const query = strings.join(' ');
+      hostedDb.calls.push({ query, values });
+      if (query.includes('SELECT control_workspace_id')) return [binding];
+      if (query.includes("SET state='revoked'")) return [{ ...binding, state: 'revoked' }];
+      throw new Error(`unexpected hosted connector SQL: ${query}`);
+    };
+
+    await revokeHostedWorkspaceConnectorsForDestroyedHost({
+      controlPlaneWorkspaceId: 'papercusp-workspace',
+      hostId: 'host-1',
+    });
+
+    expect(hostedDb.calls).toHaveLength(2);
+    expect(hostedDb.calls[0]).toMatchObject({
+      query: expect.stringContaining('FROM papercusp_auth.hosted_workspace_connectors'),
+      values: expect.arrayContaining(['papercusp-workspace', 'host-1']),
+    });
+    expect(hostedDb.calls[1]).toMatchObject({
+      query: expect.stringContaining("SET state='revoked'"),
+      values: expect.arrayContaining(['papercusp-workspace', 'org-1', 'customer-ws-1', 'host-1', 'alpha']),
+    });
   });
 });
 
