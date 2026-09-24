@@ -22,6 +22,7 @@ import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { withPgRetry } from '../../pg-transient-retry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
+import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
 import { listEventKeySubscribers } from '../../agent-tools/coordination/event-subscriptions';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
@@ -49,22 +50,17 @@ import {
   markDeliveryParked,
   reopenDeliveredAfterResumeDeath,
   recoverStuckDeliveries,
+  reconcileFiredWakeDeliveries,
   settleCancelledAwaitDeliveries,
   settleVerifiedAwaitTimeout,
 } from './store';
 import { payloadMatchesFilter } from './pattern';
 import {
-  bumpNode,
-  claimDueComposedRoots,
-  findRootAnchor,
-  insertComposedRootDelivery,
-  loadTreeLeaves,
-  stampLeafMemberFired,
-  voidTreeDescendants,
+  reconcileComposedRoot,
+  reconcileComposedRoots,
 } from './compose-store';
-import { composedWakeSummary } from './compose-spec';
 import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
-import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
+import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
 import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-by-id';
@@ -603,20 +599,11 @@ export async function deliverToSpecificAwaits(input: {
 
 // ── composed threshold-tree awaits (composable-event-awaits-2026-07-11) ──────────
 //
-// A composed await is a TREE of any/all/k-of-n threshold nodes (event_await_nodes) over
-// leaves that stay ordinary event_awaits rows (compose-store.ts). The leaf claim reuses the
-// exact same atomic exactly-once UPDATE as every await (fireAwaitsForKey); the ONLY difference
-// is that a leaf tagged with node_id PROPAGATES its claim up the tree instead of waking — and
-// only the ROOT trip queues one wake (via the tree's anchor row) + voids the rest of the tree.
-// Every decision is local + monotone (fire-once leaves, counters that only increment, fired_at
-// that only goes NULL→set under a guard), so concurrent emits are race-safe without a txn.
+// A fired composed leaf is the durable intent. The store re-reads each root's
+// fired leaves and commits member stamps, counter bumps, root delivery and
+// descendant void together under a transaction lock.
 
-/**
- * Propagate the claims of the composed LEAVES fired by one emit up their threshold trees.
- * Each leaf: capture its fire payload (for the root wake), then walk the counter chain upward;
- * a node that reaches its required_count trips and bumps ITS parent, until either a node
- * absorbs the claim below threshold (stop) or the ROOT trips (deliver one wake + void the tree).
- */
+/** Propagate this emit's leaf claims through the recoverable root transaction. */
 export async function propagateComposedLeafClaims(input: {
   leaves: AwaitRow[];
   payload?: unknown;
@@ -624,86 +611,18 @@ export async function propagateComposedLeafClaims(input: {
   source?: string | null;
 }): Promise<void> {
   const ws = input.workspaceId ?? activeWorkspaceId();
-  for (const leaf of input.leaves) {
-    if (leaf.nodeId == null) continue;
-    await stampLeafMemberFired(leaf.id, input.payload);
-    await bumpComposedChain(leaf.nodeId, ws, input.source ?? null);
+  const rootIds = new Set(input.leaves.flatMap((leaf) => leaf.nodeId != null && leaf.rootId != null ? [leaf.rootId] : []));
+  let deliveries = 0;
+  for (const rootId of rootIds) {
+    const result = await reconcileComposedRoot(rootId);
+    if (result.delivered) deliveries++;
+  }
+  if (deliveries > 0 && autoPumpEnabled) {
+    setImmediate(() => {
+      void pumpWakeDeliveries(ws).catch((e) => log(`composed pump kick failed: ${e instanceof Error ? e.message : e}`));
+    });
   }
 }
-
-/** Walk the trip chain upward from a leaf's parent node. Each step is one atomic guarded
- *  increment (bumpNode); a non-trip or an already-fired/cancelled node ends the walk. */
-async function bumpComposedChain(nodeId: number, ws: string, source: string | null): Promise<void> {
-  let current: number | null = nodeId;
-  while (current != null) {
-    const res = await bumpNode(current);
-    // null = node already fired/cancelled (a concurrent trip won the race, or the tree was
-    // voided) — the claim is harmlessly absorbed. !justTripped = counted but below threshold.
-    if (res == null || !res.justTripped) return;
-    if (res.parentId == null) {
-      // ROOT tripped — bumpNode already stamped its fired_at, uniquely, so this fires exactly once.
-      await fireComposedRoot({ rootId: res.rootId, reason: 'event', ws, source, deliver: true });
-      return;
-    }
-    current = res.parentId; // interior node tripped — count it toward its parent
-  }
-}
-
-/**
- * Fire a composed ROOT whose fired_at is ALREADY stamped (by the tripping bumpNode, or by the
- * timeout sweep's atomic claim): assemble the tree's partial state, deliver ONE wake against the
- * anchor row when `deliver` (an 'expire' timeout lapses silently), then void every unfired
- * descendant so no survivor ever wakes the subscriber again (whole-tree one-shot consumption).
- */
-async function fireComposedRoot(input: {
-  rootId: number;
-  reason: 'event' | 'timeout';
-  ws: string;
-  source?: string | null;
-  deliver: boolean;
-}): Promise<void> {
-  const leaves = await loadTreeLeaves(input.rootId);
-  const firedLeaves = leaves.filter((l) => l.memberFiredAt != null);
-  const pendingLeaves = leaves.filter((l) => l.memberFiredAt == null);
-  const satisfied = input.reason === 'event';
-
-  if (input.deliver) {
-    const anchor = await findRootAnchor(input.rootId);
-    if (anchor) {
-      const payload = {
-        composed: true,
-        // A composed root is whole-tree one-shot: the first satisfying event (or the
-        // timeout wake) consumes the root and voids every still-pending sibling.
-        // Keep this explicit so a frequent non-terminal `any` member cannot look like
-        // a healthy detector for a rarer terminal member after the wake is handled.
-        consumed: true,
-        satisfied,
-        reason: input.reason,
-        fired: firedLeaves.map((l) => ({ event: l.eventKey, payload: l.memberPayload, at: l.memberFiredAt })),
-        pending: pendingLeaves.map((l) => l.eventKey),
-      };
-      await insertComposedRootDelivery({
-        anchorAwaitId: anchor.awaitId,
-        subscriberId: anchor.subscriberId,
-        rootId: input.rootId,
-        payload,
-        summary: composedWakeSummary({ satisfied, firedCount: firedLeaves.length, leafCount: leaves.length }),
-        source: input.source ?? null,
-      });
-      // A composed-only emit queues no plain wake, so it never kicks the pump — kick it here.
-      if (autoPumpEnabled) {
-        setImmediate(() => {
-          void pumpWakeDeliveries(input.ws).catch((e) => log(`composed pump kick failed: ${e instanceof Error ? e.message : e}`));
-        });
-      }
-    } else {
-      log(`composed root ${input.rootId} tripped (${input.reason}) but has no anchor row — cannot deliver its wake`);
-    }
-  }
-
-  await voidTreeDescendants(input.rootId);
-}
-
 // ── the pump ──────────────────────────────────────────────────────────────────
 
 // Keyed per workspace (audit P-033): a single module-global boolean made workspace
@@ -1090,16 +1009,16 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       const coalesced = coalesceDeliveries(group);
       const downstreamOutcomeHandler = deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined;
       let deliveryRowsSettled = false;
-      let earlyResumeExit: { d: DeliveryWork; exit: ResumeTurnExitRaw } | null = null;
-      const onResumeTurnExit = (d: DeliveryWork, exit: ResumeTurnExitRaw) => {
+      let earlyResumeExit: { d: DeliveryWork; exit: ResumeTurnExitRaw; context?: ResumeTurnContext } | null = null;
+      const onResumeTurnExit = (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => {
         // A short-lived child can exit while the pump is still awaiting the
         // delivered write. Buffer it so a re-open cannot be overwritten by
         // that optimistic settlement.
         if (!deliveryRowsSettled) {
-          earlyResumeExit = { d, exit };
+          earlyResumeExit = { d, exit, context };
           return;
         }
-        void handleSettledResumeTurnExit(group, d, exit, downstreamOutcomeHandler);
+        void handleSettledResumeTurnExit(group, d, exit, downstreamOutcomeHandler, context);
       };
 
       const outcome = await executeWake(coalesced, {
@@ -1138,8 +1057,8 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         }
         deliveryRowsSettled = true;
         if (earlyResumeExit) {
-          const observed = earlyResumeExit as { d: DeliveryWork; exit: ResumeTurnExitRaw };
-          void handleSettledResumeTurnExit(group, observed.d, observed.exit, downstreamOutcomeHandler);
+          const observed = earlyResumeExit as { d: DeliveryWork; exit: ResumeTurnExitRaw; context?: ResumeTurnContext };
+          void handleSettledResumeTurnExit(group, observed.d, observed.exit, downstreamOutcomeHandler, observed.context);
         }
         log(`wake #${headline.id} delivered → ${subscriberId} via ${outcome.channel} (${group.length} event(s): ${group.map((d) => d.eventKey).join(', ')})`);
         continue;
@@ -1293,9 +1212,11 @@ export function registerAwaitReconciler(fn: (workspaceId: string) => Promise<voi
  * never imports harness/routines (no cycle). Fire-and-forget + best-effort: a missed exit
  * degrades to the reconcile stuck-park backstop (≥30min), exactly as today.
  */
-let resumeTurnOutcomeHandler: ((d: DeliveryWork, exit: ResumeTurnExitRaw) => void) | null = null;
+let resumeTurnOutcomeHandler: ((d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void) | null = null;
 
-export function registerResumeTurnOutcomeHandler(fn: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void): void {
+export function registerResumeTurnOutcomeHandler(
+  fn: (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void,
+): void {
   resumeTurnOutcomeHandler = fn;
 }
 
@@ -1351,6 +1272,46 @@ async function notifyDeadResumeDeliveries(dead: DeliveryWork[], error: string): 
   }
 }
 
+/** Surface a transcript-confirmed poisoned resume to the owner and its fleet. */
+async function notifyPoisonedResumeSession(
+  group: DeliveryWork[],
+  context: ResumeTurnContext,
+  error: string,
+): Promise<void> {
+  const first = group[0];
+  if (!first) return;
+  let to = [first.subscriberId];
+  try {
+    const membership = (await fetchPresenceFleet([first.subscriberId])).get(first.subscriberId);
+    if (membership?.fleetSlug) to = [`@fleet:${membership.fleetSlug}`, first.subscriberId];
+  } catch {
+    // The owner inbox remains the fallback if the fleet membership read fails.
+  }
+  try {
+    await sendMessage(emitterIdentity('await-event', first.workspaceId), {
+      to,
+      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      body:
+        `The Claude transcript recorded repeated assistant turns rejected because a Papercusp ` +
+        `tool_reference was absent from the resumed tool list. Wake retries for this incarnation ` +
+        `have stopped; the existing session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        `Event keys: ${group.map((delivery) => delivery.eventKey).join(', ')}\n` +
+        `Last provider evidence: ${error}`,
+      category: 'event',
+      extra: {
+        auto: true,
+        event_keys: group.map((delivery) => delivery.eventKey),
+        wake_delivery_ids: group.map((delivery) => delivery.id),
+        adv_session_id: context.advSessionId,
+        terminal_status: 'poisoned',
+        poison_reason: context.poisonReason,
+      },
+    });
+  } catch (e) {
+    log(`poisoned resume notification failed for ${first.subscriberId}: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 /**
  * Settle a detached resume's asynchronous outcome after the pump has written
  * its optimistic delivered/coalesced rows. Loop wakes retain their specialized
@@ -1362,6 +1323,7 @@ async function handleSettledResumeTurnExit(
   observed: DeliveryWork,
   exit: ResumeTurnExitRaw,
   downstream?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void,
+  context?: ResumeTurnContext,
 ): Promise<void> {
   try {
     downstream?.(observed, exit);
@@ -1371,6 +1333,14 @@ async function handleSettledResumeTurnExit(
 
   const outcome = classifyResumeTurnExit(exit);
   if (outcome.ok) return;
+
+  if (context?.poisoned) {
+    const reason = context.poisonReason ?? 'Claude session quarantined after repeated unavailable Papercusp tool references';
+    await Promise.all(group.map((delivery) => markDeliveryDropped(delivery.id, reason)));
+    await notifyPoisonedResumeSession(group, context, outcome.error.message);
+    log(`resume turn for ${observed.subscriberId} quarantined (${reason})`);
+    return;
+  }
 
   // Reopening loop deliveries would double-fire them: their registered handler
   // feeds the autoloop circuit and re-arms with retry-after semantics. Timeout
@@ -1456,6 +1426,12 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
       log(`reconciler failed: ${e instanceof Error ? e.message : e}`);
     }
   }
+
+  // A producer can die after consuming a one-shot await and before queuing its
+  // delivery. The fired await row is the durable intent; recover it before the
+  // pump reads due deliveries. The store serializes this with a live producer.
+  const missingWakes = await reconcileFiredWakeDeliveries();
+  if (missingWakes > 0) log(`recovered ${missingWakes} fired awaits without wake deliveries`);
 
   const superseded = await compactSupersededLoopDeliveries();
   if (superseded > 0) log(`compacted ${superseded} superseded loop wake deliveries`);
@@ -1577,19 +1553,10 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   const lapsed = await expireLapsedAwaits();
   if (lapsed > 0) log(`expired ${lapsed} lapsed awaits (timeout_behavior=expire)`);
 
-  // composable-event-awaits-2026-07-11: composed threshold-tree ROOTS past their deadline. The
-  // claim atomically stamps fired_at (each root handled once, even across concurrent ticks); a
-  // 'wake' root delivers a partial-tree timeout wake, an 'expire' root lapses silently — both
-  // then void the tree. The pump below delivers the queued timeout wakes.
-  const dueRoots = await claimDueComposedRoots();
-  for (const root of dueRoots) {
-    try {
-      await fireComposedRoot({ rootId: root.id, reason: 'timeout', ws, deliver: root.timeoutBehavior === 'wake' });
-    } catch (e) {
-      log(`composed root timeout handling failed (root ${root.id}): ${e instanceof Error ? e.message : e}`);
-    }
-  }
-  if (dueRoots.length > 0) log(`composed: fired ${dueRoots.length} timed-out tree root(s)`);
+  // Recover fired leaves left by a dead producer and settle due roots in the
+  // same atomic path used by live emits. The pump below delivers queued wakes.
+  const composed = await reconcileComposedRoots();
+  if (composed.deliveries > 0) log(`composed: queued ${composed.deliveries} recovered or timed-out root wake(s)`);
 
   await pumpWakeDeliveries(ws);
 }

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Fired await delivery recovery mutation probe",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=180",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/events/await/store.ts",
+    "--mutate 's|export async function reconcileFiredWakeDeliveries.*|export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number> { return 0;|'",
+    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/events/await/store.integration.test.ts -t \"recovers a consumed wake after a producer dies before delivery insertion\" --reporter=dot'",
+    "--expect caught",
+    "--in-tree --sweep-lock-held --fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T12:18:32Z",
+  "finishedAt": "2026-09-24T12:19:39Z",
+  "summary": "The focused real-PostgreSQL recovery test passed on the current source. Disabling reconcileFiredWakeDeliveries made its missing-delivery assertion fail, so the probe reported MUTANT CAUGHT. The probe verified byte-for-byte restoration of store.ts.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Focused Vitest baseline: 1 passed, 73 skipped, exit 0."
+    },
+    {
+      "id": "recovery-mutant-killed",
+      "passed": true,
+      "evidence": "Replacing reconcileFiredWakeDeliveries with an immediate return 0 caused the real-PG test to fail at store.integration.test.ts:385: expected one recovered delivery, received zero. Guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "mutation-probe.sh reported verdict=caught, target=in-tree:lock-held, baseline_exit=0, guard_exit=1, and tree integrity VERIFIED for store.ts."
+    }
+  ],
+  "workItemId": "WI-10002941",
+  "specId": "GBE-P-021-contract",
+  "testFile": "packages/operator-core/lib/events/await/store.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/events/await/store.ts"
+}
