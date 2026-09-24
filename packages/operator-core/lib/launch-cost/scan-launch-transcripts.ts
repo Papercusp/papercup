@@ -24,6 +24,7 @@ import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
 import type { SuStdioPeer } from '../su-session-stdio-peer';
+import type { Sql } from 'postgres';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat } from '../process-identity';
 
@@ -34,6 +35,8 @@ import {
   isLaunchCandidate,
   utcDay,
   createCarryTrialRecipe,
+  inspectCarryNativePopulation,
+  type CarryCanonicalUsageRow,
   type LaunchSample,
 } from './launch-cost-metrics';
 
@@ -93,6 +96,42 @@ export interface CarrySourceSnapshot {
   turnId: string;
   filePath: string;
   snapshot: StableSource;
+}
+
+/** Complete rows in ONE SQL snapshot for the locally reconciled native scope.
+ * Query the entire session/source-file population, including inherited usage,
+ * null event keys and bad turn provenance. Never prefilter to expected turns,
+ * successful requests or non-null usage. This is not ingestion completeness,
+ * an authenticated charge census, or proof against later writer activity.
+ */
+export async function captureCarryCanonicalUsagePopulation(sql: Sql, input: {
+  workspaceId: string;
+  native: ReturnType<typeof inspectCarryNativePopulation>;
+  maxRows?: number;
+}) {
+  const scope = structuredClone(input), maxRows = scope.maxRows ?? 10_000;
+  if (!scope.workspaceId.trim() || scope.native.status !== 'closed-peer-reconciled' ||
+    !scope.native.threads.length || scope.native.threads.some(t => !t.sourcePath) ||
+    !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 100_000) {
+    throw new Error('carry canonical query requires a reconciled native scope and bounded row limit');
+  }
+  const sessions = scope.native.threads.map(t => t.threadId), paths = scope.native.threads.map(t => t.sourcePath!);
+  // count OVER and rows share a statement snapshot: a second count query could
+  // observe different ingestion state. LIMIT only bounds transport/memory.
+  const rows = await sql<Array<CarryCanonicalUsageRow & { population_count: string }>>`
+    SELECT session_id, usage_event_key, usage_provenance, count(*) OVER ()::text AS population_count
+    FROM harness_shared.agent_usage_samples
+    WHERE workspace_id = ${scope.workspaceId} AND
+      (session_id = ANY(${sql.array(sessions)}::text[]) OR run_id = ANY(${sql.array(sessions)}::text[])
+       OR usage_provenance->>'sourceFile' = ANY(${sql.array(paths)}::text[]))
+    ORDER BY id LIMIT ${maxRows + 1}`;
+  const count = rows.length ? Number(rows[0].population_count) : 0;
+  if (!Number.isSafeInteger(count) || count !== rows.length || count > maxRows ||
+    rows.some(r => Number(r.population_count) !== count)) throw new Error('carry canonical query exceeded bound or lost rows');
+  return { coverage: 'complete-selected-snapshot' as const,
+    scope: { workspaceId: scope.workspaceId, sessionIds: sessions, sourcePaths: paths },
+    rows: rows.map(r => ({ session_id: r.session_id, usage_event_key: r.usage_event_key, usage_provenance: r.usage_provenance })),
+    ingestionCoverage: 'not-established' as const, chargeJoin: 'unavailable' as const, accountingComplete: false as const };
 }
 
 export interface CarryNativeConfigurationScope {
