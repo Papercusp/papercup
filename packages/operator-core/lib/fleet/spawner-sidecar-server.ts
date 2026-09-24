@@ -138,6 +138,16 @@ export function runSpawnerSidecarServer(): net.Server {
   }
 
   const controllers = new Set<AbortController>();
+  let shuttingDown = false;
+  let socketsClosed = false;
+  let exitRequested = false;
+  const exitWhenDrained = (): void => {
+    if (!shuttingDown || !socketsClosed || controllers.size > 0 || exitRequested) return;
+    exitRequested = true;
+    process.off('SIGTERM', onTerm);
+    process.off('SIGINT', onInterrupt);
+    process.exit(0);
+  };
   // Keep the client sockets so shutdown can destroy a persistent IPC connection
   // before `server.close()`. Without this, net.Server waits forever for the
   // parent-side client to close and the sidecar/socket survive the host exit.
@@ -216,6 +226,7 @@ export function runSpawnerSidecarServer(): net.Server {
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          exitWhenDrained();
         }
         return;
       }
@@ -241,6 +252,7 @@ export function runSpawnerSidecarServer(): net.Server {
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          exitWhenDrained();
         }
         return;
       }
@@ -290,7 +302,6 @@ export function runSpawnerSidecarServer(): net.Server {
     process.exit(1);
   });
 
-  let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -298,8 +309,10 @@ export function runSpawnerSidecarServer(): net.Server {
     for (const controller of controllers.values()) controller.abort();
     for (const client of clients) client.destroy();
     server.close(() => {
-      unlinkSocket();
-      process.exit(0);
+      // Socket closure is not command exit. Keep this process alive so its
+      // cancellation escalation and admission settlement can finish first.
+      socketsClosed = true;
+      exitWhenDrained();
     });
   };
   const onTerm = (): void => shutdown('SIGTERM');
@@ -308,8 +321,12 @@ export function runSpawnerSidecarServer(): net.Server {
   process.on('SIGINT', onInterrupt);
   server.once('close', () => {
     process.off('exit', unlinkSocket);
-    process.off('SIGTERM', onTerm);
-    process.off('SIGINT', onInterrupt);
+    // Repeated termination signals must not bypass a shutdown still draining
+    // children. Ordinary server.close() (tests/embedding) still removes hooks.
+    if (!shuttingDown) {
+      process.off('SIGTERM', onTerm);
+      process.off('SIGINT', onInterrupt);
+    }
     unlinkSocket();
   });
 
