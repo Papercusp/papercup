@@ -134,6 +134,23 @@ describe('renderOwnerDirectivesBlock', () => {
     expect(out).toContain('+8 more open — orders:list');
   });
 
+  it('WI-10002888: the viewer’s own row renders first and is never the one the cap folds away', () => {
+    const viewer = 'su-current-session';
+    // [FYI] rows render a short pointer, not the verbatim text, so it takes many
+    // older peer rows to exhaust the char cap on their own. Then the viewer's own
+    // directive comes LAST, which is the order the oldest-first fetch supplies.
+    const peers = Array.from({ length: 200 }, (_, i) => row({ id: i + 1, recordedBy: `su-peer-${i % 3}` }));
+    const own = row({ id: 470, recordedBy: viewer, verbatimText: 'carry the plans to shipped' });
+    const out = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW, viewerOwnerId: viewer })!;
+    const lines = out.split('\n');
+    expect(lines[1]).toContain('#470');
+    expect(lines[1]).toContain('[FOR THIS SESSION]');
+    expect(out).toMatch(/\+\d+ more open — orders:list/);
+    // Control: without a viewer the given order is kept, so the same input hides #470.
+    const ledger = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW })!;
+    expect(ledger).not.toContain('#470');
+  });
+
   it('labels mixed workspace rows by the session that can act on each one', () => {
     const ownerId = 'su-current-session';
     const ownText = 'carry out my open directive';
