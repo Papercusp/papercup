@@ -133,7 +133,14 @@ export interface SpecClauseRevision {
 }
 
 export type SetSpecClauseResult =
-  | { status: 'created' | 'revised'; specId: string; revision: number; contentHash: string }
+  | {
+      status: 'created' | 'revised';
+      specId: string;
+      revision: number;
+      contentHash: string;
+      /** Set on a lifecycle-only revision: live bindings carried from the prior revision (WI-10002889). */
+      evidenceCarriedForward?: number;
+    }
   | { status: 'unchanged'; specId: string; revision: number; contentHash: string }
   | { status: 'conflict'; specId: string; expectedRevision: number; actualRevision: number }
   | { status: 'source_alias_immutable'; specId: string; sourceValId: string | null }
@@ -279,6 +286,30 @@ export function specClauseContentHash(input: SpecClauseWrite): string {
   return createHash('sha256')
     .update(JSON.stringify(canonicalJson(canonicalWrite(input))))
     .digest('hex');
+}
+
+/**
+ * WI-10002889 (R-1): does this write differ from the stored prior revision ONLY in lifecycle?
+ * `lifecycleStatus` stays in the content hash on purpose (a promotion must remain an auditable
+ * immutable revision), so re-hash THIS write under the prior lifecycle and compare it with the
+ * prior revision's stored hash: equal means nothing else moved. An omitted `sourceBar` rides the
+ * prior pin forward (see setSpecClause), so that variant is tried too. A hash that differs for
+ * any other reason (a canonicalization change, a real edit) answers false, which is the safe
+ * direction: proof is then re-run rather than carried.
+ */
+export function differsOnlyInLifecycle(
+  input: SpecClauseWrite,
+  priorLifecycle: SpecLifecycleStatus,
+  priorBarPin: SpecClauseBarPin | null,
+  priorContentHash: string,
+): boolean {
+  const asPrior: SpecClauseWrite = { ...input, lifecycleStatus: priorLifecycle };
+  if (specClauseContentHash(asPrior) === priorContentHash) return true;
+  return (
+    input.sourceBar === undefined &&
+    priorBarPin !== null &&
+    specClauseContentHash({ ...asPrior, sourceBar: priorBarPin }) === priorContentHash
+  );
 }
 
 interface IdentityRow {
@@ -470,9 +501,11 @@ export async function setSpecClause(
       }
     }
 
+    // WI-10002889 (R-1): the prior revision this write differs from ONLY in lifecycle, or null.
+    let lifecycleOnlyFrom: number | null = null;
     if (identity) {
-      const current = await tx<{ content_hash: string }[]>`
-        SELECT content_hash
+      const current = await tx<{ content_hash: string; lifecycle_status: SpecLifecycleStatus | null }[]>`
+        SELECT content_hash, lifecycle_status
           FROM harness_shared.plan_spec_clause_revisions
          WHERE workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}
@@ -481,6 +514,16 @@ export async function setSpecClause(
            AND revision = ${actualRevision}`;
       if (current[0]?.content_hash === contentHash) {
         return { status: 'unchanged', specId: input.specId, revision: actualRevision, contentHash };
+      }
+      const priorLifecycle = current[0]?.lifecycle_status ?? null;
+      if (
+        current[0] &&
+        priorLifecycle &&
+        priorLifecycle !== normalized.lifecycleStatus &&
+        isEnforceableSpecLifecycle(normalized.lifecycleStatus) &&
+        differsOnlyInLifecycle(input, priorLifecycle, priorBarPin, current[0].content_hash)
+      ) {
+        lifecycleOnlyFrom = actualRevision;
       }
     } else {
       const inserted = await tx<{ spec_id: string }[]>`
@@ -564,6 +607,40 @@ export async function setSpecClause(
          AND plan_slug = ${planSlug}
          AND spec_id = ${input.specId}`;
 
+    // WI-10002889 (R-1): a lifecycle-only revision (the D-019 draft->active promotion) keeps
+    // behavior, falsifier, layers and BAR pin byte-identical, so the proof bound to the prior
+    // revision still proves this one. Re-attach every work-item bound at the prior revision to
+    // this one (the carry joins through that edge, and the FK demands it), then carry its live
+    // bindings. Without this, every promotion stranded all proof and forced a full re-proof.
+    let evidenceCarriedForward: number | undefined;
+    if (lifecycleOnlyFrom !== null) {
+      await tx`
+        INSERT INTO harness_shared.work_item_spec_revision_edges (
+          workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+          spec_revision, spec_fingerprint, created_by
+        )
+        SELECT workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+               ${revision}, ${contentHash}, ${input.actorId}
+          FROM harness_shared.work_item_spec_revision_edges
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${input.specId}
+           AND spec_revision = ${lifecycleOnlyFrom}
+        ON CONFLICT DO NOTHING`;
+      // Dynamic import: acceptance-bar-amendment imports this module (setSpecClause).
+      const { carryUnchangedBarEvidenceBindings } = await import('../../acceptance-bar-amendment');
+      evidenceCarriedForward = await carryUnchangedBarEvidenceBindings(tx as never, {
+        workspaceId: scope.workspaceId,
+        harnessSlug: scope.harnessSlug,
+        planSlug,
+        specId: input.specId,
+        priorRevision: lifecycleOnlyFrom,
+        nextRevision: revision,
+        nextSpecFingerprint: contentHash,
+      });
+    }
+
     const sourceValId = identity?.source_val_id ?? input.sourceValId ?? null;
     if (sourceValId) {
       await tx`
@@ -584,7 +661,13 @@ export async function setSpecClause(
           updated_at = now()`;
     }
 
-    return { status: actualRevision === 0 ? 'created' : 'revised', specId: input.specId, revision, contentHash };
+    return {
+      status: actualRevision === 0 ? 'created' : 'revised',
+      specId: input.specId,
+      revision,
+      contentHash,
+      ...(evidenceCarriedForward !== undefined ? { evidenceCarriedForward } : {}),
+    };
   };
   return transaction
     ? write(transaction.executor)

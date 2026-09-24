@@ -21,6 +21,7 @@ export function parsePsuConnectionArgs(argv: any): {
         logout: boolean;
         logoutName: null;
         sessionKey: null;
+        program: string;
     };
     forwardedArgv: any[];
 };
