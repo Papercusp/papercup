@@ -146,9 +146,15 @@ done
 # release's superproject commit, never from the submodule's moving worktree.
 LICENSE_SHA="$(git -C "$ROOT" rev-parse --verify "$SHA:libs/agent-chat")" \
   || die "could not resolve the agent-chat license pin from $SHA"
-git -C "$ROOT/libs/agent-chat" cat-file -e "$LICENSE_SHA:LICENSE" \
-  || die "agent-chat $LICENSE_SHA has no LICENSE file"
-git -C "$ROOT/libs/agent-chat" show "$LICENSE_SHA:LICENSE" > "$WORK/PUI_LICENSE"
+# A caller may set GIT_DIR to a throwaway superproject object store (the
+# compatibility-claim regression does this). Resolve the pinned gitlink above
+# through that store, then clear its Git environment when reading the submodule.
+# Otherwise Git ignores -C and looks for LICENSE in the superproject store.
+( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  git -C "$ROOT/libs/agent-chat" cat-file -e "$LICENSE_SHA:LICENSE" \
+    || die "agent-chat $LICENSE_SHA has no LICENSE file"
+  git -C "$ROOT/libs/agent-chat" show "$LICENSE_SHA:LICENSE" > "$WORK/PUI_LICENSE"
+)
 # compatibility.json is committed before the candidate it ships in exists, so it
 # can never hold that candidate's installed-product evidence: a 'verified' target
 # there is always evidence of another generation (R-10). Refused before anything
