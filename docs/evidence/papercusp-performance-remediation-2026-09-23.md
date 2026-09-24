@@ -540,7 +540,8 @@ remains the executed proof; it was not rerun. The old failure stays in history.
 
 The corrected unscoped evaluator passes PERF-P-001, and certification under
 the plan's governing `plan-class-bugfix` filed EI-24135395646362393. Its fresh
-independent audit reservation is pending, reserved at 09:41:48.055Z. This
+independent audit subsequently passed at 09:46:47.402Z via
+EI-24135710606333042 (re-read at 09:56Z). This
 supersedes the earlier card, not its historical failed audit.
 
 A fresh bounded read of the existing shared Health row returned snapshot
@@ -553,3 +554,39 @@ directly, with implementation-only source dependencies, replacing binding
 The new Learning concurrency test also passed the scoped TypeScript gate
 (`LINT_TSC_RESULT`, exit 0, HEAD `2bf2467436`). The full compiler reported
 diagnostics elsewhere; this does not claim a clean whole-project typecheck.
+
+## P-003 descendant cancellation
+
+EI-24136230241945593 measured another cancellation gap in `process:exec`.
+`sidecar-exec-process.ts` signalled only the direct child. A command that spawned
+a helper could exit on SIGTERM while the helper retained its output pipes;
+the original request then never completed. The new real-process regression
+failed against the old implementation at its 90-second integration timeout
+(run 19273899); teardown explicitly killed the recorded helper PID.
+
+The existing execution seam now creates a referenced POSIX process group, using
+the same group-signal pattern already used by capability/bash. Abort, idle and
+hard-deadline termination signal that group. Escalation stays armed after the
+parent exits, and admission settlement waits until the group is gone. A failed
+group-liveness probe stays unverified and cannot fabricate an exit receipt.
+Windows retains direct-child behavior; this evidence was collected on Linux.
+
+Two permanent cases launch a helper that ignores SIGTERM, with inherited or
+independent stdio. Both assert the helper is dead at admission settlement and
+before the caller receives its result. This covers both a helper retaining the
+output pipe and one outliving a parent whose pipes have already closed.
+
+The full cancellation/Git group passed **28 tests, zero skipped** at stable
+HEAD `5623ff3768` plus the local fix (runs 19273906/19273907/19273908). After
+adding the settlement-time observation, both new cases passed at stable HEAD
+`48ca7f163b` with clean named paths (19273911); the other nine integration cases
+were deliberately filtered on that focused rerun. A preceding focused run
+crossed an auto-commit and is not the final provenance reference. Scoped
+TypeScript checking of the two edited paths passed; unrelated diagnostics
+remain elsewhere. `git diff --check` passed.
+
+The older intermittent progress test passed its targeted recheck and this full
+run, but its historical failure cause is still unmeasured. No flake-resolution
+claim is made. Mutating Git remains on the local path: the separate transport-loss
+exit fence, profiler-start overhead and full multi-repository performance proof
+are still P-003 work. This is source/current-build verification, not shipment.
