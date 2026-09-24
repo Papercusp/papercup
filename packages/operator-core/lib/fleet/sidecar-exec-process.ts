@@ -187,6 +187,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let spawnFailed = false;
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleCheck: ReturnType<typeof setImmediate> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
       let removeAbortListener = (): void => {};
       const processGroup = process.platform !== 'win32' ? child.pid : undefined;
@@ -235,6 +236,8 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const clearTimers = (): void => {
         if (hardTimer) clearTimeout(hardTimer);
         if (idleTimer) clearTimeout(idleTimer);
+        if (idleCheck) clearImmediate(idleCheck);
+        idleCheck = null;
       };
       const stopGuards = (): void => {
         clearTimers();
@@ -266,7 +269,20 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const armIdleTimer = (): void => {
         if (idleTimeoutMs <= 0 || settled || terminating) return;
         if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => terminate(`made no output progress for ${idleTimeoutMs}ms`), idleTimeoutMs);
+        if (idleCheck) clearImmediate(idleCheck);
+        idleCheck = null;
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          // A stalled parent can resume in TIMERS with child output already
+          // waiting in an OS pipe. Let POLL deliver those bytes before deciding
+          // the child was idle. A data event cancels this candidate and re-arms
+          // the idle timer; the independent hard ceiling is never deferred.
+          idleCheck = setImmediate(() => {
+            idleCheck = null;
+            terminate(`made no output progress for ${idleTimeoutMs}ms`);
+          });
+          idleCheck.unref?.();
+        }, idleTimeoutMs);
         idleTimer.unref?.();
       };
       if (timeoutMs > 0) {
