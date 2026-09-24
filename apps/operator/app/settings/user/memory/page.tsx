@@ -42,6 +42,7 @@ export const DEFAULT_MEMORY_PAGE_LIMIT = 500;
 export const MEMORY_PAGE_STEP = 500;
 import { Select } from '@/app/harness/Select';
 import { FleetKnowledgePacksSection } from './FleetKnowledgePacksSection';
+import { EmbedDeviceSection } from './EmbedDeviceSection';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
 import { originOf, agentSourceDetailOf, type MemoryOrigin } from './origin';
@@ -1028,6 +1029,10 @@ export default function MemoryPage() {
           fleet-lessons loop knobs (cadence, adoption policy, hygiene bounds).
           Deliberately on this page (D-001): knowledge packs are fleet memory. */}
       <FleetKnowledgePacksSection />
+
+      {/* memory-reduction-2026-09-24 P-008 — Auto / GPU / CPU for the local
+          embedding models, with what they actually run on. */}
+      <EmbedDeviceSection />
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input

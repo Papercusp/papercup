@@ -739,6 +739,289 @@ async function establishForward(profile, deps) {
   return { controlPath, localPort, cancel };
 }
 
+/** Single-quote one argv cell for the remote POSIX shell. */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Same key for the same profile, workspace and argv — so re-running an
+ * interrupted command reattaches to the shell still alive on the machine, the
+ * way `tmux new-session -A` does for the SSH transport.
+ */
+function hostedSessionKey(profile, workspaceId, argv) {
+  return createHash("sha256")
+    .update(`${profile.name}\0${workspaceId}\0`)
+    .update(argv.join("\0"))
+    .digest("base64url")
+    .slice(0, 22);
+}
+
+const HOSTED_ERROR_GUIDANCE = {
+  cli_token_required: "psu is not signed in",
+  cli_token_invalid: "this psu sign-in has expired or was signed out",
+  membership_not_active:
+    "your account is no longer an active member of that organization",
+  workspace_not_found: "that workspace is not in your organization",
+  workspace_not_reachable:
+    "the workspace machine is not connected right now (it may be stopped or still starting)",
+  authority_unavailable: "the Papercusp cloud could not check your access; try again",
+  ticket_unavailable: "the Papercusp cloud could not open a session; try again",
+};
+
+async function hostedRequest(
+  deps,
+  profileOrOrigin,
+  path,
+  { method = "GET", body, timeoutMs = 20_000 } = {},
+) {
+  const origin =
+    typeof profileOrOrigin === "string" ? profileOrOrigin : profileOrOrigin.origin;
+  const headers = { accept: "application/json" };
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (typeof profileOrOrigin !== "string")
+    headers.authorization = `Bearer ${profileOrOrigin.accessToken}`;
+  let response;
+  try {
+    response = await deps.fetch(`${origin}/api${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(
+      `Cannot reach the Papercusp cloud at ${origin}: ${error?.message ?? error}`,
+    );
+  }
+  const payload = await response.json().catch(() => null);
+  return { status: response.status, payload };
+}
+
+function hostedFailure(profile, action, { status, payload }) {
+  const error = payload?.error;
+  const code = typeof error === "string" ? error : error?.code;
+  if (code === "forbidden" && error?.missingPermission) {
+    return new Error(
+      `Cannot ${action}: your organization role does not include ${error.missingPermission}`,
+    );
+  }
+  const reason = HOSTED_ERROR_GUIDANCE[code] ?? `HTTP ${status}${code ? ` ${code}` : ""}`;
+  const relogin =
+    code === "cli_token_invalid" || code === "cli_token_required"
+      ? ` Run psu --connect-login=${profile.origin} to sign in again.`
+      : "";
+  return new Error(`Cannot ${action}: ${reason}.${relogin}`);
+}
+
+async function listHostedWorkspaces(profile, deps, timeoutMs) {
+  const result = await hostedRequest(deps, profile, "/hosted/cli/workspaces", {
+    timeoutMs,
+  });
+  if (result.status !== 200 || result.payload?.ok !== true)
+    throw hostedFailure(profile, `list workspaces at ${profile.origin}`, result);
+  return Array.isArray(result.payload.workspaces) ? result.payload.workspaces : [];
+}
+
+/** RFC 8628 device sign-in: print a code, let the person approve it in a browser, poll once per interval. */
+async function hostedLogin(originInput, store, deps) {
+  const origin = normalizeHostedPortalOrigin(originInput);
+  const started = await hostedRequest(deps, origin, "/hosted/cli/device/code", {
+    method: "POST",
+    body: { clientLabel: deps.hostname },
+  });
+  const grant = started.payload;
+  if (started.status !== 200 || grant?.ok !== true || typeof grant.deviceCode !== "string") {
+    throw new Error(
+      `Cannot start a Papercusp cloud sign-in at ${origin} (HTTP ${started.status})`,
+    );
+  }
+  deps.notice(`psu: to sign in, open ${grant.verificationUriComplete}`);
+  deps.notice(`psu: and check that the page shows the code ${grant.userCode}`);
+  if (deps.interactive) deps.openBrowser(grant.verificationUriComplete);
+
+  let intervalMs = Math.max(1, Number(grant.interval) || 5) * 1000;
+  const deadline = deps.now() + Math.max(1, Number(grant.expiresIn) || 600) * 1000;
+  let issued = null;
+  while (!issued) {
+    if (deps.now() >= deadline)
+      throw new Error("The sign-in code expired. Run psu --connect-login again.");
+    await deps.sleep(intervalMs);
+    const polled = await hostedRequest(deps, origin, "/hosted/cli/device/token", {
+      method: "POST",
+      body: { deviceCode: grant.deviceCode },
+    });
+    if (polled.status === 200 && polled.payload?.ok === true) {
+      issued = polled.payload;
+      break;
+    }
+    const error = polled.payload?.error;
+    if (error === "authorization_pending") continue;
+    if (error === "slow_down") {
+      intervalMs += 5_000;
+      continue;
+    }
+    if (error === "access_denied")
+      throw new Error("Sign-in was denied in the browser; psu is not signed in.");
+    if (error === "expired_token")
+      throw new Error("The sign-in code expired. Run psu --connect-login again.");
+    throw new Error(
+      `Papercusp cloud sign-in failed (HTTP ${polled.status}${typeof error === "string" ? ` ${error}` : ""})`,
+    );
+  }
+
+  const profile = normalizeHostedProfile({
+    origin,
+    accessToken: issued.accessToken,
+    tokenId: issued.tokenId,
+    organizationId: issued.organizationId,
+    userId: issued.userId,
+    expiresAt: issued.expiresAt,
+  });
+  const replaced = store.profiles.find((saved) => saved.name === profile.name);
+  if (replaced && replaced.kind !== "papercusp-hosted") {
+    throw new Error(
+      `Connection profile '${profile.name}' already exists; remove it before signing in`,
+    );
+  }
+  savePsuConnectionStore(
+    {
+      ...store,
+      profiles: [
+        ...store.profiles.filter((saved) => saved.name !== profile.name),
+        profile,
+      ],
+    },
+    deps.storePath,
+  );
+  // Only after the new token is saved: a failed re-login must not sign you out.
+  if (replaced)
+    await hostedRequest(deps, replaced, "/hosted/cli/logout", { method: "POST" }).catch(
+      () => null,
+    );
+  return profile;
+}
+
+/** `name` or `name/workspaceId`; profile names cannot contain '/'. */
+function parseSelection(selection) {
+  const slash = selection.indexOf("/");
+  return slash === -1
+    ? { name: selection, workspaceId: null }
+    : { name: selection.slice(0, slash), workspaceId: selection.slice(slash + 1) || null };
+}
+
+async function runHostedConnection(profile, workspaceId, forwardedArgv, transport, pickerAllowed, deps) {
+  const workspaces = await listHostedWorkspaces(profile, deps);
+  let workspace = null;
+  if (workspaceId) {
+    workspace = workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
+    if (!workspace)
+      throw new Error(
+        `Workspace '${workspaceId}' is not in your organization at ${profile.origin}. Run psu --connect-list to see yours.`,
+      );
+    if (!workspace.reachable)
+      throw new Error(
+        `Workspace '${workspaceId}' is not connected right now (${workspace.state}). Start it in the portal, then retry.`,
+      );
+  } else {
+    const reachable = workspaces.filter((candidate) => candidate.reachable);
+    if (reachable.length === 1) workspace = reachable[0];
+    else if (reachable.length > 1 && pickerAllowed) {
+      const chosen = await deps.pickConnection(
+        reachable.map((candidate) => ({
+          name: describeHostedWorkspace(profile, candidate),
+          value: `${profile.name}/${candidate.id}`,
+        })),
+      );
+      workspace = reachable.find((candidate) => `${profile.name}/${candidate.id}` === chosen) ?? null;
+    }
+    if (!workspace) {
+      const listed = workspaces.map((candidate) => candidate.id).join(", ") || "none";
+      throw new Error(
+        reachable.length === 0
+          ? `None of your workspaces at ${profile.origin} is connected right now (yours: ${listed}). Start one in the portal, then retry.`
+          : `Choose a workspace with --connect=${profile.name}/<workspace> (connected: ${reachable.map((candidate) => candidate.id).join(", ")})`,
+      );
+    }
+  }
+
+  const session = transport.sessionKey ?? hostedSessionKey(profile, workspace.id, forwardedArgv);
+  const opened = await hostedRequest(
+    deps,
+    profile,
+    `/hosted/cli/workspaces/${encodeURIComponent(workspace.id)}/terminal`,
+    { method: "POST", body: { session } },
+  );
+  if (opened.status !== 200 || opened.payload?.ok !== true)
+    throw hostedFailure(profile, `open a terminal on ${workspace.id}`, opened);
+  // Take only the single-use ticket from the reply and address the relay at
+  // the portal psu already trusts with its token — never at a host the reply names.
+  let ticket = null;
+  try {
+    ticket = new URL(opened.payload.socketUrl).searchParams.get("ticket");
+  } catch {
+    ticket = null;
+  }
+  if (!ticket || !HOSTED_TICKET_RE.test(ticket))
+    throw new Error(`The Papercusp cloud returned an unusable session for ${workspace.id}`);
+  const socketUrl = new URL("/api/hosted/connectors/socket", profile.origin);
+  socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
+  socketUrl.searchParams.set("ticket", ticket);
+
+  deps.notice(`psu: connected to ${describeHostedWorkspace(profile, workspace)}`);
+  const initialInput = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu${forwardedArgv
+    .map((cell) => ` ${shellQuote(cell)}`)
+    .join("")}\r`;
+  const result = await deps.openHostedTerminal({
+    socketUrl: socketUrl.toString(),
+    initialInput,
+    notice: deps.notice,
+  });
+  if (result.exit) return { handled: true, argv: forwardedArgv, exitCode: result.exit.code ?? 1 };
+  throw new Error(
+    `The connection to ${workspace.id} closed${result.closeReason ? ` (${result.closeReason})` : ""}. Your shell stays alive on the machine for a while: run psu --connect=${profile.name}/${workspace.id} --connect-session=${opened.payload.session ?? session} to resume it.`,
+  );
+}
+
+/**
+ * Every place psu can run. A Papercusp cloud sign-in expands to its workspaces
+ * (a stopped one is shown but not selectable); with no sign-in yet, the picker
+ * offers one, so the remote option is discoverable from a plain `psu`.
+ */
+async function pickerChoices(store, deps) {
+  const choices = [{ name: "Local — this computer", value: "local" }];
+  let signedIn = false;
+  for (const profile of store.profiles) {
+    if (profile.kind !== "papercusp-hosted") {
+      choices.push({ name: describePsuConnectionProfile(profile), value: profile.name });
+      continue;
+    }
+    signedIn = true;
+    try {
+      // Short: this runs before every interactive launch, including local ones.
+      for (const workspace of await listHostedWorkspaces(profile, deps, 5_000)) {
+        choices.push({
+          name: describeHostedWorkspace(profile, workspace),
+          value: `${profile.name}/${workspace.id}`,
+          ...(workspace.reachable ? {} : { disabled: "not connected" }),
+        });
+      }
+    } catch (error) {
+      choices.push({
+        name: describePsuConnectionProfile(profile),
+        value: profile.name,
+        disabled: error?.message ?? String(error),
+      });
+    }
+  }
+  if (!signedIn)
+    choices.push({
+      name: "Papercusp cloud — sign in to use a hosted workspace",
+      value: HOSTED_LOGIN_CHOICE,
+    });
+  return choices;
+}
+
 function connectionDeps(overrides) {
   const home = overrides.home ?? homedir();
   return {
@@ -754,6 +1037,14 @@ function connectionDeps(overrides) {
     runInteractive: overrides.runInteractive ?? defaultRunInteractive,
     reservePort: overrides.reservePort ?? reserveLoopbackPort,
     probeOperator: overrides.probeOperator ?? defaultProbeOperator,
+    fetch: overrides.fetch ?? ((url, init) => globalThis.fetch(url, init)),
+    sleep:
+      overrides.sleep ??
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    now: overrides.now ?? (() => Date.now()),
+    hostname: overrides.hostname ?? osHostname(),
+    openBrowser: overrides.openBrowser ?? defaultOpenBrowser,
+    openHostedTerminal: overrides.openHostedTerminal ?? defaultOpenHostedTerminal,
     output: overrides.output ?? ((line) => console.log(line)),
     notice: overrides.notice ?? ((line) => console.error(line)),
     transportForwarded:
@@ -775,8 +1066,59 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
 
   if (transport.list) {
     deps.output("local — this computer");
-    for (const profile of store.profiles)
+    for (const profile of store.profiles) {
       deps.output(describePsuConnectionProfile(profile));
+      if (profile.kind !== "papercusp-hosted") continue;
+      try {
+        const workspaces = await listHostedWorkspaces(profile, deps);
+        if (workspaces.length === 0)
+          deps.output("  (no workspaces in this organization yet)");
+        for (const workspace of workspaces)
+          deps.output(`  ${describeHostedWorkspace(profile, workspace)}`);
+      } catch (error) {
+        deps.output(`  ${error?.message ?? error}`);
+      }
+    }
+    return { handled: true, argv: forwardedArgv, exitCode: 0 };
+  }
+  if (transport.login) {
+    const profile = await hostedLogin(transport.loginOrigin, store, deps);
+    deps.output(
+      `Signed in to ${profile.origin}. Run psu --connect=${profile.name} to open psu on one of your workspaces.`,
+    );
+    return { handled: true, argv: forwardedArgv, exitCode: 0 };
+  }
+  if (transport.logout) {
+    const hosted = store.profiles.filter(
+      (profile) => profile.kind === "papercusp-hosted",
+    );
+    const profile = transport.logoutName
+      ? hosted.find((candidate) => candidate.name === transport.logoutName)
+      : hosted.length === 1
+        ? hosted[0]
+        : null;
+    if (!profile) {
+      throw new Error(
+        transport.logoutName
+          ? `No Papercusp cloud sign-in named '${transport.logoutName}'`
+          : `Name the sign-in to remove: psu --connect-logout=<${hosted.map((candidate) => candidate.name).join("|") || "name"}>`,
+      );
+    }
+    const revoked = await hostedRequest(deps, profile, "/hosted/cli/logout", {
+      method: "POST",
+    }).catch((error) => ({ status: 0, error }));
+    savePsuConnectionStore(
+      {
+        ...store,
+        profiles: store.profiles.filter((saved) => saved.name !== profile.name),
+      },
+      deps.storePath,
+    );
+    if (revoked.status !== 200)
+      deps.notice(
+        `psu: could not reach ${profile.origin} to revoke the token; it was forgotten locally and expires on its own at ${profile.expiresAt}`,
+      );
+    deps.output(`Signed out of ${profile.origin}`);
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
   if (transport.addName) {
@@ -824,24 +1166,46 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     !forwardedArgv.includes("--no-picker") &&
     !forwardedArgv.includes("--headless");
   let selection = transport.selection;
-  if (transport.explicitConnect && selection == null && !pickerAllowed) {
+  if (
+    (transport.explicitConnect || transport.sessionKey) &&
+    selection == null &&
+    !pickerAllowed
+  ) {
     throw new Error(
       "--connect needs a saved profile name when psu is non-interactive",
     );
   }
   if (selection == null && pickerAllowed)
-    selection = await deps.pickConnection(store.profiles);
+    selection = await deps.pickConnection(await pickerChoices(store, deps));
+  if (selection === HOSTED_LOGIN_CHOICE) {
+    const profile = await hostedLogin(undefined, store, deps);
+    selection = profile.name;
+  }
   if (selection == null || selection === "local")
     return { handled: false, argv: forwardedArgv };
 
-  const profile = store.profiles.find(
-    (candidate) => candidate.name === selection,
+  const { name, workspaceId } = parseSelection(selection);
+  const profile = loadPsuConnectionStore(deps.storePath).profiles.find(
+    (candidate) => candidate.name === name,
   );
   if (!profile)
     throw new Error(
-      `Unknown psu connection profile '${selection}'. Run psu --connect-list to inspect saved profiles.`,
+      `Unknown psu connection profile '${name}'. Run psu --connect-list to inspect saved profiles.`,
     );
   assertProfileUsable(profile, deps);
+  if (profile.kind === "papercusp-hosted")
+    return runHostedConnection(
+      profile,
+      workspaceId,
+      forwardedArgv,
+      transport,
+      pickerAllowed,
+      deps,
+    );
+  if (workspaceId || transport.sessionKey)
+    throw new Error(
+      `'${profile.name}' is a single machine; --connect=<name>/<workspace> and --connect-session apply only to Papercusp cloud sign-ins`,
+    );
   deps.notice(
     `psu: connecting through ${describePsuConnectionProfile(profile)}`,
   );

@@ -290,6 +290,17 @@ Launcher controls:
   --recovery-grant=<uuid>            Consume a signed one-use recovery grant
   --                                 Forward remaining arguments to the backend
 
+Remote hosts (run psu on another machine; every other option is forwarded to it):
+  --connect[=<name>[/<workspace>]]   Run on a saved remote host (picker when omitted)
+  --connect-list                     List saved remote hosts and cloud workspaces
+  --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)
+  --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer
+  --connect-session=<key>            Reattach a specific cloud workspace shell
+  --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with
+                                     --connect-project, --connect-zone,
+                                     --connect-instance and --connect-user
+  --connect-remove=<name>            Forget a saved remote host
+
 Values may use either --name=value or (where supported) --name value form.
 `;
 
