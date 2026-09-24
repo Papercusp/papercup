@@ -1,6 +1,8 @@
 /** Real pipe framing, with opt-in installed-native protocol startup. The test
  * runner owns the subprocess cgroup; only DB-backed enrollment is substituted.
- * No model prompt, credential, SU launch, or native user interface is needed. */
+ * Scripted loopback Responses fixtures perform no provider inference. The
+ * separately opted-in platform case inherits only this caller's MCP credential;
+ * no SU launch, provider credential, or native user interface is needed. */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -126,7 +128,8 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
-  it.skipIf(process.env.PUI_NATIVE_PLATFORM_MCP !== '1')('resolves the inherited platform caller through native MCP without provider inference', async () => {
+  it.skipIf(process.env.PUI_NATIVE_PLATFORM_MCP !== '1').each([false, true])(
+    'resolves the inherited platform caller through native MCP without provider inference (preauthorized %s)', async preauthorized => {
     // Explicit opt-in uses ONLY this session's existing MCP bearer and client.
     // Never copy its provider/auth.json, hooks, instructions, or model routing.
     const inherited = parseToml(readFileSync(join(process.env.CODEX_HOME!, 'config.toml'), 'utf8'));
@@ -172,8 +175,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           base_url: `http://127.0.0.1:${address.port}/v1`, wire_api: 'responses', requires_openai_auth: false,
           supports_websockets: false, request_max_retries: 0, stream_max_retries: 0 } },
         features: { apps: false, shell_tool: false }, web_search: 'disabled',
+        // Filters and native receipts use the original MCP name, whereas the
+        // Responses function name is normalized to tools_invoke.
         mcp_servers: { 'papercusp-su': { url: String(mcp.url), http_headers: mcp.http_headers,
-          enabled_tools: ['tools_invoke'] } },
+          enabled_tools: ['tools:invoke'],
+          ...(preauthorized ? { tools: { 'tools:invoke': { approval_mode: 'approve' } } } : {}) } },
       } as Parameters<typeof stringifyToml>[0]);
       p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config);
       await p.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_cache_identity_test', version: '1' } } });
@@ -187,8 +193,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const entries = inventory.data as Array<Record<string, unknown>>;
       expect(entries.map(entry => entry.name)).toEqual(['papercusp-su']);
       expect(entries[0].toolsError == null).toBe(true);
+      expect(entries[0].authStatus).toBe('bearerToken');
+      expect(entries[0].runtimeStatus).toBe('connected');
       expect(Object.keys(entries[0].tools as object), JSON.stringify({ auth: entries[0].authStatus,
-        runtime: entries[0].runtimeStatus, events: events.filter(frame => frame.method?.toString().includes('mcpServer')) }))
+        runtime: entries[0].runtimeStatus, names: Object.keys(entries[0].tools as object).filter(name => /invoke/.test(name)) }))
         .toHaveLength(1);
       const response = await p.request({ method: 'turn/start', params: {
         threadId, input: [{ type: 'text', text: 'Offline native identity receipt fixture.' }],
@@ -197,19 +205,26 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       await vi.waitFor(() => expect(events.some(frame => frame.method === 'turn/completed' &&
         (frame.params as RpcFrame)?.threadId === threadId)).toBe(true), { timeout: 30_000 });
       const threadRead = await p.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
-      expect(inspectCarryNativeTurn({ threadId, turnId, events, threadRead,
-        allowedMcpCalls: [{ server: 'papercusp-su', tool: 'tools_invoke', arguments: { name: 'coord:whoami', args: {} } }] }).status)
-        .toBe('verified');
+      const trace = inspectCarryNativeTurn({ threadId, turnId, events, threadRead,
+        allowedMcpCalls: [{ server: 'papercusp-su', tool: 'tools:invoke', arguments: { name: 'coord:whoami', args: {} } }] });
       const items = ((threadRead.thread as RpcFrame).turns as RpcFrame[])[0].items as RpcFrame[];
       const call = items.find(item => item.type === 'mcpToolCall')!;
-      const content = (call.result as RpcFrame).content as Array<{ type: string; text?: string }>;
-      const identities = content.flatMap(block => {
-        try { const value = JSON.parse(block.text ?? ''); return value.ownerId ? [value] : []; } catch { return []; }
-      });
-      expect(identities).toHaveLength(1);
-      expect(identities[0].ownerId).toBe(process.env.PAPERCUSP_SID);
-      expect(identities[0].workspaceId).toBe(process.env.PAPERCUSP_WORKSPACE);
-      expect(JSON.stringify(requests.at(-1)?.input).includes(process.env.PAPERCUSP_SID!)).toBe(true);
+      const credential = String((mcp.http_headers as Record<string, unknown>).Authorization).replace(/^Bearer /, '');
+      expect(trace.status, JSON.stringify({ missing: trace.missing, violations: trace.violations, call })
+        .replaceAll(credential, '[redacted]')).toBe(preauthorized ? 'verified' : 'incomplete');
+      if (preauthorized) {
+        const content = (call.result as RpcFrame).content as Array<{ type: string; text?: string }>;
+        const identities = content.flatMap(block => {
+          try { const value = JSON.parse(block.text ?? ''); return value.ownerId ? [value] : []; } catch { return []; }
+        });
+        expect(identities).toHaveLength(1);
+        expect(identities[0].ownerId).toBe(process.env.PAPERCUSP_SID);
+        expect(identities[0].workspaceId).toBe(process.env.PAPERCUSP_WORKSPACE);
+        expect(JSON.stringify(requests.at(-1)?.input).includes(process.env.PAPERCUSP_SID!)).toBe(true);
+      } else {
+        expect(call.result).toBeNull();
+        expect((call.error as RpcFrame).message).toBe('MCP tool call requires approval, but approval policy is never');
+      }
       // Compare as booleans: a failed assertion must never print bearer-bearing
       // native configuration, either on stdout or in the test-run ledger.
       const after = await p.request({ method: 'config/read', params: { cwd: homes.at(-1), includeLayers: true } });
@@ -218,6 +233,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       expect(isDeepStrictEqual(inventory, afterInventory)).toBe(true);
       expect(requests).toHaveLength(2);
       expect(errors).toEqual([]);
+      console.info('CARRY_NATIVE_IDENTITY_RECEIPT', JSON.stringify({ threadId, turnId, preauthorized,
+        ownerId: preauthorized ? process.env.PAPERCUSP_SID : null,
+        workspaceId: preauthorized ? process.env.PAPERCUSP_WORKSPACE : null,
+        configSha256: createHash('sha256').update(JSON.stringify(before)).digest('hex'),
+        toolInventorySha256: createHash('sha256').update(JSON.stringify(inventory)).digest('hex'),
+        nativeAuthStatus: entries[0].authStatus, nativeRuntimeStatus: entries[0].runtimeStatus,
+        scriptedRequests: requests.length, providerInference: false }));
     } finally {
       try { if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); } }
       finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
