@@ -42,7 +42,7 @@ const SEEN_PIDS = new Set<number>();
 export default defineTool({
   name: 'dev:cache_stats',
   description:
-    "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline + hitRatePct, sorted by traffic. ⚠ PER-WORKER: these live in one process's memory and :3070 is a reuseport cluster, so one call reports only the worker that answered it — read `pid`/`clusterSize`, and repeat-call to sample more (`sampledWorkers`). `bypass`>0 means the CACHE_LAYER kill-switch is off (nothing is being cached); `deadline`>0 means callers hit the cachedRead deadline and got the degraded value. A tool absent from `perTool` never called cachedRead at all — which is different from calling it and missing.",
+    "Live operator READ-CACHE counters (cachedRead), per tool: hits/misses/stale/bypass/deadline, miss reasons, actual factory builds and elapsed build milliseconds. Absent misses combine new/evicted/cleared keys; no key history is retained. buildMs covers buildsCompleted, including failures; builds also includes in-flight work. L2 hits and joined readers do not add factory builds. ⚠ PER-WORKER: record pid/uptime/clusterSize and aggregate distinct workers yourself; this result covers one worker. A tool absent from perTool never called cachedRead in this process lifetime. A low hitRatePct alone does not establish expensive rebuilding.",
   guidance: {
     when: "Diagnosing why a read is slow or a cache seems not to serve — read hit/miss here instead of inferring cache behaviour from response latency (that inference is unsound: a cheap query and a cache hit look identical, and it produced two refuted root causes on P-007). Also for confirming the CACHE_LAYER kill-switch state (`bypass`) and whether callers are hitting deadlines.",
     notWhen:
@@ -107,13 +107,26 @@ export default defineTool({
         l2Hits: acc.l2Hits + r.l2Hits,
         l2Misses: acc.l2Misses + r.l2Misses,
         l2Errors: acc.l2Errors + r.l2Errors,
+        missAbsent: acc.missAbsent + r.missAbsent,
+        missInvalidated: acc.missInvalidated + r.missInvalidated,
+        missHardExpired: acc.missHardExpired + r.missHardExpired,
+        builds: acc.builds + r.builds,
+        buildsCompleted: acc.buildsCompleted + r.buildsCompleted,
+        buildErrors: acc.buildErrors + r.buildErrors,
+        buildMs: acc.buildMs + r.buildMs,
+        maxBuildMs: Math.max(acc.maxBuildMs, r.maxBuildMs),
       }),
-      { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0, l2Hits: 0, l2Misses: 0, l2Errors: 0 },
+      {
+        hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0, l2Hits: 0, l2Misses: 0, l2Errors: 0,
+        missAbsent: 0, missInvalidated: 0, missHardExpired: 0,
+        builds: 0, buildsCompleted: 0, buildErrors: 0, buildMs: 0, maxBuildMs: 0,
+      },
     );
 
     return {
       data: {
         ok: true,
+        telemetryVersion: 2,
         pid,
         clusterSize,
         sampledWorkers: SEEN_PIDS.size,

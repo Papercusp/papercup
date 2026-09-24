@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
+import { getL2Store, installL2StoreForTests, setL2EnabledForTests, __resetL2StateForTests } from "./l2-tier";
 
 import {
   getOperatorCache,
@@ -78,6 +79,18 @@ describe("stableKey — deterministic, key-order-stable serialization", () => {
 });
 
 describe("cachedRead — basic caching + key stability", () => {
+  it("keeps an own __proto__ argument in the cache identity", async () => {
+    const first = JSON.parse('{"nested":{"__proto__":{"view":"first"}},"id":"same"}');
+    const second = JSON.parse('{"nested":{"__proto__":{"view":"second"}},"id":"same"}');
+    const read = (key: unknown, value: string) => cachedRead(ctx("w1"), {
+      tool: "identity", key, tags: [],
+    }, () => value);
+    expect(await read(first, "first")).toBe("first");
+    expect(await read(second, "second")).toBe("second");
+    expect(JSON.parse(stableKey(first))).toEqual(first);
+    expect(stableKey(first)).not.toBe(stableKey(second));
+  });
+
   it("runs the factory once and serves the cached value on repeat reads", async () => {
     let builds = 0;
     const read = (): Promise<string> =>
@@ -314,6 +327,65 @@ describe("cachedRead — per-tool telemetry", () => {
     const stats = snapshotCachedReadStats();
     expect(stats["plans:list"]).toMatchObject({ misses: 1, hits: 0 });
     expect(stats["plans:attention"]).toMatchObject({ misses: 1, hits: 1 });
+  });
+});
+
+describe("cachedRead rebuild telemetry", () => {
+  it("does not charge an L2 hit as factory work", async () => {
+    installL2StoreForTests({
+      get: async () => ({ value: "from-l2", tags: [], generation: 0, expiresAt: null }),
+    } as unknown as ReturnType<typeof getL2Store>);
+    setL2EnabledForTests(true);
+    try {
+      const factory = vi.fn(() => "rebuilt");
+      const value = await cachedRead(ctx("w1"), {
+        tool: "measured-l2", key: "key", tags: [], l2: true, softTtlMs: 1000,
+      }, factory);
+      expect(value).toBe("from-l2");
+      expect(factory).not.toHaveBeenCalled();
+      expect(snapshotCachedReadStats()["measured-l2"]).toMatchObject({
+        misses: 1, missAbsent: 1, l2Hits: 1, builds: 0, buildsCompleted: 0, buildMs: 0,
+      });
+    } finally {
+      __resetL2StateForTests();
+    }
+  });
+
+  it("attributes invalidation and hard expiry separately from an absent key", async () => {
+    let now = 0;
+    setOperatorCache({ clock: () => now });
+    const opts = { tool: "measured", key: "key", tags: ["rows"], hardTtlMs: 10 };
+    await cachedRead(ctx("w1"), opts, () => 1);
+    getOperatorCache().invalidateByTag("w1", "rows");
+    await cachedRead(ctx("w1"), opts, () => 2);
+    now = 11;
+    await cachedRead(ctx("w1"), opts, () => 3);
+    await cachedRead(ctx("w1"), opts, () => 4);
+    expect(snapshotCachedReadStats().measured).toMatchObject({
+      misses: 3, hits: 1, missAbsent: 1, missInvalidated: 1, missHardExpired: 1, builds: 3,
+    });
+  });
+
+  it("counts and times factory work once for joined readers, including failed work", async () => {
+    let time = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => time);
+    let resolve!: (value: number) => void;
+    const pending = new Promise<number>((done) => { resolve = done; });
+    const opts = { tool: "measured", key: "key", tags: [] };
+    const a = cachedRead(ctx("w1"), opts, () => pending);
+    const b = cachedRead(ctx("w1"), opts, () => { throw new Error("joined factory must not run"); });
+    expect(snapshotCachedReadStats().measured).toMatchObject({ builds: 1, buildsCompleted: 0, buildMs: 0 });
+    time = 40;
+    resolve(1);
+    expect(await Promise.all([a, b])).toEqual([1, 1]);
+    expect(await cachedRead(ctx("w1"), opts, () => 2)).toBe(1);
+    await expect(cachedRead(ctx("w1"), { ...opts, key: "error" }, () => {
+      time = 60;
+      throw new Error("failed build");
+    })).rejects.toThrow("failed build");
+    expect(snapshotCachedReadStats().measured).toMatchObject({
+      misses: 3, hits: 1, missAbsent: 3, builds: 2, buildsCompleted: 2, buildErrors: 1, buildMs: 60, maxBuildMs: 40,
+    });
   });
 });
 

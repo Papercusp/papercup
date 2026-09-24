@@ -12,6 +12,7 @@ import {
   cachedRead,
   resetCachedReadStatsForTests,
   resetOperatorCacheForTests,
+  getOperatorCache,
   __setCachedReadEnabledForTests,
 } from '../../cache';
 
@@ -71,9 +72,26 @@ describe('dev:cache_stats', () => {
     );
 
     expect(row).toBeDefined();
-    expect(row).toMatchObject({ hits: 1, misses: 1, total: 2, hitRatePct: 50 });
+    expect(row).toMatchObject({ hits: 1, misses: 1, total: 2, hitRatePct: 50, missAbsent: 1, builds: 1 });
     // The factory ran ONCE: the second call was served, not rebuilt.
     expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes real invalidation/build costs in both the tool row and totals', async () => {
+    const opts = { tool: 'work_items:get', key: 'item', tags: ['rows'] };
+    await cachedRead(ctx, opts, () => 'first');
+    getOperatorCache().invalidateByTag(ctx.workspaceId, 'rows');
+    await cachedRead(ctx, opts, () => 'second');
+    const data = await read({ tool: opts.tool });
+    expect(data.telemetryVersion).toBe(2);
+    const row = (data.perTool as Array<Record<string, unknown>>)[0];
+    for (const stats of [row, data.totals]) {
+      expect(stats).toMatchObject({ missAbsent: 1, missInvalidated: 1, missHardExpired: 0, builds: 2, buildsCompleted: 2, buildErrors: 0 });
+      expect((stats as any).buildMs).toBeGreaterThanOrEqual(0);
+      expect((stats as any).maxBuildMs).toBeLessThanOrEqual((stats as any).buildMs);
+    }
+    expect((data.totals as any).buildMs).toBe(row.buildMs);
+    expect((data.totals as any).maxBuildMs).toBe(row.maxBuildMs);
   });
 
   it('counts an SWR stale-serve as served, not as a miss', async () => {

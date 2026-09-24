@@ -26,7 +26,7 @@
  * invalidation already wired off the change stream.
  */
 
-import { getOrSetBounded, type CacheOutcome } from "@papercusp/cache";
+import { getOrSetBounded, type CacheOutcome, type CacheReadReason } from "@papercusp/cache";
 import { getOperatorCache } from "./instance";
 import { withL2, type L2Outcome } from "./l2-tier";
 import { activeWorkspaceId } from "../workspace-registry";
@@ -153,7 +153,8 @@ function canonicalize(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(canonicalize);
   const obj = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
+  // JSON argument keys such as __proto__ must stay data, never invoke a setter.
+  const out: Record<string, unknown> = Object.create(null);
   for (const k of Object.keys(obj).sort()) {
     const v = obj[k];
     if (v === undefined) continue;
@@ -196,6 +197,18 @@ export interface CachedReadToolStats {
   /** The L2 store errored and the read degraded to a real build. Persistent
    *  nonzero here means the tier is silently doing nothing — worth alerting on. */
   l2Errors: number;
+  /** Lookup misses; absent cannot distinguish a new key from eviction/listener reconnect. */
+  missAbsent: number;
+  missInvalidated: number;
+  missHardExpired: number;
+  /** Actual factory invocations, excluding L2 hits and single-flight joins; includes bypass/SWR. */
+  builds: number;
+  /** Settled invocations covered by buildMs; builds - buildsCompleted are still running. */
+  buildsCompleted: number;
+  buildErrors: number;
+  /** Monotonic elapsed factory time, including failed builds. No prompt/key payloads retained. */
+  buildMs: number;
+  maxBuildMs: number;
 }
 
 const TOOL_STATS = new Map<string, CachedReadToolStats>();
@@ -204,6 +217,8 @@ function emptyStats(): CachedReadToolStats {
   return {
     hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0,
     l2Hits: 0, l2Misses: 0, l2Errors: 0,
+    missAbsent: 0, missInvalidated: 0, missHardExpired: 0,
+    builds: 0, buildsCompleted: 0, buildErrors: 0, buildMs: 0, maxBuildMs: 0,
   };
 }
 
@@ -221,14 +236,19 @@ function recordL2(tool: string, outcome: L2Outcome): void {
   else s.l2Errors++;
 }
 
-function recordOutcome(tool: string, outcome: CacheOutcome): void {
+function recordOutcome(tool: string, outcome: CacheOutcome, reason: CacheReadReason): void {
   let s = TOOL_STATS.get(tool);
   if (!s) {
     s = emptyStats();
     TOOL_STATS.set(tool, s);
   }
   if (outcome === "hit") s.hits++;
-  else if (outcome === "miss") s.misses++;
+  else if (outcome === "miss") {
+    s.misses++;
+    if (reason === "absent") s.missAbsent++;
+    else if (reason === "invalidated") s.missInvalidated++;
+    else if (reason === "hard-ttl") s.missHardExpired++;
+  }
   else if (outcome === "stale") s.stale++;
   else s.bypass++;
 }
@@ -272,6 +292,26 @@ export async function cachedRead<V>(
   const keyPart = typeof opts.key === "string" ? opts.key : stableKey(opts.key);
   const fullKey = `${opts.tool}|${keyPart}`;
   const hardTtl = opts.hardTtlMs !== undefined ? opts.hardTtlMs : defaultHardTtlMs();
+  const measuredFactory = async (): Promise<V> => {
+    let stats = TOOL_STATS.get(opts.tool);
+    if (!stats) {
+      stats = emptyStats();
+      TOOL_STATS.set(opts.tool, stats);
+    }
+    stats.builds++;
+    const started = performance.now();
+    try {
+      return await factory();
+    } catch (error) {
+      stats.buildErrors++;
+      throw error;
+    } finally {
+      const elapsed = Math.max(0, performance.now() - started);
+      stats.buildsCompleted++;
+      stats.buildMs += elapsed;
+      stats.maxBuildMs = Math.max(stats.maxBuildMs, elapsed);
+    }
+  };
 
   // L2 read-through/write-through (D-082). Wrapping the FACTORY — rather than the
   // cache — is what makes this need no change to the generic lib: `getOrSet` runs the
@@ -280,13 +320,13 @@ export async function cachedRead<V>(
   // `withL2` returns `factory` UNCHANGED when the tier is off, so a disabled L2 is
   // byte-identical to the L1-only path.
   const effectiveFactory = opts.l2
-    ? withL2(workspaceId, fullKey, factory, {
+    ? withL2(workspaceId, fullKey, measuredFactory, {
         tags: opts.tags,
         ...(opts.softTtlMs !== undefined ? { softTtlMs: opts.softTtlMs } : {}),
         ...(hardTtl !== undefined ? { hardTtlMs: hardTtl } : {}),
         onL2Outcome: (o: L2Outcome) => recordL2(opts.tool, o),
       })
-    : factory;
+    : measuredFactory;
 
   const getOrSetOpts = {
     tags: opts.tags,
@@ -294,7 +334,7 @@ export async function cachedRead<V>(
     // WI-1547: no explicit hardTtl ⇒ the bounded-staleness default (see above).
     ...(hardTtl !== undefined ? { hardTtlMs: hardTtl } : {}),
     ...(opts.cacheEmpty !== undefined ? { cacheEmpty: opts.cacheEmpty } : {}),
-    onOutcome: (outcome: CacheOutcome) => recordOutcome(opts.tool, outcome),
+    onOutcome: (outcome: CacheOutcome, reason: CacheReadReason) => recordOutcome(opts.tool, outcome, reason),
   };
 
   if (opts.deadlineMs === undefined) {
