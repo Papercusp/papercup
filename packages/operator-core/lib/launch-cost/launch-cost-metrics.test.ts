@@ -26,7 +26,7 @@ import {
 describe('carry conservative request reservation', () => {
   const request = (id = 'next', armId = 'candidate') => ({ id, armId, model: 'gpt-6-sol',
     inputTokenLimit: 100_000, outputTokenLimit: 1000, boundsVerified: true, boundsEvidenceRef: 'fixture:native-bound' });
-  const fixture = () => ({ accountingComplete: true, remainingRequestsComplete: true,
+  const fixture = (): Parameters<typeof evaluateCarryBudgetReservation>[0] => ({ accountingComplete: true, remainingRequestsComplete: true,
     spent: [{ id: 'preparation', armId: 'candidate', inputTokens: 10_000, outputTokens: 100, estimatedListUsd: 0.01 }],
     remaining: [request()],
     limits: { inputTokens: 50_000_000, outputTokens: 1_000_000, estimatedListUsd: 250, chargedRequestsPerArm: 8 } });
@@ -72,14 +72,14 @@ describe('carry conservative request reservation', () => {
   });
 
   it.each([null, NaN, Infinity, -1, 1.5])('refuses malformed/unknown token counts (%s)', value => {
-    const input = fixture(); input.remaining[0].outputTokenLimit = value as number;
+    const input = fixture(); input.remaining[0].outputTokenLimit = value;
     expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
-    input.remaining[0] = request(); input.spent[0].inputTokens = value as number;
+    input.remaining = [request()]; input.spent = [{ ...input.spent[0], inputTokens: value }];
     expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
   });
 
   it('does not substitute zero for missing charged cost', () => {
-    const input = fixture(); input.spent[0].estimatedListUsd = null as unknown as number;
+    const input = fixture(); input.spent[0].estimatedListUsd = null;
     expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
   });
 
@@ -124,6 +124,13 @@ describe('carry conservative request reservation', () => {
     expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
     input.limits.chargedRequestsPerArm = 8; input.remaining = [];
     expect(evaluateCarryBudgetReservation(input).missing).toContain('no-next-request');
+  });
+
+  it.each(['accountingComplete', 'remainingRequestsComplete', 'boundsVerified'])('rejects truthy non-boolean %s', field => {
+    const input = fixture();
+    if (field === 'boundsVerified') input.remaining[0].boundsVerified = 'false' as unknown as boolean;
+    else input[field as 'accountingComplete'] = 'false' as unknown as boolean;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
   });
 });
 
@@ -290,6 +297,29 @@ describe('carry frozen source-window receipts (T2)', () => {
     expect(inspectCarrySourceRead(input, source)).toEqual({ status: 'verified', missing: [], violations: [],
       sourceRef: source.sourceRef, itemId: 'read' });
     expect(inspectCarrySourceRead(input, source)).not.toHaveProperty('quality');
+  });
+
+  it.each(['valid', 'wrong-target', 'missing-args', 'wrong-path', 'extra-args', 'unapproved-wrapper', 'bad-bytes'])(
+    'checks attributed dispatcher source reads: %s', fault => {
+    const { source, input, read, page } = fixture();
+    source.tool = 'tools:invoke'; read.tool = source.tool;
+    const args: Record<string, unknown> = { name: 'capability:read', args: { ...read.arguments } };
+    read.arguments = args as typeof read.arguments;
+    input.allowedMcpCalls = [{ server: source.server, tool: source.tool,
+      arguments: structuredClone(args) as typeof read.arguments }];
+    if (fault === 'wrong-target') {
+      args.name = 'capability:write';
+      input.allowedMcpCalls[0].arguments = structuredClone(args) as typeof read.arguments;
+    }
+    if (fault === 'missing-args') delete args.args;
+    if (fault === 'wrong-path') (args.args as Record<string, unknown>).file_path = '/different';
+    if (fault === 'extra-args') args.unexpected = true;
+    if (fault === 'unapproved-wrapper') input.allowedMcpCalls = [];
+    if (fault === 'bad-bytes') {
+      page.data = Buffer.alloc(source.byteLength, 65).toString('base64');
+      read.result.content[0].text = JSON.stringify(page);
+    }
+    expect(inspectCarrySourceRead(input, source).status === 'verified').toBe(fault === 'valid');
   });
 
   it.each(['wrong-path', 'wrong-offset', 'wrong-total', 'changed-bytes', 'truncated', 'base64-garbage', 'base64-whitespace',

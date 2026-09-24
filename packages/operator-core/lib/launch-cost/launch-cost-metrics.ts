@@ -494,7 +494,13 @@ export function inspectCarrySourceRead(input: CarryNativeTurnEvidence, source: C
   const turn = Array.isArray(items) ? items.find(value => asRecord(value)?.id === input.turnId) : null;
   const persisted = asRecord(turn)?.items;
   const candidates = Array.isArray(persisted) ? persisted.map(asRecord).filter(item => {
-    const args = asRecord(item?.arguments);
+    const outer = asRecord(item?.arguments);
+    // Native MCP receipts retain the original colon-form tool name. The
+    // platform dispatcher is a supported route, but only its exact read
+    // target counts; a wrapper around a different tool is not source proof.
+    const args = source.tool === 'tools:invoke'
+      ? (outer?.name === 'capability:read' ? asRecord(outer.args) : null)
+      : outer;
     return item?.type === 'mcpToolCall' && item.server === source.server && item.tool === source.tool &&
       args?.file_path === source.filePath && args.byte_offset === source.byteOffset &&
       typeof args.byte_limit === 'number' && Number.isSafeInteger(args.byte_limit) && args.byte_limit >= source.byteLength;
@@ -587,17 +593,18 @@ export function evaluateCarryBudgetReservation(input: {
 }) {
   const missing = new Set<string>(), exceeded = new Set<string>();
   const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const nonblank = (s: unknown): s is string => typeof s === 'string' && s.trim().length > 0;
   const money = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 &&
     Number.isSafeInteger(Math.ceil(n * 1_000_000));
-  if (!input.accountingComplete) missing.add('incomplete-spent-accounting');
-  if (!input.remainingRequestsComplete) missing.add('incomplete-remaining-population');
+  if (input.accountingComplete !== true) missing.add('incomplete-spent-accounting');
+  if (input.remainingRequestsComplete !== true) missing.add('incomplete-remaining-population');
   if (!input.remaining.length) missing.add('no-next-request');
   if (!count(input.limits.inputTokens) || !count(input.limits.outputTokens) || !money(input.limits.estimatedListUsd) ||
     !count(input.limits.chargedRequestsPerArm) || input.limits.chargedRequestsPerArm === 0) missing.add('invalid-budget-limits');
   const ids = new Set<string>(), arms = new Map<string, number>();
   let inputTokens = 0, outputTokens = 0, microUsd = 0;
   const register = (id: string, armId: string) => {
-    if (!id.trim() || !armId.trim()) missing.add('missing-request-or-arm-identity');
+    if (!nonblank(id) || !nonblank(armId)) missing.add('missing-request-or-arm-identity');
     if (ids.has(id)) missing.add(`duplicate-request:${id}`);
     ids.add(id); arms.set(armId, (arms.get(armId) ?? 0) + 1);
   };
@@ -615,10 +622,11 @@ export function evaluateCarryBudgetReservation(input: {
   }
   for (const request of input.remaining) {
     register(request.id, request.armId);
-    if (!request.boundsVerified || !request.boundsEvidenceRef?.trim() ||
+    if (request.boundsVerified !== true || !nonblank(request.boundsEvidenceRef) ||
       !count(request.inputTokenLimit) || !count(request.outputTokenLimit) || request.outputTokenLimit === 0) {
       missing.add(`unverified-native-bounds:${request.id}`); continue;
     }
+    if (!nonblank(request.model)) { missing.add(`unpriceable-request:${request.id}`); continue; }
     const common = { requestInputTokens: request.inputTokenLimit, outputTokens: request.outputTokenLimit };
     const categories = [
       { inputTokens: request.inputTokenLimit }, { cacheReadTokens: request.inputTokenLimit },
