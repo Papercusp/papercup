@@ -47,7 +47,10 @@ const { createDefaultHostedWorkspaceAdmissionDependencies } = await import(
   './workspace-admission-dependencies'
 );
 const { upsertWorkspaceHostConnection } = await import('../../workspace-host/observability-store');
-const { activateHostedCustomerWorkspace } = await import('../../workspace-host/hosted-bring-up');
+const {
+  activateHostedCustomerWorkspace,
+  retireHostedCustomerWorkspaceAfterDestroy,
+} = await import('../../workspace-host/hosted-bring-up');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 const CONNECTION_ID = 'conn-hosted-admission';
@@ -116,11 +119,11 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
   }
 
   /** Provisioning is fire-and-forget; wait for the enqueue it started to land. */
-  async function enqueued(started: unknown[]): Promise<Record<string, unknown>> {
-    for (let attempt = 0; attempt < 100 && started.length === 0; attempt += 1) {
+  async function enqueued(started: unknown[], expectedCount = 1): Promise<Record<string, unknown>> {
+    for (let attempt = 0; attempt < 100 && started.length < expectedCount; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(started).toHaveLength(1);
+    expect(started).toHaveLength(expectedCount);
     return started[0] as Record<string, unknown>;
   }
 
@@ -185,6 +188,61 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     expect(await enqueued(started)).not.toHaveProperty('bringUp');
   }, 120_000);
 
+  it('retires the customer binding only after terminal host absence and frees the organization slot', async () => {
+    const workspaceId = await freshControlPlane();
+    const { port, started } = admissionFor();
+    const organizationId = '99999999-9999-4999-8999-999999999999';
+    const admitted = await port.ensureProvisioned({
+      organizationId,
+      userId: 'user-offboard',
+      provider: 'gcp',
+      connectionId: CONNECTION_ID,
+      displayName: 'Workspace to offboard',
+      operationKey: 'signup-offboard',
+    });
+    await enqueued(started);
+    const hostId = admissionIdentity(organizationId, 'signup-offboard').hostId;
+    const revokeConnectors = vi.fn(async () => {});
+    const retire = () =>
+      retireHostedCustomerWorkspaceAfterDestroy(
+        { controlPlaneWorkspaceId: workspaceId, hostId },
+        { revokeConnectors },
+      );
+
+    await expect(retire()).rejects.toThrow(/before host .* is terminally absent/);
+    expect(revokeConnectors).not.toHaveBeenCalled();
+
+    await db.adminSql`
+      UPDATE harness_shared.workspace_hosts
+         SET desired_state = 'absent', observed_state = 'absent', observed_at = now()
+       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+
+    await expect(retire()).resolves.toEqual({ customerWorkspaceId: admitted.workspaceId });
+    expect(revokeConnectors).toHaveBeenCalledOnce();
+    await expect(retire()).resolves.toEqual({ customerWorkspaceId: admitted.workspaceId });
+    expect(revokeConnectors).toHaveBeenCalledTimes(2);
+    const rows = await db.adminSql`
+      SELECT state, deleted_at FROM harness_shared.customer_workspaces
+       WHERE workspace_id = ${workspaceId} AND id = ${admitted.workspaceId}
+    `;
+    expect(rows[0]).toMatchObject({ state: 'deleted' });
+    expect(rows[0].deleted_at).not.toBeNull();
+
+    // Migration 1200's partial unique index now admits a replacement for the same organization.
+    await expect(
+      port.ensureProvisioned({
+        organizationId,
+        userId: 'user-offboard',
+        provider: 'gcp',
+        connectionId: CONNECTION_ID,
+        displayName: 'Replacement workspace',
+        operationKey: 'signup-offboard-replacement',
+      }),
+    ).resolves.toMatchObject({ workspaceId: expect.stringMatching(/^ws-/) });
+    await enqueued(started, 2);
+  }, 120_000);
+
   it('admits a first workspace: host row, binding row, and exactly one provision enqueued', async () => {
     const workspaceId = await freshControlPlane();
     const { port, started } = admissionFor();
@@ -242,8 +300,7 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
       scope_label: 'project-hosted',
     });
 
-    await Promise.resolve();
-    expect(started).toHaveLength(1);
+    await enqueued(started);
   }, 120_000);
 
   it('is idempotent on replay: same identity, no second row, no second provision', async () => {
@@ -260,9 +317,8 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     };
 
     const first = await port.ensureProvisioned(input);
-    await Promise.resolve();
+    await enqueued(started);
     const second = await port.ensureProvisioned(input);
-    await Promise.resolve();
 
     expect(second).toEqual(first);
     const rows = await db.adminSql`
