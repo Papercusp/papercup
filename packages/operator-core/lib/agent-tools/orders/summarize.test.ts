@@ -78,6 +78,16 @@ describe('orders:summarize', () => {
     expect(h.summarizeOwnerDirective).not.toHaveBeenCalled();
   });
 
+  it('an unreadable verdict refuses retryably (fail closed) and writes nothing', async () => {
+    h.directiveActionVerdict.mockRejectedValue(new Error('pg down'));
+
+    const result = await call({ id: 7, summary: 'ship the redesign' });
+
+    expect(result.isError).toBe(true);
+    expect(envelopeOf(result)).toMatchObject({ ok: false, error: 'verdict_unavailable', retryable: true });
+    expect(h.summarizeOwnerDirective).not.toHaveBeenCalled();
+  });
+
   it('an unknown id refuses as not_found, not as foreign', async () => {
     h.directiveActionVerdict.mockResolvedValue({ allowed: false, notFound: true });
 

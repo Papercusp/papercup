@@ -42,10 +42,33 @@ export default defineTool({
     // The summary replaces the owner's words for EVERY other agent, so only the
     // session the directive is addressed to (or a holder of work linking it)
     // may write it — the same rail orders:disposition carries.
-    const verdict = await directiveActionVerdict(
-      { directiveId: args.id, ownerId: identity.ownerId, workspaceId: activeWorkspaceId() },
-      undefined,
-    );
+    //
+    // directive-ownership-clarity-2026-09-23 D-003: FAIL CLOSED, retryably. An
+    // ownership read that errors must refuse with a typed, retryable envelope —
+    // not escape the handler as an untyped internal error the caller cannot
+    // tell apart from a real defect.
+    let verdict: Awaited<ReturnType<typeof directiveActionVerdict>>;
+    try {
+      verdict = await directiveActionVerdict(
+        { directiveId: args.id, ownerId: identity.ownerId, workspaceId: activeWorkspaceId() },
+        undefined,
+      );
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'verdict_unavailable',
+              retryable: true,
+              hint: `Could not confirm whose directive #${args.id} is (${String(err).slice(0, 160)}), so no summary was written. Retry shortly.`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     if ('notFound' in verdict) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'not_found' }) }], isError: true };
     }

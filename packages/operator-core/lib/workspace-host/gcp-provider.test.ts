@@ -175,6 +175,12 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     this.instances.set(name, { ...instance, agentOnline });
   }
 
+  replaceInstanceIncarnation(name: string, instanceId: string): void {
+    const instance = this.instances.get(name);
+    if (!instance) throw new Error(`fake GCP client has no instance '${name}'`);
+    this.instances.set(name, { ...instance, instanceId });
+  }
+
   seedExistingNetwork(): void {
     this.networks.set('shared-vpc', { name: 'shared-vpc', observedAt: NOW });
     this.subnetworks.set('shared-subnet', { name: 'shared-subnet', observedAt: NOW });
@@ -453,6 +459,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
       this.instances.set(input.name, {
         name: input.name,
         status: 'RUNNING',
+        instanceId: requestId,
         sourceImage: input.disks[0].initializeParams.sourceImage,
         attachedDiskNames: [dataDiskName],
         internalIp: '10.132.12.2',
@@ -1464,6 +1471,39 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
     ).rejects.toThrow("not labeled as managed by workspace host 'host-gcp-1'");
   });
 
+  it('does not delete a same-name replacement when a stale destroy plan targets an older incarnation', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const vm = host.resources.find((item) => item.kind === 'vm')!;
+    const oldIncarnationId = vm.incarnationId!;
+    const replacementIncarnationId = 'gcp-instance-replacement-2';
+    client.replaceInstanceIncarnation(vm.providerId, replacementIncarnationId);
+
+    const plan = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation:stale-destroy',
+        idempotencyKey: 'operation:stale-destroy',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    const deleteVm = plan.steps.find((step) => step.resourceKind === 'vm')!;
+    expect((deleteVm.input as { incarnationId?: string }).incarnationId).toBe(oldIncarnationId);
+
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: deleteVm, knownResources: resources },
+      context(),
+    );
+
+    expect(result.state).toBe('destroyed');
+    expect(client.deleteCalls).toBe(0);
+    expect((await client.getInstance('project', 'zone', vm.providerId))?.instanceId).toBe(replacementIncarnationId);
+    expect('confirmation' in result ? result.confirmation.incarnationId : undefined).toBe(oldIncarnationId);
+  });
+
   it('adopts its own READY destroy snapshot when a re-driven destroy finds the source disk already deleted', async () => {
     const { client, provider } = providerAndClient();
     const { host, resources } = await provision(client, provider);
@@ -1777,6 +1817,10 @@ describe('GCP workspace-host provider created-resource reporting', () => {
     // Positive control: a fixture that created nothing would make the assertion below vacuous.
     expect(events.length).toBeGreaterThan(0);
     expect(events.map((event) => event.resource.providerId)).toContain('pc-host-gcp-1-vm');
+    const vmEvent = events.find((event) => event.resource.kind === 'vm');
+    expect(vmEvent?.resource.incarnationId).toBe(
+      client.getInstance('project', 'zone', 'pc-host-gcp-1-vm')?.instanceId,
+    );
 
     // Named, not counted: a bare count would not say WHICH resource is unreclaimable.
     expect(events.filter((event) => (event.hostId ?? '') === '').map((event) => event.resource.providerId)).toEqual(

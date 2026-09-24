@@ -303,6 +303,19 @@ describe('recordCloudResourceObligation', () => {
     expect(r).toEqual({ id: 7, created: false });
   });
 
+  it('requires the provider incarnation id for VM obligations', async () => {
+    const { sql, calls } = makeFakeSql();
+    await expect(
+      recordCloudResourceObligation(sql, {
+        workspaceId: 'papercusp-workspace',
+        provider: 'gcp',
+        resourceKind: 'vm',
+        resourceId: 'pc-host-vm',
+      }),
+    ).rejects.toThrow(/incarnationId/);
+    expect(calls).toHaveLength(0);
+  });
+
   it('rejects an empty resourceId before ever touching sql', async () => {
     const { sql, calls } = makeFakeSql();
     await expect(
@@ -927,6 +940,21 @@ describe('createCloudResourceObligationObserver address mapping', () => {
     const { sql, calls } = makeInsertCapture();
     await createCloudResourceObligationObserver({ sql })(createdEvent());
     expect(calls[0]?.values).toContain('pc-host-gcp-1-router');
+  });
+
+  it('passes a VM incarnation id through to the durable obligation row', async () => {
+    const { sql, calls } = makeInsertCapture();
+    await createCloudResourceObligationObserver({ sql })(
+      createdEvent({
+        resource: {
+          kind: 'vm',
+          providerId: 'pc-host-gcp-1-vm',
+          incarnationId: 'gce-instance-123',
+          zone: 'us-central1-a',
+        },
+      }),
+    );
+    expect(calls[0]?.values).toContain('gce-instance-123');
   });
 
   it('does not invent a parent for a kind addressed directly', async () => {
