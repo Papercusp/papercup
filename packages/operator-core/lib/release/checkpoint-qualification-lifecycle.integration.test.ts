@@ -19,6 +19,7 @@ import {
   beginStoredQualification,
   checkpointPidIdentity,
   classifyScheduledQualificationJoin,
+  projectCheckpointQualificationState,
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
@@ -96,6 +97,15 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       runId: 'run-1', lastScheduledAtMs: 4_000, lastStartedAtMs: 2_200,
       lastProgressAtMs: 3_000, currentPhysicalRunner: { phase: 'suite', pidIdentity },
     });
+    expect(projectCheckpointQualificationState(running.transaction, 4_500, 'live')).toMatchObject({
+      lease: { holder: 'fire-1', acquiredAtMs: 2_100, expiresAtMs: 1_002_200, expired: false },
+      runnerHealth: { liveness: 'live', phase: 'suite', progressAgeMs: 1_500 },
+      clocks: {
+        lastScheduledAtMs: 4_000, lastStartedAtMs: 2_200,
+        lastProgressAtMs: 3_000, lastTerminalVerdictAtMs: null,
+      },
+      agesMs: { scheduled: 500, started: 2_300, progress: 1_500, terminal: null },
+    });
     expect(classifyScheduledQualificationJoin(running.transaction,
       probeRunnerLiveness(running.transaction.currentPhysicalRunner))).toBe('join');
 
@@ -159,6 +169,14 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         leaseExpiresAtMs: 200, evidenceRefs: [], pid: process.pid, pidIdentity: null,
       },
     } });
+    const unknown = await readStoredQualification(target);
+    expect(unknown.status).toBe('present');
+    if (unknown.status !== 'present') return;
+    expect(projectCheckpointQualificationState(unknown.transaction, 1_000, 'unknown')).toMatchObject({
+      lease: { holder: 'old-runner', expired: true },
+      runnerHealth: { liveness: 'unknown' },
+      safeNextAction: { code: 'inspect-runner-liveness' },
+    });
     const replacement = { attemptId: 'attempt-1', runnerId: 'new-runner', leaseDurationMs: 1_000, nowMs: 1_000 };
     expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('conflict');
     await sql`

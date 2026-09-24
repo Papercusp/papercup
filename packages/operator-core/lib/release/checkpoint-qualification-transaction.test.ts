@@ -124,6 +124,26 @@ describe('logical checkpoint qualification transaction', () => {
       attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 700,
     }).status).toBe('terminal');
   });
+  it('projects owner, phase, heartbeat, and deadline from the persisted runner fields', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'runner-1', runId: 'run-1', candidate: 'candidate-1',
+      pid: 123, pidIdentity: 'boot:1', leaseDurationMs: 1_000, started: true, nowMs: 200,
+    }).transaction;
+    const runner = running.currentPhysicalRunner!;
+    const project = (changes: Partial<typeof runner>) =>
+      projectCheckpointQualificationState({ ...running, currentPhysicalRunner: { ...runner, ...changes } }, 300, 'live');
+
+    expect(project({})).toMatchObject({
+      lease: { holder: 'runner-1', expiresAtMs: 1_200, expired: false },
+      runnerHealth: { phase: 'materializing', progressAgeMs: 100 },
+    });
+    expect(project({ id: 'runner-2' }).lease?.holder).toBe('runner-2');
+    expect(project({ phase: 'suite' }).runnerHealth.phase).toBe('suite');
+    expect(project({ heartbeatAtMs: 250 }).runnerHealth.progressAgeMs).toBe(50);
+    expect(project({ leaseExpiresAtMs: 250 })).toMatchObject({
+      lease: { expired: true }, safeNextAction: { code: 'inspect-runner-liveness' },
+    });
+  });
   it('creates one normalized durable identity and reuses the same attempt idempotently', () => {
     const current = begin();
     expect(current).toMatchObject({
