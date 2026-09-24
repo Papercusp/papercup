@@ -1762,9 +1762,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       expect(rubricAfter!.barSetHash).toBe(rubricBefore!.barSetHash);
       expect(after).toMatchObject(authored);
       // P-001 keeps the clause's stable identity when only rubric-wide provenance changes.
-      expect(after.revision).toBe(before.revision);
       expect(after.sourceBar).toEqual(before.sourceBar);
       expect(after.acceptanceRef).toBe(before.acceptanceRef);
+      expect(after.contentHash).toBe(before.contentHash);
+      expect(after.revision).toBe(before.revision);
     },
   );
 
