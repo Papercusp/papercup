@@ -82,7 +82,12 @@ import { trackDetached } from './detached-imports';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
-import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
+import {
+  agentReviewNormalExclusionSql,
+  agentReviewPendingAdmissionSql,
+  isAgentReviewClaimAdmission,
+  type AgentReviewClaimAdmission,
+} from './harness/improvements/agent-review-policy';
 import {
   isLegacyFleetScopeDowngradeAdmission,
   type LegacyFleetScopeDowngradeAdmission,
@@ -2857,6 +2862,8 @@ export async function claimIssue(
      * the exact holder CAS below.
      */
     forceTakeoverAdmission?: ForceTakeoverAdmission;
+    /** Exact reviewer-lane exception for a still-pending agent-review snapshot. */
+    agentReviewAdmission?: AgentReviewClaimAdmission;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
@@ -2891,6 +2898,22 @@ export async function claimIssue(
     opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
       ? opts.forceTakeoverAdmission
       : null;
+  const agentReviewAdmission =
+    isAgentReviewClaimAdmission(opts.agentReviewAdmission) &&
+    opts.agentReviewAdmission.itemId === id &&
+    opts.agentReviewAdmission.reviewer === assignee &&
+    opts.agentReviewAdmission.submittedBy !== assignee
+      ? opts.agentReviewAdmission
+      : null;
+  const admissionFloor = agentReviewAdmission
+    ? sql`(
+        ${admittedWhereSql(sql)}
+        OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
+          payload: 'target.payload',
+          admission: 'target.admission',
+        })}
+      )`
+    : admittedWhereSql(sql);
   // WI-2142171: capture the prior holder BEFORE the UPDATE, so a NO-OP re-claim does not
   // re-notify every subscriber. Claiming BY ID deliberately bypasses the claim floors (the
   // WI-5826 escape hatch below), and the `assignee = ${assignee}` disjunct in the predicate
@@ -3001,9 +3024,13 @@ export async function claimIssue(
        -- self-filed fallout. Keep each durable provenance CAS in its exception so
        -- a row changed after capability derivation cannot inherit old authorization.
        AND ${
-        leaderDispatchAdmission || selfFiledFalloutAdmission || legacyFleetScopeDowngradeAdmission || forceTakeoverAdmission
+        leaderDispatchAdmission ||
+        selfFiledFalloutAdmission ||
+        legacyFleetScopeDowngradeAdmission ||
+        forceTakeoverAdmission ||
+        agentReviewAdmission
           ? sql`(
-               ${admittedWhereSql(sql)}
+               ${admissionFloor}
                ${
                  leaderDispatchAdmission
                    ? sql`OR (
@@ -3043,7 +3070,7 @@ export async function claimIssue(
                    : sql``
                }
              )`
-           : admittedWhereSql(sql)
+           : admissionFloor
        }
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:

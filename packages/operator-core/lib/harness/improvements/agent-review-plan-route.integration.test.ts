@@ -48,7 +48,7 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
       INSERT INTO harness_shared.engineer_issues
         (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
          assignee, assigned_by, assigned_at, payload, found_during, created_by,
-         signal_origin, created_at, updated_at)
+         signal_origin, created_at, updated_at, admission)
       VALUES
         (${WS}, ${ID}, 'change', ${`harness:${HARNESS}`},
          'Plan-routed feature under review', 'integration fixture', 'major', 'engineer', 'open',
@@ -57,7 +57,7 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
            ideation: { lens: 'cost-leverage' },
            agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: ID, round: 1 },
          })}::text::jsonb,
-         NULL, 'su-filer', 'organic', ${now}, ${now})`;
+         NULL, 'su-filer', 'organic', ${now}, ${now}, 'pending')`;
     await recordRoutedIdea({
       ideaId: ID,
       lens: 'agent-review',
@@ -109,6 +109,16 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
 
     const migrated = await getWorkItem(ID, HARNESS);
     expect((migrated!.payload as { agentReview: { ledgerIdeaId: string } }).agentReview.ledgerIdeaId).toBe(FALLBACK);
+
+    const [preClaim] = await db.adminSql<{
+      admission: string | null;
+      taken_by: string | null;
+      review_status: string | null;
+    }[]>`
+      SELECT admission, taken_by, payload -> 'agentReview' ->> 'status' AS review_status
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${ID}`;
+    expect(preClaim).toEqual({ admission: 'pending', taken_by: null, review_status: 'pending' });
 
     const claimed = await claimAgentReview({ id: ID, reviewer: 'su-reviewer', harnessSlug: HARNESS });
     expect(claimed.claimed).toBe(true);

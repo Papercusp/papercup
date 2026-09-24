@@ -207,6 +207,105 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
   };
 }
 
+/**
+ * Narrow, server-only authority to claim one exact pending review. It is minted
+ * after the reviewer lane checks the work-item and consumed by the shared claim
+ * writer; the SQL still compares the full review snapshot so a concurrent grade,
+ * resubmit, or submitter change invalidates the bypass.
+ */
+export interface AgentReviewClaimAdmission {
+  readonly itemId: string;
+  readonly reviewer: string;
+  readonly harnessSlug: string;
+  readonly submittedBy: string;
+  readonly ledgerIdeaId: string;
+  readonly round: number;
+}
+
+const agentReviewClaimAdmissions = new WeakSet<object>();
+
+export function mintAgentReviewClaimAdmission(input: {
+  itemId: string;
+  reviewer: string;
+  harnessSlug: string;
+  review: AgentReviewState;
+}): AgentReviewClaimAdmission | null {
+  const itemId = input.itemId.trim();
+  const reviewer = input.reviewer.trim();
+  const harnessSlug = input.harnessSlug.trim();
+  const review = input.review;
+  if (
+    !itemId ||
+    !reviewer ||
+    !harnessSlug ||
+    review.status !== 'pending' ||
+    review.submittedBy === reviewer ||
+    !review.ledgerIdeaId.trim() ||
+    !Number.isInteger(review.round) ||
+    review.round < 1
+  ) {
+    return null;
+  }
+  const admission = Object.freeze({
+    itemId,
+    reviewer,
+    harnessSlug,
+    submittedBy: review.submittedBy,
+    ledgerIdeaId: review.ledgerIdeaId,
+    round: review.round,
+  });
+  agentReviewClaimAdmissions.add(admission);
+  return admission;
+}
+
+export function isAgentReviewClaimAdmission(value: unknown): value is AgentReviewClaimAdmission {
+  return typeof value === 'object' && value !== null && agentReviewClaimAdmissions.has(value);
+}
+
+export function matchesAgentReviewClaimAdmission(
+  value: unknown,
+  item: { id: string; harness?: string | null; payload: unknown },
+  reviewer: string,
+): value is AgentReviewClaimAdmission {
+  if (
+    !isAgentReviewClaimAdmission(value) ||
+    value.itemId !== item.id ||
+    value.reviewer !== reviewer ||
+    value.harnessSlug !== item.harness
+  ) {
+    return false;
+  }
+  const current = readAgentReviewState(item.payload);
+  return current?.status === 'pending' &&
+    current.submittedBy !== reviewer &&
+    current.submittedBy === value.submittedBy &&
+    current.ledgerIdeaId === value.ledgerIdeaId &&
+    current.round === value.round;
+}
+
+/**
+ * Admission-floor exception for an already-validated reviewer capability. The
+ * UPDATE must still see `admission='pending'` and the same pending review payload
+ * the reviewer inspected; an ordinary claim gets no such exception.
+ */
+export function agentReviewPendingAdmissionSql(
+  sql: OrgSql,
+  value: unknown,
+  columns: { payload?: 'payload' | 'target.payload'; admission?: 'admission' | 'target.admission' } = {},
+) {
+  if (!isAgentReviewClaimAdmission(value)) return sql`FALSE`;
+  const payload = sql.unsafe(columns.payload ?? 'payload');
+  const admission = sql.unsafe(columns.admission ?? 'admission');
+  return sql`(
+    ${admission} = 'pending'
+    AND ${payload} -> 'agentReview' ->> 'status' = 'pending'
+    AND ${payload} -> 'agentReview' ->> 'submittedBy' = ${value.submittedBy}
+    AND ${payload} -> 'agentReview' ->> 'ledgerIdeaId' = ${value.ledgerIdeaId}
+    AND ${payload} -> 'agentReview' ->> 'round' = ${String(value.round)}
+    AND ${value.submittedBy} <> ${value.reviewer}
+  )`;
+}
+
 export interface AgentReviewCandidate {
   kind: string;
   origin?: string | null;

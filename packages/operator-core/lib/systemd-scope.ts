@@ -274,6 +274,7 @@ export function buildIsolatedScopeArgv(
   memoryMaxG: number,
   swap: ScopeSwapPolicy = 'allow',
   runtimeMaxSec: number | null = null,
+  unit: string | null = null,
 ): string[] {
   return [
     'systemd-run',
@@ -281,6 +282,7 @@ export function buildIsolatedScopeArgv(
     '--scope',
     '--quiet',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+    ...(unit ? [`--unit=${unit}`] : []),
     `--property=MemoryMax=${memoryMaxG}G`,
     ...(swap === 'deny' ? ['--property=MemorySwapMax=0'] : []),
     // EI-22129539141207312 — the LAST-RESORT wall. Every other bound on a scoped run

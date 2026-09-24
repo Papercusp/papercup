@@ -54,6 +54,7 @@ import {
   agentReviewPendingSelectorSql,
   createImplementationReadiness,
   LEGACY_AGENT_REVIEW_SUBMITTER,
+  mintAgentReviewClaimAdmission,
   readAgentReviewState,
   readImplementationReadiness,
   type AgentReviewState,
@@ -778,12 +779,19 @@ export type ClaimAgentReviewReason =
   | 'owner-capability'
   | 'agent-review-not-pending'
   | 'own-submission'
-  | 'claim-conflict';
+  | 'claim-conflict'
+  | 'claim-not-claimable';
 
 export interface ClaimAgentReviewResult {
   claimed: boolean;
   workItem: WorkItem | null;
   reason?: ClaimAgentReviewReason;
+  claimConflict?: {
+    workItemId: string;
+    holder: string;
+    source: 'work_items.assignee';
+    assignedBy: string | null;
+  };
 }
 
 /**
@@ -819,10 +827,55 @@ export async function claimAgentReview(
     return { claimed: false, workItem: null, reason: 'own-submission' };
   }
 
+  const agentReviewAdmission = mintAgentReviewClaimAdmission({
+    itemId: workItem.id,
+    reviewer: input.reviewer,
+    harnessSlug: input.harnessSlug,
+    review: current,
+  });
+  if (!agentReviewAdmission) {
+    return { claimed: false, workItem: null, reason: 'claim-not-claimable' };
+  }
+
   const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
     ...(workItem.harness ? { harness: workItem.harness } : {}),
+    agentReviewAdmission,
   });
-  if (!claimed) return { claimed: false, workItem: null, reason: 'claim-conflict' };
+  if (!claimed) {
+    const latest = await deps.getWorkItem(input.id, input.harnessSlug);
+    if (!latest || latest.harness !== input.harnessSlug) {
+      return { claimed: false, workItem: null, reason: 'not-found' };
+    }
+    if (latest.state !== 'open') {
+      return { claimed: false, workItem: null, reason: 'not-open' };
+    }
+    const latestEligibility = agentReviewEligibility(latest);
+    if (!latestEligibility.eligible) {
+      return { claimed: false, workItem: null, reason: latestEligibility.reason };
+    }
+    const latestReview = readAgentReviewState(latest.payload);
+    if (latestReview?.status !== 'pending') {
+      return { claimed: false, workItem: null, reason: 'agent-review-not-pending' };
+    }
+    if (latestReview.submittedBy === input.reviewer) {
+      return { claimed: false, workItem: null, reason: 'own-submission' };
+    }
+    const holder = latest.assignee?.trim();
+    if (holder && holder !== input.reviewer) {
+      return {
+        claimed: false,
+        workItem: null,
+        reason: 'claim-conflict',
+        claimConflict: {
+          workItemId: latest.id,
+          holder,
+          source: 'work_items.assignee',
+          assignedBy: latest.assignedBy ?? null,
+        },
+      };
+    }
+    return { claimed: false, workItem: null, reason: 'claim-not-claimable' };
+  }
 
   const claimedState = readAgentReviewState(claimed.payload);
   const postClaimReason: ClaimAgentReviewReason | null =
@@ -867,8 +920,19 @@ export async function claimNextAgentReview(
   for (const row of rows) {
     const workItem = await deps.getWorkItem(row.feature_id, input.harnessSlug);
     if (!workItem || !agentReviewEligibility(workItem).eligible) continue;
+    const review = readAgentReviewState(workItem.payload);
+    if (review?.status !== 'pending' || review.submittedBy === input.reviewer) continue;
+    const agentReviewAdmission = workItem.harness
+      ? mintAgentReviewClaimAdmission({
+          itemId: workItem.id,
+          reviewer: input.reviewer,
+          harnessSlug: workItem.harness,
+          review,
+        })
+      : null;
     const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
+      ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
     });
     if (claimed) return claimed;
   }

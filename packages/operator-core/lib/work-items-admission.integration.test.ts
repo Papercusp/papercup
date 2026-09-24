@@ -30,6 +30,7 @@ vi.mock('./workspace-registry', async () => {
 const { claimNextWorkItem, claimWorkItem, listWorkItems } = await import('./work-items');
 const { claimReplicaSlot } = await import('./work-item-redundancy');
 const { resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
+const { mintAgentReviewClaimAdmission } = await import('./harness/improvements/agent-review-policy');
 const { buildHarnessFeaturesProjection } = await import('./sync/hyperbee/projections/harness-features');
 
 const WS = 'default';
@@ -398,6 +399,62 @@ describe('G2 trust leg — owner-keyed LOCAL trust list (Phase 3 / P-010, real P
     const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-TRUSTED', owner: 'cup' });
     expect(ok.ok).toBe(true);
   });
+});
+
+describe('pending agent-review claims keep the shared admission floor narrow (real PG)', () => {
+  it('admits only a matching pending reviewer snapshot; ordinary and stale claims remain blocked', async () => {
+    const payload = {
+      agentReview: { status: 'pending' as const, submittedBy: 'su-filer', ledgerIdeaId: 'F-REVIEW', round: 1 },
+    };
+    await ins('F-REVIEW', 'local', null, 1);
+    await h.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET admission = 'pending', payload = ${JSON.stringify(payload)}::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW'`;
+
+    expect(await claimWorkItem('F-REVIEW', 'su-reviewer', { harness: HARNESS })).toBeNull();
+    const admission = mintAgentReviewClaimAdmission({
+      itemId: 'F-REVIEW',
+      reviewer: 'su-reviewer',
+      harnessSlug: HARNESS,
+      review: payload.agentReview,
+    });
+    expect(admission).not.toBeNull();
+    const claimed = await claimWorkItem('F-REVIEW', 'su-reviewer', {
+      harness: HARNESS,
+      agentReviewAdmission: admission!,
+    });
+    expect(claimed).toMatchObject({ id: 'F-REVIEW', assignee: 'su-reviewer' });
+
+    const stalePayload = {
+      agentReview: {
+        status: 'pending' as const,
+        submittedBy: 'su-filer',
+        ledgerIdeaId: 'F-REVIEW-STALE',
+        round: 1,
+      },
+    };
+    await ins('F-REVIEW-STALE', 'local', null, 2);
+    await h.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET admission = 'pending', payload = ${JSON.stringify(stalePayload)}::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-STALE'`;
+    const staleAdmission = mintAgentReviewClaimAdmission({
+      itemId: 'F-REVIEW-STALE',
+      reviewer: 'su-reviewer',
+      harnessSlug: HARNESS,
+      review: stalePayload.agentReview,
+    });
+    expect(staleAdmission).not.toBeNull();
+    await h.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = jsonb_set(payload, '{agentReview,status}', '"approved"'::jsonb)
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-STALE'`;
+    expect(await claimWorkItem('F-REVIEW-STALE', 'su-reviewer', {
+      harness: HARNESS,
+      agentReviewAdmission: staleAdmission!,
+    })).toBeNull();
+  }, 30_000);
 });
 
 // P-008 — the PRODUCER of verified_author_github_user_id. Each case is a security

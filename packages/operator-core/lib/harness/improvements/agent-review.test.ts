@@ -223,10 +223,24 @@ describe('claimAgentReview directed pickup', () => {
     });
     expect(h.deps.getWorkItem).toHaveBeenCalledWith('WI-8', 'papercusp');
     expect(h.claimWorkItem).toHaveBeenCalledTimes(1);
-    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-8', 'su-reviewer', { harness: 'papercusp' });
+    expect(h.claimWorkItem).toHaveBeenCalledWith(
+      'WI-8',
+      'su-reviewer',
+      expect.objectContaining({
+        harness: 'papercusp',
+        agentReviewAdmission: expect.objectContaining({
+          itemId: 'WI-8',
+          reviewer: 'su-reviewer',
+          harnessSlug: 'papercusp',
+          submittedBy: 'su-filer',
+          ledgerIdeaId: 'WI-8',
+          round: 1,
+        }),
+      }),
+    );
   });
 
-  it('refuses the submitter, non-pending work, and a competing holder before claiming', async () => {
+  it('refuses the submitter and non-pending work before claiming', async () => {
     for (const [candidate, reason] of [
       [pending('WI-7', 'su-reviewer'), 'own-submission'],
       [issue({
@@ -235,18 +249,55 @@ describe('claimAgentReview directed pickup', () => {
           agentReview: { status: 'approved', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
         },
       }), 'agent-review-not-pending'],
-      [pending('WI-7'), 'claim-conflict'],
     ] as const) {
       const h = harness(candidate);
-      if (reason === 'claim-conflict') h.claimWorkItem.mockResolvedValue(null);
 
       await expect(claimAgentReview({
         id: 'WI-7',
         reviewer: 'su-reviewer',
         harnessSlug: 'papercusp',
       }, h.deps)).resolves.toMatchObject({ claimed: false, reason });
-      if (reason !== 'claim-conflict') expect(h.claimWorkItem).not.toHaveBeenCalled();
+      expect(h.claimWorkItem).not.toHaveBeenCalled();
     }
+  });
+
+  it('names the holder only when a fresh read confirms a real claim conflict', async () => {
+    const h = harness(pending('WI-7'));
+    h.claimWorkItem.mockImplementation(async () => {
+      h.state.issue = { ...h.state.issue, assignee: 'su-other', assignedBy: 'fleet-leader' };
+      return null;
+    });
+
+    await expect(claimAgentReview({
+      id: 'WI-7',
+      reviewer: 'su-reviewer',
+      harnessSlug: 'papercusp',
+    }, h.deps)).resolves.toMatchObject({
+      claimed: false,
+      reason: 'claim-conflict',
+      claimConflict: {
+        workItemId: 'WI-7',
+        holder: 'su-other',
+        source: 'work_items.assignee',
+        assignedBy: 'fleet-leader',
+      },
+    });
+  });
+
+  it('does not label a failed claim as a conflict when the row is still unheld', async () => {
+    const h = harness(pending('WI-7'));
+    h.claimWorkItem.mockResolvedValue(null);
+
+    const result = await claimAgentReview({
+      id: 'WI-7',
+      reviewer: 'su-reviewer',
+      harnessSlug: 'papercusp',
+    }, h.deps);
+    expect(result).toMatchObject({
+      claimed: false,
+      reason: 'claim-not-claimable',
+    });
+    expect(result).not.toHaveProperty('claimConflict');
   });
 
   it('releases a claim when the returned row shows the review stopped being pending', async () => {
