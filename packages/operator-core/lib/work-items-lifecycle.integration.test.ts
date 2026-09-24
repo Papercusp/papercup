@@ -106,7 +106,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  const { currentRequestWorkspaceId } = await vi.importActual<typeof import('./workspace-als')>('./workspace-als');
+  return { ...actual, activeWorkspaceId: () => currentRequestWorkspaceId() ?? 'default' };
 });
 vi.mock('./harness-core', async () => {
   const actual = await vi.importActual<typeof import('./harness-core')>('./harness-core');
@@ -281,6 +282,37 @@ beforeEach(async () => {
 });
 
 describe('blueprint direct-item revision pin', () => {
+  it('uses the requested workspace for keyed replay without an ambient workspace scope', async () => {
+    const source = {
+      id: 'cross-workspace-receipt-fixture', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' },
+        inputSchema: { type: 'object', additionalProperties: false },
+        acceptance: { resultSchema: { type: 'object' } },
+      }],
+    };
+    const request = {
+      workspaceId: 'ws-cross-workspace-receipt', harnessSlug: 'papercup',
+      operationId: 'extract', input: {}, title: 'Scoped direct item',
+      callerId: 'principal-one', requestKey: 'cross-workspace-replay',
+    };
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: request.workspaceId, harnessSlug: request.harnessSlug,
+      blueprint: BlueprintSchema.parse(source),
+      specification: compileAgentSpecification({ source }),
+    });
+    const first = await acceptBlueprintDirectWorkItem(db.sql, request);
+    expect((await acceptBlueprintDirectWorkItem(db.sql, request)).id).toBe(first.id);
+    const rows = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.work_items
+       WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
+         AND payload->'blueprintOperation'->>'requestKey' = ${request.requestKey}
+    `;
+    expect(rows[0]?.n).toBe(1);
+  });
+
   it('keeps the canonical accepted work item on A after the current blueprint moves to B', async () => {
     const operation = {
       id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },

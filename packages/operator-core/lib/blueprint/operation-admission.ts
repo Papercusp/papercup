@@ -10,6 +10,7 @@ import { compileAgentSpecification, operationFromSpecification, type Blueprint }
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { createWorkItem, getWorkItem, type WorkItem, type WorkItemKind } from '../work-items';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { runWithWorkspace } from '../workspace-als';
 import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot, retainBlueprintSpecificationSnapshot } from './project-to-pg';
 import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
 
@@ -150,7 +151,14 @@ function validateOperationInput(schema: Record<string, unknown>, input: Record<s
 /** Select the current revision once, then accept that exact immutable artifact.
  * An author moving the mutable blueprint pointer afterward cannot change the
  * accepted item's contract, even if it happens before the work-item INSERT. */
-export async function acceptBlueprintDirectWorkItem(
+export function acceptBlueprintDirectWorkItem(
+  sql: Sql,
+  request: AcceptBlueprintDirectItemInput,
+): Promise<WorkItem> {
+  return runWithWorkspace(request.workspaceId, () => acceptBlueprintDirectWorkItemScoped(sql, request));
+}
+
+async function acceptBlueprintDirectWorkItemScoped(
   sql: Sql,
   request: AcceptBlueprintDirectItemInput,
 ): Promise<WorkItem> {
@@ -352,7 +360,14 @@ interface PlanInvocationReceiptRow extends InvocationReceiptRow {
 /** Reserve a durable identity before minting the plan instance. A crash after
  * reservation reuses the same plan-run token; a crash after the plan-run seed
  * re-enters runScheduledPlanFire's canonical promotion repair. */
-export async function acceptBlueprintPlanRun(
+export function acceptBlueprintPlanRun(
+  sql: Sql,
+  request: AcceptBlueprintPlanRunInput,
+): Promise<AcceptedBlueprintPlanRun> {
+  return runWithWorkspace(request.workspaceId, () => acceptBlueprintPlanRunScoped(sql, request));
+}
+
+async function acceptBlueprintPlanRunScoped(
   sql: Sql,
   request: AcceptBlueprintPlanRunInput,
 ): Promise<AcceptedBlueprintPlanRun> {
@@ -525,7 +540,14 @@ interface ScheduledReceiptRow extends InvocationReceiptRow {
 /** Compatibility adapter for blueprint-run's legacy mode='work-item'.
  * Its per-fire receipt is committed before the canonical item create, and
  * target_ref reserves one id even if the worker dies before its response. */
-export async function acceptScheduledBlueprintWorkItem(
+export function acceptScheduledBlueprintWorkItem(
+  sql: Sql,
+  request: AcceptScheduledBlueprintWorkItemInput,
+): Promise<WorkItem> {
+  return runWithWorkspace(request.workspaceId, () => acceptScheduledBlueprintWorkItemScoped(sql, request));
+}
+
+async function acceptScheduledBlueprintWorkItemScoped(
   sql: Sql,
   request: AcceptScheduledBlueprintWorkItemInput,
 ): Promise<WorkItem> {
