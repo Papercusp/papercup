@@ -1779,6 +1779,7 @@ export async function fireAwaitsForKey(input: {
   const onceRows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+           fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
            fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
@@ -1809,6 +1810,7 @@ export async function fireAwaitsForKey(input: {
       ? await sql`
           UPDATE harness_shared.event_awaits
              SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+                 fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${onceFilterMatchedIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
@@ -1867,6 +1869,7 @@ export async function fireAwaitsForKey(input: {
       ? await sql`
           UPDATE harness_shared.event_awaits
              SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+                 fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${matchedOnceIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
@@ -1897,7 +1900,8 @@ export async function claimSpecificOnceAwaits(
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET fired_at = now(), fired_reason = ${reason}
+       SET fired_at = now(), fired_reason = ${reason},
+           fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END
      WHERE workspace_id = ${ws} AND id = ANY(${ids})
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING *
@@ -1976,24 +1980,11 @@ export async function insertDeliveries(input: {
   return n;
 }
 
-/** Upper bound on how stale a fired-but-undelivered await may be and still be
- * recoverable. The crash this sweep exists to repair is a producer dying between
- * its `fired_at` commit and its `insertDeliveries` call — a window of seconds, so
- * anything older is not a lost wake but a settled one whose delivery row never
- * landed. Without a ceiling the `NOT EXISTS` predicate keeps EVERY such row
- * eligible forever and `ORDER BY a.fired_at` serves the oldest first: this sweep's
- * first production run (2026-09-24T12:39:06Z) drained a 3.5-month backlog as one
- * 0.6s burst — 91 deliveries to 60 subscribers, awaits averaging 37 days stale and
- * reaching back to 2026-06-11, 85 of them already `fired_reason='expired'` — which
- * respawned ~50 dead sessions, each handed a note whose premises had long since
- * resolved. A resurrected agent cannot tell a stale wake from a live one, so it
- * acts on the note: the wake that prompted this fix told its (dead) recipient to
- * claim work in a fleet that had since wound down. */
-const FIRED_WAKE_RECOVERY_MAX_AGE = '1 hour';
-
 /** Recover a consumed one-shot whose producer died after firing it but before
- * creating its wake row. The await row carries its recipient and fired payload;
- * insertDeliveries serializes against a still-running original producer. */
+ * creating its wake row. Only NEW claims carry fired_delivery_intent_at: older
+ * fired rows lack provenance and must never be resurrected. A marked intent
+ * remains recoverable after an arbitrarily long outage; age is not a proof of
+ * settlement. insertDeliveries serializes with a still-running producer. */
 export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -2003,7 +1994,7 @@ export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number>
        AND a.once = true AND a.policy = 'wake'
        AND a.node_id IS NULL AND a.root_id IS NULL
        AND a.fired_at IS NOT NULL AND a.fired_at < now() - interval '2 seconds'
-       AND a.fired_at > now() - ${FIRED_WAKE_RECOVERY_MAX_AGE}::interval
+       AND a.fired_delivery_intent_at IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.event_wake_deliveries d
           WHERE d.workspace_id = a.workspace_id AND d.await_id = a.id
@@ -2304,7 +2295,8 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_awaits AS await
-       SET fired_at = now(), fired_reason = 'timeout'
+       SET fired_at = now(), fired_reason = 'timeout',
+           fired_delivery_intent_at = CASE WHEN await.policy = 'wake' AND await.node_id IS NULL AND await.root_id IS NULL THEN now() ELSE NULL END
      WHERE await.workspace_id = ${ws} AND await.timeout_behavior = 'wake'
        AND await.once = true
        AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
@@ -2383,6 +2375,7 @@ export async function settleVerifiedAwaitTimeout(input: {
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = 'verified-timeout',
+           fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
            timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
            producer_health = COALESCE(${input.finalCertificate ? JSON.stringify(input.finalCertificate) : null}::text::jsonb, producer_health),
            verification_claimed_at = NULL

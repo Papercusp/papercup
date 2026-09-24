@@ -48,6 +48,8 @@ const {
   listFiredAnnouncements,
   insertDeliveries,
   reconcileFiredWakeDeliveries,
+  fireTimedOutAwaits,
+  expireLapsedAwaits,
   retireLifecycleBoundWatches,
   retireWatchesForReapedOwners,
   listActiveAwaits,
@@ -108,6 +110,8 @@ beforeAll(async () => {
       causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
       logical_gate_key text,
       fired_by text, fired_payload jsonb,
+      -- migration 1216: only future one-shot wake claims carry recoverable intent.
+      fired_delivery_intent_at timestamptz,
       -- migration 572 (composable-event-awaits): composed-TREE leaf columns. A plain
       -- await leaves them NULL, but store.ts SELECTs root_id unconditionally
       -- (listParkedAwaitsForSubscribers), so omitting them here failed that query with
@@ -401,15 +405,16 @@ describe('await-event store (PG)', () => {
     expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(1);
   });
 
-  it('does NOT resurrect a long-settled fired await whose delivery row never landed', async () => {
-    // The recoverable crash is a producer dying between `fired_at` and
-    // insertDeliveries — seconds. An await that fired weeks ago is settled, and
-    // re-delivering it respawns a dead session on premises that have since
-    // resolved (the first production sweep did this to ~50 sessions at once,
-    // averaging 37 days stale).
+  it('does NOT resurrect a historical fired await without a delivery-intent marker', async () => {
+    // A pre-migration fired row has no proof it owes a new delivery. Its old
+    // missing ledger row must not respawn a subscriber after weeks of silence.
     const ancient = await registerAwait({ subscriberId: 'ancient-waiter', eventKey: 'work-item:claimable' });
     await fireAwaitsForKey({ eventKey: ancient.eventKey, payload: { eventKey: ancient.eventKey } });
-    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '37 days' WHERE id = ${ancient.id}`;
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now() - interval '37 days', fired_delivery_intent_at = NULL
+       WHERE id = ${ancient.id}
+    `;
 
     // A fresh crash-window row must still be recovered by the same sweep, so a
     // green result cannot come from the sweep simply doing nothing.
@@ -430,6 +435,43 @@ describe('await-event store (PG)', () => {
     expect(
       await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${ancient.id}`,
     ).toHaveLength(0);
+  });
+
+  it('recovers a marked delivery intent after a long outage instead of imposing an age ceiling', async () => {
+    const pending = await registerAwait({ subscriberId: 'outage-waiter', eventKey: 'work-item:done:WI-outage' });
+    await fireAwaitsForKey({ eventKey: pending.eventKey, payload: { itemId: 'WI-outage' } });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now() - interval '37 days',
+             fired_delivery_intent_at = now() - interval '37 days'
+       WHERE id = ${pending.id}
+    `;
+    expect(await reconcileFiredWakeDeliveries()).toBe(1);
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(1);
+  });
+
+  it('recovers a timeout wake but never replays an expired await', async () => {
+    const wake = await registerAwait({ subscriberId: 'timeout-waiter', eventKey: 'timeout:intent', timeoutSec: 60, timeoutBehavior: 'wake' });
+    const expire = await registerAwait({ subscriberId: 'expire-waiter', eventKey: 'expire:no-intent', timeoutSec: 60, timeoutBehavior: 'expire' });
+    await rootSql`
+      UPDATE harness_shared.event_awaits SET expires_ts = now() - interval '1 second'
+       WHERE id IN (${wake.id}, ${expire.id})
+    `;
+    expect((await fireTimedOutAwaits()).map((row) => row.id)).toContain(wake.id);
+    expect(await expireLapsedAwaits()).toBe(1);
+    const rows = await rootSql`
+      SELECT id, fired_delivery_intent_at FROM harness_shared.event_awaits
+       WHERE id IN (${wake.id}, ${expire.id}) ORDER BY id
+    `;
+    expect(rows[0].fired_delivery_intent_at).not.toBeNull();
+    expect(rows[1].fired_delivery_intent_at).toBeNull();
+    await rootSql`
+      UPDATE harness_shared.event_awaits SET fired_at = now() - interval '3 seconds'
+       WHERE id = ${wake.id}
+    `;
+    expect(await reconcileFiredWakeDeliveries()).toBe(1);
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${wake.id}`).toHaveLength(1);
+    expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${expire.id}`).toHaveLength(0);
   });
 
   it('serializes a recovery sweep against the original one-shot delivery writer', async () => {
