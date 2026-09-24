@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import net from 'node:net';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
 import {
@@ -263,6 +264,66 @@ describe('plain launch kickoff turn-start proof', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
+});
+
+describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808)', () => {
+  it('submits the complete long kickoff in the paste frame advertised by the child', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'claude-bracketed-kickoff-'));
+    const ownerId = `su-claude-bracketed-kickoff-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const kickoff = `⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\n${'feature-run-trace,'.repeat(520)}`;
+    const kickoffHash = createHash('sha256').update(kickoff).digest('hex');
+    const expected = `KICKOFF_SUBMITTED:${Buffer.byteLength(kickoff)}:${kickoffHash}`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const crypto=require('node:crypto');",
+      "try{process.stdin.setRawMode?.(true);}catch{}",
+      "process.stdin.setEncoding('utf8');",
+      "let wire='',reported=false;",
+      "process.stdout.write('\\x1b[?2004h\\nREADY\\n❯ \\n');",
+      "process.stdin.on('data',d=>{wire+=d;if(reported||!wire.includes('\\r'))return;reported=true;const start='\\x1b[200~',end='\\x1b[201~';const a=wire.indexOf(start),b=wire.indexOf(end,a+start.length),enter=wire.indexOf('\\r');if(a<0||b<a+start.length||enter<b+end.length){process.stdout.write('KICKOFF_FRAME_MISSING\\n');return;}const text=wire.slice(a+start.length,b);const hash=crypto.createHash('sha256').update(text).digest('hex');process.stdout.write('KICKOFF_SUBMITTED:'+Buffer.byteLength(text)+':'+hash+'\\n');});",
+      "process.stdin.on('data',d=>{if(d.includes('\\u0004'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '25',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '20',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        onExit: () => {},
+      });
+
+      const deadline = Date.now() + 8_000;
+      while (
+        !captured().includes(expected) &&
+        !captured().includes('KICKOFF_FRAME_MISSING') &&
+        Date.now() < deadline
+      ) {
+        await sleep(10);
+      }
+      expect(captured()).not.toContain('KICKOFF_FRAME_MISSING');
+      expect(captured()).toContain(expected);
+      await controlInject(sock, 'raw', '\x04');
+      expect(await done).toBe(0);
+    } finally {
+      await done?.catch(() => undefined);
+      if (existsSync(sock)) await controlInject(sock, 'raw', '\x04');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe('Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331)', () => {
