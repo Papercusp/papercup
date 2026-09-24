@@ -35,6 +35,8 @@ export interface SessionEndLeaseRow {
   cwd: string | null;
   endedAt: Date | null;
   ownerHasOpenSession: boolean;
+  /** The poison marker matches this exact ended adv-session generation. */
+  poisoned?: boolean;
 }
 
 export interface SessionEndLeaseReleaseDeps {
@@ -113,8 +115,8 @@ export function partitionReapableTasks(rows: readonly TaskRow[]): {
 
 async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndLeaseRow | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<
-    Array<{
+  type Row =
+    {
       id: number;
       workspace_id: string;
       coord_owner_id: string | null;
@@ -122,19 +124,48 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
       cwd: string | null;
       ended_at: Date | string | null;
       owner_has_open_session: boolean;
-    }>
-  >`
-    SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
-           EXISTS (
-             SELECT 1
-               FROM harness_shared.adv_sessions newer
-              WHERE newer.coord_owner_id = s.coord_owner_id
-                AND newer.ended_at IS NULL
-           ) AS owner_has_open_session
-      FROM harness_shared.adv_sessions s
-     WHERE s.id = ${advSessionId}
-     LIMIT 1
-  `;
+      poisoned: boolean;
+    }[];
+  let rows: Row;
+  try {
+    rows = await sql<Row>`
+      SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
+             COALESCE(
+               b.control_state #>> '{lifecycle,poisoned,advSessionId}' = s.id::text
+               AND date_trunc('milliseconds', (b.control_state #>> '{lifecycle,poisoned,startedAt}')::timestamptz)
+                     = date_trunc('milliseconds', s.started_at),
+               false
+             ) AS poisoned,
+             EXISTS (
+               SELECT 1
+                 FROM harness_shared.adv_sessions newer
+                WHERE newer.coord_owner_id = s.coord_owner_id
+                  AND newer.ended_at IS NULL
+             ) AS owner_has_open_session
+        FROM harness_shared.adv_sessions s
+        LEFT JOIN harness_shared.session_briefs b ON b.owner_id = s.coord_owner_id
+       WHERE s.id = ${advSessionId}
+       LIMIT 1
+    `;
+  } catch (error) {
+    // session_briefs is an optional older-schema surface. A node without its
+    // migration still performs the ordinary liveness-checked cleanup; only the
+    // special poison override is unavailable there.
+    if ((error as { code?: string } | null)?.code !== '42P01') throw error;
+    rows = await sql<Row>`
+      SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
+             false AS poisoned,
+             EXISTS (
+               SELECT 1
+                 FROM harness_shared.adv_sessions newer
+                WHERE newer.coord_owner_id = s.coord_owner_id
+                  AND newer.ended_at IS NULL
+             ) AS owner_has_open_session
+        FROM harness_shared.adv_sessions s
+       WHERE s.id = ${advSessionId}
+       LIMIT 1
+    `;
+  }
   const row = rows[0];
   if (!row) return null;
   return {
@@ -145,6 +176,7 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
     cwd: row.cwd,
     endedAt: row.ended_at == null ? null : new Date(row.ended_at),
     ownerHasOpenSession: row.owner_has_open_session,
+    poisoned: row.poisoned === true,
   };
 }
 
@@ -189,7 +221,11 @@ export async function runSessionEndLeaseRelease(
   if (row.ownerHasOpenSession) return { ok: false, reason: 'owner-resumed', ownerId };
 
   const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)(ownerId);
-  if (protectedOwners.has(ownerId)) return { ok: false, reason: 'owner-live', ownerId };
+  // A transcript-confirmed poison marker is an explicit verdict that this exact
+  // ended incarnation cannot take more work. Its still-open host/heartbeat must
+  // not hold the old leases forever. The newer-open-session guard above remains
+  // authoritative for a fresh successor under the same owner id.
+  if (protectedOwners.has(ownerId) && !row.poisoned) return { ok: false, reason: 'owner-live', ownerId };
 
   // Keep the delayed hook's eager graph leaf-like. These modules eventually
   // reach adv-sessions through coordination/work-item infrastructure, while

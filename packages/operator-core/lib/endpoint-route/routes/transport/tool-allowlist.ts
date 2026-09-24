@@ -22,13 +22,16 @@
  * Absent / empty `?tools=` → no filtering at all, so every other spawn
  * (worker / scoper / validator / a bare probe) keeps its full role surface.
  * Names are matched against the MCP catalog name (the colon form the registry
- * exposes, e.g. `harness:status`); unknown names in the param are simply
- * ignored (a stale name never hides the rest of the set). This is a LISTING
+ * exposes, e.g. `harness:status`). A legacy `mcp__<server>__...` name from a
+ * Claude resume transcript is accepted only when it normalizes to one catalog
+ * entry; unknown names are simply ignored (a stale name never hides the rest
+ * of the set). This is a LISTING
  * hint only — it does NOT gate `tools/call`. The operator is superuser and the
  * role-allowlist already governs what is callable; the allowlist exists purely
  * to shrink the deferred surface, so a tool omitted from `?tools=` that gets
  * called anyway still dispatches normally.
  */
+import { normalizeMcpName } from '@papercusp/tooldef';
 
 /**
  * Parse the `?tools=` query value into a name set, or `null` when absent/empty
@@ -55,7 +58,30 @@ export function filterListingsByAllowlist<T extends { name: string }>(
   allow: Set<string> | null,
 ): T[] {
   if (!allow) return [...listings];
-  return listings.filter((t) => allow.has(t.name));
+  // Resume transcripts can contain Claude's client-mangled name from a prior
+  // MCP surface, e.g. `mcp__papercusp-su__plans_audit`. Treat that spelling as
+  // an alias for the current colon-form MCP listing so the new process restores
+  // the tool definition before Claude replays its `tool_reference` block.
+  // Keep canonical allowlist entries exact, and only accept an alias when its
+  // normalized identity resolves to ONE listing; separator collisions fail
+  // closed instead of exposing the wrong tool.
+  const aliases = new Set(
+    [...allow]
+      .filter((name) => /^mcp__/.test(name))
+      .map((name) => normalizeMcpName(name)),
+  );
+  if (aliases.size === 0) return listings.filter((t) => allow.has(t.name));
+
+  const normalizedCounts = new Map<string, number>();
+  for (const tool of listings) {
+    const normalized = normalizeMcpName(tool.name);
+    normalizedCounts.set(normalized, (normalizedCounts.get(normalized) ?? 0) + 1);
+  }
+  return listings.filter((tool) => {
+    if (allow.has(tool.name)) return true;
+    const normalized = normalizeMcpName(tool.name);
+    return aliases.has(normalized) && normalizedCounts.get(normalized) === 1;
+  });
 }
 
 /* ── COMPACT delivery tier (deterministic-tool-definition-delivery-2026-09-21) ─

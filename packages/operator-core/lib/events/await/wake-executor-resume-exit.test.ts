@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   defaultIsHeadlessResumeTurn,
   executeWake,
@@ -25,6 +27,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     tb = MultiSessionTestbed.create();
   });
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await tb.destroy();
   });
 
@@ -93,6 +96,240 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     expect(observed!.d.id).toBe(d.id);
     expect(observed!.d.subscriberId).toBe(s.ownerId);
     expect(observed!.exit).toEqual(synthetic);
+  });
+
+  it('restores transcript tool references in the resumed MCP seed and forwards poison disposition', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const missing = "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools";
+      writeFileSync(transcriptPath, JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' }] },
+      }));
+      vi.stubEnv('PAPERCUSP_TOOLS', 'tools:find,coord:orient');
+      let spawnedEnv: Record<string, string> | null = null;
+      let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
+      let observedContext: unknown;
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{
+          rel: 'projects/-repo/native-A.jsonl',
+          abs: transcriptPath,
+          bytes: 1,
+          mtimeMs: 1,
+        }],
+        quarantineToolReferenceSession: quarantine as never,
+        sendCoordMessage: vi.fn(async () => ({} as never)),
+        spawnDetached: (_bin, _args, opts, onExit) => {
+          spawnedEnv = opts.env;
+          onExitWired = onExit;
+          return 4242;
+        },
+        onResumeTurnExit: (_d, _exit, context) => { observedContext = context; },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: await deadPid(),
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({
+        subscriberId: s.ownerId,
+        wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 0 }),
+      });
+
+      expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+      expect(spawnedEnv?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
+      onExitWired!({ exitCode: 1, signal: null, stdoutTail: missing, stderrTail: '' });
+      await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
+      expect(quarantine).toHaveBeenCalledWith(expect.objectContaining({
+        transcriptPath,
+        ownerId: s.ownerId,
+        sessionId: 'native-A',
+      }), missing);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('drops queued wakes for the exact poisoned adv-session incarnation', async () => {
+    let spawned = false;
+    const { deps, s } = await exitedClaudeResumeDeps();
+    deps.getSessionLifecycle = async () => ({
+        poisoned: {
+          advSessionId: s.advSessionId,
+          sessionId: 'native-A',
+          startedAt: '2026-09-24T10:00:00.123Z',
+          at: '2026-09-24T10:05:00.000Z',
+          by: 'resume-turn-detector',
+          reason: 'three consecutive unavailable tool references',
+          evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+        },
+      });
+    deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: await deadPid(),
+        cwd: s.cwd,
+      }) as never;
+    deps.spawnDetached = () => { spawned = true; return 4242; };
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 0 }) });
+
+    await expect(executeWake(d, deps)).resolves.toMatchObject({
+      kind: 'drop',
+      reason: expect.stringContaining('quarantined'),
+    });
+    expect(spawned).toBe(false);
+  });
+
+  it('does not let an old poison marker block a newer resumed incarnation', async () => {
+    let spawned = false;
+    const { deps, s } = await exitedClaudeResumeDeps({
+      collectSessionFiles: async () => [],
+      spawnDetached: () => { spawned = true; return 4242; },
+    });
+    deps.getSessionLifecycle = async () => ({
+      poisoned: {
+        advSessionId: s.advSessionId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        at: '2026-09-24T10:05:00.000Z',
+        by: 'resume-turn-detector',
+        reason: 'three consecutive unavailable tool references',
+        evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+      },
+    });
+    deps.getSession = async () => ({
+      id: s.advSessionId,
+      workspaceId: 'row-ws',
+      agent: 'claude',
+      coordOwnerId: null,
+      sessionId: 'native-A',
+      startedAt: '2026-09-24T10:06:00.000Z',
+      endedAt: null,
+      pid: await deadPid(),
+      cwd: s.cwd,
+    }) as never;
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 0 }) });
+
+    await expect(executeWake(d, deps)).resolves.toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawned).toBe(true);
+  });
+
+  it('quarantines a live interactive session before the next pty injection after three errors', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const error = "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools";
+      const turn = () => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: error }] } });
+      writeFileSync(transcriptPath, [turn(), turn(), turn()].join('\n'));
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{
+          rel: 'projects/-repo/native-A.jsonl',
+          abs: transcriptPath,
+          bytes: 1,
+          mtimeMs: 1,
+        }],
+        alive: () => true,
+        quarantineToolReferenceSession: quarantine as never,
+        sendCoordMessage: vi.fn(async () => ({} as never)),
+        spawnDetached: () => { throw new Error('poisoned live session must not spawn'); },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: 7777,
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      await expect(executeWake(d, deps)).resolves.toMatchObject({ kind: 'drop', reason: expect.stringContaining('quarantined') });
+      expect(quarantine).toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('seeds transcript tool references into a headless resume and quarantines a repeated failure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const missing = "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools";
+      writeFileSync(transcriptPath, JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' }] },
+      }));
+      vi.stubEnv('PAPERCUSP_TOOLS', 'tools:find,coord:orient');
+      let spawnedEnv: Record<string, string> | null = null;
+      let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
+      let observedContext: unknown;
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{
+          rel: 'projects/-repo/native-A.jsonl',
+          abs: transcriptPath,
+          bytes: 1,
+          mtimeMs: 1,
+        }],
+        spawnDetached: (_bin, _args, opts, onExit) => {
+          spawnedEnv = opts.env;
+          onExitWired = onExit;
+          return 4242;
+        },
+        quarantineToolReferenceSession: quarantine as never,
+        onResumeTurnExit: (_d, _exit, context) => { observedContext = context; },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: await deadPid(),
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({
+        subscriberId: s.ownerId,
+        wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 0 }),
+      });
+
+      expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+      expect(spawnedEnv?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
+      onExitWired!({ exitCode: 1, signal: null, stdoutTail: missing, stderrTail: '' });
+      await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
+      expect(quarantine).toHaveBeenCalledWith(expect.objectContaining({
+        transcriptPath,
+        ownerId: s.ownerId,
+        sessionId: 'native-A',
+      }), missing);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('back-compat: with NO onResumeTurnExit dep, the spawn receives an undefined onExit and still delivers', async () => {
