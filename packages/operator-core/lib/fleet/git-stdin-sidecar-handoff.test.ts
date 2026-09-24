@@ -282,6 +282,133 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     expect(res.stderr).toMatch(/could not open a handoff file/);
   });
 
+  it('recognizes binary stdout-file progress across idle deadlines without piping its bytes', async () => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const { readFile } = await import('node:fs/promises');
+    const dir = mkdtempSync(join(tmpdir(), 'fd-progress-'));
+    const outPath = join(dir, 'out');
+    const chunk = Buffer.from([0, 255, 128, 195, 169, 10]);
+    const onOutputActivity = vi.fn();
+    try {
+      const result = await execProcess({
+        command: process.execPath,
+        args: ['-e', `const b=Buffer.from('${chunk.toString('base64')}','base64'); let n=0; const t=setInterval(()=>{require('node:fs').writeSync(1,b); if(++n===8) clearInterval(t);},80);`],
+        stdoutPath: outPath,
+        idleTimeoutMs: 300,
+        timeoutMs: 3000,
+      }, { ...executionDeps, onOutputActivity });
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stdoutBytes).toBe(chunk.length * 8);
+      expect(await readFile(outPath)).toEqual(Buffer.concat(Array.from({ length: 8 }, () => chunk)));
+      expect(onOutputActivity).toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('times out a stdout-file child once its writes stop', async () => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const dir = mkdtempSync(join(tmpdir(), 'fd-silent-'));
+    try {
+      const result = await execProcess({
+        command: process.execPath,
+        args: ['-e', "require('node:fs').writeSync(1, 'once'); setInterval(()=>{},1000);"],
+        stdoutPath: join(dir, 'out'),
+        idleTimeoutMs: 300,
+        timeoutMs: 3000,
+      }, executionDeps);
+      expect(result.code).toBe(-1);
+      expect(result.stdoutBytes).toBe(4);
+      expect(result.stderr).toContain('made no output progress for 300ms');
+      expect(result.stderr).not.toContain('timed out after 3000ms');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains the hard deadline while stdout-file writes continue', async () => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const dir = mkdtempSync(join(tmpdir(), 'fd-hard-deadline-'));
+    try {
+      const result = await execProcess({
+        command: process.execPath,
+        args: ['-e', "setInterval(()=>require('node:fs').writeSync(1,'progress'),40);"],
+        stdoutPath: join(dir, 'out'),
+        idleTimeoutMs: 300,
+        timeoutMs: 800,
+      }, executionDeps);
+      expect(result.code).toBe(-1);
+      expect(result.stdoutBytes).toBeGreaterThan(0);
+      expect(result.stderr).toContain('timed out after 800ms');
+      expect(result.stderr).not.toContain('no output progress');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['stderr-progress', 'abort', 'hard-deadline'] as const)('invalidates a pending stdout-file probe after %s', async (mode) => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const { open, writeFile } = await import('node:fs/promises');
+    const dir = mkdtempSync(join(tmpdir(), 'fd-probe-race-'));
+    const notifyPath = join(dir, 'notify');
+    const finishPath = join(dir, 'finish');
+    // Pause one REAL fstat result after the kernel returns it. File contents
+    // stay real; this only controls callback delivery relative to pipe/abort.
+    const seed = await open(join(dir, 'seed'), 'w');
+    const prototype = Object.getPrototypeOf(seed) as typeof seed;
+    const originalStat = prototype.stat;
+    await seed.close();
+    let probeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { probeStarted = resolve; });
+    let releaseProbe!: () => void;
+    const pending = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const statSpy = vi.spyOn(prototype, 'stat').mockImplementationOnce(async function (this: typeof seed) {
+      const snapshot = await originalStat.call(this);
+      probeStarted();
+      await pending;
+      return snapshot;
+    });
+    const controller = new AbortController();
+    let pipeProgress!: () => void;
+    const progress = new Promise<void>((resolve) => { pipeProgress = resolve; });
+    const onOutputActivity = vi.fn(() => pipeProgress());
+    const result = execProcess({
+      command: process.execPath,
+      args: ['-e', `const fs=require('node:fs'); let sent=false; setInterval(()=>{if(!sent&&fs.existsSync(${JSON.stringify(notifyPath)})){sent=true;process.stderr.write('progress');} if(fs.existsSync(${JSON.stringify(finishPath)}))process.exit(0);},10);`],
+      stdoutPath: join(dir, 'out'),
+      idleTimeoutMs: 300,
+      timeoutMs: 1800,
+    }, { ...executionDeps, signal: controller.signal, onOutputActivity });
+    try {
+      await started;
+      if (mode === 'stderr-progress') {
+        await writeFile(notifyPath, 'notify');
+        await progress;
+        releaseProbe();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await writeFile(finishPath, 'finish');
+        expect((await result).code).toBe(0);
+      } else {
+        if (mode === 'abort') controller.abort();
+        // The hard deadline or abort must settle independently of the stale
+        // fstat callback; releasing it later cannot resume progress or timers.
+        const returned = await result;
+        expect(returned.code).toBe(-1);
+        expect(returned.stderr).toContain(mode === 'abort' ? 'aborted by caller' : 'timed out after 1800ms');
+        releaseProbe();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(onOutputActivity).not.toHaveBeenCalled();
+      }
+    } finally {
+      releaseProbe();
+      controller.abort();
+      await result;
+      statSpy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('without handoff paths, process:exec still pipes stdout as a string (existing callers untouched)', async () => {
     const { execProcess } = await import('./sidecar-exec-process');
     const res = await execProcess(
