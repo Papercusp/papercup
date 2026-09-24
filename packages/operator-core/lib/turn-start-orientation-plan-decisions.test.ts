@@ -137,6 +137,31 @@ describe('P-014 planDecisions — pushes new governing decisions, and only the n
     ]);
   });
 
+  it('renders a new decision exactly ONCE — not again once delivered, on the next unrelated re-render', () => {
+    // The pair above fakes "already seen" by fingerprinting a state that already
+    // holds the decision. This case takes the DELIVERED path: the next cursor is
+    // advanced from the very render that spoke D2 (the 3-arg fingerprint), which
+    // is what a real next turn commits. Drop the carry-forward and D2 re-announces
+    // on every later re-render.
+    const t1 = fingerprintOrientation(stateWith(decisions([D1]), { inboxRecent: inbox('first') }), EPOCH);
+    const changed = stateWith(decisions([D1, D2]));
+    const block = composeOrientationBlock({ state: changed, committed: t1, epoch: EPOCH });
+    expect(decisionLines(block)).toEqual([
+      '- plan turn-start-memory-two-class-2026-09-21 D-082: R-7/R-9 are omitted for proof depth, not automation',
+    ]);
+
+    const t2 = fingerprintOrientation(changed, EPOCH, t1);
+    const again = composeOrientationBlock({
+      state: stateWith(decisions([D1, D2]), { inboxRecent: inbox('a later, entirely unrelated message') }),
+      committed: t2,
+      epoch: EPOCH,
+    });
+
+    // The block DID re-render — otherwise the silence below proves nothing.
+    expect(again).not.toBe('');
+    expect(decisionLines(again)).toEqual([]);
+  });
+
   it('D-081 — keys on the decision REF, so the same D-NNN id on a DIFFERENT plan is not suppressed', () => {
     // The failure this pins: keying on the in-plan id (`D-001`) instead of the
     // globally-citable ref silently swallows every other plan's D-001. Both
