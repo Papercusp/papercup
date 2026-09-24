@@ -33,12 +33,19 @@ export const LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_JUDGE_INTERVAL_MS = 60 * 60_000;
 export const LIFECYCLE_SWEEP_INTERVAL_MS = 5 * 60_000;
 /**
- * `mug` is the existing prompted autonomous coding-harness persona. It receives
- * read-only process inventory access for this evidence pass; process signalling
- * remains outside its capability envelope and is performed below by trusted
- * task-manager code.
+ * Reuse the maintained coding/operator persona rather than minting a parallel
+ * lifecycle role. `operator` has the evidence surfaces this pass needs
+ * (`processes:list` + work-item lifecycle) but not `processes:kill`; process
+ * signalling remains inside the trusted task-manager boundary below.
+ *
+ * The explicit blueprint id is load-bearing. Papercusp's harness blueprint does
+ * not itself carry an operator prompt, while the coding blueprint does. Without
+ * this extra invoke-once falls through to the base prompt library and rejects the
+ * spawn before the judge takes a turn.
  */
-export const LIFECYCLE_JUDGE_ROLE = 'mug' as const;
+export const LIFECYCLE_JUDGE_ROLE = 'operator' as const;
+export const LIFECYCLE_JUDGE_BLUEPRINT_ID = 'coding' as const;
+export const LIFECYCLE_JUDGE_EXTRAS = [`BLUEPRINT_ID=${LIFECYCLE_JUDGE_BLUEPRINT_ID}`] as const;
 
 const PROBE_DETAIL_KEY = 'processLifecycleProbe';
 const CANDIDATE_PAYLOAD_KEY = 'processLifecycleCandidate';
@@ -471,7 +478,9 @@ export function lifecycleCandidateConditionKey(taskId: string): string {
 }
 
 export function lifecycleJudgeIntervalKey(workspaceId: string, nowMs: number): string {
-  return `process-lifecycle-judge:v1:${workspaceId}:${Math.floor(nowMs / LIFECYCLE_JUDGE_INTERVAL_MS)}`;
+  // v2 deliberately does not dedupe onto v1 rows: every v1 production spawn
+  // selected an unusable persona and therefore cannot satisfy this operation.
+  return `process-lifecycle-judge:v2:${workspaceId}:${Math.floor(nowMs / LIFECYCLE_JUDGE_INTERVAL_MS)}`;
 }
 
 export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]): string {
@@ -708,6 +717,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       workspaceId,
       harness: harnessSlug,
       role: LIFECYCLE_JUDGE_ROLE,
+      extras: [...LIFECYCLE_JUDGE_EXTRAS],
       tier: 'quick',
       accountOverride: 'auto',
       brief,

@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { resolvePromptFile } from '@papercusp/orchestrator/role-prompt';
 
 import {
   LIFECYCLE_IDLE_QUIET_MS,
+  LIFECYCLE_JUDGE_BLUEPRINT_ID,
+  LIFECYCLE_JUDGE_EXTRAS,
   LIFECYCLE_JUDGE_INTERVAL_MS,
   LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
@@ -17,9 +21,11 @@ import {
   type ProcessLifecycleProbe,
   type ProcessLifecycleVerdict,
 } from './lifecycle-judgement';
+import { isRetiredTierRole } from '../pot/retired-tier-roles';
 import type { TaskRow } from './types';
 
 const NOW = Date.parse('2026-09-24T06:00:00.000Z');
+const HARNESS_DIR = fileURLToPath(new URL('../../../../libs/papercusp/packages/harness', import.meta.url));
 
 function row(over: Partial<TaskRow> = {}): TaskRow {
   return {
@@ -357,6 +363,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
+    expect(current).toMatch(/^process-lifecycle-judge:v2:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });
@@ -433,15 +440,24 @@ describe('task-reconcile production wiring', () => {
     expect(actionSource).toContain('intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS');
   });
 
-  it('launches one prompted headless quick-tier mug through the durable interval idempotency seam', () => {
+  it('launches a supported prompted operator through the durable interval idempotency seam', () => {
     expect(AGENT_ROLES).toContain(LIFECYCLE_JUDGE_ROLE);
-    expect(LIFECYCLE_JUDGE_ROLE).toBe('mug');
-    const prompt = readFileSync(
-      new URL('../../../../libs/papercusp/packages/harness/blueprints/coding/prompts/mug.md', import.meta.url),
-      'utf8',
+    expect(LIFECYCLE_JUDGE_ROLE).toBe('operator');
+    expect(isRetiredTierRole(LIFECYCLE_JUDGE_ROLE)).toBe(false);
+    expect(LIFECYCLE_JUDGE_EXTRAS).toEqual(['BLUEPRINT_ID=coding']);
+    const promptPath = resolvePromptFile(
+      {
+        harnessDir: HARNESS_DIR,
+        phase: '',
+        dept: '',
+        blueprintId: LIFECYCLE_JUDGE_BLUEPRINT_ID,
+      },
+      LIFECYCLE_JUDGE_ROLE,
     );
-    expect(prompt.trim().length).toBeGreaterThan(0);
+    expect(promptPath).toMatch(/blueprints\/coding\/prompts\/operator\.md$/);
+    expect(readFileSync(promptPath!, 'utf8').trim().length).toBeGreaterThan(0);
     expect(lifecycleSource).toContain('role: LIFECYCLE_JUDGE_ROLE');
+    expect(lifecycleSource).toContain('extras: [...LIFECYCLE_JUDGE_EXTRAS]');
     expect(lifecycleSource).toContain("tier: 'quick'");
     expect(lifecycleSource).toContain("accountOverride: 'auto'");
     expect(lifecycleSource).toContain('idempotencyKey,');
