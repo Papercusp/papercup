@@ -380,7 +380,8 @@ export interface HeadlessResumeTurnInput {
   /** The coordination workspace, which the delivery carries. */
   deliveryWorkspaceId: string;
   coordOwnerId: string;
-  agent: string;
+  /** Nullable, as on the handle: a legacy row may not record its backend. */
+  agent: string | null;
   resumeId: string | null;
   cwd: string;
   argv: string[];

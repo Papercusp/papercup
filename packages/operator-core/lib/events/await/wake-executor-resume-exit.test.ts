@@ -56,6 +56,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         claimResume: async () => true,
         // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
         accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
+        // The resume leg's harness fallback reads the live loop row. That blocked
+        // real-PG attempt ran in every test here; model "no loop row" instead.
+        getLoopStatusFn: (async () => null) as never,
         ...over,
       },
     };
@@ -123,7 +126,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
             endedAt: null,
             agent: 'claude',
             sessionId: 'native-A',
-            coordOwnerId: s.ownerId,
+            // null keeps the claude rematerialize leg (a PG read) out of this
+            // unit test. The ledger owner then falls back to the subscriber.
+            coordOwnerId: null,
             cwd: s.cwd,
             workspaceId: 'row-ws',
           }) as never,
