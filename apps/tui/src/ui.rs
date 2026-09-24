@@ -195,8 +195,10 @@ fn draw_frame(f: &mut Frame, app: &App) {
         };
 
     // P7: an always-visible presence sidebar (who's online + intent), toggled
-    // with `p`. Suppressed on narrow terminals so it never crowds the body.
-    let (body, presence) = if app.show_presence && work.width >= 80 {
+    // with `p`. Only where there is room for two surfaces: the compact band
+    // (80–159 columns) shows one primary surface at a time and never squeezes
+    // a second pane beside it (PUBLIC_RELEASE_UX.md).
+    let (body, presence) = if app.show_presence && work.width >= SURFACE_B_MIN_WIDTH {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(48), Constraint::Length(30)])
@@ -3633,8 +3635,11 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 
     // 3+2 grid on wide bodies; a five-row stack on narrow ones. The four
     // navigation tiles keep their historical cursor order; Pipeline is a
-    // read-only status tile and therefore does not steal a focus stop.
-    let tiles: [Rect; 5] = if area.width >= 96 {
+    // read-only status tile and therefore does not steal a focus stop. The
+    // grid starts at the terminal width it always did (96 plus the 30-column
+    // presence sidebar that no longer shares compact widths); below it the
+    // ~40-column tiles clip plan progress and shas.
+    let tiles: [Rect; 5] = if area.width >= 126 {
         let halves = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -6785,10 +6790,22 @@ mod tests {
     fn presence_sidebar_renders_when_wide() {
         let mut app = App::new(); // Plans tab — so the only roster render is the sidebar
         app.set_roster(vec![presence_entry("claude", "porting tui")]);
-        let text = render(&app, 100, 12);
+        let text = render(&app, 160, 12);
         assert!(text.contains("Presence 1/1"));
         assert!(text.contains("claude"));
         assert!(text.contains("porting tui")); // intent shown in the sidebar
+    }
+
+    /// PUBLIC_RELEASE_UX.md compact band (80–159 columns): one primary surface
+    /// at a time, so the sidebar never squeezes the body, even when toggled on.
+    #[test]
+    fn presence_sidebar_stays_out_of_the_compact_band() {
+        let mut app = App::new();
+        app.show_presence = true;
+        app.set_roster(vec![presence_entry("claude", "porting tui")]);
+        for width in [80, 120, 159] {
+            assert!(!render(&app, width, 24).contains("Presence 1/1"), "{width} cols");
+        }
     }
 
     #[test]
