@@ -534,6 +534,10 @@ export function buildHarnessFeaturesProjection(
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
+    // P-528: the capture routes a feature row to the log of its own (canonical) harness and
+    // ships the whole row, so within one log every put under a feature_id writes that
+    // harness's row, and the only refusal (the member guard) depends on the source log.
+    supersedableKey: () => true,
   };
 }
 

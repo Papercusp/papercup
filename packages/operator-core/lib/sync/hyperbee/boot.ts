@@ -4297,6 +4297,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           : {
               prefetchStoredOrder: (entries: readonly { table: string; key: string }[]) =>
                 (scopedApply as HarnessProjectionApply).prefetchStoredOrder(entries),
+              // P-528 (D-018 #3): skip a put a later put in the same window supersedes, for
+              // the projections that allow it. Measured on P-007 run #7: 62% of a fresh
+              // joiner's tail was such puts.
+              skipSuperseded: (table: string, hbKey: string) =>
+                (scopedApply as HarnessProjectionApply).supersedablePut(table, hbKey),
             }),
         // Surface standing backlog in boot-history (best-effort observability).
         onBacklog: (keyHex: string, position: number, length: number) => {

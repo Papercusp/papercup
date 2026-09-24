@@ -23,10 +23,12 @@ import {
   registerProjection,
   applyOpVia,
   buildStoredOrderPrefetch,
+  buildSupersedablePut,
   type TableProjection,
   type ProjectionLookup,
   type ApplyOpOpts,
   type StoredOrderPrefetch,
+  type SupersedablePut,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PendingMembershipContent } from '../pending-membership-content';
@@ -568,11 +570,16 @@ export function buildHarnessProjectionApply(opts: RegisterAllOpts): HarnessProje
   const applyOpts: ApplyOpOpts = opts.ownLogKeyHex ? { ownLogKeyHex: opts.ownLogKeyHex } : {};
   const apply = (op: OpEnvelope) => applyOpVia(lookup, op, applyOpts);
   // p2p-join-catchup-speed-2026-09-23 P-002: the SAME projection instances answer the
-  // merge's stored-order prefetch, so a rekey rebuild swaps both together.
-  return Object.assign(apply, { prefetchStoredOrder: buildStoredOrderPrefetch(lookup) });
+  // merge's stored-order prefetch (and P-528's supersedable-put check), so a rekey
+  // rebuild swaps them together.
+  return Object.assign(apply, {
+    prefetchStoredOrder: buildStoredOrderPrefetch(lookup),
+    supersedablePut: buildSupersedablePut(lookup),
+  });
 }
 
-/** The scoped apply plus the stored-order prefetch bound to the same projection set. */
+/** The scoped apply plus the merge look-ahead hooks bound to the same projection set. */
 export type HarnessProjectionApply = ((op: OpEnvelope) => Promise<boolean>) & {
   prefetchStoredOrder: StoredOrderPrefetch;
+  supersedablePut: SupersedablePut;
 };

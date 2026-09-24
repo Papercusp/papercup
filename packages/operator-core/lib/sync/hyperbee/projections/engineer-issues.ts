@@ -590,7 +590,7 @@ async function writeToPg(
   opts: EngineerIssuesProjectionOpts,
   row: EngineerIssueRow,
   provenance: ProvenanceContext,
-): Promise<void> {
+): Promise<void | false> {
   // WI-259/D-027 parity (shared-hive member-content federation): own-slug applies; a CROSS-member
   // issue/task applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. The bare slug
   // early-return previously DROPPED every peer member's issue (members have distinct slugs in a real
@@ -608,7 +608,9 @@ async function writeToPg(
           rowKey: composeKey(row),
           fedHlc: provenance?.fedHlc ?? null,
           fedTs: provenance?.ts ?? null,
-          reapply: () => writeToPg(opts, row, provenance),
+          reapply: async () => {
+            await writeToPg(opts, row, provenance);
+          },
         },
         Date.now(),
       );
@@ -621,7 +623,9 @@ async function writeToPg(
           rowKey: composeKey(row),
           fedHlc: provenance?.fedHlc ?? null,
           fedTs: provenance?.ts ?? null,
-          reapply: () => writeToPg(opts, row, provenance),
+          reapply: async () => {
+            await writeToPg(opts, row, provenance);
+          },
         },
         Date.now(),
       );
@@ -654,7 +658,7 @@ async function writeToPg(
       `[engineer-issues projection] storage harness mismatch for issue_id=${row.issue_id}: ` +
         `wire=${row.storage_harness_slug}, scope=${vSlug}; refusing op`,
     );
-    return;
+    return false;
   }
   // WI-40113 / migration 859: a bare pre-829 PUT has no physical identity of
   // its own.  If migration-826 survivor evidence proves that this exact source
@@ -666,7 +670,7 @@ async function writeToPg(
       `[engineer-issues projection] suppressing legacy replay for retired migration-826 source ` +
         `issue_id=${row.issue_id} (harness_slug=${vSlug}); a qualified post-829 PUT is required`,
     );
-    return;
+    return false;
   }
   // EI-13285: id-collision guard — see isDistinctEntityCollision's header. Must run
   // BEFORE the upsert below, which would otherwise blindly clobber a distinct local
@@ -680,7 +684,7 @@ async function writeToPg(
         `These are two distinct issues that were allocated the same id; the incoming op is DROPPED ` +
         `(not applied) to avoid destroying the local record. The authoring peer's own copy is unaffected.`,
     );
-    return;
+    return false;
   }
   const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
   const payloadText = JSON.stringify({
@@ -920,6 +924,8 @@ async function writeToPg(
     const coalesced = await resolveIdentityConflict(error, sql, opts.workspaceId, vSlug, row.issue_id, row.payload);
     if (!coalesced) throw error;
     console.warn(coalesced);
+    // The op's own row was not written; another row already holds the logical item.
+    return false;
   }
 }
 
@@ -1020,6 +1026,10 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
     storedOrderForKeys: (keys) => storedOrderForKeys(opts, keys),
+    // P-528: a QUALIFIED key names one physical row (the put refuses a row whose storage
+    // slug disagrees with it, resolving false), and every put carries the author's whole
+    // wire row. A bare legacy key's row depends on the op value, so it never qualifies.
+    supersedableKey: (key) => parseEngineerIssueKey(key) !== null,
   };
 }
 

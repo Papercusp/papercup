@@ -126,8 +126,12 @@ export interface TableProjection<Row> {
    * `{ authorPubkey, origin }` so the writer can stamp `author_pubkey` +
    * `origin` on the upserted row. It is REQUIRED: treating an omitted context
    * as local masks remote rows and can make them eligible for re-emission.
+   *
+   * P-528: resolve `false` when the writer REFUSED the op (it dropped it for a reason
+   * other than LWW order, e.g. an identity or collision guard), so `applyOpVia` reports
+   * it as not applied. Resolving nothing means the op was handled.
    */
-  writeToPg: (row: Row, provenance: ProvenanceContext) => Promise<void>;
+  writeToPg: (row: Row, provenance: ProvenanceContext) => Promise<void | false>;
   /**
    * Delete the row from PG (idempotent).
    *
@@ -177,6 +181,23 @@ export interface TableProjection<Row> {
    *  - Read-only and side-effect free; a throw is swallowed by the caller.
    */
   storedOrderForKeys?: (keys: readonly string[]) => Promise<Map<string, StoredFedOrder>>;
+  /**
+   * p2p-join-catchup-speed-2026-09-23 P-528 (D-018 #3): OPTIONAL. True when the incremental
+   * merge may skip a put under `key` that a later put under the same key, from the same
+   * source log, beats under LWW. The merge still applies the later put and never passes the
+   * skipped one until that put has applied and committed; if it does not apply, the key's
+   * puts replay in log order.
+   *
+   * Contract for implementers (answer from the KEY alone; the merge sees sealed values):
+   *  - Every put under this key writes the SAME physical row, whatever its value holds.
+   *  - A put carries the author's whole row, so applying the later put alone leaves the row
+   *    the pair would have left: no field is merged from the stored row in a way an earlier
+   *    put by the same author could change.
+   *  - Whether the writer refuses a put depends only on the source log and the key, not on
+   *    the value; a value-dependent refusal must resolve `false` from the apply instead.
+   * Omit it (or return false) for a key that cannot promise all three.
+   */
+  supersedableKey?: (key: string) => boolean;
   /**
    * P-002 step 2 (p2p-join-catchup-speed D-002): this projection may apply inside
    * the incremental merge's batch transaction.
@@ -286,6 +307,18 @@ export function buildStoredOrderPrefetch(lookup: ProjectionLookup): StoredOrderP
     }
     return out;
   };
+}
+
+/**
+ * P-528: which `(table, key)` puts the incremental merge may skip when superseded (see
+ * `TableProjection.supersedableKey`). A table whose projection does not implement it
+ * answers false.
+ */
+export type SupersedablePut = (table: string, key: string) => boolean;
+
+/** Build a {@link SupersedablePut} over a projection lookup. */
+export function buildSupersedablePut(lookup: ProjectionLookup): SupersedablePut {
+  return (table, key) => lookup(table)?.supersedableKey?.(key) === true;
 }
 
 const registry = new Map<string, TableProjection<unknown>>();
@@ -550,7 +583,7 @@ export async function applyOpVia(
 
   const provenance = resolveOpProvenance(op, applyOpts);
 
-  await p.writeToPg(row, provenance);
+  if ((await p.writeToPg(row, provenance)) === false) return false;
   // P-035: clobber-event hook. Fires only when the incoming op has
   // a writerPubkey + the tracker has a recent local write for the
   // same key from a *different* pubkey within the 60s window.

@@ -437,10 +437,15 @@ function isStaleAgainst(env: OpEnvelope, prev: WinnerMeta): boolean {
   return ke < kp;
 }
 
-/** Default size of the look-ahead window read for the stored-order prefetch (P-002). */
-export const STORED_ORDER_PREFETCH_WINDOW = 512;
+/**
+ * Default size of the look-ahead window read for the stored-order prefetch (P-002) and the
+ * superseded-put skip (P-528). P-528 sees only its own window, so a larger one skips more:
+ * on the P-007 run #7 tail (61,240 ops) it skips 26.7% of ops at 512, 31.9% at 2048 and
+ * 33.9% at 4096 (.papercusp/scratch/p007/p528-skip-census.mts, tower read-only).
+ */
+export const STORED_ORDER_PREFETCH_WINDOW = 2048;
 /** Per-window budget for the look-ahead reads; an op not read in time is read normally. */
-export const STORED_ORDER_PEEK_TIMEOUT_MS = 250;
+export const STORED_ORDER_PEEK_TIMEOUT_MS = 1000;
 
 /** F4: processing an entry is distinct from materializing it. Boolean sinks
  * retain their existing handled/changed contract; typed sinks can defer or reject. */
@@ -610,6 +615,16 @@ export interface MergeCursor {
    * only, so a new cursor seeks again.
    */
   keySeeks?: Map<string, KeySeekMemo>;
+  /**
+   * P-528 (p2p-join-catchup-speed-2026-09-23 D-018 #3): per log, groups whose superseded
+   * puts must replay serially (keyHex → `${table}::${hbKey}` → exclusive position). A put
+   * the fold skipped because a later put superseded it is recorded here when that
+   * superseder did not apply and commit (a deferral, a rejection, a lost batch, a pass
+   * that ended first). Until the cursor passes the recorded position, every op of the
+   * group applies in log order, exactly as without the skip. In memory only: a restart
+   * re-reads from the persisted position, which never passes an unresolved skip.
+   */
+  supersededNoSkip?: Map<string, Map<string, number>>;
 }
 
 /**
@@ -2740,6 +2755,17 @@ export interface IncrementalMergeOpts {
   /** Budget for one window's look-ahead reads. Default `STORED_ORDER_PEEK_TIMEOUT_MS`. */
   storedOrderPeekTimeoutMs?: number;
   /**
+   * P-528 (p2p-join-catchup-speed-2026-09-23 D-018 #3): skip a put that a later put on the
+   * same key, in the same look-ahead window, beats under LWW. The predicate names the
+   * `(table, hbKey)` pairs whose projection allows it (`TableProjection.supersedableKey`).
+   * A skip stays pending, and every position this pass persists stays at or below it, until
+   * the superseder has applied and its batch has committed. If the superseder does not
+   * apply, the group replays serially from the skipped op (`MergeCursor.supersededNoSkip`).
+   * Deletes are never skipped and never supersede. Absent ⇒ today's behavior exactly.
+   * Reads its window through the same look-ahead as {@link prefetchStoredOrder}.
+   */
+  skipSuperseded?: (table: string, hbKey: string) => boolean;
+  /**
    * P-524: seek this device's epoch key ahead on a log when an apply could not decrypt
    * for want of it (see {@link EpochKeySeek}). Absent ⇒ today's behavior exactly.
    */
@@ -2813,6 +2839,12 @@ export interface IncrementalMergeResult {
    * `prefetchStoredOrder`). Present only when that option is set.
    */
   storedOrderSkips?: number;
+  /**
+   * P-528: puts skipped because a later put in the look-ahead window superseded them.
+   * Present only when `skipSuperseded` is set. Counted when skipped; a skip whose
+   * superseder then failed replays next pass and is counted again if skipped again.
+   */
+  supersededSkips?: number;
   /** P-002 step 2: batch-transaction counters. Present unless `batchApply: false`. */
   batch?: MergeBatchStats;
 }
@@ -2876,6 +2908,7 @@ export interface IncrementalMergeResult {
  * second read, so the op the fold applies is the one the lookup saw; anything not
  * read in time is simply read by the main loop as before. A seed only replaces a
  * winner whose order key is lower, and only strictly-older ops are ever skipped.
+ * Without `prefetch` it only reads the window (P-528's look-ahead).
  */
 async function peekAndSeedStoredOrder(args: {
   cursor: MergeCursor;
@@ -2883,7 +2916,7 @@ async function peekAndSeedStoredOrder(args: {
   start: number;
   end: number;
   peeked: Map<number, PeerLogOp | null>;
-  prefetch: StoredOrderPrefetch;
+  prefetch: StoredOrderPrefetch | undefined;
   peekTimeoutMs: number;
   maxWinnersEntries: number;
   onWinnersEvicted?: (evictedCount: number, size: number) => void;
@@ -2915,6 +2948,7 @@ async function peekAndSeedStoredOrder(args: {
   } finally {
     if (timer) clearTimeout(timer);
   }
+  if (!prefetch) return;
 
   const entries: { table: string; key: string }[] = [];
   const seen = new Set<string>();
@@ -2954,6 +2988,55 @@ async function peekAndSeedStoredOrder(args: {
       if (kSeed <= kPrev) continue; // the recorded winner is at least as new: keep it
     }
     recordWinner(cursor, groupKey, seed, args.maxWinnersEntries, args.onWinnersEvicted);
+  }
+}
+
+/**
+ * P-528 (p2p-join-catchup-speed-2026-09-23 D-018 #3): record in `into` (position →
+ * superseder position) every put in `[start, end)` that a later put in the window
+ * supersedes: same `(table, hbKey)`, the projection allows it (`supersedable`), and the
+ * later put beats it under LWW. Measured on P-007 run #7: 62% of a fresh joiner's
+ * post-snapshot tail is such puts, each paying a decode, a decrypt and a PG write for a
+ * row a later op overwrites.
+ *
+ * The superseder named is the put that will actually win: scanning backward, a put the
+ * best later put does not beat becomes the new best, because it applies and every later
+ * put in its group is then stale. The scan never looks past what it cannot see. A
+ * position the look-ahead did not read in time, or a snapshot chunk, clears every group,
+ * since either may write any key. A delete clears its own group, so a put is never
+ * skipped across a delete of its key.
+ */
+function indexSupersededPuts(args: {
+  keyHex: string;
+  start: number;
+  end: number;
+  peeked: ReadonlyMap<number, PeerLogOp | null>;
+  supersedable: (table: string, hbKey: string) => boolean;
+  into: Map<number, number>;
+}): void {
+  const { keyHex, start, end, peeked, supersedable, into } = args;
+  const best = new Map<string, { pos: number; env: OpEnvelope }>();
+  for (let i = end - 1; i >= start; i--) {
+    if (!peeked.has(i)) {
+      best.clear();
+      continue;
+    }
+    const op = peeked.get(i);
+    if (!op) continue; // resolved null: the fold applies nothing here
+    if (isSnapshotOp(op)) {
+      best.clear();
+      continue;
+    }
+    const env = toEnvelope(op, keyHex);
+    if (!env.table || !env.hbKey) continue;
+    const groupKey = `${env.table}::${env.hbKey}`;
+    if (env.type !== 'put' || !supersedable(env.table, env.hbKey)) {
+      best.delete(groupKey);
+      continue;
+    }
+    const later = best.get(groupKey);
+    if (later && beatsStored(later.env, toMeta(env))) into.set(i, later.pos);
+    else best.set(groupKey, { pos: i, env });
   }
 }
 
@@ -3123,6 +3206,10 @@ async function mergeIncrementalPass(
   const prefetchWindow = Math.max(1, opts?.storedOrderPrefetchWindow ?? STORED_ORDER_PREFETCH_WINDOW);
   const peekTimeoutMs = opts?.storedOrderPeekTimeoutMs ?? STORED_ORDER_PEEK_TIMEOUT_MS;
   let storedOrderSkips = 0;
+  // P-528: skip puts a later put in the same look-ahead window supersedes.
+  const skipSuperseded = opts?.skipSuperseded;
+  const lookAhead = prefetchStoredOrder !== undefined || skipSuperseded !== undefined;
+  let supersededSkips = 0;
   // P-524: optional key-before-content seek; at most one seek per (log, pot, epoch) per pass.
   const keySeek = opts?.keySeek;
   const keySeeksThisPass = new Set<string>();
@@ -3194,6 +3281,14 @@ async function mergeIncrementalPass(
     // in place of a second read of the same position.
     const peeked = new Map<number, PeerLogOp | null>();
     let peekedUpTo = from;
+    // P-528: position → the later put in this window that supersedes the put there; the
+    // skips this pass took (in position order) whose superseder has not yet applied and
+    // committed; and the superseders that applied since the last commit.
+    const supersededBy = new Map<number, number>();
+    const pendingSkips: { pos: number; sup: number; groupKey: string; env: OpEnvelope }[] = [];
+    const awaitedSups = new Set<number>();
+    const supersedersDone = new Set<number>();
+    const noSkip = cursor.supersededNoSkip?.get(log.keyHex);
     let firstDeferredPos = -1;
     const previousFailure = cursor.applyFailures?.get(log.keyHex);
     const holdCursorHere = (outcome: Exclude<MergeApplyOutcome, { kind: 'applied' }>, groupKey: string): void => {
@@ -3212,8 +3307,20 @@ async function mergeIncrementalPass(
         lastSeenAt: now,
       });
     };
-    const effectivePos = (p: number): number =>
-      firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
+    const effectivePos = (p: number): number => {
+      const held = firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
+      // P-528: never past a skipped put whose superseder has not applied and committed.
+      return pendingSkips.length > 0 ? Math.min(held, pendingSkips[0].pos) : held;
+    };
+    /** P-528: called once a commit has made every write so far durable. */
+    const resolveSkips = (): void => {
+      if (supersedersDone.size === 0) return;
+      let kept = 0;
+      for (const skip of pendingSkips) if (!supersedersDone.has(skip.sup)) pendingSkips[kept++] = skip;
+      pendingSkips.length = kept;
+      for (const sup of supersedersDone) awaitedSups.delete(sup);
+      supersedersDone.clear();
+    };
     // P-002 step 2: commit the open batch. When it is lost, rewind to its first op
     // and hold the cursor there, so no position past a rolled-back write is ever
     // persisted; the next pass replays the window (idempotent under LWW).
@@ -3234,10 +3341,15 @@ async function mergeIncrementalPass(
     // `through` is the exclusive end of what the batch may hold: `pos` where the op
     // at `pos` has not started, `pos + 1` where it has.
     const settleBatch = async (through: number): Promise<boolean> => {
-      if (!batch || (await batch.commit())) return true;
+      if (!batch || (await batch.commit())) {
+        resolveSkips();
+        return true;
+      }
       const start = batch.startPos >= 0 ? batch.startPos : pos;
       const reason = batch.reason;
       batch.discard();
+      // P-528: superseders that wrote since the last commit rolled back with the batch.
+      supersedersDone.clear();
       // The replay of [start, through) runs serially, so the op that lost this batch
       // cannot lose the next one the same way.
       const serial = (cursor.batchSerialUntil ??= new Map());
@@ -3246,6 +3358,61 @@ async function mergeIncrementalPass(
       if (firstDeferredPos >= pos) firstDeferredPos = -1;
       holdCursorHere({ kind: 'retryable', reason: `batch transaction lost: ${reason}` }, 'read-merge batch');
       return false;
+    };
+    /**
+     * P-528: the superseder at `sup` did not write its row (declined, deferred, rejected).
+     * Apply the puts skipped for it now, in log order, as the plain fold applied them
+     * before it; a row that changes under neither the superseder nor these ops lands where
+     * the plain fold lands. Then the group's winner is left where the plain fold leaves it:
+     * the newer of what it held after the superseder and the last put replayed here. The
+     * open batch commits first, so the replay autocommits and its winners are exact.
+     * A replayed put that does not apply stays pending, so the position holds at it and
+     * its group replays in order next pass. False ends the pass (a lost batch, or a
+     * retryable replay).
+     */
+    const replaySkipped = async (sup: number): Promise<boolean> => {
+      if (!(await settleBatch(pos + 1))) return false;
+      awaitedSups.delete(sup);
+      const skipped = pendingSkips.filter((skip) => skip.sup === sup);
+      if (skipped.length === 0) return true;
+      const groupKey = skipped[0].groupKey;
+      const held = cursor.winners.get(groupKey);
+      const unresolved = new Set<(typeof pendingSkips)[number]>();
+      let last: OpEnvelope | undefined;
+      let retryable = false;
+      for (const skip of skipped) {
+        if (retryable) {
+          unresolved.add(skip);
+          continue;
+        }
+        if (last && !beatsStored(skip.env, toMeta(last))) continue; // stale in the plain fold too
+        const outcome = await applyRecordingWinner(
+          cursor,
+          groupKey,
+          skip.env,
+          apply,
+          `${cursorTag}${log.keyHex}`,
+          applyTimeoutMs,
+          maxWinnersEntries,
+          onWinnersEvicted,
+          undefined,
+          { keyHex: log.keyHex, position: skip.pos },
+        );
+        if (outcome.kind === 'applied') {
+          if (outcome.changed) applied++;
+          last = skip.env;
+        } else {
+          unresolved.add(skip);
+          retryable = outcome.kind === 'retryable';
+        }
+      }
+      if (held && (!last || !beatsStored(last, held))) {
+        recordWinner(cursor, groupKey, held, maxWinnersEntries, onWinnersEvicted);
+      }
+      let kept = 0;
+      for (const skip of pendingSkips) if (skip.sup !== sup || unresolved.has(skip)) pendingSkips[kept++] = skip;
+      pendingSkips.length = kept;
+      return !retryable;
     };
     // P-524: a miss recorded before this log's fold (another log's, or the post-pass
     // drain's) is not this log's to seek.
@@ -3525,7 +3692,7 @@ async function mergeIncrementalPass(
       // bounded retry, then dead-letter past it so a single unreadable position
       // can't wedge every subsequent op in this peer's strictly-sequential log
       // forever (the pre-fix behavior — "silent REV fed_event outage class").
-      if (prefetchStoredOrder && pos >= peekedUpTo) {
+      if (lookAhead && pos >= peekedUpTo) {
         // P-002 step 2: the look-ahead reads committed rows; commit first.
         if (!(await settleBatch(pos))) break;
         peekedUpTo = Math.min(upper, pos + prefetchWindow);
@@ -3540,7 +3707,19 @@ async function mergeIncrementalPass(
           maxWinnersEntries,
           onWinnersEvicted,
         });
+        if (skipSuperseded) {
+          indexSupersededPuts({
+            keyHex: log.keyHex,
+            start: pos,
+            end: peekedUpTo,
+            peeked,
+            supersedable: skipSuperseded,
+            into: supersededBy,
+          });
+        }
       }
+      const supersededAt = supersededBy.get(pos);
+      supersededBy.delete(pos);
       let op: PeerLogOp | null;
       try {
         const readIdent = `${log.keyHex}:${pos}`;
@@ -3751,6 +3930,15 @@ async function mergeIncrementalPass(
         if (prev.seeded) storedOrderSkips++;
         continue;
       }
+      // P-528: a later put in this window supersedes this one, so skip it. The skip holds
+      // every persisted position at or below it until the superseder has applied and
+      // committed; a group that lost a superseder applies in order (supersededNoSkip).
+      if (supersededAt !== undefined && pos >= (noSkip?.get(groupKey) ?? 0)) {
+        pendingSkips.push({ pos, sup: supersededAt, groupKey, env });
+        awaitedSups.add(supersededAt);
+        supersededSkips++;
+        continue;
+      }
       const outcome = await applyRecordingWinner(
         cursor,
         groupKey,
@@ -3768,6 +3956,12 @@ async function mergeIncrementalPass(
         await settleBatch(pos + 1);
         break;
       }
+      // P-528: a superseder that wrote its row resolves its skips at the next commit. One
+      // that did not (declined, deferred, rejected) has them applied now, in log order.
+      if (awaitedSups.has(pos)) {
+        if (outcome.kind === 'applied' && outcome.changed) supersedersDone.add(pos);
+        else if (outcome.kind !== 'retryable' && !(await replaySkipped(pos))) break;
+      }
       // P-524: an op this device cannot decrypt yet makes the fold fetch its key first.
       if (!(await seekMissedKeys())) break;
       if (outcome.kind === 'applied') {
@@ -3784,9 +3978,27 @@ async function mergeIncrementalPass(
     // rewinds `pos` before the position below is taken. The op at `pos` may have
     // started (a retryable break), so the serial replay also covers it.
     await settleBatch(Math.min(pos + 1, upper));
+    // P-528: a skip still pending here never saw its superseder write: its batch rolled
+    // back, the pass ended before it (a read stall, a retryable apply), or its own replay
+    // did not apply. Its group applies in log order from the skipped op, which the
+    // position below does not pass, through the superseder.
+    if (pendingSkips.length > 0) {
+      const groups = cursor.supersededNoSkip?.get(log.keyHex) ?? new Map<string, number>();
+      for (const skip of pendingSkips) {
+        groups.set(skip.groupKey, Math.max(groups.get(skip.groupKey) ?? 0, skip.sup + 1));
+      }
+      (cursor.supersededNoSkip ??= new Map()).set(log.keyHex, groups);
+    }
     // WI-559: never advance PAST a structurally-deferred op — positions are
     // monotonic, so doing so loses it exactly as permanently as quarantining it.
     cursor.positions.set(log.keyHex, effectivePos(pos));
+    // P-528: a group's serial replay is over once the cursor has passed its superseder.
+    const replaying = cursor.supersededNoSkip?.get(log.keyHex);
+    if (replaying) {
+      const at = effectivePos(pos);
+      for (const [groupKey, until] of replaying) if (until <= at) replaying.delete(groupKey);
+      if (replaying.size === 0) cursor.supersededNoSkip?.delete(log.keyHex);
+    }
     // P-002 step 2: the serial replay is over once the cursor reaches its end. Read
     // the map, not `serialUntil`: a batch lost this pass has just raised it.
     const serialEnd = cursor.batchSerialUntil?.get(log.keyHex);
@@ -3817,9 +4029,15 @@ async function mergeIncrementalPass(
   // pass whose sink never joined one reports exactly what it did before.
   const batchStats =
     batch && (batch.stats.commits > 0 || batch.stats.rewinds > 0) ? { batch: { ...batch.stats } } : {};
-  return prefetchStoredOrder
-    ? { applied, decoded, caughtUp, truncated: false, storedOrderSkips, ...batchStats }
-    : { applied, decoded, caughtUp, truncated: false, ...batchStats };
+  return {
+    applied,
+    decoded,
+    caughtUp,
+    truncated: false,
+    ...(prefetchStoredOrder ? { storedOrderSkips } : {}),
+    ...(skipSuperseded ? { supersededSkips } : {}),
+    ...batchStats,
+  };
 }
 
 /**
