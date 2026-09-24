@@ -98,6 +98,7 @@ import {
   type SnapshotFoldWorkerFactory,
 } from './log-snapshot';
 import { SnapshotFoldWorker } from './snapshot-fold-offload';
+import { loadLiveGovernorReceiptSnapshotKeys } from './governor-receipt-snapshot-census';
 
 /**
  * WI-10002836 — how often a long own-log compaction reports its fold position. One
@@ -122,17 +123,10 @@ import {
 import { createPlanPartsRecomposeBatch } from './projections/harness-plan-parts';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
-import {
-  resolveSeedLogAdmissions,
-  validateSeedReplicaForAdmission,
-} from './seed-log-admission';
+import { resolveSeedLogAdmissions, validateSeedReplicaForAdmission } from './seed-log-admission';
 import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
 import type Corestore from 'corestore';
-import {
-  bindingResolvesHiveHomeProjection,
-  deriveSwarmTopic,
-  type SwarmBinding,
-} from './derive-swarm-topic';
+import { bindingResolvesHiveHomeProjection, deriveSwarmTopic, type SwarmBinding } from './derive-swarm-topic';
 import {
   joinHarnessSwarm,
   getSharedSwarm,
@@ -231,12 +225,8 @@ const loadHarnessRegistryModule = memoizeDynamicImport(() => import('../../harne
 const loadHiveMemberIdentitySetModule = memoizeDynamicImport(() => import('./hive-member-identity-set'));
 const loadHiveIdentityModule = memoizeDynamicImport(() => import('../../hive-identity'));
 const loadReplicationStallEiModule = memoizeDynamicImport(() => import('./replication-stall-ei'));
-const loadHiveMembershipAdmissionModule = memoizeDynamicImport(
-  () => import('../../hive-membership-admission'),
-);
-const loadPotCanonicalSlugReconcileModule = memoizeDynamicImport(
-  () => import('../../pot-canonical-slug-reconcile'),
-);
+const loadHiveMembershipAdmissionModule = memoizeDynamicImport(() => import('../../hive-membership-admission'));
+const loadPotCanonicalSlugReconcileModule = memoizeDynamicImport(() => import('../../pot-canonical-slug-reconcile'));
 // `./boot-all` imports THIS module back — a static import would cycle, so this
 // stays a runtime import; memoising only caches the RESULT after the first
 // (still-lazy, still-runtime) call, it does not change when the import fires.
@@ -427,6 +417,12 @@ export interface BootHarnessOpts {
   ownCompactionFoldWorker?: SnapshotFoldWorkerFactory;
   ownCompactionFailureBackoffBaseMs?: number;
   /**
+   * P-530 test seam. Production reads the current work_items-backed legacy receipt
+   * keys immediately after capturing the own-log boundary; tests inject a census
+   * without touching PostgreSQL.
+   */
+  loadOwnCompactionGovernorReceiptKeys?: (workspaceId: string) => Promise<readonly string[]>;
+  /**
    * WI-6324 test seam: managed recurring timers are inert under Vitest by
    * default. The zombie-socket integration repro opts in ONLY the independent
    * replication-liveness timer so it can verify that detection continues while
@@ -547,10 +543,7 @@ export interface BootHarnessOpts {
    * on the `rekey` call) to exercise the buffer→replay-on-rebind path WITHOUT the
    * registry or a live swarm. Called only when `swarmBinding.kind === 'hive'`.
    */
-  joinerPotHomeSlugOverride?: (
-    workspaceId: string,
-    harnessSlug: string,
-  ) => Promise<string | null | undefined>;
+  joinerPotHomeSlugOverride?: (workspaceId: string, harnessSlug: string) => Promise<string | null | undefined>;
   /**
    * Test seam (WI-559 / WI-2105) — override how the OWNER's hive-home slug is
    * resolved (the real `potHomeSlugForHarness`, which reads the harness_registry
@@ -562,10 +555,7 @@ export interface BootHarnessOpts {
    * (not a no-hiveHome drop) while the hive-home projection rebind stays OFF (no
    * double-apply). Gated on `bindingResolvesHiveHomeProjection` like the real path.
    */
-  potHomeSlugForHarnessOverride?: (
-    workspaceId: string,
-    harnessSlug: string,
-  ) => Promise<string | null | undefined>;
+  potHomeSlugForHarnessOverride?: (workspaceId: string, harnessSlug: string) => Promise<string | null | undefined>;
   /**
    * Test seam — override the boot-scope re-key dependency composition. Production
    * leaves this undefined and builds the real crypto/provider stack. Passing null
@@ -1066,12 +1056,7 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
   try {
     return await bootHarnessSubstrateInner(opts);
   } catch (e) {
-    recordBootEvent(
-      opts.workspaceId,
-      opts.harnessSlug,
-      'boot_fail',
-      e instanceof Error ? e.message : String(e),
-    );
+    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_fail', e instanceof Error ? e.message : String(e));
     throw e;
   }
 }
@@ -1084,8 +1069,7 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
  * "newer Papercusp available" alert once per (slug, version).
  */
 function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
-  const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): void })
-    .prefetch;
+  const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): void }).prefetch;
   return {
     get keyHex() {
       return log.keyHex;
@@ -1178,11 +1162,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // awaits the mutateRegistry commit before the rekey RPC), so the rebind +
         // forceReFold re-fold engage on the no-restart path. Rare path — the hot
         // loadHarnessRegistry callers keep the cache; only this resolve reads fresh.
-        resolved =
-          (await joinerPotHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
+        resolved = (await joinerPotHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
         console.error(
           `[A-003] ${new Date().toISOString()} resolve ${opts.harnessSlug}: joinerPotHomeSlug=${resolved ?? '<null>'}`,
         );
@@ -1218,7 +1200,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       return resolved;
     } catch (e) {
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
         console.error(
           `[A-003] ${new Date().toISOString()} resolve ${opts.harnessSlug}: joinerPotHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -1316,9 +1297,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const resolvedPotHomeSlug = await (async (): Promise<string | undefined> => {
     if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
     try {
-      const resolve =
-        opts.potHomeSlugForHarnessOverride ??
-        (await loadHiveFederationModule()).potHomeSlugForHarness;
+      const resolve = opts.potHomeSlugForHarnessOverride ?? (await loadHiveFederationModule()).potHomeSlugForHarness;
       return (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
     } catch {
       return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
@@ -1380,8 +1359,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // home may boot after this member and still be excluded from then on; for a
         // JOINED hive the home slug is never locally booted → null → no exclusion.
         const { getBootedHarness } = await loadBootAllModule();
-        return () =>
-          getBootedHarness(opts.workspaceId, memberHomeRebindSlug)?.ownLog.keyHex ?? null;
+        return () => getBootedHarness(opts.workspaceId, memberHomeRebindSlug)?.ownLog.keyHex ?? null;
       })()
     : undefined;
 
@@ -1401,8 +1379,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   };
   let memoryFederationEnabledForPass = await readMemoryFederationFlag();
-  const memoryFederationFlagSnapshot = async (): Promise<boolean> =>
-    memoryFederationEnabledForPass;
+  const memoryFederationFlagSnapshot = async (): Promise<boolean> => memoryFederationEnabledForPass;
 
   // WI-2142064: one instance for this harness's whole boot lifetime (survives a
   // rekey rebuild of `scopedApply` below — `buildHarnessProjectionApply` builds a
@@ -1463,7 +1440,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // without back-computing timelines from scenario-order arithmetic. Set
   // PAPERCUSP_A003_TRACE=1 on the instance to enable.
   if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
     console.error(
       `[A-003] ${new Date().toISOString()} boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
     );
@@ -1656,15 +1632,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // log that has EVER shown a live replicator peer, when it last did — and
   // whether we've already alarmed for the current stall episode (so a
   // sustained stall fires exactly once, not every merge tick).
-  const replicationStallState = new Map<
-    string,
-    { lastNonZeroPeersAtMs: number; alarmed: boolean }
-  >();
-  const REPLICATION_STALL_GRACE_MS =
-    opts.replicationStallGraceMs ?? DEFAULT_REPLICATION_STALL_GRACE_MS;
+  const replicationStallState = new Map<string, { lastNonZeroPeersAtMs: number; alarmed: boolean }>();
+  const REPLICATION_STALL_GRACE_MS = opts.replicationStallGraceMs ?? DEFAULT_REPLICATION_STALL_GRACE_MS;
   // WI-5686: zombie axis gets its own grace, defaulting to the general one.
-  const CONNECTED_NEVER_REPLICATED_GRACE_MS =
-    opts.connectedNeverReplicatedGraceMs ?? REPLICATION_STALL_GRACE_MS;
+  const CONNECTED_NEVER_REPLICATED_GRACE_MS = opts.connectedNeverReplicatedGraceMs ?? REPLICATION_STALL_GRACE_MS;
   // WI-38376: frozen axis likewise, defaulting to the general one.
   const FROZEN_GRACE_MS = opts.frozenGraceMs ?? REPLICATION_STALL_GRACE_MS;
   // WI-6324: the independent dead-man sampler below continues only windows
@@ -1712,11 +1683,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * the correctness boundary, while a live replicator can take seconds to tear
    * down and must not hold the merge/revoke hot path.
    */
-  function dropAdmittedRemoteLog(
-    logKey: string,
-    devicePubkey: string | undefined,
-    context: string,
-  ): void {
+  function dropAdmittedRemoteLog(logKey: string, devicePubkey: string | undefined, context: string): void {
     const droppedLog = admitted.get(logKey);
     admitted.delete(logKey);
     replicationStallState.delete(logKey);
@@ -1727,10 +1694,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
     if (droppedLog && typeof droppedLog.close === 'function') {
       void droppedLog.close().catch((e: unknown) => {
-        console.error(
-          `[boot] ${context}: closing session for ${peerLabel(logKey)} failed (non-fatal):`,
-          e,
-        );
+        console.error(`[boot] ${context}: closing session for ${peerLabel(logKey)} failed (non-fatal):`, e);
       });
     }
   }
@@ -1748,9 +1712,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   function carriesUnappliedSupersession(frame: SignedAnnounce): boolean {
     const keys = frame.supersedes_log_keys;
     if (!Array.isArray(keys)) return false;
-    return keys.some(
-      (k) => typeof k === 'string' && knownLogOwner(k.toLowerCase()) === frame.device_pubkey,
-    );
+    return keys.some((k) => typeof k === 'string' && knownLogOwner(k.toLowerCase()) === frame.device_pubkey);
   }
 
   /**
@@ -1964,12 +1926,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
           for (const logKey of logKeys) {
             dropAdmittedRemoteLog(logKey, pk, 'published revoke');
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'peer_revoked',
-              peerLabel(logKey),
-            );
+            recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_revoked', peerLabel(logKey));
           }
         }
       }
@@ -2101,10 +2058,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // re-verified or enqueued.) Own-log and identity-less entries are dropped
     // HERE rather than skipped in the loop so they cannot consume a batch slot.
     const snapshot = [...admittedIdentities.entries()]
-      .filter(
-        ([logKey, identity]) =>
-          logKey !== ownLog.keyHex && !!identity && identity.channel2Verified,
-      )
+      .filter(([logKey, identity]) => logKey !== ownLog.keyHex && !!identity && identity.channel2Verified)
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     if (snapshot.length === 0) return;
 
@@ -2185,12 +2139,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // from the same device may still be admitted (for example when the
       // bounded reverify batch processed only one of the pair).
       dropAdmittedRemoteLog(logKey, identity?.devicePubkey, 'channel-2 reverify drop');
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'peer_revoked',
-        `channel-2 revoked ${peerLabel(logKey)}`,
-      );
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_revoked', `channel-2 revoked ${peerLabel(logKey)}`);
     }
   }
 
@@ -2332,10 +2281,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // recorded below and never poison later transitions.
   let peerLifecycleWriteTail: Promise<void> = Promise.resolve();
 
-  function enqueuePeerLifecycleWrite(
-    context: string,
-    write: () => Promise<void>,
-  ): Promise<void> {
+  function enqueuePeerLifecycleWrite(context: string, write: () => Promise<void>): Promise<void> {
     const result = peerLifecycleWriteTail.then(write).catch((e) => {
       recordBootEvent(
         opts.workspaceId,
@@ -2353,10 +2299,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * prerequisite for admission, revocation, or merge progress. The canonical PG
    * cursor store exposes this seam; position-only test/in-memory stores omit it.
    */
-  function persistPeerLifecycle(
-    updates: readonly MergeCursorPeerLifecycleUpdate[],
-    context: string,
-  ): Promise<void> {
+  function persistPeerLifecycle(updates: readonly MergeCursorPeerLifecycleUpdate[], context: string): Promise<void> {
     const lifecycle = pgMergeCursorStore?.peerLifecycle;
     if (!lifecycle || updates.length === 0) return Promise.resolve();
     const applyBinding = currentApplyBinding();
@@ -2412,8 +2355,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // next-pass reset livelocked a joiner: P-007 run #1 reset log 5b00878b to 0 about
   // every 2 min, before the fold could reach the epoch-key rows near the tail.
   const evictionReFold = new DeferralEvictionReFold();
-  const deferralBuffersHold = (): boolean =>
-    (rekeyDeps?.pending.size() ?? 0) > 0 || pendingMemberContent.size() > 0;
+  const deferralBuffersHold = (): boolean => (rekeyDeps?.pending.size() ?? 0) > 0 || pendingMemberContent.size() > 0;
 
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED.
   // WI-3370 (2026-07-10) split ONE boolean into two: (a) the READER —
@@ -2865,8 +2807,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // current window opened) — the true incident duration, reported on EVERY
     // outcome below so no branch is silent.
     const incidentS = Math.round((Date.now() - confirmation.repairAppliedAtMs) / 1000);
-    const deferredNote =
-      confirmation.deferrals > 0 ? ` after ${confirmation.deferrals} zero-peer deferral(s)` : '';
+    const deferredNote = confirmation.deferrals > 0 ? ` after ${confirmation.deferrals} zero-peer deferral(s)` : '';
     if (advanced || caughtUp) {
       repairConfirmations.delete(logKeyHex);
       // EI-18723690188615364: genuine recovery used to `return` here having
@@ -3054,9 +2995,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // polled handle.admitted.size on a 100ms timer to detect mesh-readiness —
   // emit directly at admission instead. Best-effort: a throwing listener
   // never breaks admission or the merge pass.
-  const admittedListeners = new Set<
-    (info: { logKeyHex: string; admittedSize: number }) => void
-  >();
+  const admittedListeners = new Set<(info: { logKeyHex: string; admittedSize: number }) => void>();
   function emitAdmitted(logKeyHex: string): void {
     for (const listener of [...admittedListeners]) {
       try {
@@ -3097,17 +3036,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
       try {
         if (!admitted.has(frame.log_core_key)) {
-          const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(
-            store,
-            frame.log_core_key,
-          );
+          const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, frame.log_core_key);
           admitted.set(frame.log_core_key, remote);
-          recordBootEvent(
-            opts.workspaceId,
-            opts.harnessSlug,
-            'announce_admitted',
-            peerLabel(frame.log_core_key),
-          );
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_admitted', peerLabel(frame.log_core_key));
           emitAdmitted(frame.log_core_key);
         }
         // The remote session is now open/admitted. Record its multi-value
@@ -3127,11 +3058,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         });
         newlyResolvedSourceLogs.push(frame.log_core_key);
         await persistPeerLifecycle(
-          [{
-            logKeyHex: frame.log_core_key,
-            devicePubkey: frame.device_pubkey,
-            state: 'active',
-          }],
+          [
+            {
+              logKeyHex: frame.log_core_key,
+              devicePubkey: frame.device_pubkey,
+              state: 'active',
+            },
+          ],
           'verified admission',
         );
         // The frame reached this point only after real signature verification,
@@ -3210,20 +3143,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               // `rekey_grant_failed` boot-event; this catch only fires if the resolve /
               // membership write itself throws. Stay non-blocking (merge-gated), best-effort.
 
-              console.error(
-                `[hive-rekey] owner admit failed for ${peerLabel(frame.log_core_key)}: ${detail}`,
-              );
+              console.error(`[hive-rekey] owner admit failed for ${peerLabel(frame.log_core_key)}: ${detail}`);
             }
           })();
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_error',
-          msg,
-        );
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_error', msg);
         // WI-1544 root cause #3 (one-shot silent loss): the frame was already
         // shift()'d off the queue, announces are never re-delivered (sender-side
         // sentKeys dedup), and this catch was ring-only — a single throw here
@@ -3409,8 +3335,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * one costs a 52-minute release cut to discover.
    */
   async function flushStoreForExternalReaders(): Promise<void> {
-    const storage = (store as unknown as { storage?: { readOnly?: boolean; flush?: () => Promise<void> } })
-      .storage;
+    const storage = (store as unknown as { storage?: { readOnly?: boolean; flush?: () => Promise<void> } }).storage;
     if (!storage || typeof storage.flush !== 'function') {
       throw new Error(
         `[substrate] cannot flush the corestore for ${opts.workspaceId}::${opts.harnessSlug} before answering an ` +
@@ -3517,9 +3442,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // observability must never fail the compaction
     }
     try {
+      // P-530: capture the boundary BEFORE the PG census. A receipt appended after
+      // the census is at/above this index and the transform keeps it automatically;
+      // a row already present in PG is kept through the exact qualified-key set.
+      const receiptFilterCoversUpTo = ownLog.length;
+      const liveGovernorReceiptKeys = await (
+        opts.loadOwnCompactionGovernorReceiptKeys ?? loadLiveGovernorReceiptSnapshotKeys
+      )(opts.workspaceId);
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        governorReceiptFilter: {
+          maxSourceIndexExclusive: receiptFilterCoversUpTo,
+          liveQualifiedKeys: liveGovernorReceiptKeys,
+        },
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
         shouldAbort: () => stopped,
         // WI-10002855: the fold runs in a worker thread. Inline, the first full-history
@@ -3562,6 +3498,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           opts.harnessSlug,
           'own_log_compaction',
           `own log compaction: coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount} ` +
+            `droppedGovernorReceipts=${snap.droppedGovernorReceipts ?? 0} ` +
+            `liveGovernorReceiptKeys=${liveGovernorReceiptKeys.length} ` +
             `grewBy=${snap.coversUpTo - previousCoversUpTo} nextThreshold=${snapshotCompactThreshold(snap.rowCount)} ` +
             `elapsedMs=${Date.now() - startedAt} mergeGateHeld=false`,
         );
@@ -3961,12 +3899,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // never aborts the pass via the outer catch.
       if (pgMergeCursorStore && pgCursorSeedCache) {
         try {
-          await pgCursorSeedCache.seed(
-            mergeCursor,
-            pgMergeCursorStore,
-            currentApplyBinding(),
-            logKeys,
-          );
+          await pgCursorSeedCache.seed(mergeCursor, pgMergeCursorStore, currentApplyBinding(), logKeys);
         } catch (e) {
           // F4: an unreadable durable cursor may be holding an unapplied entry
           // at zero. Snapshot skipping is unsafe until that state is known.
@@ -4042,8 +3975,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (log.keyHex === ownLog.keyHex) continue;
         try {
           const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
-          const livenessPeersCount =
-            typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
+          const livenessPeersCount = typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
           const livenessMergedPosition = mergeCursor.positions.get(log.keyHex) ?? 0;
           const knownWriterLength = livenessKnownLength(log);
           const queueIndex = mergeQueueIndex.get(log.keyHex);
@@ -4057,9 +3989,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               mergedPosition: livenessMergedPosition,
               peersCount: livenessPeersCount,
               swarmConnections: swarmHandle?.liveConnectionCount,
-              ...(queueIndex !== undefined
-                ? { mergeQueueIndex: queueIndex, mergeQueueHeadKeyHex }
-                : {}),
+              ...(queueIndex !== undefined ? { mergeQueueIndex: queueIndex, mergeQueueHeadKeyHex } : {}),
             },
             {
               graceMs: REPLICATION_STALL_GRACE_MS,
@@ -4068,12 +3998,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             },
           );
           canonicallySampledLivenessKeys.add(log.keyHex);
-          checkRepairConfirmation(
-            log.keyHex,
-            livenessMergedPosition,
-            knownWriterLength,
-            livenessPeersCount,
-          );
+          checkRepairConfirmation(log.keyHex, livenessMergedPosition, knownWriterLength, livenessPeersCount);
         } catch {
           // diagnostic-only — swallow
         }
@@ -4153,9 +4078,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // own slug (today's fallback, preserved for the non-hive-peered case).
       const policyScopeSlug = hiveHomeProjectionSlug ?? resolvedPotHomeSlug ?? opts.harnessSlug;
       const ownerPolicy: HivePolicy | null =
-        (
-          await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null)
-        )?.policy ?? null;
+        (await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null))?.policy ?? null;
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this
@@ -4231,10 +4154,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (!memoryReplayCursor) return mergeCursor.positions;
         const conservative = new Map<string, number>();
         for (const [keyHex, mainPosition] of mergeCursor.positions) {
-          conservative.set(
-            keyHex,
-            Math.min(mainPosition, memoryReplayCursor.positions.get(keyHex) ?? 0),
-          );
+          conservative.set(keyHex, Math.min(mainPosition, memoryReplayCursor.positions.get(keyHex) ?? 0));
         }
         return conservative;
       };
@@ -4396,26 +4316,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         const replayOpts = {
           ...mergeOpts,
           applyImpl: (op: OpEnvelope) =>
-            op.table === 'p2p-memories-by-id'
-              ? mergeOpts.applyImpl(op)
-              : Promise.resolve(false),
+            op.table === 'p2p-memories-by-id' ? mergeOpts.applyImpl(op) : Promise.resolve(false),
           onCursorAdvance: () => persistDurableCursor(),
           // P-524: this sink drops every non-memory op, so a seek here could not apply
           // the key row it finds; the main fold's seek supplies the key.
           keySeek: undefined,
         };
-        let replayResult = await mergeAdmittedLogsIncremental(
-          orderedLogs,
-          memoryReplayCursor,
-          replayOpts,
-        );
+        let replayResult = await mergeAdmittedLogsIncremental(orderedLogs, memoryReplayCursor, replayOpts);
         if (replayResult.truncated) {
           memoryReplayCursor = createMergeCursor();
-          replayResult = await mergeAdmittedLogsIncremental(
-            orderedLogs,
-            memoryReplayCursor,
-            replayOpts,
-          );
+          replayResult = await mergeAdmittedLogsIncremental(orderedLogs, memoryReplayCursor, replayOpts);
         }
         applied += replayResult.applied;
         if (replayResult.caughtUp) {
@@ -4535,9 +4445,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // Initial backfill merge + a polled fallback. On-remote-append merges
   // are driven by `onAnnounce` (4b) calling mergeNow after each admit.
   void mergeNow();
-  const mergePollMs = Number.isFinite(opts.mergePollMs as number)
-    ? (opts.mergePollMs as number)
-    : MERGE_POLL_MS;
+  const mergePollMs = Number.isFinite(opts.mergePollMs as number) ? (opts.mergePollMs as number) : MERGE_POLL_MS;
   /**
    * WI-6324: liveness sampling must not depend on the serialized merge pass
    * completing. A genuinely dead remote can hold that pass inside
@@ -4561,8 +4469,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (!canonicallySampledLivenessKeys.has(log.keyHex)) continue;
       try {
         const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
-        const peersCount =
-          typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
+        const peersCount = typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
         sampleReplicationLiveness(
           opts.workspaceId,
           opts.harnessSlug,
@@ -4590,22 +4497,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // to call mergeNow() — no separate out-of-lock refresh here.
   const mergeTimer =
     mergePollMs > 0
-      ? managedSetInterval('hyperbee-merge-poll', mergePollMs, async () => {
-          await mergeNow();
-        }, { category: 'lifecycle', instanced: true })
+      ? managedSetInterval(
+          'hyperbee-merge-poll',
+          mergePollMs,
+          async () => {
+            await mergeNow();
+          },
+          { category: 'lifecycle', instanced: true },
+        )
       : null;
   const livenessTimer =
     mergePollMs > 0
-      ? managedSetInterval(
-          'hyperbee-replication-liveness-poll',
-          mergePollMs,
-          sampleAdmittedLivenessOutsideMerge,
-          {
-            category: 'lifecycle',
-            instanced: true,
-            allowInTest: opts.allowReplicationLivenessTimerInTest,
-          },
-        )
+      ? managedSetInterval('hyperbee-replication-liveness-poll', mergePollMs, sampleAdmittedLivenessOutsideMerge, {
+          category: 'lifecycle',
+          instanced: true,
+          allowInTest: opts.allowReplicationLivenessTimerInTest,
+        })
       : null;
 
   // ── Read-admission decider (4c) ── the D-004 + D-002 sig+binding decision
@@ -4633,9 +4540,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     opts.loadHiveMembersOverride ??
     (async (potHomeSlug) => {
       const { resolveHiveMemberDeviceSet } = await loadHiveMemberIdentitySetModule();
-      const set = await resolveHiveMemberDeviceSet(opts.workspaceId, potHomeSlug).catch(
-        () => new Set<string>(),
-      );
+      const set = await resolveHiveMemberDeviceSet(opts.workspaceId, potHomeSlug).catch(() => new Set<string>());
       return [...set];
     });
 
@@ -4670,9 +4575,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       for (const b of bindings) {
         let derived: string;
         try {
-          derived = deriveSwarmTopic({ kind: 'hive', hive_pubkey: b.hivePubkey })
-            .toString('hex')
-            .toLowerCase();
+          derived = deriveSwarmTopic({ kind: 'hive', hive_pubkey: b.hivePubkey }).toString('hex').toLowerCase();
         } catch {
           continue; // a malformed cached pubkey can't derive a topic — skip it
         }
@@ -4706,7 +4609,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // directory cache resolve the joined hive's owner device? `<null>` here is the live A→B
     // root — the owner-bootstrap admit + the roster member-set both depend on this resolving.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
       console.error(
         `[A-003] ${new Date().toISOString()} owner-resolve ${opts.harnessSlug}: binding.kind=${binding.kind} ` +
           `${binding.kind === 'hive' ? `hive_pubkey=${binding.hive_pubkey.slice(0, 10)}` : binding.kind === 'topic' ? `topic=${binding.topic_hex.slice(0, 12)}` : ''} ` +
@@ -4755,8 +4657,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (!(originSlug != null && originSlug !== slug)) return null;
     const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const myHiveHome =
-      hiveHomeProjectionSlug ??
-      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+      hiveHomeProjectionSlug ?? (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return null;
     // WI-787 / WI-780 — owner-log BOOTSTRAP admission (the keystone). A fresh joiner's
     // hive_members is EMPTY, so the OWNER's own announce 'miss'es below and buffers
@@ -4828,10 +4729,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return { admit: false, reason: 'pending' };
   }
 
-  async function admitsAsKnownHiveMember(
-    frame: SignedAnnounce,
-    sigValid: boolean,
-  ): Promise<boolean> {
+  async function admitsAsKnownHiveMember(frame: SignedAnnounce, sigValid: boolean): Promise<boolean> {
     if (!sigValid || revoked.has(frame.device_pubkey)) return false;
     // WI-797 — owner-log BOOTSTRAP at the IDENTITY stage (the keystone's missing half),
     // HOISTED ABOVE the `myHiveHome == null` gate (recv-but-no-admit-during-rekey fix; the
@@ -4866,7 +4764,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // fire + match this frame's device? match=true ⇒ B admits the owner log (the keystone);
     // match=false with ownerDevice=<null> ⇒ cache didn't resolve the owner (the live A→B root).
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
       console.error(
         `[A-003] ${new Date().toISOString()} owner-admit ${opts.harnessSlug}: ownerDevice=${ownerDevice ? ownerDevice.slice(0, 10) : '<null>'} ` +
           `frame.device=${frame.device_pubkey.slice(0, 10)} match=${!!(ownerDevice && frame.device_pubkey === ownerDevice)}`,
@@ -4877,8 +4774,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // binding-only owner-bootstrap above, so a home=<none> joiner still bootstrap-admits the owner.
     const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const myHiveHome =
-      hiveHomeProjectionSlug ??
-      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+      hiveHomeProjectionSlug ?? (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (myHiveHome == null) return false;
     const memberDevices = await loadHiveMembers(myHiveHome);
     return trustedHiveMemberDeviceAdmission({
@@ -4957,10 +4853,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     reannouncesSuppressed++;
     // Bounded observability: one line on the first suppression and one per
     // 5,000 thereafter — never one per frame (a per-frame line IS the flood).
-    if (
-      reannouncesSuppressed === 1 ||
-      reannouncesSuppressed % REANNOUNCE_SUPPRESSION_LOG_EVERY === 0
-    ) {
+    if (reannouncesSuppressed === 1 || reannouncesSuppressed % REANNOUNCE_SUPPRESSION_LOG_EVERY === 0) {
       console.log(
         `[boot] re-announce suppressed (already admitted, same identity; P-504) harness=${opts.harnessSlug} ` +
           `count=${reannouncesSuppressed} ${peerLabel(frame.log_core_key)}`,
@@ -5003,12 +4896,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       channel2Verified = !admittedByKnownMember;
       decision = admittedByKnownMember ? { admit: true } : await admit(input);
     } catch (e) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'announce_error',
-        e instanceof Error ? e.message : String(e),
-      );
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_error', e instanceof Error ? e.message : String(e));
       return { admit: false, reason: 'binding_invalid' };
     }
     if (!decision.admit) {
@@ -5027,7 +4915,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `binding_unverified_window ${peerLabel(frame.log_core_key)}`,
         );
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
           console.error(
             `[A-003] ${new Date().toISOString()} reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
           );
@@ -5040,12 +4927,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (!pendingPeers.has(frame.log_core_key)) {
           pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
         }
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_pending',
-          peerLabel(frame.log_core_key),
-        );
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_pending', peerLabel(frame.log_core_key));
       } else {
         recordBootEvent(
           opts.workspaceId,
@@ -5086,7 +4968,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // an ISO wall-clock timestamp right after the `[A-003]` tag for cross-frame
     // timeline correlation.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
       console.error(
         `[A-003] ${new Date().toISOString()} slug-filter ${opts.harnessSlug}: origin=${originSlug ?? '<none>'} own=${slug} ` +
           `home=${hiveHomeProjectionSlug ?? '<none>'} → ${inScope ? 'ADMIT' : 'REJECT'} ` +
@@ -5150,10 +5031,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * returned promise resolves (audit P-022). Extracted so the pending-retry
    * path uses the same logic as the initial admit path.
    */
-  async function admitPeer(
-    frame: SignedAnnounce,
-    channel2Verified: boolean,
-  ): Promise<AdmissionResult> {
+  async function admitPeer(frame: SignedAnnounce, channel2Verified: boolean): Promise<AdmissionResult> {
     admissionQueue.push({ frame, channel2Verified });
     await mergeNow();
     return { admit: true };
@@ -5192,12 +5070,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
       for (const logKey of logKeys) {
         dropAdmittedRemoteLog(logKey, devicePubkey, 'explicit revoke');
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'peer_revoked',
-          peerLabel(logKey),
-        );
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_revoked', peerLabel(logKey));
       }
     }
     // (c) Re-merge so the merge set no longer includes the revoked log.
@@ -5505,16 +5378,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (binding.kind !== 'hive') return null;
     const { potHomeSlugForHarness } = await loadHiveFederationModule();
     const potHomeSlug =
-      hiveHomeProjectionSlug ??
-      (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
+      hiveHomeProjectionSlug ?? (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (!potHomeSlug) return null;
     // EI-18777176681958978: `hiveHomeProjectionSlug` is already the federated scope, but the
     // `potHomeSlugForHarness` FALLBACK is the local handle — resolve either way (idempotent
     // on an already-federated scope) so this identity resolve can't read an empty roster.
     const { listHiveMembersForLocalPot } = await loadFederatedPotScopeModule();
-    const members = await listHiveMembersForLocalPot(opts.workspaceId, potHomeSlug).catch(
-      () => [],
-    );
+    const members = await listHiveMembersForLocalPot(opts.workspaceId, potHomeSlug).catch(() => []);
     return resolveLocalAnnounceIdentityFromHiveMembers({ members });
   }
 
@@ -5566,12 +5436,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const knownHiveIdentity = opts.announceIdentityOverride
         ? null
         : await resolveKnownHiveMemberAnnounceIdentityForBinding(binding);
-      const identity = knownHiveIdentity ?? (await resolveLocalAnnounceIdentity({
-        // Spread the test override FIRST so boot's own `logCoreKeyHex` always
-        // wins (the announce must bind THIS peer's actual log core).
-        ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
-        logCoreKeyHex: ownLog.keyHex,
-      }));
+      const identity =
+        knownHiveIdentity ??
+        (await resolveLocalAnnounceIdentity({
+          // Spread the test override FIRST so boot's own `logCoreKeyHex` always
+          // wins (the announce must bind THIS peer's actual log core).
+          ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
+          logCoreKeyHex: ownLog.keyHex,
+        }));
       announceIdentity = identity;
       // WI-2039866: feed the EN-4 owner exemption (mergeOnePass) the identity peers
       // actually attribute this device to — the announce identity, NOT the gh-CLI login
@@ -5581,8 +5453,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // The signer defaults to the keychain-backed `signWithDeviceKey`; tests
       // inject a signer over a self-generated keypair so no OS keychain is
       // touched (see `announceIdentityOverride`).
-      const signAnnounce =
-        opts.announceIdentityOverride?.sign ?? signWithDeviceKey;
+      const signAnnounce = opts.announceIdentityOverride?.sign ?? signWithDeviceKey;
       // WI-559 issue-2 — FRESH-ANNOUNCE-PER-CONNECTION. The announce BODY is static (this peer's
       // device identity + log core + signed origin slug); only `ts`+`sig` change per build. A single
       // frozen-`ts` frame built ONCE at boot is rejected by the peer's `verifyAnnounce` the moment it
@@ -5599,8 +5470,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       let ownLogSupersession: Awaited<ReturnType<typeof buildLogSupersession>> = {};
       try {
         const superseded = await (
-          opts.supersededOwnLogKeysOverride ??
-          (() => readSupersededOwnLogKeys(harnessStorePath(storeOpts)))
+          opts.supersededOwnLogKeysOverride ?? (() => readSupersededOwnLogKeys(harnessStorePath(storeOpts)))
         )();
         ownLogSupersession = await buildLogSupersession(
           { device_pubkey: identity.devicePubkeyBase64, log_core_key: ownLog.keyHex },
@@ -5640,8 +5510,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       };
       // WI-38376: compute log_length at EACH fresh/re-flush build, not once at
       // boot. The periodic announce sweep is the writer-progress heartbeat.
-      const buildOurAnnounce = () =>
-        buildAnnounce({ ...announceBody, log_length: ownLog.length }, signOurAnnounce);
+      const buildOurAnnounce = () => buildAnnounce({ ...announceBody, log_length: ownLog.length }, signOurAnnounce);
       const ourAnnounce = await buildOurAnnounce();
       // ── P-006 scoped-log federation coordinator (P-108). Best-effort: a
       // failure here leaves the scoped layer off (null) without failing the
@@ -5663,80 +5532,75 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // consumer (onAnnounce :2814, declareParticipatingScopes, the handle
       // getter) null-guards. The closure catches internally and never rejects.
       const scopedInitDone = (async () => {
-      try {
-        const scopedStore = opts.scopedStoreOverride
-          ? await opts.scopedStoreOverride()
-          : await getHarnessScopedStore(storeOpts);
-        if (!scopeRegistry) {
-          // Narrowed at the boundary (scope-cores.ts convention): Corestore
-          // sessions structurally satisfy ScopedSessionLike.
-          scopeRegistry = new ScopeCoreRegistry(scopedStore as unknown as ScopedStoreLike);
-        }
-        const rosterPotSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
-        // P-101: the fleet directory widens the scope roster from owner-only to
-        // owner ∪ publisher-set, and seeds this peer's participating scopes from
-        // its directory records (owner or publisher of a live fleet ⇒ participant).
-        const fleetDirectory = new PgFleetDirectory({
-          workspaceId: opts.workspaceId,
-          potSlug: rosterPotSlug,
-        });
-        scopeFederation = new ScopeFederation({
-          registry: scopeRegistry,
-          roster: getScopeRoster({
+        try {
+          const scopedStore = opts.scopedStoreOverride
+            ? await opts.scopedStoreOverride()
+            : await getHarnessScopedStore(storeOpts);
+          if (!scopeRegistry) {
+            // Narrowed at the boundary (scope-cores.ts convention): Corestore
+            // sessions structurally satisfy ScopedSessionLike.
+            scopeRegistry = new ScopeCoreRegistry(scopedStore as unknown as ScopedStoreLike);
+          }
+          const rosterPotSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
+          // P-101: the fleet directory widens the scope roster from owner-only to
+          // owner ∪ publisher-set, and seeds this peer's participating scopes from
+          // its directory records (owner or publisher of a live fleet ⇒ participant).
+          const fleetDirectory = new PgFleetDirectory({
             workspaceId: opts.workspaceId,
             potSlug: rosterPotSlug,
-            directory: fleetDirectory,
-          }),
-          selfGithubUserId: identity.githubUserId,
-          buildScopedAnnounce: (scopedLogs) =>
-            buildAnnounce(
-              { ...announceBody, log_length: ownLog.length, scoped_logs: scopedLogs },
-              signOurAnnounce,
-            ),
-          // M15/D-004: every refused scoped entry is a visible counter + boot
-          // event, never a silent drop. Best-effort (PG may be unavailable in
-          // rigs); the boot event is the always-on local witness.
-          onRefusal: (r) => {
-            const reason =
-              r.kind === 'inbound-announce'
-                ? `scoped-announce:${r.refusal.reason}`
-                : `scoped-${r.kind}:${r.refusal.reason}`;
-            recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', reason);
-            void bumpRefusedOpCounter({
+          });
+          scopeFederation = new ScopeFederation({
+            registry: scopeRegistry,
+            roster: getScopeRoster({
               workspaceId: opts.workspaceId,
               potSlug: rosterPotSlug,
-              reason,
-            }).catch(() => {});
-          },
-        });
-        // P-101 driver: union the directory-derived participation (fleets this
-        // identity owns or publishes to) into the durable declared set. Best-
-        // effort — a PG/directory failure leaves explicit declarations intact.
-        const directoryScopes = await fleetDirectory
-          .listParticipatingScopes(identity.githubUserId)
-          .catch(() => [] as ScopeId[]);
-        for (const s of directoryScopes) participatingScopes.set(formatScopeId(s), s);
-        if (participatingScopes.size > 0) {
-          await scopeFederation.ensureOwnScopes([...participatingScopes.values()]);
+              directory: fleetDirectory,
+            }),
+            selfGithubUserId: identity.githubUserId,
+            buildScopedAnnounce: (scopedLogs) =>
+              buildAnnounce({ ...announceBody, log_length: ownLog.length, scoped_logs: scopedLogs }, signOurAnnounce),
+            // M15/D-004: every refused scoped entry is a visible counter + boot
+            // event, never a silent drop. Best-effort (PG may be unavailable in
+            // rigs); the boot event is the always-on local witness.
+            onRefusal: (r) => {
+              const reason =
+                r.kind === 'inbound-announce'
+                  ? `scoped-announce:${r.refusal.reason}`
+                  : `scoped-${r.kind}:${r.refusal.reason}`;
+              recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', reason);
+              void bumpRefusedOpCounter({
+                workspaceId: opts.workspaceId,
+                potSlug: rosterPotSlug,
+                reason,
+              }).catch(() => {});
+            },
+          });
+          // P-101 driver: union the directory-derived participation (fleets this
+          // identity owns or publishes to) into the durable declared set. Best-
+          // effort — a PG/directory failure leaves explicit declarations intact.
+          const directoryScopes = await fleetDirectory
+            .listParticipatingScopes(identity.githubUserId)
+            .catch(() => [] as ScopeId[]);
+          for (const s of directoryScopes) participatingScopes.set(formatScopeId(s), s);
+          if (participatingScopes.size > 0) {
+            await scopeFederation.ensureOwnScopes([...participatingScopes.values()]);
+          }
+        } catch (e) {
+          scopeFederation = null;
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'announce_error',
+            `scoped-log layer unavailable: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
-      } catch (e) {
-        scopeFederation = null;
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_error',
-          `scoped-log layer unavailable: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
       })();
       // SUBSTRATE_SIDECAR Option B (WI-604): build the replication-offload seam.
       // A test override wins; else, when the OFF-by-default flag is ON, route each
       // accepted peer socket to the sidecar via offloadReplicationToSidecar.
       // undefined (flag OFF + no override) ⇒ joinHarnessSwarm replicates in-process,
       // byte-identical to today.
-      const offloadReplication:
-        | ((socket: unknown, peerInfo?: unknown) => boolean)
-        | undefined =
+      const offloadReplication: ((socket: unknown, peerInfo?: unknown) => boolean) | undefined =
         opts.sidecarOffloadOverride ??
         (sidecarOffloadEnabled
           ? (socket: unknown) =>
@@ -5821,8 +5685,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // before, unchanged from today's behavior.
         try {
           const resolve =
-            opts.potHomeSlugForHarnessOverride ??
-            (await loadHiveFederationModule()).potHomeSlugForHarness;
+            opts.potHomeSlugForHarnessOverride ?? (await loadHiveFederationModule()).potHomeSlugForHarness;
           const maybeHiveHome = (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
           if (maybeHiveHome) {
             recordBootEvent(
@@ -5964,12 +5827,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         },
         onPeerRejected: (keyHex, ip) => {
-          recordBootEvent(
-            opts.workspaceId,
-            opts.harnessSlug,
-            'peer_rejected',
-            peerLabel(keyHex, ip),
-          );
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_rejected', peerLabel(keyHex, ip));
           // WI-5355/WI-5481 diagnosability: onPeerRejected/onPeerRateLimited
           // previously ONLY wrote to the in-process boot-history ring buffer
           // (no HTTP surface reachable from these rig containers was found
@@ -5987,12 +5845,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         },
         onPeerRateLimited: (keyHex, ip) => {
-          recordBootEvent(
-            opts.workspaceId,
-            opts.harnessSlug,
-            'peer_rate_limited',
-            peerLabel(keyHex, ip),
-          );
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_rate_limited', peerLabel(keyHex, ip));
           // WI-5355/WI-5481: this peer key+IP just tripped the process-global
           // swarm-guard connection-rate ceiling (CONN_RATE) and is now BANNED
           // for DEFAULT_BAN_TTL_MS (10 minutes) — Hyperswarm's firewall will
@@ -6140,7 +5993,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // NEW topic, never re-join the boot-time one from the opts snapshot.
       await joinForBinding(currentBinding);
       if (swarmHandle !== null) {
-
         console.info(
           `[swarm] join RECOVERED via retry harness=${opts.harnessSlug} — federation re-established without a restart`,
         );
@@ -6234,10 +6086,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     async getGitServingCapability(request): Promise<GitServingState> {
       const { resolveServingStoreContext } = await import('../pot-git/signed-context-store');
       return issueGitServingCapability(request, {
-        current: () => !stopped && swarmHandle && announceIdentity && gitServingHome ? {
-          runtimeId: gitServingRuntimeId, workspaceId: opts.workspaceId, potHomeSlug: gitServingHome,
-          topicHex: swarmHandle.topicHex, identity: announceIdentity,
-        } : null,
+        current: () =>
+          !stopped && swarmHandle && announceIdentity && gitServingHome
+            ? {
+                runtimeId: gitServingRuntimeId,
+                workspaceId: opts.workspaceId,
+                potHomeSlug: gitServingHome,
+                topicHex: swarmHandle.topicHex,
+                identity: announceIdentity,
+              }
+            : null,
         resolveContext: resolveServingStoreContext,
       });
     },
@@ -6281,7 +6139,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (!opts.applyOverride) {
         const next = await resolveHiveHomeProjectionSlug(binding);
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
           console.error(
             `[A-003] ${new Date().toISOString()} rekey ${opts.harnessSlug}: binding.kind=${binding?.kind ?? '<none>'} next=${next ?? '<none>'} prev=${hiveHomeProjectionSlug ?? '<none>'} rebind=${next !== hiveHomeProjectionSlug}`,
           );
@@ -6326,10 +6183,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           forceReFoldCanReloadPgSeed = previousApplyBinding !== currentApplyBinding();
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
-
-        console.error(
-          `[A-003] ${new Date().toISOString()} rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`,
-        );
+        console.error(`[A-003] ${new Date().toISOString()} rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
       }
       await joinForBinding(binding);
       // A-003 fix (c) — replay-on-rebind. The rekey is the exact moment
@@ -6389,7 +6243,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         try {
           await hook();
         } catch (e) {
-
           console.error(
             `[boot.close] close-hook failed for ${opts.workspaceId}::${opts.harnessSlug}:`,
             e instanceof Error ? e.message : String(e),
@@ -6452,17 +6305,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Leave the swarm before tearing down the store so we stop receiving
       // peer replication onto an about-to-close corestore.
       if (swarmHandle) {
-        try { await swarmHandle.close(); } catch {}
+        try {
+          await swarmHandle.close();
+        } catch {}
       }
       // Close via closeHarnessStore (NOT a bare store.close()) so the closed
       // Corestore is EVICTED from the getHarnessStore cache — a bare close would
       // leave the dead instance cached and trip "Corestore is closed" on the next
       // boot. (A re-key never reaches here: rekeyHarness/handle.rekey leave the
       // old topic + join the new one WITHOUT closing the store — see boot-all.ts.)
-      try { await closeHarnessStore(storeOpts); } catch {}
+      try {
+        await closeHarnessStore(storeOpts);
+      } catch {}
       // P-006: the scoped store is a separate Corestore instance — close +
       // evict it the same way (it was only opened if a swarm join ran).
-      try { await closeHarnessScopedStore(storeOpts); } catch {}
+      try {
+        await closeHarnessScopedStore(storeOpts);
+      } catch {}
       // P-003: an off-gate compaction may still be folding. Awaited AFTER the store
       // closes so its reads fail fast instead of finishing an O(history) fold; it saw
       // `stopped` and appends nothing (`shouldAbort`). It never rejects.
@@ -6479,5 +6338,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
  */
 export function onSchemaVersionAlert(handler: (alert: SchemaVersionAlert) => void): () => void {
   schemaVersionEvents.on('alert', handler);
-  return () => { schemaVersionEvents.off('alert', handler); };
+  return () => {
+    schemaVersionEvents.off('alert', handler);
+  };
 }
