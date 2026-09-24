@@ -440,7 +440,8 @@ export interface WorkspaceHostResourceCreatedEvent {
  * Errors PROPAGATE and fail the apply step on purpose: an unregistered metered resource is the
  * exact defect this seam exists to prevent, so a failed ledger write must be loud rather than
  * leaving a billable resource nothing is tracking. Retry is safe — the underlying recorder is
- * idempotent (ON CONFLICT DO NOTHING on the resource identity).
+ * idempotent for the same provider incarnation; a recreated same-name resource reopens its
+ * obligation under the fresh provider identity.
  */
 export type WorkspaceHostResourceCreatedObserver = (
   event: WorkspaceHostResourceCreatedEvent,
@@ -455,7 +456,7 @@ export type WorkspaceHostResourceCreatedObserver = (
  */
 export type WorkspaceHostResourceDestroyedObserver = (
   event: {
-    readonly resource: { readonly deleteOp: string; readonly providerId: string };
+    readonly resource: { readonly deleteOp: string; readonly providerId: string; readonly incarnationId?: string };
     readonly workspaceId: string;
   },
 ) => Promise<void> | void;
@@ -642,6 +643,8 @@ type GcpStepInput =
       projectId: string;
       requestId: string;
       resourceName: string;
+      /** Expected provider allocation identity from the host resource checkpoint, when known. */
+      incarnationId?: string;
       routerName?: string;
       region?: string;
       zone?: string;
@@ -1456,9 +1459,23 @@ function sameMetadata(observed: GcpInstanceObservation, expected: GcpInstanceMet
 function resource(
   kind: string,
   providerId: string,
-  options: Pick<WorkspaceHostResourceRef, 'parentProviderId' | 'region' | 'zone'> = {},
+  options: Pick<WorkspaceHostResourceRef, 'parentProviderId' | 'region' | 'zone' | 'incarnationId'> = {},
 ): WorkspaceHostResourceRef {
   return { target: GCP_WORKSPACE_HOST_TARGET, kind, providerId, ...options };
+}
+
+function vmResource(
+  observed: GcpInstanceObservation,
+  projectId: string,
+  zone: string,
+  region?: string,
+): WorkspaceHostResourceRef {
+  return resource(VM_KIND, observed.name, {
+    parentProviderId: projectId,
+    zone,
+    ...(region ? { region } : {}),
+    incarnationId: requireString(observed.instanceId, `GCP instance '${observed.name}' incarnation id`),
+  });
 }
 
 function knownResource(
@@ -2264,6 +2281,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             region: item.region,
             zone: item.zone,
             hostId: request.host.hostId,
+            ...(kind === VM_KIND && item.incarnationId ? { incarnationId: item.incarnationId } : {}),
           } as GcpStepInput,
         });
       }
@@ -2287,8 +2305,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
    *     gating on `applied` alone silently dropped it, leaving a live metered resource with no
    *     ledger row and therefore invisible to the teardown sweep forever.
    * `createsOwnedResource` is the discriminator. Firing is safe to repeat: the ledger writer is
-   * idempotent on (workspace, provider, kind, resourceId), so a re-reconciled step is a no-op
-   * rather than a duplicate row.
+   * idempotent for the same provider incarnation, so a re-reconciled step is a no-op; a
+   * same-name replacement is a new incarnation and reopens the obligation.
    */
   async apply(
     request: WorkspaceHostApplyRequest,
@@ -2334,7 +2352,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       const deleteOp = deleteOpName(request.step);
       if (deleteOp) {
         await this.onResourceDestroyed({
-          resource: { deleteOp, providerId: result.confirmation.providerResourceId },
+          resource: {
+            deleteOp,
+            providerId: result.confirmation.providerResourceId,
+            ...(result.confirmation.incarnationId ? { incarnationId: result.confirmation.incarnationId } : {}),
+          },
           workspaceId: ctx.workspaceId,
         });
       }
@@ -2479,11 +2501,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         return found?.status === 'RUNNING'
           ? this.applied(
               request,
-              resource(VM_KIND, found.name, {
-                parentProviderId: input.projectId,
-                region: input.zone.slice(0, input.zone.lastIndexOf('-')),
-                zone: input.zone,
-              }),
+              vmResource(found, input.projectId, input.zone, input.zone.slice(0, input.zone.lastIndexOf('-'))),
               operation.name,
             )
           : this.inProgress(request, operation.name);
@@ -2528,7 +2546,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         }
         return this.applied(
           request,
-          resource(VM_KIND, found.name, { parentProviderId: input.projectId, zone: input.zone }),
+          vmResource(found, input.projectId, input.zone),
           operation.name,
         );
       }
@@ -2618,7 +2636,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     return found?.status === expected
       ? this.applied(
           request,
-          resource(VM_KIND, found.name, { parentProviderId: input.projectId, zone: input.zone }),
+          vmResource(found, input.projectId, input.zone),
           operation.name,
         )
       : this.inProgress(request, operation.name);
@@ -2648,7 +2666,18 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     signal?: AbortSignal,
   ): Promise<WorkspaceHostApplyResult> {
     const before = await this.describeDeleteTarget(input);
-    if (!before) return this.destroyed(request, input.hostId, input.resourceName);
+    if (!before) return this.destroyed(request, input.hostId, input.resourceName, undefined, input.incarnationId);
+    const beforeIncarnationId = input.op === 'delete-instance'
+      ? requireString((before as GcpInstanceObservation).instanceId, `GCP instance '${input.resourceName}' id`)
+      : undefined;
+    if (input.op === 'delete-instance' && input.incarnationId && beforeIncarnationId !== input.incarnationId) {
+      // The provider name now identifies a replacement, not the incarnation this destroy plan
+      // observed. Treat the old target as absent without deleting the live replacement.
+      return this.destroyed(request, input.hostId, input.resourceName, undefined, input.incarnationId);
+    }
+    const destroyedIncarnationId = input.op === 'delete-instance'
+      ? input.incarnationId ?? beforeIncarnationId
+      : undefined;
     if (input.op === 'delete-instance') assertManagedHostResource(before, input.hostId, 'instance');
     if (input.op === 'delete-disk') {
       const disk = before as GcpDiskObservation;
@@ -2708,9 +2737,20 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       );
     else operation = await this.client.deleteNetwork(input.projectId, input.resourceName, input.requestId);
     if (!(await this.settled(operation, signal))) return this.inProgress(request, operation.name);
-    return (await this.describeDeleteTarget(input))
-      ? this.inProgress(request, operation.name)
-      : this.destroyed(request, input.hostId, input.resourceName, operation.name);
+    const after = await this.describeDeleteTarget(input);
+    if (after) {
+      if (input.op === 'delete-instance') {
+        const afterIncarnationId = requireString(
+          (after as GcpInstanceObservation).instanceId,
+          `GCP instance '${input.resourceName}' id`,
+        );
+        if (destroyedIncarnationId && afterIncarnationId !== destroyedIncarnationId) {
+          return this.destroyed(request, input.hostId, input.resourceName, operation.name, destroyedIncarnationId);
+        }
+      }
+      return this.inProgress(request, operation.name);
+    }
+    return this.destroyed(request, input.hostId, input.resourceName, operation.name, destroyedIncarnationId);
   }
 
   private describeDeleteTarget(
@@ -2809,19 +2849,21 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
                           : input.op === 'use-existing-firewall'
                             ? EXISTING_FIREWALL_KIND
                             : undefined;
-      if (kind)
-        return this.report(
-          request,
-          ctx,
-          this.unchanged(
-            request,
-            resource(kind, existing.name, {
+      if (kind) {
+        const resourceRef = input.op === 'insert-instance'
+          ? vmResource(
+              existing as GcpInstanceObservation,
+              input.projectId,
+              input.zone,
+              input.zone.slice(0, input.zone.lastIndexOf('-')),
+            )
+          : resource(kind, existing.name, {
               parentProviderId: 'projectId' in input ? input.projectId : undefined,
               region: 'region' in input ? input.region : undefined,
               zone: 'zone' in input ? input.zone : undefined,
-            }),
-          ),
-        );
+            });
+        return this.report(request, ctx, this.unchanged(request, resourceRef));
+      }
       if (input.op === 'set-instance-metadata') {
         if (sameMetadata(existing as GcpInstanceObservation, input.request)) {
           return this.report(
@@ -2829,7 +2871,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             ctx,
             this.unchanged(
               request,
-              resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+              vmResource(existing as GcpInstanceObservation, input.projectId, input.zone),
             ),
           );
         }
@@ -2843,13 +2885,17 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             ctx,
             this.unchanged(
               request,
-              resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+              vmResource(existing as GcpInstanceObservation, input.projectId, input.zone),
             ),
           );
       }
     }
     if (isDeleteStepInput(input) && !(await this.describeDeleteTarget(input))) {
-      return this.report(request, ctx, this.destroyed(request, input.hostId, input.resourceName));
+      return this.report(
+        request,
+        ctx,
+        this.destroyed(request, input.hostId, input.resourceName, undefined, input.incarnationId),
+      );
     }
     return this.apply(request, ctx);
   }
@@ -2921,6 +2967,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     hostId: string,
     providerResourceId: string,
     providerRequestId?: string,
+    incarnationId?: string,
   ): WorkspaceHostApplyResult {
     const observedAt = this.now();
     return {
@@ -2932,6 +2979,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       confirmation: {
         hostId,
         providerResourceId,
+        ...(incarnationId ? { incarnationId } : {}),
         confirmedAbsentAt: observedAt,
         source: 'provider-read',
         providerRequestId,

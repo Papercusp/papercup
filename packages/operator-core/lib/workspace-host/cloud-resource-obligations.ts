@@ -178,9 +178,9 @@ function toRow(raw: Record<string, unknown>): CloudResourceObligationRow {
 
 /**
  * Write the obligation at (or immediately after) resource-creation time. Idempotent on
- * (workspaceId, provider, resourceKind, resourceId): a re-call for a resource already
- * tracked is a no-op (`created: false`) rather than a duplicate or an error, so a
- * retried creation step never double-files.
+ * (workspaceId, provider, resourceKind, resourceId, incarnationId): a re-call for the same
+ * provider allocation is a no-op (`created: false`), while a different incarnation reopens
+ * the same address's obligation and replaces its close state.
  */
 export async function recordCloudResourceObligation(
   sql: postgres.Sql,
