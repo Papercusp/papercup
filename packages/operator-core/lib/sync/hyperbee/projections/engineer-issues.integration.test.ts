@@ -12,6 +12,9 @@ import { readFileSync } from 'node:fs';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 import { buildEngineerIssuesProjection, _testing, type EngineerIssueRow } from './engineer-issues';
+import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from '../read-merge';
+import { applyOpVia, type TableProjection } from '../projection';
+import type { PeerLogOp } from '../peer-log';
 
 const WS = 'ws-ei-proj';
 const SLUG = 'papercup';
@@ -1301,5 +1304,98 @@ describe('storedOrderForKeys (P-002 stored-order prefetch)', () => {
 
   it('returns an empty map without querying when no key is qualified', async () => {
     expect((await proj().storedOrderForKeys!(['EI-sof-bare'])).size).toBe(0);
+  });
+});
+
+/**
+ * P-002 step 2 (p2p-join-catchup-speed D-002) — real-PG PARITY for batched fold
+ * commits. The same op stream folded serially (one autocommit per op) and batched
+ * (one transaction per window, a savepoint per op) must leave byte-identical rows,
+ * cursors and winners. The stream carries LWW losers (newest-first versions),
+ * exact duplicates, tombstones and a re-put after a tombstone. The batch protocol
+ * and its failure paths are pinned against a fake store in
+ * read-merge-batch-apply.test.ts; this is the proof against real PG semantics
+ * (ON CONFLICT ... WHERE, the capture trigger, the compat view).
+ */
+describe('P-002 step 2: batched fold commits leave the same rows as the serial fold (real PG)', () => {
+  const TABLE = 'engineer-issues';
+
+  function stream(): PeerLogOp[] {
+    const ops: PeerLogOp[] = [];
+    const put = (id: string, ts: number, title: string, state = 'open'): void => {
+      ops.push({
+        type: 'put',
+        table: TABLE,
+        hbKey: id,
+        value: issueRow({ issue_id: id, title, state }),
+        ts,
+        schema_version: 1,
+        author_pubkey: 'peer-pk',
+      });
+    };
+    const del = (id: string, ts: number): void => {
+      ops.push({ type: 'del', table: TABLE, hbKey: id, ts, schema_version: 1, author_pubkey: 'peer-pk' });
+    };
+    for (let v = 0; v < 3; v++) {
+      for (let k = 0; k < 40; k++) {
+        const id = `EI-par-${k}`;
+        // Every third key arrives newest-first, so its later versions are LWW losers.
+        const ts = k % 3 === 0 ? 30_000 - v * 1000 + k : 10_000 + v * 1000 + k;
+        put(id, ts, `title ${k} v${v}`, v === 2 && k % 5 === 0 ? 'done' : 'open');
+        if (k % 7 === 0) put(id, ts, `title ${k} v${v}`); // exact duplicate
+      }
+    }
+    for (let k = 0; k < 40; k += 9) del(`EI-par-${k}`, 50_000 + k);
+    put('EI-par-9', 60_000, 'recreated after tombstone');
+    return ops;
+  }
+
+  async function snapshot() {
+    return db.sql`
+      SELECT issue_id, scope, kind, state, title, body, origin, fed_ts, fed_hlc, author_pubkey
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${WS} AND issue_id LIKE 'EI-par-%'
+       ORDER BY issue_id`;
+  }
+
+  async function fold(batchApply: false | { maxOps: number; maxMs: number }) {
+    await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
+    const ops = stream();
+    const log: AdmittedLog = { keyHex: 'peer-log', length: ops.length, get: async (i) => ops[i] ?? null };
+    const p = proj();
+    const lookup = (t: string) => (t === TABLE ? (p as TableProjection<unknown>) : null);
+    const cursor = createMergeCursor();
+    const started = performance.now();
+    const res = await mergeAdmittedLogsIncremental([log], cursor, {
+      applyImpl: (env) => applyOpVia(lookup, env, { ownLogKeyHex: 'own-log' }),
+      getTimeoutMs: 0,
+      batchApply,
+    });
+    const ms = performance.now() - started;
+    const winners = Object.fromEntries([...cursor.winners].map(([k, v]) => [k, v.ts]));
+    return { res, ms, rows: await snapshot(), position: cursor.positions.get('peer-log'), winners, n: ops.length };
+  }
+
+  it('matches the serial fold row for row, and commits in windows', async () => {
+    const serial = await fold(false);
+    const batched = await fold({ maxOps: 7, maxMs: 60_000 });
+
+    expect(serial.rows.length).toBeGreaterThan(30);
+    expect(batched.rows).toEqual(serial.rows);
+    expect(batched.position).toBe(serial.n);
+    expect(batched.position).toBe(serial.position);
+    expect(batched.winners).toEqual(serial.winners);
+    expect(batched.res.applied).toBe(serial.res.applied);
+    expect(serial.res.batch).toBeUndefined();
+    expect(batched.res.batch?.rewinds).toBe(0);
+    expect(batched.res.batch?.commits).toBeGreaterThan(1);
+    // Every op that wrote landed inside a batch: none fell back to autocommit.
+    expect(batched.res.batch?.ops).toBe(serial.res.applied);
+    const rowsOf = (r: typeof serial.rows) => r.map((x) => `${x.issue_id}:${x.state}:${x.title}`);
+    expect(rowsOf(batched.rows)).toContain('EI-par-9:open:recreated after tombstone');
+    console.info(
+      `[P-002 parity] ${serial.n} ops: serial ${serial.ms.toFixed(0)}ms, batched ${batched.ms.toFixed(0)}ms ` +
+        `(${batched.res.batch?.commits} commits)`,
+    );
   });
 });

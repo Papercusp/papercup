@@ -2965,7 +2965,7 @@ async function mergeIncrementalPass(
           );
           // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
           if (batch?.failed) {
-            await settleBatch();
+            await settleBatch(pos + 1);
             retryable = true;
             break;
           }
@@ -3004,7 +3004,7 @@ async function mergeIncrementalPass(
       );
       // P-002 step 2: a lost batch rewinds the cursor to its first op; end this pass.
       if (batch?.failed) {
-        await settleBatch();
+        await settleBatch(pos + 1);
         break;
       }
       if (outcome.kind === 'applied') {
@@ -3018,8 +3018,9 @@ async function mergeIncrementalPass(
     }
     // P-002 step 2: every exit from the loop above (end of log, a read stall, a
     // retryable apply) lands here, so this commit covers them all. A lost batch
-    // rewinds `pos` before the position below is taken.
-    await settleBatch();
+    // rewinds `pos` before the position below is taken. The op at `pos` may have
+    // started (a retryable break), so the serial replay also covers it.
+    await settleBatch(Math.min(pos + 1, upper));
     // WI-559: never advance PAST a structurally-deferred op — positions are
     // monotonic, so doing so loses it exactly as permanently as quarantining it.
     cursor.positions.set(log.keyHex, effectivePos(pos));

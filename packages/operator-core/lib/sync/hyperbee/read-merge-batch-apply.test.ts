@@ -7,7 +7,8 @@
  * protocol and every failure path: a lost COMMIT, a per-op deferral inside the
  * batch, and an apply that times out mid-transaction. The real-PG proof that the
  * batched fold leaves the same rows as the serial one lives in
- * projections/engineer-issues-batch-parity.integration.test.ts.
+ * projections/engineer-issues.integration.test.ts ("P-002 step 2: batched fold
+ * commits leave the same rows as the serial fold (real PG)").
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type postgres from 'postgres';
@@ -111,10 +112,12 @@ class FakeDb {
   }
 }
 
+type FakeSql = (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown>;
+
 /** A batchable sink: every statement goes through projectionSql, like engineer-issues. */
 function sink(db: FakeDb, extraWriteFor?: string) {
   return async (op: OpEnvelope): Promise<boolean> => {
-    const sql = await projectionSql(db.target);
+    const sql = (await projectionSql(db.target)) as unknown as FakeSql;
     await sql`WRITE ${op.hbKey} ${op.value}`;
     if (op.hbKey === extraWriteFor) await sql`WRITE ${`${op.hbKey}-extra`} ${op.value}`;
     return true;
@@ -200,7 +203,13 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(cursor.applyFailures?.get('A')?.reason).toContain('batch transaction lost');
     expect(first.batch).toEqual({ commits: 0, ops: 0, rewinds: 1 });
 
-    // The next pass replays the window and everything lands.
+    // The lost window [0, 5) is marked for a SERIAL replay, so whatever lost it
+    // cannot lose the replay the same way.
+    expect(cursor.batchSerialUntil?.get('A')).toBe(5);
+
+    // The next pass replays the window and everything lands: k0..k4 autocommit one
+    // by one, then k5..k9 and k10..k11 commit as two batches.
+    const beginsBefore = db.count('BEGIN');
     const second = await mergeAdmittedLogsIncremental([memLog('A', ops)], cursor, {
       applyImpl: sink(db),
       getTimeoutMs: 0,
@@ -209,7 +218,9 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(db.committed.size).toBe(12);
     expect(cursor.positions.get('A')).toBe(12);
     expect(cursor.applyFailures?.get('A')).toBeUndefined();
-    expect(second.batch?.commits).toBe(3);
+    expect(second.batch?.commits).toBe(2);
+    expect(db.count('BEGIN') - beginsBefore).toBe(2);
+    expect(cursor.batchSerialUntil?.has('A') ?? false).toBe(false);
     expect(db.releases).toBe(db.reserves);
   });
 
