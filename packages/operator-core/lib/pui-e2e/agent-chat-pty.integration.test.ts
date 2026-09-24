@@ -605,7 +605,11 @@ class PuiPane {
     bin: string,
     operatorPort: number,
     home: string,
-    options: { args?: string[]; cols?: number; rows?: number; operatorToken?: string; env?: Record<string, string> } = {},
+    options: {
+      args?: string[]; cols?: number; rows?: number; operatorToken?: string; env?: Record<string, string>;
+      /** Never answer terminal queries, like a bare pipe (P-013 startup progress). */
+      silentTerminal?: boolean;
+    } = {},
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
@@ -631,6 +635,11 @@ class PuiPane {
     });
     this.pty.onData((chunk) => {
       this.raw += chunk;
+      // Answer primary device attributes as a VTE-class terminal without the
+      // kitty keyboard protocol does. PUI's startup capability probe
+      // (crossterm supports_keyboard_enhancement, main.rs) waits up to 2 s for
+      // this reply: every mainstream terminal answers at once, a bare PTY never.
+      if (!options.silentTerminal && /\u001b\[0?c/.test(chunk)) this.pty.write('\u001b[?62;22c');
       if (this.setupDriverArmed && !this.setupDriverRunning
         && this.screen().includes('New SU session')) {
         this.setupDriverArmed = false;
@@ -4692,6 +4701,26 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     }
   });
 
+  test('P-013: a terminal that never answers the capability probe shows startup progress at once', { timeout: 120_000 }, async () => {
+    // "Display meaningful startup progress immediately": held to the same
+    // 250 ms as send feedback. The probe then times out (2 s) and PUI goes on.
+    const STARTUP_PROGRESS_MS = SEND_FEEDBACK_MS;
+    const spawnedAt = performance.now();
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40, silentTerminal: true });
+    try {
+      const progressMs = await renderedAfter(pane, () => {}, (screen) => screen.includes('Starting PUI'), 10_000);
+      if (optimised()) expect(progressMs).toBeLessThanOrEqual(STARTUP_PROGRESS_MS);
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      const usableMs = performance.now() - spawnedAt;
+      await pane.waitForGone('Starting PUI');
+      console.info('PUI_P013_STARTUP_PROGRESS_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, optimised: optimised(), progressMs, usableMs,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
   test('P-013: a 40-turn session keeps key feedback in budget and memory bounded', { timeout: 600_000 }, async () => {
     const turns = 40;
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
@@ -4721,12 +4750,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     }
   });
 
-  // One palette per mode, each named by its own ink and panel slots in theme.rs.
+  // One palette per mode, each named by the slots the always-drawn status bar
+  // paints with in theme.rs (Theme::status_bar: `muted` on `status`).
   test.for([
-    { theme: 'papercusp-light', ink: '26;32;31', panel: '247;249;248' },
-    { theme: 'papercusp-dark', ink: '232;238;232', panel: '9;18;20' },
-    { theme: 'high-contrast', ink: '255;255;255', panel: '0;0;0' },
-  ])('P-013: :theme $theme repaints the workbench in that palette', { timeout: 120_000 }, async ({ theme, ink, panel }) => {
+    { theme: 'papercusp-light', muted: '110;125;120', status: '238;242;241' },
+    { theme: 'papercusp-dark', muted: '134;150;146', status: '5;10;12' },
+    { theme: 'high-contrast', muted: '200;200;200', status: '0;0;0' },
+  ])('P-013: :theme $theme repaints the workbench in that palette', { timeout: 120_000 }, async ({ theme, muted, status }) => {
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
     try {
       await openAgentChat(pane);
@@ -4744,8 +4774,8 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       await switchTo(theme);
       await vi.waitFor(() => {
         const params = sgrParams(pane.rawSince(mark));
-        expect(params.some((list) => list.includes(`38;2;${ink}`))).toBe(true);
-        expect(params.some((list) => list.includes(`48;2;${panel}`))).toBe(true);
+        expect(params.some((list) => list.includes(`38;2;${muted}`))).toBe(true);
+        expect(params.some((list) => list.includes(`48;2;${status}`))).toBe(true);
       }, { timeout: 10_000, interval: 100 });
       await pane.waitFor('Agent Chat');
       console.info('PUI_P013_THEME_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, theme, frame: pane.screen() }));

@@ -469,6 +469,15 @@ async fn main() -> Result<()> {
     // holding `v` can drive PTT. Without support no release events arrive and
     // PTT falls back to press-to-toggle. Best-effort; only REPORT_EVENT_TYPES is
     // pushed (minimal — doesn't disambiguate/alter other key reporting).
+    //
+    // That probe waits up to 2 s in a terminal that never answers it, so show
+    // startup progress first (pui-first-party-public-release P-013: "display
+    // meaningful startup progress immediately"). Cleared before the first frame.
+    let _ = execute!(
+        out,
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::style::Print("Starting PUI…")
+    );
     let kbd_enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     if kbd_enhanced {
         let _ = execute!(
@@ -478,6 +487,11 @@ async fn main() -> Result<()> {
             )
         );
     }
+    // ratatui diffs against a blank screen; leave it one.
+    let _ = execute!(
+        out,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+    );
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
     let result = run(
