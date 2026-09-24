@@ -2204,13 +2204,6 @@ export const MERGE_SNAPSHOT_LANES = 4;
 /** A chunk with fewer applicable rows than this is applied serially. */
 export const MERGE_SNAPSHOT_LANE_MIN_ROWS = 32;
 
-/**
- * P-527: a WI-N work item's INSERT takes migration 1003's transaction advisory lock
- * (the id-sequence floor), held until COMMIT. Two lanes inserting WI-N rows would take
- * turns on it at transaction length, so every such row goes to lane 0.
- */
-const WI_N_KEY = /(?:^|[^A-Za-z0-9])WI-\d+(?![0-9])/;
-
 /** P-527: one applicable snapshot row, routed to a lane. */
 interface LaneRow {
   env: OpEnvelope;
@@ -2218,20 +2211,19 @@ interface LaneRow {
 }
 
 /**
- * P-527: split one chunk's applicable rows over `k` lanes. Every row keyed by a WI-N id
- * goes to lane 0 ({@link WI_N_KEY}); every other row joins the shortest lane, so lane 0
- * is not the longest when a chunk is mostly work items. A key seen twice stays on one
- * lane, so two lanes never write the same row.
+ * P-527: split one chunk's applicable rows over `k` lanes. Every row joins the shortest
+ * lane. A key seen twice stays on one lane, so two lanes never write the same row.
+ *
+ * WI-N work items spread like any other row. A WI-N INSERT takes the id-sequence floor
+ * lock only when it raises the floor (migration 1218); below the floor, which is almost
+ * every row of a set, it takes no lock. A lane that does take it holds it to its next
+ * COMMIT, so a sibling waits at most one batch, and a lane commits as soon as its queue
+ * drains (applyChunkOnLanes) rather than holding the lock while it waits for the others.
  */
 function partitionSnapshotRows(rows: readonly LaneRow[], k: number): LaneRow[][] {
   const lanes: LaneRow[][] = Array.from({ length: k }, () => []);
-  const pinned = rows.map((row) => WI_N_KEY.test(row.env.hbKey ?? ''));
-  rows.forEach((row, i) => {
-    if (pinned[i]) lanes[0].push(row);
-  });
   const laneOf = new Map<string, number>();
-  for (const [i, row] of rows.entries()) {
-    if (pinned[i]) continue;
+  for (const row of rows) {
     let lane = laneOf.get(row.groupKey);
     if (lane === undefined) {
       lane = 0;
@@ -3328,6 +3320,9 @@ async function mergeIncrementalPass(
             }
           }
         }
+        // A drained lane commits now: its open transaction may hold the id-sequence floor
+        // lock (migration 1218) that a sibling still inserting is waiting on.
+        if (next[i] >= queue.length && !(await lane.commit())) halt.reason ??= 'lost';
       };
       for (;;) {
         await Promise.all(queues.map((_, i) => runLane(i)));

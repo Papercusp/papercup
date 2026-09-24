@@ -254,8 +254,9 @@ describe('P-527: snapshot chunks apply on parallel lanes', () => {
     expect(laneDb.count('BEGIN')).toBe(laneDb.count('COMMIT'));
   });
 
-  it('keeps every WI-N row on one lane, so two lanes never contend for the id-sequence lock', async () => {
-    // WI-N and EI- issues share one table; only a WI-N insert takes migration 1003's lock.
+  it('spreads WI-N rows over the lanes like any other row', async () => {
+    // P-007 run #5: pinned to one lane, the WI-N part of a set ran at ~1.0x. Migration
+    // 1218 takes the id-sequence floor lock only for a row that raises the floor.
     const eiRows: SnapshotRow[] = Array.from({ length: 80 }, (_, i) => ({
       table: 'engineer-issues',
       hbKey: `EI-${2000 + i}`,
@@ -270,10 +271,34 @@ describe('P-527: snapshot chunks apply on parallel lanes', () => {
       batchApply: { ...BATCH, snapshotLanes: 4 },
     });
     expect(db.committed.size).toBe(160);
-    // CONTROL: the instrument sees overlap within one table when rows are not pinned.
     expect(db.maxActiveBy.get('EI')).toBeGreaterThan(1);
-    // Migration 1003 takes its advisory lock on every WI-N insert and holds it to COMMIT.
-    expect(db.maxActiveBy.get('WI')).toBe(1);
+    expect(db.maxActiveBy.get('WI')).toBeGreaterThan(1);
+  });
+
+  it('commits a drained lane before a slower sibling finishes', async () => {
+    // A lane holding the floor lock must not sit on it until every sibling is done.
+    // 40 rows go round-robin over 4 lanes, 10 each (under maxOps, so no mid-queue
+    // commit); every row of lane 1 (N-1, N-5, ... N-37) is slow.
+    const slow = new Set(Array.from({ length: 10 }, (_, j) => `N-${1 + 4 * j}`));
+    const db = new LaneDb();
+    const apply = sink(db);
+    const cursor = createMergeCursor();
+    await mergeAdmittedLogsIncremental([memLog([chunk(setRows(0, 40))])], cursor, {
+      applyImpl: async (op) => {
+        if (slow.has(op.hbKey ?? '')) await new Promise((r) => setTimeout(r, 5));
+        return apply(op);
+      },
+      getTimeoutMs: 0,
+      batchApply: { ...BATCH, snapshotLanes: 4 },
+    });
+    expect(db.committed.size).toBe(40);
+    expect(cursor.positions.get(LOG)).toBe(1);
+    const firstCommit = db.statements.indexOf('COMMIT');
+    const lastSlowWrite = db.statements.lastIndexOf('WRITE N-37');
+    expect(lastSlowWrite).toBeGreaterThan(-1);
+    expect(firstCommit).toBeGreaterThan(-1);
+    expect(firstCommit).toBeLessThan(lastSlowWrite);
+    expect(db.count('BEGIN')).toBe(db.count('COMMIT'));
   });
 
   it('a lost lane COMMIT holds the cursor at the chunk and replays it outside any batch', async () => {
