@@ -34,6 +34,7 @@ const {
   agentReviewPendingAdmissionSql,
   matchesAgentReviewClaimAdmission,
   mintAgentReviewClaimAdmission,
+  readAgentReviewState,
 } = await import('./harness/improvements/agent-review-policy');
 const { buildHarnessFeaturesProjection } = await import('./sync/hyperbee/projections/harness-features');
 
@@ -413,7 +414,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
     await ins('F-REVIEW', 'local', null, 1);
     await h.sql`
       UPDATE harness_shared.harness_features_consolidated
-         SET admission = 'pending', payload = ${JSON.stringify(payload)}::jsonb
+         SET admission = 'pending', payload = ${JSON.stringify(payload)}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW'`;
 
     expect(await claimWorkItem('F-REVIEW', 'su-reviewer', { harness: HARNESS })).toBeNull();
@@ -430,8 +431,8 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       id: 'F-REVIEW',
       family: 'feature',
       harness: HARNESS,
-      payload: { agentReview: payload.agentReview },
     });
+    expect(readAgentReviewState(candidate!.payload)).toEqual(payload.agentReview);
     expect(admission).toMatchObject({
       itemId: 'F-REVIEW',
       reviewer: 'su-reviewer',
@@ -484,7 +485,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
     await ins('F-REVIEW-STALE', 'local', null, 2);
     await h.sql`
       UPDATE harness_shared.harness_features_consolidated
-         SET admission = 'pending', payload = ${JSON.stringify(stalePayload)}::jsonb
+         SET admission = 'pending', payload = ${JSON.stringify(stalePayload)}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-STALE'`;
     const staleAdmission = mintAgentReviewClaimAdmission({
       itemId: 'F-REVIEW-STALE',
