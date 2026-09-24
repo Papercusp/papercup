@@ -4857,7 +4857,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     async () => {
       const manifest = installedManifest();
       const question = 'Would you like to keep or change the draft title?';
-      const expected = 'You chose: Change.';
+      // The accepted choice is the product outcome. Native providers may omit
+      // the sentence's final period while still returning the exact choice.
+      const expected = /^You chose: Change\.?$/;
       const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[
         scriptedEngine.backend
       ];
@@ -4948,7 +4950,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             card,
             cardReplies,
             suToolApprovals: pane.answeredSuToolApprovals,
-            expected,
+            expected: expected.source,
             questionFrame,
             answeredFrame: pane.screen(),
             timeoutDegradations,
