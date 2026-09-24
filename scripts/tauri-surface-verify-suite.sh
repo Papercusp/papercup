@@ -39,8 +39,10 @@ OUT_DIR="${TAURI_SURFACE_VERIFY_SUITE_OUT:-/tmp/pcv-suite-$STAMP}"
 mkdir -p "$OUT_DIR"
 
 # "<leg name>:<needs VERIFY_TAURI_ISOLATED_DB=1>:<script path>"
-# Only `gym` needs isolation — it makes a real write to /api/flags/set and
-# must never touch shared live state (see tauri-surface-verify-p004-gym.sh).
+# `gym` and `embed-device` need isolation — both make real API writes and must
+# never touch shared live state (see their script headers). `embed-device`
+# additionally needs the ready seed because its target is a post-onboarding
+# Settings route; the runner handles that one special seed below.
 # `rubrics-wiki` explicitly must run WITHOUT isolation (an isolated-DB boot's
 # first-run onboarding redirect defeats its cross-route reload assertions —
 # see that script's own header). Every other leg is indifferent and runs
@@ -53,6 +55,7 @@ LEGS=(
   "prompt-studio:0:scripts/tauri-surface-verify-p006-prompt-studio.sh"
   "login:0:scripts/tauri-surface-verify-p007-login.sh"
   "settings:0:scripts/tauri-surface-verify-p007-settings.sh"
+  "embed-device:1:scripts/tauri-surface-verify-embed-device.sh"
   "signup:0:scripts/tauri-surface-verify-p007-signup.sh"
   # Added post-P-007-expansion (gui-e2e-tauri-surface-verification-2026-08-27
   # D-012): the P-007 spec-upgrade item grew to cover 14 surfaces total, but
@@ -86,7 +89,12 @@ for entry in "${LEGS[@]}"; do
     continue
   fi
   log_file="$OUT_DIR/$leg.log"
-  if [ "$needs_isolated" = "1" ]; then
+  if [ "$leg" = "embed-device" ]; then
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Embedding device' \
+      scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1
+  elif [ "$needs_isolated" = "1" ]; then
     VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1
   else
     scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1

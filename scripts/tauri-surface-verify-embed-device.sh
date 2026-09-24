@@ -16,7 +16,7 @@ set -uo pipefail
 : "${VERIFY_TAURI_ISOLATED_DB:?set VERIFY_TAURI_ISOLATED_DB=1 for this write-path verifier}"
 
 if [ "$VERIFY_TAURI_ISOLATED_DB" != "1" ]; then
-  echo "EMBED_DEVICE_TAURI_FAIL reason=isolated-db-required" >&2
+  echo "P008_TAURI_SURFACE_VERIFY_FAIL leg=embed-device reason=isolated-db-required" >&2
   exit 2
 fi
 
@@ -29,7 +29,7 @@ mkdir -p "$OUT_DIR"
 
 FAIL=0
 fail() {
-  echo "EMBED_DEVICE_TAURI_FAIL $*" >&2
+  echo "P008_TAURI_SURFACE_VERIFY_FAIL leg=embed-device $*" >&2
   FAIL=1
 }
 
@@ -86,8 +86,8 @@ fi
   || fail "step=screenshot"
 
 if [ "$FAIL" -ne 0 ]; then
-  echo "EMBED_DEVICE_TAURI_VERIFY_FAIL output=$OUT_DIR" >&2
+  echo "P008_TAURI_SURFACE_VERIFY_FAIL leg=embed-device output=$OUT_DIR" >&2
   exit 1
 fi
 
-echo "EMBED_DEVICE_TAURI_VERIFY_OK output=$OUT_DIR"
+echo "P008_TAURI_SURFACE_VERIFY_OK leg=embed-device output=$OUT_DIR"
