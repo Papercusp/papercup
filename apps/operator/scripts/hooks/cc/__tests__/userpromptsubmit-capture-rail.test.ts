@@ -290,6 +290,40 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     'coord-inject:coord:inbox-wake',
   ] as const;
 
+  it('a mismatched prompt during a fresh scripted launch stays unverified and is not captured', async () => {
+    writeMachineRow({
+      origin: 'fleet-kickoff',
+      sha256: sha256Normalized('the complete scripted judge brief'),
+      ts: Date.now() - 4_000,
+    });
+    const prompt =
+      'over only with these read-only Papercusp tools. Use recovered evidence only when plans:get still reports frozenIdentity.';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-truncated-fleet-kickoff' }),
+    );
+
+    expect(ctx).toContain('UNVERIFIED SCRIPTED-LAUNCH INPUT');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(captureCalls()).toHaveLength(0);
+  });
+
+  it('a human prompt after the scripted-launch startup window remains capturable', async () => {
+    writeMachineRow({
+      origin: 'fleet-kickoff',
+      sha256: sha256Normalized('the earlier scripted judge brief'),
+      ts: Date.now() - 120_001,
+    });
+    const prompt = 'please fix the login page';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-owner-after-launch' }),
+    );
+
+    expect(ctx).toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(1);
+    expect(captureCalls()[0]!.args.verbatim).toBe(prompt);
+  });
+
   for (const origin of VERIFIED_ORIGINS) {
     it(`CONTROL: a VERIFIED ${origin} turn is classified agent-origin and captures nothing`, async () => {
       const payload = `the injected payload for ${origin}`;

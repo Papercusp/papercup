@@ -2232,6 +2232,15 @@ export interface SpawnHeadlessOpts {
    *  to the native session id. Omit rather than infer it from command text. */
   coordOwnerId?: string | null;
   /**
+   * Structured, caller-owned facts merged into the ledger row's `detail` bag
+   * (after the spawner's own keys, which it cannot override). This is how a
+   * single-purpose launch tells the task reaper what it is FOR, so the reaper can
+   * end it when that purpose is over instead of inferring it from label text —
+   * e.g. a consult answering session records `consultAnswer`
+   * (EI-24106882795589775).
+   */
+  ledgerDetail?: Record<string, unknown> | null;
+  /**
    * EI-19311623077693508: injectable seams for the boot-receipt scan. Tests pass
    * fakes so a case can emit the greeting-failure sentinel deterministically
    * instead of sleeping out the real 6s window. Production callers omit it.
@@ -2623,6 +2632,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
         logPath,
         memoryMaxBytes,
         detail: {
+          ...(opts.ledgerDetail ?? {}),
           headless: true,
           label,
           ...(coordOwnerId ? { coordOwnerId } : {}),

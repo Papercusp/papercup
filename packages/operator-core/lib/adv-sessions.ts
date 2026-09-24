@@ -1028,6 +1028,16 @@ export async function markAdvSessionEnded(
     throwOnError?: boolean;
     /** Refuse to end a reactivated/re-anchored successor using an old observation. */
     expectedBinding?: AdvSessionExpectedBinding;
+    /**
+     * WI-10002854: WHEN the reporter observed the exit. A row whose `started_at` is LATER
+     * than this was reactivated by a successor incarnation after the observation (a wake
+     * executor's headless resume, a relaunch), so the observation is about a predecessor
+     * and must not end it. Without this, the killed terminal's late or replayed end report
+     * re-ended the row a headless wake had just resumed; the next resume claim then read
+     * it as terminal and won, leaving two live processes on one coord identity. Omitted
+     * (legacy reporters) keeps the unguarded behaviour.
+     */
+    observedAt?: Date | null;
   } = {},
 ): Promise<boolean> {
   try {
@@ -1047,6 +1057,7 @@ export async function markAdvSessionEnded(
            AND session_id IS NOT DISTINCT FROM ${opts.expectedBinding?.sessionId ?? null}
            AND started_at = ${opts.expectedBinding?.startedAt ?? null}::timestamptz
          ))
+         AND (${opts.observedAt == null} OR started_at <= ${opts.observedAt ?? null}::timestamptz)
        RETURNING id
     `;
     if (r.length) {

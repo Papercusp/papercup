@@ -56,6 +56,12 @@ describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', 
   });
 });
 
+describe('set-plan-status acceptance-grader launch deadline', () => {
+  it('covers the bounded headless judge launch path so its outcome reaches the recruiter', () => {
+    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec).toBe(90);
+  });
+});
+
 // Caller-DX (watchdog P-006): plans:set-plan-status previously zod-REJECTED the
 // status words agents reach for ('active' from old plans, 'done' confused with the
 // item-status verb). Now they are accepted + mapped to the canonical settable form,

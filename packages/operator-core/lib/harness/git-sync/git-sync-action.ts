@@ -61,6 +61,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
 import { getBuildInfo } from '../../build-info';
+import { stripNulBytesDeep } from '../../coord-lifecycle/records';
 import { requestOnlyHost } from '../../background-workers';
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
@@ -1776,11 +1777,14 @@ async function recordContentFixerDispatch(
   }
 }
 
-/** Stable identity for one content-fixer job. Human detector messages are deliberately excluded. */
+/** Stable identity for one content-fixer job. Human detector messages are deliberately excluded.
+ *  The separators are ASCII unit/record separators, never NUL: this value is persisted into
+ *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
+ *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
 function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
-  return [...new Set(contentErrors.map((c) => `${c.scope}\u0000${c.file}\u0000${c.detectorKey}`))]
+  return [...new Set(contentErrors.map((c) => `${c.scope}\u001f${c.file}\u001f${c.detectorKey}`))]
     .sort()
-    .join('\u0001');
+    .join('\u001e');
 }
 
 /** Persist human-actionable quarantine work through the existing condition-key upsert. */
@@ -1825,9 +1829,12 @@ async function upsertGitSyncContentHumanWorkItem(
 async function claimContentFixerDispatch(
   slug: string,
   workspaceId: string,
-  marker: ContentFixerMarker,
+  rawMarker: ContentFixerMarker,
 ): Promise<boolean> {
   const { sql } = getOrgPg();
+  // Same JSONB NUL rail as patchRoutineMetadata; the CAS compares the STRIPPED signature
+  // so it matches what the marker actually persisted.
+  const { value: marker } = stripNulBytesDeep(rawMarker);
   const signature = marker.signature ?? '';
   const pass = String(marker.pass ?? '');
   const staleBefore = Date.now() - RESOLVER_INFLIGHT_MS;
@@ -2136,14 +2143,23 @@ export const GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP = 20;
  *  are read from (EI-18799539619330782).
  *
  *  Param order deliberately matches the signature ($1 slug, $2 workspaceId, $3 patch) —
- *  do not "simplify" workspaceId to a trailing $3 to avoid re-indexing test assertions. */
+ *  do not "simplify" workspaceId to a trailing $3 to avoid re-indexing test assertions.
+ *
+ *  NUL bytes are stripped before serialising: JSONB rejects \u0000 (22P05), so one NUL in
+ *  any string — a git message, a path, a signature — failed the WHOLE write, and with it
+ *  every leg after recordOutcome (EI-24099226502437988). */
 async function patchRoutineMetadata(
   slug: string,
   workspaceId: string,
-  patch: GitSyncRoutineMetadataPatch,
-  historyEntry?: GitSyncHistoryEntry,
+  rawPatch: GitSyncRoutineMetadataPatch,
+  rawHistoryEntry?: GitSyncHistoryEntry,
 ): Promise<void> {
   const { sql } = getOrgPg();
+  const { value: patch, stripped: patchStripped } = stripNulBytesDeep(rawPatch);
+  const { value: historyEntry, stripped: historyStripped } = stripNulBytesDeep(rawHistoryEntry);
+  if (patchStripped || historyStripped) {
+    console.warn(`[git-sync] ${slug}: stripped NUL byte(s) from a routine metadata patch (JSONB rejects \\u0000)`);
+  }
   if (historyEntry) {
     // Keep the latest metadata patch and the bounded history append in ONE UPDATE.
     // Reading the old array and appending inside the same row update prevents two

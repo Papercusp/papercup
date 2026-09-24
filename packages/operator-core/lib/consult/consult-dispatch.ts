@@ -186,6 +186,37 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Is there budget to run this backend at all right now? (D-004 walls.) */
   probeBackendAvailable: (agent: ExpertBackend, workspaceId: string) => Promise<BackendAvailability>;
   mintOwnerId: () => string;
+  /**
+   * Stop a session this rank SPAWNED but then failed (EI-24106882795589775).
+   * Returns a short outcome for the attempt record; never throws.
+   */
+  stopFailedLaunch: (taskId: string | null | undefined) => Promise<string>;
+}
+
+/**
+ * Default `stopFailedLaunch`: kill the spawned session's ledger task, i.e. its
+ * whole scope subtree, by the task id `spawnHeadless` returned.
+ *
+ * WHY THIS EXISTS. A rank that fails after its spawn succeeded (the kickoff never
+ * persisted, or verification lost to a child death) used to be recorded as
+ * `failed` while its process was left running. The walk then launched the next
+ * rank, and the orphan idled on its pty forever: it was never announced as the
+ * consult's responder, so nothing would ever route to it or settle it. Measured
+ * 2026-09-24: 77 of the 94 consult processes found running, and 178 of the 203
+ * the task reaper had stranded earlier, were such unannounced orphans.
+ *
+ * Keyed on the task id, never on the owner id: a conversion shares the expert's
+ * own identity, so an owner-keyed stop could hit the expert's live session.
+ */
+async function defaultStopFailedLaunch(taskId: string | null | undefined): Promise<string> {
+  if (!taskId) return 'no task id to stop (unledgered spawn)';
+  try {
+    const { killTask } = await import('../task-manager/control');
+    const outcome = await killTask(taskId);
+    return outcome.ok ? `stopped task ${taskId}` : `stop of task ${taskId} refused: ${outcome.error ?? 'unknown'}`;
+  } catch (e) {
+    return `stop of task ${taskId} threw: ${(e as Error)?.message ?? String(e)}`;
+  }
 }
 
 /** The account-pool provider that funds a backend. OMP is not a pooled
@@ -350,6 +381,7 @@ export async function dispatchConsultResponder(
     fetchContextPressure,
     probeBackendAvailable: defaultProbeBackendAvailable,
     mintOwnerId: () => `su-${randomUUID()}`,
+    stopFailedLaunch: defaultStopFailedLaunch,
     ...deps,
   };
   const attempts: ConsultDispatchAttempt[] = [];
@@ -614,6 +646,16 @@ async function launchAnsweringSession(
     launchedBy: ctx.launchedBy ?? undefined,
     fleetSlug: null,
     coordOwnerId: answeringOwnerId,
+    // EI-24106882795589775: an answering session is single-purpose, but a headless
+    // interactive CLI does not exit when it ends its turn — "reply, then END YOUR
+    // TURN" leaves an idle TUI alive, and its presence keepalive keeps vouching for
+    // it. Recording WHAT this session answers lets the task reaper end it the
+    // moment that consult is settled for it (`consult-settled`), keyed on this
+    // exact ledger row — never on the owner id, which a conversion shares with
+    // the expert's own, possibly live, session.
+    ledgerDetail: {
+      consultAnswer: { conversationId: opts.conversationId, operation, answeringOwnerId },
+    },
     kickoffProof: true,
   });
   if (spawn.status !== 'ok') {
@@ -624,10 +666,13 @@ async function launchAnsweringSession(
   // transcript receipt before treating this rank as dispatched — an unsubmitted
   // brief would otherwise create a phantom responder the consult waits on.
   if (spawn.kickoffProof?.persisted !== true) {
+    // The walk is about to launch another rank; this one must not outlive the
+    // verdict (see defaultStopFailedLaunch).
+    const stopped = await d.stopFailedLaunch(spawn.taskId);
     return failed(
       'kickoff-not-persisted',
       `spawn did not persist its kickoff in the native transcript ` +
-        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'})`,
+        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ${stopped}`,
     );
   }
 
@@ -655,6 +700,9 @@ async function launchAnsweringSession(
     if (winner.kind === 'exit') {
       const failure = childExitFailure(winner.exit);
       if (failure) {
+        // The root died, but its scope can still hold descendants (MCP servers,
+        // wrapper chains) — clear it before reporting the rank failed.
+        await d.stopFailedLaunch(spawn.taskId);
         return {
           record: {
             ...base,

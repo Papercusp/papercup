@@ -101,6 +101,29 @@ describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)',
     const [after] = await admin`SELECT ended_at, ended_by, exit_code FROM harness_shared.adv_sessions WHERE id = ${id}`;
     expect(after).toEqual(before);
   });
+
+  // WI-10002854 split-brain: an end OBSERVATION vs a successor incarnation.
+  it('refuses to end a row a successor reactivated AFTER the exit was observed (WI-10002854)', async () => {
+    const { id } = await predecessor();
+    // The killed predecessor's exit was observed a minute ago; a headless wake resume then
+    // reactivated the row (started_at = now). The late/replayed report must not end it —
+    // that is what let the next resume claim win against a still-running twin.
+    const observedAt = new Date(Date.now() - 60_000);
+    await admin`UPDATE harness_shared.adv_sessions SET started_at = now() WHERE id = ${id}`;
+    await expect(markAdvSessionEnded(id, 0, 'self', { observedAt, throwOnError: true })).resolves.toBe(false);
+    const [row] = await admin`SELECT ended_at, ended_by FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(row.ended_at).toBeNull();
+    expect(row.ended_by).toBeNull();
+  });
+
+  it('still ends the row when the observation follows the current incarnation start (WI-10002854)', async () => {
+    const { id } = await predecessor();
+    await admin`UPDATE harness_shared.adv_sessions SET started_at = now() - interval '5 minutes' WHERE id = ${id}`;
+    await expect(markAdvSessionEnded(id, 0, 'self', { observedAt: new Date(), throwOnError: true })).resolves.toBe(true);
+    const [row] = await admin`SELECT ended_at, ended_by FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(row.ended_at).not.toBeNull();
+    expect(row.ended_by).toBe('self');
+  });
 });
 
 describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column regression guard)', () => {

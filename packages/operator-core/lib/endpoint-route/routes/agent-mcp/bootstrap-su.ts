@@ -3432,6 +3432,7 @@ const sessionEnded = defineTool({
     let killedBySignal: string | null = null;
     let launchFailed = false;
     let endAttemptKey: string | null = null;
+    let observedAt: Date | null = null;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
@@ -3439,7 +3440,15 @@ const sessionEnded = defineTool({
         killedBySignal?: unknown;
         launchFailed?: unknown;
         endAttemptKey?: unknown;
+        observedAt?: unknown;
       };
+      // WI-10002854: when the launcher OBSERVED the exit. A replayed pending witness carries
+      // its ORIGINAL observation time, so markAdvSessionEnded can refuse to end a successor
+      // incarnation that started after it. An unparseable value is ignored (legacy behaviour).
+      if (typeof body.observedAt === 'string') {
+        const parsed = new Date(body.observedAt);
+        if (!Number.isNaN(parsed.getTime())) observedAt = parsed;
+      }
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -3474,11 +3483,15 @@ const sessionEnded = defineTool({
       // classification even if a malformed/overlapping report also contains a
       // signal; `ended_signal` is only valid for observed signal exits.
       const endedBy = launchFailed ? 'cleanup' : killedBySignal ? 'signal' : 'self';
-      await markAdvSessionEnded(advSessionId, exitCode, endedBy, {
+      // `ended:false` is still ok:true: the row was already ended, or (with observedAt) a
+      // successor incarnation started after this observation — either way the launcher must
+      // DROP its pending witness rather than replay a stale end forever.
+      const ended = await markAdvSessionEnded(advSessionId, exitCode, endedBy, {
         signal: launchFailed ? null : killedBySignal,
         throwOnError: true,
+        observedAt,
       });
-      return jsonRes({ ok: true, ended: true, endAttemptKey });
+      return jsonRes({ ok: true, ended, endAttemptKey });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }

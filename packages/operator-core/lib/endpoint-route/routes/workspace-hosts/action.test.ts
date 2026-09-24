@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostActionRoute, type WorkspaceHostActionRouteDependencies } from './action';
+import { WorkspaceHostCustomerAcceptanceError } from '../../../workspace-host/customer-acceptance-release-receipt';
+import { WorkspaceHostReleaseCleanupError } from '../../../workspace-host/release-cleanup-release-receipt';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
@@ -276,6 +278,27 @@ describe('POST /workspace-hosts/action destroy', () => {
     );
   });
 
+  it('returns a terminal offboarding result when the host is already absent', async () => {
+    const { dependencies, startDestroy } = harness();
+    startDestroy.mockResolvedValueOnce({
+      status: 'succeeded',
+      operationId: 'destroy-reconcile-1',
+      hostId: 'host-1',
+      alreadyAbsent: true,
+      offboardedCustomerWorkspaceId: 'customer-ws-1',
+    });
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      customerWorkspace: { id: 'customer-ws-1', state: 'deleted' },
+      message: 'Workspace host was already absent; its customer workspace was marked deleted',
+    });
+  });
+
   it('admits every explicit disposition without manufacturing canary evidence and rejects a missing disposition', async () => {
     const { dependencies, startDestroy } = harness();
     const ordinary = { ...destroyBody, canary: undefined };
@@ -378,6 +401,171 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(readConnection).not.toHaveBeenCalled();
     expect(startDestroy).not.toHaveBeenCalled();
     expect(startLifecycle).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /workspace-hosts/action customer-acceptance', () => {
+  const acceptanceBody = {
+    action: 'customer-acceptance',
+    workspaceId: 'host-1',
+    releaseTaskId: 'release-task-1',
+    customerWorkspaceId: 'customer-workspace-1',
+    hostedSessionId: 'hosted-session-1',
+    channelId: 'channel-1',
+  };
+
+  it('records against the exact authenticated hosted session without requiring DBOS or a provider action', async () => {
+    const h = harness();
+    const recordCustomerAcceptance = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordCustomerAcceptance']>>(
+      async () => ({
+        outcome: 'committed',
+        stage: 'desktop-session.customer-acceptance',
+        releaseTaskId: 'release-task-1',
+        bundleSha256: 'c'.repeat(64),
+        auditEventId: 'hosted-vnc-1',
+        evidenceRefs: ['hosted-desktop-takeover:hosted-vnc-1'],
+      }),
+    );
+
+    const response = await post(
+      {
+        ...h.dependencies,
+        provisioningAvailable: () => false,
+        recordCustomerAcceptance,
+      },
+      acceptanceBody,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, receipt: { stage: 'desktop-session.customer-acceptance' } });
+    expect(recordCustomerAcceptance).toHaveBeenCalledWith({
+      workspaceId: 'workspace_1',
+      hostId: 'host-1',
+      releaseTaskId: 'release-task-1',
+      customerWorkspaceId: 'customer-workspace-1',
+      hostedSessionId: 'hosted-session-1',
+      channelId: 'channel-1',
+    });
+    expect(h.readTarget).not.toHaveBeenCalled();
+    expect(h.startDestroy).not.toHaveBeenCalled();
+    expect(h.startLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('requires the release and exact hosted-session correlation before calling the writer', async () => {
+    const h = harness();
+    const recordCustomerAcceptance = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordCustomerAcceptance']>>();
+
+    const response = await post(
+      { ...h.dependencies, recordCustomerAcceptance },
+      { ...acceptanceBody, channelId: '' },
+    );
+
+    expect(response.status).toBe(400);
+    expect(recordCustomerAcceptance).not.toHaveBeenCalled();
+  });
+
+  it('keeps acceptance pending when the matching takeover audit is absent', async () => {
+    const h = harness();
+    const recordCustomerAcceptance = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordCustomerAcceptance']>>(
+      async () => {
+        throw new WorkspaceHostCustomerAcceptanceError('takeover-not-found', 'no matching hosted takeover audit');
+      },
+    );
+
+    const response = await post({ ...h.dependencies, recordCustomerAcceptance }, acceptanceBody);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      reason: 'takeover-not-found',
+    });
+  });
+});
+
+describe('POST /workspace-hosts/action release-cleanup', () => {
+  const cleanupBody = {
+    action: 'release-cleanup',
+    workspaceId: 'host-1',
+    releaseTaskId: 'release-task-1',
+  };
+
+  it('records release cleanup on the explicit task without requiring DBOS or a provider action', async () => {
+    const h = harness();
+    const recordReleaseCleanup = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseCleanup']>>(
+      async () => ({
+        outcome: 'committed',
+        stage: 'release.cleanup',
+        releaseTaskId: 'release-task-1',
+        hostId: 'host-1',
+        bundleSha256: 'c'.repeat(64),
+        evidenceRefs: ['release-cleanup-verification:host-1', 'cleanup-live-workflows:none'],
+      }),
+    );
+
+    const response = await post(
+      { ...h.dependencies, provisioningAvailable: () => false, recordReleaseCleanup },
+      cleanupBody,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, receipt: { stage: 'release.cleanup' } });
+    expect(recordReleaseCleanup).toHaveBeenCalledWith({
+      workspaceId: 'workspace_1',
+      hostId: 'host-1',
+      releaseTaskId: 'release-task-1',
+    });
+    expect(h.readTarget).not.toHaveBeenCalled();
+    expect(h.startDestroy).not.toHaveBeenCalled();
+    expect(h.startLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('returns the measured refusal evidence without claiming cleanup committed', async () => {
+    const h = harness();
+    const recordReleaseCleanup = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseCleanup']>>(
+      async () => ({
+        outcome: 'refused',
+        stage: 'release.cleanup',
+        releaseTaskId: 'release-task-1',
+        hostId: 'host-1',
+        bundleSha256: 'c'.repeat(64),
+        evidenceRefs: ['cleanup-failed:billing-closure-not-committed'],
+      }),
+    );
+
+    const response = await post({ ...h.dependencies, recordReleaseCleanup }, cleanupBody);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      receipt: { outcome: 'refused', evidenceRefs: ['cleanup-failed:billing-closure-not-committed'] },
+    });
+  });
+
+  it('requires an explicit release task before invoking the cleanup writer', async () => {
+    const h = harness();
+    const recordReleaseCleanup = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseCleanup']>>();
+
+    const response = await post(
+      { ...h.dependencies, recordReleaseCleanup },
+      { ...cleanupBody, releaseTaskId: undefined },
+    );
+
+    expect(response.status).toBe(400);
+    expect(recordReleaseCleanup).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed conflict when cleanup cannot resolve the release task', async () => {
+    const h = harness();
+    const recordReleaseCleanup = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseCleanup']>>(
+      async () => {
+        throw new WorkspaceHostReleaseCleanupError('release-task-not-found', 'no release task');
+      },
+    );
+
+    const response = await post({ ...h.dependencies, recordReleaseCleanup }, cleanupBody);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, reason: 'release-task-not-found' });
   });
 });
 

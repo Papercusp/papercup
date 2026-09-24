@@ -39,6 +39,14 @@ import {
   workspaceHostTeardownBillingSubject,
   workspaceHostTeardownReleaseRefusal,
 } from '../../../workspace-host/teardown-release-receipt';
+import {
+  recordWorkspaceHostCustomerAcceptance,
+  WorkspaceHostCustomerAcceptanceError,
+} from '../../../workspace-host/customer-acceptance-release-receipt';
+import {
+  recordWorkspaceHostReleaseCleanup,
+  WorkspaceHostReleaseCleanupError,
+} from '../../../workspace-host/release-cleanup-release-receipt';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -55,12 +63,19 @@ interface WorkspaceHostActionBody {
   rollbackImage?: unknown;
   snapshot?: unknown;
   desired?: unknown;
-  /** Destroy only: record the terminal census on this release's journal (WI-10002510). */
+  /** Release task whose destroy, acceptance, or cleanup milestone is being recorded. */
   releaseTaskId?: unknown;
+  /** Customer acceptance only: the active customer workspace attached to the hosted takeover. */
+  customerWorkspaceId?: unknown;
+  /** Customer acceptance only: exact authenticated hosted session and control channel. */
+  hostedSessionId?: unknown;
+  channelId?: unknown;
 }
 
 const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart', 'repair', 'snapshot', 'upgrade', 'restore'] as const;
 type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
+const CUSTOMER_ACCEPTANCE_ACTION = 'customer-acceptance';
+const RELEASE_CLEANUP_ACTION = 'release-cleanup';
 const DESTROY_DISPOSITIONS = ['snapshot', 'backup', 'discard'] as const;
 type DestroyDisposition = (typeof DESTROY_DISPOSITIONS)[number];
 
@@ -166,6 +181,10 @@ export interface WorkspaceHostActionRouteDependencies {
   forwardRequest?: WorkspaceHostRequestForwarder;
   /** Read-only admission check for a destroy's census receipt; defaults to the real journal. */
   openTeardownRelease?: typeof openWorkspaceHostTeardownRelease;
+  /** Record a customer-controlled hosted desktop takeover against its exact release task. */
+  recordCustomerAcceptance?: typeof recordWorkspaceHostCustomerAcceptance;
+  /** Measure D-396's release cleanup predicate and record it on the exact release task. */
+  recordReleaseCleanup?: typeof recordWorkspaceHostReleaseCleanup;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
@@ -175,6 +194,8 @@ const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
   readConnection: readWorkspaceHostConnection,
   startDestroy: startWorkspaceHostDestroyWorkflow,
   startLifecycle: startWorkspaceHostLifecycleWorkflow,
+  recordCustomerAcceptance: recordWorkspaceHostCustomerAcceptance,
+  recordReleaseCleanup: recordWorkspaceHostReleaseCleanup,
 };
 
 function requestError(error: string, status = 400, extra: Record<string, unknown> = {}): Response {
@@ -197,7 +218,12 @@ export function createWorkspaceHostActionRoute(
       }
       if (!isRecord(body)) return requestError('body must be an object');
       const action = typeof body.action === 'string' ? body.action : '';
-      if (action !== 'destroy' && !LIFECYCLE_ACTIONS.includes(action as LifecycleAction)) {
+      if (
+        action !== 'destroy' &&
+        action !== CUSTOMER_ACCEPTANCE_ACTION &&
+        action !== RELEASE_CLEANUP_ACTION &&
+        !LIFECYCLE_ACTIONS.includes(action as LifecycleAction)
+      ) {
         return requestError('workspace-host lifecycle action is not implemented', 501, {
           action: action || null,
         });
@@ -209,10 +235,29 @@ export function createWorkspaceHostActionRoute(
         return requestError('invalid operationId');
       }
       if (body.releaseTaskId !== undefined) {
-        if (action !== 'destroy') return requestError('releaseTaskId is recorded only by a destroy');
+        if (action !== 'destroy' && action !== CUSTOMER_ACCEPTANCE_ACTION && action !== RELEASE_CLEANUP_ACTION) {
+          return requestError('releaseTaskId is recorded only by a destroy, customer acceptance, or release cleanup');
+        }
         if (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId)) {
           return requestError('releaseTaskId has an invalid value');
         }
+      }
+      if (action === CUSTOMER_ACCEPTANCE_ACTION) {
+        if (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId)) {
+          return requestError('customer acceptance requires a valid releaseTaskId');
+        }
+        for (const [field, value] of [
+          ['customerWorkspaceId', body.customerWorkspaceId],
+          ['hostedSessionId', body.hostedSessionId],
+          ['channelId', body.channelId],
+        ] as const) {
+          if (typeof value !== 'string' || !value.trim() || value.length > 300) {
+            return requestError(`customer acceptance requires a valid ${field}`);
+          }
+        }
+      }
+      if (action === RELEASE_CLEANUP_ACTION && (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId))) {
+        return requestError('release cleanup requires a valid releaseTaskId');
       }
       let destroyAdmission:
         | {
@@ -252,6 +297,54 @@ export function createWorkspaceHostActionRoute(
           ...(canary ? { canary } : {}),
         };
       }
+      const workspaceId = dependencies.activeWorkspaceId();
+      if (action === CUSTOMER_ACCEPTANCE_ACTION) {
+        try {
+          const receipt = await (dependencies.recordCustomerAcceptance ?? recordWorkspaceHostCustomerAcceptance)({
+            workspaceId,
+            hostId,
+            releaseTaskId: body.releaseTaskId as string,
+            customerWorkspaceId: body.customerWorkspaceId as string,
+            hostedSessionId: body.hostedSessionId as string,
+            channelId: body.channelId as string,
+          });
+          return Response.json({ ok: true, receipt });
+        } catch (error) {
+          if (error instanceof WorkspaceHostCustomerAcceptanceError) {
+            return requestError('workspace-host customer acceptance was not verified', 409, {
+              reason: error.reason,
+            });
+          }
+          if (error instanceof WorkspaceHostReleaseBindingError) {
+            return requestError('workspace-host customer acceptance could not bind to the release', 409, {
+              reason: error.reason,
+            });
+          }
+          return requestError('workspace-host customer acceptance could not be recorded', 500);
+        }
+      }
+      if (action === RELEASE_CLEANUP_ACTION) {
+        try {
+          const receipt = await (dependencies.recordReleaseCleanup ?? recordWorkspaceHostReleaseCleanup)({
+            workspaceId,
+            hostId,
+            releaseTaskId: body.releaseTaskId as string,
+          });
+          return receipt.outcome === 'committed'
+            ? Response.json({ ok: true, receipt })
+            : requestError('workspace-host release cleanup requirements are not met', 409, { receipt });
+        } catch (error) {
+          if (error instanceof WorkspaceHostReleaseCleanupError) {
+            return requestError('workspace-host release cleanup could not be verified', 409, { reason: error.reason });
+          }
+          if (error instanceof WorkspaceHostReleaseBindingError) {
+            return requestError('workspace-host release cleanup could not bind to the release', 409, {
+              reason: error.reason,
+            });
+          }
+          return requestError('workspace-host release cleanup could not be recorded', 500);
+        }
+      }
       if (!dependencies.provisioningAvailable()) {
         try {
           const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
@@ -266,7 +359,6 @@ export function createWorkspaceHostActionRoute(
         return requestError('workspace-host provisioning workflow is unavailable on this operator', 503);
       }
 
-      const workspaceId = dependencies.activeWorkspaceId();
       const target = await dependencies.readTarget(workspaceId, hostId);
       if (!target) return requestError('workspace host not found', 404);
       const stored = await dependencies.readConnection(workspaceId, target.connectionId);
@@ -348,29 +440,54 @@ export function createWorkspaceHostActionRoute(
             { status: 202, headers: { location: auditUrl } },
           );
         }
+        const planId = 'plan' in result ? result.plan.planId : undefined;
+        const resources = 'checkpoints' in result
+          ? result.checkpoints.map((checkpoint) => ({
+              logicalKey: checkpoint.logicalKey,
+              state: checkpoint.state,
+              attempts: checkpoint.attempts,
+              ...(checkpoint.deletionConfirmation ? { deletionConfirmation: checkpoint.deletionConfirmation } : {}),
+            }))
+          : [];
+        const resultMetadata = result as typeof result & {
+          alreadyAbsent?: boolean;
+          offboardedCustomerWorkspaceId?: string;
+        };
+        const requiresInitialization = 'requiresInitialization' in result ? result.requiresInitialization : undefined;
         const response = {
           ok: result.status !== 'failed',
           status: result.status,
           operationId: result.operationId,
           hostId: result.hostId,
-          planId: result.plan.planId,
-          resources: result.checkpoints.map((checkpoint) => ({
-            logicalKey: checkpoint.logicalKey,
-            state: checkpoint.state,
-            attempts: checkpoint.attempts,
-            ...(checkpoint.deletionConfirmation ? { deletionConfirmation: checkpoint.deletionConfirmation } : {}),
-          })),
-          ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
+          ...(planId ? { planId } : {}),
+          resources,
+          ...(resultMetadata.offboardedCustomerWorkspaceId
+            ? {
+                customerWorkspace: {
+                  id: resultMetadata.offboardedCustomerWorkspaceId,
+                  state: 'deleted',
+                },
+              }
+            : {}),
+          ...('retryAfterMs' in result && result.retryAfterMs !== undefined
+            ? { retryAfterMs: result.retryAfterMs }
+            : {}),
           ...('evidence' in result && result.evidence ? { evidence: result.evidence } : {}),
           // Read the runner's own verdict rather than re-deriving readiness from `action` here.
           // An initialization-invalidating action succeeds while leaving the host unable to serve
           // until initialization is run again (WI-2143797/WI-2146639). The runner already decided
           // that; a second copy of the rule here is what let the ledger and HTTP response disagree.
-          ...(result.requiresInitialization ? { requiresInitialization: true } : {}),
+          ...(requiresInitialization ? { requiresInitialization: true } : {}),
           message: result.status === 'succeeded'
             ? action === 'destroy'
-              ? 'Workspace-host discard teardown completed with terminal evidence'
-              : result.requiresInitialization
+              ? resultMetadata.alreadyAbsent
+                ? resultMetadata.offboardedCustomerWorkspaceId
+                  ? 'Workspace host was already absent; its customer workspace was marked deleted'
+                  : 'Workspace host is already absent'
+                : resultMetadata.offboardedCustomerWorkspaceId
+                  ? 'Workspace-host discard teardown completed; its customer workspace was marked deleted'
+                  : 'Workspace-host discard teardown completed with terminal evidence'
+              : requiresInitialization
                 ? `Workspace-host ${action} completed its provider steps, but the host CANNOT SERVE yet: ` +
                   `${action} invalidated the host's initialized state, so initialization must be run again before use`
                 : `Workspace-host ${action} completed`

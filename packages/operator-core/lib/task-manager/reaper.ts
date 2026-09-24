@@ -87,7 +87,151 @@ export const REAP_MAX_PER_TICK = 12;
 /** Presence heartbeat younger than this vouches for a quiet session's owner. */
 export const REAP_PRESENCE_FRESH_MS = 15 * 60_000;
 
-export type ReapKind = 'terminal-residue' | 'managed-residue' | 'quiet-zombie';
+/** A settled consult's answering session gets this long to finish the turn it
+ *  replied in (flush its transcript, end the turn) before it is stopped. */
+export const REAP_CONSULT_SETTLED_GRACE_MS = 3 * 60_000;
+
+export type ReapKind = 'terminal-residue' | 'managed-residue' | 'consult-settled' | 'quiet-zombie';
+
+// ── consult answering sessions (EI-24106882795589775) ──────────────────────
+//
+// consult-dispatch launches a headless session to answer ONE question. Its brief
+// says "reply, then END YOUR TURN" — but a headless interactive CLI does not exit
+// when a turn ends; it idles on its pty forever. Measured 2026-09-24: 94 such rows
+// RUNNING, 87 idle `claude` processes, ~14.4 GB RSS, oldest 19 days.
+//
+// The quiet-zombie class could not clear them, for a measured reason: its
+// fresh-presence veto. The session's presence heartbeat is a PROCESS KEEPALIVE,
+// not activity — fork 0muescjix2spy7114ys showed heartbeat_at 02:21:51 (a minute
+// before it was killed) against last_active_at 01:21:53. So every idle-but-alive
+// fork vouched for itself and was spared on every tick.
+//
+// Two rules follow, both scoped to rows that ARE consult answering sessions:
+//   - `consult-settled`: once the consult is settled FOR THIS SESSION (closed, or
+//     the cascade has moved past it), the session's purpose is over — stop it
+//     after a short grace, no quiet window, no presence veto.
+//   - the quiet-zombie presence veto does not apply: for a one-question session a
+//     log quiet for the full window is the answer to "is it done", and its
+//     heartbeat cannot say otherwise.
+
+/** What a ledger row says it answers. */
+export interface ConsultAnswerFacts {
+  conversationId: string | null;
+  answeringOwnerId: string | null;
+  operation: string | null;
+}
+
+// consult-dispatch's label shape (`consult-<operation> · <owner16>`), for rows
+// written before the structured `consultAnswer` tag existed.
+const LEGACY_CONSULT_LABEL_RE = /^consult-(fork|convert|resume|revival)\b/;
+
+/** The consult facts a row carries, or null when it is not a consult answering session. */
+export function consultAnswerFacts(row: Pick<TaskRow, 'detail'>): ConsultAnswerFacts | null {
+  const d = row.detail ?? {};
+  const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : null);
+  const tagged = d.consultAnswer;
+  if (tagged && typeof tagged === 'object' && !Array.isArray(tagged)) {
+    const t = tagged as Record<string, unknown>;
+    return {
+      conversationId: str(t.conversationId),
+      answeringOwnerId: str(t.answeringOwnerId) ?? rowOwnerId(row),
+      operation: str(t.operation),
+    };
+  }
+  const legacy = LEGACY_CONSULT_LABEL_RE.exec(str(d.label) ?? '');
+  if (!legacy) return null;
+  return { conversationId: null, answeringOwnerId: rowOwnerId(row), operation: legacy[1] ?? null };
+}
+
+/** The slice of `harness_shared.consult_state` the settlement rule reads. */
+export interface ConsultStateRow {
+  conversationId: string;
+  state: string;
+  closedAt: string | null;
+  updatedAt: string | null;
+  cascadeCursor: number | null;
+  /** `routing.selection.selected` — per-cursor responder entries. */
+  selected: unknown;
+}
+
+export interface ConsultSettlement {
+  why: string;
+  /** When the consult settled for this session; null = unknown (the row's start is used). */
+  settledAtMs: number | null;
+}
+
+/** States that end a consult even when `closed_at` was not stamped. */
+const CONSULT_SETTLED_STATES = new Set([
+  'expired',
+  'closed_answered',
+  'closed_cant_help',
+  'declined',
+  'no_qualified_responder',
+]);
+
+function selectedAnsweringOwners(selected: unknown): (string | null)[] {
+  if (!Array.isArray(selected)) return [];
+  return selected.map((entry) => {
+    const v = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).answeringOwnerId : null;
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  });
+}
+
+function parseMs(iso: string | null): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * PURE: is the consult this session answers settled FOR THIS SESSION?
+ *
+ * Returns null whenever that cannot be established — no matching consult row, an
+ * ambiguous legacy match, or a session that is still the active responder. Null is
+ * "not this class's call", never "keep forever": the quiet-zombie class (with no
+ * presence veto for consult rows) remains the backstop.
+ *
+ * A legacy row (no structured tag) is matched by answering owner ONLY for a fork,
+ * whose owner id is minted fresh per launch and therefore unique. A conversion
+ * continues the expert's own id, which recurs across consults, so an owner match
+ * there could name the wrong conversation.
+ */
+export function consultSettlement(
+  facts: ConsultAnswerFacts,
+  consults: readonly ConsultStateRow[],
+): ConsultSettlement | null {
+  let consult: ConsultStateRow | undefined;
+  if (facts.conversationId) {
+    consult = consults.find((c) => c.conversationId === facts.conversationId);
+  } else if (facts.answeringOwnerId && facts.operation === 'fork') {
+    const matches = consults.filter((c) =>
+      selectedAnsweringOwners(c.selected).includes(facts.answeringOwnerId),
+    );
+    if (matches.length === 1) consult = matches[0];
+  }
+  if (!consult) return null;
+
+  if (consult.closedAt || CONSULT_SETTLED_STATES.has(consult.state)) {
+    return {
+      why: `consult ${consult.conversationId} is ${consult.state}`,
+      settledAtMs: parseMs(consult.closedAt) ?? parseMs(consult.updatedAt),
+    };
+  }
+
+  // Still open. It is settled for THIS session only if the cascade has moved on
+  // to a different responder — this session answered, declined or expired.
+  if (facts.answeringOwnerId && consult.cascadeCursor != null) {
+    const owners = selectedAnsweringOwners(consult.selected);
+    const idx = owners.indexOf(facts.answeringOwnerId);
+    if (idx >= 0 && idx < consult.cascadeCursor) {
+      return {
+        why: `consult ${consult.conversationId} cascade advanced past this responder (slot ${idx} → cursor ${consult.cascadeCursor})`,
+        settledAtMs: parseMs(consult.updatedAt),
+      };
+    }
+  }
+  return null;
+}
 
 /** A two-scan-confirmed managed agent-session scope with no live ledger row. */
 export interface ManagedResidueCandidate {
@@ -269,6 +413,12 @@ export interface ReaperInputs {
    *  TERMINAL rows only (live rows are judged by the census) — the carry-respawn
    *  guard above. */
   logQuietForMs: (row: TaskRow) => number | null;
+  /**
+   * For a LIVE consult answering session: is its consult settled for it
+   * (`consultSettlement`)? Missing ⇒ the consult-settled class is off for the
+   * tick; null for a row ⇒ unknown / still active, never a reap.
+   */
+  consultSettlementFor?: (row: TaskRow, facts: ConsultAnswerFacts) => ConsultSettlement | null;
   now: number;
   maxPerTick?: number;
 }
@@ -335,6 +485,30 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
       continue;
     }
 
+    // Live row — consult-settled class first: a one-question session whose
+    // consult is over has no further purpose, however recently it wrote its log.
+    const consult = consultAnswerFacts(row);
+    if (consult && inputs.consultSettlementFor) {
+      const settled = inputs.consultSettlementFor(row, consult);
+      if (settled) {
+        const since = settled.settledAtMs ?? Date.parse(row.startedAt);
+        const age = Number.isFinite(since) ? inputs.now - since : NaN;
+        if (Number.isFinite(age) && age >= REAP_CONSULT_SETTLED_GRACE_MS) {
+          const pids = inputs.scopePidCount(row);
+          if (pids !== null && pids > 0) {
+            reap.push({
+              taskId: row.taskId,
+              scopeUnit: row.scopeUnit,
+              logPath: row.logPath ?? null,
+              kind: 'consult-settled',
+              why: `consult answering session (${consult.operation ?? '?'}): ${settled.why} ${Math.round(age / 60_000)}min ago, ${pids} process(es)`,
+            });
+            continue;
+          }
+        }
+      }
+    }
+
     // Live row — quiet-zombie class.
     const quietRow = quietByTask.get(row.taskId);
     if (!quietRow) continue; // active / too-young / no-log / unreadable — never residue
@@ -343,7 +517,9 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
       continue;
     }
     const owner = rowOwnerId(row);
-    if (owner && inputs.freshOwners.has(owner)) {
+    // A consult answering session's heartbeat is a process keepalive, not
+    // activity (see the header above `ConsultAnswerFacts`), so it cannot veto.
+    if (owner && inputs.freshOwners.has(owner) && !consult) {
       spared.push({ taskId: row.taskId, why: `log quiet ${quietRow.quietMinutes}min but presence heartbeat fresh (${owner})` });
       continue;
     }
@@ -354,7 +530,12 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
       scopeUnit: row.scopeUnit,
       logPath: row.logPath ?? null,
       kind: 'quiet-zombie',
-      why: `log quiet ${quietRow.quietMinutes}min, owner ${owner ? 'presence-stale' : 'unmapped'}, ${pids} process(es)`,
+      why:
+        `log quiet ${quietRow.quietMinutes}min, ` +
+        (consult
+          ? `consult answering session (presence keepalive is not activity)`
+          : `owner ${owner ? 'presence-stale' : 'unmapped'}`) +
+        `, ${pids} process(es)`,
     });
   }
 
@@ -398,7 +579,12 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
   }
 
   // Longest-standing residue first, bounded per tick.
-  const order: Record<ReapKind, number> = { 'terminal-residue': 0, 'managed-residue': 1, 'quiet-zombie': 2 };
+  const order: Record<ReapKind, number> = {
+    'terminal-residue': 0,
+    'managed-residue': 1,
+    'consult-settled': 2,
+    'quiet-zombie': 3,
+  };
   reap.sort((a, b) => order[a.kind] - order[b.kind]);
   const deferred = Math.max(0, reap.length - cap);
   return { reap: reap.slice(0, cap), spared, quietClassDisabled, deferred };
@@ -573,7 +759,8 @@ export async function executeReaps(
     let note: string | undefined;
     try {
       ok = await effects.stopUnit(d.scopeUnit);
-      if (ok && d.kind === 'quiet-zombie') {
+      // Both classes stop a row the ledger still records as RUNNING.
+      if (ok && (d.kind === 'quiet-zombie' || d.kind === 'consult-settled')) {
         await effects.closeAsReaped(d.taskId, d.why);
       }
     } catch (err) {

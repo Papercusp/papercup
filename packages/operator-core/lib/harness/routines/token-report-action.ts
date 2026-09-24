@@ -194,7 +194,8 @@ export async function readCarryHealth(sql: Sql, workspaceId: string, from: numbe
       )) FILTER (WHERE usage_provenance->>'requestOrdinal' IN ('1', '2', '3')), '[]'::jsonb) AS observations
     FROM harness_shared.agent_usage_samples
     WHERE workspace_id = ${workspaceId} AND ts >= ${from} AND ts < ${to}
-      AND usage_provenance->>'adapter' = 'codex' AND usage_provenance->>'grain' = 'request'
+      AND usage_provenance->>'adapter' ~ '^codex(-iso-[0-9]+)?$'
+      AND usage_provenance->>'grain' = 'request'
     GROUP BY 1, session_id, usage_provenance->>'sourceFile', usage_provenance->>'fileGeneration'
     ORDER BY 1
   `;

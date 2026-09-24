@@ -65,6 +65,8 @@ interface Fakes {
     }>;
     verify: Array<{ ownerId: string; timeoutMs?: number }>;
     capacity: Array<{ agent: string; workspaceId: string }>;
+    /** Task ids the dispatcher asked to stop after a failed rank. */
+    stopped: Array<string | null | undefined>;
   };
 }
 
@@ -72,7 +74,7 @@ function makeFakes(
   over: Partial<Record<keyof ConsultDispatchDeps, unknown>> = {},
   opts: { source?: Record<string, unknown>; spawnStatuses?: Array<'ok' | 'error' | 'no-proof'> } = {},
 ): Fakes {
-  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [] };
+  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [] };
   let mintSeq = 0;
   let spawnSeq = 0;
   const statuses = opts.spawnStatuses ?? [];
@@ -106,6 +108,7 @@ function makeFakes(
       return {
         status: 'ok',
         pid: 42,
+        taskId: `task-${spawnSeq}`,
         terminal: 'headless',
         logPath: '/logs/x.log',
         child: null,
@@ -126,6 +129,10 @@ function makeFakes(
       return { available: true, detail: `${agent} fixture headroom` };
     },
     mintOwnerId: () => `su-answer-${++mintSeq}`,
+    stopFailedLaunch: async (taskId: string | null | undefined) => {
+      calls.stopped.push(taskId);
+      return `stopped task ${taskId}`;
+    },
     loadRanks: async () => RANKS,
     ...over,
   } as unknown as Partial<ConsultDispatchDeps>;
@@ -217,7 +224,7 @@ describe('dispatchConsultResponder — the fork leg', () => {
       expect(rowResponder).toBe(ownerId);
       expect(calls.spawn[0]!.coordOwnerId).toBe(ownerId);
       expect(calls.spawn[0]!.envelope.greetingCmd).toContain(`--owner-id=${ownerId}`);
-      return { started: true, waitedMs: 900 };
+      return { started: true, waitedMs: 900, expectedSessionId: null, actualSessionId: null, mismatch: false };
     };
 
     const r = await dispatchConsultResponder(
@@ -334,6 +341,34 @@ describe('dispatchConsultResponder — the walk', () => {
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(r.attempts[0]).toMatchObject({ rank: 1, outcome: 'failed', reason: 'kickoff-not-persisted' });
     expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
+  });
+
+  // EI-24106882795589775: a failed rank's spawned session used to be left running
+  // while the walk launched the next one — ~80% of the leaked consult processes.
+  it('STOPS the session a failed rank spawned — by its task id — and only that one', async () => {
+    const { deps, calls } = makeFakes({}, { spawnStatuses: ['no-proof', 'ok'] });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(calls.stopped).toEqual(['task-1']);
+    expect(r.attempts[0]!.detail).toMatch(/stopped task task-1/);
+    expect(r).toMatchObject({ dispatched: true });
+  });
+
+  it('never stops the session of a DISPATCHED rank (CONTROL)', async () => {
+    const { deps, calls } = makeFakes();
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(true);
+    expect(calls.stopped).toEqual([]);
+  });
+
+  it('tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)', async () => {
+    const { deps, calls } = makeFakes();
+    await dispatchConsultResponder(OPTS, CTX, deps);
+    const spawned = calls.spawn[0] as unknown as { ledgerDetail?: { consultAnswer?: Record<string, unknown> } };
+    expect(spawned.ledgerDetail?.consultAnswer).toMatchObject({
+      conversationId: OPTS.conversationId,
+      operation: 'fork',
+      answeringOwnerId: 'su-answer-1',
+    });
   });
 
   it('a CRITICAL-context source blocks the FORK ranks only — a conversion re-renders into the target budget', async () => {

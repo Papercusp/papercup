@@ -279,6 +279,33 @@ describe('classifier boundaries', () => {
     expect(res.reason).toMatch(/OWNER/);
   });
 
+  it.each(['fleet-kickoff', 'role-prompt'] as const)(
+    'NO envelope + mismatched fresh %s row → unverified, not owner',
+    (origin) => {
+      const fragment = 'over only with these read-only Papercusp tools';
+      const r = row({
+        origin,
+        sha256: payloadSha256('the complete scripted launch prompt'),
+        ts: NOW,
+      });
+      const res = classify(fragment, [r], { nowMs: NOW + 4_000, ttlMs: TTL });
+      expect(res.verdict).toBe('unverified-claim');
+      expect(res.origin).toBe(origin);
+      expect(res.textMangled).toBe(true);
+      expect(res.reason).toMatch(/fresh .* record.*hash does not match/u);
+    },
+  );
+
+  it('a launch row older than the startup window does not shadow a later owner prompt', () => {
+    const r = row({
+      origin: 'fleet-kickoff',
+      sha256: payloadSha256('the complete scripted launch prompt'),
+      ts: NOW,
+    });
+    const res = classify('please fix the login page', [r], { nowMs: NOW + 120_001, ttlMs: TTL });
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
   it('empty ledger + no envelope → owner-interactive', () => {
     expect(classify('hello', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('owner-interactive');
   });

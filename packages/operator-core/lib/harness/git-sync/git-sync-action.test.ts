@@ -3777,7 +3777,42 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
   });
 
   const contentSignature = (errors: GitSyncOutcome['contentErrors']): string =>
-    [...new Set(errors.map((e) => `${e.scope}\u0000${e.file}\u0000${e.detectorKey}`))].sort().join('\u0001');
+    [...new Set(errors.map((e) => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e');
+
+  // EI-24099226502437988: JSONB rejects \u0000, so a NUL anywhere in the outcome patch
+  // failed the whole write — and the bridge leg that pushes origin runs after it.
+  it('a quarantined signature persists with no NUL byte in any routine metadata write', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const NUL = String.fromCharCode(0);
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({ last_content_error_signature: contentSignature(contentErrorOutcome.contentErrors) }),
+    );
+    for (const p of allRoutinePatches()) expect(JSON.stringify(p)).not.toContain('\\u0000');
+    expect(contentSignature(contentErrorOutcome.contentErrors)).not.toContain(NUL);
+    warn.mockRestore();
+  });
+
+  it('strips a NUL carried in from git output instead of failing the metadata write', async () => {
+    const NUL = String.fromCharCode(0);
+    const nulError = { ...contentErrorOutcome.contentErrors[0]!, file: `apps/operator-docs/bad${NUL}name.mdx` };
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: [nulError] });
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({ last_content_errors: ['superproject/apps/operator-docs/badname.mdx [mdx]'] }),
+    );
+    for (const p of allRoutinePatches()) expect(JSON.stringify(p)).not.toContain('\\u0000');
+    expect(warn.mock.calls.some(([m]) => String(m).includes('stripped NUL byte(s)'))).toBe(true);
+    warn.mockRestore();
+  });
 
   it('after MAX attempts the file is STILL broken → surfaces to a human + STOPS auto-dispatching (P-005)', async () => {
     runGitSyncMock.mockResolvedValue(contentErrorOutcome);

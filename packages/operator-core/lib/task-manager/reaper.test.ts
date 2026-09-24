@@ -16,15 +16,20 @@ import {
   DEFAULT_QUIET_MS,
 } from './agent-session-progress-census';
 import {
+  consultAnswerFacts,
+  consultSettlement,
   decideReaps,
   evaluateReaperFloor,
   executeReaps,
   managedResidueCandidates,
   readScopeHolder,
+  REAP_CONSULT_SETTLED_GRACE_MS,
   REAP_MAX_PER_TICK,
   REAP_TERMINAL_GRACE_MS,
   residualAfterPass,
   rowOwnerId,
+  type ConsultAnswerFacts,
+  type ConsultStateRow,
   type ManagedResidueCandidate,
   type ReapDecision,
   type ReaperFloorSample,
@@ -76,8 +81,11 @@ function decide(
     scopePids?: Record<string, number | null>;
     holders?: Record<string, ScopeHolder | 'unreadable'>;
     maxPerTick?: number;
+    /** When set, the consult-settled class runs against these consult rows. */
+    consults?: ConsultStateRow[];
   } = {},
 ) {
+  const consults = opts.consults;
   return decideReaps({
     rows,
     census: census(rows, opts.mtimes ?? {}),
@@ -87,9 +95,34 @@ function decide(
     scopeHolderForScope: (scopeUnit) => opts.holders?.[scopeUnit] ?? null,
     freshOwners: new Set(opts.freshOwners ?? []),
     logQuietForMs: (r) => opts.logQuiet?.[r.taskId] ?? null,
+    ...(consults ? { consultSettlementFor: (_r: TaskRow, f: ConsultAnswerFacts) => consultSettlement(f, consults) } : {}),
     now: NOW,
     maxPerTick: opts.maxPerTick,
   });
+}
+
+/** A consult answering session's ledger row, as consult-dispatch writes it. */
+function consultRow(taskId: string, conversationId: string | null, owner: string, operation = 'fork'): TaskRow {
+  return row({
+    taskId,
+    detail: {
+      headless: true,
+      label: `consult-${operation} · ${owner.slice(0, 16)}`,
+      coordOwnerId: owner,
+      ...(conversationId ? { consultAnswer: { conversationId, operation, answeringOwnerId: owner } } : {}),
+    },
+  });
+}
+
+function consultState(partial: Partial<ConsultStateRow> & { conversationId: string }): ConsultStateRow {
+  return {
+    state: 'awaiting_responder',
+    closedAt: null,
+    updatedAt: new Date(NOW - HOUR).toISOString(),
+    cascadeCursor: 0,
+    selected: [],
+    ...partial,
+  };
 }
 
 describe('terminal-residue class', () => {
@@ -191,6 +224,149 @@ describe('quiet-zombie class', () => {
     });
     expect(v.quietClassDisabled).toBe(true);
     expect(v.reap.map((x) => x.kind)).toEqual(['terminal-residue']);
+  });
+});
+
+// EI-24106882795589775: consult answering sessions idled on their pty for days
+// because their presence heartbeat (a process keepalive) vetoed every quiet reap.
+describe('consult answering sessions (EI-24106882795589775)', () => {
+  const quietMtime = NOW - DEFAULT_QUIET_MS - 2 * HOUR;
+  const freshMtime = NOW - 60_000;
+  const OWNER = 'su-78341af6-60bb-4490-8f60-ec315ab0ccfb';
+  const closedLongAgo = new Date(NOW - REAP_CONSULT_SETTLED_GRACE_MS - 60_000).toISOString();
+
+  it('CAUGHT: a quiet consult fork is reaped even though its presence heartbeat is fresh', () => {
+    const r = consultRow('c1', 'conv-1', OWNER);
+    const v = decide([r], { mtimes: { '/logs/c1.log': quietMtime }, pids: { c1: 5 }, freshOwners: [OWNER] });
+    expect(v.reap).toHaveLength(1);
+    expect(v.reap[0]).toMatchObject({ taskId: 'c1', kind: 'quiet-zombie' });
+    expect(v.reap[0]!.why).toMatch(/keepalive is not activity/);
+  });
+
+  it('CAUGHT: a LEGACY consult row (label only, no tag) also loses the presence veto', () => {
+    const r = consultRow('c2', null, OWNER);
+    const v = decide([r], { mtimes: { '/logs/c2.log': quietMtime }, pids: { c2: 5 }, freshOwners: [OWNER] });
+    expect(v.reap.map((x) => x.taskId)).toEqual(['c2']);
+  });
+
+  it('CONTROL: an ordinary quiet session keeps its presence veto (the change is consult-scoped)', () => {
+    const r = row({ taskId: 'c3', detail: { ownerId: OWNER, label: 'headless-member' } });
+    const v = decide([r], { mtimes: { '/logs/c3.log': quietMtime }, pids: { c3: 5 }, freshOwners: [OWNER] });
+    expect(v.reap).toHaveLength(0);
+  });
+
+  it('CAUGHT: a session whose consult CLOSED is stopped past the grace, however fresh its log', () => {
+    const r = consultRow('c4', 'conv-4', OWNER);
+    const v = decide([r], {
+      mtimes: { '/logs/c4.log': freshMtime },
+      pids: { c4: 5 },
+      freshOwners: [OWNER],
+      consults: [consultState({ conversationId: 'conv-4', state: 'closed_answered', closedAt: closedLongAgo })],
+    });
+    expect(v.reap).toHaveLength(1);
+    expect(v.reap[0]).toMatchObject({ taskId: 'c4', kind: 'consult-settled' });
+  });
+
+  it('CONTROL: waits out the settle grace so the replying turn can finish', () => {
+    const r = consultRow('c5', 'conv-5', OWNER);
+    const justClosed = new Date(NOW - REAP_CONSULT_SETTLED_GRACE_MS + 30_000).toISOString();
+    const v = decide([r], {
+      mtimes: { '/logs/c5.log': freshMtime },
+      pids: { c5: 5 },
+      consults: [consultState({ conversationId: 'conv-5', state: 'closed_answered', closedAt: justClosed })],
+    });
+    expect(v.reap).toHaveLength(0);
+  });
+
+  it('CONTROL: the ACTIVE responder of an open consult is never stopped by this class', () => {
+    const r = consultRow('c6', 'conv-6', OWNER);
+    const v = decide([r], {
+      mtimes: { '/logs/c6.log': freshMtime },
+      pids: { c6: 5 },
+      consults: [consultState({ conversationId: 'conv-6', cascadeCursor: 0, selected: [{ answeringOwnerId: OWNER }] })],
+    });
+    expect(v.reap).toHaveLength(0);
+  });
+
+  it('CAUGHT: a responder the cascade moved past is stopped while the consult stays open', () => {
+    const r = consultRow('c7', 'conv-7', OWNER);
+    const v = decide([r], {
+      mtimes: { '/logs/c7.log': freshMtime },
+      pids: { c7: 5 },
+      consults: [
+        consultState({
+          conversationId: 'conv-7',
+          cascadeCursor: 1,
+          selected: [{ answeringOwnerId: OWNER }, { answeringOwnerId: 'su-next' }],
+        }),
+      ],
+    });
+    expect(v.reap.map((x) => [x.taskId, x.kind])).toEqual([['c7', 'consult-settled']]);
+  });
+
+  it('CONTROL: an empty scope is not stopped, and a missing settlement probe turns the class off', () => {
+    const r = consultRow('c8', 'conv-8', OWNER);
+    const closed = [consultState({ conversationId: 'conv-8', state: 'expired', closedAt: closedLongAgo })];
+    expect(decide([r], { mtimes: { '/logs/c8.log': freshMtime }, pids: { c8: 0 }, consults: closed }).reap).toHaveLength(0);
+    expect(decide([r], { mtimes: { '/logs/c8.log': freshMtime }, pids: { c8: 5 } }).reap).toHaveLength(0);
+  });
+
+  it('executeReaps closes a consult-settled row after a successful stop', async () => {
+    const closed: string[] = [];
+    await executeReaps(
+      [{ taskId: 'c9', scopeUnit: 'pc-c9--x.scope', logPath: null, kind: 'consult-settled', why: 'w' }],
+      {
+        archiveTail: async () => null,
+        stopUnit: async () => true,
+        closeAsReaped: async (id) => {
+          closed.push(id);
+        },
+      },
+    );
+    expect(closed).toEqual(['c9']);
+  });
+});
+
+describe('consultSettlement / consultAnswerFacts (pure)', () => {
+  const OWNER = 'su-aaaaaaaa-0000-0000-0000-000000000001';
+
+  it('reads the structured tag, the legacy label, and rejects a non-consult row', () => {
+    expect(consultAnswerFacts(consultRow('f1', 'conv-a', OWNER))).toEqual({
+      conversationId: 'conv-a',
+      answeringOwnerId: OWNER,
+      operation: 'fork',
+    });
+    expect(consultAnswerFacts(consultRow('f2', null, OWNER, 'convert'))).toEqual({
+      conversationId: null,
+      answeringOwnerId: OWNER,
+      operation: 'convert',
+    });
+    expect(consultAnswerFacts(row({ taskId: 'f3', detail: { label: 'headless-member', coordOwnerId: OWNER } }))).toBeNull();
+  });
+
+  it('matches a legacy FORK by its unique owner, but never a legacy CONVERT (owner recurs across consults)', () => {
+    const consults = [
+      consultState({ conversationId: 'conv-x', state: 'expired', closedAt: new Date(NOW - HOUR).toISOString(), selected: [{ answeringOwnerId: OWNER }] }),
+    ];
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork' }, consults)?.why).toMatch(/conv-x is expired/);
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'convert' }, consults)).toBeNull();
+  });
+
+  it('refuses an ambiguous legacy match and an unknown conversation (null = not this class’s call)', () => {
+    const twice = [
+      consultState({ conversationId: 'conv-1', state: 'expired', selected: [{ answeringOwnerId: OWNER }] }),
+      consultState({ conversationId: 'conv-2', state: 'expired', selected: [{ answeringOwnerId: OWNER }] }),
+    ];
+    expect(consultSettlement({ conversationId: null, answeringOwnerId: OWNER, operation: 'fork' }, twice)).toBeNull();
+    expect(consultSettlement({ conversationId: 'conv-missing', answeringOwnerId: OWNER, operation: 'fork' }, twice)).toBeNull();
+  });
+
+  it('treats an unstamped terminal state as settled, and tolerates a non-array selection', () => {
+    const s = consultSettlement(
+      { conversationId: 'conv-n', answeringOwnerId: OWNER, operation: 'fork' },
+      [consultState({ conversationId: 'conv-n', state: 'no_qualified_responder', selected: { not: 'an array' } })],
+    );
+    expect(s?.why).toMatch(/no_qualified_responder/);
   });
 });
 

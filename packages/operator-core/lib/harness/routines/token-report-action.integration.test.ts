@@ -18,20 +18,22 @@ describe('token report source coverage (real PostgreSQL)', () => {
     const sql = org.adminSql;
     const workspace = 'carry-health-ledger';
     for (const ws of [workspace, 'other-carry-workspace']) {
+      for (const adapter of ['codex', 'codex-iso-4']) {
       for (const [ordinal, input, cached, generation] of [[3, 90205, 7936, 1], [1, 691102, 0, 0], [2, 690650, 2816, 0]]) {
         await sql`INSERT INTO harness_shared.agent_usage_samples
           (workspace_id,ts,event_ts,source,provider,bucket_key,model_class,model,session_id,
            cache_read_tokens,cache_creation_tokens,usage_provenance)
           VALUES (${ws},${ordinal},${ordinal},'interactive','openai','openai:test','default','gpt-6-sol','native-fork',
-            ${cached},NULL,${JSON.stringify({ grain: 'request', adapter: 'codex', sourceFile: '/fixture/fork', fileGeneration: 0,
+            ${cached},NULL,${JSON.stringify({ grain: 'request', adapter, sourceFile: `/fixture/${adapter}`, fileGeneration: 0,
               requestOrdinal: ordinal, inputTotalTokens: input, contextGeneration: generation, predecessorSessionId: 'parent', cacheReadSource: 'reported' })}::jsonb)`;
+      }
       }
     }
     const rows = await readCarryHealth(sql, workspace, 0, 4);
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(evaluateCarryStartup(rows[0].observations)).toMatchObject({ state: 'regression',
       signals: ['cold-inherited-startup', 'oversized-startup-immediately-compacted'], firstTwoUncachedInput: null });
-    expect(renderCarryHealth(rows)).toContain('1 source groups; 0 incomplete; 1 cold inherited startup; 1 oversized startup immediately compacted');
+    expect(renderCarryHealth(rows)).toContain('2 source groups; 0 incomplete; 2 cold inherited startup; 2 oversized startup immediately compacted');
     const partial = await readCarryHealth(sql, workspace, 2, 4);
     expect(evaluateCarryStartup(partial[0].observations)).toMatchObject({ state: 'unknown', signals: [] });
     await sql`UPDATE harness_shared.agent_usage_samples SET usage_provenance = usage_provenance - 'cacheReadSource'

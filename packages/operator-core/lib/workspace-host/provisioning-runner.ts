@@ -463,8 +463,13 @@ type CanaryWorkspaceHostDestroyInput = RunWorkspaceHostDestroyInput & {
   canary: WorkspaceHostDestroyCanaryEvidence;
 };
 
+/**
+ * The persisted reason for a failure. `describeFetchError` equals `.message` unless undici hid the
+ * real reason in `.cause.code`; a destroy whose evidence census died on a bare "fetch failed" left
+ * nothing to tell a connect timeout from a closed socket (r39 destroy, 2026-09-24).
+ */
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return describeFetchError(error);
 }
 
 function nonEmpty(value: string, label: string): string {

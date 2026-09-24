@@ -34,8 +34,11 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
+  parseWorkspaceHostBootstrapReportedStatus,
   type WorkspaceHostDeliveryCapabilities,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostInitializationHostOperations,
@@ -52,6 +55,7 @@ import {
   GcpIapWorkspaceHostInitializationOperations,
   gcpIapHostKeyAlias,
   gcpIapHostKeyAliasFamily,
+  type GcpIapWorkspaceHostBootstrapStatusSource,
   type GcpIapWorkspaceHostInitializationProfile,
   type GcpIapWorkspaceHostTransportProfile,
 } from './gcp-iap-initialization-operations';
@@ -120,6 +124,27 @@ const hostKeyEnrollmentQueues = new Map<string, Promise<void>>();
 const HOST_KEY_ENROLLMENT_MUTEX_PREFIX = 'workspace-host-known-hosts-';
 
 interface GcpIapHostKeyEnrollmentTestHooks {
+  /** Test seam: synchronize independent processes immediately before cross-process acquisition. */
+  beforeMutex?: () => Promise<void>;
+  /** Test seam: widen the stale-snapshot window after the trust file is read. */
+  afterRead?: () => Promise<void>;
+}
+
+export interface GcpIapHostKeyPruneInput {
+  /** The stable GCP identity used by the same alias-family writer as enrollment. */
+  identity: Pick<GcpIapWorkspaceHostInitializationProfile, 'projectId' | 'zone' | 'instanceName'>;
+  knownHostsFile: string;
+  /** Re-read workspace_hosts inside the enrollment mutex; prune only after desired AND observed absent. */
+  confirmHostAbsent: () => Promise<boolean>;
+}
+
+export interface GcpIapHostKeyPruneResult {
+  aliasFamily: string;
+  removedEntries: number;
+  remainingEntries: number;
+}
+
+export interface GcpIapHostKeyPruneTestHooks {
   /** Test seam: synchronize independent processes immediately before cross-process acquisition. */
   beforeMutex?: () => Promise<void>;
   /** Test seam: widen the stale-snapshot window after the trust file is read. */
@@ -523,6 +548,118 @@ export function enrollGcpIapHostKeys(
   });
 }
 
+async function pruneGcpIapHostKeysForAbsentHostUnlocked(
+  input: GcpIapHostKeyPruneInput,
+  hooks: GcpIapHostKeyPruneTestHooks,
+): Promise<GcpIapHostKeyPruneResult> {
+  if (!(await input.confirmHostAbsent())) {
+    throw new WorkspaceHostInitializationHostKeyError(
+      'controller pins may be pruned only after a fresh workspace-host read confirms desired and observed absent',
+    );
+  }
+
+  const family = gcpIapHostKeyAliasFamily(input.identity);
+  const inFamily = (host: string) => host === family || host.startsWith(`${family}-`);
+  let current = '';
+  try {
+    const metadata = await lstat(input.knownHostsFile);
+    if (!metadata.isFile()) {
+      throw new WorkspaceHostInitializationHostKeyError('known_hosts path is not a regular file');
+    }
+    current = await readFile(input.knownHostsFile, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await hooks.afterRead?.();
+
+  const kept: string[] = [];
+  let removedEntries = 0;
+  for (const line of current === '' ? [] : current.replace(/\n$/, '').split('\n')) {
+    const trimmed = line.trimStart();
+    if (!trimmed || trimmed.startsWith('#')) {
+      kept.push(line);
+      continue;
+    }
+    const fields = trimmed.split(/\s+/);
+    const marked = fields[0]?.startsWith('@') === true;
+    const hostField = fields[marked ? 1 : 0] ?? '';
+    if (inFamily(hostField)) {
+      if (marked) {
+        throw new WorkspaceHostInitializationHostKeyError('known_hosts contains a marked controller-alias entry');
+      }
+      removedEntries += 1;
+      continue;
+    }
+    if (hostField.split(',').some(inFamily)) {
+      throw new WorkspaceHostInitializationHostKeyError(
+        'known_hosts embeds the controller alias in a multi-host entry',
+      );
+    }
+    kept.push(line);
+  }
+
+  if (removedEntries > 0) {
+    const next = kept.length > 0 ? `${kept.join('\n')}\n` : '';
+    const temporary = `${input.knownHostsFile}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      await rename(temporary, input.knownHostsFile);
+      await chmod(input.knownHostsFile, 0o600);
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  // Verify the replacement while still holding the same cross-process lock used by enrollment.
+  const written = removedEntries > 0 ? await readFile(input.knownHostsFile, 'utf8') : current;
+  let remainingEntries = 0;
+  for (const line of written === '' ? [] : written.replace(/\n$/, '').split('\n')) {
+    const trimmed = line.trimStart();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const fields = trimmed.split(/\s+/);
+    const hostField = fields[fields[0]?.startsWith('@') === true ? 1 : 0] ?? '';
+    if (inFamily(hostField) || hostField.split(',').some(inFamily)) remainingEntries += 1;
+  }
+  if (remainingEntries > 0) {
+    throw new WorkspaceHostInitializationHostKeyError(
+      `known_hosts still contains ${remainingEntries} pin(s) for an absent host alias family`,
+    );
+  }
+  return { aliasFamily: family, removedEntries, remainingEntries };
+}
+
+/**
+ * Remove every incarnation pin for a GCP instance name, but only after the caller's fresh host-row
+ * read confirms desired=observed=absent. This shares both the in-process queue and filesystem mutex
+ * with enrollment, so a concurrent reenrollment cannot be lost to an atomic rewrite of a stale
+ * snapshot.
+ */
+export function pruneGcpIapHostKeysForAbsentHost(
+  input: GcpIapHostKeyPruneInput,
+  hooks: GcpIapHostKeyPruneTestHooks = {},
+): Promise<GcpIapHostKeyPruneResult> {
+  if (!isAbsolute(input.knownHostsFile)) {
+    return Promise.reject(new WorkspaceHostInitializationHostKeyError('known_hosts path must be absolute'));
+  }
+  const knownHostsFile = resolve(input.knownHostsFile);
+  const prior = hostKeyEnrollmentQueues.get(knownHostsFile) ?? Promise.resolve();
+  const run = prior
+    .catch(() => undefined)
+    .then(async () => {
+      await hooks.beforeMutex?.();
+      return withFsMutex(
+        hostKeyEnrollmentMutexName(knownHostsFile),
+        () => pruneGcpIapHostKeysForAbsentHostUnlocked({ ...input, knownHostsFile }, hooks),
+        { timeoutMs: 30_000, staleMs: 60_000, retryMs: 20 },
+      );
+    });
+  hostKeyEnrollmentQueues.set(knownHostsFile, run);
+  return run.finally(() => {
+    if (hostKeyEnrollmentQueues.get(knownHostsFile) === run) hostKeyEnrollmentQueues.delete(knownHostsFile);
+  });
+}
+
 /** Raised when no initialization adapter exists for a host's provider target. */
 export class UnsupportedWorkspaceHostInitializationTargetError extends Error {
   readonly target: string;
@@ -596,6 +733,33 @@ export function createGcpWorkspaceHostApiClientForDesired(
 }
 
 /**
+ * Read the bootstrap's own status report from the instance's guest attributes — the channel
+ * `bootstrapStatusChannel: 'gce-guest-attributes'` renders into the script (WI-10002837). An
+ * absent or unparseable report is null (keep waiting); a Compute error propagates, and the
+ * readiness wait treats it as no report.
+ */
+export function gcpBootstrapStatusSource(
+  client: Pick<GcpWorkspaceHostApiClient, 'getInstanceGuestAttributes'>,
+  identity: { projectId: string; zone: string; instanceName: string },
+): GcpIapWorkspaceHostBootstrapStatusSource {
+  const namespace = WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE;
+  return async () => {
+    const attributes = await client.getInstanceGuestAttributes(
+      identity.projectId,
+      identity.zone,
+      identity.instanceName,
+      `${namespace}/`,
+    );
+    const report = attributes.find(
+      (attribute) =>
+        attribute.namespace === namespace &&
+        attribute.key === WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY,
+    );
+    return report ? parseWorkspaceHostBootstrapReportedStatus(report.value) : null;
+  };
+}
+
+/**
  * Build the concrete host adapter for a desired spec.
  *
  * Throws `UnsupportedWorkspaceHostInitializationTargetError` for a target with no adapter, and
@@ -609,6 +773,8 @@ export function resolveWorkspaceHostInitializationOperations(
   /** The live incarnation the trust pin was enrolled for — the SSH alias must name the same one. */
   incarnation: { instanceId: string },
   credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
+  /** The bootstrap's out-of-band report, which lets the readiness wait fail fast (WI-10002837). */
+  bootstrapStatus?: GcpIapWorkspaceHostBootstrapStatusSource,
 ): WorkspaceHostControllerOperations {
   const profile = resolveGcpIapWorkspaceHostInitializationProfile(desired, controller, incarnation);
   const { remoteEntrypoint: _remoteEntrypoint, ...transport } = profile;
@@ -620,7 +786,7 @@ export function resolveWorkspaceHostInitializationOperations(
   // `material is not present` message, which blames the host for the controller's gap. Wrapping
   // always is what keeps the honest one.
   return new GcpIapDeliveringWorkspaceHostInitializationOperations(
-    new GcpIapWorkspaceHostInitializationOperations(profile),
+    new GcpIapWorkspaceHostInitializationOperations(profile, undefined, undefined, bootstrapStatus),
     { ...transport, deliveryEntrypoint: controller.deliveryEntrypoint },
     credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
   );
@@ -881,6 +1047,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
       input.controller,
       { instanceId },
       input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+      gcpBootstrapStatusSource(client, identity),
     ),
     deliveryCapabilities,
     transport,

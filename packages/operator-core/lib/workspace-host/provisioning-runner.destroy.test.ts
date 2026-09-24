@@ -728,6 +728,26 @@ describe('runWorkspaceHostDestroy', () => {
     expect(updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed', percent: 99 }));
   });
 
+  // The r39 destroy (2026-09-24) stored `{ reason: 'fetch failed' }` and nothing else, so its
+  // census failure could not tell a connect timeout from a closed socket.
+  it('records the transport CAUSE CODE when the terminal census read dies on a bare fetch failure', async () => {
+    const inventoryError = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' },
+    });
+    const { provider } = providerHarness({ inventoryError });
+    const { store, updateOperation } = storeHarness();
+
+    const result = await runWorkspaceHostDestroy(runInput(provider, store));
+
+    expect(result.status).toBe('failed');
+    expect(updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        error: { reason: 'fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)' },
+      }),
+    );
+  });
+
   it('rejects invalid cumulative evidence before planning or deleting any provider resource', async () => {
     const { provider, apply } = providerHarness();
     const { store } = storeHarness();

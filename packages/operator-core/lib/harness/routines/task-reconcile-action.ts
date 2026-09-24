@@ -30,6 +30,8 @@ import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded } from '../../task-manager/store';
 import {
+  consultAnswerFacts,
+  consultSettlement,
   decideReaps,
   evaluateReaperFloor,
   executeReaps,
@@ -37,9 +39,11 @@ import {
   readScopeHolder,
   REAP_PRESENCE_FRESH_MS,
   residualAfterPass,
+  type ConsultStateRow,
   type ReapDecision,
   type ReapEffects,
 } from '../../task-manager/reaper';
+import type { TaskRow } from '../../task-manager/types';
 import type { ResidueGroup } from '../../task-manager/reconcile';
 import { absCgroupDir, walkCgroupTree } from '../../task-manager/cgroup-read';
 import { scopeCgroupRelPath } from '../../task-manager/types';
@@ -421,6 +425,90 @@ async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
 }
 
 /**
+ * The `consult_state` rows that the LIVE consult answering sessions serve
+ * (EI-24106882795589775), for the reaper's consult-settled class.
+ *
+ * `[]` when no live row is a consult answering session (nothing to read);
+ * `null` when the read FAILS, which switches the class off for the tick rather
+ * than letting an unreadable consult table read as "settled".
+ *
+ * Tagged rows are matched by conversation id. Legacy rows (written before the
+ * `consultAnswer` tag) are matched by answering owner inside the consult's
+ * `routing.selection.selected`, bounded to recent consults; `consultSettlement`
+ * decides whether such a match is unambiguous enough to act on.
+ */
+async function readConsultStatesForReaper(
+  live: readonly TaskRow[],
+): Promise<(ConsultStateRow & { workspaceId: string })[] | null> {
+  const consultRows = live.flatMap((row) => {
+    const facts = consultAnswerFacts(row);
+    return facts ? [{ row, facts }] : [];
+  });
+  if (consultRows.length === 0) return [];
+  const workspaceIds = [...new Set(consultRows.map((x) => x.row.workspaceId))];
+  const conversationIds = [
+    ...new Set(consultRows.flatMap((x) => (x.facts.conversationId ? [x.facts.conversationId] : []))),
+  ];
+  const legacyOwnerIds = [
+    ...new Set(
+      consultRows.flatMap((x) =>
+        !x.facts.conversationId && x.facts.answeringOwnerId ? [x.facts.answeringOwnerId] : [],
+      ),
+    ),
+  ];
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    const rows = await sql<
+      {
+        workspace_id: string;
+        conversation_id: string;
+        state: string;
+        closed_at: Date | null;
+        updated_at: Date | null;
+        cascade_cursor: number | null;
+        selected: unknown;
+      }[]
+    >`
+      SELECT cs.workspace_id, cs.conversation_id, cs.state, cs.closed_at, cs.updated_at,
+             cs.cascade_cursor, cs.routing #> '{selection,selected}' AS selected
+        FROM harness_shared.consult_state cs
+       WHERE cs.workspace_id = ANY(${workspaceIds}::text[])
+         AND (
+           cs.conversation_id = ANY(${conversationIds}::text[])
+           OR (
+             cardinality(${legacyOwnerIds}::text[]) > 0
+             AND cs.created_at > now() - interval '30 days'
+             AND EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
+                             THEN cs.routing #> '{selection,selected}'
+                             ELSE '[]'::jsonb END
+                      ) sel
+                WHERE sel->>'answeringOwnerId' = ANY(${legacyOwnerIds}::text[])
+             )
+           )
+         )`;
+    const iso = (d: Date | null) => (d ? new Date(d).toISOString() : null);
+    return rows.map((r) => ({
+      workspaceId: r.workspace_id,
+      conversationId: r.conversation_id,
+      state: r.state,
+      closedAt: iso(r.closed_at),
+      updatedAt: iso(r.updated_at),
+      cascadeCursor: r.cascade_cursor,
+      selected: r.selected,
+    }));
+  } catch (err) {
+    console.warn(
+      `[task-reaper] consult_state unreadable — consult-settled class off this pass: ${(err as Error)?.message ?? err}`,
+    );
+    return null;
+  }
+}
+
+/**
  * The agent-session RESIDUE REAPER (WI-41607) — the enforcement pass.
  *
  * Decision logic is pure and lives in `../../task-manager/reaper` with its own
@@ -493,6 +581,12 @@ async function reapAgentSessionResidue(
       freshOwners = null;
     }
 
+    // EI-24106882795589775: the consult each live answering session serves, so a
+    // settled consult's session is stopped within a tick instead of idling on its
+    // pty for days. Unreadable ⇒ the consult-settled class is simply off this tick
+    // (the quiet-zombie backstop still applies); it never widens the kill set.
+    const consultStates = await readConsultStatesForReaper(live);
+
     const verdict = decideReaps({
       rows: [...live, ...terminal],
       managedResidue,
@@ -524,6 +618,15 @@ async function reapAgentSessionResidue(
         const m = statMtimeMs(p);
         return m === null ? null : Date.now() - m;
       },
+      ...(consultStates
+        ? {
+            consultSettlementFor: (_row: TaskRow, facts: Parameters<typeof consultSettlement>[0]) =>
+              consultSettlement(
+                facts,
+                consultStates.filter((c) => c.workspaceId === _row.workspaceId),
+              ),
+          }
+        : {}),
       now: Date.now(),
     });
 
@@ -606,6 +709,7 @@ async function reapAgentSessionResidue(
         `[task-reaper] reaped ${okCount}/${outcomes.length} agent-session scope(s) ` +
         `(${verdict.reap.filter((r) => r.kind === 'terminal-residue').length} terminal-residue, ` +
         `${verdict.reap.filter((r) => r.kind === 'managed-residue').length} managed-residue, ` +
+        `${verdict.reap.filter((r) => r.kind === 'consult-settled').length} consult-settled, ` +
         `${verdict.reap.filter((r) => r.kind === 'quiet-zombie').length} quiet-zombie` +
         `${verdict.deferred > 0 ? `; ${verdict.deferred} deferred to next pass` : ''}` +
         `${verdict.quietClassDisabled ? '; quiet class DISABLED this pass (census degraded)' : ''}). ` +

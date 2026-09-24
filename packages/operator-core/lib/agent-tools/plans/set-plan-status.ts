@@ -473,6 +473,12 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
+  // A shipped-gate refusal can synchronously recruit a fresh headless judge.
+  // That bounded path can spend 6s in boot, 30s on native kickoff proof and
+  // 25s verifying its first turn (61s total). The default status-tool deadline
+  // expires first, hiding the launcher's failure/recovery receipt from the
+  // recruiter; match the launcher budget so the structured outcome is returned.
+  timeoutSec: 90,
   args: argsSchema,
   async handler(args, ctx) {
     // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.

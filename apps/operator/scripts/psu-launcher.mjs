@@ -9270,18 +9270,26 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
     killedBySignal = null,
     launchFailed = false,
     endAttemptKey = randomUUID(),
+    // WI-10002854: a REPLAYED pending witness passes its ORIGINAL observation time. Stamping
+    // the replay time instead would let a stale end observation of a killed predecessor
+    // re-end the row a successor (a headless wake resume) reactivated in between.
+    observedAt = null,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now = () => Date.now(),
     home = homedir(),
   } = opts;
   if (!advSessionId) return { reported: false, reason: "no-session" };
+  const observedMs =
+    typeof observedAt === "string" ? Date.parse(observedAt) : Number.NaN;
   const witness = {
     advSessionId: Number(advSessionId),
     exitCode: exitCode ?? null,
     killedBySignal: killedBySignal ?? null,
     launchFailed: launchFailed === true,
     endAttemptKey,
-    observedAt: new Date(now()).toISOString(),
+    observedAt: Number.isFinite(observedMs)
+      ? new Date(observedMs).toISOString()
+      : new Date(now()).toISOString(),
   };
   try {
     writePendingSessionEndWitness(witness, home);
@@ -9309,6 +9317,9 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
           killedBySignal: killedBySignal ?? null,
           ...(launchFailed ? { launchFailed: true } : {}),
           endAttemptKey,
+          // WI-10002854: lets the server refuse to end a successor incarnation that
+          // started after this observation (markAdvSessionEnded observedAt).
+          observedAt: witness.observedAt,
         }),
       },
       {
@@ -12076,6 +12087,7 @@ async function launchResume(
           killedBySignal: pendingEnd.killedBySignal,
           launchFailed: pendingEnd.launchFailed === true,
           endAttemptKey: pendingEnd.endAttemptKey,
+          observedAt: pendingEnd.observedAt ?? null,
         },
       );
       if (!reconciled.reported) {

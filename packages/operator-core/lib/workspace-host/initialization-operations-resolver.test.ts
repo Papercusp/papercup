@@ -9,7 +9,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,8 @@ import {
   WorkspaceHostInitializationHostKeyError,
   WorkspaceHostInstanceUnavailableError,
   enrollGcpIapHostKeys,
+  gcpBootstrapStatusSource,
+  pruneGcpIapHostKeysForAbsentHost,
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
   resolveWorkspaceHostInitializationOperationsForHost,
@@ -37,7 +39,10 @@ import {
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
 import { resolveGcpWorkspaceHostInstanceIdentity, type GcpInstanceGuestAttribute } from './gcp-provider';
-import { buildGcpIapWorkspaceHostInitializationCommand } from './gcp-iap-initialization-operations';
+import {
+  buildGcpIapWorkspaceHostInitializationCommand,
+  gcpIapHostKeyAliasFamily,
+} from './gcp-iap-initialization-operations';
 
 const controller: WorkspaceHostInitializationControllerProfile = {
   sshUser: 'papercusp',
@@ -1091,5 +1096,125 @@ describe('persisting a desired spec is secret-safe', () => {
     expect(() =>
       assertWorkspaceHostSecretIsolation(desired({ provider: { note: pemMarker } }), 'workspaceHost.desiredSpec'),
     ).toThrow(/Secret material is forbidden/);
+  });
+});
+
+describe('pruning a GCP IAP host-key alias family after confirmed destroy', () => {
+  it('removes every incarnation pin for only the absent instance family and preserves other trust entries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-prune-'));
+    const knownHostsFile = join(root, 'controller', 'known_hosts');
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const family = gcpIapHostKeyAliasFamily(identity);
+    await mkdir(dirname(knownHostsFile), { recursive: true });
+    const original = [
+      '# controller trust',
+      `other-host ssh-ed25519 other-key`,
+      `${family} ssh-ed25519 old-name-only-key`,
+      `${family}-1234 ssh-ed25519 prior-incarnation-key`,
+      `${family}-5678 ssh-ed25519 latest-incarnation-key`,
+      '',
+    ].join('\n');
+    await writeFile(knownHostsFile, original, { mode: 0o600 });
+
+    try {
+      const result = await pruneGcpIapHostKeysForAbsentHost({
+        identity,
+        knownHostsFile,
+        confirmHostAbsent: async () => true,
+      });
+
+      const written = await readFile(knownHostsFile, 'utf8');
+      expect(result).toEqual({ aliasFamily: family, removedEntries: 3, remainingEntries: 0 });
+      expect(written).toContain('# controller trust');
+      expect(written).toContain('other-host ssh-ed25519 other-key');
+      expect(written).not.toContain(family);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses before reading or changing trust when a fresh absence check fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-prune-running-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const family = gcpIapHostKeyAliasFamily(identity);
+    const original = `${family}-1234 ssh-ed25519 retained-key\n`;
+    await writeFile(knownHostsFile, original, { mode: 0o600 });
+
+    try {
+      await expect(
+        pruneGcpIapHostKeysForAbsentHost({
+          identity,
+          knownHostsFile,
+          confirmHostAbsent: async () => false,
+        }),
+      ).rejects.toThrow(/only after a fresh workspace-host read/);
+      expect(await readFile(knownHostsFile, 'utf8')).toBe(original);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses marked or multi-host entries rather than changing trust it cannot address exactly', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-prune-malformed-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const family = gcpIapHostKeyAliasFamily(identity);
+    const malformed = [`@revoked ${family}-1234 ssh-ed25519 key`, `other,${family}-1234 ssh-ed25519 key`];
+
+    try {
+      for (const line of malformed) {
+        await writeFile(knownHostsFile, `${line}\n`, { mode: 0o600 });
+        await expect(
+          pruneGcpIapHostKeysForAbsentHost({
+            identity,
+            knownHostsFile,
+            confirmHostAbsent: async () => true,
+          }),
+        ).rejects.toThrow(/known_hosts/);
+        expect(await readFile(knownHostsFile, 'utf8')).toBe(`${line}\n`);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('gcpBootstrapStatusSource (WI-10002837)', () => {
+  const identity = { projectId: 'proj-1', zone: 'us-central1-a', instanceName: 'host-1' };
+
+  function sourceReturning(attributes: GcpInstanceGuestAttribute[]) {
+    const getInstanceGuestAttributes = vi.fn(async () => attributes);
+    return { getInstanceGuestAttributes, read: gcpBootstrapStatusSource({ getInstanceGuestAttributes }, identity) };
+  }
+
+  it('reads the papercusp/bootstrap report from the instance the provider created', async () => {
+    const { getInstanceGuestAttributes, read } = sourceReturning([
+      { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'AAAA' },
+      { namespace: 'papercusp', key: 'bootstrap', value: 'failed exit=100 phase=apt-install error=apt-get install failed' },
+    ]);
+
+    await expect(read()).resolves.toEqual({
+      state: 'failed',
+      exitCode: 100,
+      phase: 'apt-install',
+      error: 'apt-get install failed',
+    });
+    expect(getInstanceGuestAttributes).toHaveBeenCalledWith('proj-1', 'us-central1-a', 'host-1', 'papercusp/');
+  });
+
+  it('is null when no report was written yet, so the wait keeps probing', async () => {
+    const { read } = sourceReturning([{ namespace: 'hostkeys', key: 'ssh-ed25519', value: 'AAAA' }]);
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it('reads a foreign or truncated value as no report, never as a failure', async () => {
+    const { read } = sourceReturning([{ namespace: 'papercusp', key: 'bootstrap', value: 'failed exit=' }]);
+    await expect(read()).resolves.toBeNull();
+  });
+
+  it('ignores a bootstrap key under another namespace', async () => {
+    const { read } = sourceReturning([{ namespace: 'other', key: 'bootstrap', value: 'failed exit=1 phase= error=' }]);
+    await expect(read()).resolves.toBeNull();
   });
 });
