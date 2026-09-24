@@ -30,6 +30,18 @@ export interface SuStdioPeer {
   done: Promise<void>;
   close(): Promise<void>;
   pid(): number | null;
+  /** Optional for older peer implementations. A missing state cannot prove a
+   * complete receipt population. Read after close(), not just turn/completed. */
+  receiptState?(): SuStdioReceiptState;
+}
+export interface SuStdioReceiptState {
+  peerId: string;
+  clockId: string;
+  emitted: number;
+  enabled: boolean;
+  sinkFailed: boolean;
+  exited: boolean;
+  pendingWrites: number;
 }
 export interface SuStdioPeerOptions {
   binary: string;
@@ -59,10 +71,14 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   let stderrTruncated = false;
   const peerId = randomUUID();
   let receiptSequence = 0;
+  let receiptSinkFailed = false;
+  let pendingWrites = 0;
   function receipt(phase: SuStdioReceipt['phase'], frame: RpcFrame): void {
     if (!options.onReceipt) return;
-    options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: processMonotonicClock.id,
-      atMs: processMonotonicClock.now(), phase, frame: structuredClone(frame) });
+    try {
+      options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: processMonotonicClock.id,
+        atMs: processMonotonicClock.now(), phase, frame: structuredClone(frame) });
+    } catch (error) { receiptSinkFailed = true; throw error; }
   }
   const diagnosticSecrets = Object.entries(options.env)
     .filter(([key]) => /token|secret|password|credential|authorization|api.?key|database.?url|dsn/i.test(key))
@@ -100,7 +116,9 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     const sent = options.onReceipt ? JSON.parse(line) as RpcFrame : frame;
     try {
       receipt('write-started', sent);
+      pendingWrites++;
       child.stdin!.write(`${line}\n`, (error) => {
+        pendingWrites--;
         try { receipt(error ? 'write-failed' : 'write-completed', sent); }
         catch (failure) { fail(failure instanceof Error ? failure : new Error(String(failure))); return; }
         if (error) fail(error);
@@ -192,6 +210,8 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   }
   return {
     send, done, close, pid: () => child.pid ?? null,
+    receiptState: () => ({ peerId, clockId: processMonotonicClock.id, emitted: receiptSequence,
+      enabled: Boolean(options.onReceipt), sinkFailed: receiptSinkFailed, exited, pendingWrites }),
     request(frame, timeoutMs = 45_000) {
       const id = `pui-${randomUUID()}`;
       return new Promise<RpcFrame>((resolve, reject) => {
