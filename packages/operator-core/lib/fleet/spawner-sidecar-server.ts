@@ -27,10 +27,19 @@
  *              `spawn:outputActivity` { requestId }
  *            then replies with the SpawnInvokeOnceResult.
  * Request  `spawn:cancel`     { requestId } → aborts that request's AbortController.
+ *                           Also returns the server/connection generation for a
+ *                           process:exec `fence` (including with no requestId).
+ * Request  `process:drain`    { serverGeneration, connectionId, requestId } on a
+ *                           different connection → revokes the old connection,
+ *                           waits for its exec to settle, confirms exit. A null
+ *                           result means the result was lost, never retry it.
+ *                           This is live-server proof only; a server-generation
+ *                           mismatch cannot prove an old process has exited.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 // WI-6822: MUST be the first import in this file, textually before
 // `orchestrator-runner` below — it installs the flag-override store as an
@@ -52,7 +61,7 @@ import {
   ownerPidFromSocketPath,
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
-import { execProcess, type ExecParams } from './sidecar-exec-process';
+import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -138,6 +147,14 @@ export function runSpawnerSidecarServer(): net.Server {
   }
 
   const controllers = new Set<AbortController>();
+  // Only live connections and their unfinished work are retained. No result
+  // cache, TTL, durable receipt or new background timer is needed for draining.
+  const serverGeneration = randomUUID();
+  const connections = new Map<string, {
+    socket: net.Socket;
+    requests: Map<number | string, AbortController>;
+    executions: Map<number | string, Promise<ExecResult>>;
+  }>();
   let shuttingDown = false;
   let socketsClosed = false;
   let exitRequested = false;
@@ -171,9 +188,16 @@ export function runSpawnerSidecarServer(): net.Server {
     // JSON-RPC ids are local to a connection. Two clients can both send id=1;
     // neither may cancel the other's child or leave it orphaned on disconnect.
     const requests = new Map<number | string, AbortController>();
+    const executions = new Map<number | string, Promise<ExecResult>>();
+    const connectionId = randomUUID();
+    connections.set(connectionId, { socket, requests, executions });
+    const forgetDrainedConnection = (): void => {
+      if (socket.destroyed && requests.size === 0) connections.delete(connectionId);
+    };
     socket.once('close', () => {
       clients.delete(socket);
       for (const controller of requests.values()) controller.abort();
+      forgetDrainedConnection();
     });
     const write = (obj: object): void => {
       if (socket.destroyed) return;
@@ -181,6 +205,9 @@ export function runSpawnerSidecarServer(): net.Server {
     };
 
     const handleLine = async (line: string): Promise<void> => {
+      // A recovery connection can revoke this socket while already-buffered
+      // frames remain. None may create work after the drain barrier.
+      if (socket.destroyed) return;
       let req: { jsonrpc?: string; method?: string; params?: unknown; id?: number | string | null };
       try {
         req = JSON.parse(line);
@@ -226,6 +253,7 @@ export function runSpawnerSidecarServer(): net.Server {
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          forgetDrainedConnection();
           exitWhenDrained();
         }
         return;
@@ -236,15 +264,28 @@ export function runSpawnerSidecarServer(): net.Server {
           write(rpcError(-32600, 'process:exec requires an id', null));
           return;
         }
+        const params = (req.params ?? {}) as ExecParams;
+        if (params.fence && (params.fence.serverGeneration !== serverGeneration || params.fence.connectionId !== connectionId)) {
+          write(rpcResult({ code: -1, stdout: '', stderr: 'spawner sidecar execution fence mismatch before spawn' }, id));
+          return;
+        }
+        // Reusing an in-flight id could hide the original process from both
+        // cancellation and draining. Refuse it before any admission or spawn.
+        if (requests.has(id)) {
+          write(rpcError(-32600, 'request id already active', id));
+          return;
+        }
         const controller = new AbortController();
         controllers.add(controller);
         requests.set(id, controller);
         try {
-          const result = await execProcess((req.params ?? {}) as ExecParams, {
+          const execution = execProcess(params, {
             signal: controller.signal,
             onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
           });
+          executions.set(id, execution);
+          const result = await execution;
           write(rpcResult(result, id));
         } catch (e) {
           const err = e as { message?: string };
@@ -252,7 +293,41 @@ export function runSpawnerSidecarServer(): net.Server {
         } finally {
           controllers.delete(controller);
           requests.delete(id);
+          executions.delete(id);
+          forgetDrainedConnection();
           exitWhenDrained();
+        }
+        return;
+      }
+
+      if (req.method === 'process:drain') {
+        const p = (req.params ?? {}) as { serverGeneration?: string; connectionId?: string; requestId?: number | string };
+        if (id === null) return;
+        if (p.serverGeneration !== serverGeneration) {
+          write(rpcError(-32600, 'server generation mismatch; exit is unverified', id));
+          return;
+        }
+        if (typeof p.connectionId !== 'string' || p.requestId == null) {
+          write(rpcError(-32600, 'connectionId and requestId are required', id));
+          return;
+        }
+        if (p.connectionId === connectionId) {
+          write(rpcError(-32600, 'process:drain requires a different connection', id));
+          return;
+        }
+        const original = connections.get(p.connectionId);
+        const execution = original?.executions.get(p.requestId);
+        // Close FIRST, before awaiting admission or exit: even an absent
+        // request is now fenced against later delivery on the old connection.
+        original?.socket.destroy();
+        for (const controller of original?.requests.values() ?? []) controller.abort();
+        try {
+          const result = execution ? await execution : null;
+          // A deleted connection/request has already drained. Lost results
+          // remain unknown (null); they are never replayed to reconstruct one.
+          write(rpcResult({ exitConfirmed: true, result }, id));
+        } catch (error) {
+          write(rpcError(-32603, `process exit proof unavailable: ${String(error)}`, id));
         }
         return;
       }
@@ -263,7 +338,10 @@ export function runSpawnerSidecarServer(): net.Server {
         if (controller) controller.abort();
         // cancelled acknowledges the signal, not child exit. The original
         // process:exec result is sent only after the child closes.
-        if (id !== null) write(rpcResult({ cancelled: !!controller, processExecCancellation: true }, id));
+        if (id !== null) write(rpcResult({
+          cancelled: !!controller, processExecCancellation: true,
+          processExecFence: { serverGeneration, connectionId },
+        }, id));
         return;
       }
 

@@ -155,7 +155,7 @@ export async function projectBlueprintToPg(
       throw new Error('compiled specification belongs to a different workspace or harness');
     }
   }
-  if (specification && (specification.configuration.bundles.length || resolveSeedPackKey(specification.configuration).packId)) {
+  if (specification && ((specification.configuration.bundles?.length ?? 0) || resolveSeedPackKey(specification.configuration).packId)) {
     await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
   }
   // Legacy blueprints have no operation manifest and keep their current one-row

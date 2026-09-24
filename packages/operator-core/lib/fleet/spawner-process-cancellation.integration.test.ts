@@ -88,8 +88,127 @@ function runChild(releasePath?: string) {
     onPid: (value) => { pid = value; pids.add(pid); },
     onOutputActivity: () => ready(),
   });
+  // Cleanup may close the socket after an earlier assertion failed. Keep that
+  // secondary rejection observed without changing the result asserted by tests.
+  void result.catch(() => {});
   return { client, started, result, id: () => requestId, pid: () => pid };
 }
+
+function recoveryClient() {
+  const client = new SpawnerIpcClient(join(dir, 'server.sock'));
+  clients.push(client);
+  return client;
+}
+
+async function executionFence(client: SpawnerIpcClient) {
+  const capabilities = await client.call<{
+    processExecFence: { serverGeneration: string; connectionId: string };
+  }>('spawn:cancel', {});
+  expect(capabilities.processExecFence).toMatchObject({
+    serverGeneration: expect.any(String), connectionId: expect.any(String),
+  });
+  return capabilities.processExecFence;
+}
+
+describe('process:drain connection-generation exit proof', () => {
+  it('waits for disconnected command exit and settlement without cancelling another client', async () => {
+    const child = runChild(join(dir, 'release'));
+    const sibling = runChild();
+    await Promise.all([child.started, sibling.started]);
+    const fence = await executionFence(child.client);
+    let releaseSettlement!: () => void;
+    h.finished.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      releaseSettlement = () => resolve(true);
+    }));
+    const rejected = expect(child.result).rejects.toThrow('Connection closed by caller');
+    child.client.close();
+    await rejected;
+    let settled = false;
+    const drain = recoveryClient().call('process:drain', { ...fence, requestId: child.id() });
+    void drain.then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(h.finished).toHaveBeenCalledOnce());
+      expect(alive(child.pid())).toBe(false);
+      expect(settled).toBe(false);
+      expect(alive(sibling.pid())).toBe(true);
+      releaseSettlement();
+      expect(await drain).toMatchObject({ exitConfirmed: true });
+      expect(alive(sibling.pid())).toBe(true);
+    } finally {
+      releaseSettlement?.();
+      await sibling.client.call('spawn:cancel', { requestId: sibling.id() });
+      await sibling.result;
+    }
+  });
+
+  it('revokes a connection before admission/PID and waits until it cannot launch the mutation', async () => {
+    let admit!: (value: GovernedExecution) => void;
+    h.begin.mockImplementationOnce(() => new Promise<GovernedExecution>((resolve) => { admit = resolve; }));
+    const client = recoveryClient();
+    const fence = await executionFence(client);
+    const marker = join(dir, 'must-not-run');
+    let requestId = 0;
+    const onPid = vi.fn();
+    const execution = client.call('process:exec', {
+      command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'mutation')`],
+      fence, timeoutMs: 5000,
+    }, { onRequestId: (id) => { requestId = id; }, onPid });
+    const rejected = expect(execution).rejects.toThrow('Socket error');
+    await vi.waitFor(() => expect(h.begin).toHaveBeenCalledOnce());
+    let settled = false;
+    const drain = recoveryClient().call('process:drain', { ...fence, requestId });
+    void drain.then(() => { settled = true; });
+    await rejected;
+    expect(settled).toBe(false);
+    admit(receipt());
+    expect(await drain).toMatchObject({ exitConfirmed: true, result: { code: -1 } });
+    expect(onPid).not.toHaveBeenCalled();
+    await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses an old connection fence after reconnect, even if no request had reached admission', async () => {
+    const client = recoveryClient();
+    const fence = await executionFence(client);
+    expect(await recoveryClient().call('process:drain', { ...fence, requestId: 2 }))
+      .toMatchObject({ exitConfirmed: true, result: null });
+    client.close();
+    const result = await client.call('process:exec', { command: process.execPath, args: ['-e', 'process.exit(0)'], fence });
+    expect(result).toMatchObject({ code: -1, stderr: expect.stringContaining('fence mismatch') });
+    expect(h.begin).not.toHaveBeenCalled();
+  });
+
+  it('refuses another server generation and same-connection drain without cancelling a live command', async () => {
+    const child = runChild();
+    await child.started;
+    const fence = await executionFence(child.client);
+    await expect(recoveryClient().call('process:drain', {
+      ...fence, serverGeneration: 'previous-incarnation', requestId: child.id(),
+    })).rejects.toThrow('server generation mismatch');
+    await expect(child.client.call('process:drain', { ...fence, requestId: child.id() }))
+      .rejects.toThrow('different connection');
+    expect(alive(child.pid())).toBe(true);
+    await child.client.call('spawn:cancel', { requestId: child.id() });
+    await child.result;
+  });
+
+  it('confirms a completed connection without replaying a completed mutation', async () => {
+    const client = recoveryClient();
+    const fence = await executionFence(client);
+    const marker = join(dir, 'mutation-count');
+    let requestId = 0;
+    expect(await client.call('process:exec', {
+      command: process.execPath, args: ['-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'once\\n')`],
+      fence, timeoutMs: 5000,
+    }, { onRequestId: (id) => { requestId = id; } })).toMatchObject({ code: 0 });
+    const recovery = recoveryClient();
+    for (let i = 0; i < 2; i++) {
+      expect(await recovery.call('process:drain', { ...fence, requestId }))
+        .toMatchObject({ exitConfirmed: true, result: null });
+    }
+    expect(await readFile(marker, 'utf8')).toBe('once\n');
+    expect(h.begin).toHaveBeenCalledOnce();
+  });
+});
 
 describe('process:exec cancellation over the real spawner IPC protocol', () => {
   it('keeps the original request pending until graceful cleanup and actual child exit', async () => {

@@ -238,7 +238,7 @@ export async function provisionBlueprintPackages(
   const target: BlueprintPackageScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
     ...(scope.memoryTarget ? { memoryTarget: scope.memoryTarget } : {}),
     ...(scope.knowledgeSelection ? { knowledgeSelection: scope.knowledgeSelection } : {}) };
-  const bundles = specification.configuration.bundles;
+  const bundles = specification.configuration.bundles ?? [];
   const packages = validateAgentInputClosure(specification.inputs).filter((entry): entry is ResolvedPackageInput => entry.kind === 'package');
   const byKey = new Map(packages.map((pin) => [pin.packageKind + ':' + pin.ref, pin]));
   const included = new Set<string>();

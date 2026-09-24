@@ -69,6 +69,9 @@ export interface ExecParams {
   idempotencyKey?: string;
   /** Typed nested lineage. When absent, the propagated process env is decoded. */
   admissionContext?: AdmissionContext;
+  /** Bind dispatch to the server/connection observed before starting work.
+   * Validated by the IPC server before admission, never by a durable receipt. */
+  fence?: { serverGeneration: string; connectionId: string };
 }
 
 export interface ExecResult {

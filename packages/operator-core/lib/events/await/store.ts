@@ -1976,6 +1976,21 @@ export async function insertDeliveries(input: {
   return n;
 }
 
+/** Upper bound on how stale a fired-but-undelivered await may be and still be
+ * recoverable. The crash this sweep exists to repair is a producer dying between
+ * its `fired_at` commit and its `insertDeliveries` call — a window of seconds, so
+ * anything older is not a lost wake but a settled one whose delivery row never
+ * landed. Without a ceiling the `NOT EXISTS` predicate keeps EVERY such row
+ * eligible forever and `ORDER BY a.fired_at` serves the oldest first: this sweep's
+ * first production run (2026-09-24T12:39:06Z) drained a 3.5-month backlog as one
+ * 0.6s burst — 91 deliveries to 60 subscribers, awaits averaging 37 days stale and
+ * reaching back to 2026-06-11, 85 of them already `fired_reason='expired'` — which
+ * respawned ~50 dead sessions, each handed a note whose premises had long since
+ * resolved. A resurrected agent cannot tell a stale wake from a live one, so it
+ * acts on the note: the wake that prompted this fix told its (dead) recipient to
+ * claim work in a fleet that had since wound down. */
+const FIRED_WAKE_RECOVERY_MAX_AGE = '1 hour';
+
 /** Recover a consumed one-shot whose producer died after firing it but before
  * creating its wake row. The await row carries its recipient and fired payload;
  * insertDeliveries serializes against a still-running original producer. */
@@ -1988,6 +2003,7 @@ export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number>
        AND a.once = true AND a.policy = 'wake'
        AND a.node_id IS NULL AND a.root_id IS NULL
        AND a.fired_at IS NOT NULL AND a.fired_at < now() - interval '2 seconds'
+       AND a.fired_at > now() - ${FIRED_WAKE_RECOVERY_MAX_AGE}::interval
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.event_wake_deliveries d
           WHERE d.workspace_id = a.workspace_id AND d.await_id = a.id

@@ -61,7 +61,7 @@ describe('P-006 operator package adapter', () => {
       resolvePackage: async ({ ref, kind }) => pin(ref, kind as 'recipe' | 'knowledge-pack' | 'rubric'),
       input: { mutableState: { ref: 'mode', revision: 6, value: { auto: false } } },
     });
-    expect(artifact.configuration.knobs.aiBackend?.default?.engine).toBe('loop');
+    expect(artifact.configuration.knobs?.aiBackend?.default?.engine).toBe('loop');
     expect(artifact.inputs).toContainEqual({ kind: 'setting', ref: 'mode', revision: '6', value: { auto: false } });
     expect(artifact.inputs).toContainEqual({ kind: 'setting', ref: 'bundle-scope', revision: '1',
       value: { workspaceId: 'workspace-a', harnessSlug: 'harness-a', memoryTarget: { kind: 'hive', slug: 'parent-pot' },

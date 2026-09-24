@@ -251,7 +251,7 @@ describe('buildRoleLaunchSpec', () => {
       expect(fromDefault.promptText.indexOf('FIXTURE DOMAIN IDENTITY')).toBeLessThan(
         fromDefault.promptText.indexOf('ROLE KERNEL'),
       );
-      expect(fromDefault.specificationArtifact.configuration.roles[0]?.stack).toEqual([
+      expect(fromDefault.specificationArtifact.configuration.roles?.[0]?.stack).toEqual([
         'domain:fixture-domain',
       ]);
 

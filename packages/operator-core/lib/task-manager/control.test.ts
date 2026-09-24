@@ -226,6 +226,28 @@ describe('killTask — confined path', () => {
     expect(store.closed).toHaveLength(0);
   });
 
+  it('reports failed SIGKILL escalation instead of claiming delivery or closing the task', async () => {
+    row({ taskId: 'failedkill' });
+    const calls: string[][] = [];
+    const out = await killTask('failedkill', {
+      escalateAfterMs: 1,
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args.includes('--signal=SIGKILL')) throw new Error('systemd bus disconnected during escalation');
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(calls).toEqual([
+      ['--user', 'kill', '--signal=SIGTERM', 'pc-failedkill.scope'],
+      ['--user', 'kill', '--signal=SIGKILL', 'pc-failedkill.scope'],
+    ]);
+    expect(out).toMatchObject({ ok: false, error: 'command_failed', detail: expect.stringContaining('systemd bus disconnected') });
+    expect(out.detail).not.toContain('no retry is required');
+    expect(store.closed).toHaveLength(0);
+  });
+
   it('EI-22074929140199832: verifies the SCOPE, not the stored cgroup_path — a mismatched path never becomes a phantom survivor', async () => {
     // The measured production shape: `task_ledger.cgroup_path` holds the OPERATOR'S
     // own cgroup rather than this task's scope (522 of 726 confined rows started in
@@ -589,6 +611,32 @@ describe('killTask — residue diagnostics on an incomplete kill (EI-21065795494
 });
 
 describe('killScopeUnit — explicit orphan-scope teardown', () => {
+  it.each([false, true])('distinguishes SIGKILL delivery from failed escalation (failure=%s)', async (failure) => {
+    const calls: string[][] = [];
+    const out = await killScopeUnit('pc-orphan123.scope', {
+      escalateAfterMs: 1,
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'show') return { stdout: '/papercusp.slice/pc-orphan123.scope\n', stderr: '' };
+        if (failure && args.includes('--signal=SIGKILL')) throw new Error('systemd bus disconnected during escalation');
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(calls.slice(1)).toEqual([
+      ['--user', 'kill', '--signal=SIGTERM', 'pc-orphan123.scope'],
+      ['--user', 'kill', '--signal=SIGKILL', 'pc-orphan123.scope'],
+    ]);
+    if (failure) {
+      expect(out).toMatchObject({ ok: false, error: 'command_failed', detail: expect.stringContaining('systemd bus disconnected') });
+      expect(out.detail).not.toContain('no retry is required');
+    } else {
+      expect(out).toMatchObject({ ok: true, detail: expect.stringContaining('termination pending') });
+    }
+    expect(store.closed).toHaveLength(0);
+  });
+
   it('resolves a validated Papercusp scope, requires a live cgroup, and verifies it empty', async () => {
     let alive = true;
     const calls: string[][] = [];

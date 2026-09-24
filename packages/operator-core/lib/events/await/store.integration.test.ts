@@ -401,6 +401,37 @@ describe('await-event store (PG)', () => {
     expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${pending.id}`).toHaveLength(1);
   });
 
+  it('does NOT resurrect a long-settled fired await whose delivery row never landed', async () => {
+    // The recoverable crash is a producer dying between `fired_at` and
+    // insertDeliveries — seconds. An await that fired weeks ago is settled, and
+    // re-delivering it respawns a dead session on premises that have since
+    // resolved (the first production sweep did this to ~50 sessions at once,
+    // averaging 37 days stale).
+    const ancient = await registerAwait({ subscriberId: 'ancient-waiter', eventKey: 'work-item:claimable' });
+    await fireAwaitsForKey({ eventKey: ancient.eventKey, payload: { eventKey: ancient.eventKey } });
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '37 days' WHERE id = ${ancient.id}`;
+
+    // A fresh crash-window row must still be recovered by the same sweep, so a
+    // green result cannot come from the sweep simply doing nothing.
+    const recent = await registerAwait({ subscriberId: 'recent-waiter', eventKey: 'work-item:done:WI-recent' });
+    await fireAwaitsForKey({ eventKey: recent.eventKey, payload: { itemId: 'WI-recent' } });
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '3 seconds' WHERE id = ${recent.id}`;
+
+    expect(await reconcileFiredWakeDeliveries()).toBe(1); // the recent one only
+    expect(
+      await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${ancient.id}`,
+    ).toHaveLength(0);
+    expect(
+      await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${recent.id}`,
+    ).toHaveLength(1);
+
+    // Still inert on every later sweep — not merely deferred past one pass.
+    expect(await reconcileFiredWakeDeliveries()).toBe(0);
+    expect(
+      await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${ancient.id}`,
+    ).toHaveLength(0);
+  });
+
   it('serializes a recovery sweep against the original one-shot delivery writer', async () => {
     const pending = await registerAwait({ subscriberId: 'race-waiter', eventKey: 'work-item:done:WI-race' });
     const [fired] = await fireAwaitsForKey({ eventKey: pending.eventKey, payload: { result: 'settled' } });

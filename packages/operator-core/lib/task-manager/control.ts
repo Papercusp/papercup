@@ -340,9 +340,17 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     if (opts.escalateAfterMs && opts.escalateAfterMs > 0) {
       await d.sleep(opts.escalateAfterMs);
       if ((await countScopeProcesses(row, d)) > 0) {
-        escalated = true;
         notifyTaskKillRequested(taskId, 'SIGKILL');
-        await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
+        const escalation = await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
+        // Pending termination is a success only when SIGKILL was delivered.
+        // A failed command must not suppress recovery or close a live task.
+        if (!escalation.ok) {
+          return {
+            ok: false, taskId, action: 'kill', error: 'command_failed',
+            detail: `SIGKILL escalation failed for scope ${row.scopeUnit}: ${escalation.detail}`,
+          };
+        }
+        escalated = true;
       }
     }
     // EI-19478780721557822: a `systemctl kill` exit code only proves the SIGNAL was
@@ -484,8 +492,14 @@ export async function killScopeUnit(
   if (opts.escalateAfterMs && opts.escalateAfterMs > 0) {
     await d.sleep(opts.escalateAfterMs);
     if (countCgroupProcesses(resolved.cgroupPath, d) > 0) {
+      const escalation = await systemctl(['kill', '--signal=SIGKILL', scopeUnit], d);
+      if (!escalation.ok) {
+        return {
+          ok: false, scopeUnit, action, error: 'command_failed',
+          detail: `SIGKILL escalation failed for scope ${scopeUnit}: ${escalation.detail}`,
+        };
+      }
       escalated = true;
-      await systemctl(['kill', '--signal=SIGKILL', scopeUnit], d);
     }
   }
 
