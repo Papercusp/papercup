@@ -485,6 +485,7 @@ import {
   GitSyncActionTimeoutError,
   parseGitSyncOwnerPid,
   formatOwnHeadPublishedLine,
+  formatOwnHeadPublishSkipLine,
   isIntegratorActorAdmitted,
   mergeAttributionRosters,
   isGenericLockIntent,
@@ -942,7 +943,9 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     let observedSignal: AbortSignal | undefined;
     reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, { signal, onProgress }) => {
       observedSignal = signal;
-      await new Promise<never>((_resolve, reject) => {
+      // Returned, not awaited: an awaited never-settling promise infers Promise<void>,
+      // which the mock's settlement-result return type rejects (TS2345).
+      return new Promise<never>((_resolve, reject) => {
         let completed = 0;
         const progress = setInterval(() => {
           completed += 1;
@@ -3069,6 +3072,83 @@ describe('clean sync outcome', () => {
     );
   });
 
+  // EI-24099226502437988: the own-head leg used to return SILENTLY on its
+  // preconditions, so `own_head_publish` froze while fires kept committing and
+  // nothing said which exit had fired. These pin that each reachable exit now
+  // writes a named `own_head_publish_skip` record and a warn line.
+  const ownHeadSkipRecords = (): unknown[] =>
+    allRoutinePatches()
+      .filter((p) => 'own_head_publish_skip' in p)
+      .map((p) => p.own_head_publish_skip);
+
+  it('EI-24099226502437988: a bridged tick whose device actor does not resolve records a named own-head skip', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      potGitMode = 'bridged';
+      registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+      runGitSyncMock.mockResolvedValue({
+        status: 'nothing',
+        dirtyPathCount: 0,
+        committedCount: 0,
+        oversized: [],
+        contentErrors: [],
+        strandedSubmodules: [],
+      });
+
+      await action({ ...ctx, triggerConfig: { push: false } });
+
+      expect(ownHeadSkipRecords()).toContainEqual({
+        at: expect.any(Number),
+        reason: 'no-device-actor',
+        detail: expect.stringContaining('resolveHiveGitActor returned null'),
+      });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[git-sync] papercup: own-head publish SKIPPED — no-device-actor'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('EI-24099226502437988: a registry read that fails inside the own-head leg records registry-unreadable, not silence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const originalRegistry = loadHarnessRegistryMock.getMockImplementation();
+    try {
+      potGitMode = 'bridged';
+      registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+      // The gate and local-sync read the registry normally. Every read after
+      // local-sync fails, as a PG connect timeout would under a starved loop.
+      runGitSyncMock.mockImplementation(async () => {
+        loadHarnessRegistryMock.mockImplementation(async () => {
+          throw new Error('timeout exceeded when trying to connect');
+        });
+        return {
+          status: 'nothing',
+          dirtyPathCount: 0,
+          committedCount: 0,
+          oversized: [],
+          contentErrors: [],
+          strandedSubmodules: [],
+        };
+      });
+
+      await action({ ...ctx, triggerConfig: { push: false } });
+
+      expect(ownHeadSkipRecords()).toContainEqual({
+        at: expect.any(Number),
+        reason: 'registry-unreadable',
+        detail: 'timeout exceeded when trying to connect',
+      });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[git-sync] papercup: own-head publish SKIPPED — registry-unreadable'),
+      );
+    } finally {
+      if (originalRegistry) loadHarnessRegistryMock.mockImplementation(originalRegistry);
+      runGitSyncMock.mockReset();
+      warn.mockRestore();
+    }
+  });
+
   it('EI-22154166487566939: a stalled post-legs leg (github-bridge) is bounded by its own liveness guard, names the hung leg, and never reaches the terminal complete write', async () => {
     // Regression for a fleet-wide wedge: the post-legs phase (github-bridge,
     // bootstrap, own-head-publish, ref-announce, integrator,
@@ -4026,6 +4106,26 @@ describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is re
 // construction) rather than `outcome.publishedSha` (what actually became
 // servable) — a false, authoritative-looking line that produced two OPPOSITE
 // wrong diagnoses from two separate agents during the 2026-08-02 freeze.
+describe('formatOwnHeadPublishSkipLine (EI-24099226502437988)', () => {
+  it('names the slug, the reason, what the reason means, and that nothing was published', () => {
+    expect(formatOwnHeadPublishSkipLine('papercusp', 'no-device-actor', 'resolveHiveGitActor returned null')).toBe(
+      '[git-sync] papercusp: own-head publish SKIPPED — no-device-actor: no serving device actor resolved ' +
+        '(serving not ready, or no device identity) (resolveHiveGitActor returned null); ' +
+        'nothing published this tick, the next tick retries',
+    );
+  });
+
+  it('omits the detail parenthesis when there is no detail, and caps a long detail at 300 chars', () => {
+    expect(formatOwnHeadPublishSkipLine('papercusp', 'no-hive-slug', null)).toBe(
+      '[git-sync] papercusp: own-head publish SKIPPED — no-hive-slug: this install names no hive ' +
+        '(no hive_slug and not self_repo); nothing published this tick, the next tick retries',
+    );
+    const line = formatOwnHeadPublishSkipLine('papercusp', 'registry-unreadable', 'x'.repeat(1000));
+    expect(line).toContain(`(${'x'.repeat(300)});`);
+    expect(line).not.toContain('x'.repeat(301));
+  });
+});
+
 describe('formatOwnHeadPublishedLine (EI-19341838904344665)', () => {
   const baseOutcome: OwnHeadPublishTickOutcome = {
     ran: true,

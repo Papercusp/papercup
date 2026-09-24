@@ -4276,22 +4276,118 @@ export function formatOwnHeadPublishedLine(slug: string, outcome: OwnHeadPublish
   return `[git-sync] ${slug}: own-head published ${outcome.branch}@${published} into own namespace${backlogNote}`;
 }
 
+/**
+ * EI-24099226502437988: the own-head leg used to exit SILENTLY on its
+ * preconditions (registry unreadable, no worktree path, no hive slug, no device
+ * actor): no log line and no metadata write. On 2026-09-23 `own_head_publish`
+ * froze at its last real run (22:15Z) while fires kept committing locally, and
+ * origin/staging sat frozen for hours with nothing to say which exit had fired.
+ *
+ * Every exit now names itself: a warn line plus an `own_head_publish_skip`
+ * metadata record, which the next real publish clears to null. The later of
+ * `own_head_publish.at` and `own_head_publish_skip.at` is therefore the last time
+ * the leg actually RAN. If both are stale while fires keep completing, the fires
+ * are not reaching the post-legs at all.
+ */
+export type OwnHeadPublishSkipReason =
+  | 'registry-unreadable'
+  | 'no-worktree-path'
+  | 'no-hive-slug'
+  | 'no-device-actor'
+  | 'leg-failed';
+
+export interface OwnHeadPublishSkipRecord {
+  at: number;
+  reason: OwnHeadPublishSkipReason;
+  detail: string | null;
+}
+
+const OWN_HEAD_PUBLISH_SKIP_MEANING: Record<OwnHeadPublishSkipReason, string> = {
+  'registry-unreadable': 'the harness registry could not be read',
+  'no-worktree-path': 'this install has no registry entry with a worktree path',
+  'no-hive-slug': 'this install names no hive (no hive_slug and not self_repo)',
+  'no-device-actor': 'no serving device actor resolved (serving not ready, or no device identity)',
+  'leg-failed': 'the leg threw',
+};
+
+/** Pure so the exact wording is unit-testable without a real git tick. */
+export function formatOwnHeadPublishSkipLine(
+  slug: string,
+  reason: OwnHeadPublishSkipReason,
+  detail?: string | null,
+): string {
+  const tail = detail ? ` (${detail.slice(0, 300)})` : '';
+  return (
+    `[git-sync] ${slug}: own-head publish SKIPPED — ${reason}: ${OWN_HEAD_PUBLISH_SKIP_MEANING[reason]}${tail}; ` +
+    `nothing published this tick, the next tick retries`
+  );
+}
+
+/** Persist the skip. A failed write is logged, never thrown: the leg stays best-effort. */
+async function persistOwnHeadPublishSkip(
+  slug: string,
+  workspaceId: string,
+  reason: OwnHeadPublishSkipReason,
+  detail: string | null,
+): Promise<void> {
+  const record: OwnHeadPublishSkipRecord = { at: Date.now(), reason, detail };
+  try {
+    await patchRoutineMetadata(slug, workspaceId, { own_head_publish_skip: record });
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: could not record own-head publish skip: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+async function recordOwnHeadPublishSkip(
+  slug: string,
+  workspaceId: string,
+  reason: OwnHeadPublishSkipReason,
+  detail: string | null,
+): Promise<void> {
+  console.warn(formatOwnHeadPublishSkipLine(slug, reason, detail));
+  await persistOwnHeadPublishSkip(slug, workspaceId, reason, detail);
+}
+
 async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {
       entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
-    } catch {
-      return; // registry unreadable — next tick retries
+    } catch (e) {
+      // The next tick retries.
+      await recordOwnHeadPublishSkip(slug, workspaceId, 'registry-unreadable', e instanceof Error ? e.message : String(e));
+      return;
     }
-    if (!entry?.path) return;
+    if (!entry?.path) {
+      await recordOwnHeadPublishSkip(
+        slug,
+        workspaceId,
+        'no-worktree-path',
+        entry ? 'the registry entry has no path' : 'no registry entry for this slug',
+      );
+      return;
+    }
     const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-    if (!potHomeSlug) return;
+    if (!potHomeSlug) {
+      await recordOwnHeadPublishSkip(slug, workspaceId, 'no-hive-slug', null);
+      return;
+    }
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
 
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
-    if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
+    if (!actor?.devicePubkey) {
+      // gh unauthenticated or serving not ready: no device identity to publish as.
+      await recordOwnHeadPublishSkip(
+        slug,
+        workspaceId,
+        'no-device-actor',
+        actor
+          ? 'the resolved actor has no device pubkey'
+          : 'resolveHiveGitActor returned null; its serving line above names why',
+      );
+      return;
+    }
 
     const genesisBaselineSha = await deriveGenesisBaselineSha(entry, branch);
 
@@ -4364,9 +4460,13 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         // stay blind to an exemption quietly keeping the plane un-wedged.
         exemptedFindingsCount: outcome.exemptedFindings.length,
       }),
+      // EI-24099226502437988: the leg ran, so any earlier skip record is stale.
+      own_head_publish_skip: null,
     });
   } catch (e) {
-    console.warn(`[git-sync] ${slug}: own-head publish leg failed: ${e instanceof Error ? e.message : e}`);
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn(`[git-sync] ${slug}: own-head publish leg failed: ${message}`);
+    await persistOwnHeadPublishSkip(slug, workspaceId, 'leg-failed', message);
   }
 }
 
