@@ -10,7 +10,7 @@ import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } 
 import recipeGetTool from '../agent-tools/recipes/get';
 import recipeRunTool from '../agent-tools/recipes/run';
 import rubricGetTool from '../agent-tools/rubrics/get';
-import { getIdentitySource } from './source';
+import { bindSelectedIdentityOutputArtifact, getIdentitySource } from './source';
 import { resolveIdentityGrantEnvelope } from '../capability-envelope/blueprint-envelopes';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null, appSql: null as Sql | null }));
@@ -53,7 +53,10 @@ describe('selected identity recipe reaches its existing consumer', () => {
         bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
         grants: { optional: ['calendar.read@1.0.0'] },
         contributions: [{ id: 'resource-rules', purpose: 'prompt', source: 'fixed',
-          refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:domain' }],
+          refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:domain' },
+        { id: 'current-guidance', purpose: 'prompt', source: 'provider',
+          refresh: 'launch', inputKind: 'prompt-file', ref: 'current-guidance',
+          producerRef: 'existing.guidance' }],
       };
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
         ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
@@ -66,13 +69,20 @@ describe('selected identity recipe reaches its existing consumer', () => {
 
       const selected = await getIdentitySource(identityId);
       expect(selected.ok, JSON.stringify(selected)).toBe(true);
+      const bound = await bindSelectedIdentityOutputArtifact({
+        identityId, outputs: [{ contributionId: 'current-guidance', value: 'GENERATED RECIPE GUIDANCE' }],
+        scope: { workspace: 'identity-resource-ws', harness: 'identity-resource-harness' },
+        observedAt: '2026-09-24T00:00:00.000Z',
+      });
 
       const launch = await compileLaunchSpecificationArtifact({
         promptText: 'Inspect the selected recipe before use.',
         cwd: root, workspaceId: 'identity-resource-ws', harnessSlug: 'identity-resource-harness',
         role: 'worker', stack: [`domain:${identityId}`], state: { schemaVersion: 1 }, renderStack: true,
+        producerBindings: [{ identityId, artifact: bound.artifact }],
       });
       expect(launch.promptText.match(/SELECTED RESOURCE DOMAIN RULES/g)).toHaveLength(1);
+      expect(launch.promptText.match(/GENERATED RECIPE GUIDANCE/g)).toHaveLength(1);
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'prompt-file', ref: 'fixed:domain', bytes: 'SELECTED RESOURCE DOMAIN RULES\n',
       }));
