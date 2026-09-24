@@ -108,7 +108,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         message: { content: [{ type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' }] },
       }));
       vi.stubEnv('PAPERCUSP_TOOLS', 'tools:find,coord:orient');
-      let spawnedEnv: Record<string, string> | null = null;
+      const spawnedEnvs: Record<string, string>[] = [];
       let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
       let observedContext: unknown;
       const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
@@ -123,7 +123,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         quarantineToolReferenceSession: quarantine as never,
         sendCoordMessage: vi.fn(async () => ({} as never)),
         spawnDetached: (_bin, _args, opts, onExit) => {
-          spawnedEnv = opts.env;
+          spawnedEnvs.push(opts.env);
           onExitWired = onExit;
           return 4242;
         },
@@ -147,7 +147,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       });
 
       expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
-      expect(spawnedEnv?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
+      expect(spawnedEnvs[0]?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
       onExitWired!({ exitCode: 1, signal: null, stdoutTail: missing, stderrTail: '' });
       await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
       expect(quarantine).toHaveBeenCalledWith(expect.objectContaining({
@@ -225,7 +225,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     }) as never;
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 0 }) });
 
-    await expect(executeWake(d, deps)).resolves.toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+    expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
     expect(spawned).toBe(true);
   });
 
@@ -281,7 +281,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         message: { content: [{ type: 'tool_reference', tool_name: 'mcp__papercusp-su__plans_audit' }] },
       }));
       vi.stubEnv('PAPERCUSP_TOOLS', 'tools:find,coord:orient');
-      let spawnedEnv: Record<string, string> | null = null;
+      const spawnedEnvs: Record<string, string>[] = [];
       let onExitWired: ((e: ResumeTurnExitRaw) => void) | undefined;
       let observedContext: unknown;
       const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
@@ -294,7 +294,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
           mtimeMs: 1,
         }],
         spawnDetached: (_bin, _args, opts, onExit) => {
-          spawnedEnv = opts.env;
+          spawnedEnvs.push(opts.env);
           onExitWired = onExit;
           return 4242;
         },
@@ -319,7 +319,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       });
 
       expect(await executeWake(d, deps)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
-      expect(spawnedEnv?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
+      expect(spawnedEnvs[0]?.PAPERCUSP_TOOLS).toBe('tools:find,coord:orient,mcp__papercusp-su__plans_audit');
       onExitWired!({ exitCode: 1, signal: null, stdoutTail: missing, stderrTail: '' });
       await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
       expect(quarantine).toHaveBeenCalledWith(expect.objectContaining({
