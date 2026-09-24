@@ -97,11 +97,13 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   CHECKPOINT_SCHEDULED_RUN_ENV,
   beginStoredQualification,
+  classifyQualificationVerdict,
   classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationScheduledFire,
+  recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
   reserveStoredQualificationRunner,
 } from '../../release/checkpoint-qualification-transaction';
@@ -169,6 +171,7 @@ export interface ScheduledCheckpointTerminalContext {
   installSlug?: string | null;
   qualificationAttemptId?: string | null;
   gateFireId?: string | null;
+  integrationRoot?: string | null;
 }
 
 export interface ScheduledCheckpointTerminalRecord {
@@ -183,6 +186,7 @@ export interface ScheduledCheckpointTerminalRecord {
   installSlug: string | null;
   qualificationAttemptId: string | null;
   gateFireId: string | null;
+  integrationRoot: string | null;
 }
 
 function nullableBoundedString(value: unknown, max = 512): string | null | undefined {
@@ -210,6 +214,7 @@ export function parseScheduledCheckpointTerminal(
   const installSlug = nullableBoundedString(value.installSlug, 160);
   const qualificationAttemptId = nullableBoundedString(value.qualificationAttemptId, 200);
   const gateFireId = nullableBoundedString(value.gateFireId, 160);
+  const integrationRoot = nullableBoundedString(value.integrationRoot, 4096);
   const exitCode = value.exitCode;
   if (
     !runId ||
@@ -222,6 +227,8 @@ export function parseScheduledCheckpointTerminal(
     installSlug === undefined ||
     qualificationAttemptId === undefined ||
     gateFireId === undefined ||
+    integrationRoot === undefined ||
+    (integrationRoot !== null && !path.isAbsolute(integrationRoot)) ||
     (value.killed !== undefined && typeof value.killed !== 'boolean') ||
     (terminalPath && `${logPath}.terminal.json` !== terminalPath)
   ) {
@@ -239,6 +246,7 @@ export function parseScheduledCheckpointTerminal(
     installSlug,
     qualificationAttemptId,
     gateFireId,
+    integrationRoot,
   };
 }
 
@@ -276,11 +284,13 @@ export function checkpointTerminalSummary(terminal: ScheduledCheckpointTerminalR
 }
 
 type ScheduledTerminalRecorder = typeof recordStoredQualificationVerdict;
+type ScheduledTerminalRecovery = typeof recordStoredQualificationScheduledTerminalRecovery;
 type ScheduledTerminalRead = (file: string) => Promise<string>;
 type ScheduledTerminalMove = (from: string, to: string) => Promise<unknown>;
 
 export interface ScheduledCheckpointTerminalReconcileDeps {
   recordVerdict?: ScheduledTerminalRecorder;
+  recoverTerminal?: ScheduledTerminalRecovery;
   readText?: ScheduledTerminalRead;
   move?: ScheduledTerminalMove;
   listNames?: (dir: string) => Promise<string[]>;
@@ -348,7 +358,7 @@ async function markScheduledTerminalReconciled(terminalPath: string, move: Sched
 async function reconcileLoadedScheduledCheckpointTerminal(
   target: GateVerdictTarget,
   loaded: LoadedScheduledCheckpointTerminal,
-  deps: Required<Pick<ScheduledCheckpointTerminalReconcileDeps, 'recordVerdict' | 'move'>>,
+  deps: Required<Pick<ScheduledCheckpointTerminalReconcileDeps, 'recordVerdict' | 'recoverTerminal' | 'move'>>,
 ): Promise<ScheduledCheckpointTerminalReconcileResult> {
   const { terminalPath, terminal, logText } = loaded;
   if (terminal.workspaceId !== target.workspaceId || terminal.installSlug !== target.installSlug) {
@@ -384,6 +394,21 @@ async function reconcileLoadedScheduledCheckpointTerminal(
     `checkpoint-log:${terminal.logPath}`,
     ...(terminal.gateFireId ? [`gate-fire:${terminal.gateFireId}`] : []),
   ];
+  const terminalEvent = {
+    status: reason,
+    detail: emittedReason && emitted
+      ? buildCheckpointDetail(emitted as unknown as CheckpointVerdict, terminal.gateFireId ?? undefined)
+      : {
+          runId: terminal.runId,
+          candidate: emittedCandidate,
+          green: null,
+          logPath: terminal.logPath,
+          exitCode: terminal.exitCode,
+          killed: terminal.killed ?? false,
+          gateFireId: terminal.gateFireId ?? null,
+          summary: checkpointTerminalSummary(terminal),
+        },
+  };
   let settlement: Awaited<ReturnType<ScheduledTerminalRecorder>>;
   try {
     settlement = await deps.recordVerdict(target, {
@@ -394,6 +419,7 @@ async function reconcileLoadedScheduledCheckpointTerminal(
       ...(emittedRepairHead ? { repairHead: emittedRepairHead } : {}),
       ...(emittedRunId ? { runId: emittedRunId } : {}),
       evidenceRefs,
+      terminalEvent,
     });
   } catch (error) {
     return {
@@ -409,6 +435,55 @@ async function reconcileLoadedScheduledCheckpointTerminal(
       status: 'retry',
       reason: 'error' in settlement && settlement.error ? settlement.error : settlement.status,
       markerRetained: true,
+    };
+  }
+  // The parent that normally emits the awaitable red wake may have died. Only the first
+  // exact-attempt terminal transition emits; a replay sees an already-terminal attempt.
+  if (settlement.status === 'updated' && terminal.integrationRoot && emittedCandidate && green === false &&
+      classifyQualificationVerdict({ reason, green }).kind === 'red' &&
+      !isPinnedCheckpointVerdict(emitted as CheckpointVerdict | null)) {
+    await emitLegacyRedVerdictEvent(terminal.integrationRoot, {
+      reason, green: false, candidate: emittedCandidate, runId: emittedRunId,
+      from: typeof emitted?.from === 'string' ? emitted.from : undefined,
+      summary: typeof emitted?.summary === 'string' ? emitted.summary : undefined,
+      failingTests: Array.isArray(emitted?.failingTests) ? emitted.failingTests.filter((test): test is string => typeof test === 'string') : [],
+      logPath: terminal.logPath,
+    });
+  }
+  if (settlement.status === 'conflict') {
+    // A different logical attempt is stale. A conflict within THIS attempt can mean the
+    // scheduled wrapper finished before its unitless reservation attached to the CLI. Its
+    // terminal marker and gate-fire id are exact runner proof even when the emitted candidate
+    // drifted. Keep the marker unless a guarded recovery actually clears that runner.
+    if (settlement.transaction.attemptId !== terminal.qualificationAttemptId) {
+      const moved = await markScheduledTerminalReconciled(terminalPath, deps.move);
+      return { terminalPath, status: 'stale-attempt', reason, markerRetained: !moved };
+    }
+    if (!terminal.gateFireId || classifyQualificationVerdict({ reason, green }).kind !== 'pre-suite-no-verdict') {
+      return { terminalPath, status: 'retry', reason: 'same-attempt terminal conflict without exact no-verdict runner proof', markerRetained: true };
+    }
+    let recovery: Awaited<ReturnType<ScheduledTerminalRecovery>>;
+    try {
+      recovery = await deps.recoverTerminal(target, {
+        attemptId: terminal.qualificationAttemptId,
+        runnerId: terminal.gateFireId,
+        runId: terminal.runId,
+        reason,
+        finishedAtMs: Date.parse(terminal.finishedAt),
+        evidenceRefs,
+      });
+    } catch (error) {
+      return { terminalPath, status: 'retry', reason: error instanceof Error ? error.message : String(error), markerRetained: true };
+    }
+    if (recovery.status !== 'updated' && recovery.status !== 'terminal') {
+      return { terminalPath, status: 'retry', reason: `exact terminal recovery ${recovery.status}`, markerRetained: true };
+    }
+    const moved = await markScheduledTerminalReconciled(terminalPath, deps.move);
+    return {
+      terminalPath,
+      status: recovery.status === 'updated' ? 'settled' : 'already-settled',
+      reason: `orphaned-reservation-after-${reason}`,
+      markerRetained: !moved,
     };
   }
   const moved = await markScheduledTerminalReconciled(terminalPath, deps.move);
@@ -435,6 +510,7 @@ export async function reconcileScheduledCheckpointTerminalFile(
   if (!loaded) return { terminalPath, status: 'invalid', markerRetained: true };
   return reconcileLoadedScheduledCheckpointTerminal(target, loaded, {
     recordVerdict: deps.recordVerdict ?? recordStoredQualificationVerdict,
+    recoverTerminal: deps.recoverTerminal ?? recordStoredQualificationScheduledTerminalRecovery,
     move: deps.move ?? rename,
   });
 }
@@ -475,6 +551,7 @@ export async function reconcileScheduledCheckpointTerminals(
     results.push(
       await reconcileLoadedScheduledCheckpointTerminal(target, item, {
         recordVerdict: options.recordVerdict ?? recordStoredQualificationVerdict,
+        recoverTerminal: options.recoverTerminal ?? recordStoredQualificationScheduledTerminalRecovery,
         move: options.move ?? rename,
       }),
     );
@@ -492,6 +569,12 @@ export function checkpointRunLogPaths(
   const fileSafeRunId = runId.replace(/[^a-zA-Z0-9_-]/g, '-') || 'run';
   const logPath = path.join(logDir, `${stamp}-scheduled-${fileSafeRunId}.log`);
   return { runId, logPath, terminalPath: `${logPath}.terminal.json` };
+}
+
+/** The pre-spawn reservation and systemd scope share one inspectable runner identity. */
+export function scheduledCheckpointScopeUnit(gateFireId: string): string {
+  if (!/^[0-9a-f-]{36}$/i.test(gateFireId)) throw new Error('invalid scheduled gate-fire id');
+  return `papercusp-checkpoint-${gateFireId}.scope`;
 }
 
 /**
@@ -542,6 +625,7 @@ export function buildScheduledCheckpointShell(
   const installSlugJson = shellQuote(JSON.stringify(context.installSlug ?? null));
   const qualificationAttemptIdJson = shellQuote(JSON.stringify(context.qualificationAttemptId ?? null));
   const gateFireIdJson = shellQuote(JSON.stringify(context.gateFireId ?? null));
+  const integrationRootJson = shellQuote(JSON.stringify(context.integrationRoot ?? null));
   const logDir = path.dirname(paths.logPath);
   return [
     `log=${shellQuote(paths.logPath)}`,
@@ -591,9 +675,9 @@ export function buildScheduledCheckpointShell(
     '  fi',
     '  printf "GREEN_CHECKPOINT_MEMORY_EVENTS %s\\n" "$memory_events_json" >> "$log" 2>/dev/null || :',
     '  if [ "$checkpoint_reached_exit" = 1 ]; then',
-    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":%s,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s}\\n' ${runIdJson} ${logPathJson} "$ec" "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} > "$tmp" 2>/dev/null || :`,
+    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":%s,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s,"integrationRoot":%s}\\n' ${runIdJson} ${logPathJson} "$ec" "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} ${integrationRootJson} > "$tmp" 2>/dev/null || :`,
     '  else',
-    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":null,"killed":true,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s}\\n' ${runIdJson} ${logPathJson} "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} > "$tmp" 2>/dev/null || :`,
+    `    printf '{"schemaVersion":1,"runId":%s,"logPath":%s,"exitCode":null,"killed":true,"memoryEvents":%s,"finishedAt":"%s","workspaceId":%s,"installSlug":%s,"qualificationAttemptId":%s,"gateFireId":%s,"integrationRoot":%s}\\n' ${runIdJson} ${logPathJson} "$memory_events_json" "$finished_at" ${workspaceIdJson} ${installSlugJson} ${qualificationAttemptIdJson} ${gateFireIdJson} ${integrationRootJson} > "$tmp" 2>/dev/null || :`,
     '  fi',
     '  mv -f -- "$tmp" "$terminal" 2>/dev/null || :',
     '  exit "$ec"',
@@ -797,6 +881,8 @@ interface RunResult {
   timedOut?: boolean;
   /** Durable wrapper evidence path, present only for an isolated scheduled checkpoint. */
   terminalPath?: string;
+  /** The same wrapper/CLI run identity, even if no terminal marker was written. */
+  runId?: string;
 }
 
 function runScript(
@@ -847,7 +933,14 @@ function runScript(
       for (const key of clearEnv) delete childEnv[key];
       const child = spawn(argv[0], argv.slice(1), {
         cwd: root,
-        env: { ...childEnv, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
+        env: {
+          ...childEnv,
+          PAPERCUSP_INTEGRATION_ROOT: root,
+          ...extraEnv,
+          // Reuse the scheduled-run transport: a modern scope sends its terminal-marker
+          // runId; the legacy direct path retains the '1' sentinel and mints in the CLI.
+          ...(checkpointPaths ? { [CHECKPOINT_SCHEDULED_RUN_ENV]: checkpointPaths.runId } : {}),
+        },
         detached: true,
       });
       let stdout = '';
@@ -876,12 +969,14 @@ function runScript(
         settled = true;
         clearTimeout(killer);
         if (sigkiller) clearTimeout(sigkiller);
-        const withTerminal = terminalPath ? { ...r, terminalPath } : r;
+        const withTerminal = terminalPath
+          ? { ...r, terminalPath, runId: checkpointPaths?.runId }
+          : checkpointPaths ? { ...r, runId: checkpointPaths.runId } : r;
         resolve(timedOut ? { ...withTerminal, timedOut: true } : withTerminal);
       };
       // Scope-launch failure (spawn error / fast systemd-run exit with a launch-shaped
-      // stderr) → retry DIRECT once, so a box without a reachable user bus degrades to
-      // the old same-cgroup behavior instead of red-pinning the gate.
+      // stderr) → retry without systemd once. Keep the SAME terminal wrapper, so a parent
+      // death while that direct child runs still leaves an exact-attempt exit marker.
       const finishOrFallback = (r: RunResult, launchFailed: boolean): void => {
         if (settled) return;
         if (fallback && launchFailed) {
@@ -905,8 +1000,16 @@ function runScript(
     });
   return wantScope
     ? attempt(
-        buildIsolatedScopeArgv(scopedPayload, isolate.memoryMaxG, 'allow', CHECKPOINT_SCOPE_RUNTIME_MAX_SEC),
-        () => attempt(base, null),
+        buildIsolatedScopeArgv(
+          scopedPayload,
+          isolate.memoryMaxG,
+          'allow',
+          CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+          isolate.terminalContext?.gateFireId
+            ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
+            : null,
+        ),
+        () => attempt(scopedPayload, null, checkpointPaths?.terminalPath),
         checkpointPaths?.terminalPath,
       )
     : attempt(base, null);
@@ -1876,7 +1979,12 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // The detached launcher transports the attempt id in its unit environment; scheduled/version-
   // skew paths omit it and best-effort settle the current global attempt instead.
   const transportedAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
-  const qualificationSettlement = isPinnedCheckpointVerdict(verdict)
+  const pinned = isPinnedCheckpointVerdict(verdict);
+  const recordable = isRecordableVerdict(verdict.reason);
+  const atomicTerminalEvent = transportedAttemptId && !pinned && recordable
+    ? { status: verdict.reason, detail: buildCheckpointDetail(verdict) }
+    : undefined;
+  const qualificationSettlement = pinned
     ? null
     : await recordStoredQualificationVerdict(target, {
         ...(transportedAttemptId ? { attemptId: transportedAttemptId } : {}),
@@ -1889,6 +1997,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
           ...(verdict.runId ? [`checkpoint-run:${verdict.runId}`] : []),
           ...(verdict.candidate ? [`candidate:${verdict.candidate}`] : []),
         ],
+        ...(atomicTerminalEvent ? { terminalEvent: atomicTerminalEvent } : {}),
       }).catch((error) => ({
         status: 'unreadable' as const,
         error: error instanceof Error ? error.message : String(error),
@@ -1919,17 +2028,24 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // authority; a candidate/run identity conflict is therefore a deliberate no-op, not a reason
   // to emit a second terminal event from this producer.
   if (transportedAttemptId && qualificationSettlement?.status === 'conflict') return false;
-  if (!isRecordableVerdict(verdict.reason)) return false;
-  await appendPipelineEvent({
-    workspaceId: target.workspaceId,
-    installSlug: target.installSlug,
-    kind: 'green_checkpoint',
-    status: verdict.reason,
-    detail: buildCheckpointDetail(verdict),
-  });
+  if (transportedAttemptId &&
+      (qualificationSettlement?.status === 'missing' || qualificationSettlement?.status === 'unreadable')) return false;
+  if (!recordable) return false;
+  // An exact replay finds the already-terminal qualification. The first producer's
+  // result and pipeline event committed together, so do not append or count it twice.
+  if (transportedAttemptId && qualificationSettlement?.status === 'terminal') return true;
+  if (!atomicTerminalEvent) {
+    await appendPipelineEvent({
+      workspaceId: target.workspaceId,
+      installSlug: target.installSlug,
+      kind: 'green_checkpoint',
+      status: verdict.reason,
+      detail: buildCheckpointDetail(verdict),
+    });
+  }
   // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
   // shared gate state or trigger any repair/escalation machinery.
-  if (isPinnedCheckpointVerdict(verdict)) return true;
+  if (pinned) return true;
   // P-303: the terminal producer has the one exact (runId, candidate) pair that can
   // bind CI file outcomes to committed DG-2 shard inputs. Publish here, once, after
   // the recordability + pinned-diagnostic guards. The publisher is fail-closed and
@@ -1965,7 +2081,12 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
       repairQueue: verdict.repairQueue,
       repairTickLegs: verdict.repairTickLegs,
     },
-  );
+  ).catch((error) => {
+    // The exact terminal result and pipeline event already committed atomically.
+    // A cache/projection fault must not relabel the marker as unrecorded and trigger
+    // a second fallback history row from the scheduled parent.
+    console.warn(`${orchestratorStdoutTag()} gate-health projection failed after terminal record: ${error instanceof Error ? error.message : error}`);
+  });
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
@@ -2304,6 +2425,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const reserved = await reserveStoredQualificationRunner(ctx, {
     attemptId: qualificationAttemptId,
     runnerId: gateFireId,
+    ...(process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0' ? { unit: scheduledCheckpointScopeUnit(gateFireId) } : {}),
     leaseDurationMs: CHECKPOINT_SCOPE_RUNTIME_MAX_SEC * 1_000,
     started: false,
     evidenceRefs: [`gate-fire:${gateFireId}`],
@@ -2351,6 +2473,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         installSlug: ctx.installSlug,
         qualificationAttemptId: qualificationAttemptId ?? null,
         gateFireId,
+        integrationRoot: root,
       },
     },
     // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
@@ -2397,8 +2520,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   } else if (loadedTerminal) {
     summary = checkpointTerminalSummary(loadedTerminal.terminal);
   }
-  if (r.terminalPath) {
-    const terminalReconciliation = await reconcileScheduledCheckpointTerminalFile(ctx, r.terminalPath);
+  const terminalReconciliation = r.terminalPath
+    ? await reconcileScheduledCheckpointTerminalFile(ctx, r.terminalPath)
+    : null;
+  if (terminalReconciliation) {
     if (terminalReconciliation.status === 'retry') {
       console.warn(
         `${orchestratorStdoutTag()} terminal marker retained for retry: ${terminalReconciliation.reason ?? r.terminalPath}`,
@@ -2420,9 +2545,43 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
    *    behalf — it is dead. This branch is the ONLY reason the routine still holds a recorder.
    */
   const recordedByRun = parsed?.recorded === true;
-  if (recordedByRun) {
+  const terminalOutcome = classifyQualificationVerdict({ reason: status, green: parsed?.green });
+  const terminalKind = terminalOutcome.kind === 'green' || terminalOutcome.kind === 'red' ||
+    terminalOutcome.kind === 'code-inconclusive';
+  const reconciliationSettled = terminalReconciliation?.status === 'settled' ||
+    terminalReconciliation?.status === 'already-settled';
+  const reconciliationRefused = terminalReconciliation?.status === 'retry' ||
+    terminalReconciliation?.status === 'stale-attempt' ||
+    terminalReconciliation?.status === 'ignored-other-target';
+  let fallbackQualification: Awaited<ReturnType<typeof recordStoredQualificationVerdict>> | null = null;
+  if (!recordedByRun && !reconciliationSettled && !reconciliationRefused && qualificationAttemptId) {
+    // A scope can end before its CLI prints a marker (including launch refusal). Its
+    // pre-spawn reservation must not survive as an ownerless, PID-less runner forever.
+    fallbackQualification = await recordStoredQualificationVerdict(ctx, {
+      attemptId: qualificationAttemptId,
+      reason: status,
+      green: parsed?.green ?? null,
+      ...(candidate ? { candidate } : {}),
+      ...(parsed?.repairQueue?.repairHead ? { repairHead: parsed.repairQueue.repairHead } : {}),
+      ...(parsed?.runId ?? r.runId ? { runId: parsed?.runId ?? r.runId } : {}),
+      evidenceRefs: [
+        ...(r.runId ? [`checkpoint-run:${r.runId}`] : []),
+        ...(r.terminalPath ? [`checkpoint-terminal:${r.terminalPath}`] : []),
+      ],
+      terminalEvent: {
+        status,
+        detail: parsed?.reason
+          ? buildCheckpointDetail(parsed, gateFireId)
+          : withGateFireId({ runId: r.runId ?? null, code: r.code, stderr: (r.stderr || r.stdout).slice(-300) }),
+      },
+    });
+  }
+  const atomicallyRecorded = terminalKind && (reconciliationSettled ||
+    fallbackQualification?.status === 'updated' || fallbackQualification?.status === 'terminal');
+  if (recordedByRun || atomicallyRecorded) {
     console.log(`${orchestratorStdoutTag()} '${status}' — recorded by the run that produced it (WI-4494)`);
-  } else {
+  } else if (!reconciliationRefused && fallbackQualification?.status !== 'conflict' &&
+             fallbackQualification?.status !== 'unreadable') {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
@@ -2433,12 +2592,16 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         : // No parseable result marker (crash before print / non-zero exit) → 'error'.
           withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) }),
     });
-    // EI-20981232855780375: an old CLI can record the red result but cannot emit the
-    // candidate-bound awaitable wake. Keep this strictly on the parsed red fallback;
-    // modern producer-side recording already emits it, and crash/green results do not.
-    if (!isPinnedCheckpointVerdict(parsed) && parsed?.green === false && parsed.candidate) {
-      await emitLegacyRedVerdictEvent(root, parsed);
-    }
+  }
+  // The old CLI can produce a real red without its own awaitable wake. The exact logical
+  // terminal transaction may have persisted its event above, so the wake belongs AFTER that
+  // commit on both atomic and legacy fallback paths. A replay or stale-attempt conflict must
+  // not wake a newer candidate's waiters.
+  if (!recordedByRun && !reconciliationRefused && fallbackQualification?.status !== 'conflict' &&
+      fallbackQualification?.status !== 'unreadable' &&
+      !isPinnedCheckpointVerdict(parsed) && parsed?.green === false && parsed.candidate &&
+      (!atomicallyRecorded || fallbackQualification?.status === 'updated')) {
+    await emitLegacyRedVerdictEvent(root, parsed);
   }
 
   // P-004: track the red streak + time-since-last-green across ticks and fire a

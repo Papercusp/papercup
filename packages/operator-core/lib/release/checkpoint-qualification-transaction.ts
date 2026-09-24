@@ -9,9 +9,11 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -61,6 +63,12 @@ export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => Runn
 export const QUALIFICATION_OWNER_ABANDONED_MS = 3 * 60 * 60 * 1_000;
 /** Three missed one-minute runner heartbeats warrant investigation, never a second runner. */
 export const QUALIFICATION_PROGRESS_STALE_MS = 3 * 60_000;
+/** An admitted scheduler fire may be probed before systemd has created its named scope. */
+export const QUALIFICATION_LAUNCH_GRACE_MS = 60_000;
+
+function launchReservationInGrace(runner: QualificationPhysicalRunner | null | undefined, nowMs: number): boolean {
+  return !!runner && runner.phase === 'launching' && nowMs - runner.reservedAtMs < QUALIFICATION_LAUNCH_GRACE_MS;
+}
 
 const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
   if (runner.pid != null) {
@@ -106,8 +114,12 @@ export function configureRunnerLivenessProber(prober: RunnerLivenessProber | nul
   runnerLivenessProber = prober ?? systemdRunnerLiveness;
 }
 
-export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined): RunnerLiveness {
-  return runner ? runnerLivenessProber(runner) : 'unknown';
+export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined, nowMs = Date.now()): RunnerLiveness {
+  if (!runner) return 'unknown';
+  const observed = runnerLivenessProber(runner);
+  // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
+  // cannot authorize a second physical run during that launch interval.
+  return observed === 'dead' && launchReservationInGrace(runner, nowMs) ? 'unknown' : observed;
 }
 
 export const PRE_SUITE_NO_VERDICT_REASONS = [
@@ -352,7 +364,8 @@ function isAbandonedQualification(
   nowMs: number,
 ): boolean {
   if (!current || isTerminalQualificationOutcome(current.outcome)) return false;
-  if (current.currentPhysicalRunner) return incumbentLiveness === 'dead';
+  if (current.currentPhysicalRunner)
+    return incumbentLiveness === 'dead' && !launchReservationInGrace(current.currentPhysicalRunner, nowMs);
   return nowMs - current.updatedAtMs > QUALIFICATION_OWNER_ABANDONED_MS;
 }
 
@@ -1001,7 +1014,7 @@ export function reserveQualificationRunner(
     };
   }
   // A lease timeout alone cannot prove death. Unknown or live ownership keeps single flight.
-  if (incumbent && input.incumbentLiveness !== 'dead') {
+  if (incumbent && (input.incumbentLiveness !== 'dead' || launchReservationInGrace(incumbent, nowMs))) {
     return { status: 'conflict', transaction: current };
   }
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
@@ -1119,10 +1132,17 @@ export function settleQualificationTransaction(
   if (current.runId && runId && current.runId !== runId) {
     return { status: 'conflict', transaction: current };
   }
-  // A late result from another candidate/run must stay a conflict even after the first
-  // result settled. Otherwise a replay against a terminal row looks like an exact duplicate.
-  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const outcome = classifyQualificationVerdict(input);
+  // Only the identical outcome is a replay. A changed run, candidate, or verdict may
+  // never turn a terminal red into a green wake under the same logical attempt.
+  if (isTerminalQualificationOutcome(current.outcome)) {
+    return {
+      status: current.outcome.kind === outcome.kind &&
+        'reason' in current.outcome && 'reason' in outcome && current.outcome.reason === outcome.reason
+        ? 'terminal' : 'conflict',
+      transaction: current,
+    };
+  }
   if (outcome.kind === 'pre-suite-no-verdict') {
     return waitQualificationTransaction(current, {
       attemptId: input.attemptId,
@@ -1152,6 +1172,59 @@ export function settleQualificationTransaction(
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
+    },
+  };
+}
+
+/** Recover only the exact unstarted scheduled runner proved finished by its terminal marker. */
+export function recoverQualificationScheduledTerminal(
+  current: CheckpointQualificationTransaction,
+  input: {
+    attemptId: string;
+    runnerId: string;
+    runId: string;
+    reason: string;
+    finishedAtMs: number;
+    evidenceRefs: readonly string[];
+    nowMs?: number;
+  },
+): QualificationTransition {
+  const terminalRef = `checkpoint-terminal:${input.runId}`;
+  if (current.attemptId !== input.attemptId || !input.evidenceRefs.includes(terminalRef)) {
+    return { status: 'conflict', transaction: current };
+  }
+  const outcome = classifyQualificationVerdict({ reason: input.reason });
+  if (outcome.kind !== 'pre-suite-no-verdict') return { status: 'conflict', transaction: current };
+  const recoveredReason = `orphaned-reservation-after-${outcome.reason}`;
+  if (isTerminalQualificationOutcome(current.outcome)) {
+    return current.outcome.kind === 'code-inconclusive' &&
+      current.outcome.reason === recoveredReason && current.evidenceRefs.includes(terminalRef)
+      ? { status: 'terminal', transaction: current }
+      : { status: 'conflict', transaction: current };
+  }
+  const runner = current.currentPhysicalRunner;
+  if (current.phase !== 'running' || !runner || runner.id !== input.runnerId ||
+      runner.pid != null || runner.unit || runner.phase !== 'launching' ||
+      !runner.evidenceRefs.includes(`gate-fire:${input.runnerId}`) ||
+      !Number.isFinite(input.finishedAtMs) || input.finishedAtMs < runner.reservedAtMs) {
+    return { status: 'conflict', transaction: current };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  const recoveredOutcome: QualificationOutcome = { kind: 'code-inconclusive', reason: recoveredReason };
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
+      phaseEnteredAtMs: nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
+      outcome: recoveredOutcome,
+      blockers: [],
+      currentPhysicalRunner: null,
+      consumedPhysicalRuns: consumedRunner(current, recoveredOutcome, nowMs),
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, ...input.evidenceRefs]),
     },
   };
 }
@@ -1368,6 +1441,8 @@ type StoredQualificationMutationOptions = {
    * context so the successor's attempt id can be derived from the queue it will verify.
    */
   successorInput?: BeginQualificationInput | ((context: StoredQualificationRowContext) => BeginQualificationInput);
+  /** A terminal pipeline result committed with the exact qualification transition. */
+  terminalEvent?: { status: string; detail: Record<string, unknown> };
 };
 
 async function mutateStoredQualification(
@@ -1401,6 +1476,15 @@ async function mutateStoredQualification(
       }
       const transition = change(current, rowContext);
       if (transition.status !== 'updated') return transition;
+      const persistTerminalEvent = async (): Promise<void> => {
+        if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
+        await appendPipelineEvent({
+          workspaceId: target.workspaceId,
+          installSlug: target.installSlug,
+          kind: 'green_checkpoint',
+          ...options.terminalEvent,
+        }, tx as unknown as Sql, { required: true });
+      };
       const successorInput =
         typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
       const predecessor =
@@ -1454,6 +1538,7 @@ async function mutateStoredQualification(
             },
           };
         }
+        await persistTerminalEvent();
         return { ...transition, repairQueueReconciliation: reconciliation };
       }
       if (reconciliation?.status === 'preserved') {
@@ -1492,6 +1577,7 @@ async function mutateStoredQualification(
             },
           };
         }
+        await persistTerminalEvent();
         return { ...transition, repairQueueReconciliation: reconciliation };
       }
       await tx`
@@ -1506,6 +1592,7 @@ async function mutateStoredQualification(
          WHERE workspace_id = ${target.workspaceId}
            AND install_slug = ${target.installSlug}
            AND target_role = 'system:green-checkpoint'`;
+      await persistTerminalEvent();
       return reconciliation ? { ...transition, repairQueueReconciliation: reconciliation } : transition;
     });
   } catch (error) {
@@ -1657,6 +1744,8 @@ export function recordStoredQualificationVerdict(
     runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
+    /** Present for a recordable terminal verdict; included in the same DB transaction. */
+    terminalEvent?: { status: string; detail: Record<string, unknown> };
   },
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) => {
@@ -1665,7 +1754,17 @@ export function recordStoredQualificationVerdict(
       ...input,
       attemptId: input.attemptId ?? current.attemptId,
     });
-  });
+  }, { terminalEvent: input.terminalEvent });
+}
+
+export function recordStoredQualificationScheduledTerminalRecovery(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recoverQualificationScheduledTerminal>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current ? recoverQualificationScheduledTerminal(current, input)
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
 }
 
 /**
