@@ -590,3 +590,45 @@ run, but its historical failure cause is still unmeasured. No flake-resolution
 claim is made. Mutating Git remains on the local path: the separate transport-loss
 exit fence, profiler-start overhead and full multi-repository performance proof
 are still P-003 work. This is source/current-build verification, not shipment.
+
+### Normal parent exit must also wait for helpers
+
+EI-24137289590776306 extends the same exit-proof invariant to a parent that
+exits normally. The previous implementation waited for the process group only
+when `terminating` was true, and ignored later cancellation once `childClosed`
+was true. A helper with independent stdio could therefore remain alive after
+admission settlement and the caller's result.
+
+Three real-process regressions failed against that implementation (run
+19273936): each observed `settled` where the helper was alive and the call
+needed to remain `pending`. The cases cover eventual normal helper completion,
+caller abort after the parent exits, and the absolute deadline after parent
+exit. The same existing group-exit check now runs on every close; cancellation
+and timeout guards remain active until the group is confirmed gone. No new
+registry, tool or persistence surface was introduced.
+
+The full lifecycle suite passed 14 tests, zero skipped (19273939), and the
+Git-sidecar suite passed 16 tests, zero skipped. Both ran at HEAD `53172e7894`
+with the local implementation change; the integration test was also locally
+modified. Each new case observes helper death both at admission settlement and
+at caller completion. This is Linux process evidence; Windows still uses the
+direct-child contract. It does not establish transport-loss recovery or shipment.
+
+### Shutdown waits for active requests to finish
+
+EI-24137972449455522 found a distinct lifetime boundary in the server shutdown
+handler. It aborted request controllers and destroyed sockets, then invoked
+`process.exit(0)` from `server.close()` without waiting for those requests.
+Closing network sockets does not establish command termination or admission
+settlement. A regression using real IPC and a real child failed on the old
+server (19273997): the intercepted exit call occurred while execution was still
+pending. Only `process.exit` was intercepted, to keep the test runner alive.
+
+Shutdown now reuses the active controller set as the drain condition and exits
+after both socket closure and request completion. Signal handlers remain
+installed while draining so a repeated SIGTERM does not bypass cleanup. The
+full lifecycle suite passed 15 tests, zero skipped (19274002), at HEAD
+`53172e7894` plus local source/test changes. Scoped typechecking of the server
+and test passed; diagnostics outside these files remain. This verifies the
+server's exit decision and real child cleanup, not recovery from SIGKILL or a
+lost transport response. Those failure modes remain P-003 work.

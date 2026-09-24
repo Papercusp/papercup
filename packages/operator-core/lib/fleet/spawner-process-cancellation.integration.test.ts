@@ -45,6 +45,7 @@ function alive(pid: number): boolean {
 let server: Server;
 let dir: string;
 let clients: SpawnerIpcClient[];
+let shutdown: () => void;
 const pids = new Set<number>();
 const childScript = "process.on('SIGTERM', () => setTimeout(() => { process.stdout.write('cleanup complete\\n'); process.exit(0); }, 40)); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
 
@@ -55,7 +56,9 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'exec-cancel-'));
   vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', join(dir, 'server.sock'));
   clients = [];
+  const previousSignalHandlers = new Set(process.listeners('SIGTERM'));
   server = runSpawnerSidecarServer();
+  shutdown = process.listeners('SIGTERM').find((handler) => !previousSignalHandlers.has(handler)) as () => void;
   await once(server, 'listening');
 });
 
@@ -131,6 +134,51 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     await vi.waitFor(() => expect(alive(child.pid())).toBe(false));
   });
 
+  it('drains active command exit and admission settlement before exiting on shutdown', async () => {
+    const child = runChild();
+    await child.started;
+    let releaseSettlement!: () => void;
+    const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
+    h.finished.mockImplementationOnce(async () => { await settlement; return true; });
+    // Invoke only THIS server's registered handler; never send a real signal
+    // to the test runner or invoke unrelated process-global signal listeners.
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const rejected = expect(child.result).rejects.toThrow('Socket error');
+    const closed = once(server, 'close');
+    try {
+      shutdown();
+      await Promise.all([closed, rejected]);
+      expect(exit).not.toHaveBeenCalled();
+      expect(process.listeners('SIGTERM')).toContain(shutdown);
+      shutdown();
+      expect(exit).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(h.finished).toHaveBeenCalledOnce());
+      expect(alive(child.pid())).toBe(false);
+      expect(exit).not.toHaveBeenCalled();
+      releaseSettlement();
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
+      expect(process.listeners('SIGTERM')).not.toContain(shutdown);
+    } finally {
+      releaseSettlement();
+      await vi.waitFor(() => expect(alive(child.pid())).toBe(false));
+      await vi.waitFor(() => expect(exit).toHaveBeenCalled());
+      exit.mockRestore();
+    }
+  });
+
+  it('exits promptly on shutdown with no active requests', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const closed = once(server, 'close');
+    try {
+      shutdown();
+      await closed;
+      expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+      expect(process.listeners('SIGTERM')).not.toContain(shutdown);
+    } finally {
+      exit.mockRestore();
+    }
+  });
+
   it('does not spawn after cancellation while admission was pending', async () => {
     const controller = new AbortController();
     let admit!: (value: GovernedExecution) => void;
@@ -191,6 +239,44 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(alive(pid)).toBe(false);
     expect(h.finished).toHaveBeenCalledOnce();
   });
+
+  it.each(['release', 'abort', 'timeout'] as const)('waits for a helper after normal parent exit until %s', async (ending) => {
+    const readyPath = join(dir, 'orphan-ready');
+    const releasePath = join(dir, 'orphan-release');
+    const helper = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, String(process.pid)); setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(releasePath)})) process.exit(0); }, 5);`;
+    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: 'ignore' }).unref(); const timer = setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(readyPath)})) { clearInterval(timer); process.exit(0); } }, 5);`;
+    const controller = new AbortController();
+    let parentPid = 0;
+    let helperAliveAtSettlement: boolean | undefined;
+    h.finished.mockImplementationOnce(async () => {
+      helperAliveAtSettlement = alive(Number(await readFile(readyPath, 'utf8')));
+      return true;
+    });
+    const result = execProcess({ command: process.execPath, args: ['-e', parent], timeoutMs: 5000 }, {
+      signal: controller.signal, onPid: (pid) => { parentPid = pid; pids.add(pid); },
+    });
+    let helperPid = 0;
+    await vi.waitFor(async () => {
+      helperPid = Number(await readFile(readyPath, 'utf8'));
+      pids.add(helperPid);
+      expect(parentPid).toBeGreaterThan(0);
+      expect(alive(parentPid)).toBe(false);
+    });
+    expect(alive(helperPid)).toBe(true);
+    const early = await Promise.race([
+      result.then(() => 'settled'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+    expect(early).toBe('pending');
+    expect(h.finished).not.toHaveBeenCalled();
+    if (ending === 'release') await writeFile(releasePath, 'release');
+    else if (ending === 'abort') controller.abort();
+    const completed = await result;
+    expect(completed.code).toBe(ending === 'release' ? 0 : -1);
+    expect(alive(helperPid)).toBe(false);
+    expect(helperAliveAtSettlement).toBe(false);
+    expect(h.finished).toHaveBeenCalledOnce();
+  }, 10_000);
 
   it('keeps observer failures separate from child execution and settlement', async () => {
     const fail = () => { throw new Error('observer unavailable'); };

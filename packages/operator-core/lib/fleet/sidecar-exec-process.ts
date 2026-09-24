@@ -182,7 +182,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let stdout = '';
       let stderr = '';
       let settled = false;
-      let childClosed = false;
+      let commandExited = false;
       let terminating = false;
       let spawnFailed = false;
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -204,16 +204,23 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       };
       const waitForCommandExit = async (): Promise<void> => {
-        if (processGroup === undefined) return;
+        if (processGroup === undefined) {
+          commandExited = true;
+          return;
+        }
         // A parent can close its pipes while a helper still runs with its own
-        // stdio. Keep the cancellation escalation armed until the GROUP exits.
+        // stdio, including after a successful parent exit. Keep the guards and
+        // cancellation escalation armed until the GROUP exits.
         // No deadline may manufacture an exit receipt and release caller locks.
         let probeFailureReported = false;
         for (;;) {
           try {
             process.kill(-processGroup, 0);
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+              commandExited = true;
+              return;
+            }
             // A failed liveness probe is not proof of exit. Keep the request
             // pending (and its escalation armed), rather than letting the
             // admission-error handler manufacture completion for a live group.
@@ -246,7 +253,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
       const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
       const terminate = (reason: string): void => {
-        if (settled || childClosed || terminating) return;
+        if (settled || commandExited || terminating) return;
         terminating = true;
         clearTimers();
         stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
@@ -299,9 +306,8 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       });
       child.on('close', async (code) => {
-        childClosed = true;
         try {
-          if (terminating) await waitForCommandExit();
+          await waitForCommandExit();
           // Admission settlement can itself wait on IO. Remove kill timers
           // after command exit, before awaiting admission settlement.
           stopGuards();
