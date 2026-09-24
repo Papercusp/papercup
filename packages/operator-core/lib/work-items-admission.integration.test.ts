@@ -27,10 +27,14 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { claimNextWorkItem, claimWorkItem, listWorkItems } = await import('./work-items');
+const { claimNextWorkItem, claimWorkItem, getWorkItem, listWorkItems } = await import('./work-items');
 const { claimReplicaSlot } = await import('./work-item-redundancy');
-const { resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
-const { mintAgentReviewClaimAdmission } = await import('./harness/improvements/agent-review-policy');
+const { autoPickableWhereSql, resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
+const {
+  agentReviewPendingAdmissionSql,
+  matchesAgentReviewClaimAdmission,
+  mintAgentReviewClaimAdmission,
+} = await import('./harness/improvements/agent-review-policy');
 const { buildHarnessFeaturesProjection } = await import('./sync/hyperbee/projections/harness-features');
 
 const WS = 'default';
@@ -420,6 +424,49 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       review: payload.agentReview,
     });
     expect(admission).not.toBeNull();
+    const candidate = await getWorkItem('F-REVIEW', HARNESS);
+    expect(candidate).not.toBeNull();
+    expect(candidate).toMatchObject({
+      id: 'F-REVIEW',
+      family: 'feature',
+      harness: HARNESS,
+      payload: { agentReview: payload.agentReview },
+    });
+    expect(admission).toMatchObject({
+      itemId: 'F-REVIEW',
+      reviewer: 'su-reviewer',
+      harnessSlug: HARNESS,
+      submittedBy: 'su-filer',
+      ledgerIdeaId: 'F-REVIEW',
+      round: 1,
+    });
+    expect(matchesAgentReviewClaimAdmission(admission, candidate!, 'su-reviewer')).toBe(true);
+    const [claimFloor] = await h.sql<{
+      admission: string;
+      origin: string;
+      taken_by: string | null;
+      review_allowed: boolean;
+      auto_pickable: boolean;
+    }[]>`
+      SELECT target.admission,
+             target.origin,
+             target.taken_by,
+             ${agentReviewPendingAdmissionSql(h.sql, admission, {
+               payload: 'target.payload',
+               admission: 'target.admission',
+             })} AS review_allowed,
+             ${autoPickableWhereSql(h.sql, WS)} AS auto_pickable
+        FROM harness_shared.harness_features_consolidated AS target
+       WHERE target.workspace_id = ${WS}
+         AND target.harness_slug = ${HARNESS}
+         AND target.feature_id = 'F-REVIEW'`;
+    expect(claimFloor).toEqual({
+      admission: 'pending',
+      origin: 'local',
+      taken_by: null,
+      review_allowed: true,
+      auto_pickable: true,
+    });
     const claimed = await claimWorkItem('F-REVIEW', 'su-reviewer', {
       harness: HARNESS,
       agentReviewAdmission: admission!,
