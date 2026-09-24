@@ -30,6 +30,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { ServingRuntimeId } from './serving-runtimes';
 import {
   normalizeRequirementSections,
@@ -116,7 +117,7 @@ import {
   FIRST_PARTY_RUBRIC_SEED_OWNER,
   seedContentHash as computeSeedContentHash,
   type ExistingRubricRow,
-  type LocalRubric,
+  type RubricSeedSource,
 } from './cupboard/rubric-store';
 import { pgTimestampToIso } from './pg-timestamp';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
@@ -990,7 +991,7 @@ export function assertRubricWritable(rubric: Pick<Rubric, 'rubricId' | 'readComp
  * carries (releaseGating, ratifiedBy, status) survive the whole-document replace instead
  * of being silently dropped.
  */
-function buildSeedProposeInput(r: LocalRubric, upgrading: Rubric | null): ProposeRubricInput {
+function buildSeedProposeInput(r: RubricSeedSource, upgrading: Rubric | null): ProposeRubricInput {
   return {
     rubricId: r.rubricId,
     characteristic: r.characteristic,
@@ -1082,10 +1083,10 @@ export async function reseedRubricsAfterInstall(): Promise<void> {
 /** The seed pass itself, WITHOUT the once-per-process guard — shared by the lazy
  *  boot path and the post-install re-seed. Returns whether the pass fully
  *  succeeded; never throws. */
-async function runRubricSeedPass(): Promise<boolean> {
+async function runRubricSeedPass(sources?: readonly RubricSeedSource[]): Promise<boolean> {
   let ok = true;
   try {
-    const bundled = listLocalRubrics();
+    const bundled = sources ?? listLocalRubrics();
     if (bundled.length > 0) {
       const existingRows = await existingRubricPlanRows();
       const existingById = new Map(existingRows.map((e) => [e.rubricId, e] as const));
@@ -1114,6 +1115,36 @@ async function runRubricSeedPass(): Promise<boolean> {
     );
   }
   return ok;
+}
+
+/** Reuse the ordinary seed and no-clobber decision for an exact package pin.
+ * Keep the lazy first-party pass pending: seeding one selected package does not
+ * mean the rest of the bundled library has been loaded. A conflicting live
+ * rubric fails the required resource rather than silently serving other bytes. */
+export async function provisionPinnedRubric(
+  source: RubricSeedSource,
+  workspaceId: string,
+): Promise<void> {
+  return runWithWorkspaceIfConcrete(workspaceId, async () => {
+    const priorState = rubricSeedState;
+    rubricSeedState = 'running';
+    try {
+      if (!await runRubricSeedPass([source])) {
+        throw new Error(`pinned rubric ${source.rubricId} could not be seeded`);
+      }
+      const row = (await existingRubricPlanRows()).find((entry) => entry.rubricId === source.rubricId);
+      if (!row?.valid || !row.templateData ||
+          computeSeedContentHash(row.templateData) !== computeSeedContentHash(source)) {
+        throw new Error(`pinned rubric ${source.rubricId} conflicts with the workspace rubric store`);
+      }
+      const live = await getRubric(source.rubricId);
+      if (live?.status !== 'active') {
+        throw new Error(`pinned rubric ${source.rubricId} is not active in the workspace`);
+      }
+    } finally {
+      rubricSeedState = priorState;
+    }
+  });
 }
 
 export interface ListRubricsFilter {
