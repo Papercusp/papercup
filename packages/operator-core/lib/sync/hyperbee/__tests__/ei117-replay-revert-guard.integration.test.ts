@@ -154,6 +154,16 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
       );
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '125-harness-plans-federation.sql'), 'utf8')));
+    // The writer re-derives the plan index (plan-index-rows.ts) in the same transaction, so
+    // plan_items/plan_decisions must exist: the REAL migrations, not a stub, so a later column
+    // cannot strand this fixture the way the harness_plans stub above was stranded.
+    for (const mig of [
+      '675-normalize-plan-items-decisions.sql',
+      '1071-restore-plan-items-owner-gate-marker-after-1059-collision.sql',
+      '1142-plan-decision-affects-authority.sql',
+    ]) {
+      await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, mig), 'utf8')));
+    }
 
     // Mig 214 attaches its stamp trigger to all 11 CDC tables (strict by
     // design — no silent skip on a typo'd name), so cheap stubs stand in for
@@ -179,7 +189,7 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
       // only (ON CONFLICT DO NOTHING; per-part recompose owns updates), which
       // plan-part-federation-cutover.integration.test.ts covers. Pin OFF here so this
       // suite keeps exercising the LWW guard instead of trivially passing on DO NOTHING.
-      isFlagOn: () => false,
+      isFlagOn: async () => false,
     });
     writeRemote = (row, ts) =>
       projection.writeToPg(row, { authorPubkey: 'REMOTE-LOG-KEY', origin: 'remote', ts });
