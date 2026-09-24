@@ -1,16 +1,18 @@
-import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, symlink, readFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   collectTranscriptFiles,
   measureTranscriptFile,
   ownerIdFromPath,
   scanLaunchTranscripts,
+  captureCompletedCarrySource,
+  recheckCarrySourceSnapshot,
 } from './scan-launch-transcripts';
 
 let root: string;
@@ -57,6 +59,97 @@ function usageEntry(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('completed native carry source capture', () => {
+  const setup = async () => {
+    const entries = [
+      { type: 'session_meta', payload: { id: 'native-thread' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'native-turn' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'native-turn' } },
+    ];
+    const path = join(root, 'native.jsonl');
+    const body = () => entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
+    await writeFile(path, body());
+    const thread = { id: 'native-thread', path, status: { type: 'idle' },
+      turns: [{ id: 'native-turn', status: 'completed', error: null, itemsView: 'full', items: [] }] };
+    const peer = { request: vi.fn(async () => ({ thread })), send: vi.fn(), close: vi.fn(async () => {}),
+      done: Promise.resolve(), pid: () => 1 };
+    return { entries, path, body, peer, thread };
+  };
+  it('waits for native teardown and captures exact bytes, without editing the source', async () => {
+    const { peer, path } = await setup();
+    const bytes = await readFile(path);
+    const closing: string[] = [];
+    peer.close.mockImplementation(async () => { closing.push('closed'); });
+    peer.done = Promise.resolve().then(() => { closing.push('exited'); });
+    const result = await captureCompletedCarrySource(peer, 'native-thread', 'native-turn');
+    expect(closing.sort()).toEqual(['closed', 'exited']);
+    expect(peer.request).toHaveBeenCalledWith({ method: 'thread/read', params: { threadId: 'native-thread', includeTurns: true } });
+    expect(result.snapshot.bytes).toEqual(bytes);
+    expect(await readFile(path)).toEqual(bytes);
+    await expect(recheckCarrySourceSnapshot(result)).resolves.toBeUndefined();
+  });
+  it('reads only after close completes, so a native final flush is included', async () => {
+    const { peer, path, body } = await setup();
+    await writeFile(path, '');
+    peer.close.mockImplementation(async () => { await writeFile(path, body()); });
+    expect((await captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).snapshot.bytes.toString()).toBe(body());
+  });
+  it.each(['busy', 'wrong-thread', 'wrong-turn', 'failed', 'partial-view', 'relative-path', 'later-turn', 'duplicate-turn'])('rejects native %s before teardown', async fault => {
+    const { peer, thread } = await setup();
+    if (fault === 'busy') thread.status.type = 'active';
+    if (fault === 'wrong-thread') thread.id = 'other';
+    if (fault === 'wrong-turn') thread.turns[0].id = 'other';
+    if (fault === 'failed') thread.turns[0].status = 'failed';
+    if (fault === 'partial-view') thread.turns[0].itemsView = 'summary';
+    if (fault === 'relative-path') thread.path = 'native.jsonl';
+    if (fault === 'later-turn') thread.turns.push({ ...thread.turns[0], id: 'later' });
+    if (fault === 'duplicate-turn') thread.turns.push(thread.turns[0]);
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow(/carry source/);
+    expect(peer.close).not.toHaveBeenCalled();
+  });
+  it.each(['partial-record', 'empty', 'bad-json', 'wrong-header', 'duplicate-header', 'no-header', 'later-start', 'wrong-terminal', 'terminal-error'])('rejects %s in the original source', async fault => {
+    const { peer, path, entries, body } = await setup();
+    if (fault === 'wrong-header') entries[0].payload.id = 'other';
+    if (fault === 'duplicate-header') entries.unshift(entries[0]);
+    if (fault === 'no-header') entries.shift();
+    if (fault === 'later-start') entries.push({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'later' } });
+    if (fault === 'wrong-terminal') entries[2].payload.turn_id = 'other';
+    if (fault === 'terminal-error') Object.assign(entries[2].payload, { status: 'failed' });
+    await writeFile(path, fault === 'empty' ? '' : fault === 'bad-json' ? '{bad}\n' : body() + (fault === 'partial-record' ? '{' : ''));
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow();
+  });
+  it('propagates teardown failure before reading a source that otherwise looks valid', async () => {
+    const { peer } = await setup();
+    peer.close.mockRejectedValue(new Error('tracked teardown failed'));
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow('tracked teardown failed');
+  });
+  it('does not capture after a rejected native process-exit receipt', async () => {
+    const { peer } = await setup();
+    peer.done = Promise.reject(new Error('native exit failed')); void peer.done.catch(() => {});
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow('native exit failed');
+  });
+  it.each([NaN, Infinity, 0, -1, 65 * 1024 * 1024])('refuses unsafe byte cap %s before native reads', async cap => {
+    const { peer } = await setup();
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn', cap)).rejects.toThrow(/byte cap/);
+    expect(peer.request).not.toHaveBeenCalled();
+  });
+  it('honors the byte cap and refuses a symlinked source', async () => {
+    const { peer, path, thread } = await setup();
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn', 1)).rejects.toThrow(/byte cap/);
+    const link = join(root, 'link.jsonl'); await symlink(path, link); thread.path = link;
+    await expect(captureCompletedCarrySource(peer, 'native-thread', 'native-turn')).rejects.toThrow();
+  });
+  it.each(['append', 'rewrite-same-length', 'truncate', 'partial-tail'])('rejects source %s before the next arm', async change => {
+    const { peer, path, body } = await setup();
+    const source = await captureCompletedCarrySource(peer, 'native-thread', 'native-turn');
+    if (change === 'append') await appendFile(path, '{}\n');
+    if (change === 'rewrite-same-length') await writeFile(path, body().replace('task_complete', 'task_completE'));
+    if (change === 'truncate') await writeFile(path, '');
+    if (change === 'partial-tail') await appendFile(path, '{');
+    await expect(recheckCarrySourceSnapshot(source)).rejects.toThrow();
+  });
+});
 
 describe('measureTranscriptFile — the streaming guarantee', () => {
   it('the real CLI refuses a passing target on partial usage and accepts the fully reported control', async () => {

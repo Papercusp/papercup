@@ -19,8 +19,10 @@
 
 import { createReadStream } from 'node:fs';
 import { opendir } from 'node:fs/promises';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { StableSource } from '../session-port/source';
+import type { SuStdioPeer } from '../su-session-stdio-peer';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -81,6 +83,87 @@ export type ScanReport = {
   /** Skip counts by reason — the census a reader needs before trusting a small sample set. */
   skippedByReason: Record<SkipReason, number>;
 };
+
+export interface CarrySourceSnapshot {
+  threadId: string;
+  turnId: string;
+  filePath: string;
+  snapshot: StableSource;
+}
+
+/** Capture an owned native preparation peer at its last completed turn. The
+ * native process is stopped before reading its original rollout; the existing
+ * bounded JSONL reader supplies the exact bytes/hash. This does not copy or
+ * rewrite native history, nor prove serving-account identity or tool authority.
+ * The returned cut is a snapshot, not a promise that the pathname stays frozen:
+ * recheckCarrySourceSnapshot must pass before each comparison arm.
+ */
+export async function captureCompletedCarrySource(
+  peer: SuStdioPeer,
+  threadId: string,
+  turnId: string,
+  maxBytes?: number,
+): Promise<CarrySourceSnapshot> {
+  const record = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (!threadId.trim() || !turnId.trim()) throw new Error('carry source requires exact native identity');
+  // Ordinary launch scanning does not need the archive module's DB/zstd
+  // dependencies; load the shared reader only for this source-capture path.
+  const { MAX_SESSION_PORT_SOURCE_BYTES, readStableLiveJsonl } = await import('../session-port/source');
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_SESSION_PORT_SOURCE_BYTES)) {
+    throw new Error('carry source byte cap must be positive and within the existing source limit');
+  }
+  const response = await peer.request({ method: 'thread/read', params: { threadId, includeTurns: true } });
+  const thread = record(response.thread), turns = thread?.turns;
+  const last = Array.isArray(turns) ? record(turns.at(-1)) : null;
+  if (thread?.id !== threadId || record(thread.status)?.type !== 'idle' ||
+    !Array.isArray(turns) || turns.filter(turn => record(turn)?.id === turnId).length !== 1 || last?.id !== turnId ||
+    last.status !== 'completed' || last.error != null || !Array.isArray(last.items) ||
+    (last.itemsView !== undefined && last.itemsView !== 'full')) {
+    throw new Error('carry source requires a full, idle, completed final native turn');
+  }
+  if (typeof thread.path !== 'string' || !isAbsolute(thread.path)) throw new Error('carry source native path is unavailable');
+  // A successful thread/read is not writer exclusion. Both tracked teardown
+  // and its process-exit receipt must finish before the source file is opened.
+  await peer.close();
+  await peer.done;
+  const snapshot = await readStableLiveJsonl(thread.path, maxBytes);
+  if (!snapshot.completeBytes || snapshot.completeBytes !== snapshot.highWaterBytes) {
+    throw new Error('carry source is empty, short, or ends with a partial record');
+  }
+  let headerCount = 0, lastBoundary: Record<string, unknown> | null = null;
+  let offset = 0, records = 0;
+  while (offset < snapshot.bytes.length) {
+    const end = snapshot.bytes.indexOf(0x0a, offset);
+    const line = snapshot.bytes.subarray(offset, end).toString('utf8');
+    offset = end + 1;
+    const entry = record(JSON.parse(line)), payload = record(entry?.payload);
+    if (!entry || !payload) throw new Error('carry source contains a malformed native record');
+    if (records++ === 0 && entry.type !== 'session_meta') throw new Error('carry source lacks its native header');
+    if (entry.type === 'session_meta') {
+      headerCount++;
+      if (payload.id !== threadId) throw new Error('carry source native header identity mismatch');
+    }
+    if (entry.type === 'event_msg' && ['task_started', 'task_complete', 'turn_completed', 'turn_aborted'].includes(String(payload.type))) {
+      lastBoundary = payload;
+    }
+  }
+  if (headerCount !== 1 || !lastBoundary || !['task_complete', 'turn_completed'].includes(String(lastBoundary.type)) ||
+    lastBoundary.turn_id !== turnId || lastBoundary.error != null ||
+    ['error', 'failed', 'failure'].includes(String(lastBoundary.status ?? ''))) {
+    throw new Error('carry source terminal record does not match the completed native cut');
+  }
+  return { threadId, turnId, filePath: thread.path, snapshot };
+}
+
+/** Source drift is a stop condition, never a reason to silently select a new
+ * cutoff or regenerate preparation after comparison results are visible. */
+export async function recheckCarrySourceSnapshot(source: CarrySourceSnapshot): Promise<void> {
+  const { readStableLiveJsonl } = await import('../session-port/source');
+  const current = await readStableLiveJsonl(source.filePath, source.snapshot.highWaterBytes);
+  if (current.completeBytes !== current.highWaterBytes || current.completeBytes !== source.snapshot.completeBytes ||
+    current.sha256 !== source.snapshot.sha256) throw new Error('carry source changed after its frozen cut');
+}
 
 /**
  * Recursively collect `*.jsonl` paths under `root`.
