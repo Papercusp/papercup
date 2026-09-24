@@ -181,6 +181,7 @@ beforeAll(async () => {
     '387-event-wake-delivery-source.sql',
     '533-add-event-awaits-payload-filter.sql',
     '541-predicate-watches.sql',
+    '572-event-await-nodes-threshold-tree.sql',
     '599-event-announcement-generation.sql',
     '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
@@ -229,6 +230,10 @@ beforeAll(async () => {
       FROM harness_shared.work_items WHERE feature_id = 'WI-P020-BACKFILL'
   `;
   await db.sql.unsafe(readMigration('1214-work-item-completion-event-intent.sql')).simple();
+  // The completion event runs through the current await writer. Keep its
+  // composed-row and fired-delivery-intent columns in this isolated database.
+  await db.sql.unsafe(readMigration('1215-event-await-delivery-intent-recovery-index.sql')).simple();
+  await db.sql.unsafe(readMigration('1216-event-await-fired-delivery-intent-marker.sql')).simple();
   const after1214 = await db.sql<{ intent: string | null }[]>`
     SELECT payload->>'_completionEventIntentId' AS intent
       FROM harness_shared.work_items WHERE feature_id = 'WI-P020-BACKFILL'
@@ -257,6 +262,7 @@ beforeEach(async () => {
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
                        harness_shared.coord_event_log, harness_shared.event_awaits,
+                       harness_shared.event_await_nodes,
                        harness_shared.event_wake_deliveries, harness_shared.event_key_fires,
                        harness_shared.predicate_watches,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
