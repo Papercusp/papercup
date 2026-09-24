@@ -19,12 +19,13 @@
 
 import { constants as fsConstants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { opendir, open, realpath, stat } from 'node:fs/promises';
+import { opendir, open, readdir, readlink, realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
 import type { SuStdioPeer } from '../su-session-stdio-peer';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { linuxPpidFromProcStat, linuxProcessIdentityFromStat } from '../process-identity';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -172,6 +173,123 @@ export interface CarryArtifactInput {
   maxBytes: number;
 }
 
+export interface CarryRuntimeSnapshot {
+  schemaVersion: 1;
+  evidenceKind: 'observation-only';
+  rootPid: number;
+  processes: Array<{ pid: number; parentPid: number; identity: string; executable: string; mappedFiles: string[] }>;
+  /** On-disk files observed through exe/maps, not a complete dependency graph. */
+  artifacts: CarryArtifactInput[];
+}
+
+/** Observe the live native process tree, including a wrapper's children and
+ * file-backed mappings. Reuse the kernel identity parsers; PID alone is not an
+ * identity. All thread children lists are read because a non-main thread can
+ * spawn the native child. Missing/short/oversized proc data fails closed.
+ *
+ * This is deliberately NOT admission: maps do not enumerate JS modules, files
+ * read then closed, future/transient children, or unloaded dependencies. Hashing
+ * a mapped pathname binds its current on-disk bytes, not resident memory. The
+ * controller still needs declared script/data dependencies and writer exclusion.
+ */
+export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<CarryRuntimeSnapshot> {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(rootPid) || rootPid <= 0) {
+    throw new Error('carry runtime requires a live Linux peer PID');
+  }
+  const readProc = async (path: string): Promise<string> => {
+    const file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    try {
+      const buffer = Buffer.alloc(2 * 1024 * 1024 + 1);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const chunk = await file.read(buffer, bytes, buffer.length - bytes, bytes);
+        if (!chunk.bytesRead) break;
+        bytes += chunk.bytesRead;
+      }
+      if (bytes === buffer.length) throw new Error('carry runtime proc record exceeds bound');
+      return buffer.subarray(0, bytes).toString('utf8');
+    } finally { await file.close(); }
+  };
+  const boot = (await readProc('/proc/sys/kernel/random/boot_id')).trim();
+  if (!/^[0-9a-f-]{36}$/i.test(boot)) throw new Error('carry runtime boot identity unavailable');
+  const observe = async (): Promise<CarryRuntimeSnapshot> => {
+    const processes: CarryRuntimeSnapshot['processes'] = [], files = new Set<string>();
+    const queue = [{ pid: rootPid, parent: null as number | null }], seen = new Set<number>();
+    while (queue.length) {
+      const { pid, parent } = queue.shift()!;
+      if (seen.has(pid) || seen.size >= 64) throw new Error('carry runtime process tree repeated or exceeds bound');
+      seen.add(pid);
+      const before = await readProc(`/proc/${pid}/stat`);
+      const identity = linuxProcessIdentityFromStat(boot, before), parentPid = linuxPpidFromProcStat(before);
+      if (!identity || parentPid === null || (parent !== null && parentPid !== parent)) {
+        throw new Error('carry runtime process identity or parent changed');
+      }
+      const executable = await readlink(`/proc/${pid}/exe`);
+      if (!isAbsolute(executable) || executable.endsWith(' (deleted)')) throw new Error('carry runtime executable unavailable');
+      const mappedFiles = new Set<string>();
+      const maps = await readProc(`/proc/${pid}/maps`);
+      if (!maps.trim() || !maps.endsWith('\n')) throw new Error('carry runtime mappings incomplete');
+      for (const line of maps.trimEnd().split('\n')) {
+        const match = /^([0-9a-f]+)-([0-9a-f]+)\s+([r-][w-][x-][ps])\s+[0-9a-f]+\s+([0-9a-f]+):([0-9a-f]+)\s+(\d+)(?:\s+(.*))?$/i.exec(line);
+        if (!match) throw new Error('carry runtime mapping invalid');
+        const path = match[7];
+        if (!path || path.startsWith('[')) continue; // anonymous/kernel mappings are not disk artifacts
+        if (!isAbsolute(path) || path.endsWith(' (deleted)') || /\\[0-7]{3}/.test(path)) {
+          throw new Error('carry runtime mapped pathname unavailable or ambiguous');
+        }
+        if (mappedFiles.has(path)) continue;
+        const file = await stat(path, { bigint: true });
+        const major = ((file.dev >> 8n) & 0xfffn) | ((file.dev >> 32n) & 0xfffff000n);
+        const minor = (file.dev & 0xffn) | ((file.dev >> 12n) & 0xffffff00n);
+        if (!file.isFile() || file.ino !== BigInt(match[6]) || major !== BigInt(`0x${match[4]}`) ||
+          minor !== BigInt(`0x${match[5]}`)) throw new Error('carry runtime mapped file replaced');
+        mappedFiles.add(path);
+      }
+      if (!mappedFiles.has(executable)) throw new Error('carry runtime executable absent from mappings');
+      for (const path of mappedFiles) files.add(path);
+      if (files.size > 256) throw new Error('carry runtime artifact population exceeds bound');
+      const threads = await readdir(`/proc/${pid}/task`);
+      if (!threads.length || threads.length > 512 || threads.some(tid => !/^[1-9]\d*$/.test(tid))) {
+        throw new Error('carry runtime thread population invalid or exceeds bound');
+      }
+      const children = new Set<number>();
+      for (const tid of threads) {
+        const text = (await readProc(`/proc/${pid}/task/${tid}/children`)).trim();
+        if (!text) continue;
+        for (const child of text.split(/\s+/)) {
+          const childPid = Number(child);
+          if (!/^[1-9]\d*$/.test(child) || !Number.isSafeInteger(childPid)) throw new Error('carry runtime child PID invalid');
+          children.add(childPid);
+          if (seen.size + children.size + queue.length > 64) throw new Error('carry runtime process tree exceeds bound');
+        }
+      }
+      if (linuxProcessIdentityFromStat(boot, await readProc(`/proc/${pid}/stat`)) !== identity ||
+        await readlink(`/proc/${pid}/exe`) !== executable) throw new Error('carry runtime process changed during observation');
+      processes.push({ pid, parentPid, identity, executable, mappedFiles: [...mappedFiles].sort() });
+      queue.push(...[...children].sort((a, b) => a - b).map(child => ({ pid: child, parent: pid })));
+    }
+    return { schemaVersion: 1, evidenceKind: 'observation-only', rootPid,
+      processes: processes.sort((a, b) => a.pid - b.pid),
+      artifacts: [...files].sort().map(filePath => ({
+        id: `runtime:${createHash('sha256').update(filePath).digest('hex')}`, filePath, maxBytes: 512 * 1024 * 1024,
+      })) };
+  };
+  const before = await observe(), after = await observe();
+  if ((await readProc('/proc/sys/kernel/random/boot_id')).trim() !== boot || canonicalJson(before) !== canonicalJson(after)) {
+    throw new Error('carry runtime tree or mappings changed during observation');
+  }
+  return before;
+}
+
+/** Equal snapshots establish observations at the boundaries, never absence of
+ * a transient child/mapping or an authenticated provider-send event. */
+export async function recheckCarryRuntimeSnapshot(snapshot: CarryRuntimeSnapshot): Promise<void> {
+  snapshot = structuredClone(snapshot);
+  if (canonicalJson(await captureCarryRuntimeSnapshot(snapshot.rootPid)) !== canonicalJson(snapshot)) {
+    throw new Error('carry runtime changed after capture');
+  }
+}
+
 /** Freeze the declared file set alongside its native configuration observation.
  * Reuses the existing canonical serializer and configuration capture. This is
  * an artifact binding, NOT a complete dependency census, approval, provider
@@ -184,6 +302,7 @@ export async function captureCarryArtifactManifest(input: {
   protocolRef: string;
   artifacts: readonly CarryArtifactInput[];
   configuration: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>;
+  runtime?: CarryRuntimeSnapshot;
 }) {
   input = structuredClone(input);
   const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -208,6 +327,14 @@ export async function captureCarryArtifactManifest(input: {
   if (!config || !nonblank(config.threadId) || !isAbsolute(config.cwd) ||
     !/^[a-f0-9]{64}$/.test(config.configSha256) || !/^[a-f0-9]{64}$/.test(config.toolInventorySha256)) {
     throw new Error('carry manifest requires a native configuration observation');
+  }
+  if (input.runtime) {
+    await recheckCarryRuntimeSnapshot(input.runtime);
+    for (const required of input.runtime.artifacts) {
+      if (!input.artifacts.some(a => a.id === required.id && a.filePath === required.filePath && a.maxBytes === required.maxBytes)) {
+        throw new Error('carry manifest is missing an observed runtime artifact');
+      }
+    }
   }
   const artifacts = [];
   for (const artifact of [...input.artifacts].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
@@ -241,8 +368,10 @@ export async function captureCarryArtifactManifest(input: {
         resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) });
     } finally { await fh.close(); }
   }
+  if (input.runtime) await recheckCarryRuntimeSnapshot(input.runtime);
   const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
-    protocolRef: input.protocolRef, configuration: config, artifacts };
+    protocolRef: input.protocolRef, configuration: config, artifacts,
+    ...(input.runtime ? { runtime: input.runtime } : {}) };
   return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
 }
 
@@ -262,7 +391,7 @@ export async function recheckCarryArtifactManifest(
   }
   await recheckCarryNativeConfiguration(peer, manifest.configuration);
   const current = await captureCarryArtifactManifest({ protocolRef: manifest.protocolRef,
-    configuration: manifest.configuration,
+    configuration: manifest.configuration, runtime: manifest.runtime,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
   if (current.sha256 !== sha256) throw new Error('carry artifacts changed after manifest freeze');
 }
