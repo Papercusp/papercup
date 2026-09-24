@@ -148,6 +148,9 @@ import {
  *  makes that budget the tool's own rather than something each agent re-picks. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
+// The foreground transport yields below 55s, but measured integration work took 227s
+// before an adjacent unit group and startup. Give detached recovery the full bounded window.
+const DETACHED_RECOVERY_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
@@ -200,6 +203,10 @@ function detachedRunUndurableHint(runId: string): string {
     `testing:run-status { runId: '${runId}' } may answer unknown_run if no shared snapshot is available — which is NOT evidence the tests passed. ` +
     'Prefer the detached fallback below. '
   );
+}
+
+function detachedRecoveryRuntimeMaxSec(timeoutMs?: number): number {
+  return Math.max(1, Math.ceil(Math.max(timeoutMs ?? 0, DETACHED_RECOVERY_TIMEOUT_MS) / 1_000));
 }
 
 /**
@@ -300,9 +307,7 @@ export function buildDetachedTestRunRequest(opts: {
           ],
         }
       : {}),
-    ...(opts.timeoutMs && opts.timeoutMs > 0
-      ? { runtimeMaxSec: Math.max(1, Math.ceil(Math.max(opts.timeoutMs, DEFAULT_TIMEOUT_MS) / 1000)) }
-      : {}),
+    runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -411,11 +416,8 @@ export function buildDetachedMixedTestRunRequest(opts: {
     cwd: root,
     ...(detachedReportArtifacts.length > 0 ? { detachedReportArtifacts } : {}),
     // A detached continuation is a fresh operation, not the expired foreground
-    // remainder. Keep the existing default recovery budget when a caller chose
-    // the foreground transport ceiling.
-    ...(opts.timeoutMs && opts.timeoutMs > 0
-      ? { runtimeMaxSec: Math.max(1, Math.ceil(Math.max(opts.timeoutMs, DEFAULT_TIMEOUT_MS) / 1000)) }
-      : {}),
+    // remainder. It gets the full bounded test window, including mixed-root suites.
+    runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
