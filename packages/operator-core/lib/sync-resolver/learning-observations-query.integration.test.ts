@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { composeCompanionSummary, type CompanionListSummary, type FacetDef } from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
@@ -149,6 +149,99 @@ afterAll(async () => {
 });
 
 describe('learning.observations + summary real-PG contract', () => {
+  it('bounds reference expansion for summaries/pages while retaining reference search', async () => {
+    let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;
+    const recordingSql = postgres(db.url, {
+      max: 1,
+      debug: (_connection, query, parameters) => { captured = { query, parameters }; },
+    });
+    type PlanNode = {
+      'Node Type': string;
+      'Actual Rows': number;
+      'Actual Loops': number;
+      Plans?: PlanNode[];
+    };
+    const expandedRows = (node: PlanNode): number =>
+      (node['Node Type'] === 'ProjectSet' ? node['Actual Rows'] * node['Actual Loops'] : 0)
+      + (node.Plans ?? []).reduce((sum, child) => sum + expandedRows(child), 0);
+    try {
+      for (const q of ['', 'context:plan-deep/P-005']) {
+        const rows = await readLearningObservationsSummaryFromStore(
+          recordingSql, workspaceId,
+          buildLearningObservationsPredicate(normalizeLearningObservationsArgs({ q })),
+        );
+        expect(rows.find((row) => row.kind === 'totals')).toMatchObject({
+          total: ROWS, matched: q ? 1 : ROWS,
+        });
+        expect(captured).toBeDefined();
+        const plan = await sql.unsafe<Array<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }>>(
+          `EXPLAIN (ANALYZE, FORMAT JSON) ${captured!.query}`, captured!.parameters,
+        );
+        const expanded = expandedRows(plan[0]!['QUERY PLAN'][0]!.Plan);
+        if (q) expect(expanded).toBeGreaterThan(0);
+        else expect(expanded).toBe(0);
+        if (!q) {
+          // Reintroduce only the old unused projection into the captured REAL
+          // query. Both variants use the same predicates, facets, fixture and
+          // connection; this is a controlled SQL benchmark, not a route p95.
+          const currentQuery = captured!.query;
+          const legacyQuery = currentQuery.replace(
+            /(scoped AS MATERIALIZED\s*\(\s*SELECT)/i,
+            `$1 issue_id AS id, COALESCE(title, '') AS title, body, created_at,
+              ARRAY(SELECT jsonb_array_elements_text(CASE
+                WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
+                THEN payload->'observation'->'refs' ELSE '[]'::jsonb END)) AS refs,`,
+          );
+          expect(legacyQuery).not.toBe(currentQuery);
+          const parameters = captured!.parameters;
+          const canonical = (result: readonly object[]) => result.map((row) => JSON.stringify(row)).sort();
+          const reference = canonical(await sql.unsafe(currentQuery, parameters));
+          const timings: Record<'legacy' | 'current', number[]> = { legacy: [], current: [] };
+          for (let sample = 0; sample < 100; sample += 1) {
+            const order = sample % 2 === 0 ? ['legacy', 'current'] as const : ['current', 'legacy'] as const;
+            for (const variant of order) {
+              const started = performance.now();
+              const result = await sql.unsafe(variant === 'legacy' ? legacyQuery : currentQuery, parameters);
+              timings[variant].push(performance.now() - started);
+              expect(canonical(result)).toEqual(reference);
+            }
+          }
+          const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * p) - 1];
+          console.info('OBSERVATION_SUMMARY_BENCHMARK', JSON.stringify({
+            rows: ROWS, callsPerVariant: 100, cacheState: 'warm',
+            p50Ms: { legacy: percentile(timings.legacy, 0.5), current: percentile(timings.current, 0.5) },
+            p95Ms: { legacy: percentile(timings.legacy, 0.95), current: percentile(timings.current, 0.95) },
+          }));
+          const burst = await Promise.all(Array.from({ length: 8 }, () => summaryFor({})));
+          for (const summary of burst) expect(summary).toEqual(burst[0]);
+          expect(burst[0]).toMatchObject({ total: ROWS, matched: ROWS });
+        }
+      }
+      const page = await readLearningObservationsPageFromStore(
+        recordingSql, workspaceId,
+        buildLearningObservationsPredicate(normalizeLearningObservationsArgs({ limit: 200 })),
+      );
+      expect(page.rows).toHaveLength(200);
+      expect(page.hasMore).toBe(true);
+      const pagePlan = await sql.unsafe<Array<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }>>(
+        `EXPLAIN (ANALYZE, FORMAT JSON) ${captured!.query}`, captured!.parameters,
+      );
+      // One ref per fixture row: only the bounded page plus its next-page
+      // sentinel needs display refs, not every row in the observation corpus.
+      expect(expandedRows(pagePlan[0]!['QUERY PLAN'][0]!.Plan)).toBeLessThanOrEqual(201);
+    } finally {
+      await recordingSql.end();
+    }
+  }, 120_000);
+
+  it.each([
+    { q: `body ${DEEP}` },
+    { q: 'context:plan-deep/P-005' },
+    { filters: { plans: ['plan-deep'] } },
+  ])('preserves body/reference/plan summary predicates: %j', async (args) => {
+    expect(await summaryFor(args)).toMatchObject({ total: ROWS, matched: 1 });
+  });
+
   it('proves OR-within/AND-across parity, exact zero, facets, and cursor termination above live size', async () => {
     const deep = rowFor(DEEP);
     const args: LearningObservationsWireArgs = {

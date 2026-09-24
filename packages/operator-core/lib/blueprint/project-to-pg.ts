@@ -72,6 +72,56 @@ export interface ProjectBlueprintInput {
   specification?: CompiledAgentSpecification;
 }
 
+/** Preserve an operation-bearing specification before moving the mutable
+ * current-blueprint pointer. Replaying the artifact verifies its hash and
+ * closure; an existing revision with different bytes is a hard collision. */
+export async function retainBlueprintSpecificationSnapshot(
+  sql: Sql,
+  input: { workspaceId: string; harnessSlug: string; specification: CompiledAgentSpecification },
+): Promise<string> {
+  const specification = replayAgentSpecification(input.specification);
+  const artifact = JSON.stringify(specification);
+  await sql`
+    INSERT INTO harness_shared.blueprint_specifications
+      (workspace_id, harness_slug, specification_revision, artifact)
+    VALUES (${input.workspaceId}, ${input.harnessSlug}, ${specification.specificationRevision}, ${artifact}::text::jsonb)
+    ON CONFLICT (workspace_id, harness_slug, specification_revision) DO NOTHING
+  `;
+  const rows = await sql<{ matches: boolean }[]>`
+    SELECT artifact = ${artifact}::text::jsonb AS matches
+      FROM harness_shared.blueprint_specifications
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND specification_revision = ${specification.specificationRevision}
+  `;
+  if (rows.length !== 1 || rows[0].matches !== true) {
+    throw new Error('blueprint specification revision already exists with different content');
+  }
+  return specification.specificationRevision;
+}
+
+/** Read the accepted revision, never the mutable current blueprint cache. */
+export async function readBlueprintSpecificationSnapshot(
+  sql: Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  specificationRevision: string,
+): Promise<CompiledAgentSpecification | null> {
+  const rows = await sql<{ artifact: unknown }[]>`
+    SELECT artifact FROM harness_shared.blueprint_specifications
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND specification_revision = ${specificationRevision}
+     LIMIT 1
+  `;
+  if (rows.length === 0) return null;
+  const specification = replayAgentSpecification(rows[0].artifact);
+  if (specification.specificationRevision !== specificationRevision) {
+    throw new Error('stored blueprint specification revision does not match its lookup key');
+  }
+  return specification;
+}
+
 /**
  * Upsert a resolved blueprint into the PG cache. Idempotent on
  * (workspace_id, harness_slug). Returns the content hash written.
@@ -104,6 +154,15 @@ export async function projectBlueprintToPg(
   }
   if (specification && (specification.configuration.bundles.length || resolveSeedPackKey(specification.configuration).packId)) {
     await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
+  }
+  // Legacy blueprints have no operation manifest and keep their current one-row
+  // projection cost. Only externally invocable operations need historical pins.
+  if (specification?.configuration.operations?.length) {
+    await retainBlueprintSpecificationSnapshot(sql, {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      specification,
+    });
   }
   const contentHash = specification?.specificationRevision ?? input.contentHash ?? blueprintHash(input.blueprint);
   await sql`

@@ -30,6 +30,12 @@ export const LIFECYCLE_IDLE_QUIET_MS = 6 * 60 * 60_000;
 export const LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_JUDGE_INTERVAL_MS = 60 * 60_000;
 export const LIFECYCLE_SWEEP_INTERVAL_MS = 5 * 60_000;
+/**
+ * `spawnAgentInHarness` accepts registered persona ids, not the coordination
+ * label (`su`) used for interactive superuser sessions. Keep this exported so
+ * the production-wiring test can pin it against the runtime role registry.
+ */
+export const LIFECYCLE_JUDGE_ROLE = 'operator' as const;
 
 const PROBE_DETAIL_KEY = 'processLifecycleProbe';
 const CANDIDATE_PAYLOAD_KEY = 'processLifecycleCandidate';
@@ -540,7 +546,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
     spawnAgentInHarness({
       workspaceId,
       harness: harnessSlug,
-      role: 'su',
+      role: LIFECYCLE_JUDGE_ROLE,
       tier: 'quick',
       accountOverride: 'auto',
       brief,

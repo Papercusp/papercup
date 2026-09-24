@@ -4244,6 +4244,62 @@ export function createHeadlessNormalizedLogWriter(path, {
   };
 }
 
+/** Codex can offer a newly available model before it installs the composer.
+ * A headless launch must keep its explicitly selected model and advance this
+ * one startup menu before the ordinary composer gate can submit the kickoff.
+ * Never answer an interactive session or a later turn. */
+export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS = 30_000;
+const HEADLESS_CODEX_MODEL_CHOICE_BUFFER_CHARS = 32_768;
+
+export function headlessCodexModelChoiceEnabled(env = process.env) {
+  return (
+    String(env?.PAPERCUSP_PSU_HEADLESS ?? '').trim() === '1' &&
+    String(env?.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
+  );
+}
+
+/** Match the two actual menu choices, not Codex's earlier loading frame. The
+ * pty may split ANSI sequences and cursor-positioned words across chunks. */
+export function makeHeadlessCodexModelChoiceStateMachine({
+  enabled = true,
+  startupMs = HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS,
+  now = () => Date.now(),
+} = {}) {
+  const clock = typeof now === 'function' ? now : () => Date.now();
+  const windowMs = positiveNumber(startupMs, HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS);
+  const startedAt = clock();
+  let phase = enabled ? 'watching' : 'disabled';
+  let observed = '';
+  const snapshot = (action = 'none') => ({ action, phase, active: phase === 'watching' });
+  return {
+    observe(chunk, at = clock()) {
+      if (phase !== 'watching') return snapshot();
+      if (at - startedAt >= windowMs) {
+        phase = 'expired';
+        observed = '';
+        return snapshot('expired');
+      }
+      observed = `${observed}${String(chunk ?? '')}`.slice(-HEADLESS_CODEX_MODEL_CHOICE_BUFFER_CHARS);
+      const visible = stripAnsi(observed).replace(/[\s\u00a0]+/g, '');
+      if (!/Meet/i.test(visible) || !/1\.Trynewmodel/i.test(visible) || !/2\.Useexistingmodel/i.test(visible)) {
+        return snapshot();
+      }
+      if (/›2\.Useexistingmodel/i.test(visible)) {
+        phase = 'complete';
+        observed = '';
+        return snapshot('confirm-existing');
+      }
+      if (/›1\.Trynewmodel/i.test(visible)) {
+        phase = 'complete';
+        observed = '';
+        return snapshot('select-existing');
+      }
+      return snapshot();
+    },
+    status: () => ({ phase, active: phase === 'watching', startedAt, expiresAt: startedAt + windowMs }),
+  };
+}
+
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
@@ -4395,10 +4451,12 @@ const CLAUDE_RESUME_COMPACTION_DONT_ASK_RE =
   /don['’]t\s+ask\s+again\b/i;
 
 function claudeStandaloneComposerPromptVisible(visible) {
+  // Claude's HPA cursor codes can supply the visual space after Try. stripAnsi
+  // removes those codes, leaving Try"…"; keep the complete quoted-line guard.
   return String(visible ?? '')
     .split(/[\r\n]/)
     .map((line) => line.trim())
-    .some((line) => /^(?:❯|>|╰─>)(?:\s*Try\s+["“][^"”]+["”])?\s*$/u.test(line));
+    .some((line) => /^(?:❯|>|╰─>)(?:\s*Try\s*["“][^"”]+["”])?\s*$/u.test(line));
 }
 
 function claudeResumeCompactionMenuVisible(visible) {
@@ -8669,6 +8727,9 @@ export function hostThroughPty(o) {
       enabled: headlessClaudeOnboardingEnabled(env),
       startupMs: headlessClaudeOnboardingStartupMs(env),
     });
+    const headlessCodexModelChoice = makeHeadlessCodexModelChoiceStateMachine({
+      enabled: headlessCodexModelChoiceEnabled(env),
+    });
     if (headlessClaudeOnboarding.isActive()) {
       headlessClaudeOnboardingExpiryTimer = setTimeout(() => {
         const result = headlessClaudeOnboarding.expire();
@@ -8686,6 +8747,19 @@ export function hostThroughPty(o) {
     }
     child.onData((d) => {
       const raw = typeof d === 'string' ? d : String(d);
+      const codexModelChoice = headlessCodexModelChoice.observe(raw);
+      if (codexModelChoice.action === 'select-existing' || codexModelChoice.action === 'confirm-existing') {
+        try {
+          // The first row offers a model switch. Move to the second row before
+          // confirming so a managed launch retains its configured model.
+          child.write(codexModelChoice.action === 'select-existing' ? '\x1b[B\r' : '\r');
+          appendHostEvent(ownerId, 'headless-codex-model-choice-kept-existing', {
+            selection: codexModelChoice.action,
+          });
+        } catch {
+          /* child-exit teardown owns a vanished pty */
+        }
+      }
       if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);

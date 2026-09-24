@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
 import {
   LIFECYCLE_IDLE_QUIET_MS,
   LIFECYCLE_JUDGE_INTERVAL_MS,
+  LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
   evaluateLifecycleCandidates,
   lifecycleCandidateConditionKey,
@@ -300,8 +302,10 @@ describe('task-reconcile production wiring', () => {
     expect(actionSource).toContain('intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS');
   });
 
-  it('launches one headless quick-tier su through the durable interval idempotency seam', () => {
-    expect(lifecycleSource).toContain("role: 'su'");
+  it('launches one headless quick-tier operator through the durable interval idempotency seam', () => {
+    expect(AGENT_ROLES).toContain(LIFECYCLE_JUDGE_ROLE);
+    expect(LIFECYCLE_JUDGE_ROLE).toBe('operator');
+    expect(lifecycleSource).toContain('role: LIFECYCLE_JUDGE_ROLE');
     expect(lifecycleSource).toContain("tier: 'quick'");
     expect(lifecycleSource).toContain("accountOverride: 'auto'");
     expect(lifecycleSource).toContain('idempotencyKey,');

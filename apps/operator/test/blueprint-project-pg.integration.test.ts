@@ -11,11 +11,12 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
-import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSchema, compileAgentSpecification, loadBuiltinBlueprint, operationFromSpecification } from '@papercusp/orchestrator/blueprint';
 import {
   projectBlueprintToPg,
   readBlueprintFromPg,
   readBlueprintHashFromPg,
+  readBlueprintSpecificationSnapshot,
 } from '@papercusp/operator-core/lib/blueprint/project-to-pg';
 
 let adminUri: string;
@@ -53,6 +54,17 @@ beforeAll(async () => {
       PRIMARY KEY (workspace_id, harness_slug)
     )
   `);
+  await sql.unsafe(`
+    CREATE TABLE harness_shared.blueprint_specifications (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      specification_revision text NOT NULL,
+      artifact jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug, specification_revision),
+      CHECK (artifact->>'specificationRevision' = specification_revision)
+    )
+  `);
 }, 60_000);
 
 afterAll(async () => {
@@ -73,6 +85,7 @@ it('projects + reads back the resolved coding blueprint', async () => {
     workspaceId: WS,
     harnessSlug: 'demo',
     blueprint: loaded.blueprint,
+    loaded,
     contentHash: loaded.contentHash,
     sourcePath: '.papercusp/blueprint.yaml',
   });
@@ -103,4 +116,35 @@ it('reads are isolated by (workspace, harness)', async () => {
   await projectBlueprintToPg(sql, { workspaceId: 'ws_a', harnessSlug: 'shared-slug', blueprint: coding });
   expect(await readBlueprintFromPg(sql, 'ws_b', 'shared-slug')).toBeNull();
   expect(await readBlueprintFromPg(sql, 'ws_a', 'shared-slug')).not.toBeNull();
+});
+
+it('keeps accepted operation revision A after the mutable blueprint cache moves to B', async () => {
+  const operation = {
+    id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+    execution: { kind: 'agent', role: 'worker' },
+    inputSchema: { type: 'object', properties: { itemId: { type: 'string' } } },
+    acceptance: { resultSchema: { type: 'object', properties: { value: { type: 'string' } } } },
+    policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+  };
+  const source = {
+    id: 'snapshot-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
+    spine: { edges: { DONE: { to: 'done' } } }, operations: [operation],
+  };
+  const a = compileAgentSpecification({ source });
+  await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: 'snapshot-demo', blueprint: BlueprintSchema.parse(source), specification: a });
+  const acceptedRevision = a.specificationRevision;
+  const bSource = { ...source, operations: [{ ...operation, version: 'B', policy: { model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }] };
+  const b = compileAgentSpecification({ source: bSource });
+  await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: 'snapshot-demo', blueprint: BlueprintSchema.parse(bSource), specification: b });
+
+  expect(await readBlueprintHashFromPg(sql, WS, 'snapshot-demo')).toBe(b.specificationRevision);
+  const retained = await readBlueprintSpecificationSnapshot(sql, WS, 'snapshot-demo', acceptedRevision);
+  expect(retained?.specificationRevision).toBe(acceptedRevision);
+  expect(operationFromSpecification(retained!, 'extract').operation).toMatchObject({
+    version: 'A', execution: { kind: 'agent', role: 'worker' },
+    inputSchema: { type: 'object' }, policy: { model: { mode: 'exact', models: ['gpt-6-sol'] } },
+  });
+  expect(await readBlueprintSpecificationSnapshot(sql, 'other-workspace', 'snapshot-demo', acceptedRevision)).toBeNull();
+  expect(await readBlueprintSpecificationSnapshot(sql, WS, 'other-harness', acceptedRevision)).toBeNull();
+  expect((await sql`SELECT count(*)::int AS n FROM harness_shared.blueprint_specifications WHERE workspace_id=${WS} AND harness_slug='snapshot-demo'`)[0].n).toBe(2);
 });

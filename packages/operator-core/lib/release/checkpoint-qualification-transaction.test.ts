@@ -13,6 +13,7 @@ import {
   recordQualificationScheduledFire,
   qualificationIntentMatches,
   reserveQualificationRunner,
+  recoverQualificationScheduledTerminal,
   settleQualificationTransaction,
   waitQualificationTransaction,
 } from './checkpoint-qualification-transaction';
@@ -187,6 +188,40 @@ describe('logical checkpoint qualification transaction', () => {
       attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
       reason: 'advanced', green: true, nowMs: 300,
     }).status).toBe('conflict');
+  });
+
+  it('recovers a mismatched pre-suite terminal only for its exact unitless scheduled runner, including replay', () => {
+    const reserved = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      evidenceRefs: ['gate-fire:fire-1'], leaseDurationMs: 1_000, started: false, nowMs: 150,
+    }).transaction;
+    const proof = {
+      attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'wrapper-1',
+      reason: 'skipped-locked', finishedAtMs: 200,
+      evidenceRefs: ['checkpoint-terminal:wrapper-1', 'gate-fire:fire-1'], nowMs: 210,
+    };
+    expect(settleQualificationTransaction(reserved, {
+      attemptId: 'attempt-1', reason: 'skipped-locked', candidate: 'candidate-2', nowMs: 200,
+    }).status).toBe('conflict');
+    for (const changed of [
+      { runnerId: 'fire-other' }, { attemptId: 'attempt-other' }, { reason: 'not-green' },
+      { finishedAtMs: 149 }, { evidenceRefs: ['gate-fire:fire-1'] },
+    ]) {
+      expect(recoverQualificationScheduledTerminal(reserved, { ...proof, ...changed }).status).toBe('conflict');
+    }
+    expect(recoverQualificationScheduledTerminal({
+      ...reserved, currentPhysicalRunner: { ...reserved.currentPhysicalRunner!, pid: 123 },
+    }, proof).status).toBe('conflict');
+    const recovered = recoverQualificationScheduledTerminal(reserved, proof);
+    expect(recovered).toMatchObject({
+      status: 'updated', transaction: {
+        phase: 'terminal', candidate: 'candidate-1', currentPhysicalRunner: null,
+        outcome: { kind: 'code-inconclusive', reason: 'orphaned-reservation-after-skipped-locked' },
+      },
+    });
+    expect(recovered.transaction.consumedPhysicalRuns).toHaveLength(1);
+    expect(recoverQualificationScheduledTerminal(recovered.transaction, proof).status).toBe('terminal');
+    expect(recoverQualificationScheduledTerminal(recovered.transaction, { ...proof, runId: 'other' }).status).toBe('conflict');
   });
 
   it('WI-10002454: names every identity behind a settle conflict, and nothing when identities agree', () => {

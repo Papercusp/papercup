@@ -247,12 +247,27 @@ function observationScopedCte(
   sql: OrgSql,
   workspaceId: string,
   args: NormalizedLearningObservationsArgs,
+  summary = false,
 ) {
+  // The summary materializes this CTE for reuse by every facet. Project search
+  // text and reference arrays only when the summary predicate consumes them;
+  // otherwise a counts-only read detoasts bodies and expands refs for the
+  // entire corpus. Single-use page reads inline the CTE so PostgreSQL can push
+  // down the cursor/filter and defer display projection until after LIMIT.
   return sql`
-    scoped AS MATERIALIZED (
-      SELECT issue_id AS id,
-             COALESCE(title, '') AS title,
-             body,
+    scoped AS ${summary ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (
+      SELECT ${summary ? sql`` : sql`issue_id AS id, created_at,`}
+             ${!summary || args.q ? sql`COALESCE(title, '') AS title, body,` : sql``}
+             ${!summary || args.q || args.filters.plans.length > 0 ? sql`
+               ARRAY(
+                 SELECT jsonb_array_elements_text(
+                   CASE
+                     WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
+                     THEN payload->'observation'->'refs'
+                     ELSE '[]'::jsonb
+                   END
+                 )
+               ) AS refs,` : sql``}
              NULLIF(payload->'observation'->>'kind', '') AS observation_kind,
              COALESCE(
                NULLIF(payload->'observation'->>'scope', ''),
@@ -262,17 +277,7 @@ function observationScopedCte(
                NULLIF(payload->>'sourceRole', ''),
                NULLIF(payload->>'filedByRole', '')
              ) AS source_role,
-             NULLIF(payload->'observation'->>'confidence', '') AS confidence,
-             ARRAY(
-               SELECT jsonb_array_elements_text(
-                 CASE
-                   WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
-                   THEN payload->'observation'->'refs'
-                   ELSE '[]'::jsonb
-                 END
-               )
-             ) AS refs,
-             created_at
+             NULLIF(payload->'observation'->>'confidence', '') AS confidence
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND kind = ANY(${['bug', 'change']}::text[])
@@ -421,7 +426,7 @@ export async function readLearningObservationsSummaryFromStore(
 ): Promise<readonly CompanionSummaryAggregateRow[]> {
   const args = predicate.args;
   const rows = await sql<LearningObservationAggregateDbRow[]>`
-    WITH ${observationScopedCte(sql, workspaceId, args)},
+    WITH ${observationScopedCte(sql, workspaceId, args, true)},
     totals AS (
       SELECT count(*)::int AS n FROM scoped
     ),

@@ -1613,6 +1613,26 @@ export function createHeadlessNormalizedLogWriter(path: string, { maxLineBytes, 
     flush: () => void;
     close: () => void;
 };
+export function headlessCodexModelChoiceEnabled(env?: NodeJS.ProcessEnv): boolean;
+/** Match the two actual menu choices, not Codex's earlier loading frame. The
+ * pty may split ANSI sequences and cursor-positioned words across chunks. */
+export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, now, }?: {
+    enabled?: boolean | undefined;
+    startupMs?: number | undefined;
+    now?: (() => number) | undefined;
+}): {
+    observe(chunk: any, at?: number): {
+        action: string;
+        phase: string;
+        active: boolean;
+    };
+    status: () => {
+        phase: string;
+        active: boolean;
+        startedAt: number;
+        expiresAt: any;
+    };
+};
 /** The onboarding actuator is never enabled for an interactive or non-Claude
  * launch. Pure and exported so the environment gate cannot silently broaden. */
 export function headlessClaudeOnboardingEnabled(env?: NodeJS.ProcessEnv): boolean;
@@ -2523,6 +2543,11 @@ export const ACTIVITY_PERSIST_MS: 15000;
  */
 export const HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES: number;
 export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
+/** Codex can offer a newly available model before it installs the composer.
+ * A headless launch must keep its explicitly selected model and advance this
+ * one startup menu before the ordinary composer gate can submit the kickoff.
+ * Never answer an interactive session or a later turn. */
+export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 30000;
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
