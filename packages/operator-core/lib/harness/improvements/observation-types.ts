@@ -667,10 +667,12 @@ export type ObservationSubjectKind =
  * NON-AUTHOR auditor grades it against the grading-integrity meta-rubric (mirror of
  * the acceptance grader ≠ author rule). ONE level deep by construction: the audit
  * card itself (rubricRef = grading-integrity) is never stamped pending.
+ * `awaiting-reemit` means evaluator semantics changed after the source card was
+ * graded; the source author must re-emit it before another audit can make progress.
  */
 export interface ScorecardGradingAudit {
   /** `cancelled` means the source scorecard was retracted before its audit settled. */
-  state: 'pending' | 'passed' | 'failed' | 'cancelled';
+  state: 'pending' | 'awaiting-reemit' | 'passed' | 'failed' | 'cancelled';
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
   stampedAt: string;
@@ -686,6 +688,12 @@ export interface ScorecardGradingAudit {
   dispatchReservation?: {
     key: string;
     reservedAt: string;
+  };
+  /** Why the source card must be re-emitted before its audit can be retried. */
+  reemitRequired?: {
+    code: 'grading_audit_evaluator_changed';
+    at: string;
+    reason: string;
   };
   /** The audit scorecard's issue id, once audited. */
   auditIssueId?: string;

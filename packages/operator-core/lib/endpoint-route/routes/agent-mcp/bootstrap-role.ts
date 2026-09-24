@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
-import { recordAdvSession } from '../../../adv-sessions';
+import { recordAdvSession, recordSuLaunchSpec } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { roleConsumes } from '../../../role-registry';
@@ -56,6 +56,9 @@ import {
 } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 import { resolveCodexModelSelection } from '../../../model-context-budget.mjs';
+import { getOrgPg } from '@papercusp/db-org';
+import { resolveProjectDir } from '../../../spawn-config';
+import { resolveAcceptedOperationWorkerBinding } from '../../../blueprint/operation-worker-binding';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -353,6 +356,16 @@ const post = defineTool({
     // Build the shared spec: role prompt + signed role-scoped MCP URL + cwd.
     let spec;
     try {
+      const acceptedOperation = feature && harnessSlug
+        ? await resolveAcceptedOperationWorkerBinding({
+            sql: getOrgPg().sql,
+            workspaceId: workspace,
+            harnessSlug,
+            workItemId: feature,
+            role,
+            repoDir: await resolveProjectDir(harnessSlug, workspace) ?? '',
+          })
+        : null;
       spec = await buildRoleLaunchSpec({
         role,
         workspaceId: workspace,
@@ -363,6 +376,7 @@ const post = defineTool({
         featureId: feature,
         contextSize,
         stack: body.stack?.map((ref) => ref.trim()) ?? null,
+        acceptedOperation,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
@@ -481,6 +495,50 @@ const post = defineTool({
       launchArgv,
       ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
     });
+
+    // A grant-bearing role identity must reach the same database-owned kernel
+    // receipt as an SU identity. Merely compiling its prompt/artifact leaves
+    // checkIdentityGrantKernel on the legacy ungoverned path. Persist before
+    // returning a launch so the first tool call can only use the current grant
+    // policy; a failed receipt is a failed launch, not an unrestricted worker.
+    if (spec.specificationArtifact?.configuration?.grants != null) {
+      const recorded = await recordSuLaunchSpec(sessionId, sid, {
+        v: 1,
+        workspaceId: workspace,
+        harnessSlug,
+        role,
+        stack: spec.stack,
+        specificationRevision: spec.specificationRevision,
+        stateRevision: spec.stateRevision,
+        specificationArtifact: spec.specificationArtifact,
+        ...(spec.acceptedOperation ? { acceptedOperation: {
+          kind: 'blueprint-operation-worker',
+          workItemId: spec.acceptedOperation.workItemId,
+          operationId: spec.acceptedOperation.operationId,
+          specificationRevision: spec.acceptedOperation.specificationRevision,
+          identity: spec.acceptedOperation.identity,
+          requiredTools: spec.acceptedOperation.requiredTools,
+        } } : {}),
+      });
+      if (!recorded) {
+        return jsonRes({ status: 'error', error: 'restricted role identity receipt was not persisted' }, 500);
+      }
+      try {
+        const { requestSessionIdentityActivation } = await import('../../../agent-tools/coordination/control-anchor');
+        await requestSessionIdentityActivation({
+          ownerId: sid,
+          workspaceId: workspace,
+          revision: {
+            specificationRevision: spec.specificationRevision,
+            stateRevision: spec.stateRevision,
+          },
+          attribution: { actorId: sid, principalId: sid, sessionId: sid },
+          source: 'launch',
+        });
+      } catch (error) {
+        return jsonRes({ status: 'error', error: `restricted role identity activation failed: ${error instanceof Error ? error.message : String(error)}` }, 500);
+      }
+    }
 
     // EI-23204591840754750: role sessions use the same launcher supervisor beat
     // as SU sessions, but that beat can only keep an EXISTING presence row warm.

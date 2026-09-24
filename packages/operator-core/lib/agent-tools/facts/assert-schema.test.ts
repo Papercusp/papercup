@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { formatIssues } from '@papercusp/tooldef';
 
+import { schemaToText } from '../../cupboard/tools-discovery';
 import assertTool from './assert';
 import { FACT_MAX_SUPERSEDES, FACT_VOLATILE_MAX_TTL_SEC } from '../../agent-facts/store';
 
@@ -301,6 +302,24 @@ describe('facts:assert TTL spelling contract', () => {
     // The old description called an omitted confidence an "ordinary TTL", which
     // contradicted validateFactLifetime's refusal of an undeclared lifetime.
     expect(confidence).not.toMatch(/renders unbadged, ordinary TTL/i);
+  });
+
+  it('publishes the conditional lifetime rule beside the optional ttlSec field', () => {
+    const json = z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    const compact = schemaToText(json) ?? '';
+
+    // The field is structurally optional because conventions, typed safety
+    // keys, and provisional/suspected claims have other declared lifetime
+    // rules. Preserve that shape while making the verified-conclusion case
+    // explicit in the callable schema instead of leaving it only in prose.
+    expect(json.properties?.ttlSec).toBeDefined();
+    expect(json.required ?? []).not.toContain('ttlSec');
+    expect(compact).toContain('constraint:$ (Declare exactly one lifetime');
+    expect(compact).toContain('ordinary facts, including verified conclusions, require ttlSec');
+    expect(compact).toContain('ttlSec?:integer');
   });
 
   it('REFUSES an ordinary verified fact without a declared lifetime at schema parse', () => {

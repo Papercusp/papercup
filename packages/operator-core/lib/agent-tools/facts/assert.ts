@@ -68,6 +68,9 @@ import {
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
 
+const FACT_LIFETIME_CALL_CONSTRAINT =
+  "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
+
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
  * case (no field on the response) — same warn-only shape as provenanceLint.
@@ -887,7 +890,8 @@ export default defineTool({
           const path = lifetimeError.includes('permanent:true') ? ['permanent'] : ['ttlSec'];
           ctx.addIssue({ code: 'custom', path, message: lifetimeError });
         }
-      });
+      })
+      .meta({ 'x-papercusp-call-constraint': FACT_LIFETIME_CALL_CONSTRAINT });
   })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');

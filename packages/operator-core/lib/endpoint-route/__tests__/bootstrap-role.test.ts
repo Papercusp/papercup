@@ -25,7 +25,11 @@ afterAll(() => {
 });
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
+const recordSuLaunchSpecMock = vi.fn(async () => true);
+const requestSessionIdentityActivationMock = vi.fn(async () => ({}));
 const buildRoleLaunchSpecMock = vi.fn();
+const resolveAcceptedOperationWorkerBindingMock = vi.fn(async (_input: unknown) => null as unknown);
+const resolveProjectDirMock = vi.fn(async (_slug: string, _workspace: string) => LC_DIR);
 const roleConsumesMock = vi.fn();
 const writeRoleCodexHomeMock = vi.fn();
 const resolveAccountPinMock = vi.fn();
@@ -80,9 +84,25 @@ vi.mock('../../workspace-registry', () => ({
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
   recordAdvSession: recordAdvSessionMock,
+  recordSuLaunchSpec: recordSuLaunchSpecMock,
+}));
+vi.mock('../../agent-tools/coordination/control-anchor', async (orig) => ({
+  ...(await orig<typeof import('../../agent-tools/coordination/control-anchor')>()),
+  requestSessionIdentityActivation: requestSessionIdentityActivationMock,
 }));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
+vi.mock('../../blueprint/operation-worker-binding', () => ({
+  resolveAcceptedOperationWorkerBinding: (input: unknown) => resolveAcceptedOperationWorkerBindingMock(input),
+}));
+vi.mock('../../spawn-config', async (orig) => ({
+  ...(await orig<typeof import('../../spawn-config')>()),
+  resolveProjectDir: (slug: string, workspace: string) => resolveProjectDirMock(slug, workspace),
+}));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn() }),
+}));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
 // Keep this unit suite off the live flag store. Without this mock the first
 // request waits on getFlag's production datastore timeout (~7s), exceeding
@@ -175,6 +195,10 @@ async function callPost(body: unknown): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(7);
+  recordSuLaunchSpecMock.mockResolvedValue(true);
+  requestSessionIdentityActivationMock.mockResolvedValue({});
+  resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+  resolveProjectDirMock.mockResolvedValue(LC_DIR);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
   resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
   resolveFleetMock.mockResolvedValue({ env: {}, notice: null, fleetSlug: null, fleetRole: null });
@@ -186,7 +210,7 @@ beforeEach(() => {
     agentsPath: '/tmp/role-codex-homes/session-7/AGENTS.md',
     configPath: '/tmp/role-codex-homes/session-7/config.toml',
   });
-  buildRoleLaunchSpecMock.mockImplementation(async (input: { stack?: string[] | null }) => ({
+  buildRoleLaunchSpecMock.mockImplementation(async (input: { stack?: string[] | null; acceptedOperation?: unknown }) => ({
     role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
     cwd: LC_DIR, promptText: 'WORKER PROMPT', promptFile: '/h/prompts/worker.md',
     mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
@@ -197,6 +221,7 @@ beforeEach(() => {
     sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
     contextSize: 'trimmed',
     stack: input.stack ?? [],
+    acceptedOperation: input.acceptedOperation ?? null,
     specificationArtifact: {},
     specificationRevision: 'a'.repeat(64),
     stateRevision: 'b'.repeat(64),
@@ -205,6 +230,64 @@ beforeEach(() => {
 });
 
 describe('bootstrap-role', () => {
+  it('persists and activates a restricted role artifact before returning its launch', async () => {
+    const restrictedArtifact = { configuration: { grants: { requires: [], optional: [], suggestedProviders: {} } } };
+    const acceptedOperation = {
+      workItemId: 'F-001', operationId: 'run', specificationRevision: 'c'.repeat(64),
+      identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
+      stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
+    };
+    resolveAcceptedOperationWorkerBindingMock.mockResolvedValueOnce(acceptedOperation);
+    buildRoleLaunchSpecMock.mockImplementationOnce(async (input: { stack?: string[] | null; acceptedOperation?: unknown }) => ({
+      role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
+      cwd: LC_DIR, promptText: 'RESTRICTED WORKER', promptFile: '/h/prompts/worker.md',
+      mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
+      mcpJsonContents: JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: 'http://localhost:3070/api/mcp?role=worker&sig=x' } } }),
+      sid: 'role-abc', nativeSessionId: 'nsid-abc',
+      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
+      contextSize: 'trimmed', stack: input.stack ?? ['domain:blueprint-operation-worker'],
+      acceptedOperation: input.acceptedOperation,
+      specificationArtifact: restrictedArtifact,
+      specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64),
+      compositionSource: 'blueprint',
+    }));
+
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(response.status).toBe(200);
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledWith(7, 'role-abc', expect.objectContaining({
+      workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+      specificationArtifact: restrictedArtifact,
+      acceptedOperation: {
+        kind: 'blueprint-operation-worker', workItemId: 'F-001', operationId: 'run',
+        specificationRevision: 'c'.repeat(64), identity: acceptedOperation.identity,
+        requiredTools: ['work_items:get'],
+      },
+    }));
+    expect(resolveAcceptedOperationWorkerBindingMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default', harnessSlug: 'papercup', workItemId: 'F-001', role: 'worker',
+    }));
+    expect(requestSessionIdentityActivationMock).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: 'role-abc', workspaceId: 'default', source: 'launch',
+      revision: { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) },
+    }));
+  });
+
+  it('refuses a restricted role launch if its identity receipt is not persisted', async () => {
+    buildRoleLaunchSpecMock.mockImplementationOnce(async () => ({
+      role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
+      cwd: LC_DIR, promptText: 'RESTRICTED WORKER', promptFile: '/h/prompts/worker.md',
+      sid: 'role-abc', nativeSessionId: 'nsid-abc', stack: ['domain:blueprint-operation-worker'],
+      specificationArtifact: { configuration: { grants: {} } },
+      specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64),
+    }));
+    recordSuLaunchSpecMock.mockResolvedValueOnce(false);
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: 'restricted role identity receipt was not persisted' });
+    expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
+  });
+
   it('worker + feature → role-scoped session recorded with role+feature+agent', async () => {
     const sharedMcp = join(LC_DIR, '.mcp.json');
     writeFileSync(sharedMcp, 'pre-existing shared config');

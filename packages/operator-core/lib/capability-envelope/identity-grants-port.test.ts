@@ -79,6 +79,32 @@ function fixture(grants: { requires?: string[]; optional?: string[] } | undefine
 }
 
 describe('P-005 current identity grants at the common kernel seat', () => {
+  it.each(['dispatch', 'indirect-dispatch', 'native'] as const)(
+    'intersects a pinned operation tool set at the %s boundary',
+    async (boundary) => {
+      const f = fixture();
+      const read = vi.fn(async () => f.policy);
+      const acceptedOperation = {
+        kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+        specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+      };
+      const record = { ...f.record, acceptedOperation };
+      const request = { ...f.request, boundary };
+      expect(await checkIdentityGrantKernel(request, f.state, record, read))
+        .toMatchObject({ decision: 'allow', applied: true });
+      expect(await checkIdentityGrantKernel(request, f.state,
+        { ...record, acceptedOperation: { ...acceptedOperation, requiredTools: [] } }, read))
+        .toMatchObject({ decision: 'deny', obligations: {
+          capabilityUnsatisfied: { cause: 'outside-ceiling', toolName: 'mail:send' },
+        } });
+      expect(await checkIdentityGrantKernel(request, f.state,
+        { ...record, acceptedOperation: { ...acceptedOperation, requiredTools: 'mail:send' } }, read))
+        .toMatchObject({ decision: 'deny', obligations: {
+          capabilityUnsatisfied: { cause: 'outside-ceiling' },
+        } });
+    },
+  );
+
   it.each(['dispatch', 'indirect-dispatch', 'reaction', 'native', 'shell'] as const)(
     'denies tools outside the exact provider set at %s, including superusers',
     async (boundary) => {
@@ -214,7 +240,9 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       return {
         load,
         handle: lazyIdentityLaunchRecord({
-          isObject, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug, load,
+          isObject, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug,
+          hasAcceptedOperation: Object.prototype.hasOwnProperty.call(record, 'acceptedOperation'),
+          acceptedOperation: record.acceptedOperation ?? null, load,
         }),
       };
     };
@@ -234,6 +262,29 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       expect(io.replay).toHaveBeenCalledTimes(replayCount);
       // Policy is still re-read on every call; only the artifact replay is cached.
       expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('enforces the accepted operation tool ceiling on a cached repeat call', async () => {
+      const f = fixture();
+      const read = vi.fn(async () => f.policy);
+      const acceptedOperation = {
+        kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+        specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+      };
+      const record = { ...f.record, acceptedOperation };
+      const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'operation-header-test', rowVersion: '67' } };
+      const { handle, load } = lazyFor(record, '67');
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
+      expect(load).toHaveBeenCalledTimes(1);
+
+      const narrowed = lazyFor({ ...record, acceptedOperation: { ...acceptedOperation, requiredTools: [] } }, '68');
+      const narrowedState = { ...state, identityLaunchRecordVersion: { sessionId: 'operation-header-test', rowVersion: '68' } };
+      expect(await checkIdentityGrantKernel(f.request, narrowedState, narrowed.handle, read))
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling' } } });
+      expect(await checkIdentityGrantKernel(f.request, narrowedState, narrowed.handle, read))
+        .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling' } } });
+      expect(narrowed.load).toHaveBeenCalledTimes(1);
     });
 
     it('audits the exact adv_sessions xmin returned with the lazily loaded record', async () => {
@@ -292,7 +343,8 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'lazy-gone-test', rowVersion: '66' } };
       for (const loaded of [null, { record: null, rowVersion: '66' }, { record: ['x'], rowVersion: '66' }]) {
         const handle = lazyIdentityLaunchRecord({
-          isObject: true, workspaceId: 'ws-a', harnessSlug: 'sales', load: async () => loaded,
+          isObject: true, workspaceId: 'ws-a', harnessSlug: 'sales',
+          hasAcceptedOperation: false, acceptedOperation: null, load: async () => loaded,
         });
         expect(await checkIdentityGrantKernel(f.request, state, handle, vi.fn()))
           .toMatchObject({ decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });

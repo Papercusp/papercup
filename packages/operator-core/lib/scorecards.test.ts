@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
@@ -62,6 +62,58 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(write.values).toContain('grading-audit:EI-TARGET');
     expect(write.values).toContain('2026-09-20T04:02:01.600Z');
     expect(write.values).toContain(JSON.stringify(settled));
+  });
+
+  it('marks only the exact pending lease awaiting re-emit and clears its dispatch reservation', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      if (text.includes('FROM harness_shared.consult_state')) return [];
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const notifySyncInvalidate = vi.fn();
+    const expected = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-20T04:02:01.584Z',
+      rubricRevision: 7,
+      criteriaHash: 'hash-v7',
+      dispatchReservation: {
+        key: 'grading-audit:EI-TARGET',
+        reservedAt: '2026-09-20T04:02:01.600Z',
+      },
+    };
+
+    await expect(
+      markGradingAuditAwaitingReemit(
+        'EI-TARGET',
+        expected,
+        { reason: 'evaluator revision 2 changed falsifiability from pass to unknown', at: '2026-09-20T04:03:00.000Z' },
+        { resolveWorkspace: async () => 'ws-test', transact, notifySyncInvalidate },
+      ),
+    ).resolves.toBe(true);
+
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
+    expect(write.values).toContain('grading-audit:EI-TARGET');
+    expect(write.values).toContain('2026-09-20T04:02:01.600Z');
+    const stamp = write.values.find((value): value is string => typeof value === 'string' && value.includes('"awaiting-reemit"'));
+    expect(stamp).toBeDefined();
+    expect(JSON.parse(stamp!)).toMatchObject({
+      state: 'awaiting-reemit',
+      reemitRequired: {
+        code: 'grading_audit_evaluator_changed',
+        at: '2026-09-20T04:03:00.000Z',
+        reason: 'evaluator revision 2 changed falsifiability from pass to unknown',
+      },
+    });
+    expect(JSON.parse(stamp!)).not.toHaveProperty('dispatchReservation');
   });
 
   it('refuses atomic settlement when the consult cascade has moved to another answerer', async () => {
@@ -191,6 +243,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       },
     }));
     const replaceSettledGradingAudit = vi.fn(async () => true);
+    const notifySyncInvalidate = vi.fn();
 
     const result = await recordGradingAudit(
       'EI-TARGET',
@@ -207,6 +260,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       {
         getIssue: getIssue as never,
         replaceSettledGradingAudit,
+        notifySyncInvalidate,
       },
     );
 
@@ -234,6 +288,9 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       stampedAt: '2026-09-07T00:00:00.000Z',
       auditedAt: '2026-09-07T00:02:00.000Z',
     });
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('learning.releaseReadiness');
   });
 
   it('refuses a settled replacement that does not name the audit currently stamped on the target', async () => {

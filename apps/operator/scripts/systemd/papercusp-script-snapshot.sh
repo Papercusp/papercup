@@ -140,8 +140,18 @@ snapshot_script() {
 
   snapshot_file "$source" "$destination" "target $base" || return $?
 
-  # Health checks source lib/red-marker.sh through BASH_SOURCE.  Preserve
-  # adjacent shell sidecars under the same relative lib/ path in the snapshot.
+  # Setup-release-checkout sources dependency-generation.sh beside itself via
+  # BASH_SOURCE. Preserve every adjacent shell helper in the same directory;
+  # copying only the entry script changes that path to this private snapshot
+  # directory and makes the prepared checkout fail before any restart.
+  while IFS= read -r -d '' sidecar; do
+    [[ "$sidecar" == "$source" ]] && continue
+    snapshot_file "$sidecar" "$destination_dir/$(basename -- "$sidecar")" \
+      "adjacent helper $(basename -- "$sidecar")" || return $?
+  done < <(find "$source_dir" -maxdepth 1 -type f -name '*.sh' -print0 2>/dev/null)
+
+  # Health checks source lib/red-marker.sh through BASH_SOURCE. Preserve the
+  # existing subdirectory layout for those shell sidecars too.
   if [[ -d "$source_dir/lib" ]]; then
     mkdir -p -- "$destination_dir/lib" || return 73
     while IFS= read -r -d '' sidecar; do
