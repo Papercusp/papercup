@@ -1103,3 +1103,123 @@ No new production p95 or universal speedup claim follows. Source is
 23 other import-graph diagnostics. P-003 still needs sustained observer-cost
 acceptance and independent verification; whole-plan acceptance/shipment remains
 open.
+
+## P-003 exact cancellation-clause proof (2026-09-24 14:02Z)
+
+PERF-P-003@1 now has bindings **11508–11511**. Current-source action run
+**19295455** passes the two delayed-child lease cases (141 unrelated cases
+filtered); historical red **19288100** supplies the caught counterexample.
+Real IPC/process runs **19294007/19294006** supply the separately bounded
+integration layer. This composes the action's awaited promise with the child-exit
+boundary; it does not claim a production-DB end-to-end action. The revision-2
+adequacy evaluator passed and emitted **EI-24151782242112283**, pending independent
+audit when filed. P-003's sustained profiler acceptance is still open.
+
+## P-004 lineage projection (2026-09-24 14:15Z)
+
+The live source query for ten frozen recent candidate/parent identities took
+**2266.560 ms** under bounded `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`.
+Its `adv_sessions` edge scan took **2148.190 ms** and 82,632 buffer hits.
+An isolated launch-parent extraction measured **2402.494 ms**, 4,511 edges from
+30,026 scanned rows. A narrow owner-only scan, returning more rows, took
+**10.321 ms**, 2,218 hits. The expensive operation is repeatedly extracting the
+parent from prompt-bearing launch JSON, not recursive traversal alone. These
+are individual live measurements, not production p95 or CPU shares.
+
+Migration **1217-adv-session-launch-parent-projection.sql** extends the existing
+session table with a stored generated `launch_parent_owner`. PostgreSQL derives
+it from `NULLIF(launch_spec->>'launchedBy', '')` for old and new application
+writers. No new edge table, cache, service, or timer is introduced. The shared
+`identityEdges` query reads this scalar, preserving the existing directed graph
+and workspace predicate. The additive migration uses a five-second lock timeout;
+deployment must apply it before running the changed query.
+
+The new project integration suite reconstructs the pre-migration table shape,
+seeds 4,000 sessions with 16 KiB launch documents, applies the migration twice,
+and verifies backfill and subsequent parent/blank/null/absent updates. It tests
+cycles, the 64-edge bound, consult ancestry, sibling eligibility and foreign
+workspace exclusion against both query variants. Both variants execute the
+production query; only the legacy arm replaces the scalar with JSON extraction.
+
+| Frozen fixture measurement | Legacy JSON | Stored projection |
+|---|---:|---:|
+| Counterbalanced lookup median (10 calls each) | 42.119 ms | 10.782 ms |
+| EXPLAIN execution | 40.961 ms | 11.434 ms |
+| Shared buffer hits | 25,084 | 84 |
+
+The eight-candidate acceptance workload completed **100 calls**, identical
+grouping each time, with **12.252 ms p95**. This is an isolated fixture, not the
+live ten-candidate population. The test asserts the 500 ms bar, lower median
+cost, and fewer buffer accesses as a mechanism guard. Ledger runs **19295800**
+and **19295801** pass all **14 tests, zero skips**, at `76b15a89a4` plus local
+changes. Scoped typecheck passes both source/test paths and their import graph.
+Raw test output is `/tmp/p004-lineage-tests-20260924.log`.
+
+The absolute-path migration dry run succeeded; no live SQL apply or shipment is
+claimed. The relative-path dry run incorrectly selected the detached
+`papercusp-staging` checkout (tracked under **EI-24070880772695626**); Git confirms
+the actual main checkout remains `papercusp`, branch `staging`. Memory lexical
+profiling, independent acceptance and whole-plan shipment remain open.
+
+## P-004 lexical field normalization (2026-09-24 14:28Z)
+
+Frozen query: `papercusp memory lexical retrieval ranking scope deterministic
+query performance timeout lineage candidate exclusion active history search`
+(16 tokens), `user_id=harness:papercusp`, top-K 10, memory kind, active/current
+rows. Bounded live EXPLAIN of the source query measured 595.992 ms. Moving its
+match predicate before the projection fence measured 449.177 ms but increased
+buffer hits from 20,675 to 69,580; that variant was not selected.
+
+The selected change keeps the existing query structure, scope/validity guards,
+admission, weights and rank-before-limit. PostgreSQL `lower()` normalizes each
+field once behind the existing `OFFSET 0` fence; already-lowercase query tokens
+then use `LIKE`. This removes repeated case conversion for each token in both
+filtering and scoring. Counterbalanced live source-query EXPLAIN runs measured
+580.770/206.182/216.389/602.697 ms (legacy/current/current/legacy), with comparable
+buffer counts. These are four controlled statement executions, not service p95.
+
+The real-PG suite compares the production query to its ILIKE predecessor across
+mixed case, Unicode, JSON null/numeric/array fields, escaped compound identifiers,
+memory/entity separation, archive status, foreign scope and validity windows.
+Repeated results and complete result payloads/scores agree. Its 2,000-row frozen
+wide-text benchmark uses counterbalanced five-call blocks, ten calls per arm:
+
+| Measurement | Legacy ILIKE | Normalize once |
+|---|---:|---:|
+| Median caller time | 718.137 ms | 179.363 ms |
+| EXPLAIN execution | 935.211 ms | 259.254 ms |
+| Shared buffer hits | 119 | 119 |
+
+Ledger **19295840** passes all seven PG cases, zero skips. **19295830** passes
+96 memory-store unit cases. Scoped typecheck passes the three changed paths and
+their import graph. Raw final test output is
+`/tmp/p004-lexical-final-20260924.log`; source is `f6cdc8cbe2` plus local edits.
+The first PG attempt exposed a stale fixture missing the now-required storage
+profile; the next exposed an untyped polymorphic JSON parameter. Both fixture
+faults were corrected before the successful run; neither was a passing test.
+
+P-004 lineage binding **11537** passes traceability, layer, oracle, execution and
+freshness checks. Adequacy remains **unknown** for falsifiability and the L4
+floor: a targeted counterexample is still required. Broader independent
+acceptance and shipment remain open. P-003's cancellation scorecard now has a
+passed independent audit, **EI-24151960564427869** (2026-09-24 14:05Z).
+
+## P-004 latency falsifier (2026-09-24 14:37Z)
+
+The preceding adequacy gap is now cleared for **PERF-P-004@1**. The sanctioned
+copy-out mutation tool inserted an awaited 600 ms delay in a temporary copy of
+`lineagePartyKeys`. Original baseline **19295851** and unmodified relocated
+baseline **19296562** passed (100-call p95 17.292 and 12.727 ms). Mutant
+**19297277** completed its 100 calls and failed specifically at the 500 ms p95
+assertion, measuring **619.196 ms**. Two unrelated cases were filtered in each
+probe run. The script returned `verdict=caught`, `baseline_exit=0`, `guard_exit=1`.
+Its TS syntax checker reported `mutant_parse=unchecked`; the actual Vitest run
+loaded the module, ran the benchmark and failed the named numeric assertion.
+This is not an import failure. The shared source was unchanged by the probe.
+
+Bindings **11546/11547** supersede the earlier test recipe and add the targeted
+mutation. The revision-2 adequacy evaluator passes with no blocking criteria;
+scorecard **EI-24154001676167368** is filed for the automatic independent audit.
+The broad P-004 acceptance and shipment are still open. Logs and frozen mutant
+are at `/tmp/p004-lineage-mutation-20260924.log` and
+`/tmp/mutation-probe.TneDEs/`; the canonical scorecard retains its replay recipe.
