@@ -36,6 +36,8 @@ vi.mock('../loopback-fetch', async (importActual) => ({
 }));
 // DBOS inactive → goes straight to fire-and-forget fallback.
 vi.mock('../dbos/dbos-flags', () => ({ dbosOrchestratorActive: vi.fn(() => false) }));
+const durableSpawnFireMock = vi.hoisted(() => vi.fn());
+vi.mock('../dbos/durable-spawn', () => ({ durableSpawnFire: durableSpawnFireMock }));
 // Keep no-turn classification deterministic without probing a live gateway.
 vi.mock('../inference-gateway/observability', () => ({ gatewayWholesaleThrottled: vi.fn(async () => false) }));
 
@@ -44,6 +46,7 @@ import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { heartbeatSpawns, recordSpawnPid } from '../fleet/spawn-reclaim';
 import { loopbackFetch } from '../loopback-fetch';
 import { gatewayWholesaleThrottled } from '../inference-gateway/observability';
+import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import {
   fireLaunchBlueprint,
   setLaunchBlueprintFire,
@@ -98,6 +101,7 @@ afterEach(() => {
   resetLaunchBlueprintTriggerMap();
   activeQueenRows.length = 0;
   vi.clearAllMocks();
+  vi.mocked(dbosOrchestratorActive).mockReturnValue(false);
   mockSql.begin = vi.fn(async (cb: (tx: typeof mockSql) => unknown) => cb(mockSql));
   resetScheduledRegistry();
 });
@@ -109,6 +113,24 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     vi.mocked(finishSpawn).mockResolvedValue(undefined);
     vi.mocked(loopbackFetch).mockResolvedValue(new Response('', { status: 200 }));
     vi.mocked(gatewayWholesaleThrottled).mockResolvedValue(false);
+  });
+
+  it('does not launch a direct child after an uncertain durable enqueue', async () => {
+    vi.mocked(dbosOrchestratorActive).mockReturnValue(true);
+    durableSpawnFireMock.mockRejectedValueOnce(Object.assign(new Error('reply lost'), {
+      name: 'DurableSpawnEnqueueUncertainError',
+    }));
+    await expect(fireLaunchBlueprint('cup', opts)).rejects.toThrow(/reply lost/);
+    expect(loopbackFetch).not.toHaveBeenCalled();
+    expect(recordSpawn).not.toHaveBeenCalled();
+  });
+
+  it('retains the explicitly non-durable fallback when no enqueue was attempted', async () => {
+    vi.mocked(dbosOrchestratorActive).mockReturnValue(true);
+    durableSpawnFireMock.mockResolvedValueOnce(false);
+    const result = await fireLaunchBlueprint('cup', opts);
+    expect(result.spawn?.durable).toBe(false);
+    expect(loopbackFetch).toHaveBeenCalledOnce();
   });
 
   it('records a spawned_agents row with status=running before fetch', async () => {

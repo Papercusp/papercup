@@ -226,11 +226,10 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
 
     const result = await run();
 
-    // The routine workflow drains result.durableSpawns and starts them durably AFTER the step.
+    // The routine workflow starts this child after the step. Until its enqueue
+    // succeeds the dispatch ledger stays pending, not optimistically accepted.
     expect(result).toEqual({ durableSpawns: [req] });
-    expect(ledgerResults).toEqual([
-      { dispatchId: 'd-1', result: { ok: true, spawnedRunId: 'durable-spawn:implement:EI-1:2' } },
-    ]);
+    expect(ledgerResults).toEqual([]);
   });
 
   it('EI-403-A: returns void when the fire seam yields no durableSpawn (disarmed / void seam)', async () => {

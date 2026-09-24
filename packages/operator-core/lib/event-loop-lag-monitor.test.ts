@@ -337,6 +337,59 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
     await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('prewarms on a quiet tick and reuses the same V8 recorder across later ticks', async () => {
+    const dir = tmp('warm-idle');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 50, profileOnSaturation: true, profileDir: dir,
+      profileTriggerP95Ms: 100_000, profileTriggerMaxMs: 100_000,
+      heapSamplingOnHighRss: false, heapSnapshotOnHighRss: false, log,
+    });
+    const warmups = () => log.mock.calls.filter(([, detail]) => 'warmupMs' in detail);
+    await vi.waitFor(() => expect(warmups()).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    expect(warmups()).toHaveLength(1);
+    expect(warmups()[0][1].samplingIntervalUs).toBe(10_000);
+    await expect(fs.stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('gate OFF cancels active recording before the five-minute artifact gap elapses', async () => {
+    const dir = tmp('off-active');
+    let enabled = true;
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 40, profileOnSaturation: () => enabled, profileDir: dir,
+      profileTriggerP95Ms: 0, profileDurationMs: 300, minProfileGapMs: 300_000,
+      heapSamplingOnHighRss: false, heapSnapshotOnHighRss: false, log,
+    });
+    await vi.waitFor(async () => expect((await fs.stat(dir)).isDirectory()).toBe(true));
+    enabled = false;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toEqual([]);
+    expect(log.mock.calls.some(([line]) => String(line).includes('captured CPU profile'))).toBe(false);
+  });
+
+  it('a flag read spanning a tick revokes sampling and its stale true result cannot restart it', async () => {
+    const dir = tmp('slow-gate');
+    const log = vi.fn();
+    let resolveGate: ((value: boolean) => void) | undefined;
+    let blockGate = false;
+    const gate = () => blockGate ? new Promise<boolean>((resolve) => { resolveGate = resolve; }) : true;
+    handle = startEventLoopLagMonitor({
+      intervalMs: 40, profileOnSaturation: gate, profileDir: dir,
+      profileTriggerP95Ms: 0, profileDurationMs: 300,
+      heapSamplingOnHighRss: false, heapSnapshotOnHighRss: false, log,
+    });
+    await vi.waitFor(async () => expect((await fs.stat(dir)).isDirectory()).toBe(true));
+    blockGate = true;
+    await vi.waitFor(() => expect(resolveGate).toBeTypeOf('function'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    resolveGate!(true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(log.mock.calls.filter(([, detail]) => 'warmupMs' in detail)).toHaveLength(1);
+    expect((await fs.readdir(dir)).filter((entry) => entry.endsWith('.cpuprofile'))).toEqual([]);
+  });
+
   it('is INERT by default: no capture under saturation when profileOnSaturation is off', async () => {
     const dir = tmp('off');
     const log = vi.fn();

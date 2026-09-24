@@ -477,6 +477,9 @@ const defaultFire = async (
         return { spawnId: `durable-spawn:${idempotencyKey}`, runId: idempotencyKey, durable: true };
       }
     } catch (e) {
+      // DBOS may have committed the workflow before the enqueue response was
+      // lost. A direct /invoke fallback here would create a second child.
+      if (e instanceof Error && e.name === 'DurableSpawnEnqueueUncertainError') throw e;
       console.warn(
         `[launch-blueprint] durable fire unavailable (${installSlug}/${role}); falling back: ${e instanceof Error ? e.message : e}`,
       );

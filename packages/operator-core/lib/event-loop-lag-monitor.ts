@@ -21,6 +21,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
+import { LoopCpuRecorder, type CpuRecording } from './event-loop-cpu-recorder';
 
 export interface LagMonitorOpts {
   /** How often to sample + evaluate the histogram (ms). Default 10_000. */
@@ -41,13 +42,14 @@ export interface LagMonitorOpts {
    *
    * WI-5820: accepts a PREDICATE as well as a boolean. Pass a function (e.g.
    * `() => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host')`) and the gate is
-   * read LAZILY, at the moment a saturated window would trigger a capture —
+   * read LAZILY on the existing monitor tick —
    * never latched at boot. That matters twice over: `getFlag` is fragile during
    * host-boot (it resolves false before the backend is configured, which is how
    * a boot-latched gate silently stays off forever), and a lazy read means a
    * flip in /admin/features takes effect without restarting the host. The
-   * predicate may be async; it is evaluated at most once per `minProfileGapMs`,
-   * so a sustained saturation burst cannot turn it into a per-tick flag read.
+   * predicate may be async and reads are single-flight. A true gate maintains a
+   * 100 Hz recorder so captures do not repeatedly rebuild V8's code map. A false
+   * or failed gate stops it, including any capture, on the next completed tick.
    */
   profileOnSaturation?: boolean | (() => boolean | Promise<boolean>);
   /** Dir for `.cpuprofile` artifacts. Default ~/.papercusp/loop-profiles. */
@@ -479,6 +481,8 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   let lastProfileAt = 0;
   let stopped = false;
   const profileLifetime = new AbortController();
+  const cpuRecorder = new LoopCpuRecorder(Math.max(1000, intervalMs * 3), log);
+  let profileGatePending = false;
 
   // P-002: heap-snapshot-on-high-RSS state. WI-3255: full V8 heap snapshots
   // pause the live loop while V8 serializes the heap, and on multi-GB bg-hosts
@@ -537,17 +541,13 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       });
     }
     const profileTriggered = shouldTriggerLoopProfile(s, profileTriggerP95Ms, profileTriggerMaxMs);
-    // F1 + WI-2146561: capture after either sustained p95 pressure or one
-    // catastrophic maximum delay. Rate-limited + single-flight; fully best-effort.
-    if (!profiling && profileTriggered && Date.now() - lastProfileAt >= minProfileGapMs) {
-      // Claim the single-flight slot and consume the rate-limit window BEFORE
-      // resolving the (possibly async) gate — so a second tick cannot race in
-      // behind us, and a gate that reads false costs at most one evaluation per
-      // `minProfileGapMs` rather than one per tick for the whole burst. The cost
-      // of consuming the window on a false read is bounded and stated: flipping
-      // the flag ON mid-burst engages within one gap (default 5min).
-      profiling = true;
-      lastProfileAt = Date.now();
+    // Maintain the recorder independently of artifact cadence: otherwise flag
+    // OFF would leave a sampler running throughout the five-minute capture gap.
+    // Revoke immediately on an unsafe tick, even if a flag read is still pending.
+    if (s.p95Ms >= profileMaxP95Ms || profileGatePending) void cpuRecorder.update(false, false);
+    if (!profileGatePending) {
+      profileGatePending = true;
+      const gateStartedAt = Date.now();
       void (async () => {
         let on = false;
         try {
@@ -555,7 +555,13 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         } catch {
           on = false; // a flag-read failure must never break lag monitoring
         }
-        if (!on || stopped) return;
+        if (stopped || Date.now() - gateStartedAt >= intervalMs) return;
+        // A slow predicate may span several windows. Recheck the current window
+        // as well as the one that initiated the read before entering inspector.
+        const safe = s.p95Ms < profileMaxP95Ms && read().p95Ms < profileMaxP95Ms;
+        const ready = await cpuRecorder.update(on, safe);
+        if (!on || stopped || profiling || !profileTriggered || Date.now() - lastProfileAt < minProfileGapMs) return;
+        lastProfileAt = Date.now();
         // WI-5820 SAFETY CAP — checked here, INSIDE the gate, so a host with the
         // profiler disabled never emits a confusing "skipped" line about work it
         // was never going to do. A window this saturated is the regime where the
@@ -566,7 +572,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         // isolated block has ended and inspector is no longer entering an already-
         // wedged loop. Shares the capture rate-limit, so an extreme burst cannot
         // profile-storm or log-storm.
-        if (s.p95Ms >= profileMaxP95Ms) {
+        if (!safe) {
           log('[event-loop-lag] CPU profile SKIPPED — loop too saturated to profile safely', {
             p95Ms: s.p95Ms,
             profileMaxP95Ms,
@@ -574,16 +580,21 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           });
           return;
         }
-        await captureCpuProfile({
+        if (!ready) return;
+        profiling = true;
+        // Artifact sampling has its own single-flight slot. Do not hold the
+        // gate slot: future ticks must rotate/revoke during an active capture.
+        void captureCpuProfile({
           durationMs: profileDurationMs,
           dir: profileDir,
           maxProfiles,
           trigger: s,
           log,
           signal: profileLifetime.signal,
-        }).catch(() => {});
+          record: (durationMs, signal) => cpuRecorder.record(durationMs, signal),
+        }).catch(() => {}).finally(() => { profiling = false; });
       })().finally(() => {
-        if (!stopped) profiling = false;
+        profileGatePending = false;
       });
     }
     // WI-1088 round 2: arm the sampling heap profiler on the first tick (O(1)
@@ -712,6 +723,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     stop() {
       stopped = true;
       profileLifetime.abort();
+      cpuRecorder.stop();
       timer.stop();
       h.disable();
       if (_liveRead === read) _liveRead = null;
@@ -739,6 +751,8 @@ export async function captureCpuProfile(args: {
   log: (line: string, detail: Record<string, number | string>) => void;
   /** Owner shutdown cancels setup, sampling and artifact publication. */
   signal?: AbortSignal;
+  /** Monitor-owned warm recorder; standalone diagnostics retain a short session. */
+  record?: (durationMs: number, signal?: AbortSignal) => Promise<CpuRecording>;
 }): Promise<string | null> {
   const { durationMs, maxProfiles, trigger, log, signal } = args;
   try {
@@ -765,17 +779,22 @@ export async function captureCpuProfile(args: {
       }
     };
 
-    const session = new inspector.Session();
+    const session = args.record ? null : new inspector.Session();
     signal?.throwIfAborted();
-    session.connect();
+    session?.connect();
     try {
-      await session.post('Profiler.enable');
-      signal?.throwIfAborted();
-      await session.post('Profiler.start');
-      // Abort clears the duration timer; finally disconnects the native sampler.
-      // Stopping only the monitor interval left this work alive after shutdown.
-      await delay(durationMs, undefined, { signal });
-      const { profile } = (await session.post('Profiler.stop')) as { profile: unknown };
+      let profile: unknown;
+      let observer: Omit<CpuRecording, 'profile'> | undefined;
+      if (args.record) {
+        const recording = await args.record(durationMs, signal);
+        ({ profile, ...observer } = recording);
+      } else {
+        await session!.post('Profiler.enable');
+        signal?.throwIfAborted();
+        await session!.post('Profiler.start');
+        await delay(durationMs, undefined, { signal });
+        ({ profile } = await session!.post('Profiler.stop') as { profile: unknown });
+      }
       signal?.throwIfAborted();
       // Reserve one slot before the write. A post-write-only prune briefly made
       // maxProfiles + 1 artifacts observable and allowed another capture/test to
@@ -799,6 +818,7 @@ export async function captureCpuProfile(args: {
         maxMs: trigger.maxMs,
         durationMs,
         file,
+        ...observer,
       });
 
       // Keep the post-write pass as a defensive bound for concurrent/external
@@ -807,7 +827,7 @@ export async function captureCpuProfile(args: {
       return file;
     } finally {
       try {
-        session.disconnect();
+        session?.disconnect();
       } catch {
         /* ignore */
       }

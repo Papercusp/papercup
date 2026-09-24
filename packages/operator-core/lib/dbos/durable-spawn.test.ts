@@ -3,10 +3,8 @@
  *
  * DBOS is mocked: registerWorkflow returns the impl, WorkflowQueue is a real class
  * (it's `new`'d at import), startWorkflow is a spy we can make succeed or throw. We
- * assert the degrade-safe contract: `durableSpawnFire` returns true when it
- * enqueues a dedup-keyed durable workflow, and false (never throws) when DBOS is
- * off OR when the enqueue fails (e.g. called from inside another step) — so the
- * caller falls back to fire-and-forget.
+ * assert the request-only client path, stable dedup identity, and fail-closed
+ * handling when an attempted enqueue has an uncertain outcome.
  *
  * The spies + the DBOS-on flag live in `vi.hoisted` because the `vi.mock` factories
  * are hoisted above top-level declarations.
@@ -15,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   startWorkflow: vi.fn((_wf: unknown, _opts: unknown) => (_input: unknown) => Promise.resolve()),
+  remoteEnqueue: vi.fn(async (opts: { workflowID: string }) => ({ workflowID: opts.workflowID })),
+  remoteGetWorkflow: vi.fn(async (_id: string): Promise<unknown | undefined> => undefined),
   loopbackFetch: vi.fn(async (..._args: unknown[]): Promise<{ ok: boolean; status: number; text?: () => Promise<string> }> => ({ ok: true, status: 200 })),
   recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
@@ -46,6 +46,7 @@ const h = vi.hoisted(() => ({
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
   // EI-9759: the pre-invoke-skip → dispatch-ledger close back-edge.
   markDispatchOrphaned: vi.fn(async (_id: string, _by: string, _detail?: string) => true),
+  recordFireResult: vi.fn(async (_id: string, _result: unknown) => {}),
   mergeIssuePayload: vi.fn(async (_id: string, _patch: Record<string, unknown>) => undefined),
 }));
 
@@ -102,11 +103,15 @@ vi.mock('../pot/started', () => ({ setPotStarted: h.setPotStarted }));
 vi.mock('../overwatch/control-state', () => ({ setOverwatchStarted: h.setOverwatchStarted }));
 vi.mock('../harness/routines/wake-brain-action', () => ({ resolveBrainOwner: h.resolveBrainOwner }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
-vi.mock('../harness/improvements/dispatch-ledger', () => ({ markDispatchOrphaned: h.markDispatchOrphaned }));
+vi.mock('../harness/improvements/dispatch-ledger', () => ({
+  markDispatchOrphaned: h.markDispatchOrphaned,
+  recordFireResult: h.recordFireResult,
+}));
 vi.mock('../issues-engineer', () => ({ mergeIssuePayload: h.mergeIssuePayload }));
 
 import {
   durableSpawnFire,
+  DurableSpawnEnqueueUncertainError,
   durableSpawnFireImpl,
   startDurableSpawns,
   isPermanentSpawnStatus,
@@ -120,6 +125,7 @@ const INPUT = {
   idempotencyKey: 'k1',
   label: 'h/worker',
 };
+const remoteClient = async () => ({ enqueue: h.remoteEnqueue, getWorkflow: h.remoteGetWorkflow });
 
 beforeEach(() => {
   h.state.dbosOn = true;
@@ -128,6 +134,10 @@ beforeEach(() => {
   h.isInStep.mockReturnValue(false);
   h.startWorkflow.mockReset();
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
+  h.remoteEnqueue.mockReset();
+  h.remoteEnqueue.mockImplementation(async (opts: { workflowID: string }) => ({ workflowID: opts.workflowID }));
+  h.remoteGetWorkflow.mockReset();
+  h.remoteGetWorkflow.mockResolvedValue(undefined);
   h.recordSpawn.mockClear();
   h.finishSpawn.mockClear();
   h.recordSpawnPid.mockClear();
@@ -152,6 +162,7 @@ beforeEach(() => {
   h.wakeRecipients.mockClear();
   h.markDispatchOrphaned.mockReset();
   h.markDispatchOrphaned.mockResolvedValue(true);
+  h.recordFireResult.mockClear();
   h.mergeIssuePayload.mockReset();
   h.mergeIssuePayload.mockResolvedValue(undefined);
   h.sql.mockReset();
@@ -203,9 +214,11 @@ describe('durableSpawnFire (P-010)', () => {
     const opts = h.startWorkflow.mock.calls[0][1] as {
       workflowID: string;
       enqueueOptions: { deduplicationID: string };
+      duplicationPolicy: string;
     };
     expect(opts.workflowID).toBe('durable-spawn:k1');
     expect(opts.enqueueOptions.deduplicationID).toBe('durable-spawn:k1');
+    expect(opts.duplicationPolicy).toBe('return-existing');
   });
 
   it('stamps DBOS workflow timeout from the invoke body plus cleanup cushion when launch has a deadline', async () => {
@@ -230,22 +243,46 @@ describe('durableSpawnFire (P-010)', () => {
     expect(durableSpawnWorkflowTimeoutMs({ ...INPUT, body: { timeoutMs: '180000' } })).toBeUndefined();
   });
 
-  it('returns false (never throws) when the enqueue fails — e.g. called from inside a step', async () => {
+  it('does not downgrade an uncertain in-process enqueue to a direct fire', async () => {
     h.startWorkflow.mockImplementation(() => {
-      throw new Error('cannot start a child workflow from inside a step');
+      throw new Error('enqueue reply lost');
     });
-    await expect(durableSpawnFire(INPUT)).resolves.toBe(false);
+    await expect(durableSpawnFire(INPUT, { remoteClient })).rejects.toBeInstanceOf(DurableSpawnEnqueueUncertainError);
   });
 
   // WI-2605: two documented-as-expected degrades that used to fall through to a
   // startWorkflow throw + a scary console.warn every time — now detected up front.
   describe('WI-2605 — anticipated degrades skip the doomed attempt (no log noise)', () => {
-    it('returns false WITHOUT attempting startWorkflow when DBOS is flagged on but not launched here (e.g. :3070 delegating to bg-host)', async () => {
+    it('enqueues through the DBOS client when this request-only host has no executor', async () => {
       h.state.dbosStarted = false;
-      const r = await durableSpawnFire(INPUT);
-      expect(r).toBe(false);
+      const r = await durableSpawnFire(INPUT, { remoteClient });
+      expect(r).toBe(true);
       expect(h.startWorkflow).not.toHaveBeenCalled();
-      expect(console.warn).not.toHaveBeenCalled();
+      expect(h.remoteEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+        queueName: 'durable-spawn-fire', workflowName: 'durableSpawnFire',
+        workflowID: 'durable-spawn:k1', deduplicationID: 'durable-spawn:k1',
+        duplicationPolicy: 'return-existing', appVersion: 'bg-host-v1',
+      }), INPUT);
+    });
+
+    it('treats a lost enqueue response as accepted only when the exact workflow is readable', async () => {
+      h.state.dbosStarted = false;
+      h.remoteEnqueue.mockRejectedValueOnce(new Error('reply lost'));
+      h.remoteGetWorkflow.mockResolvedValueOnce({ workflowID: 'durable-spawn:k1', status: 'ENQUEUED' });
+      await expect(durableSpawnFire(INPUT, { remoteClient })).resolves.toBe(true);
+      expect(h.remoteGetWorkflow).toHaveBeenCalledWith('durable-spawn:k1');
+    });
+
+    it('refuses a direct fallback when an attempted remote enqueue remains uncertain', async () => {
+      h.state.dbosStarted = false;
+      h.remoteEnqueue.mockRejectedValueOnce(new Error('reply lost'));
+      await expect(durableSpawnFire(INPUT, { remoteClient })).rejects.toBeInstanceOf(DurableSpawnEnqueueUncertainError);
+    });
+
+    it('returns false only when the remote client failed before an enqueue was attempted', async () => {
+      h.state.dbosStarted = false;
+      await expect(durableSpawnFire(INPUT, { remoteClient: async () => { throw new Error('database unavailable'); } })).resolves.toBe(false);
+      expect(h.remoteEnqueue).not.toHaveBeenCalled();
     });
 
     it('returns false WITHOUT attempting startWorkflow when called from inside a DBOS step (e.g. git-sync:record dispatching doc-steward)', async () => {
@@ -256,14 +293,12 @@ describe('durableSpawnFire (P-010)', () => {
       expect(console.warn).not.toHaveBeenCalled();
     });
 
-    it('still attempts + logs on a genuinely unexpected enqueue failure (not one of the two anticipated cases)', async () => {
+    it('keeps an unexpected local enqueue failure uncertain when no DBOS row confirms it', async () => {
       h.startWorkflow.mockImplementation(() => {
         throw new Error('some other DBOS error');
       });
-      const r = await durableSpawnFire(INPUT);
-      expect(r).toBe(false);
+      await expect(durableSpawnFire(INPUT, { remoteClient })).rejects.toBeInstanceOf(DurableSpawnEnqueueUncertainError);
       expect(h.startWorkflow).toHaveBeenCalledTimes(1);
-      expect(console.warn).toHaveBeenCalled();
     });
 
     it('falls through to the real attempt when isInStep() itself throws (best-effort probe)', async () => {
@@ -294,31 +329,38 @@ describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () =
     expect(ids).toEqual(['durable-spawn:k1', 'durable-spawn:k2']);
   });
 
-  it('tolerates declined fires (DBOS off ⇒ enqueued 0, total N, never throws)', async () => {
+  it('marks an improvement dispatch accepted only after its durable child is enqueued', async () => {
+    const req = { ...INPUT, body: { kickoff: 'go', improvementDispatch: { dispatchId: 'dispatch-1', itemId: 'EI-1' } } };
+    expect(await startDurableSpawns([req])).toEqual({ enqueued: 1, total: 1 });
+    expect(h.recordFireResult).toHaveBeenCalledWith('dispatch-1', {
+      ok: true, spawnedRunId: 'durable-spawn:k1',
+    });
+  });
+
+  it('keeps a checkpointed one-shot request pending when DBOS is off', async () => {
     h.state.dbosOn = false;
-    const res = await startDurableSpawns([INPUT, REQ2]);
-    expect(res).toEqual({ enqueued: 0, total: 2 });
+    await expect(startDurableSpawns([INPUT, REQ2])).rejects.toThrow(/enqueue unavailable/);
     expect(h.startWorkflow).not.toHaveBeenCalled();
   });
 
-  it('a single failed enqueue does not block the rest (partial enqueue count)', async () => {
+  it('stops after an uncertain enqueue and retries the same workflow IDs', async () => {
     h.startWorkflow
       .mockImplementationOnce(() => {
         throw new Error('enqueue blip');
       })
       .mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
+    await expect(startDurableSpawns([INPUT, REQ2])).rejects.toBeInstanceOf(DurableSpawnEnqueueUncertainError);
     const res = await startDurableSpawns([INPUT, REQ2]);
-    expect(res).toEqual({ enqueued: 1, total: 2 });
-    expect(h.startWorkflow).toHaveBeenCalledTimes(2);
+    expect(res).toEqual({ enqueued: 2, total: 2 });
+    expect(h.startWorkflow).toHaveBeenCalledTimes(3);
+    expect((h.startWorkflow.mock.calls[0][1] as { workflowID: string }).workflowID).toBe(
+      (h.startWorkflow.mock.calls[1][1] as { workflowID: string }).workflowID,
+    );
   });
 
-  // EI-18118495431535177 (dispatch-orphan investigation, root cause): a declined
-  // enqueue (durableSpawnFire returns false without throwing) previously left an
-  // improvementDispatch-correlated request silently dropped — no /invoke fire, no
-  // worker-exit back-edge, no ledger diagnostic — until the blind 2h orphan collector
-  // closed it with a blank fire_error. It must now close the ledger row itself, same
-  // shape as the pre-invoke skip paths.
-  it('EI-18118495431535177: closes the dispatch-ledger row (and rolls back the attempt) when a declined enqueue carries an improvementDispatch correlation', async () => {
+  // The parent DBOS workflow already owns this checkpointed request. A refusal
+  // must not turn that parent into SUCCESS or close its dispatch as if finished.
+  it('keeps a declined improvement dispatch available for workflow recovery', async () => {
     h.state.dbosOn = false; // any decline reason exercises the same branch
     const req = {
       url: 'http://x/api/harness/h/invoke?role=worker',
@@ -326,20 +368,14 @@ describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () =
       idempotencyKey: 'implement:EI-10524:3',
       label: 'h/worker',
     };
-    const res = await startDurableSpawns([req]);
-    expect(res).toEqual({ enqueued: 0, total: 1 });
-    expect(h.markDispatchOrphaned).toHaveBeenCalledWith(
-      'd-9',
-      'pre-invoke-skip:durable-fire-declined',
-      expect.stringContaining('attempt 3 not charged'),
-    );
-    expect(h.mergeIssuePayload).toHaveBeenCalledWith('EI-10524', { implementAttempts: 2 });
+    await expect(startDurableSpawns([req])).rejects.toThrow(/enqueue unavailable/);
+    expect(h.markDispatchOrphaned).not.toHaveBeenCalled();
+    expect(h.mergeIssuePayload).not.toHaveBeenCalled();
   });
 
-  it('a declined enqueue with no improvementDispatch correlation is a plain no-op (no ledger writes)', async () => {
+  it('also retains a declined non-improvement one-shot request', async () => {
     h.state.dbosOn = false;
-    const res = await startDurableSpawns([INPUT, REQ2]);
-    expect(res).toEqual({ enqueued: 0, total: 2 });
+    await expect(startDurableSpawns([INPUT, REQ2])).rejects.toThrow(/enqueue unavailable/);
     expect(h.markDispatchOrphaned).not.toHaveBeenCalled();
     expect(h.mergeIssuePayload).not.toHaveBeenCalled();
   });

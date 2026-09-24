@@ -9,21 +9,18 @@
  * registered, step-retried, dedup-keyed DBOS workflow: a host crash mid-fire is
  * resumed by DBOS recovery and the fire re-runs once, instead of silently vanishing.
  *
- * Degrade-safe by spawn class / DBOS state (D-003 / D-007). `durableSpawnFire`
- * returns `false` — so the caller keeps its existing fire-and-forget — when:
+ * Degrade-safe by spawn class / DBOS state (D-003 / D-007). Request-only hosts
+ * enqueue with DBOSClient into the same durable queue. `durableSpawnFire`
+ * returns `false` only when no enqueue was attempted, for example when:
  *   • DBOS is OFF (`PAPERCUSP_DBOS_ORCHESTRATOR=0`), or
- *   • DBOS is feature-flagged on but not actually LAUNCHED on this process
- *     (`!dbosStarted()` — e.g. a request-only host like :3070 that delegates DBOS
- *     to the bg-host), or
+ *   • the request-only host cannot create a DBOS client, or
  *   • it cannot start a durable workflow here (`DBOS.isInStep()` — e.g. it was
  *     called from inside another DBOS step/transaction, like git-sync's
  *     `git-sync:record` checkpoint dispatching the doc-steward), where starting a
  *     child workflow is disallowed.
- * The latter two are detected UP FRONT (WI-2605) rather than discovered by
- * `DBOS.startWorkflow()` throwing — both are expected, routine degrades, not
- * genuine failures, so they skip the doomed attempt and its log noise.
- * It NEVER throws and NEVER blocks on the agent's lifetime — the durable workflow
- * runs detached, exactly like the fire-and-forget it replaces.
+ * An attempted enqueue with an unconfirmed outcome THROWS: a direct fallback
+ * could duplicate a child whose durable workflow already committed. It never
+ * blocks on the agent's lifetime; the executor runs detached.
  *
  * Per-class durability (D-003 — the class is the dial, not a global on/off):
  *   • launch-blueprints (release cadence, event reactions, git-sync merge-resolver)
@@ -44,13 +41,14 @@
  * Registered in bootstrap.ts under `dbosOrchestratorActive()` — BEFORE
  * `DBOS.launch()`, like the feature-pipeline + coord-program workflows.
  */
-import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
-import { dbosStarted } from './bootstrap';
+import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
+import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { loopbackFetch } from '../loopback-fetch';
 import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
 import {
@@ -910,59 +908,110 @@ export const durableSpawnQueue = idempotentWorkflowQueue('durable-spawn-fire', (
   new WorkflowQueue('durable-spawn-fire', { concurrency: queueConcurrency(8) }),
 );
 
+/** Request-only hosts can enqueue on the existing DBOS primary without running
+ * an executor locally. This mirrors enqueueRoutineFire's DBOSClient path. */
+interface DurableSpawnRemoteClient {
+  enqueue(options: {
+    queueName: string;
+    workflowName: string;
+    workflowID: string;
+    deduplicationID: string;
+    duplicationPolicy: 'return-existing';
+    appVersion: string;
+    workflowTimeoutMS?: number;
+  }, input: DurableSpawnFireInput): Promise<{ workflowID: string }>;
+  getWorkflow(workflowId: string): Promise<unknown | undefined>;
+}
+let remoteSpawnClient: Promise<DurableSpawnRemoteClient> | null = null;
+
+function primarySpawnAppVersion(): string {
+  return process.env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION?.trim() || 'bg-host-v1';
+}
+
+function getRemoteSpawnClient(): Promise<DurableSpawnRemoteClient> {
+  remoteSpawnClient ??= DBOSClient.create({
+    systemDatabaseUrl: withDbosIdleTxGrace(getHarnessAdminUrlWithSource().url),
+    systemDatabaseSchemaName: 'dbos',
+  }).catch((error: unknown) => {
+    remoteSpawnClient = null;
+    throw error;
+  });
+  return remoteSpawnClient;
+}
+
+/** The enqueue write may have committed before its response was lost. Direct
+ * fallback after this error could start a conflicting child. */
+export class DurableSpawnEnqueueUncertainError extends Error {
+  constructor(readonly workflowId: string, cause: unknown) {
+    super(`durable spawn enqueue outcome unknown for ${workflowId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'DurableSpawnEnqueueUncertainError';
+  }
+}
+
 /**
- * Durably fire an autonomous agent launch. Returns `true` when the durable workflow
- * was enqueued, `false` when the caller should do its existing fire-and-forget
- * (DBOS off, or a durable start isn't possible here). Never throws; never blocks on
- * the agent's lifetime.
+ * Durably fire an autonomous agent launch. Returns true only after a durable
+ * workflow row is confirmed, false only when no enqueue was attempted. An
+ * uncertain enqueue throws, so callers cannot launch a conflicting fallback.
  */
-export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<boolean> {
+export async function durableSpawnFire(
+  input: DurableSpawnFireInput,
+  deps: { remoteClient?: () => Promise<DurableSpawnRemoteClient> } = {},
+): Promise<boolean> {
   if (!dbosOrchestratorActive()) return false;
-  // WI-2605: two documented-as-expected degrade cases used to fall all the way
-  // through to `DBOS.startWorkflow()` throwing, landing here as a scary
-  // '[durable-spawn] could not enqueue...' console.warn every time — even though
-  // neither is a genuine failure:
-  //
-  //  (a) DBOS is FEATURE-FLAGGED on (`dbosOrchestratorActive()`) but never actually
-  //      LAUNCHED on THIS process — e.g. a request-only host (:3070) that delegates
-  //      DBOS to the bg-host. `DBOS.startWorkflow` there throws 'DBOS.launch() must
-  //      be called before running workflows.' `dbosStarted()` (bootstrap.ts) is the
-  //      real "did .launch() run HERE" predicate — distinct from the feature flag.
-  //  (b) called from inside another DBOS step/transaction (e.g. git-sync's
-  //      `git-sync:record` checkpoint dispatching the doc-steward) — starting a
-  //      CHILD workflow from inside a step is illegal by DBOS's own design (see the
-  //      module docstring); `DBOS.isInStep()` detects this up front.
-  //
-  // Both are silently expected per this function's own contract ("returns false
-  // when it can't durably enqueue here") — skip straight to the fallback instead
-  // of attempting (and logging) a doomed enqueue.
-  if (!dbosStarted()) return false;
+  const id = `durable-spawn:${input.idempotencyKey}`;
+  const remoteClient = deps.remoteClient ?? getRemoteSpawnClient;
+  const timeoutMS = durableSpawnWorkflowTimeoutMs(input);
+
+  if (!dbosStarted()) {
+    let client: DurableSpawnRemoteClient;
+    try {
+      client = await remoteClient();
+    } catch (error) {
+      // No enqueue was attempted. Best-effort callers may use their declared
+      // direct fallback; a checkpointed one-shot caller must retry instead.
+      console.warn(`[durable-spawn] remote DBOS client unavailable (${input.label ?? id}): ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+    try {
+      await client.enqueue({
+        queueName: durableSpawnQueue.name,
+        workflowName: 'durableSpawnFire',
+        workflowID: id,
+        deduplicationID: id,
+        duplicationPolicy: 'return-existing',
+        appVersion: primarySpawnAppVersion(),
+        ...(timeoutMS ? { workflowTimeoutMS: timeoutMS } : {}),
+      }, input);
+      return true;
+    } catch (error) {
+      // A lost response is not proof that the write failed. A positive lookup
+      // confirms acceptance; a negative/unreadable lookup stays uncertain.
+      if (await client.getWorkflow(id).catch(() => undefined)) return true;
+      throw new DurableSpawnEnqueueUncertainError(id, error);
+    }
+  }
+
+  // Starting a child workflow inside a DBOS step is forbidden. System actions
+  // return their request for the parent workflow to enqueue after the step.
   try {
     if (DBOS.isInStep()) return false;
   } catch {
-    // isInStep() itself is best-effort — fall through to the real attempt below,
-    // whose catch already handles any enqueue failure gracefully.
+    // The start call below remains the authoritative attempt.
   }
-  const id = `durable-spawn:${input.idempotencyKey}`;
-  const timeoutMS = durableSpawnWorkflowTimeoutMs(input);
   try {
     await DBOS.startWorkflow(durableSpawnFireWorkflow, {
       workflowID: id,
       queueName: durableSpawnQueue.name,
       ...(timeoutMS ? { timeoutMS } : {}),
       enqueueOptions: { deduplicationID: id },
+      duplicationPolicy: 'return-existing',
     })(input);
     return true;
-  } catch (e) {
-    // A genuinely unexpected enqueue failure (not one of the two anticipated cases
-    // above, which already returned false silently) → caller falls back to
-    // fire-and-forget; this IS worth a loud warning.
-    console.warn(
-      `[durable-spawn] could not enqueue durable fire (${input.label ?? ''}); falling back to fire-and-forget: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-    return false;
+  } catch (error) {
+    let client: DurableSpawnRemoteClient | null = null;
+    try { client = await remoteClient(); } catch { /* no status reader is available */ }
+    if (client && await client.getWorkflow(id).catch(() => undefined)) return true;
+    throw new DurableSpawnEnqueueUncertainError(id, error);
   }
 }
 
@@ -976,10 +1025,8 @@ export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<bo
  * checkpointed return value, so a replay re-drains the same list, and each fire is
  * idempotency-keyed (`durable-spawn:<key>`) — a stable key dedups the re-fire, a
  * clock-derived key would double-dispatch (hence the SystemActionResult doc's
- * STABLE-key requirement). `durableSpawnFire` never throws, so one declined fire
- * (DBOS off, or a genuine enqueue error) never blocks the rest. Returns how many of
- * `total` were durably enqueued (the remainder are the caller's fire-and-forget /
- * cadence-recovery concern).
+ * STABLE-key requirement). A declined or uncertain enqueue fails the parent
+ * workflow, leaving its checkpointed request available for DBOS recovery.
  */
 export async function startDurableSpawns(
   spawns: DurableSpawnFireInput[] | undefined,
@@ -996,29 +1043,20 @@ export async function startDurableSpawns(
   const { cooperativeYield } = await import('../event-loop-lag-monitor');
   let yielded = 0;
   for (const req of reqs) {
-    if (await durableSpawnFire(req)) {
-      enqueued += 1;
-    } else {
-      // EI-18118495431535177 (dispatch-orphan investigation, root cause): a DECLINED
-      // enqueue here (DBOS not started on THIS process, an illegal in-step call, or a
-      // genuine `DBOS.startWorkflow` failure — `durableSpawnFire`'s own documented
-      // false-not-throw contract) previously left the request SILENTLY DROPPED: no
-      // /invoke fire ever happens, so the /invoke route's worker-exit back-edge
-      // (implement-worker-exit.ts) never runs either. Meanwhile the improvement-implement
-      // dispatch loop had ALREADY recorded this ledger row `fire_result: 'ok'`
-      // (improvement-actions.ts — optimistic, "durably handed off", before this
-      // workflow-layer fire even ran) — so the row just sat open, indistinguishable from
-      // a worker legitimately still running, until the blind 2h orphaned-dispatch
-      // collector finally closed it with NO diagnostic (`fire_error` NULL). That fed the
-      // "auto-implement lane is broken" watchdog signal (orphaned-dispatch:<item>) with
-      // zero evidence of WHY — live: EI-10524's dispatch ledger showed 8+ consecutive
-      // `orphaned-dispatch-collector` closes with a blank fire_error across 07-19
-      // 12:30-16:02, none tagged by any known death classifier. Close it here instead —
-      // same shape as the pre-invoke skip paths in `durableSpawnFireImpl` above (this is
-      // a strict subset: declined BEFORE even attempting the /invoke fire) — so the
-      // ledger always carries a reason and the item's attempt counter isn't burned on a
-      // request that never reached the runner at all.
-      await closeSkippedImprovementDispatch(req.body, 'durable-fire-declined');
+    // The parent workflow owns this checkpointed one-shot request. A declined
+    // enqueue must ERROR that workflow so recovery replays this same stable key;
+    // returning success here would silently drop accepted work.
+    if (!await durableSpawnFire(req)) {
+      throw new Error(`durable spawn enqueue unavailable for ${req.idempotencyKey}; parent workflow retains the checkpointed request`);
+    }
+    enqueued += 1;
+    const dispatch = req.body.improvementDispatch as { dispatchId?: unknown } | undefined;
+    if (typeof dispatch?.dispatchId === 'string') {
+      const { recordFireResult } = await import('../harness/improvements/dispatch-ledger');
+      await recordFireResult(dispatch.dispatchId, {
+        ok: true,
+        spawnedRunId: `durable-spawn:${req.idempotencyKey}`,
+      });
     }
     yielded = await cooperativeYield(yielded);
   }

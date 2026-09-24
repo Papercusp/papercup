@@ -473,9 +473,9 @@ const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candid
     idempotencyKey,
   );
   // The fire happens at the workflow layer (the engine drains durableSpawns); the
-  // durable workflow id IS the spawn correlation, recorded now (fire_result 'ok'
-  // here means "durably handed off" — the same optimistic point the old fire-and-
-  // forget recorded 'ok', before its loopbackFetch even landed).
+  // The durable workflow id is the eventual spawn correlation. The dispatch
+  // ledger stays pending until startDurableSpawns confirms the enqueue outside
+  // this checkpointed action step.
   return { spawnedRunId: `durable-spawn:${idempotencyKey}`, durableSpawn };
 };
 
@@ -718,9 +718,9 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
       continue;
     }
     // Ledger row BEFORE the fire (P-010): a dispatcher crash between insert and
-    // fire leaves a 'pending' row — visible, not silent. The fire's success or
-    // failure then drives it: 'ok' (worker in progress, spawned_run_id recorded)
-    // or terminal 'fire-failed'. A fire failure no longer aborts the loop — the
+    // fire leaves a 'pending' row — visible, not silent. Direct fire success or
+    // failure drives it here; a returned durableSpawn stays pending until the
+    // workflow layer confirms enqueue. A fire failure no longer aborts the loop — the
     // item stays claimed (stale-claim reclaim backs it off; no hot re-dispatch)
     // and the remaining candidates still dispatch.
     // (per-hive-learning-loops P-012) Stamp the dispatch with the Hive that owns the
