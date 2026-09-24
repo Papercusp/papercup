@@ -16,6 +16,9 @@
  * timestamp). LWW helper here is pure + testable.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type postgres from 'postgres';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
 import { observeRemoteHlc } from './hlc-stamp';
@@ -174,6 +177,73 @@ export interface TableProjection<Row> {
    *  - Read-only and side-effect free; a throw is swallowed by the caller.
    */
   storedOrderForKeys?: (keys: readonly string[]) => Promise<Map<string, StoredFedOrder>>;
+  /**
+   * P-002 step 2 (p2p-join-catchup-speed D-002): this projection may apply inside
+   * the incremental merge's batch transaction.
+   *
+   * Contract: EVERY PG statement the projection's `writeToPg` / `deleteFromPg`
+   * issues (helper reads included) goes through
+   * `await projectionSql(<the handle it would otherwise use>)`, and the projection
+   * sets no transaction-local state (no `SET LOCAL` / `set_config(..., true)`).
+   * A projection that CATCHES a PG error from one of those statements and then
+   * keeps issuing statements calls `await projectionStatementFailed()` first
+   * (inside the batch the error aborted the whole transaction).
+   * A projection that cannot promise all of this leaves the flag unset: the merge
+   * then commits any open batch BEFORE it writes, so it never waits on a row lock
+   * the batch holds and never reads around the batch's uncommitted rows.
+   */
+  batchable?: true;
+}
+
+/**
+ * P-002 step 2 — the incremental merge's per-op view of its open batch
+ * transaction. Bound to ONE op via {@link runInProjectionBatch}; a call made
+ * after that op finished (a timed-out apply still running) gets the plain
+ * target back, so a zombie write can never land inside a later op's savepoint.
+ */
+export interface ProjectionBatchSession {
+  /** The batch transaction on `target` (opened on first use), or `target` itself when this op is no longer current. */
+  sqlFor(target: postgres.Sql): Promise<postgres.Sql>;
+  /** Commit the open batch now (called before a NON-batchable projection writes). Throws when the commit failed. */
+  flush(): Promise<void>;
+  /** Roll this op back to its savepoint after a statement error the projection caught (see {@link projectionStatementFailed}). */
+  recover(): Promise<void>;
+}
+
+// Pinned: read-merge enters the store and every projection reads it, so a split
+// module record would silently run every batchable write outside the batch.
+const projectionBatchStore = pinModuleState(
+  '@papercusp/operator-core.sync.projection-batch-store',
+  () => new AsyncLocalStorage<ProjectionBatchSession>(),
+);
+
+/** Run `fn` with `session` as the ambient batch for every projection write it awaits. */
+export function runInProjectionBatch<T>(session: ProjectionBatchSession, fn: () => Promise<T>): Promise<T> {
+  return projectionBatchStore.run(session, fn);
+}
+
+/**
+ * The handle a batchable projection must use for its apply statements: the
+ * ambient batch transaction when the merge runs one, otherwise `target`.
+ */
+export async function projectionSql(target: postgres.Sql): Promise<postgres.Sql> {
+  const session = projectionBatchStore.getStore();
+  return session ? session.sqlFor(target) : target;
+}
+
+/**
+ * Call after CATCHING a PG error from a statement issued on the
+ * {@link projectionSql} handle, before issuing another statement on it.
+ *
+ * Outside a batch this does nothing: the failed autocommit statement rolled back
+ * alone. Inside the batch the error aborted the whole transaction, so every later
+ * statement would fail with 25P02, and a caught one would silently turn what the
+ * serial path treats as a handled error into a failed op. This rolls the op back
+ * to its savepoint, which undoes EVERY statement the op issued so far. Call it
+ * only when those were reads, or when the op re-issues its writes afterwards.
+ */
+export async function projectionStatementFailed(): Promise<void> {
+  await projectionBatchStore.getStore()?.recover();
 }
 
 /** The federation order stored on a PG row (`fed_hlc`, `fed_ts`), as the LWW guard reads it. */
@@ -427,6 +497,12 @@ export async function applyOpVia(
   // scoped apply), so this changes no behaviour — it makes the class AUDIBLE and
   // the stack names the caller. Capped so a single-harness/global context that
   // legitimately has no peers cannot spam the log.
+  // P-002 step 2: a projection outside the batch contract writes on its own
+  // connection. Commit the merge's open batch first, so it neither waits on a row
+  // lock the batch holds (a self-deadlock until the apply timeout) nor reads
+  // around rows the batch has not committed yet.
+  const batchSession = p.batchable === true ? undefined : projectionBatchStore.getStore();
+  if (batchSession) await batchSession.flush();
   if (p.skipOwnOps === true && op.type === 'put' && applyOpts?.ownLogKeyHex === undefined) {
     noteUnthreadedSkipOwnOpsApply(op);
   }

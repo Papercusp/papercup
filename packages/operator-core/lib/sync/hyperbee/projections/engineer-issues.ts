@@ -23,7 +23,13 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection, ProvenanceContext, StoredFedOrder } from '../projection';
+import {
+  projectionSql,
+  projectionStatementFailed,
+  type TableProjection,
+  type ProvenanceContext,
+  type StoredFedOrder,
+} from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
@@ -622,7 +628,9 @@ async function writeToPg(
     }
     return;
   }
-  const sql = opts.sql ?? getOrgPg().sql;
+  // P-002 step 2 (batchable): every statement below, helper reads included, runs
+  // on this one handle, so inside the merge's batch it is the batch transaction.
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
@@ -903,6 +911,12 @@ async function writeToPg(
     // the already-coalesced logical item, so the duplicate physical-row PUT is
     // a no-op. Any missing/malformed component, lookup failure, or other 23505
     // rethrows the original error and remains visible to the merge retry path.
+    //
+    // P-002 step 2: inside the merge's batch transaction the 23505 aborted the
+    // transaction, so the lookups below would fail and the coalesce could never
+    // resolve. Rolling back to the op's savepoint is exact here: every statement
+    // this op issued before the INSERT above was a read.
+    await projectionStatementFailed();
     const coalesced = await resolveIdentityConflict(error, sql, opts.workspaceId, vSlug, row.issue_id, row.payload);
     if (!coalesced) throw error;
     console.warn(coalesced);
@@ -917,7 +931,7 @@ async function deleteFromPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (!key) return;
-  const sql = opts.sql ?? getOrgPg().sql;
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   const parsed = parseEngineerIssueKey(key);
@@ -998,6 +1012,9 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     tableTag: 'engineer-issues',
     // EI-117: CDC-captured table (mig 197 custom capture) — own-log ops are replays.
     skipOwnOps: true,
+    // P-002 step 2: every apply statement goes through projectionSql and no
+    // transaction-local state is set, so ops may fold inside the batch transaction.
+    batchable: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
