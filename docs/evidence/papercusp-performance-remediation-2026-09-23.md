@@ -1833,6 +1833,31 @@ work after the layout effect starts; the expensive commit/layout operation is
 still unidentified. Request-start561ms to response1150ms remains a separate589ms.
 No 1500ms acceptance or shipment claim is supported.
 
+The next native probe identifies the effect: the actual production React
+`usePlanDocumentTheme` callback took **672ms** within a685ms content-to-microtask
+interval. Its registration stack maps to `ct` in `src-5132942f.js`, line2,
+column21154, which is that hook. Log
+`/tmp/p007-native-react-effects-20260924.log`, receipt
+`perfrun-1790278862635-q7hxdv` (2313ms total). The hook resolves computed root
+styles in its initial state initializer, then calls `sync()` again from its
+mount effect, forcing a second style read after the plan DOM is committed.
+A separate Presence effect took143ms. A prior DOM-method probe found no
+individual wrapped operation over10ms; it did not cover computed-style access.
+
+The source fix preserves theme resolution and live-change listeners. It saves
+the cheap theme attribute, inline-style and media inputs at the initial read,
+then skips the second read only when those inputs remain unchanged after
+subscriptions attach. The same duplicate-read pattern in MarkdownEditor is
+fixed. A new project regression failed before the fix (two root computed-style
+reads versus one expected) and passed after it. Another test changes the theme
+between render and the subscription effect and still observes the new theme.
+Shared reader16 tests, PlanEditor5 tests and MarkdownEditor17 tests pass, zero
+skipped; shared-library typecheck passes. Logs:
+`/tmp/p007-theme-control-tests-20260924.log`,
+`/tmp/p007-theme-final-tests-20260924.log`, and
+`/tmp/p007-markdown-theme-tests-20260924.log`.
+Native impact of this source fix is still pending its private Vite build.
+
 The staging sync incident is separately fixed under `EI-24170757950252845`:
 launcher stderr no longer contaminates its JSON receipt, and scheduled but
 unobserved restarts enter the existing bounded wait, requiring a new PID and
