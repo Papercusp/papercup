@@ -71,6 +71,10 @@ const H = vi.hoisted(() => {
     emit(type: string): void {
       this.listeners.get(type)?.();
     }
+
+    // The viewer subclasses noVNC to override this (kasmvnc-rfb.ts) and refuses a
+    // class without it; the real override is tested against real noVNC there.
+    _sendMouse(): void {}
   }
 
   return {

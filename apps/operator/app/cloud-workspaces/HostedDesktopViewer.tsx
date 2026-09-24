@@ -17,6 +17,7 @@ import {
   type HostedDesktopViewerMode,
 } from "./hosted-desktop-viewer-protocol";
 import { readHostedWorkspaceTicket } from "./hosted-workspace-session-protocol";
+import { kasmvncRfbClass } from "./kasmvnc-rfb";
 import styles from "./hosted-workspace-session.module.css";
 
 export type HostedDesktopViewerState =
@@ -186,7 +187,10 @@ export function HostedDesktopViewer({
         setError(reason || null);
         updateState(readyRejectedRef.current ? "error" : "closed");
       };
-      const { default: RFB } = await import("@novnc/novnc");
+      const { default: NoVncRfb } = await import("@novnc/novnc");
+      // The desktop is KasmVNC, whose PointerEvent is not the standard one: stock noVNC's
+      // first mouse move desyncs the stream and KasmVNC drops Take control (kasmvnc-rfb.ts).
+      const RFB = kasmvncRfbClass(NoVncRfb);
       if (epoch !== epochRef.current || !stageRef.current) {
         channel.close(1000, "superseded");
         return;
