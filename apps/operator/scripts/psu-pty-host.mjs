@@ -5917,8 +5917,9 @@ export function fireSessionCompactedEvent(ownerId, focus, opts = {}) {
  *  delayed by the settle). An empty carry ⇒ a bare clear (no opening turn). Pure —
  *  exported for tests.
  *  @param {EnvironmentMap} [env]
+ *  @param {{ bracketedPaste?: boolean }} [opts]
  */
-export function resetWritesForAgent(decoded, agent, env = process.env) {
+export function resetWritesForAgent(decoded, agent, env = process.env, opts = {}) {
   const clearCmd = contextClearCommandForAgent(agent);
   const steps = [
     { data: clearCmd, delayMs: 0 },
@@ -5927,7 +5928,7 @@ export function resetWritesForAgent(decoded, agent, env = process.env) {
   if (!decoded.data) return steps; // bare clear — no carry turn to open on
   // The carry turn reuses the normal per-agent turn plan; its FIRST write waits
   // for the clear to settle so the text lands on the fresh prompt, not mid-clear.
-  const turnPlan = controlWritesForAgent({ mode: 'turn', data: decoded.data }, agent, env);
+  const turnPlan = controlWritesForAgent({ mode: 'turn', data: decoded.data }, agent, env, opts);
   turnPlan[0] = { ...turnPlan[0], delayMs: clearSettleMs(env) };
   steps.push(...turnPlan);
   return steps;
@@ -6405,6 +6406,10 @@ export function hostThroughPty(o) {
   let childStartupReady = false;
   let childPromptReady = false;
   let childStartupFirstOutputAt = 0;
+  // EI-24141825238362808: the child's own bracketed-paste mode, tracked over ALL
+  // output (not only startup) so turn text is framed only while the TUI has it on.
+  let childBracketedPaste = false;
+  let childBracketedPasteTail = '';
   // WI-10002745: when the backend TUI itself started (Codex: its first
   // capability probe), as distinct from the psu launcher's banner above, and
   // when it painted its first frame after that probe. Only the frame proves
@@ -7072,7 +7077,9 @@ export function hostThroughPty(o) {
                 : startupFallbackReady
                   ? 'startup-fallback'
                   : 'last-resort';
-          const steps = controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env);
+          const steps = controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env, {
+            bracketedPaste: childBracketedPaste,
+          });
           let markerEchoFailureReason = null;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
             const step = steps[stepIndex];
@@ -8550,7 +8557,9 @@ export function hostThroughPty(o) {
         // and the human has to press Enter.
         let machineTurnSubmitted = false;
         try {
-          for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env)) {
+          for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env, {
+            bracketedPaste: childBracketedPaste,
+          })) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
             sink.write(step.data);
@@ -8807,6 +8816,8 @@ export function hostThroughPty(o) {
         }
       }
       if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
+      childBracketedPaste = bracketedPasteModeAfter(childBracketedPaste, childBracketedPasteTail, raw);
+      childBracketedPasteTail = `${childBracketedPasteTail}${raw}`.slice(-BRACKETED_PASTE_TAIL_CHARS);
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
       if (
@@ -9639,6 +9650,8 @@ export function hostThroughPty(o) {
         childStartupReady = false;
         childPromptReady = false;
         childStartupFirstOutputAt = 0;
+        childBracketedPaste = false;
+        childBracketedPasteTail = '';
         childBackendTuiStartedAt = 0;
         childBackendFirstFrameAt = 0;
         // WI-1386682 (1): a fresh child has no screen history and cannot

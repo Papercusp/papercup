@@ -123,43 +123,21 @@ type VolatileSeed = {
  * a test can place each incumbent at a chosen point on the ranking.
  */
 async function seedVolatile(scope: 'owner' | 'harness', scopeRef: string, seeds: VolatileSeed[]): Promise<void> {
-  if (seeds.length === 0) return;
-  const seedRows = seeds.map((seed, index) => {
+  for (const seed of seeds) {
     const ageSec = seed.ageSec ?? 0;
     const ttlSec = seed.ttlSec ?? FACT_VOLATILE_MAX_TTL_SEC;
-    return {
-      key: seed.key,
-      body: seed.body ?? 'a snapshot',
-      created_by: seed.createdBy ?? 'su-int',
-      age_sec: ageSec,
-      remaining_ttl_sec: ttlSec - ageSec,
-      confidence: seed.confidence ?? 'verified',
-      kind: seed.kind ?? null,
-      measurement: volatileMeasurement(ageSec),
-      source_hive: seed.sourceHive ?? null,
-      seed_order: index + 1,
-    };
-  });
-  const seedRowsJson = JSON.stringify(seedRows);
-  // One set-based insert keeps a 500-row saturated fixture inside its 15s
-  // timeout. Preserve the prior insertion tie-break order with a 1µs step.
-  await db.sql`
-    INSERT INTO harness_shared.agent_facts
-      (workspace_id, scope, scope_ref, key, body, created_by, created_at, updated_at,
-       expires_at, confidence, kind, measurement, source_hive)
-    SELECT ${WS}, ${scope}, ${scopeRef}, seed.key, seed.body, seed.created_by,
-           statement_timestamp() - seed.age_sec * interval '1 second'
-             + seed.seed_order * interval '1 microsecond',
-           statement_timestamp() - seed.age_sec * interval '1 second'
-             + seed.seed_order * interval '1 microsecond',
-           statement_timestamp() + seed.remaining_ttl_sec * interval '1 second'
-             + seed.seed_order * interval '1 microsecond',
-           seed.confidence, seed.kind, seed.measurement::jsonb, seed.source_hive
-    FROM jsonb_to_recordset(${seedRowsJson}::text::jsonb) AS seed(
-      key text, body text, created_by text, age_sec int, remaining_ttl_sec int,
-      confidence text, kind text, measurement text, source_hive text, seed_order int
-    )
-    ORDER BY seed.seed_order`;
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, created_at, updated_at,
+         expires_at, confidence, kind, measurement, source_hive)
+      VALUES (${WS}, ${scope}, ${scopeRef}, ${seed.key}, ${seed.body ?? 'a snapshot'},
+              ${seed.createdBy ?? 'su-int'},
+              now() - ${ageSec}::int * interval '1 second',
+              now() - ${ageSec}::int * interval '1 second',
+              now() + ${ttlSec - ageSec}::int * interval '1 second',
+              ${seed.confidence ?? 'verified'}, ${seed.kind ?? null},
+              ${volatileMeasurement(ageSec)}::text::jsonb, ${seed.sourceHive ?? null})`;
+  }
 }
 
 /** `n` interchangeable volatile incumbents — the saturating cohort. */

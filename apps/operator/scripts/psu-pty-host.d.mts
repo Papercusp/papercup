@@ -2289,8 +2289,11 @@ export function fireSessionCompactedEvent(ownerId: any, focus: any, opts?: {}): 
  *  delayed by the settle). An empty carry ⇒ a bare clear (no opening turn). Pure —
  *  exported for tests.
  *  @param {EnvironmentMap} [env]
+ *  @param {{ bracketedPaste?: boolean }} [opts]
  */
-export function resetWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap): {
+export function resetWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap, opts?: {
+    bracketedPaste?: boolean;
+}): {
     data: string;
     delayMs: any;
 }[];
