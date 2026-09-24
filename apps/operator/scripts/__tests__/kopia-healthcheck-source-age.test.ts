@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-const SOURCE_SCRIPT = resolve(__dirname, '..', 'systemd', 'kopia-healthcheck.sh');
-const CACHE_BOOTSTRAP = resolve(__dirname, '..', 'systemd', 'kopia-cache-bootstrap.sh');
+const SOURCE_SCRIPT = resolve(__dirname, '../systemd/kopia-healthcheck.sh');
+const CACHE_BOOTSTRAP = resolve(__dirname, '../systemd/kopia-cache-bootstrap.sh');
 const tempDirs: string[] = [];
 
 function shellQuote(value: string): string {
