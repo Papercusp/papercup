@@ -146,6 +146,53 @@ describe('isSidecarInfrastructureFault (WI-10002709)', () => {
 });
 
 describe('spawner-sidecar process progress guard', () => {
+  it('drains already-written progress before judging an idle deadline after a parent-loop stall', async () => {
+    const script = [
+      "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
+      "send('ready'); let n = 0; const timer = setInterval(() => { send('progress'); if (++n === 10) clearInterval(timer); }, 40);",
+    ].join(' ');
+    let queuedBlock = false;
+    let blockedFrom = 0;
+    let blockedUntil = 0;
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', script],
+      idleTimeoutMs: 150,
+      timeoutMs: 3000,
+    }, {
+      ...executionDeps,
+      onOutputActivity: () => {
+        if (queuedBlock) return;
+        queuedBlock = true;
+        // The child has reported readiness. Occupy the CHECK phase while it
+        // keeps writing, so the expired timer races the next POLL phase.
+        setImmediate(() => {
+          blockedFrom = Date.now();
+          while (Date.now() - blockedFrom < 450) { /* deliberate parent-loop stall */ }
+          blockedUntil = Date.now();
+        });
+      },
+    });
+    const writes = res.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+    // Distinguish absent child progress from progress waiting in the OS pipe.
+    expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
+    expect(res.code, res.stderr).toBe(0);
+    expect(res.stderr).not.toContain('no output progress');
+  });
+
+  it('retains the absolute deadline when output never stops', async () => {
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', "process.stderr.write('ready\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);"],
+      idleTimeoutMs: 500,
+      timeoutMs: 800,
+    }, executionDeps);
+    expect(res.stderr).toContain('progress');
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toContain('timed out after 800ms');
+    expect(res.stderr).not.toContain('no output progress');
+  });
+
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
     const script =
       "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === 8) clearInterval(t); }, 100);";
