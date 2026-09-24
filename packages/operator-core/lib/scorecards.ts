@@ -1955,6 +1955,8 @@ export interface ListScorecardsFilter {
    * scorecards can only be listed in bulk and told apart by reading prose.
    */
   subjectRef?: string;
+  /** Select exact scorecard issue IDs before applying the newest-first limit. */
+  issueIds?: readonly string[];
   /** Only scorecards filed at/after this ISO timestamp (the time-window). */
   since?: string;
   /**
@@ -2100,6 +2102,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
        AND ${filter.rubricRef ? tx`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : tx`TRUE`}
        AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
+       AND ${filter.issueIds ? tx`scorecard.issue_id = ANY(${[...filter.issueIds]}::text[])` : tx`TRUE`}
        AND ${filter.since ? tx`scorecard.created_at >= ${filter.since}` : tx`TRUE`}
        AND ${
          before

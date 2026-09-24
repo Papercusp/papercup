@@ -1167,6 +1167,64 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     return matchingCard({ rerunRecipe: recipe, gradingAudit: PASSED_AUDIT, ...over });
   }
 
+  function proofCohort(rows: ListedEvidence[]) {
+    return rows.map((row) => ({
+      planSlug: row.planSlug, specId: row.specId, specRevision: row.specRevision,
+      specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef, sourceFingerprint: row.fingerprints.sourceFingerprint,
+      testFingerprint: row.fingerprints.testFingerprint,
+      fixtureFingerprint: row.fingerprints.fixtureFingerprint,
+      rubricFingerprint: row.fingerprints.rubricFingerprint,
+      environmentFingerprint: row.fingerprints.environmentFingerprint,
+    })).sort((a, b) => `${a.evidenceKind}:${a.evidenceRef}`.localeCompare(`${b.evidenceKind}:${b.evidenceRef}`));
+  }
+
+  it('refuses an audited card for an older proof cohort even when every verdict stayed pass', async () => {
+    const original = passingEvidence();
+    const moved = original.map((row) => row.evidenceKind === 'test'
+      ? { ...row, fingerprints: { ...row.fingerprints, sourceFingerprint: 'git:new-source' } }
+      : row);
+    const prior = stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
+    const previousRecipe = {
+      ...prior.rerunRecipe!, current: { supplied: true, fingerprints: proofCohort(original) },
+    };
+    const pendingRecipe = {
+      ...prior.rerunRecipe!, current: { supplied: true, fingerprints: proofCohort(moved) },
+    };
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue(moved);
+    deps.listCards.mockResolvedValue([
+      { ...prior, rerunRecipe: previousRecipe },
+      stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION, {
+        issueId: 'EI-refreshed', rerunRecipe: pendingRecipe,
+        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-20T00:03:00.000Z' },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toMatchObject({
+      ok: false, applicable: true, pendingGradingAuditTargetIds: ['EI-refreshed'],
+    });
+  });
+
+  it('accepts richer criterion explanations for the same independently audited proof cohort', async () => {
+    const original = passingEvidence();
+    const prior = stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
+    const ratings = Object.fromEntries(Object.entries(prior.ratings).map(([key, rating]) => [
+      key, { ...rating, evidence: `${rating.evidence} Verified with a fuller probe.` },
+    ])) as ScorecardRow['ratings'];
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([{
+      ...prior, ratings,
+      rerunRecipe: { ...prior.rerunRecipe!, current: { supplied: true, fingerprints: proofCohort(original) } },
+    }]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+  });
+
   it('the evaluator stamps its rule revision on every card recipe, and it is past the pre-stamp revision', () => {
     expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBeGreaterThan(1);
   });

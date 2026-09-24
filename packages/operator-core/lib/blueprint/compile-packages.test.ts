@@ -68,9 +68,11 @@ describe('P-006 operator package adapter', () => {
         knowledgeSelection: { shapes: [], domains: ['research'] } } });
     expect(artifact.inputs.find((entry) => entry.kind === 'package' && entry.packageKind === 'rubric')).toHaveProperty('value.criteria');
     const recipe = vi.fn(async () => {});
+    const rubric = vi.fn(async () => {});
     const knowledge = vi.fn(async () => {});
-    await provisionBlueprintPackages(artifact, { recipe, knowledge });
+    await provisionBlueprintPackages(artifact, { recipe, rubric, knowledge });
     expect(recipe).toHaveBeenCalledWith(expect.objectContaining({ ref: 'job' }), expect.objectContaining({ workspaceId: 'workspace-a', harnessSlug: 'harness-a' }));
+    expect(rubric).toHaveBeenCalledWith(expect.objectContaining({ ref: 'judge' }), expect.objectContaining({ workspaceId: 'workspace-a', harnessSlug: 'harness-a' }));
     expect(knowledge).toHaveBeenCalledWith(expect.objectContaining({ ref: 'facts' }), {
       workspaceId: 'workspace-a', harnessSlug: 'harness-a', memoryTarget: { kind: 'hive', slug: 'parent-pot' },
       knowledgeSelection: { shapes: [], domains: ['research'] },
@@ -78,9 +80,10 @@ describe('P-006 operator package adapter', () => {
 
     const corrupt = JSON.parse(JSON.stringify(artifact));
     corrupt.inputs.find((entry: { kind: string; ref: string }) => entry.kind === 'package' && entry.ref === 'job').value.script = 'corrupt';
-    recipe.mockClear(); knowledge.mockClear();
-    await expect(provisionBlueprintPackages(corrupt, { recipe, knowledge })).rejects.toThrow(/package-hash-mismatch/);
+    recipe.mockClear(); rubric.mockClear(); knowledge.mockClear();
+    await expect(provisionBlueprintPackages(corrupt, { recipe, rubric, knowledge })).rejects.toThrow(/package-hash-mismatch/);
     expect(recipe).not.toHaveBeenCalled();
+    expect(rubric).not.toHaveBeenCalled();
     expect(knowledge).not.toHaveBeenCalled();
   });
 
@@ -149,7 +152,7 @@ describe('P-006 operator package adapter', () => {
     const root = artifact.inputs.find((entry) => entry.kind === 'package' && entry.ref === 'seed-fixture');
     expect(root).toHaveProperty('dependencies', [expect.objectContaining({ packageKind: 'knowledge-pack', ref: 'facts' })]);
     const knowledge = vi.fn(async () => {});
-    await provisionBlueprintPackages(artifact, { recipe: vi.fn(), knowledge });
+    await provisionBlueprintPackages(artifact, { recipe: vi.fn(), rubric: vi.fn(), knowledge });
     expect(knowledge).toHaveBeenCalledWith(expect.objectContaining({ ref: 'facts' }), expect.objectContaining({
       memoryTarget: { kind: 'harness', slug: 'h' }, knowledgeSelection: { shapes: ['ui'], domains: ['research'] },
     }));

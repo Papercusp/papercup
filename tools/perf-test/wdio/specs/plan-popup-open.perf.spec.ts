@@ -94,6 +94,19 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     });
     await spaNavigate(plansUrl);
 
+    // Compact desktop profiles can present the chat as a collapsed rail.
+    // Establish the visible interaction surface before starting any timing.
+    await browser.waitUntil(async () => await browser.execute(() => {
+      const sidebar = document.querySelector<HTMLElement>('.op-chat-sidebar');
+      if (!sidebar) return false;
+      if (sidebar.dataset.collapsed === 'true') {
+        sidebar.querySelector<HTMLButtonElement>('[aria-label="Expand Papercup chat"]')?.click();
+        return false;
+      }
+      return true;
+    }), { timeout: 20_000, timeoutMsg: 'Papercup chat sidebar not available' })
+      .catch(() => undefined); // The diagnostic below records absent vs collapsed.
+
     // 3. Wait for at least one plan row in the sidebar Plans face.
     const rowsReady = await browser.waitUntil(
       async () =>
@@ -108,6 +121,21 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     ).then(() => true, () => false);
 
     if (!rowsReady) {
+      const transport = await browser.execute(() => {
+        const metrics = (window as unknown as {
+          __sync_metrics__?: {
+            snapshot(): { scheduler?: unknown; byQuery?: Record<string, unknown> };
+            queries(): Array<{ name: string }>;
+          };
+        }).__sync_metrics__;
+        const snapshot = metrics?.snapshot();
+        return {
+          scheduler: snapshot?.scheduler ?? null,
+          plans: snapshot?.byQuery?.['plans.list'] ?? null,
+          recentPlans: metrics?.queries().filter((query) => query.name === 'plans.list').slice(-5) ?? [],
+        };
+      });
+      console.log(`[perf] plan-list transport=${JSON.stringify(transport)}`);
       const snapshot = await browser.execute(() => ({
         href: location.href,
         planRowCount: document.querySelectorAll(
@@ -117,10 +145,15 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
           '[aria-selected="true"], [aria-pressed="true"]',
         )?.getAttribute("aria-label") ?? null,
         sidebarText: (
-          document.querySelector<HTMLElement>(".pc-opchat")?.textContent ??
-          document.body.textContent ??
+          document.querySelector<HTMLElement>(".op-chat-sidebar")?.innerText ??
+          document.body.innerText ??
           ""
-        ).trim().slice(0, 320),
+        ).trim().slice(0, 1200),
+        shellPresent: Boolean(document.querySelector('[data-testid="operator-shell"], .pc-advshell')),
+        sidebarPresent: Boolean(document.querySelector('.op-chat-sidebar')),
+        sidebarCollapsed: document.querySelector<HTMLElement>('.op-chat-sidebar')?.dataset.collapsed ?? null,
+        alerts: Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]'))
+          .map((el) => el.innerText.trim().slice(0, 320)).slice(0, 3),
       }));
       throw new Error(
         "no plan rows in the sidebar Plans face within 20s after router PUSH; " +

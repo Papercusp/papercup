@@ -180,6 +180,112 @@ describe('WI-4020: MergeCursor.winners bounding', () => {
     expect(cursor.winners.size).toBeGreaterThan(10);
   });
 
+  /** Puts on `keys` in order, each newer than the last, so every one changes its key's winner. */
+  function putsOn(keys: string[], firstTs: number): PeerLogOp[] {
+    return keys.map((hbKey, i) => ({
+      type: 'put',
+      table: 't',
+      hbKey,
+      value: { i },
+      ts: firstTs + i,
+      schema_version: 1,
+      author_pubkey: '',
+    }));
+  }
+
+  async function foldAll(log: AdmittedLog, cursor: ReturnType<typeof createMergeCursor>, cap: number): Promise<void> {
+    for (let guard = 0; guard < 100; guard++) {
+      const res = await mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: guardedApply().apply,
+        getTimeoutMs: 0,
+        maxOpsPerPass: 97,
+        maxWinnersEntries: cap,
+      });
+      if (res.caughtUp) return;
+    }
+    throw new Error('fold did not catch up');
+  }
+
+  it('evicts exactly the least-recently-changed key, also after the map is cleared (P-007 run #7 reused iterator)', async () => {
+    const cap = 20;
+    const rnd = mulberry32(17);
+    const draw = (n: number): string[] => Array.from({ length: n }, () => `k${Math.floor(rnd() * 60)}`);
+    const first = draw(700);
+    const second = draw(700);
+
+    // Reference LRU over the same stream: a changed key moves to the end, the front is evicted.
+    const model = new Map<string, true>();
+    const touch = (hbKey: string): void => {
+      const k = `t::${hbKey}`;
+      model.delete(k);
+      model.set(k, true);
+      while (model.size > cap) model.delete(model.keys().next().value!);
+    };
+
+    const live: PeerLogOp[] = [];
+    const log = memLog('9'.repeat(64), live);
+    const cursor = createMergeCursor();
+
+    live.push(...putsOn(first, 1_000));
+    first.forEach(touch);
+    await foldAll(log, cursor, cap);
+    expect([...cursor.winners.keys()]).toEqual([...model.keys()]);
+
+    // A rewind clears the map in place (rewindMergeCursor); the reused iterator must still find the front.
+    cursor.winners.clear();
+    model.clear();
+    live.push(...putsOn(second, 10_000));
+    second.forEach(touch);
+    await foldAll(log, cursor, cap);
+    expect([...cursor.winners.keys()]).toEqual([...model.keys()]);
+  });
+
+  it('does not start a fresh keys() iterator for every eviction (each one walks the deleted front of the table)', async () => {
+    const cap = 50;
+    const keys = Array.from({ length: 2_000 }, (_, i) => `k${i % 500}`);
+    const log = memLog('8'.repeat(64), putsOn(keys, 1_000));
+    const cursor = createMergeCursor();
+    let keysCalls = 0;
+    const winners = cursor.winners;
+    const realKeys = winners.keys.bind(winners);
+    winners.keys = () => {
+      keysCalls++;
+      return realKeys();
+    };
+    let evictions = 0;
+    for (let guard = 0; guard < 100; guard++) {
+      const res = await mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: guardedApply().apply,
+        getTimeoutMs: 0,
+        maxWinnersEntries: cap,
+        onWinnersEvicted: (n) => {
+          evictions += n;
+        },
+      });
+      if (res.caughtUp) break;
+    }
+
+    expect(evictions).toBe(2_000 - cap);
+    expect(cursor.winners.size).toBe(cap);
+    // One iterator serves every eviction; a new one starts only when it has run off the end.
+    expect(keysCalls).toBeLessThanOrEqual(2);
+  });
+
+  it('control: the keys() count does catch an evictor that starts a fresh iterator per eviction', () => {
+    const map = new Map<string, true>();
+    let keysCalls = 0;
+    const realKeys = map.keys.bind(map);
+    map.keys = () => {
+      keysCalls++;
+      return realKeys();
+    };
+    for (let i = 0; i < 200; i++) {
+      map.set(`k${i}`, true);
+      while (map.size > 50) map.delete(map.keys().next().value!); // recordWinner before P-007 run #7
+    }
+    expect(keysCalls).toBe(150);
+  });
+
   it('defaults to DEFAULT_MAX_WINNERS_ENTRIES when maxWinnersEntries is omitted (no behavior change for existing callers at normal scale)', async () => {
     const author = 'f'.repeat(64);
     const ops = corpusOps(401, 500, author, 1_700_000_000_000);

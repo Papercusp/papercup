@@ -18,6 +18,7 @@ import {
 import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
 import {
   adequacyCardRevisionDisposition,
+  activeSpecEvidence,
   evaluateSpecTestAdequacy,
   isNonCodeWorkItemKind,
   requiredProofFloor,
@@ -25,6 +26,7 @@ import {
   specTestAdequacySubjectRef,
   type PlanClassRubricRef,
   type SpecTestAdequacyResult,
+  type SpecEvidenceForAdequacy,
 } from '../plans/spec-test-adequacy';
 
 export interface SpecAdequacyCompletionAttestation {
@@ -258,7 +260,53 @@ function ratingVerdictsMatch(card: ScorecardRow, result: SpecTestAdequacyResult)
   });
 }
 
-function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): boolean {
+/** Keep independent prose review separate from the identity of the proof it
+ * reviewed. Enriching a criterion explanation may change the card fingerprint,
+ * but a new binding or a changed source/test hash needs a new audit. */
+function scorecardProofCohortMatches(
+  card: ScorecardRow,
+  result: SpecTestAdequacyResult,
+  evidence: SpecEvidenceForAdequacy[],
+): boolean {
+  const recorded = card.rerunRecipe?.current;
+  if (!recorded?.supplied) return true; // pre-fingerprint legacy cards keep their existing admission rule
+  const proofKey = (row: { evidenceKind: string; evidenceRef: string }) =>
+    `${row.evidenceKind}\0${row.evidenceRef}`;
+  const selected = result.scorecardDraft.rerunRecipe.selection.evidence;
+  const selectedKeys = new Set(selected.map(proofKey));
+  const recordedKeys = card.rerunRecipe?.selection.evidence.map(proofKey) ?? [];
+  if (JSON.stringify([...selectedKeys].sort()) !== JSON.stringify([...recordedKeys].sort())) return false;
+  const tuple = (row: {
+    planSlug?: string; specId?: string; specRevision?: number; specFingerprint?: string;
+    evidenceKind: string; evidenceRef: string; sourceFingerprint: string;
+    testFingerprint?: string | null; fixtureFingerprint?: string | null;
+    rubricFingerprint?: string | null; environmentFingerprint?: string | null;
+  }) => [
+    row.planSlug ?? null, row.specId ?? null, row.specRevision ?? null, row.specFingerprint ?? null,
+    row.evidenceKind, row.evidenceRef, row.sourceFingerprint,
+    row.testFingerprint ?? null, row.fixtureFingerprint ?? null,
+    row.rubricFingerprint ?? null, row.environmentFingerprint ?? null,
+  ];
+  const live = activeSpecEvidence(evidence.filter((row) =>
+    row.planSlug === result.planSlug && row.specId === result.specId &&
+    row.specRevision === result.specRevision && row.specFingerprint === result.specFingerprint,
+  )).filter((row) => selectedKeys.has(proofKey(row))).map((row) => tuple({
+    planSlug: row.planSlug, specId: row.specId, specRevision: row.specRevision,
+    specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind,
+    evidenceRef: row.evidenceRef, ...row.fingerprints,
+  }));
+  const prior = recorded.fingerprints.map(tuple);
+  const sortTuples = (rows: (string | number | null)[][]) => rows.sort((a, b) =>
+    JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return live.length === selectedKeys.size &&
+    JSON.stringify(sortTuples(live)) === JSON.stringify(sortTuples(prior));
+}
+
+function scorecardMatches(
+  card: ScorecardRow,
+  result: SpecTestAdequacyResult,
+  evidence: SpecEvidenceForAdequacy[],
+): boolean {
   const expectedSubjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);
   return (
     card.subject?.kind === 'plan' &&
@@ -273,9 +321,10 @@ function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): b
     // entire scorecard fingerprint here coupled those two responsibilities: enriching a
     // terse evaluator explanation with the probe demanded by grading-integrity changed
     // the fingerprint and made the two gates impossible to satisfy simultaneously.
-    // Match the exact criterion set + verdicts instead. Fresh/current evidence is still
-    // recomputed above, and the independently settled audit remains mandatory below.
+    // Match criterion verdicts and the proof cohort independently. Currentness
+    // above proves the new binding; it does not prove an older card audited it.
     ratingVerdictsMatch(card, result) &&
+    scorecardProofCohortMatches(card, result, evidence) &&
     Object.values(card.ratings).every(acceptedRating)
   );
 }
@@ -628,7 +677,7 @@ export async function specTestAdequacyCompletionGate(
       subjectRef,
       limit: 20,
     });
-    if (!cards.some((card) => scorecardMatches(card, result))) {
+    if (!cards.some((card) => scorecardMatches(card, result, evidence))) {
       const failedAuditsForLabel: FailedGradingAudit[] = [];
       for (const card of cards) {
         const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
@@ -671,15 +720,20 @@ export async function specTestAdequacyCompletionGate(
                 )
                 .join(', ')}`
           : (() => {
+              const movedCohort = cards.some((card) =>
+                card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
+                !scorecardProofCohortMatches(card, result, evidence));
               const detail = verdictChangeDetail(cards, result);
-              return `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
+              return movedCohort
+                ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
+                : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
             })(),
       );
       continue;
     }
     // Only an evaluator-minted card (it carries a rerun recipe) has a grading revision to
     // report; a recipe without the stamp predates it and reads as revision 1.
-    const admitting = cards.find((card) => scorecardMatches(card, result))!;
+    const admitting = cards.find((card) => scorecardMatches(card, result, evidence))!;
     const disposition = admitting.rerunRecipe
       ? adequacyCardRevisionDisposition({
           recordedRevision: admitting.rerunRecipe.evaluatorRevision,

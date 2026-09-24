@@ -441,6 +441,54 @@ describe('sync-staging-checkout.sh staging_live_client_count() — live-session 
 });
 
 describe('sync-staging-checkout.sh coordinated restart result', () => {
+  const pending = (result: unknown) => runFn(
+    ['restart_result_is_pending'],
+    'restart_result_is_pending',
+    { input: JSON.stringify(result) },
+  ).status === 0;
+
+  it('waits for a scheduled unobserved staging restart without calling it accepted', () => {
+    const result = {
+      ok: false, target: 'staging', restarted: false,
+      restartScheduled: true, restartObserved: false,
+      stagingReadiness: { ready: false, outcome: 'not-observed', activeState: 'deactivating' },
+    };
+    expect(pending(result)).toBe(true);
+    expect(accepted(result)).toBe(false);
+    expect(pending({ ...result, restartScheduled: false })).toBe(false);
+    expect(pending({ ...result, target: 'gateway' })).toBe(false);
+    expect(pending({ ...result, stagingReadiness: { outcome: 'failed', activeState: 'failed' } })).toBe(false);
+    expect(pending({ ok: false, reason: 'restart_withheld' })).toBe(false);
+  });
+
+  it('keeps launcher stderr out of the JSON receipt on the actual request path', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('(\n  cd "$INTEGRATION_ROOT"', script.indexOf('restart_result_file='));
+    const end = script.indexOf('\nrestart_tool_pid=$!', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const dir = mkdtempSync(join(tmpdir(), 'staging-restart-receipt-'));
+    try {
+      const cli = join(dir, 'ptool');
+      writeFileSync(cli, '#!/bin/sh\necho "ptool launcher" >&2\necho \'{"ok":true,"restarted":true}\'\n', { mode: 0o700 });
+      const r = spawnSync('bash', ['-c', [
+        'set -eu',
+        'restart_result_file="$INTEGRATION_ROOT/result"',
+        'restart_diagnostics_file="$INTEGRATION_ROOT/diagnostics"',
+        script.slice(start, end),
+        'wait $!',
+        'cat "$restart_result_file"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, INTEGRATION_ROOT: dir, PTOOL_CLIENT_SID: 'test-client', PTOOL_BIN: cli,
+          STAGING_PORT: '3170', GIT_SYNC_DRAIN_SEC: '45', current: '12345678', target: 'abcdef12' },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(JSON.parse(r.stdout)).toEqual({ ok: true, restarted: true });
+      expect(readFileSync(join(dir, 'diagnostics'), 'utf8')).toContain('ptool launcher');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   const accepted = (result: unknown) => runFn(
     ['restart_result_is_accepted'],
     'restart_result_is_accepted',

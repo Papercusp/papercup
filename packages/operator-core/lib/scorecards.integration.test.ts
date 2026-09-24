@@ -501,6 +501,12 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T11:00:00.000Z']);
   });
 
+  it('selects an older scorecard by exact issue ID before applying the limit', async () => {
+    const rows = await listScorecards({ issueIds: [reset.oldSuperseded], limit: 1 });
+    expect(rows.map((row) => row.issueId)).toEqual([reset.oldSuperseded]);
+    expect(await listScorecards({ issueIds: [], limit: 1 })).toEqual([]);
+  });
+
   it('fills valid page slots past malformed raw rows and reports authoritative hasMore', async () => {
     const first = await listScorecardPage({ rubricRef: RUBRIC, sourceHive: 'papercusp', limit: 1 });
     expect(first.rows).toHaveLength(1);

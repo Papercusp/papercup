@@ -321,6 +321,26 @@ restart_result_is_pre_dispatch_refusal() {
   printf '%s' "${1:-}" | grep -Eiq 'authorization_denied|no-launch-record|restart_withheld'
 }
 
+# A scheduled restart can still be stopping the old process when dev:restart's
+# observation window ends. This permits ONLY the bounded verification below,
+# never a success verdict or another restart request.
+restart_result_is_pending() {
+  node -e '
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const result = JSON.parse(body);
+        process.exit(result?.target === "staging" &&
+          result?.restartScheduled === true && result?.restartObserved === false &&
+          result?.stagingReadiness?.outcome === "not-observed" &&
+          result?.stagingReadiness?.activeState !== "failed" ? 0 : 1);
+      } catch { process.exit(1); }
+    });
+  '
+}
+
 # True when a dev:restart refusal is a TRANSIENT git-sync coordination refusal
 # (EI-22102474093310851). dev:restart derives these reasons with a stable prefix —
 # `git_sync_collision_${kind}` and `git_sync_barrier_${reason}` (agent-tools/dev/
@@ -539,10 +559,12 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
 # The ptool result may be lost when this request restarts its own :3170 server.
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result_file="$(mktemp)"
+restart_diagnostics_file="$(mktemp)"
 restart_tool_timeout_sec=350
 restart_tool_started_at="$(date +%s)"
 restart_tool_status=0
 restart_verified=0
+restart_pending=0
 # The default ptool endpoint is the older background operator (:9071),
 # whose identity kernel may not yet admit the installer's machine client.
 # The staging operator owns this target and accepts that same static client.
@@ -553,7 +575,7 @@ restart_verified=0
 (
   cd "$INTEGRATION_ROOT"
   exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -
-) >"$restart_result_file" 2>&1 <<JSON &
+) >"$restart_result_file" 2>"$restart_diagnostics_file" <<JSON &
 {"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
 restart_tool_pid=$!
@@ -592,7 +614,8 @@ else
   restart_tool_status=$?
 fi
 restart_result="$(cat "$restart_result_file" 2>/dev/null || true)"
-rm -f "$restart_result_file"
+restart_diagnostics="$(cat "$restart_diagnostics_file" 2>/dev/null || true)"
+rm -f "$restart_result_file" "$restart_diagnostics_file"
 
 # Close the race where ptool exits as the new listener becomes ready.
 if [ "$restart_verified" -ne 1 ]; then
@@ -609,11 +632,14 @@ fi
 # cooldown prevents a redundant outage.
 if [ "$restart_verified" -eq 1 ]; then
   log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"
-elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result"; then
-  log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:500}"
+elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result $restart_diagnostics"; then
+  log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:250} ${restart_diagnostics:0:250}"
   exit 1
 elif [ "$restart_tool_status" -ne 0 ]; then
   log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding"
+elif printf '%s' "$restart_result" | restart_result_is_pending; then
+  restart_pending=1
+  log "coordinated dev:restart is scheduled but not yet observed; waiting for a new MainPID and exact target health"
 elif ! printf '%s' "$restart_result" | restart_result_is_accepted; then
   # EI-22102474093310851: a git-sync coordination refusal that OUTLASTS the drain
   # above is still transient — git-sync runs continuously on this tree, so the very
@@ -647,7 +673,9 @@ readiness_started_at="$(date +%s)"
 readiness_elapsed_sec=0
 while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   last_health_sha="$(staging_health_source_sha || true)"
-  if health_sha_matches_target "$last_health_sha" "$target"; then
+  observed_main_pid="$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)"
+  if health_sha_matches_target "$last_health_sha" "$target" &&
+     { [ "$restart_pending" -eq 0 ] || staging_restart_is_observed "$main_pid" "$observed_main_pid" "$last_health_sha" "$target"; }; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
     exit 0
   fi
