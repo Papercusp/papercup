@@ -529,6 +529,15 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
         const parsed = parseBlueprintSourceDocument(parseBlueprintSource(await readFile(entry.file, 'utf8')));
         if (parsed.kind !== 'identity') return { kind: 'blueprint' as const };
         const doc = parsed.document;
+        const selected = await getIdentitySource(entry.id, { repoDir: opts.repoDir });
+        if (!selected.ok || selected.sourcePath !== entry.file) {
+          const details = 'errors' in selected && Array.isArray(selected.errors)
+            ? selected.errors.map((issue) => `${issue.code}: ${issue.message}`).join('; ') : '';
+          return { kind: 'unreadable' as const, value: {
+            id: entry.id, tier: entry.tier, sourcePath: entry.file,
+            error: details || ('error' in selected ? String(selected.error) : 'identity source changed'),
+          } };
+        }
         return {
           kind: 'identity' as const,
           value: {
@@ -536,6 +545,7 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
             sourceId: doc.id,
             tier: entry.tier,
             version: doc.version,
+            sourceRevision: selected.contentHash,
             description: doc.description,
             // The slot registry is authoritative for cardinality. Identity files
             // may omit the optional restatement, but the UI still has to choose
