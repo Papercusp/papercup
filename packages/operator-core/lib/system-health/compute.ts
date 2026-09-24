@@ -2221,6 +2221,10 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         perf = evaluatePerfSignals(sig, ctx.now, undefined, deployInProgress);
       }
     } catch { /* perf-signals unreadable — leave null */ }
+    // This reader runs even when the sampling routine has stopped. Reuse Infra's
+    // existing status/metrics surface instead of relying on a producer-side log.
+    const { readPerfRegressionProducerHealth } = await import('./perf-regression-rig');
+    const performanceHistory = await readPerfRegressionProducerHealth(ctx.ws);
     // MCP tool-call-transport SLO (W8/P-008): read the resilient MCP proxy's failure
     // ledger tail and summarize the windowed hard/soft failure counts. Fail-soft — an
     // unreadable ledger leaves mcpProxy null (greyed leg), an absent ledger is a healthy
@@ -2328,6 +2332,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       gatewayReachable: ctx.gatewayReachable,
       hostPressure,
       perf,
+      performanceHistory,
       mcpProxy,
       pool,
       disk,
@@ -2357,6 +2362,8 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),
+        m('performance history', performanceHistory.note,
+          performanceHistory.status === 'disabled' ? undefined : performanceHistory.status),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),
         m(
           'backup',
