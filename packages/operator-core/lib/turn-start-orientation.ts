@@ -72,7 +72,7 @@ import {
   directiveStatusLabel,
   type DirectiveStatus,
 } from './owner-directive-status';
-import { directiveDisplayText, directiveNeedsSummary, shortOwner } from './owner-directive-display';
+import { alsoSentToNote, directiveDisplayText, directiveNeedsSummary, shortOwner } from './owner-directive-display';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -157,6 +157,13 @@ export interface OrientationOwnerDirective {
    */
   addresseeState?: string | null;
   addresseeIntent?: string | null;
+  /**
+   * How many OTHER sessions hold an open copy of this exact text (D-004(1) of
+   * directive-ownership-clarity-2026-09-23) — rendered as "also sent to N other
+   * sessions" so a text match is never mistaken for ownership. Optional: absent
+   * renders no note.
+   */
+  alsoSentTo?: number;
   /**
    * The derived status of the directive (P-006). Optional so a sink that cannot
    * afford the work-item join still renders a correctly LABELLED line; absent
@@ -2314,6 +2321,9 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // `capturedByHook: false` means an AGENT asserted this, not the owner.
             // Labelled, never silently promoted to owner speech.
             const origin = directive.capturedByHook ? '' : ' [owner-candidate]';
+            // D-004(1): the same pasted text is open for other sessions too — say so,
+            // so the reader closes THIS id and never the look-alikes.
+            const sentTo = alsoSentToNote(directive.alsoSentTo);
 
             if (mine) {
               // OBLIGATION framing — only ever for the session the owner addressed
@@ -2324,7 +2334,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
                   ? ` It is long: write what other agents will see first — orders:summarize { id: ${directive.id}, summary }.`
                   : '';
               lines.push(
-                `- 📌 YOURS · owner directive #${directive.id}${origin}: ${shown} — carry out, then orders:disposition { id: ${directive.id}, status, note }.${summaryAsk}`,
+                `- 📌 YOURS · owner directive #${directive.id}${origin}: ${shown}${sentTo} — carry out, then orders:disposition { id: ${directive.id}, status, note }.${summaryAsk}`,
               );
               continue;
             }
@@ -2345,10 +2355,11 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
                   ' (claimed by ' +
                   shortOwner(claimedBy) +
                   ' — awareness only, already taken; do not act on or resolve it.): ' +
-                  shown,
+                  shown +
+                  sentTo,
               );
             } else {
-              group.parts.push('owner directive #' + directive.id + origin + ': ' + shown);
+              group.parts.push('owner directive #' + directive.id + origin + ': ' + shown + sentTo);
               group.routes.push(directive.id);
             }
             groups.set(by, group);
@@ -3850,6 +3861,7 @@ export function defaultOrientationDeps(): OrientationDeps {
         addressedToMe: row.recordedBy === ownerId,
         addresseeState: row.recordedBy === ownerId ? null : (states.get(row.recordedBy) ?? null),
         addresseeIntent: row.recordedBy === ownerId ? null : (intents.get(row.recordedBy) ?? null),
+        alsoSentTo: row.otherSessionCopies,
         status: deriveDirectiveStatus(row, byDirective.get(row.id) ?? []),
       }));
     },
