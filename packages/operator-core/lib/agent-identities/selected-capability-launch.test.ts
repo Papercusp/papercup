@@ -52,6 +52,10 @@ describe('selected identity capability declaration at launch', () => {
       });
       providerState.version = '1.0.0';
       const launch = await compile();
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('workItem');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('spine');
+      expect(launch.specificationArtifact.configuration).not.toHaveProperty('fleet');
+      expect(launch.specificationArtifact.configuration.roles ?? []).toEqual([]);
       expect(launch.specificationArtifact.configuration.grants?.requires).toContain(CLASS);
       expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model).toBe('selected-mail-model');
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
