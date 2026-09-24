@@ -42,7 +42,7 @@ describe('bounded upstream HTTP write observations', () => {
         responseStatus: 200, matchedRequests: 1, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
       expect(call.events.map(event => event.phase)).toEqual(['created', 'headers-write-start', 'body-write-complete']);
       expect(call.events.map(event => event.requestOrdinal)).toEqual([1, 1, 1]);
-      expect(call.clockId).toMatch(/^gateway-upstream:/);
+      expect(call.clockId).toMatch(/^process-monotonic:/);
       for (let i = 1; i < call.events.length; i++) expect(call.events[i].atMs).toBeGreaterThanOrEqual(call.events[i - 1].atMs);
       expect(JSON.stringify(snapshot)).not.toMatch(/PRIVATE_|127\.0\.0\.1/);
       call.events[0].atMs = -1;

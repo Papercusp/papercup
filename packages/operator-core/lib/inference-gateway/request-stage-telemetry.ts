@@ -6,17 +6,17 @@
  * only enumerated dimensions plus bounded owner/model/account identifiers. Request bodies, prompt text,
  * credentials, headers, URLs, and raw error strings are deliberately absent from the contract.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { channel } from 'node:diagnostics_channel';
-import { performance } from 'node:perf_hooks';
+import { processMonotonicClock } from '../process-monotonic-clock';
 
 export interface GatewayUpstreamWriteObservation {
   /** Local fetch invocation, not a provider request id or charged identity. */
   ordinal: number;
   accountId: string | null;
-  /** Separate monotonic clock domain; never subtract these from Date.now or
-   * a native controller's receipts without an explicit clock binding. */
+  /** Shared with a native controller only when the exact process clock id
+   * matches. Never subtract from Date.now or a different process's clock. */
   clockId: string;
   clock: 'performance.now';
   outcome: 'pending' | 'returned' | 'threw';
@@ -36,14 +36,13 @@ interface UpstreamWriteScope {
   method: string;
   observation: GatewayUpstreamWriteObservation;
 }
-const upstreamWriteClockId = `gateway-upstream:${randomUUID()}`;
 const upstreamWriteScope = new AsyncLocalStorage<UpstreamWriteScope>();
 const upstreamWriteRequests = new WeakMap<object, { scope: UpstreamWriteScope; ordinal: number }>();
 let upstreamWriteObservers = 0;
 const recordWriteEvent = (scope: UpstreamWriteScope, requestOrdinal: number, phase: GatewayUpstreamWriteObservation['events'][number]['phase']) => {
   if (!scope.active) return;
   if (scope.observation.events.length >= 32) { scope.observation.droppedEvents++; return; }
-  scope.observation.events.push({ requestOrdinal, phase, atMs: performance.now() });
+  scope.observation.events.push({ requestOrdinal, phase, atMs: processMonotonicClock.now() });
 };
 const upstreamWriteChannels = [
   ['undici:request:create', 'created'], ['undici:client:sendHeaders', 'headers-write-start'],
@@ -667,7 +666,7 @@ export class GatewayRequestSpan {
     if (this.upstreamWrites.calls.length >= 32) { this.upstreamWrites.droppedCalls++; return upstreamWriteScope.exit(fetch); }
     const observation: GatewayUpstreamWriteObservation = { ordinal: this.upstreamWrites.calls.length + 1,
       accountId: typeof accountId === 'string' && /^[A-Za-z0-9._:@/+\-]{1,120}$/.test(accountId) ? accountId : null,
-      clockId: upstreamWriteClockId, clock: 'performance.now', outcome: 'pending', responseStatus: null,
+      clockId: processMonotonicClock.id, clock: 'performance.now', outcome: 'pending', responseStatus: null,
       matchedRequests: 0, unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0, events: [] };
     const scope: UpstreamWriteScope = { active: true, origin: null, path: null, method: method.toUpperCase(), observation };
     try { const url = new URL(target); scope.origin = url.origin; scope.path = url.pathname + url.search; }
