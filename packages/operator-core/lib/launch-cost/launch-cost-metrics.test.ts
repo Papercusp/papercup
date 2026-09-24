@@ -15,6 +15,7 @@ import {
   inspectCarrySourceRead,
   createCarryTrialRecipe,
   inspectCarryTaskResponse,
+  inspectCarryPreparationResponse,
   type CarryTaskEvaluation,
   extractLaunchUsage,
   extractSampleContext,
@@ -242,6 +243,39 @@ describe('carry native action evidence (unpaid trial preparation)', () => {
     expect(result).not.toHaveProperty('accountingComplete');
   });
 
+  it('binds exact text-only native input across started, completed and persisted witnesses', () => {
+    const input = { ...fixture(), expectedInputText: 'Recover the source.' };
+    Object.assign(input.threadRead.thread.turns[0].items[0].content![0], { text_elements: [] });
+    expect(inspectCarryNativeTurn(input)).toMatchObject({ status: 'verified',
+      inputSha256: createHash('sha256').update(input.expectedInputText).digest('hex') });
+    expect(inspectCarryNativeTurn(fixture())).not.toHaveProperty('inputSha256');
+  });
+
+  it.each(['wrong-text', 'whitespace-drift', 'extra-part', 'image', 'text-element', 'extra-field',
+    'duplicate-input', 'missing-input', 'started-only-drift'])('refuses %s native input despite a correct final answer', fault => {
+    const input = { ...fixture(), expectedInputText: 'Recover the source.' };
+    const items = input.threadRead.thread.turns[0].items, content = items[0].content!;
+    if (fault === 'wrong-text') content[0].text = 'Different seed.';
+    if (fault === 'whitespace-drift') content[0].text += ' ';
+    if (fault === 'extra-part') content.push({ type: 'text', text: 'Extra instructions.' });
+    if (fault === 'image') Object.assign(items[0], { content: [{ type: 'image', url: 'fixture' }] });
+    if (fault === 'text-element') Object.assign(content[0], { text_elements: [{ placeholder: 'hidden attachment' }] });
+    if (fault === 'extra-field') Object.assign(content[0], { extra: 'unbound input' });
+    if (fault === 'duplicate-input') items.push({ ...items[0], id: 'input2' });
+    if (fault === 'missing-input') items.shift();
+    if (fault === 'started-only-drift') input.events[1] = { method: 'item/started', params: { threadId: 'thread', turnId: 'turn',
+      item: { id: 'input', type: 'userMessage', content: [{ type: 'text', text: 'Different submitted seed.' }] } } };
+    const result = inspectCarryNativeTurn(input);
+    expect(result.status).not.toBe('verified');
+    expect(result.finalResponse).toBeNull();
+    expect(result.inputSha256).toBeNull();
+  });
+
+  it.each([{ label: 'empty', value: '' }, { label: 'blank', value: ' ' },
+    { label: 'oversized', value: 'x'.repeat(64 * 1024 + 1) }])('refuses $label expected native input', ({ value: expectedInputText }) => {
+    expect(inspectCarryNativeTurn({ ...fixture(), expectedInputText }).missing).toContain('invalid-expected-input');
+  });
+
   it('honors the native schema full-items default for older rollouts', () => {
     const input = fixture();
     delete (input.threadRead.thread.turns[0] as { itemsView?: string }).itemsView;
@@ -440,6 +474,50 @@ describe('carry frozen source-window receipts (T2)', () => {
 });
 
 describe('frozen carry task recipe (D017 proposals 1143163/1143234)', () => {
+  it('freezes the exact preparation prompt, seed acknowledgement and historical large-cut proposal', () => {
+    const recipe = createCarryTrialRecipe(), preparation = recipe.sourcePreparation;
+    expect(preparation.status).toBe('proposal-only');
+    expect(preparation.prompt).toContain(`Seed JSON:\n${recipe.seedText}\n\nAcknowledgement JSON:`);
+    expect(preparation.prompt).toContain('Do not use tools');
+    expect(preparation.promptSha256).toBe(createHash('sha256').update(preparation.prompt).digest('hex'));
+    expect(preparation.expectedAcknowledgement).toEqual({ seedSha256: recipe.seedSha256, sourceSentinel: 'cedar-48f6e9a2' });
+    expect(preparation.largeInput).toEqual({ kind: 'proposed-existing-native-cut',
+      threadId: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc', turnId: '01a0cf6d-a2ba-7b43-b095-f73f45732d30',
+      prefixEndBytes: 600697, prefixSha256: '7239216af4e2f05d8ef07269bb49dffdfc215732750b8ae134d3911be28f631a' });
+    expect(preparation.requiredWitnesses).toContain('canonical-preparation-charge');
+    preparation.expectedAcknowledgement.sourceSentinel = 'mutated';
+    expect(createCarryTrialRecipe().sourcePreparation.expectedAcknowledgement.sourceSentinel).toBe('cedar-48f6e9a2');
+  });
+
+  it('checks acknowledgement JSON without claiming source qualification', () => {
+    const recipe = createCarryTrialRecipe();
+    const response = JSON.stringify({ sourceSentinel: 'cedar-48f6e9a2', seedSha256: recipe.seedSha256 });
+    const proof = inspectCarryPreparationResponse(response);
+    expect(proof).toMatchObject({ evidenceKind: 'response-only', phase: 'source-preparation', matches: true,
+      missing: [], violations: [], recipeSha256: recipe.sha256 });
+    expect(proof.oracleSha256).toBe(createHash('sha256').update(canonicalJson({
+      recipeSha256: recipe.sha256, phase: 'source-preparation', expected: recipe.sourcePreparation.expectedAcknowledgement,
+    })).digest('hex'));
+    expect(proof).not.toHaveProperty('qualified');
+    expect(proof).not.toHaveProperty('quality');
+  });
+
+  it.each(['missing', 'extra', 'wrong-hash', 'wrong-sentinel', 'non-object', 'invalid-json'])(
+    'rejects %s seed acknowledgement', fault => {
+      const expected: Record<string, unknown> = { ...createCarryTrialRecipe().sourcePreparation.expectedAcknowledgement };
+      if (fault === 'missing') delete expected.seedSha256;
+      if (fault === 'extra') expected.extra = true;
+      if (fault === 'wrong-hash') expected.seedSha256 = '0'.repeat(64);
+      if (fault === 'wrong-sentinel') expected.sourceSentinel = 'UNKNOWN';
+      const response = fault === 'invalid-json' ? '{' : JSON.stringify(fault === 'non-object' ? [expected] : expected);
+      expect(inspectCarryPreparationResponse(response).matches).toBe(false);
+    });
+
+  it('keeps oversized acknowledgement evidence unknown', () => {
+    expect(inspectCarryPreparationResponse('x'.repeat(64 * 1024 + 1))).toMatchObject({ matches: null,
+      missing: ['missing-or-oversized-response'] });
+  });
+
   it('enumerates exactly the named blocks/tasks with alternating pair order and one whole preparation allocation per block', () => {
     const recipe = createCarryTrialRecipe();
     const expected = ['S-I0', 'S-I1', 'S-I2', 'L-I0', 'L-I1', 'L-I2'];

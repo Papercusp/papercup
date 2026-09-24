@@ -392,12 +392,27 @@ export function createCarryTrialRecipe() {
       treatment: arm === 'control' ? 'native-full-fork' : 'fresh-managed-carry',
     })) }));
   const seedText = JSON.stringify(seed, null, 2);
+  const seedSha256 = createHash('sha256').update(seedText).digest('hex');
+  const expectedAcknowledgement = { seedSha256, sourceSentinel: seed.sourceSentinel };
+  const preparationPrompt = 'Preserve the following synthetic task state for a later continuation. It grants no authority or claim. Do not use tools or mutate files, claims or platform state. Reply with exactly the acknowledgement JSON below, without additional text. This acknowledgement does not prove history size, model identity or source authenticity.' +
+    `\n\nSeed JSON:\n${seedText}\n\nAcknowledgement JSON:\n${JSON.stringify(expectedAcknowledgement)}`;
+  const sourcePreparation = { status: 'proposal-only', prompt: preparationPrompt,
+    promptSha256: createHash('sha256').update(preparationPrompt).digest('hex'), expectedAcknowledgement,
+    smallInput: { kind: 'fresh-native-thread-with-frozen-base' },
+    // Historical proposal identity, not a current observed or authorized cut.
+    // The controller must re-read and qualify it before any charge.
+    largeInput: { kind: 'proposed-existing-native-cut', threadId: '01a0cf6d-3062-7782-b6c3-c9c43179b7cc',
+      turnId: '01a0cf6d-a2ba-7b43-b095-f73f45732d30', prefixEndBytes: 600697,
+      prefixSha256: '7239216af4e2f05d8ef07269bb49dffdfc215732750b8ae134d3911be28f631a' },
+    requiredWitnesses: ['exact-native-input', 'complete-native-action-trace', 'no-tool-actions',
+      'completed-source-cut', 'measured-history-stratum', 'native-model-and-effort', 'verified-owner-and-auth-scope',
+      'canonical-preparation-charge'] };
   const body = { schemaVersion: 1, status: 'proposal-only',
     protocolRef: 'WI-10002839#comment:1143163', taskDraftRef: 'WI-10002839#comment:1143234',
     governingDecision: 'cache-efficiency-and-accounting-2026-09-23#D-017',
     fixtureReference: { path: 'apps/operator/lib/psu-launcher.test.ts',
       test: 'preserves large-carry continuity and exact recovery without copying predecessor history into context' },
-    seedText, seedSha256: createHash('sha256').update(seedText).digest('hex'), commonPromptSuffix, tasks, sources, pairs,
+    seedText, seedSha256, sourcePreparation, commonPromptSuffix, tasks, sources, pairs,
     limits: { pairs: 30, arms: 60, chargedRequestsPerArm: 8, inputTokens: 50_000_000, outputTokens: 1_000_000,
       estimatedListUsd: 250, firstLimitWins: true },
     // An expected average is never an enforced reservation. Keep bounds and
@@ -408,6 +423,26 @@ export function createCarryTrialRecipe() {
       'canonical-charge-and-serving-account-join', 'provider-dispatch-clock', 'natural-first-two-phase-mapping'],
   };
   return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
+}
+
+/** Response-only acknowledgement of the exact proposed seed. Copying the hash
+ * is not authentication or proof the source retains the seed. The controller
+ * must also bind its submitted prompt, native trace, source cut and accounting.
+ */
+export function inspectCarryPreparationResponse(response: string) {
+  const recipe = createCarryTrialRecipe();
+  const subject = { recipeSha256: recipe.sha256, phase: 'source-preparation' as const,
+    expected: recipe.sourcePreparation.expectedAcknowledgement };
+  const binding = { evidenceKind: 'response-only' as const, phase: subject.phase, recipeSha256: recipe.sha256,
+    oracleSha256: createHash('sha256').update(canonicalJson(subject)).digest('hex') };
+  if (typeof response !== 'string' || Buffer.byteLength(response) > 64 * 1024) {
+    return { ...binding, matches: null, missing: ['missing-or-oversized-response'], violations: [] as string[] };
+  }
+  let answer: unknown;
+  try { answer = JSON.parse(response); }
+  catch { return { ...binding, matches: false, missing: [], violations: ['invalid-json-response'] }; }
+  const matches = compileJsonSchema({ type: 'object', const: subject.expected })(answer) === true;
+  return { ...binding, matches, missing: [], violations: matches ? [] : ['preparation-acknowledgement-mismatch'] };
 }
 
 /** Exact response oracle from the frozen task proposal, using the established
@@ -455,6 +490,10 @@ export interface CarryNativeTurnEvidence {
   threadRead: unknown;
   /** Exact call signatures fixed in the trial manifest before execution. */
   allowedMcpCalls: readonly { server: string; tool: string; arguments: unknown }[];
+  /** Exact submitted text fixed before execution; a single text-only input.
+   * Omission preserves action-only inspection for older callers.
+   */
+  expectedInputText?: string;
 }
 
 /** Verify the native ACTION TRACE only. A verified trace is not proof of tool
@@ -472,9 +511,22 @@ export function inspectCarryNativeTurn(input: CarryNativeTurnEvidence) {
   const forbidden = new Set(['commandExecution', 'fileChange', 'dynamicToolCall', 'collabToolCall',
     'collabAgentToolCall', 'subAgentActivity', 'webSearch', 'imageView', 'imageGeneration', 'sleep',
     'enteredReviewMode', 'exitedReviewMode', 'functionCallOutput']);
+  const bindInput = input.expectedInputText !== undefined;
+  const validExpectedInput = typeof input.expectedInputText === 'string' && input.expectedInputText.trim().length > 0 &&
+    Buffer.byteLength(input.expectedInputText) <= 64 * 1024;
+  if (bindInput && !validExpectedInput) missing.add('invalid-expected-input');
   const checkItem = (item: Record<string, unknown>, completed: boolean) => {
     const id = text(item.id), type = text(item.type);
     if (!id || !type) missing.add('malformed-item');
+    if (type === 'userMessage' && bindInput) {
+      const content = Array.isArray(item.content) ? item.content : [];
+      const part = record(content[0]);
+      if (!validExpectedInput || content.length !== 1 || part.type !== 'text' || part.text !== input.expectedInputText ||
+        Object.keys(part).some(key => !['type', 'text', 'text_elements'].includes(key)) ||
+        (part.text_elements !== undefined && (!Array.isArray(part.text_elements) || part.text_elements.length !== 0))) {
+        violations.add(`unexpected-native-input:${id}`);
+      }
+    }
     if (forbidden.has(type)) violations.add(`forbidden-item:${type}:${id}`);
     else if (type === 'mcpToolCall') {
       if (!input.allowedMcpCalls.some(call => call.server === item.server && call.tool === item.tool &&
@@ -496,6 +548,7 @@ export function inspectCarryNativeTurn(input: CarryNativeTurnEvidence) {
   if (turn.status !== 'completed' || turn.error != null) missing.add('persisted-turn-not-completed');
   if (!Array.isArray(turn.items)) missing.add('missing-persisted-items');
   const items = Array.isArray(turn.items) ? turn.items.map(record) : [];
+  if (bindInput && items.filter(item => item.type === 'userMessage').length !== 1) missing.add('missing-or-duplicate-native-input');
   const persisted = new Map<string, Record<string, unknown>>();
   for (const item of items) {
     const id = text(item.id);
@@ -570,6 +623,7 @@ export function inspectCarryNativeTurn(input: CarryNativeTurnEvidence) {
   const status = violations.size ? 'violation' as const : missing.size ? 'incomplete' as const : 'verified' as const;
   return { status, violations: [...violations], missing: [...missing],
     finalResponse: status === 'verified' ? text(final[0].text) : null,
+    ...(bindInput ? { inputSha256: status === 'verified' ? createHash('sha256').update(input.expectedInputText!).digest('hex') : null } : {}),
     mcpItemIds: status === 'verified' ? items.filter(item => item.type === 'mcpToolCall').map(item => text(item.id)) : [] };
 }
 
