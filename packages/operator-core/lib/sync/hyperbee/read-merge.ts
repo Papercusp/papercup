@@ -781,6 +781,11 @@ export interface SnapshotScanMemo {
   /** P-522: that unreadable block READ as null (gate-dropped), which is permanent for
    *  this build. A fresh log is not held for it. */
   unreadableGateDropped?: true;
+  /** P-522 (D-011): the block the scan stopped on, and since when the scan has stopped on
+   *  that SAME block in unbroken attempts. A retry that reads past it drops both, so a
+   *  store that is slow but serving never looks stuck. */
+  unreadableAtIndex?: number;
+  unreadableSinceMs?: number;
 }
 
 /** P-004: how long an unreadable snapshot scan is remembered before a retry. */
@@ -1159,13 +1164,9 @@ export async function seedCursorFromSnapshots(
       // Fresh log (P-007): seed at the newest complete set anywhere in the log.
       const scan = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
       // P-522: an inconclusive scan with nothing known yet holds the fold rather than
-      // starting it at 0, which would forfeit the seed for good. A scan stuck on an
-      // unreadable block gets the shorter bound: that block may be missing from every
-      // reachable peer, and the fold from 0 can still progress up to it.
-      if (!scan.set && !scan.conclusive) {
-        const maxMs = scan.unreadable ? Math.min(deferMaxMs, SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS) : deferMaxMs;
-        if (holdFreshSeed(cursor, key, maxMs)) continue;
-      }
+      // starting it at 0, which would forfeit the seed for good. `holdFreshSeed` bounds
+      // the hold, and bounds a scan stuck on one unreadable block more tightly.
+      if (!scan.set && !scan.conclusive && holdFreshSeed(cursor, key, deferMaxMs, scan)) continue;
       cursor.snapshotSeedPending?.delete(key);
       if (scan.set && scan.set.seed.seedIndex > 0) {
         cursor.positions.set(key, scan.set.seed.seedIndex);
@@ -1258,11 +1259,16 @@ export const SNAPSHOT_SEED_SCAN_BUDGET_MS = 20_000;
 export const SNAPSHOT_SEED_DEFER_MAX_MS = 30 * 60_000;
 
 /**
- * P-522: the give-up bound when the scan is inconclusive because a block is UNREADABLE
- * (a read timed out or failed), not because the budget ran out. The scan retries every
+ * P-522: the give-up bound for a scan STUCK on one unreadable block: the same block has
+ * not read (timed out or failed) on every attempt for this long. The scan retries every
  * `SNAPSHOT_UNREADABLE_RETRY_MS`, so this allows about six retries. The P-007 tower census
  * found 13 peer logs whose locator reports `unreadable` (sparse on the tower). Holding those
  * for 30 min would only delay a fold that has to start from 0 anyway.
+ *
+ * D-011: it is measured on the block, not on the hold. P-007 run #2 measured it on the
+ * hold: the scan was held on the budget bound for 239 s, one read on a joiner replicating
+ * at ~24 MB/s missed its 5 s bound, and the hold gave up at once, so 7.76M ops folded
+ * from 0. A block that reads on a retry was slow, not missing.
  */
 export const SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS = 3 * 60_000;
 
@@ -1275,23 +1281,38 @@ export const SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS = 3 * 60_000;
  * prefix is. Measured in P-007 run #1: the 20s budget ran out on a 7.76M-op remote log
  * whose complete set sat about 50k ops below the tail, and the joiner replayed from 0.
  *
- * Returns true to keep holding. Returns false when `maxMs <= 0` or once `maxMs` has
- * passed since the first hold; the caller then lets the log fold from 0.
+ * Returns true to keep holding. Returns false when `maxMs <= 0`, once `maxMs` has passed
+ * since the first hold, or once the scan has been stuck on one unreadable block for
+ * `SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS`; the caller then lets the log fold from 0.
  */
-function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number): boolean {
+function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number, scan: SnapshotScanAnswer): boolean {
   if (maxMs <= 0) return false;
   const pending = (cursor.snapshotSeedPending ??= new Map<string, number>());
   const now = Date.now();
   const since = pending.get(keyHex);
+  const stuckMaxMs = Math.min(maxMs, SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS);
   if (since === undefined) {
     pending.set(keyHex, now);
     // console.info, not warn: a fresh joiner's scan routinely needs more than one pass.
     // Only the give-up below is an anomaly.
     console.info(
       `[read-merge] P-522 snapshot seed pending: log ${keyHex.slice(0, 12)} is held out of the fold ` +
-        `until its seed scan concludes (give-up after ${Math.round(maxMs / 1000)}s).`,
+        `until its seed scan concludes (give-up after ${Math.round(maxMs / 1000)}s, or after ` +
+        `${Math.round(stuckMaxMs / 1000)}s stuck on one unreadable block).`,
     );
     return true;
+  }
+  if (scan.unreadable) {
+    // An unmemoized scan (maxLookback > 0) keeps no per-block record; the hold's age stands in.
+    const stuckForMs = scan.stuckForMs ?? now - since;
+    if (stuckForMs >= stuckMaxMs) {
+      console.warn(
+        `[read-merge] P-522 snapshot seed GAVE UP: log ${keyHex.slice(0, 12)} scan stuck on unreadable block ` +
+          `#${scan.stuckAtIndex ?? '?'} for ${Math.round(stuckForMs / 1000)}s (held ${Math.round((now - since) / 1000)}s); ` +
+          `folding it from 0.`,
+      );
+      return false;
+    }
   }
   if (now - since < maxMs) return true;
   console.warn(
@@ -1411,6 +1432,7 @@ async function latestCompleteSnapshotMemoized(
       set: r.kind === 'found' ? { seed: r.seed, meta: r.meta } : null,
       conclusive: !unreadable,
       unreadable,
+      ...(unreadable ? { stuckAtIndex: r.atIndex } : {}),
     };
   }
   const memos = (cursor.snapshotScans ??= new Map<string, SnapshotScanMemo>());
@@ -1426,7 +1448,14 @@ async function latestCompleteSnapshotMemoized(
     Date.now() - (memo.unreadableAtMs ?? 0) < SNAPSHOT_UNREADABLE_RETRY_MS
   ) {
     const gateDropped = memo.unreadableGateDropped === true;
-    return { set: memo.set, conclusive: gateDropped, unreadable: !gateDropped };
+    return {
+      set: memo.set,
+      conclusive: gateDropped,
+      unreadable: !gateDropped,
+      ...(memo.unreadableSinceMs !== undefined
+        ? { stuckAtIndex: memo.unreadableAtIndex, stuckForMs: Date.now() - memo.unreadableSinceMs }
+        : {}),
+    };
   }
   if (
     memo &&
@@ -1439,17 +1468,29 @@ async function latestCompleteSnapshotMemoized(
   const key = log.keyHex;
   const known = memo?.set ?? null;
   const deadlineAt = budgetMs > 0 ? Date.now() + budgetMs : undefined;
-  const unreadable = (gateDropped: boolean): SnapshotScanAnswer => {
-    // Not evidence about any set. Keep what is known and retry later.
+  const unreadable = (atIndex: number, gateDropped: boolean): SnapshotScanAnswer => {
+    // Not evidence about any set. Keep what is known and retry later. The stuck clock
+    // runs only while the scan keeps stopping on the SAME block.
+    const now = Date.now();
+    const sinceMs =
+      memo?.unreadableAtIndex === atIndex && memo.unreadableSinceMs !== undefined ? memo.unreadableSinceMs : now;
     memos.set(key, {
       scannedTo: memo?.scannedTo ?? 0,
       set: known,
       ...(memo?.resumeBelow !== undefined ? { resumeBelow: memo.resumeBelow } : {}),
       unreadableAtLength: len,
-      unreadableAtMs: Date.now(),
+      unreadableAtMs: now,
+      unreadableAtIndex: atIndex,
+      unreadableSinceMs: sinceMs,
       ...(gateDropped ? { unreadableGateDropped: true as const } : {}),
     });
-    return { set: known, conclusive: gateDropped, unreadable: !gateDropped };
+    return {
+      set: known,
+      conclusive: gateDropped,
+      unreadable: !gateDropped,
+      stuckAtIndex: atIndex,
+      stuckForMs: now - sinceMs,
+    };
   };
 
   // 1. The newest region first: the ops appended since the last scan (all of the log on
@@ -1467,7 +1508,7 @@ async function latestCompleteSnapshotMemoized(
       memos.set(key, { scannedTo: len, set });
       return { set, conclusive: true };
     }
-    if (top.kind === 'unreadable') return unreadable(top.gateDropped === true);
+    if (top.kind === 'unreadable') return unreadable(top.atIndex, top.gateDropped === true);
     if (top.kind === 'budget') {
       // Out of time inside the new region. Resume below it next pass. Keep a known
       // older set as the answer meanwhile: any complete set is a correct seed.
@@ -1479,7 +1520,7 @@ async function latestCompleteSnapshotMemoized(
   // 2. An earlier scan ran out of time: continue it downward from where it stopped.
   if (resumeBelow !== undefined) {
     const rest = await scanForCompleteSnapshot(log, { from: resumeBelow - 1, floor, getTimeoutMs, deadlineAt });
-    if (rest.kind === 'unreadable') return unreadable(rest.gateDropped === true);
+    if (rest.kind === 'unreadable') return unreadable(rest.atIndex, rest.gateDropped === true);
     if (rest.kind === 'budget') {
       memos.set(key, { scannedTo: len, set: known, resumeBelow: rest.resumeBelow });
       return { set: known, conclusive: false };
@@ -1499,6 +1540,10 @@ interface SnapshotScanAnswer {
   conclusive: boolean;
   /** Inconclusive because a block would not read (not because the budget ran out). */
   unreadable?: boolean;
+  /** P-522 (D-011): with `unreadable`, the block the scan stopped on, and how long it has
+   *  stopped on that same block. `stuckForMs` is absent for an unmemoized scan. */
+  stuckAtIndex?: number;
+  stuckForMs?: number;
 }
 
 /* ------------------------------------------------------------------ *
