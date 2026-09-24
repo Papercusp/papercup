@@ -67,12 +67,14 @@ pub enum Event {
     /// regression. `FocusGained` is deliberately NOT forwarded: nothing is
     /// re-armed by regaining focus, and a held key cannot resume.
     FocusLost,
-    /// The terminal was resized. It carries no geometry — ratatui re-reads the
-    /// size on the next draw — it only guarantees that draw happens NOW. Before
-    /// this was forwarded an idle PUI kept painting the old geometry until some
-    /// unrelated event arrived, so neither the compact layout nor "resize
-    /// resumes the prior surface and draft" (PUBLIC_RELEASE_UX.md) held.
-    Resize,
+    /// The terminal was resized to (cols, rows). It guarantees the redraw happens
+    /// NOW — before this was forwarded an idle PUI kept painting the old
+    /// geometry until some unrelated event arrived, so neither the compact
+    /// layout nor "resize resumes the prior surface and draft"
+    /// (PUBLIC_RELEASE_UX.md) held. The geometry lets the app hold input while
+    /// the terminal is below the supported minimum (`ui::too_small`); ratatui
+    /// still re-reads the size itself on each draw.
+    Resize(u16, u16),
     /// Idle tick (emitted when no input arrives within the poll window).
     Tick,
     /// Fresh plans list from the backend poller.
@@ -602,7 +604,7 @@ pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
                     // pushes it alongside bracketed paste). Releases every key
                     // we believe is held — see Event::FocusLost.
                     Ok(CtEvent::FocusLost) => Some(Event::FocusLost),
-                    Ok(CtEvent::Resize(..)) => Some(Event::Resize),
+                    Ok(CtEvent::Resize(cols, rows)) => Some(Event::Resize(cols, rows)),
                     _ => None,
                 };
                 if let Some(ev) = ev {

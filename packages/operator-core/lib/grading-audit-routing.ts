@@ -7,6 +7,7 @@ import { lineagePartyKeys } from './acceptance-author-identity';
 import { getFeedbackProd } from './consult/get-feedback-prod';
 import type { RouteResult } from './consult/relevance-router';
 import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
+import { GRADING_INTEGRITY_AUDIT_POLICY } from './consult/selection-policies';
 
 export interface SourceAuditRouteInput {
   card: ScorecardRow;
@@ -132,6 +133,7 @@ export async function routeSourceGradingAudit(
     originTaskRef: input.card.issueId,
     excludeOwners: [input.card.createdBy, ...(input.card.vetting?.critics ?? [])].filter((id): id is string => Boolean(id)),
     archiveFloor: 2,
+    policy: GRADING_INTEGRITY_AUDIT_POLICY,
     latencyContract: 'hard-blocked',
     ...(input.harness ? { harnessSlug: input.harness } : {}),
     cascade: { flavor: 'grading-integrity', issueId: input.card.issueId,

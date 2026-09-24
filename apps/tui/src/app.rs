@@ -14339,7 +14339,8 @@ mod tests {
         // Before Event::Resize existed an idle PUI kept the old geometry on
         // screen until some unrelated event arrived.
         let mut app = App::new();
-        assert_eq!(app.update(Event::Resize), Action::Render);
+        assert_eq!(app.update(Event::Resize(120, 40)), Action::Render);
+        assert_eq!(app.viewport, (120, 40));
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
@@ -19858,6 +19859,41 @@ mod tests {
         a.chat_composing = true;
         a.chat_input = text.to_string();
         a
+    }
+
+    /// PUBLIC_RELEASE_UX.md "Below 80 columns or 20 rows": while the blocking
+    /// too-small view shows, typed keys and pastes are held so the hidden draft
+    /// is safe, and a resize back to the minimum resumes that same draft.
+    #[test]
+    fn too_small_holds_input_and_a_resize_back_resumes_the_draft() {
+        let mut a = composing("kept draft");
+        a.update(Event::Resize(79, 40));
+        assert_eq!(a.on_key(KeyCode::Char('x'), KeyModifiers::NONE), Action::None);
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::None);
+        assert_eq!(a.update(Event::Paste("pasted".into())), Action::None);
+        a.update(Event::Resize(120, 19));
+        assert_eq!(a.on_key(KeyCode::Backspace, KeyModifiers::NONE), Action::None);
+        assert_eq!(a.chat_input, "kept draft", "nothing hidden changed");
+        assert!(a.chat_composing && !a.should_quit);
+
+        a.update(Event::Resize(80, 20));
+        a.on_key(KeyCode::Char('!'), KeyModifiers::NONE);
+        assert!(a.chat_input.contains('!'), "typing reaches the draft again");
+        assert!(a.chat_input.contains("kept draft"));
+    }
+
+    /// q and Ctrl-C still quit from the blocking view, as they do from navigation.
+    #[test]
+    fn too_small_still_quits_on_q_and_ctrl_c() {
+        for (code, mods) in [
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            let mut a = composing("draft");
+            a.update(Event::Resize(60, 16));
+            assert_eq!(a.on_key(code, mods), Action::Quit);
+            assert!(a.should_quit);
+        }
     }
 
     #[test]

@@ -403,7 +403,12 @@ export async function advanceCascade(
       | null;
     const answers = digest.filter((e) => e.kind === 'answer').length;
     const min = typeof sel?.min === 'number' ? sel.min : 0;
-    if (snap && sel && min > 0 && answers < min) {
+    // A grading-integrity reservation epoch is a single-auditor attempt.
+    // Refill would dispatch another auditor under the same lease after a
+    // decline/expiry, while the previous answering session may still be
+    // finishing its evidence pass. A later attempt must first acquire a fresh
+    // reservation epoch through the source-audit dispatcher.
+    if (!sourceAudit && snap && sel && min > 0 && answers < min) {
       const tried = new Set<string>([...selected.map((e) => e.ownerId), ...digest.map((e) => e.ownerId)]);
       const needed = Math.max(0, min - answers);
       type SnapCand = {

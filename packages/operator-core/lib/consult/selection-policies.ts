@@ -32,6 +32,13 @@ export const RUBRIC_VETTING_POLICY = 'rubric-vetting';
 export const ACCEPTANCE_GRADING_POLICY = 'acceptance-grading';
 
 /**
+ * Grading-integrity audits settle one source card on the first accepted audit.
+ * Keep each reservation epoch to one auditor; a new attempt requires a new
+ * reservation rather than cascading another auditor under the same lease.
+ */
+export const GRADING_INTEGRITY_AUDIT_POLICY = 'grading-integrity-audit';
+
+/**
  * Every other get_feedback consult (plan-start, goal kickoff, ad-hoc peer
  * consults). D-004 [owner 2026-08-30] deliberately LEAVES this at max 3: the
  * owner's 3→2 change is scoped to vetting and grading, and this constant is
@@ -48,6 +55,7 @@ export const SELECTION_POLICIES: Readonly<Record<string, SelectionBounds>> = Obj
   [CONSULT_DEFAULT_POLICY]: { min: 1, max: 3 },
   [RUBRIC_VETTING_POLICY]: { min: 1, max: 2 },
   [ACCEPTANCE_GRADING_POLICY]: { min: 1, max: 2 },
+  [GRADING_INTEGRITY_AUDIT_POLICY]: { min: 1, max: 1 },
 });
 
 /**
