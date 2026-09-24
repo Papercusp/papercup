@@ -1,0 +1,8 @@
+# WI-10003011: the XDG autostart copy would compete with diodon-session.service.
+# Install as ~/.config/autostart/diodon-autostart.desktop to override the
+# system-wide /etc/xdg/autostart entry without deleting it.
+[Desktop Entry]
+Type=Application
+Name=Diodon
+Exec=diodon
+Hidden=true
