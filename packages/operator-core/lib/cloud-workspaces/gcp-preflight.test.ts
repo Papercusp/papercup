@@ -241,6 +241,62 @@ describe('GCP workspace-host credential references', () => {
       expect(causeMessage).toContain('…');
     });
   });
+
+  // Measured 2026-09-24: p318-r39-destroy-20260924-1 deleted every resource, then failed its
+  // terminal evidence on ONE `count_invalid` from discovery, which had no retry at all.
+  describe('a momentary miss in active-account discovery', () => {
+    const tokenAndProject = (args: readonly string[]) => {
+      if (args[0] === 'auth' && args[1] === 'print-access-token') return { stdout: `${SECRET}\n` };
+      if (args[0] === 'config') return { stdout: `${PROJECT}\n` };
+      throw new Error(`unexpected exec ${args.join(' ')}`);
+    };
+
+    it('recovers when the account list is briefly empty', async () => {
+      let listed = 0;
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') {
+          listed += 1;
+          return { stdout: listed === 1 ? '' : 'developer@example.com\n' };
+        }
+        return tokenAndProject(args);
+      });
+      const sleep = vi.fn(async () => {});
+
+      await expect(acquireGcpGcloudActiveUserAuth({ exec, sleep })).resolves.toMatchObject({
+        identity: 'developer@example.com',
+      });
+      expect(listed).toBe(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the taxonomy message when the count never settles, and says what it saw', async () => {
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'a@example.com\nb@example.com\n' };
+        return tokenAndProject(args);
+      });
+      const sleep = vi.fn(async () => {});
+
+      const caught = await acquireGcpGcloudActiveUserAuth({ exec, sleep }).catch((error: unknown) => error);
+      expect((caught as Error).message).toBe('gcp_gcloud_active_user_count_invalid');
+      expect(((caught as Error).cause as Error).message).toContain('2 active account(s)');
+      expect(((caught as Error).cause as Error).message).toContain('a@example.com, b@example.com');
+      expect(sleep).toHaveBeenCalledTimes(2);
+      expect(exec).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the taxonomy message when discovery itself keeps failing, with the exit code', async () => {
+      const exec = vi.fn(async () => {
+        throw Object.assign(new Error('Command failed: gcloud auth list'), { code: 1, stderr: 'ERROR: config busy' });
+      });
+      const sleep = vi.fn(async () => {});
+
+      const caught = await acquireGcpGcloudActiveUserAuth({ exec, sleep }).catch((error: unknown) => error);
+      expect((caught as Error).message).toBe('gcp_gcloud_active_user_unavailable');
+      expect(((caught as Error).cause as Error).message).toContain('exit 1');
+      expect(((caught as Error).cause as Error).message).toContain('config busy');
+      expect(sleep).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 describe('GCP workspace-host preflight', () => {

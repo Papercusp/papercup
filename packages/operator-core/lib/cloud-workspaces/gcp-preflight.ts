@@ -448,18 +448,41 @@ export async function acquireGcpGcloudActiveUserAuth(
   deps: Pick<GcpWorkspaceHostAuthResolverDeps, 'exec' | 'sleep'> = {},
 ): Promise<GcpResolvedAuth> {
   const exec = deps.exec ?? defaultExec;
+  const sleep = deps.sleep ?? defaultSleep;
+  // Discovery gets the same bounded retry as the token pair below. Measured 2026-09-24: a
+  // completed canary destroy (p318-r39-destroy-20260924-1) deleted every resource and then
+  // failed its terminal evidence on a single `count_invalid`, while the same command in the same
+  // environment returned exactly one account before and after. The observed account list rides
+  // on `.cause`, so the next occurrence says whether it was zero accounts or several.
   let identity: string;
-  try {
-    const { stdout } = await exec('gcloud', ['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']);
-    const accounts = stdout
-      .split(/\r?\n/)
-      .map((account) => account.trim())
-      .filter(Boolean);
-    if (accounts.length !== 1) throw new Error('gcp_gcloud_active_user_count_invalid');
-    identity = accounts[0]!;
-  } catch (error) {
-    if (error instanceof Error && error.message === 'gcp_gcloud_active_user_count_invalid') throw error;
-    throw new Error('gcp_gcloud_active_user_unavailable');
+  for (let attempt = 0; ; attempt += 1) {
+    let failure: Error;
+    try {
+      const { stdout } = await exec('gcloud', ['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']);
+      const accounts = stdout
+        .split(/\r?\n/)
+        .map((account) => account.trim())
+        .filter(Boolean);
+      if (accounts.length === 1) {
+        identity = accounts[0]!;
+        break;
+      }
+      failure = new Error('gcp_gcloud_active_user_count_invalid', {
+        cause: new Error(
+          `gcloud auth list returned ${accounts.length} active account(s) on attempt ${attempt + 1}` +
+            (accounts.length > 0 ? `: ${accounts.join(', ')}` : ''),
+        ),
+      });
+    } catch (error) {
+      const { code, stderrExcerpt } = describeGcloudExecFailure(error);
+      failure = new Error('gcp_gcloud_active_user_unavailable', {
+        cause: new Error(
+          `gcloud auth list failed on attempt ${attempt + 1} (exit ${code ?? 'unknown'}): ${stderrExcerpt}`,
+        ),
+      });
+    }
+    if (attempt >= GCLOUD_TOKEN_EXEC_RETRY_BACKOFF_MS.length) throw failure;
+    await sleep(GCLOUD_TOKEN_EXEC_RETRY_BACKOFF_MS[attempt]!);
   }
   if (SERVICE_ACCOUNT_EMAIL.test(identity)) {
     throw new Error('gcp_gcloud_active_user_service_account_forbidden');
@@ -475,7 +498,6 @@ export async function acquireGcpGcloudActiveUserAuth(
   // when every attempt fails, preserve the exact taxonomy `.message` every downstream caller
   // matches on (see gcp-api-client.ts's SAFE_CONNECTION_VALIDATION_PROBLEMS) while attaching the
   // last attempt's exit code + a bounded stderr excerpt as `.cause` for whoever investigates next.
-  const sleep = deps.sleep ?? defaultSleep;
   let tokenOutput: string;
   let projectOutput: string;
   for (let attempt = 0; ; attempt += 1) {
