@@ -52,6 +52,11 @@ const MIGRATION_1111 = path.resolve(
   here,
   '../../../../../libs/papercusp/libs/db/sql/1111-acceptance-bar-contract-seed.sql',
 );
+const sqlMigration = (file: string) => path.resolve(here, `../../../../../libs/papercusp/libs/db/sql/${file}`);
+const MIGRATION_855 = sqlMigration('855-work-item-spec-evidence-bindings.sql');
+const MIGRATION_1174 = sqlMigration('1174-spec-evidence-binding-retraction.sql');
+const MIGRATION_1175 = sqlMigration('1175-spec-evidence-dedup-partial-on-live.sql');
+const MIGRATION_1176 = sqlMigration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-integration',
@@ -142,6 +147,17 @@ beforeAll(async () => {
       updated_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (workspace_id, harness_slug, val_id)
     );
+    -- work_items is the FK target of 855's work_item_spec_revision_edges. setSpecClause
+    -- writes edges on a lifecycle-only revision (WI-10002889), so this fixture must carry
+    -- the evidence tables; a fixture one table behind the real schema is EI-21270668928342264.
+    CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      feature_id text NOT NULL,
+      source_plan_slug text,
+      admission text, admitted_at timestamptz, admitted_by text,
+      PRIMARY KEY (harness_slug, feature_id)
+    );
   `);
   await applyMigrationForTest(db.sql, MIGRATION_851);
   await applyMigrationForTest(db.sql, MIGRATION_852);
@@ -154,6 +170,11 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_930);
   await applyMigrationForTest(db.sql, MIGRATION_1111);
   await applyMigrationForTest(db.sql, MIGRATION_1111);
+  // Evidence tables (edges + bindings + the retraction columns the carry filters on).
+  await applyMigrationForTest(db.sql, MIGRATION_855);
+  await applyMigrationForTest(db.sql, MIGRATION_1174);
+  await applyMigrationForTest(db.sql, MIGRATION_1175);
+  await applyMigrationForTest(db.sql, MIGRATION_1176);
 }, 90_000);
 
 afterAll(async () => {
