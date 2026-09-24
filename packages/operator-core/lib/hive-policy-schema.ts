@@ -86,6 +86,39 @@ export interface HivePolicyCrefs {
   [k: string]: unknown;
 }
 
+/**
+ * One owner-adjudicated secrets-scan waiver (WI-10002785). Same path grammar as the
+ * local table (secrets-guard-exemptions.ts `isPathExempt`): an exact file, or a
+ * directory prefix spelled `dir/` or `dir/**`.
+ */
+export interface HivePolicySecretsGuardExemption {
+  path: string;
+  /** Why the owner judged the finding a false positive (required — this is a waiver). */
+  reason: string;
+  createdBy?: string;
+  createdAt?: string;
+  /** Forward-compat: future per-waiver knobs are preserved + signed. */
+  [k: string]: unknown;
+}
+
+/**
+ * WI-10002785 — owner-signed secrets-scan waivers that travel with the Hive.
+ *
+ * ROOT CAUSE this closes: `harness_shared.secrets_guard_path_exemptions` is host-local,
+ * so a false positive the owner adjudicated on one machine re-refuses on every joined
+ * peer that folds the same history (the Mac VM refused refs/heads/staging on 34 findings
+ * the tower had waived). Riding the signed policy gives the waiver the policy's trust
+ * model for free: only the Swarm holding the Hive key can author it, and every member
+ * drops a forged or unsigned policy at apply (projections/hive-policy.ts). A member's
+ * local row stays local — a member can never widen what the owner's guards accept.
+ */
+export interface HivePolicySecretsGuard {
+  /** Sorted by path, one entry per path (see {@link withSecretsGuardExemption}). */
+  pathExemptions?: HivePolicySecretsGuardExemption[];
+  /** Forward-compat: future secrets-guard knobs are preserved + signed. */
+  [k: string]: unknown;
+}
+
 /** Governance policy extensions. Kept under the existing signed HivePolicy record. */
 export interface HivePolicyGovernance {
   /** P-001: exact-plan admission thresholds and ratification epoch rules. */
@@ -120,6 +153,8 @@ export interface HivePolicy {
   comms?: HivePolicyComms;
   /** G-6 P-030 — canonical-ref rules for release-class refs (see {@link HivePolicyCrefs}). */
   crefs?: HivePolicyCrefs;
+  /** WI-10002785 — owner-signed secrets-scan path waivers (see {@link HivePolicySecretsGuard}). */
+  secretsGuard?: HivePolicySecretsGuard;
   /** EN-4 P-CONTRIB — fork→PR contribution rules. Opaque at EN-1. */
   contrib?: Record<string, unknown>;
   /** EN-4 P-CONTENT — payload/content rules. Opaque at EN-1. */
@@ -303,7 +338,83 @@ export function coerceHivePolicyInput(
       return { ok: false, error: 'policy.moderation.takedownList must be a string[]' };
     }
   }
+  if (p.secretsGuard !== undefined) {
+    if (!p.secretsGuard || typeof p.secretsGuard !== 'object' || Array.isArray(p.secretsGuard)) {
+      return { ok: false, error: 'policy.secretsGuard must be an object' };
+    }
+    const sg = p.secretsGuard as Record<string, unknown>;
+    if (sg.pathExemptions !== undefined) {
+      if (!Array.isArray(sg.pathExemptions)) {
+        return { ok: false, error: 'policy.secretsGuard.pathExemptions must be an array' };
+      }
+      for (const [i, e] of sg.pathExemptions.entries()) {
+        const bad = secretsGuardExemptionProblem(e);
+        if (bad) return { ok: false, error: `policy.secretsGuard.pathExemptions[${i}]: ${bad}` };
+      }
+    }
+  }
   return { ok: true, policy: p as HivePolicy };
+}
+
+/**
+ * Why a waiver entry is malformed, or null when it is well-formed. A waiver switches
+ * scanning OFF, so the grammar is strict: a non-empty repo-relative path (no leading
+ * `/`, no `..` segment, no newline) and a non-empty reason.
+ */
+export function secretsGuardExemptionProblem(e: unknown): string | null {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return 'must be an object';
+  const r = e as Record<string, unknown>;
+  if (typeof r.path !== 'string' || r.path.trim() === '') return 'path must be a non-empty string';
+  if (r.path.startsWith('/') || r.path.split('/').includes('..') || /[\r\n]/.test(r.path)) {
+    return 'path must be repo-relative (no leading "/", no ".." segment, no newline)';
+  }
+  if (typeof r.reason !== 'string' || r.reason.trim() === '') return 'reason must be a non-empty string';
+  return null;
+}
+
+/**
+ * The well-formed waiver entries of a (verified) policy. Defensive on a READ: a malformed
+ * entry is skipped, never thrown — the read path must not crash on a junk document, and
+ * skipping a waiver only keeps scanning ON (the fail-safe direction).
+ */
+export function policySecretsGuardExemptions(policy: HivePolicy | null | undefined): HivePolicySecretsGuardExemption[] {
+  const list = policy?.secretsGuard?.pathExemptions;
+  if (!Array.isArray(list)) return [];
+  return list.filter((e): e is HivePolicySecretsGuardExemption => secretsGuardExemptionProblem(e) === null);
+}
+
+function withExemptionList(policy: HivePolicy, list: HivePolicySecretsGuardExemption[]): HivePolicy {
+  const sorted = [...list].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const secretsGuard: HivePolicySecretsGuard = { ...(policy.secretsGuard ?? {}), pathExemptions: sorted };
+  if (sorted.length === 0) delete secretsGuard.pathExemptions;
+  const next: HivePolicy = { ...policy, secretsGuard };
+  if (Object.keys(secretsGuard).length === 0) delete next.secretsGuard;
+  return next;
+}
+
+/**
+ * PURE: the policy with `entries` added (an entry for an existing path REPLACES it).
+ * Sorted by path so the canonical bytes do not depend on authoring order — two owners'
+ * devices adding the same set produce the same signed document.
+ */
+export function withSecretsGuardExemptions(
+  policy: HivePolicy,
+  entries: readonly HivePolicySecretsGuardExemption[],
+): HivePolicy {
+  const byPath = new Map(policySecretsGuardExemptions(policy).map((e) => [e.path, e]));
+  for (const e of entries) byPath.set(e.path, e);
+  return withExemptionList(policy, [...byPath.values()]);
+}
+
+/** PURE: the policy with the waiver for each of `paths` removed (absent paths are a no-op). */
+export function withoutSecretsGuardExemptions(policy: HivePolicy, paths: readonly string[]): HivePolicy {
+  const drop = new Set(paths);
+  const current = policySecretsGuardExemptions(policy);
+  const kept = current.filter((e) => !drop.has(e.path));
+  // Nothing to remove ⇒ the SAME object, so the canonical bytes (and the re-sign skip in
+  // mutateHivePolicyIfChanged) are untouched.
+  if (kept.length === current.length) return policy;
+  return withExemptionList(policy, kept);
 }
 
 /**

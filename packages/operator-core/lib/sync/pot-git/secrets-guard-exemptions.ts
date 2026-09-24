@@ -24,8 +24,30 @@
  * already threads a concrete workspaceId through runOwnHeadPublishLeg for
  * exactly this reason — a background tick must not depend on request-scoped
  * ambient context being set correctly.
+ *
+ * WI-10002785 — the table is HOST-LOCAL, so a waiver adjudicated on one machine
+ * re-refused on every joined peer folding the same history (the P-203 Mac VM refused
+ * refs/heads/staging on 34 findings the tower had waived). The fix rides the one record
+ * that is already owner-signed, federated and verified on apply: the pot's policy
+ * (`harness_shared.pot_policy`, `policy.secretsGuard.pathExemptions`). The loader is the
+ * UNION of this host's table rows and every verified pot-policy waiver in the workspace;
+ * {@link shareSecretsGuardPathExemptions} signs local waivers into a pot the calling
+ * Swarm owns. A member can still add a LOCAL row for its own host, but it cannot widen
+ * what any other peer's guard accepts — only the pot key signs a replicated waiver.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
+import {
+  type HivePolicy,
+  type HivePolicySecretsGuardExemption,
+  parseHivePolicyJson,
+  policySecretsGuardExemptions,
+  withSecretsGuardExemptions,
+  withoutSecretsGuardExemptions,
+} from '../../hive-policy-schema';
+import type { AuthorHivePolicySeams } from '../../hive-policy-author';
+
+type Sql = postgres.Sql;
 
 const TABLE = 'harness_shared.secrets_guard_path_exemptions';
 
@@ -34,33 +56,177 @@ export interface SecretsGuardExemption {
   reason: string;
   createdBy: string;
   createdAt: string;
+  /** 'local' = this host's table row; 'pot-policy' = an owner-signed waiver a pot's policy carries. */
+  source: 'local' | 'pot-policy';
+  /** The pot whose signed policy carries this waiver (source 'pot-policy' only). */
+  potHomeSlug?: string;
 }
 
-/** All exempted paths for `workspaceId`, as a Set for O(1) lookup. Fails
- *  CLOSED to an empty set on any error — a DB hiccup must never silently
- *  exempt more than intended (the scanner stays strict on read failure). */
-export async function loadSecretsGuardPathExemptions(workspaceId: string): Promise<ReadonlySet<string>> {
-  try {
-    const { sql } = getOrgPg();
-    const rows = (await sql`
-      SELECT path FROM ${sql(TABLE)} WHERE workspace_id = ${workspaceId}
-    `) as Array<{ path: string }>;
-    return new Set(rows.map((r) => r.path));
-  } catch {
-    return new Set();
-  }
+function pgOf(sql?: Sql): Sql {
+  return sql ?? getOrgPg().sql;
 }
 
-/** List exemptions with full detail (reason/who/when) — for an admin/agent view. */
-export async function listSecretsGuardPathExemptions(workspaceId: string): Promise<SecretsGuardExemption[]> {
-  const { sql } = getOrgPg();
-  const rows = (await sql`
+async function readLocalRows(
+  workspaceId: string,
+  sql?: Sql,
+): Promise<Array<{ path: string; reason: string; created_by: string; created_at: string }>> {
+  const s = pgOf(sql);
+  return (await s`
     SELECT path, reason, created_by, created_at
-      FROM ${sql(TABLE)}
+      FROM ${s(TABLE)}
      WHERE workspace_id = ${workspaceId}
      ORDER BY created_at DESC
   `) as Array<{ path: string; reason: string; created_by: string; created_at: string }>;
-  return rows.map((r) => ({ path: r.path, reason: r.reason, createdBy: r.created_by, createdAt: r.created_at }));
+}
+
+/** Every well-formed waiver carried by a pot policy in `workspaceId`. The rows in
+ *  pot_policy are ALREADY verified — a forged/unsigned policy is dropped at projection
+ *  apply and never lands (projections/hive-policy.ts), so this reader does not re-verify. */
+async function readPotPolicyExemptions(
+  workspaceId: string,
+  sql?: Sql,
+): Promise<Array<{ potHomeSlug: string; exemption: HivePolicySecretsGuardExemption }>> {
+  const s = pgOf(sql);
+  const rows = (await s`
+    SELECT harness_slug, policy_json FROM harness_shared.pot_policy WHERE workspace_id = ${workspaceId}
+  `) as Array<{ harness_slug: string; policy_json: string }>;
+  const out: Array<{ potHomeSlug: string; exemption: HivePolicySecretsGuardExemption }> = [];
+  for (const r of rows) {
+    for (const exemption of policySecretsGuardExemptions(parseHivePolicyJson(r.policy_json))) {
+      out.push({ potHomeSlug: r.harness_slug, exemption });
+    }
+  }
+  return out;
+}
+
+/** All exempted paths for `workspaceId` — this host's rows ∪ every verified pot-policy
+ *  waiver — as a Set for O(1) lookup. Each source fails CLOSED to empty on its own
+ *  error: a DB hiccup must never silently exempt more than intended (the scanner stays
+ *  strict on read failure), and a partial read only ever exempts LESS. */
+export async function loadSecretsGuardPathExemptions(workspaceId: string, sql?: Sql): Promise<ReadonlySet<string>> {
+  const out = new Set<string>();
+  try {
+    for (const r of await readLocalRows(workspaceId, sql)) out.add(r.path);
+  } catch {
+    /* fail closed for this source */
+  }
+  try {
+    for (const r of await readPotPolicyExemptions(workspaceId, sql)) out.add(r.exemption.path);
+  } catch {
+    /* fail closed for this source */
+  }
+  return out;
+}
+
+/** List exemptions with full detail (reason/who/when/source) — for an admin/agent view. */
+export async function listSecretsGuardPathExemptions(workspaceId: string, sql?: Sql): Promise<SecretsGuardExemption[]> {
+  const local: SecretsGuardExemption[] = (await readLocalRows(workspaceId, sql)).map((r) => ({
+    path: r.path,
+    reason: r.reason,
+    createdBy: r.created_by,
+    createdAt: String(r.created_at),
+    source: 'local',
+  }));
+  const signed: SecretsGuardExemption[] = (await readPotPolicyExemptions(workspaceId, sql)).map(
+    ({ potHomeSlug, exemption }) => ({
+      path: exemption.path,
+      reason: exemption.reason,
+      createdBy: exemption.createdBy ?? '',
+      createdAt: exemption.createdAt ?? '',
+      source: 'pot-policy',
+      potHomeSlug,
+    }),
+  );
+  return [...local, ...signed];
+}
+
+/** Outcome of signing (or unsigning) waivers into ONE pot's policy. */
+export type PotWaiverOutcome =
+  | { potHomeSlug: string; outcome: 'signed'; policyVersion: number }
+  | { potHomeSlug: string; outcome: 'unchanged'; policyVersion: number }
+  | { potHomeSlug: string; outcome: 'not_owner_swarm' | 'no_owner_pubkey' | 'write_failed'; detail?: string };
+
+export interface SecretsGuardShareSeams {
+  /** Forwarded to mutateHivePolicyIfChanged (resolve/read/sign/pubkey/write). */
+  author?: AuthorHivePolicySeams;
+}
+
+async function mutatePotWaivers(
+  workspaceId: string,
+  potHomeSlug: string,
+  mutate: (current: HivePolicy) => HivePolicy,
+  seams: SecretsGuardShareSeams,
+): Promise<PotWaiverOutcome> {
+  const { mutateHivePolicyIfChanged } = await import('../../hive-policy-author');
+  const res = await mutateHivePolicyIfChanged({ workspaceId, potHomeSlug, mutate }, seams.author ?? {});
+  if (!res.ok) return { potHomeSlug, outcome: res.code, detail: res.detail };
+  if ('unchanged' in res && res.unchanged) {
+    return { potHomeSlug, outcome: 'unchanged', policyVersion: res.policy.policyVersion };
+  }
+  return { potHomeSlug, outcome: 'signed', policyVersion: res.policy.policyVersion };
+}
+
+/**
+ * Sign `entries` into `potHomeSlug`'s owner-signed policy so every member of the pot
+ * honours them (WI-10002785). Only the Swarm holding the pot key can sign — a member
+ * gets `not_owner_swarm` and its waiver stays local. Idempotent: re-sharing an identical
+ * set re-signs nothing (`unchanged`).
+ */
+export async function shareSecretsGuardPathExemptions(
+  input: { workspaceId: string; potHomeSlug: string; entries: readonly HivePolicySecretsGuardExemption[] },
+  seams: SecretsGuardShareSeams = {},
+): Promise<PotWaiverOutcome> {
+  return mutatePotWaivers(
+    input.workspaceId,
+    input.potHomeSlug,
+    (current) => withSecretsGuardExemptions(current, input.entries),
+    seams,
+  );
+}
+
+/** Remove the waivers for `paths` from `potHomeSlug`'s signed policy (re-arms scanning
+ *  on every member once the re-signed policy replicates). Owner Swarm only. */
+export async function unshareSecretsGuardPathExemptions(
+  input: { workspaceId: string; potHomeSlug: string; paths: readonly string[] },
+  seams: SecretsGuardShareSeams = {},
+): Promise<PotWaiverOutcome> {
+  return mutatePotWaivers(
+    input.workspaceId,
+    input.potHomeSlug,
+    (current) => withoutSecretsGuardExemptions(current, input.paths),
+    seams,
+  );
+}
+
+/**
+ * The pots in `workspaceId` whose Hive private key THIS Swarm holds (i.e. it can sign
+ * their policy). A key lookup error counts as "not owned": signing would fail anyway,
+ * and the caller then keeps the waiver local rather than guessing.
+ */
+export async function listOwnedPotHomes(workspaceId: string): Promise<string[]> {
+  const [{ listHives }, { loadHivePubkey }] = await Promise.all([
+    import('../../hive-store'),
+    import('../../identity/hive-keypair'),
+  ]);
+  const owned: string[] = [];
+  for (const h of await listHives(workspaceId)) {
+    const pk = await loadHivePubkey(h.workspaceId, h.homeSlug).catch(() => null);
+    if (pk && pk === h.pubkeyBase64) owned.push(h.homeSlug);
+  }
+  return owned;
+}
+
+/** The local table rows as signable waiver entries (the one-shot `share` of legacy rows). */
+export async function localRowsAsWaiverEntries(
+  workspaceId: string,
+  sql?: Sql,
+): Promise<HivePolicySecretsGuardExemption[]> {
+  return (await readLocalRows(workspaceId, sql)).map((r) => ({
+    path: r.path,
+    reason: r.reason,
+    ...(r.created_by ? { createdBy: r.created_by } : {}),
+    createdAt: new Date(r.created_at).toISOString(),
+  }));
 }
 
 /** Add (or update the reason on) a path exemption — takes effect on the very
