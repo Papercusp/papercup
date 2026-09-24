@@ -1937,3 +1937,27 @@ bindings11632/11630 and passed their exact-clause adequacy. New card
 at2026-09-24T18:07:59.863Z. Historical failed records remain intact. This is
 exact `PERF-P-006@1` test adequacy; combined prose/budget/sustained acceptance
 and whole-P-006 closure remain open.
+
+### P-007 source and lifecycle timing boundaries — 2026-09-24 22:03Z
+
+The native 21:46 run remains a failure at 1709ms. Its matching dispatch
+29467611 measured source483.036ms and lifecycle288.304ms, but those totals
+cannot distinguish pool setup from the query, parsing, or module loading.
+The separate admin EXPLAIN is not evidence of the native app-role query time.
+
+The existing `plansGetRead` invocation metadata now includes request-local
+`detailMs`: source scope resolution, acquisition plus BEGIN/workspace setup,
+query, transaction finalization, row conversion, and plan parsing; lifecycle
+reader import, acquisition/setup, query, and finalization. These are wall
+intervals, including event-loop scheduling; `query` is not PostgreSQL CPU time.
+No query or RLS behavior changed. Cached responses carry no previous timing
+sample, and timing data stays outside the plan payload.
+
+Run `4fbb96db-8a8c-46c3-bb42-054be542dc9a` passed36 tests with zero skips:
+read-timing19358076, lifecycle19358075, get-lifecycle-scope19358077, and
+get-ship-readiness19358078. The clock-controlled attribution guard distinguishes
+7ms from250ms queries while keeping100ms setup,3ms finalization, and11ms parse
+separate. Scoped typecheck found zero diagnostics in the five changed source
+and test files, with23 other import-graph diagnostics. Native measurement on
+the activated diagnostic build is still required; these checks establish the
+measurement boundaries, not an improved popup latency or acceptance pass.
