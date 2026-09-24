@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends,
+  type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { buildBlueprintReleaseArchive, commitBlueprintRelease } from './cupboard/blueprint-release';
 import { diffIdentitySpecifications, resolveIdentityStackMutation } from './identity-management';
-import { getIdentitySource, listIdentitySources } from './agent-identities/source';
+import { getIdentitySource, getSelectedModeCatalog, listIdentitySources } from './agent-identities/source';
+import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +49,95 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  it('selects exactly one approved installed mode revision over its built-in definition', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'installed-mode-selection-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const baseline = await getSelectedModeCatalog();
+      const oldAuto = baseline.entries.find((entry) => entry.id === 'auto')!;
+      const id = 'su.mode-auto-custom';
+      const sourceDir = join(root, 'source');
+      await cp(dirname(builtinBlueprintPath('su.mode-auto')), sourceDir, { recursive: true });
+      const sourceFile = join(sourceDir, 'blueprint.yaml');
+      const raw = parseYaml(await readFile(sourceFile, 'utf8')) as Record<string, unknown>;
+      raw.id = id;
+      raw.mode = { ...(raw.mode as Record<string, unknown>), title: 'AUTO approved variant',
+        replacesRevision: oldAuto.revision };
+      await writeFile(sourceFile, stringifyYaml(raw));
+      await writeFile(join(sourceDir, 'prompts', 'autonomy.md'),
+        '## AUTO selected installed variant\n\nThis approved content is delivered on activation.\n');
+      const resolved = resolveBlueprintSource(raw, {
+        sourcePath: sourceFile, resolve: resolveBuiltinExtends,
+        lint: { approvedModePolicyRefs: ['auto'] },
+      });
+      expect(resolved.validation.ok).toBe(true);
+      const pins = blueprintPackageInputs(resolved, []);
+      const hash = buildBlueprintReleaseArchive(pins, id).package.rootHash;
+      await commitBlueprintRelease({
+        installedDir: join(root, 'blueprints'), sourceDir, id, version: '1.0.0',
+        source: 'https://github.com/acme/mode', pins,
+        modeApproval: { listingId: 'approved-listing', policyRef: 'auto', approvedArtifactContentHash: hash },
+      });
+      const selected = await getSelectedModeCatalog();
+      expect(selected.entries).toHaveLength(baseline.entries.length);
+      expect(selected.entries.find((entry) => entry.id === 'auto')).toMatchObject({
+        sourceId: id, title: 'AUTO approved variant',
+      });
+      expect(selected.revision).not.toBe(baseline.revision);
+      const injected = await renderStackTransitionContext({
+        state: { stack: [`autonomy:${id}`] } as never,
+        stackBefore: [],
+      });
+      expect(injected).toContain('AUTO selected installed variant');
+      expect(await getSelectedModeCatalog()).toBe(selected);
+      await appendFile(join(root, 'blueprints', id, 'prompts', 'autonomy.md'), '\nchanged after approval\n');
+      await expect(getSelectedModeCatalog()).rejects.toThrow(/no current moderated release approval/);
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serves a moderated installed mode only while its current full closure matches the receipt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'installed-mode-approval-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const id = 'su.mode-auto';
+      const sourceDir = join(root, 'source');
+      await cp(dirname(builtinBlueprintPath(id)), sourceDir, { recursive: true });
+      const sourceFile = join(sourceDir, 'blueprint.yaml');
+      const raw = parseYaml(await readFile(sourceFile, 'utf8'));
+      const resolved = resolveBlueprintSource(raw, {
+        sourcePath: sourceFile, resolve: resolveBuiltinExtends,
+        lint: { approvedModePolicyRefs: ['auto'] },
+      });
+      expect(resolved.validation.ok).toBe(true);
+      const pins = blueprintPackageInputs(resolved, []);
+      const hash = buildBlueprintReleaseArchive(pins, id).package.rootHash;
+      await commitBlueprintRelease({
+        installedDir: join(root, 'blueprints'), sourceDir, id, version: '1.0.0',
+        source: 'https://github.com/acme/mode', pins,
+        modeApproval: { listingId: 'approved-listing', policyRef: 'auto', approvedArtifactContentHash: hash },
+      });
+      expect((await getIdentitySource(id)).ok).toBe(true);
+      await appendFile(join(root, 'blueprints', id, 'prompts', 'autonomy.md'), '\nchanged after approval\n');
+      expect(await getIdentitySource(id)).toMatchObject({ ok: false, error: 'mode-approval-stale' });
+      const warned: string[] = [];
+      const transition = await renderStackTransitionContextResult({
+        state: { stack: [`autonomy:${id}`] } as never, stackBefore: [],
+      }, { warn: (message) => warned.push(message) });
+      expect(transition).toMatchObject({ text: '', rendered: false });
+      expect(warned[0]).toContain('selected mode identity');
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the installed-source attestation diagnostic instead of returning an empty preview error', async () => {
     const root = await mkdtemp(join(tmpdir(), 'identity-preview-diagnostic-'));
     const priorHome = process.env.PAPERCUSP_HOME;

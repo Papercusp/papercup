@@ -30,7 +30,7 @@
  * layer render must never block the prompt, exactly like the control anchor itself.
  */
 import type { ControlAnchorState, ControlTransition } from './agent-tools/coordination/control-anchor';
-import type { StackMutationActivation, StackActivationContext, StackDocument } from '@papercusp/orchestrator/blueprint';
+import type { ModeCatalogSnapshot, StackMutationActivation, StackActivationContext, StackDocument } from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 
 /**
@@ -68,11 +68,16 @@ export const SU_MODE_REFS: Readonly<Record<string, string>> = Object.freeze({
  * here: `setMode` already wrote the implied rows, so the `modes` read from `agent_modes`
  * carries `drain` AND `auto`.
  */
-export function stackRefsForModes(modes: readonly string[] | null | undefined): string[] {
+export function stackRefsForModes(
+  modes: readonly string[] | null | undefined,
+  modeCatalog?: ModeCatalogSnapshot,
+): string[] {
   const out: string[] = [];
   for (const m of modes ?? []) {
-    const ref = SU_MODE_REFS[String(m).trim().toLowerCase()];
-    if (ref && !out.includes(ref)) out.push(ref);
+    const key = String(m).trim().toLowerCase();
+    const entry = modeCatalog?.entries.find((candidate) => candidate.id === (key === 'cold-auto' ? 'auto' : key));
+    const ref = modeCatalog ? (entry ? `${entry.slot}:${entry.sourceId}` : undefined) : SU_MODE_REFS[key];
+    if (ref && !out.some((prior) => prior.split(':', 1)[0] === ref.split(':', 1)[0])) out.push(ref);
   }
   return out;
 }
@@ -87,8 +92,9 @@ export function stackRefsForSession(input: {
   route: ControlAnchorState['route'];
   modes: readonly string[] | null | undefined;
   explicit?: readonly string[] | null;
+  modeCatalog?: ModeCatalogSnapshot;
 }): string[] {
-  return [...new Set([...(input.explicit ?? []), ...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes)])];
+  return [...new Set([...(input.explicit ?? []), ...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes, input.modeCatalog)])];
 }
 
 function sameRefs(a: readonly string[], b: readonly string[]): boolean {
@@ -159,13 +165,16 @@ export async function renderStackTransitionContextResult(
       import('node:fs/promises'),
     ]);
     await Promise.all(to.layers.map(async (layer) => {
+      const spec = bp.slotSpec(layer.slot);
+      if (!spec) return;
       const identity = await getIdentitySource(layer.id, { ...(opts.repoDir ? { repoDir: opts.repoDir } : {}) });
-      if (!identity.ok || !identity.sourcePath) return;
-      if (!identity.identity.slots.some((entry) => entry.slot === layer.slot)) return;
+      if (!identity.ok || !identity.sourcePath ||
+          !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
+        if (spec.layer === 'modes') throw new Error(`selected mode identity ${layer.slot}:${layer.id} is unavailable or invalid`);
+        return;
+      }
       const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
       try {
-        const spec = bp.slotSpec(layer.slot);
-        if (!spec) return;
         resolvedLayers.set(`${layer.slot}:${layer.id}`, {
           id: layer.id,
           layer: spec.layer,
@@ -173,7 +182,8 @@ export async function renderStackTransitionContextResult(
           text: await fs.readFile(sourcePath, 'utf8'),
           sourcePath,
         });
-      } catch {
+      } catch (error) {
+        if (spec.layer === 'modes') throw error;
         /* built-in documents still resolve inside composeSuStackMutation */
       }
     }));

@@ -47,6 +47,13 @@ describe('stackRefsForRoute (P-012)', () => {
     expect(stackRefsForModes(['cold-auto'])).toEqual(['autonomy:su.mode-auto']);
     expect(stackRefsForModes(['IDEATE', 'auto'])).toEqual(['ideation:su.mode-ideate', 'autonomy:su.mode-auto']);
     expect(stackRefsForModes(['drain', 'auto'])).toEqual(['objective:su.mode-drain', 'autonomy:su.mode-auto']);
+    const selected = {
+      revision: 'selected',
+      entries: [{ id: 'auto', slot: 'autonomy', sourceId: 'su.mode-auto-custom' }],
+    } as unknown as blueprint.ModeCatalogSnapshot;
+    expect(stackRefsForModes(['auto', 'cold-auto'], selected)).toEqual(['autonomy:su.mode-auto-custom']);
+    expect(stackRefsForSession({ route: { kind: 'self' }, modes: ['auto'], modeCatalog: selected }))
+      .toEqual(['autonomy:su.mode-auto-custom']);
     for (const [mode, ref] of Object.entries(SU_MODE_REFS)) {
       expect(ref, mode).toBe(blueprint.bindingRef(blueprint.suModeLayer(mode)!));
     }
