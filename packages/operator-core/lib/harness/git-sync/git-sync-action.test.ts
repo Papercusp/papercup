@@ -237,6 +237,7 @@ const runGitSyncMock = vi.fn(
     strandedSubmodules: [],
   }),
 );
+const runGitBoundedMock = vi.fn(async (..._args: unknown[]) => ({ code: 0, stdout: '', stderr: '' }));
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -255,7 +256,7 @@ vi.mock('./run-git-sync', () => ({
   STASH_RECENT_WINDOW_MS: 24 * 60 * 60 * 1000,
   // The action also pulls these for its bounded git plumbing; the sweep paths
   // exercised here never reach them with empty stash/submodule sets.
-  runGitBounded: async () => ({ code: 0, stdout: '', stderr: '' }),
+  runGitBounded: (...args: unknown[]) => runGitBoundedMock(...args),
   gitTimeoutMsFor: () => 30_000,
   DEFAULT_MAX_BLOB_BYTES: 95 * 1024 * 1024,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
@@ -781,6 +782,7 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
+  runGitBoundedMock.mockReset().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
   reconcileProposedCompletionsAtCommitMock.mockReset();
   reconcileProposedCompletionsAtCommitMock.mockResolvedValue({
     inspected: 0,
@@ -2494,6 +2496,67 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
       if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)('retains repository leases and heartbeat until an aborted Git child settles (%s)', async (settlement) => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '100');
+    resetScheduledRegistry();
+    let heartbeat!: () => void;
+    let heartbeatStopped = false;
+    const handle: TimerHandle = { unref: () => undefined };
+    configureScheduledRegistry({
+      setIntervalImpl: (cb) => { heartbeat = cb; return handle; },
+      clearIntervalImpl: () => { heartbeatStopped = true; },
+    });
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    let finishChild!: () => void;
+    let childSignal!: AbortSignal;
+    runGitBoundedMock.mockImplementationOnce(async (...args) => {
+      childSignal = (args[3] as { signal: AbortSignal }).signal;
+      childStarted();
+      await new Promise<void>((resolve) => { finishChild = resolve; });
+      if (settlement === 'reject') throw new Error('child exit failure');
+      return { code: -1, stdout: '', stderr: 'child exited' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      // Model the pipeline's existing injected/default runner seam on both
+      // revisions, so old code reaches the actual premature-release assertion.
+      const run = opts.runGit ?? ((args, cwd) => runGitBoundedMock(args, cwd, 30_000, { signal: opts.signal }));
+      await run(['commit'], repoDir);
+      return syncedOutcome;
+    });
+    let returned = false;
+    const running = action(ctx).then(
+      () => { returned = true; return null; },
+      (error: unknown) => { returned = true; return error; },
+    );
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(30);
+      expect(childSignal.aborted).toBe(true);
+      expect(returned).toBe(false);
+      expect(releasedResources()).toEqual([]);
+      expect(heartbeatStopped).toBe(false);
+      const acquisitions = acquiredResources().length;
+      heartbeat();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(acquiredResources().length).toBeGreaterThan(acquisitions);
+      finishChild();
+      expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(heartbeatStopped).toBe(true);
+    } finally {
+      finishChild?.();
+      await running;
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
     }
   });
 
