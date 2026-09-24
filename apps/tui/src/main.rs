@@ -359,6 +359,11 @@ async fn main() -> Result<()> {
     if pinned.is_some() {
         crate::theme::Theme::set_transparent_surfaces(true);
     }
+    // Colour-disabled mode (P-013, https://no-color.org): honour NO_COLOR for
+    // every frame this process draws, the standalone workbench and dock panes alike.
+    crate::theme::Theme::set_monochrome(crate::theme::no_color_requested(
+        std::env::var_os("NO_COLOR").as_deref(),
+    ));
     let agent_ctx_mode = match subcommand.as_deref() {
         Some("mail-pane") => app::AgentCtxMode::Mail,
         Some("work-pane") => app::AgentCtxMode::Work,
