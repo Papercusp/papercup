@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 const exec = promisify(execFile);
 
 describe('bounded overlapping V8 recordings', () => {
-  it('preserves useful stacks, rotates without rebuilding native state, and cleans up', async () => {
+  it.each([1000, 10_000])('preserves useful stacks and cleanup at a %i microsecond sampling interval', async (samplingIntervalUs) => {
     const { stdout } = await exec(process.execPath, ['--expose-gc', '--input-type=module', '-e', `
       import { Session } from 'node:inspector/promises';
       import { performance } from 'node:perf_hooks';
@@ -21,7 +21,7 @@ describe('bounded overlapping V8 recordings', () => {
       const startMs = [], rotateMs = [], heap = [], rss = [];
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
       function profilerFixtureWork() {
-        const until = performance.now() + 30;
+        const until = performance.now() + ${samplingIntervalUs === 1000 ? 30 : 100};
         let value = 0;
         while (performance.now() < until) value = retained[value % retained.length](value) % 100000;
         return value;
@@ -67,6 +67,7 @@ describe('bounded overlapping V8 recordings', () => {
       let coldBefore, coldAfter;
       try {
         await session.post('Profiler.enable');
+        await session.post('Profiler.setSamplingInterval', { interval: ${samplingIntervalUs} });
         coldBefore = await capture();
         anchor = beginAnchor();
         for (let batch = 0; batch < 4; batch++) {
@@ -95,14 +96,14 @@ describe('bounded overlapping V8 recordings', () => {
         ended: ended.length, uniqueEnded: new Set(ended).size, maxAnchorSamples, maxAnchorBytes, usefulProfiles }));
     `], { timeout: 45_000, maxBuffer: 128 * 1024 });
     const result = JSON.parse(stdout);
-    console.info('P-003 overlap fixture:', JSON.stringify(result));
+    console.info('P-003 overlap fixture:', JSON.stringify({ samplingIntervalUs, ...result }));
     expect(result.anchorCount).toBe(0);
     expect(result.peakAnchors).toBe(2);
     expect(result.ended).toBe(49);
     expect(result.uniqueEnded).toBe(49);
     expect(result.usefulProfiles).toBe(50);
     expect(result.maxAnchorSamples).toBeGreaterThan(0);
-    // Broad regression bounds for this controlled 60ms fixture, not a claim
+    // Broad regression bounds for this controlled short fixture, not a claim
     // that a main-thread timer can enforce a bound during an arbitrary stall.
     expect(result.maxAnchorSamples).toBeLessThan(10_000);
     expect(result.maxAnchorBytes).toBeLessThan(8 * 1024 * 1024);
@@ -111,7 +112,7 @@ describe('bounded overlapping V8 recordings', () => {
     expect(median(result.startMs)).toBeLessThan(Math.min(result.coldBefore, result.coldAfter) / 2);
   }, 60_000);
 
-  it('measures steady idle sampling cost separately from profiler startup', async () => {
+  it.each([1000, 10_000])('measures idle sampling cost separately from startup at %i microseconds', async (samplingIntervalUs) => {
     const { stdout } = await exec(process.execPath, ['--input-type=module', '-e', `
       import { Session } from 'node:inspector/promises';
       import { performance } from 'node:perf_hooks';
@@ -126,6 +127,7 @@ describe('bounded overlapping V8 recordings', () => {
       session.connect();
       try {
         await session.post('Profiler.enable');
+        await session.post('Profiler.setSamplingInterval', { interval: ${samplingIntervalUs} });
         for (let i = 0; i < 4; i++) {
           baseline.push(await measure());
           // Construction and destruction are OUTSIDE the measured window.
@@ -138,10 +140,96 @@ describe('bounded overlapping V8 recordings', () => {
       process.stdout.write(JSON.stringify({ baseline, active }));
     `], { timeout: 20_000, maxBuffer: 128 * 1024 });
     const result = JSON.parse(stdout);
-    console.info('P-003 idle sampler CPU:', JSON.stringify(result));
+    console.info('P-003 idle sampler CPU:', JSON.stringify({ samplingIntervalUs, ...result }));
     const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
     const fraction = (row: { cpuMs: number; wallMs: number }) => row.cpuMs / row.wallMs;
     // A generous detector of a runaway sampler, not a production cost SLO.
     expect(median(result.active.map(fraction)) - median(result.baseline.map(fraction))).toBeLessThan(0.1);
   }, 30_000);
+
+  it('measures loaded 100Hz recording and exposes delayed-rotation growth', async () => {
+    const { stdout } = await exec(process.execPath, ['--expose-gc', '--input-type=module', '-e', `
+      import { Session } from 'node:inspector/promises';
+      import { performance } from 'node:perf_hooks';
+      const retained = Array.from({ length: 25000 }, (_, i) => new Function('x', 'return x + ' + i));
+      const data = Int32Array.from({ length: 8192 }, (_, i) => i * 17);
+      const work = () => {
+        let value = retained.length;
+        // One hot calculation reaches a stable tier. Calling all 25,000 generated
+        // functions instead kept compiling between the before/after controls.
+        for (let i = 0; i < 25000000; i++) value = Math.imul(value ^ data[i & 8191], 1664525) | 0;
+        return value;
+      };
+      const measure = () => {
+        const before = process.cpuUsage(), start = performance.now();
+        const checksum = work();
+        const cpu = process.cpuUsage(before);
+        return { checksum, cpuMs: (cpu.user + cpu.system) / 1000, wallMs: performance.now() - start };
+      };
+      for (let i = 0; i < 12; i++) work(); // compile/tier-up the same fixed workload first
+      const baselineBefore = Array.from({ length: 4 }, measure);
+      global.gc();
+      const beforeMemory = process.memoryUsage();
+      const active = [], memory = [], ended = [];
+      let maxSamples = 0, maxBytes = 0, delayed;
+      const session = new Session();
+      session.connect();
+      session.on('Profiler.consoleProfileFinished', ({ params }) => {
+        ended.push(params.title);
+        maxSamples = Math.max(maxSamples, params.profile.samples.length);
+        maxBytes = Math.max(maxBytes, Buffer.byteLength(JSON.stringify(params.profile)));
+        if (params.title === 'loaded-0') delayed = {
+          durationUs: params.profile.endTime - params.profile.startTime,
+          samples: params.profile.samples.length,
+        };
+      });
+      let anchor = 'loaded-0';
+      try {
+        await session.post('Profiler.enable');
+        await session.post('Profiler.setSamplingInterval', { interval: 10000 });
+        console.profile(anchor);
+        // Simulate a rotation tick delayed by synchronous work. The native
+        // recording continues while JS cannot rotate it: do not call that capped.
+        const until = performance.now() + 1000;
+        while (performance.now() < until) work();
+        for (let i = 1; i <= 24; i++) {
+          active.push(measure());
+          const next = 'loaded-' + i;
+          console.profile(next);
+          console.profileEnd(anchor);
+          anchor = next;
+          if (i % 4 === 0) { global.gc(); memory.push(process.memoryUsage()); }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        console.profileEnd(anchor);
+        anchor = undefined;
+      } finally {
+        if (anchor) console.profileEnd(anchor);
+        session.disconnect();
+      }
+      global.gc();
+      const afterMemory = process.memoryUsage();
+      const baselineAfter = Array.from({ length: 4 }, measure);
+      process.stdout.write(JSON.stringify({ baselineBefore, active, baselineAfter, beforeMemory,
+        memory, afterMemory, ended: ended.length, maxSamples, maxBytes, delayed }));
+    `], { timeout: 90_000, maxBuffer: 128 * 1024 });
+    const result = JSON.parse(stdout);
+    console.info('P-003 loaded sampler:', JSON.stringify(result));
+    const rows = [...result.baselineBefore, ...result.active, ...result.baselineAfter];
+    expect(new Set(rows.map((row) => row.checksum)).size).toBe(1);
+    expect(result.ended).toBe(25);
+    expect(result.delayed.durationUs).toBeGreaterThan(1_000_000);
+    expect(result.delayed.samples).toBeGreaterThan(10);
+    expect(result.maxBytes).toBeLessThan(8 * 1024 * 1024);
+    const heaps = result.memory.map((row: { heapUsed: number }) => row.heapUsed);
+    expect(Math.max(...heaps) - Math.min(...heaps)).toBeLessThan(16 * 1024 * 1024);
+    const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+    const baselineCpu = median([...result.baselineBefore, ...result.baselineAfter].map((row) => row.cpuMs));
+    const controlRatio = median(result.baselineBefore.map((row: { cpuMs: number }) => row.cpuMs)) /
+      median(result.baselineAfter.map((row: { cpuMs: number }) => row.cpuMs));
+    expect(controlRatio).toBeGreaterThan(0.85);
+    expect(controlRatio).toBeLessThan(1.15);
+    // Broad runaway detector; log the actual tradeoff for acceptance review.
+    expect(median(result.active.map((row: { cpuMs: number }) => row.cpuMs)) / baselineCpu).toBeLessThan(1.25);
+  }, 100_000);
 });

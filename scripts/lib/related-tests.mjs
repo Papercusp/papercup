@@ -94,6 +94,9 @@ export function writeRelatedFilterList(dir, files) {
 
 /** Extensions we index. */
 const SOURCE_RE = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+// Runtime paths can point at shell scripts as well as modules. Keep `.sh` out of
+// SOURCE_RE so the index does not treat every shell script as a source module.
+const RUNTIME_DEPENDENCY_RE = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx|sh)$/;
 const TEST_RE = /\.(test|spec)\.(ts|tsx|mts|mjs|js|jsx)$/;
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -472,6 +475,15 @@ export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
       const r = resolve(f, spec);
       if (r.target) set.add(r.target);
       else if (r.unresolvable) unresolved.add(f);
+    }
+    for (const match of src.matchAll(MODULE_RUNTIME_PATH_RE)) {
+      const spec = match[1] ?? match[2];
+      if (!spec || !RUNTIME_DEPENDENCY_RE.test(spec)) continue;
+      const target = candidatesFor(path.resolve(path.dirname(f), spec)).find(
+        (candidate) => fileSet.has(candidate) || fs.exists(candidate),
+      );
+      if (target) set.add(target);
+      else unresolved.add(f);
     }
     deps.set(f, set);
   }

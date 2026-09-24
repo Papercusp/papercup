@@ -1,0 +1,480 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P008 fixed six-pair client query wall comparison",
+  "framework": "node",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T11:06:20.643Z",
+  "finishedAt": "2026-09-24T11:06:21.930Z",
+  "summary": "Prospective protocol thread-post:1143257 completed six alternating control/candidate pairs on one read-only REPEATABLE READ backend. Candidate query client wall improved with identical returned row digests. Query component only; no full-tool, HTTP, host-adoption or shipment claim.",
+  "assertions": [
+    {
+      "id": "fixed-six-pair-cohort",
+      "passed": true,
+      "evidence": "Four ABBA warmups followed by six complete AB/BA pairs; every collected sample is preserved in measurement."
+    },
+    {
+      "id": "equal-row-results",
+      "passed": true,
+      "evidence": "All sixteen SELECTs returned 300 rows with one identical sorted full-row digest."
+    },
+    {
+      "id": "same-readonly-snapshot-backend",
+      "passed": true,
+      "evidence": "{\"before\":{\"snapshot\":\"683165444:683165444:\",\"backend_pid\":242085,\"read_only\":\"on\",\"isolation\":\"repeatable read\",\"enable_seqscan\":\"on\",\"enable_indexscan\":\"on\",\"enable_bitmapscan\":\"on\",\"plan_cache_mode\":\"auto\"},\"after\":{\"snapshot\":\"683165444:683165444:\",\"backend_pid\":242085,\"read_only\":\"on\",\"isolation\":\"repeatable read\",\"enable_seqscan\":\"on\",\"enable_indexscan\":\"on\",\"enable_bitmapscan\":\"on\",\"plan_cache_mode\":\"auto\"}}"
+    },
+    {
+      "id": "natural-planner",
+      "passed": true,
+      "evidence": "No planner flags forced. Post-timing EXPLAIN without ANALYZE reports broad work_items scan for control and hfc_item_kind_idx for candidate."
+    },
+    {
+      "id": "paired-improvement",
+      "passed": true,
+      "evidence": "{\"controlMedianMs\":90.41879499999993,\"candidateMedianMs\":11.655870500000105,\"pairedDeltasMs\":[-78.16815199999996,-76.85067000000004,-75.69288699999993,-78.62452199999984,-79.07681500000035,-153.84021699999948],\"paired\":{\"n\":6,\"meanA\":101.90832866666665,\"meanB\":11.53278483333338,\"delta\":{\"point\":-90.37554383333327,\"lower\":-116.01210966666645,\"upper\":-76.90390299999997,\"ci\":0.95},\"rho\":-0.811431706861344,\"halfWidth\":19.554103333333238,\"mde80\":32.88548841828643,\"significant\":true}}"
+    },
+    {
+      "id": "source-stability",
+      "passed": true,
+      "evidence": "Production query, cache adapter, database connection and bootstrap CI source hashes match before/after."
+    }
+  ],
+  "protocolRef": "thread-post:1143257",
+  "resultRef": "thread-post:1143258",
+  "coverageMapRef": "thread-post:1143259",
+  "executionNote": "Exact script below was passed to node on quoted-heredoc stdin. stdout was captured to /tmp/cache-p008-client-wall-cold69.json; stderr was empty; exec_command reported exit_code 0. No new measurement is run by recording this artifact.",
+  "script": "import { createHash } from 'node:crypto';\nimport { readFileSync } from 'node:fs';\nimport { performance } from 'node:perf_hooks';\nimport { createDedicatedOrgPg } from './libs/papercusp/libs/db/src/connection.ts';\nimport { pairedBootstrapCI } from './libs/generic/bench-metrics/src/intervals.ts';\nconst inputs = {\"queries\":{\"control\":\"SELECT feature_id, item_kind, harness_slug, title, summary, status, taken_by, taken_at, last_progress_at, parent_id, NULL::jsonb AS payload, needs_design, design_status, design_spec_id, discarded_design_work, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts, origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref, authority, closed_ts, goal_id, tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents FROM harness_shared.harness_features_consolidated WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND (parent_id IS NULL OR parent_id='') AND (item_kind='feature' OR item_kind IN (SELECT work_item_kind FROM harness_shared.datatype_registry WHERE workspace_id='papercusp-workspace' AND tier='generic-kind' AND status='active' AND work_item_kind IS NOT NULL)) ORDER BY updated_ts DESC NULLS LAST LIMIT 300\",\"candidate\":\"SELECT feature_id, item_kind, harness_slug, title, summary, status, taken_by, taken_at, last_progress_at, parent_id, NULL::jsonb AS payload, needs_design, design_status, design_spec_id, discarded_design_work, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts, origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref, authority, closed_ts, goal_id, tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents FROM harness_shared.harness_features_consolidated WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND (parent_id IS NULL OR parent_id='') AND item_kind = ANY(ARRAY(SELECT 'feature'::text UNION SELECT work_item_kind FROM harness_shared.datatype_registry WHERE workspace_id='papercusp-workspace' AND tier='generic-kind' AND status='active' AND work_item_kind IS NOT NULL)) ORDER BY updated_ts DESC NULLS LAST LIMIT 300\"},\"queryHashes\":{\"control\":\"e0a56fb5dcac4c67448182bf24c68c3f097cc303151f9910a66dba3b335d6afb\",\"candidate\":\"7164e9c80c414d73ade09c24b823d8f08d2381fa69f17692f8a77380d79626c9\"},\"sourceHashes\":{\"packages/operator-core/lib/work-items.ts\":\"e71c918817bc44b9f784f604d48494ebb0c75f3acd758ee5809784695b261969\",\"packages/operator-core/lib/cache/cached-read.ts\":\"73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9\",\"libs/papercusp/libs/db/src/connection.ts\":\"15ce7b0a0bd390fe46c80368621486758844841e7d1e6b00de5e08db2c21a5a0\",\"libs/generic/bench-metrics/src/intervals.ts\":\"1875122463e2f06e8c2c0fe2423202ae957aaf12e7853b03cb03716ca74e32f2\"},\"head\":\"befef09f6b70432395b23f9eec017988882f597f\"};\nconst sha = x => createHash('sha256').update(x).digest('hex');\nconst fingerprints = () => Object.fromEntries(Object.keys(inputs.sourceHashes).map(p => [p, sha(readFileSync(p))]));\nconst canonical = x => Array.isArray(x) ? x.map(canonical) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>[k,canonical(v)])) : typeof x === 'bigint' ? String(x) : x;\nconst digest = rows => sha(JSON.stringify(rows.map(r=>JSON.stringify(canonical(r))).sort()));\nconst result = {schemaVersion:'p008-query-client-wall-v1', manifestRef:'thread-post:1143257', startedAt:new Date().toISOString(), inputs, sourceBefore:fingerprints(), warmups:[], samples:[], failures:[]};\nfor(const [p,v] of Object.entries(inputs.sourceHashes)) if(result.sourceBefore[p]!==v) throw new Error('source fingerprint moved before run: '+p);\nconst {sql} = createDedicatedOrgPg('cache-p008-client-wall', {max:1});\ntry {\n await sql.begin('isolation level repeatable read read only', async tx => {\n  await tx.unsafe(\"SET LOCAL statement_timeout = '15s'\");\n  const state = async () => (await tx.unsafe(\"SELECT txid_current_snapshot()::text AS snapshot, pg_backend_pid() AS backend_pid, current_setting('transaction_read_only') AS read_only, current_setting('transaction_isolation') AS isolation, current_setting('enable_seqscan') AS enable_seqscan, current_setting('enable_indexscan') AS enable_indexscan, current_setting('enable_bitmapscan') AS enable_bitmapscan, current_setting('plan_cache_mode') AS plan_cache_mode\"))[0];\n  result.before = await state();\n  let expectedDigest;\n  const sample = async (arm,pair,phase) => {\n   const start=performance.now();\n   try {\n    const rows=await tx.unsafe(inputs.queries[arm],[],{prepare:false});\n    const wallMs=performance.now()-start;\n    const row={phase,pair,arm,wallMs,rowCount:rows.length,rowDigest:digest(rows)};\n    (phase==='warmup'?result.warmups:result.samples).push(row);\n    expectedDigest ??= row.rowDigest;\n    if(row.rowCount!==300 || row.rowDigest!==expectedDigest) throw new Error('row equality/count failed for '+phase+'/'+pair+'/'+arm);\n   } catch(e) {result.failures.push({phase,pair,arm,message:String(e),elapsedMs:performance.now()-start});throw e;}\n  };\n  for(const arm of ['control','candidate','candidate','control']) await sample(arm,null,'warmup');\n  for(let pair=0;pair<6;pair++) for(const arm of pair%2===0?['control','candidate']:['candidate','control']) await sample(arm,pair,'measured');\n  result.after = await state();\n  result.plans={};\n  for(const arm of ['control','candidate']) result.plans[arm]=(await tx.unsafe('EXPLAIN (FORMAT JSON) '+inputs.queries[arm],[],{prepare:false}))[0]['QUERY PLAN'];\n });\n if(result.before.snapshot!==result.after.snapshot || result.before.backend_pid!==result.after.backend_pid) throw new Error('snapshot/backend changed');\n const values=arm=>result.samples.filter(s=>s.arm===arm).sort((a,b)=>a.pair-b.pair).map(s=>s.wallMs);\n const median=a=>{const s=[...a].sort((a,b)=>a-b);return(s[2]+s[3])/2;};\n const a=values('control'),b=values('candidate');\n result.analysis={controlMedianMs:median(a),candidateMedianMs:median(b),pairedDeltasMs:b.map((v,i)=>v-a[i]),paired:pairedBootstrapCI(a,b,{ci:0.95,iterations:10000,seed:12345})};\n result.sourceAfter=fingerprints();\n result.sourceUnchanged=JSON.stringify(result.sourceBefore)===JSON.stringify(result.sourceAfter);\n result.status=result.sourceUnchanged?'complete':'source-moved';\n} catch(e) {result.status='incomplete';result.error=String(e);process.exitCode=1;}\nfinally {await sql.end({timeout:5});result.finishedAt=new Date().toISOString();console.log(JSON.stringify(result));}\n",
+  "measurement": {
+    "schemaVersion": "p008-query-client-wall-v1",
+    "manifestRef": "thread-post:1143257",
+    "startedAt": "2026-09-24T11:06:20.643Z",
+    "inputs": {
+      "queries": {
+        "control": "SELECT feature_id, item_kind, harness_slug, title, summary, status, taken_by, taken_at, last_progress_at, parent_id, NULL::jsonb AS payload, needs_design, design_status, design_spec_id, discarded_design_work, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts, origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref, authority, closed_ts, goal_id, tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents FROM harness_shared.harness_features_consolidated WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND (parent_id IS NULL OR parent_id='') AND (item_kind='feature' OR item_kind IN (SELECT work_item_kind FROM harness_shared.datatype_registry WHERE workspace_id='papercusp-workspace' AND tier='generic-kind' AND status='active' AND work_item_kind IS NOT NULL)) ORDER BY updated_ts DESC NULLS LAST LIMIT 300",
+        "candidate": "SELECT feature_id, item_kind, harness_slug, title, summary, status, taken_by, taken_at, last_progress_at, parent_id, NULL::jsonb AS payload, needs_design, design_status, design_spec_id, discarded_design_work, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts, origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref, authority, closed_ts, goal_id, tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents FROM harness_shared.harness_features_consolidated WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND (parent_id IS NULL OR parent_id='') AND item_kind = ANY(ARRAY(SELECT 'feature'::text UNION SELECT work_item_kind FROM harness_shared.datatype_registry WHERE workspace_id='papercusp-workspace' AND tier='generic-kind' AND status='active' AND work_item_kind IS NOT NULL)) ORDER BY updated_ts DESC NULLS LAST LIMIT 300"
+      },
+      "queryHashes": {
+        "control": "e0a56fb5dcac4c67448182bf24c68c3f097cc303151f9910a66dba3b335d6afb",
+        "candidate": "7164e9c80c414d73ade09c24b823d8f08d2381fa69f17692f8a77380d79626c9"
+      },
+      "sourceHashes": {
+        "packages/operator-core/lib/work-items.ts": "e71c918817bc44b9f784f604d48494ebb0c75f3acd758ee5809784695b261969",
+        "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+        "libs/papercusp/libs/db/src/connection.ts": "15ce7b0a0bd390fe46c80368621486758844841e7d1e6b00de5e08db2c21a5a0",
+        "libs/generic/bench-metrics/src/intervals.ts": "1875122463e2f06e8c2c0fe2423202ae957aaf12e7853b03cb03716ca74e32f2"
+      },
+      "head": "befef09f6b70432395b23f9eec017988882f597f"
+    },
+    "sourceBefore": {
+      "packages/operator-core/lib/work-items.ts": "e71c918817bc44b9f784f604d48494ebb0c75f3acd758ee5809784695b261969",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "libs/papercusp/libs/db/src/connection.ts": "15ce7b0a0bd390fe46c80368621486758844841e7d1e6b00de5e08db2c21a5a0",
+      "libs/generic/bench-metrics/src/intervals.ts": "1875122463e2f06e8c2c0fe2423202ae957aaf12e7853b03cb03716ca74e32f2"
+    },
+    "warmups": [
+      {
+        "phase": "warmup",
+        "pair": null,
+        "arm": "control",
+        "wallMs": 93.26803799999993,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "warmup",
+        "pair": null,
+        "arm": "candidate",
+        "wallMs": 16.26457400000004,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "warmup",
+        "pair": null,
+        "arm": "candidate",
+        "wallMs": 11.442468999999846,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "warmup",
+        "pair": null,
+        "arm": "control",
+        "wallMs": 245.81472899999994,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      }
+    ],
+    "samples": [
+      {
+        "phase": "measured",
+        "pair": 0,
+        "arm": "control",
+        "wallMs": 91.0111629999999,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 0,
+        "arm": "candidate",
+        "wallMs": 12.843010999999933,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 1,
+        "arm": "candidate",
+        "wallMs": 11.47146500000008,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 1,
+        "arm": "control",
+        "wallMs": 88.32213500000012,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 2,
+        "arm": "control",
+        "wallMs": 87.53316300000006,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 2,
+        "arm": "candidate",
+        "wallMs": 11.84027600000013,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 3,
+        "arm": "candidate",
+        "wallMs": 11.201905000000124,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 3,
+        "arm": "control",
+        "wallMs": 89.82642699999997,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 4,
+        "arm": "control",
+        "wallMs": 91.05251300000009,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 4,
+        "arm": "candidate",
+        "wallMs": 11.975697999999738,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 5,
+        "arm": "candidate",
+        "wallMs": 9.864354000000276,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      },
+      {
+        "phase": "measured",
+        "pair": 5,
+        "arm": "control",
+        "wallMs": 163.70457099999976,
+        "rowCount": 300,
+        "rowDigest": "c2e5cd25b4518351f7e571d80f250474edab2a1ff7df4c554ab78ee749c99b6b"
+      }
+    ],
+    "failures": [],
+    "before": {
+      "snapshot": "683165444:683165444:",
+      "backend_pid": 242085,
+      "read_only": "on",
+      "isolation": "repeatable read",
+      "enable_seqscan": "on",
+      "enable_indexscan": "on",
+      "enable_bitmapscan": "on",
+      "plan_cache_mode": "auto"
+    },
+    "after": {
+      "snapshot": "683165444:683165444:",
+      "backend_pid": 242085,
+      "read_only": "on",
+      "isolation": "repeatable read",
+      "enable_seqscan": "on",
+      "enable_indexscan": "on",
+      "enable_bitmapscan": "on",
+      "plan_cache_mode": "auto"
+    },
+    "plans": {
+      "control": [
+        {
+          "Plan": {
+            "Node Type": "Limit",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 56392.5,
+            "Total Cost": 56428.42,
+            "Plan Rows": 300,
+            "Plan Width": 1086,
+            "Disabled": false,
+            "Plans": [
+              {
+                "Node Type": "Gather Merge",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 56392.5,
+                "Total Cost": 56644.42,
+                "Plan Rows": 2104,
+                "Plan Width": 1086,
+                "Disabled": false,
+                "Workers Planned": 4,
+                "Plans": [
+                  {
+                    "Node Type": "Sort",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Startup Cost": 55392.44,
+                    "Total Cost": 55393.75,
+                    "Plan Rows": 526,
+                    "Plan Width": 1086,
+                    "Disabled": false,
+                    "Sort Key": [
+                      "work_items.updated_ts DESC NULLS LAST"
+                    ],
+                    "Plans": [
+                      {
+                        "Node Type": "Seq Scan",
+                        "Parent Relationship": "Outer",
+                        "Parallel Aware": true,
+                        "Async Capable": false,
+                        "Relation Name": "work_items",
+                        "Alias": "work_items",
+                        "Startup Cost": 2.36,
+                        "Total Cost": 55368.67,
+                        "Plan Rows": 526,
+                        "Plan Width": 1086,
+                        "Disabled": false,
+                        "Filter": "(((parent_id IS NULL) OR (parent_id = ''::text)) AND (workspace_id = 'papercusp-workspace'::text) AND (harness_slug = 'papercusp'::text) AND (item_kind <> ALL ('{bug,change,task}'::text[])) AND ((item_kind = 'feature'::text) OR (ANY (item_kind = (hashed SubPlan 1).col1))))",
+                        "Plans": [
+                          {
+                            "Node Type": "Index Scan",
+                            "Parent Relationship": "SubPlan",
+                            "Subplan Name": "SubPlan 1",
+                            "Parallel Aware": false,
+                            "Async Capable": false,
+                            "Scan Direction": "Forward",
+                            "Index Name": "datatype_registry_ws_kind_idx",
+                            "Relation Name": "datatype_registry",
+                            "Alias": "datatype_registry",
+                            "Startup Cost": 0.13,
+                            "Total Cost": 2.36,
+                            "Plan Rows": 1,
+                            "Plan Width": 32,
+                            "Disabled": false,
+                            "Index Cond": "(workspace_id = 'papercusp-workspace'::text)",
+                            "Filter": "((tier = 'generic-kind'::text) AND (status = 'active'::text))"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "candidate": [
+        {
+          "Plan": {
+            "Node Type": "Limit",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 53644.78,
+            "Total Cost": 53645.53,
+            "Plan Rows": 300,
+            "Plan Width": 1086,
+            "Disabled": false,
+            "Plans": [
+              {
+                "Node Type": "Unique",
+                "Parent Relationship": "InitPlan",
+                "Subplan Name": "InitPlan 1",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 2.38,
+                "Total Cost": 2.39,
+                "Plan Rows": 2,
+                "Plan Width": 32,
+                "Disabled": false,
+                "Plans": [
+                  {
+                    "Node Type": "Sort",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Startup Cost": 2.38,
+                    "Total Cost": 2.39,
+                    "Plan Rows": 2,
+                    "Plan Width": 32,
+                    "Disabled": false,
+                    "Sort Key": [
+                      "('feature'::text)"
+                    ],
+                    "Plans": [
+                      {
+                        "Node Type": "Append",
+                        "Parent Relationship": "Outer",
+                        "Parallel Aware": false,
+                        "Async Capable": false,
+                        "Startup Cost": 0,
+                        "Total Cost": 2.38,
+                        "Plan Rows": 2,
+                        "Plan Width": 32,
+                        "Disabled": false,
+                        "Subplans Removed": 0,
+                        "Plans": [
+                          {
+                            "Node Type": "Result",
+                            "Parent Relationship": "Member",
+                            "Parallel Aware": false,
+                            "Async Capable": false,
+                            "Startup Cost": 0,
+                            "Total Cost": 0.01,
+                            "Plan Rows": 1,
+                            "Plan Width": 32,
+                            "Disabled": false
+                          },
+                          {
+                            "Node Type": "Index Scan",
+                            "Parent Relationship": "Member",
+                            "Parallel Aware": false,
+                            "Async Capable": false,
+                            "Scan Direction": "Forward",
+                            "Index Name": "datatype_registry_ws_kind_idx",
+                            "Relation Name": "datatype_registry",
+                            "Alias": "datatype_registry",
+                            "Startup Cost": 0.13,
+                            "Total Cost": 2.36,
+                            "Plan Rows": 1,
+                            "Plan Width": 32,
+                            "Disabled": false,
+                            "Index Cond": "(workspace_id = 'papercusp-workspace'::text)",
+                            "Filter": "((tier = 'generic-kind'::text) AND (status = 'active'::text))"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Node Type": "Sort",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 53642.38,
+                "Total Cost": 53650.51,
+                "Plan Rows": 3252,
+                "Plan Width": 1086,
+                "Disabled": false,
+                "Sort Key": [
+                  "work_items.updated_ts DESC NULLS LAST"
+                ],
+                "Plans": [
+                  {
+                    "Node Type": "Index Scan",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Scan Direction": "Forward",
+                    "Index Name": "hfc_item_kind_idx",
+                    "Relation Name": "work_items",
+                    "Alias": "work_items",
+                    "Startup Cost": 0.42,
+                    "Total Cost": 53492.32,
+                    "Plan Rows": 3252,
+                    "Plan Width": 1086,
+                    "Disabled": false,
+                    "Index Cond": "((workspace_id = 'papercusp-workspace'::text) AND (harness_slug = 'papercusp'::text) AND (item_kind = ANY ((InitPlan 1).col1)))",
+                    "Filter": "(((parent_id IS NULL) OR (parent_id = ''::text)) AND (item_kind <> ALL ('{bug,change,task}'::text[])))"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "analysis": {
+      "controlMedianMs": 90.41879499999993,
+      "candidateMedianMs": 11.655870500000105,
+      "pairedDeltasMs": [
+        -78.16815199999996,
+        -76.85067000000004,
+        -75.69288699999993,
+        -78.62452199999984,
+        -79.07681500000035,
+        -153.84021699999948
+      ],
+      "paired": {
+        "n": 6,
+        "meanA": 101.90832866666665,
+        "meanB": 11.53278483333338,
+        "delta": {
+          "point": -90.37554383333327,
+          "lower": -116.01210966666645,
+          "upper": -76.90390299999997,
+          "ci": 0.95
+        },
+        "rho": -0.811431706861344,
+        "halfWidth": 19.554103333333238,
+        "mde80": 32.88548841828643,
+        "significant": true
+      }
+    },
+    "sourceAfter": {
+      "packages/operator-core/lib/work-items.ts": "e71c918817bc44b9f784f604d48494ebb0c75f3acd758ee5809784695b261969",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "libs/papercusp/libs/db/src/connection.ts": "15ce7b0a0bd390fe46c80368621486758844841e7d1e6b00de5e08db2c21a5a0",
+      "libs/generic/bench-metrics/src/intervals.ts": "1875122463e2f06e8c2c0fe2423202ae957aaf12e7853b03cb03716ca74e32f2"
+    },
+    "sourceUnchanged": true,
+    "status": "complete",
+    "finishedAt": "2026-09-24T11:06:21.930Z"
+  },
+  "limitations": [
+    "Only the feature-family query component is measured, through the current production connection builder.",
+    "One backend and one repeatable-read snapshot; shared database/host were not isolated from unrelated traffic.",
+    "Rows are compared as sorted full-row multisets; stable ordering among equal updated_ts values is not asserted.",
+    "R7 freshness/accounting/semantic proofs remain separate ledger-backed test bindings.",
+    "No provider inference, cache TTL/invalidation change, deployment, or host-process adoption verification."
+  ]
+}

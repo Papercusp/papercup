@@ -1009,6 +1009,21 @@ export function sessionTranscriptFile(session: any, { home }?: {
     home?: string | undefined;
 }): any;
 /**
+ * Restore the Papercusp MCP definitions referenced by a Claude transcript
+ * before `--resume` opens it. A native ToolSearch result is stored as a
+ * client-mangled `tool_reference`; a new CLI process otherwise starts with
+ * only the current trimmed seed, and Claude rejects the replay before it can
+ * call tools:find. Unknown/removed tool names are harmlessly ignored by the
+ * server's allowlist filter and remain eligible for the poison detector.
+ */
+export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { home }?: {
+    home?: string | undefined;
+}): {
+    transcriptPath: any;
+    restored: number;
+    toolReferences: string[];
+};
+/**
  * The model that was LAST ACTIVE in a session, read from its own transcript
  * (WI-3758: `psu --resume` shows it and offers to keep it). Tail-reads the
  * final ~256KB and scans lines newest-first:

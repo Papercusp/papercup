@@ -9,6 +9,7 @@
  * keeps that true as MODES grows.
  */
 import { describe, it, expect } from 'vitest';
+import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 // WI-37711: imported rather than re-typed so the drain-fleet contract assertion below is
 // pinned to the REAL claim-spec grammar — if `goal` ever leaves ITEM_FIELDS while the
 // contract still prescribes a goal leaf, this test fails instead of the fleet discovering it.
@@ -28,6 +29,31 @@ import {
   isLaunchableMode,
   launchableModes,
 } from './registry';
+
+describe('generated mode identity catalog view', () => {
+  it('serves titles and index text from authored manifests while retaining host policy fields', () => {
+    for (const component of BUILTIN_MODE_COMPONENTS) {
+      const mode = modeById(component.id)!;
+      expect(mode.title).toBe(component.title);
+      expect(mode.oneLiner).toBe(component.oneLiner);
+      expect(modeIndexMarkdown()).toContain(component.oneLiner);
+    }
+    expect(modeById('goal')?.implies).toEqual(['auto', 'ideate']);
+    expect(modeById('goal')?.requiresSubject).toBe(true);
+    expect(modeById('cold-auto')?.axis).toBe('autonomy');
+    const autoText = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === 'auto')!.definitionText;
+    const coldHeading = '## COLD AUTO — the same autonomy component across fresh-context wakes';
+    expect(modeById('cold-auto')?.contract).toBe(autoText.slice(autoText.indexOf(coldHeading)).trimEnd());
+    expect(modeById('cold-auto')?.contract).toContain('loop:checkpoint { did, left, insight, next }');
+  });
+
+  it('reads GOAL/GRADE/TEST definition text from the generated authored components', () => {
+    for (const id of ['goal', 'grade', 'test']) {
+      const component = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === id)!;
+      expect(modeById(id)?.contract).toBe(component.definitionText);
+    }
+  });
+});
 
 /**
  * THE `implies` DECLARATION (D-003) — the field the cascade writes from and the
@@ -124,10 +150,10 @@ describe('DRAIN mode defect-filing contract (WI-38401)', () => {
 
   it('suppresses incidental suspected-defect rows and preserves only direct blockers', () => {
     expect(drain).not.toBeNull();
-    expect(drain!.contract).toContain('DEFECT-FILING EXCEPTION');
+    expect(drain!.contract).toMatch(/Defect-filing exception/i);
     expect(drain!.contract).toMatch(/DRAIN overrides the general file-every-suspected-bug\s+rule/);
-    expect(drain!.contract).toMatch(/Do not mint improvements:capture rows, issues, work-items, or observations/);
-    expect(drain!.contract).toMatch(/DIRECTLY BLOCKS the scoped drain/);
+    expect(drain!.contract).toMatch(/do\s+\*\*not\*\*\s+mint an\s+`improvements:capture`, issue, work-item, or observation/i);
+    expect(drain!.contract).toMatch(/directly blocks the scoped drain/i);
     expect(drain!.contract).toMatch(/exactly one blocker linked to the active drain item\/plan/);
   });
 });
@@ -905,9 +931,9 @@ describe('AUDIT mode', () => {
   it('requires an explicit mode exit after delivery and before routed remediation', () => {
     const c = audit!.contract;
     expect(c).toContain("mode:set { mode:'audit', enabled:false");
-    expect(c).toContain('Delivery does NOT clear the durable mode row');
-    expect(c).toContain('that exit call is your FIRST action');
-    expect(c).toContain('never\n   begins until that exit call succeeds');
+    expect(c).toMatch(/Delivery does\s+not clear the durable mode row/i);
+    expect(c).toMatch(/that (explicit )?exit call is your FIRST action/);
+    expect(c).toMatch(/never\s+begins until that exit call succeeds/);
     expect(c).toContain('standalone tool call');
     expect(c).toContain('never batch it with any subject mutation');
   });
@@ -915,8 +941,8 @@ describe('AUDIT mode', () => {
   it('keeps the anti-false-verdict rails a report is most likely to violate', () => {
     const c = audit!.contract;
     expect(c).toContain('"All items terminal" is NOT a finished plan');
-    expect(c).toContain('A single grep is not an absence proof');
-    expect(c).toContain('bounded\n   count is never quoted as a total');
+    expect(c).toMatch(/A\s+single grep is not an absence proof/);
+    expect(c).toMatch(/bounded\s+count is never quoted as a total/);
   });
 });
 
