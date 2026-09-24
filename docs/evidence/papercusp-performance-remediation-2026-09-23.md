@@ -914,3 +914,58 @@ cases. All 199 passed with zero skips. Scoped typecheck passed the four changed
 TypeScript source/test paths, with 23 other import-graph diagnostics; diff
 whitespace checks passed. This proves current source behavior, not deployment,
 transport-loss exit recovery, a profiler-overhead remedy or P-003 completion.
+
+### P-003 prerequisite: failed SIGKILL escalation is not successful delivery
+
+EI-24146077216039124 was found while evaluating the existing task-manager
+containment surface for transport-loss recovery. Both `killTask` and
+`killScopeUnit` ignored the result of the escalated `systemctl kill` command,
+then reported successful pending termination even if that command failed.
+They now propagate `command_failed` and retain the original command error.
+
+The initial interpretation that any successful pending response was itself a
+bug was withdrawn after reading EI-20130774106283501. That behavior deliberately
+avoids retry advice after accepted SIGKILL delivery while reaping is pending.
+It is preserved. A successful kill response therefore still is **not** proof
+that every process has exited; a future transport fence needs separate proof.
+
+The permanent test holds the cgroup populated, accepts SIGTERM, and rejects
+only SIGKILL with a bus-disconnect error. Old source failed both task and scope
+cases in **19289906**, reporting `ok:true` and `no retry is required`. Fixed
+source passed all 53 control cases in **19289907**, including accepted-delivery
+and delayed-reaping controls. The accompanying processes/kill suite passed
+10 cases: 63 tests total, zero skips, at HEAD `2cc99b2e34` plus the local source
+and test changes. Scoped typecheck found zero diagnostics in the two changed
+files (25 other import-graph diagnostics); `git diff --check` passed. This is
+source verification only. The overall P-003 transport fence remains open.
+
+### P-003 live-server connection drain (server-death recovery still open)
+
+Plan decision D-001 preserves other users of the shared sidecar. The existing
+`spawn:cancel` capability response now includes random server and connection
+generations. `process:exec` can require that identity before admission; a
+reconnected socket cannot silently run a request bound to its predecessor.
+The new IPC `process:drain` operation runs on another connection, revokes the
+original socket before any await, aborts its existing controllers, and joins
+the original exec promise. Closed connections retain only their unfinished
+requests. Completed responses are not cached: a missing result is returned as
+`null`, meaning unknown outcome with confirmed exit, never permission to replay.
+This extends the existing IPC and controller maps without a table or timer.
+
+The project integration suite covers disconnection while the child is alive,
+delayed admission before any PID, stale connection and server generations,
+same-connection refusal, isolation from another client's live command, and
+repeated drain after one completed file mutation. The old-source run
+**19289919** failed all five new cases on the absent capability; cleanup also
+reported three secondary rejected promises, subsequently handled in the test
+helper. Fixed **19289921** passed all 21 real-process cases; the IPC client
+suite passed 11 cases. Total: 32 passed, zero skipped, at HEAD `2cc99b2e34` plus
+local source/test changes. The three changed TypeScript paths pass scoped
+typecheck with zero requested errors and 23 other import-graph diagnostics.
+
+This verifies the **live-server half only**. No Git caller uses the new fence
+yet, and signal-bearing mutations remain local. Next: bind the handshake to
+kernel process/cgroup identity, prove recovery when that exact server dies,
+then integrate the caller without retrying an ambiguous mutation or releasing
+its repository lease early. Do not use `killScopeUnit.ok` as an exit verdict,
+nor destroy a live shared sidecar after a single client's connection fault.
