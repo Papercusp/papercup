@@ -907,7 +907,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         .querySelector('input[aria-label="Filter work items"]')
         ?.closest('.pc-advpanel')
         ?.querySelectorAll<HTMLElement>('[role="row"]');
-      rows[1]?.click();
+      rows?.[1]?.click();
     });
 
     // If a customised layout placed Detail in the same tab group as Work

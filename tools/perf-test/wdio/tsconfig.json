@@ -1,16 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
-    // "node10" (the old "node") is deprecated and made `tsc -p` here exit 2 on
-    // the OPTION before it typechecked a single file — so this runner's
-    // typecheck silently checked NOTHING (WI-38449). "node10" is spelled
-    // explicitly now because the alias is what hid it, and the deprecation is
-    // acknowledged rather than left to fail the run. Not "bundler"/"node16":
-    // these sources are extensionless CommonJS relative imports, which those
-    // modes reject.
-    "moduleResolution": "node10",
-    "ignoreDeprecations": "5.0",
+    // Match the current Node/tsx runner, including require(ESM). NodeNext
+    // preserves extensionless imports in this CommonJS package. The retired
+    // node10 resolver prevented TS7 from checking any runner source at all.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

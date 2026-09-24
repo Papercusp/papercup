@@ -4,7 +4,8 @@
   "private": true,
   "description": "WebdriverIO + tauri-driver runner for the packaged Papercusp desktop binary",
   "scripts": {
-    "test": "npm run test:unit && npm run test:wdio",
+    "test": "npm run typecheck && npm run test:unit && npm run test:wdio",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:unit": "node --import tsx --test perf-report.node-test.ts",
     "test:wdio": "wdio run wdio.conf.ts",
     "test:debug": "wdio run wdio.conf.ts --logLevel=debug"

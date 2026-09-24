@@ -15,7 +15,8 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * unsaved draft (D-007).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { markInteractionPhase, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import { Drawer } from 'vaul';
 import { useSyncQuery } from '@papercusp/sync';
 import { PlanDocumentFrontmatter } from '@papercusp/ui-primitives';
@@ -80,6 +81,14 @@ interface Props {
 
 export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
   const { data, loading, error, refresh, setData } = usePlan(slug, { harnessSlug });
+  useLayoutEffect(() => {
+    markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'detail-mounted');
+  }, [slug, harnessSlug]);
+  useLayoutEffect(() => {
+    if (data && !loading && !error) {
+      markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'data-ready');
+    }
+  }, [data, loading, error]);
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
   const [writeTick, setWriteTick] = useState(0);

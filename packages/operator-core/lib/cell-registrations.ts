@@ -619,6 +619,10 @@ export const GATE_QUALIFICATION_CELL: CellSpec = {
         meaning: 'One physical runner owns a live lease for this logical attempt.',
         safeAction: 'Await that runner; do not start a competing checkpoint.',
       },
+      'inspect-runner-liveness': {
+        meaning: 'The physical runner lease expired, but its process liveness is not yet proven.',
+        safeAction: 'Inspect the exact runner before reclaiming its lease; age alone does not prove the runner is dead.',
+      },
       'recover-expired-runner': {
         meaning: 'The recorded physical-run lease expired without a terminal result.',
         safeAction: 'Reconcile the expired runner and let the routine reserve a replacement for the same logical attempt.',

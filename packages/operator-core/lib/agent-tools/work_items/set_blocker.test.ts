@@ -314,6 +314,38 @@ describe('work_items:set_blocker', () => {
     expect(out).toMatchObject({ ok: true, id: item.id });
   });
 
+  it('refuses to park source proof when the item also promises final deployed parity', async () => {
+    const item = {
+      id: 'WI-mixed-parity',
+      family: 'issue',
+      kind: 'change',
+      state: 'wip',
+      harness: 'papercusp',
+      title: 'Prove regression clauses and deployed runtime parity',
+      summary: 'Run regression tests on staging before final deployed parity.',
+      payload: {},
+    };
+    getWorkItem.mockResolvedValue(item);
+
+    const out = await one({
+      id: item.id,
+      kind: 'gate',
+      capability: 'live-dependency',
+      ref: 'gate.greenCheckpoint.ownership',
+      summary:
+        'deployed-only property: final runtime identity. staging cannot exercise it because only the deployed host serves main.',
+      nextVerb: 'wait for main deployment before final parity',
+    });
+
+    expect(out).toMatchObject({
+      ok: false,
+      id: item.id,
+      code: 'non_final_deployed_main_blocker',
+    });
+    expect(out.error).toContain('Split the source work');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('does not let item metadata launder a generic deployed-main blocker', async () => {
     const item = {
       id: 'EI-23090624251629318',

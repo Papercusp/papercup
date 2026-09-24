@@ -7,6 +7,8 @@
  * the green pin is automation-only).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import { renderWorkspaceMapSection, resolveWorkspaceMapConfig } from './workspace-map';
 
 // EI-8794: the fallback-detection tests below stub `execFileSync` itself (rather
@@ -154,5 +156,29 @@ describe('resolveWorkspaceMapConfig', () => {
     const cfg = resolveWorkspaceMapConfig();
     expect(cfg.integrationRoot).toBe('/repo/toplevel');
     expect(cfg.gitDetected).not.toBe(false);
+  });
+});
+
+describe('live staging workspace-map agreement', () => {
+  it('prescribes the existing worktree checked out on the staging branch', () => {
+    const listing = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const stagingPaths = listing
+      .split(/\n{2,}/)
+      .map((block) => {
+        const worktree = block.match(/^worktree (.+)$/m)?.[1]?.trim();
+        const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1]?.trim();
+        const prunable = /^prunable(?:\s|$)/m.test(block);
+        return worktree && branch === 'staging' && !prunable && existsSync(worktree) ? worktree : null;
+      })
+      .filter((worktree): worktree is string => worktree !== null);
+
+    expect(stagingPaths).toHaveLength(1);
+    const actualStagingPath = stagingPaths[0]!;
+    const config = resolveWorkspaceMapConfig();
+    expect(config.integrationBranch).toBe('staging');
+    expect(resolvePath(config.integrationRoot)).toBe(resolvePath(actualStagingPath));
   });
 });
