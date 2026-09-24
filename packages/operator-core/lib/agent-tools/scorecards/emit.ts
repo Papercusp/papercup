@@ -2125,14 +2125,14 @@ export async function emitScorecard(
         deps.dispatchTool,
       );
       if (replayConsistencyError) return { ok: false as const, ...replayConsistencyError };
-      // A grading-integrity FAIL on re-runnable-evidence is a claim about executing
-      // the target card's stored probe. An auditor on an older/diverged build can
-      // observe its own stale API and manufacture a failure that belongs to the
-      // deployment pipeline, not the card. Keep the target pending until a runtime
-      // whose generation is known to contain the graded card can audit it.
+      // Every grading-integrity rating on re-runnable-evidence depends on the
+      // target card's evaluator. An older/diverged auditor can return pass,
+      // fail, or unknown using different evaluator semantics; none can settle
+      // a card graded by a newer build. Keep the target pending until the
+      // auditor runs on the same or a descendant generation.
       if (
         gradedObservation.rerunRecipe &&
-        ratingVerdict(args.ratings?.['re-runnable-evidence']?.rating ?? '') === 'fail'
+        args.ratings?.['re-runnable-evidence'] !== undefined
       ) {
         const rawGeneration =
           gradedRawObservation && typeof gradedRawObservation === 'object' && !Array.isArray(gradedRawObservation)
@@ -2152,8 +2152,8 @@ export async function emitScorecard(
             ok: false as const,
             code: 'grading_audit_generation_incompatible' as const,
             error:
-              `grading-integrity audit for '${args.subject.ref}' cannot accept ` +
-              `re-runnable-evidence='fail': ${generationCheck.reason}; ` +
+              `grading-integrity audit for '${args.subject.ref}' cannot accept its ` +
+              `re-runnable-evidence rating from an incompatible build: ${generationCheck.reason}; ` +
               'the auditor must run on the same or a descendant build of the graded card; no audit card was persisted',
           };
         }
