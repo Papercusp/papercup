@@ -3,6 +3,7 @@
  * No model prompt, credential, SU launch, or native user interface is needed. */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +116,65 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it('Codex preserves native turn metadata on a loopback Responses request without provider inference', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      // An intentional local refusal ends this wire-format probe. No provider,
+      // credential, model inference, or synthetic charged-usage record is used.
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'local protocol probe complete', type: 'invalid_request_error' } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback listener');
+    let p: SuStdioPeer | undefined;
+    try {
+      const overrides = {
+        model_provider: 'cache_protocol_probe',
+        'model_providers.cache_protocol_probe.name': 'Local protocol fixture',
+        'model_providers.cache_protocol_probe.base_url': `http://127.0.0.1:${address.port}/v1`,
+        'model_providers.cache_protocol_probe.wire_api': 'responses',
+        'model_providers.cache_protocol_probe.requires_openai_auth': false,
+        'model_providers.cache_protocol_probe.supports_websockets': false,
+        'model_providers.cache_protocol_probe.request_max_retries': 0,
+        'model_providers.cache_protocol_probe.stream_max_retries': 0,
+        'features.apps': false,
+        'features.shell_tool': false,
+        web_search: 'disabled',
+      };
+      p = await peer('codex', ['app-server', ...Object.entries(overrides).flatMap(([key, value]) =>
+        ['-c', `${key}=${JSON.stringify(value)}`])]);
+      await p.request({ method: 'initialize', params: {
+        clientInfo: { name: 'papercusp_cache_protocol_test', version: '1' },
+        capabilities: { experimentalApi: true },
+      } });
+      p.send({ method: 'initialized', params: {} });
+      const started = await p.request({ method: 'thread/start', params: {
+        model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe',
+        cwd: homes.at(-1), approvalPolicy: 'never', sandbox: 'read-only',
+      } });
+      const threadId = (started.thread as RpcFrame).id;
+      const turn = await p.request({ method: 'turn/start', params: {
+        threadId, input: [{ type: 'text', text: 'Offline wire-format probe; the local endpoint will refuse.' }],
+        responsesapiClientMetadata: { cache_eval_case: 'native-correlation-control' },
+      } });
+      await vi.waitFor(() => expect(requests).toHaveLength(1), { timeout: 20_000 });
+      const clientMetadata = requests[0].client_metadata as Record<string, string>;
+      const metadata = JSON.parse(clientMetadata['x-codex-turn-metadata']) as Record<string, string>;
+      expect(metadata).toMatchObject({
+        thread_id: threadId,
+        turn_id: (turn.turn as RpcFrame).id,
+        cache_eval_case: 'native-correlation-control',
+      });
+    } finally {
+      if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  }, 90_000);
+
   it('Codex accepts the SU launch flags and app-server handshake', async () => {
     const p = await peer('codex', ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'app-server']);
     let init: RpcFrame;
