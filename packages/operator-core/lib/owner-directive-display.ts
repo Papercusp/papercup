@@ -37,6 +37,18 @@ export function shortOwner(ownerId: string): string {
 }
 
 /**
+ * D-004(1) of directive-ownership-clarity-2026-09-23: identical text pasted into
+ * N sessions stays N rows, one per addressee, each closed independently — so a
+ * row whose text is also open for other sessions says so. `n` counts OTHER
+ * sessions holding an OPEN copy (a closed copy can no longer be closed by
+ * mistake). Empty for 0/unknown, so an undecorated line never claims "unique".
+ */
+export function alsoSentToNote(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  return ` (also sent to ${n} other session${n === 1 ? '' : 's'}; each copy is its own addressee's to close)`;
+}
+
+/**
  * Nothing is truncated: a directive of at most OWNER_DIRECTIVE_VERBATIM_CAP
  * chars renders the owner's words in full; a longer one renders its agent
  * summary, labeled with its author so it is never mistaken for owner speech,
