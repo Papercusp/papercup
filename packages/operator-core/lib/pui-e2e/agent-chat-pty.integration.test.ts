@@ -4620,6 +4620,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       await pane.waitFor('resize to at least 80×20');
       expect(pane.screen()).not.toContain(draft);
       pane.write('zzz'); // held: nothing the owner cannot see changes
+      // The keys (PTY bytes) and the resize (SIGWINCH) reach the PUI on separate
+      // channels, so their processing order is not fixed. Let the event loop consume
+      // the held keys at the small size first; otherwise a slow debug build under load
+      // applies the resize first and then correctly accepts 'zzz' at 80x24.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
       pane.resize(80, 24);
       await pane.waitFor(draft);
       await pane.waitForGone('Terminal too small');
