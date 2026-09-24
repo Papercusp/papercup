@@ -45,7 +45,8 @@ export interface ExecParams {
   cwd?: string;
   env?: Record<string, string>;
   /** Optional no-output deadline. Unlike `timeoutMs` (the absolute hard
-   * ceiling), this timer refreshes whenever stdout/stderr advances. */
+   * ceiling), this timer refreshes on observed stdout/stderr progress. File
+   * output is sampled at idle deadlines, without copying its bytes into JS. */
   idleTimeoutMs?: number;
   timeoutMs?: number;
   /**
@@ -190,6 +191,8 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleCheck: ReturnType<typeof setImmediate> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleGeneration = 0;
+      let observedStdoutBytes = 0;
       let removeAbortListener = (): void => {};
       const groupLifetime = processGroupLifetime(child, (message) => { stderr += `\nsidecar ${message}`; });
       const signalCommand = groupLifetime.signal;
@@ -198,6 +201,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         commandExited = true;
       };
       const clearTimers = (): void => {
+        idleGeneration += 1;
         if (hardTimer) clearTimeout(hardTimer);
         if (idleTimer) clearTimeout(idleTimer);
         if (idleCheck) clearImmediate(idleCheck);
@@ -232,6 +236,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       };
       const armIdleTimer = (): void => {
         if (idleTimeoutMs <= 0 || settled || terminating) return;
+        const generation = ++idleGeneration;
         if (idleTimer) clearTimeout(idleTimer);
         if (idleCheck) clearImmediate(idleCheck);
         idleCheck = null;
@@ -241,11 +246,40 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           // waiting in an OS pipe. Let POLL deliver those bytes before deciding
           // the child was idle. A data event cancels this candidate and re-arms
           // the idle timer; the independent hard ceiling is never deferred.
-          idleCheck = setImmediate(() => {
+          idleCheck = setImmediate(async () => {
             idleCheck = null;
+            const current = (): boolean =>
+              generation === idleGeneration && !settled && !commandExited && !terminating;
+            if (!current()) return;
+            if (stdoutHandle) {
+              // A handed-off fd has no pipe events. Inspect its own inode,
+              // not the path (which could have been replaced), only when the
+              // existing idle deadline needs a verdict. A changed size is
+              // observed output progress; an unchanged next sample can expire.
+              // This is conservative by one sample interval after the final
+              // write, while the independent absolute deadline stays exact.
+              let bytes: number;
+              try {
+                bytes = (await stdoutHandle.stat()).size;
+              } catch (error) {
+                if (current()) terminate(`could not verify stdout-file progress: ${String(error)}`);
+                return;
+              }
+              // Pipe progress, cancellation or close may have won while fstat
+              // was pending. That newer state invalidates this idle candidate.
+              if (!current()) return;
+              if (bytes !== observedStdoutBytes) {
+                observedStdoutBytes = bytes;
+                reportOutput();
+                armIdleTimer();
+                return;
+              }
+            }
             terminate(`made no output progress for ${idleTimeoutMs}ms`);
           });
-          idleCheck.unref?.();
+          // A file-only child has no pipe traffic to wake POLL. Keep this
+          // one-shot check referenced so it runs even when the next event
+          // would otherwise be child close or the absolute deadline.
         }, idleTimeoutMs);
         idleTimer.unref?.();
       };
