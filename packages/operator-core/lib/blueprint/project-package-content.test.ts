@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSchema, loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 
 vi.mock('../harness-ops/proxy', () => ({ registerHarnessOpProxies: vi.fn() }));
 vi.mock('./registry-sets', () => ({ blueprintRegistrySets: () => ({}) }));
@@ -41,6 +41,25 @@ describe('P-006 existing blueprint content-hash projection', () => {
     const sql = vi.fn(async () => []);
     await expect(projectBlueprintToPg(sql as never, { workspaceId: 'w', harnessSlug: 'h',
       blueprint: {} as never, sourcePath: '/missing-p006/blueprint.yaml' })).rejects.toThrow();
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('refuses to project an operation without an immutable compiled input closure', async () => {
+    const sql = vi.fn(async () => []);
+    const blueprint = BlueprintSchema.parse({
+      id: 'uncompiled-operation',
+      workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'extract', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' },
+        inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } },
+      }],
+    });
+    await expect(projectBlueprintToPg(sql as never, {
+      workspaceId: 'w', harnessSlug: 'h', blueprint,
+    })).rejects.toThrow(/requires a compiled specification/);
     expect(sql).not.toHaveBeenCalled();
   });
 });

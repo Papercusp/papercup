@@ -81,22 +81,22 @@ afterAll(async () => {
 
 it('projects + reads back the resolved coding blueprint', async () => {
   const loaded = loadBuiltinBlueprint('coding-factory');
-  const { contentHash } = await projectBlueprintToPg(sql, {
+  const { contentHash, specification } = await projectBlueprintToPg(sql, {
     workspaceId: WS,
     harnessSlug: 'demo',
     blueprint: loaded.blueprint,
     loaded,
-    contentHash: loaded.contentHash,
-    sourcePath: '.papercusp/blueprint.yaml',
   });
-  expect(contentHash).toBe(loaded.contentHash);
+  // The current cache key is the complete compiled specification revision when
+  // a loaded source is available, including prompt/package inputs.
+  expect(contentHash).toBe(specification?.specificationRevision);
 
   const read = await readBlueprintFromPg(sql, WS, 'demo');
   expect(read).not.toBeNull();
   expect(read!.id).toBe('coding-factory');
   // The round-tripped (jsonb → schema-parse) blueprint equals the loaded one.
   expect(read).toEqual(loaded.blueprint);
-  expect(await readBlueprintHashFromPg(sql, WS, 'demo')).toBe(loaded.contentHash);
+  expect(await readBlueprintHashFromPg(sql, WS, 'demo')).toBe(contentHash);
 });
 
 it('upsert overwrites the same (workspace, harness) row', async () => {

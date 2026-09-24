@@ -142,6 +142,9 @@ export async function projectBlueprintToPg(
     : loaded ? await compileBlueprintWithPackages(loaded, {
       workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
     }) : undefined;
+  if (input.blueprint.operations?.length && !specification) {
+    throw new Error('operation-bearing blueprint projection requires a compiled specification with a pinned input closure');
+  }
   if (specification && blueprintHash(BlueprintSchema.parse(specification.configuration)) !== blueprintHash(input.blueprint)) {
     throw new Error('compiled specification does not describe the blueprint being projected');
   }
