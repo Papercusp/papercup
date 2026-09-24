@@ -8,6 +8,7 @@ import { layerContentHash } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
 import recipeGetTool from '../agent-tools/recipes/get';
+import recipeRunTool from '../agent-tools/recipes/run';
 import { getIdentitySource } from './source';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null }));
@@ -68,6 +69,18 @@ describe('selected identity recipe reaches its existing consumer', () => {
       expect(body.results[0]).toMatchObject({
         ok: true, id: recipeId,
         recipe: { script: 'return "from selected identity"', authorRole: 'blueprint-bundle' },
+      });
+
+      const run = await recipeRunTool.handler({ id: recipeId }, {
+        role: 'worker', workspaceId: 'identity-resource-ws',
+        harnessSlug: 'identity-resource-harness', isSuperuser: false,
+        log: () => {},
+      } as never);
+      const runBody = JSON.parse((run as { content: Array<{ text: string }> }).content[0]!.text) as {
+        results: Array<{ ok: boolean; id: string; result?: { summary?: unknown } }>;
+      };
+      expect(runBody.results[0]).toMatchObject({
+        ok: true, id: recipeId, result: { summary: 'from selected identity' },
       });
     } finally {
       vi.unstubAllEnvs();
