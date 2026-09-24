@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Blueprint direct receipt recovery mutation probe",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=300",
+    "scripts/mutation-probe.sh",
+    "--file",
+    "packages/operator-core/lib/blueprint/operation-admission.ts",
+    "--mutate",
+    "s/LIMIT 2/LIMIT 0/",
+    "--test",
+    "npx vitest run packages/operator-core/lib/work-items-lifecycle.integration.test.ts -t \"admits one .* work item under concurrent replay\" --reporter=dot",
+    "--expect",
+    "caught",
+    "--in-tree",
+    "--sweep-lock-held",
+    "--fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T18:18:25Z",
+  "finishedAt": "2026-09-24T18:19:15Z",
+  "summary": "A verified mutation-probe file lock fenced the shared tree. The focused migrated PostgreSQL feature and bug replay tests passed on the current source. Changing the exact lost-receipt lookup from LIMIT 2 to LIMIT 0 made both tests fail: recovery returned WI-2 where the accepted task was WI-1. The runner reported MUTANT CAUGHT and restored operation-admission.ts byte for byte.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Baseline focused Vitest exited 0 for both feature and bug direct replay tests."
+    },
+    {
+      "id": "lost-receipt-mutant-caught",
+      "passed": true,
+      "evidence": "Mutation probe reported verdict=caught, baseline_exit=0, guard_exit=1. Both tests failed at work-items-lifecycle.integration.test.ts:390: expected repaired.id WI-1, received WI-2."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "Mutation probe reported tree integrity VERIFIED: operation-admission.ts byte-identical to its pre-probe state; mutation lock was released afterward."
+    }
+  ],
+  "workItemId": "WI-10002931",
+  "specId": "GBE-P-004-contract",
+  "testFile": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/blueprint/operation-admission.ts"
+}

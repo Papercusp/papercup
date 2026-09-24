@@ -29,8 +29,9 @@
  * Roles that launch as a full su agent (engineer playbook + superuser MCP) plus
  * a short role addendum, instead of via the role-scoped bootstrap.
  *
- * Each entry MUST have a matching prompt source at
- * `apps/operator/prompts/su-role-<role>.addendum.md`.
+ * Planner's behavior comes from the built-in `su.specialist-planner` identity.
+ * Admission remains this closed list; selecting an arbitrary identity cannot
+ * mint a superuser principal.
  */
 export const SU_TIER_ROLES = ['planner'];
 

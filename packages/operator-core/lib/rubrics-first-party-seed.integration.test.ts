@@ -19,6 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -120,6 +121,40 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
     // Still exactly one row — reclaim is an in-place upsert, never a duplicate.
     const all = await rubrics.listRubrics({});
     expect(all.filter((r) => r.rubricId === 'su-agent-behavior')).toHaveLength(1);
+  });
+});
+
+describe('identity package rubric pin through the existing seed decision', () => {
+  it('makes pinned criteria gradeable and refuses a different pin over locally edited criteria', async () => {
+    const rubricId = 'identity-pinned-rubric';
+    const source = {
+      rubricId,
+      title: 'Pinned identity rubric',
+      characteristic: 'selected identity behavior',
+      description: 'Pinned by the selected identity.',
+      ratingScale: ['pass', 'fail', 'unknown'],
+      methodRef: null,
+      criteria: [{
+        key: 'correct', title: 'Correct behavior', model: 'The selected behavior works.',
+        method: 'Check a real run.', driftMarkers: 'The real run fails.',
+      }],
+    };
+    await rubrics.provisionPinnedRubric(source, 'default');
+    const read = () => runWithWorkspaceIfConcrete('default', () => rubrics.getRubric(rubricId));
+    expect(await read()).toMatchObject({
+      status: 'active', createdBy: rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER,
+      criteria: [{ key: 'correct', model: 'The selected behavior works.' }],
+    });
+    await rubrics.provisionPinnedRubric(source, 'default');
+
+    await h.sql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{criteria,0,title}', '"Local revision"')
+       WHERE workspace_id = 'default' AND plan_slug = ${rubricId} AND template = 'rubric'`;
+    const changed = { ...source, criteria: [{ ...source.criteria[0]!, model: 'A newer package revision.' }] };
+    await expect(rubrics.provisionPinnedRubric(changed, 'default'))
+      .rejects.toThrow(/conflicts with the workspace rubric store/);
+    expect((await read())?.criteria[0]?.title).toBe('Local revision');
   });
 });
 

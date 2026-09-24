@@ -20,11 +20,9 @@
  *     table, so it is independent of P-020. Replaying the durable step just re-fires the
  *     decider (idempotent in effect — the decider is fired on a cadence anyway).
  *
- *   - `'work-item'` — creates a work-item of the blueprint's declared `workItem.kind`. v1 is
- *     scoped to `kind === 'feature'` (a normal feature insert into the canonical base
- *     `harness_features_consolidated`); non-feature kinds (e.g. `research-task`) await P-020
- *     generalizing the base into `work_items(kind, payload)` — until then they log + no-op
- *     (coordinated with the P-020 owner: this module does NOT write the `kind` column).
+ *   - `'work-item'` — admits a canonical work-item of the blueprint's declared kind.
+ *     A per-fire receipt reserves its identity and accepted input before the item is
+ *     created, so retrying a DBOS fire or an explicit-id call reuses the same item.
  *
  * Runs as ONE durable step (the `system-actions.ts` contract), so it must be safe to re-run
  * from the top — both modes are (see the per-mode notes above).
@@ -59,6 +57,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveWorkItemPot } from '../pot-membership';
 import { isDeprecatedWorkItemKind } from '../work-items';
+import { acceptScheduledBlueprintWorkItem } from './operation-admission';
 
 const operatorBase = operatorApiBase;
 
@@ -249,22 +248,11 @@ async function resolveBlueprint(installSlug: string, workspaceId: string): Promi
   }
 }
 
-/** A short uppercase random suffix for an auto work-item id. */
-function randSuffix(): string {
-  return Math.random().toString(36).slice(2, 6).toUpperCase();
-}
-
 /**
- * mode='work-item': create a work-item of the blueprint's declared kind. Writes go to the
- * work_items BASE table `harness_features_consolidated` (P-020 / migration 135 — `work_items`
- * is a read VIEW over the base); `item_kind` is the work-item discriminator and `payload` is
- * kind-specific data. Supports any kind (`feature`, `research-task`, …) with a MINIMAL insert:
- * the base's federation/needs-design triggers are still feature-tuned and fire on every row,
- * so we set only the work-item columns and do NOT rely on trigger side-effects for non-feature
- * kinds (kind-aware triggers are a deferred P-020 follow-on, coordinated w/ that owner).
- *
- * `ON CONFLICT DO NOTHING` makes an explicit-id create replay-safe; an auto-id create matches
- * the existing (non-idempotent) feature-create behavior (execute-action.ts).
+ * Legacy mode='work-item' remains a compatibility entry point. Its accepted
+ * task now uses the canonical work-item writer and a durable per-fire receipt.
+ * A DBOS workflow id, or an explicit item id for a manual call, is required
+ * so retrying the same fire cannot mint a sibling task.
  */
 async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
@@ -276,16 +264,16 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
     );
     return;
   }
-  const idPrefix = bp.workItem.idPrefix || 'W';
   const explicitId = typeof wi.id === 'string' && wi.id.trim() ? wi.id.trim() : null;
-  const featureId =
-    explicitId ?? `${idPrefix}-SCHED-${Date.now().toString(36).toUpperCase()}${randSuffix()}`;
+  const requestKey = ctx.workflowId ?? (explicitId ? `explicit-id:${explicitId}` : null);
+  if (!requestKey) {
+    throw new Error('blueprint scheduled work-item requires a stable workflowId or explicit item id');
+  }
   const title =
     typeof wi.title === 'string' && wi.title.trim() ? wi.title.trim() : `Scheduled work item (${installSlug})`;
-  const summary = typeof wi.summary === 'string' ? wi.summary : null;
-  const payload =
-    wi.payload && typeof wi.payload === 'object' ? (wi.payload as Record<string, unknown>) : null;
-  const now = Date.now();
+  const summary = typeof wi.summary === 'string' ? wi.summary : undefined;
+  const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+    ? wi.payload as Record<string, unknown> : undefined;
 
   // pot-membership-enforcement-2026-07-20 (P-005/P-006): a scheduled work-item must
   // belong to a REAL Pot. A workspace-global routine host (`@singleton`) or any non-pot
@@ -304,33 +292,12 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
   }
 
   const { sql } = getOrgPg();
-  // Admin pool (RLS-bypassed) with workspace_id set explicitly — no GUC needed. The jsonb
-  // payload is bound as `$N::text::jsonb` (the JSON.stringify'd value), the client-agnostic
-  // form that stores a real jsonb object under BOTH the getOrgPg runtime pool AND a
-  // fresh/testcontainer pool (agent-insights/postgres-js-jsonb-binding).
-  await sql.unsafe(
-    `INSERT INTO harness_shared.work_items (
-       harness_slug, feature_id, title, summary, status, attempts,
-       item_kind, payload, needs_human_review, workspace_id, ts, created_ts, updated_ts
-     ) VALUES (
-       -- work-item-status-full-unify P-004/P-005: 'open' is the UNIFIED claimable token.
-       -- This wrote 'todo' until EI-21460610464031791, a status NO claim floor admits:
-       -- claimFloorsWhereSql defaults to states=['open'] and matches with a raw
-       -- status = ANY(...) predicate. There is no alias fold at READ time, so
-       -- FEATURE_STATE_ALIASES (todo -> open) does NOT rescue a row written here.
-       -- A row born 'todo' is therefore born permanently unclaimable: minted, counted
-       -- as work, and never dispatched to anyone. The sibling plan-run minter had the
-       -- identical defect and stranded 15 rows between 2026-08-12 and 2026-08-25 before
-       -- it was rewritten onto canonical promotion (commit 4b0d4cc344). This raw INSERT
-       -- bypasses createWorkItem, so it does not inherit that path's 'open' default and
-       -- must spell the token itself.
-       $1, $2, $3, $4, 'open', 0,
-       $5, $6::text::jsonb, FALSE, $7, $8, $9, $10
-     )
-     ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-    [potSlug, featureId, title, summary, itemKind, payload ? JSON.stringify(payload) : null, workspaceId, now, now, now],
-  );
-  console.log(`[blueprint-run] ${installSlug}: created scheduled work-item ${featureId} (item_kind=${itemKind})`);
+  const item = await acceptScheduledBlueprintWorkItem(sql, {
+    workspaceId, installSlug, targetHarnessSlug: potSlug, callerId: 'system:blueprint-run',
+    requestKey, allowDefinitionDrift: Boolean(ctx.workflowId), blueprint: bp,
+    title, summary, payload, ...(explicitId ? { explicitId } : {}),
+  });
+  console.log(`[blueprint-run] ${installSlug}: accepted scheduled work-item ${item.id} (item_kind=${itemKind})`);
 }
 
 /**

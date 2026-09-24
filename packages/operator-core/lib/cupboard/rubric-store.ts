@@ -70,6 +70,11 @@ export interface LocalRubric {
   layer: 'bundled' | 'user';
 }
 
+/** Fields the existing seed/no-clobber path needs. An already pinned package
+ * has these values but must not consult its mutable source directory again. */
+export type RubricSeedSource = Pick<LocalRubric,
+  'rubricId' | 'title' | 'characteristic' | 'description' | 'criteria' | 'ratingScale' | 'methodRef'>;
+
 export interface RubricRoot {
   dir: string;
   layer: 'bundled' | 'user';
@@ -338,9 +343,9 @@ export function seedContentHash(f: SeedComparableSource): string {
  * Idempotent: a re-run against a fully up-to-date store (or one with no bundle changes)
  * returns [].
  */
-export function rubricsNeedingSeed(bundled: LocalRubric[], existing: readonly ExistingRubricRow[]): LocalRubric[] {
+export function rubricsNeedingSeed<T extends RubricSeedSource>(bundled: readonly T[], existing: readonly ExistingRubricRow[]): T[] {
   const byId = new Map(existing.map((e) => [e.rubricId, e] as const));
-  const out: LocalRubric[] = [];
+  const out: T[] = [];
   for (const r of bundled) {
     const row = byId.get(r.rubricId);
     if (!row) {
