@@ -2004,9 +2004,14 @@ const RESUMABLE_SCAN_LIMIT = 300;
  */
 export async function listResumableSessions(
   limit = 30,
-  { perAgentFloor = RESUMABLE_PER_AGENT_FLOOR, scanLimit = RESUMABLE_SCAN_LIMIT } = {},
+  { perAgentFloor = RESUMABLE_PER_AGENT_FLOOR, scanLimit = RESUMABLE_SCAN_LIMIT, exactId = null as number | null } = {},
 ): Promise<AdvSessionRow[]> {
   try {
+    // An explicit native-session resume can recover its durable adv id from the
+    // local first-write-wins session-owner index even after the row falls outside
+    // the bounded recent-ended pool below. Keep that ONE row in the candidate set
+    // without widening the human picker's normal history window.
+    const exactResumeId = Number.isSafeInteger(exactId) && Number(exactId) > 0 ? Number(exactId) : -1;
     const { sql } = getOrgPg();
     const rows = await sql<
       Array<{
@@ -2054,6 +2059,17 @@ export async function listResumableSessions(
              ORDER BY GREATEST(a.started_at, COALESCE(a.ended_at, a.started_at)) DESC
              LIMIT ${scanLimit}
           ) recent
+        UNION
+          -- A direct resume/fork may name a tracked row older than the picker
+          -- window. Include exactly that row (when resumable-shaped) so the
+          -- launcher can recover workspace/plan/identity and use the managed
+          -- fork path instead of silently degrading to a raw native fork.
+          SELECT a.id
+            FROM harness_shared.adv_sessions a
+           WHERE a.id = ${exactResumeId}
+             AND a.agent IS NOT NULL
+             AND a.cwd IS NOT NULL
+             AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
       ),
       scored AS (
         SELECT a.id, a.workspace_id,
@@ -2096,7 +2112,7 @@ export async function listResumableSessions(
              launch_argv,
              started_at, last_active_at, ended_at, exit_code, ended_by, ended_signal
         FROM ranked
-       WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor}
+       WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor} OR id = ${exactResumeId}
        ORDER BY last_active_at DESC
     `;
     return rows.map(mapAdvSessionRow);
