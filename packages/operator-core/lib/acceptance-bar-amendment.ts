@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
@@ -966,12 +966,17 @@ export interface AcceptanceBarAmendmentTransactionArgs {
   plans: readonly AcceptanceBarAmendmentPlan[];
   /** Bounded lock wait, matching the ordinary withPlanLock write seam. */
   ttlSec?: number;
+  /** Read-only previews skip exclusive plan locks and the wrapping transaction; callers recheck source revisions before returning. */
+  mode?: 'write' | 'preview';
 }
 
 /**
  * Acquire all plan locks in a stable `(workspace, harness, slug)` order, then
- * invoke `work` inside one transaction.  Duplicate plans are collapsed before
- * locking, so a caller cannot deadlock itself by naming the same plan twice.
+ * invoke `work` inside one transaction. Read-only previews run directly on the
+ * pool: their callback fans out to independent snapshot readers, so keeping a
+ * transaction connection checked out can starve those readers in a small pool.
+ * Duplicate plans are collapsed before locking, so a caller cannot deadlock
+ * itself by naming the same plan twice.
  */
 export async function withAcceptanceBarAmendmentTransaction<T>(
   args: AcceptanceBarAmendmentTransactionArgs,
@@ -992,6 +997,10 @@ export async function withAcceptanceBarAmendmentTransaction<T>(
   }
   const budgetMs = (args.ttlSec ?? 5) * 1000;
   try {
+    if (args.mode === 'preview') {
+      const { sql } = getOrgPg();
+      return await work(sql);
+    }
     return await withWorkspace(workspaceId, async (tx) => {
       for (const plan of plans) {
         await acquirePlanAdvisoryLock(
