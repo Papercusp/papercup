@@ -2370,6 +2370,42 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('lets pending progress refresh an expired idle timer before committing the action timeout', async () => {
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '500');
+    vi.useFakeTimers();
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let complete!: (outcome: GitSyncOutcome) => void;
+    let signal!: AbortSignal;
+    let progress!: () => void;
+    runGitSyncMock.mockImplementation(async (_slug, opts) => {
+      signal = opts.signal as AbortSignal;
+      progress = opts.onProgress as () => void;
+      start();
+      return new Promise<GitSyncOutcome>((resolve) => { complete = resolve; });
+    });
+    const running = action(ctx).then((value) => ({ value, error: null }), (error) => ({ value: null, error }));
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(25);
+      // TIMERS has expired, but pending POLL progress gets a chance before the
+      // deferred CHECK verdict. Real OS-pipe ordering is covered by the two
+      // local/sidecar process regressions; fake time pins this outer guard.
+      expect(signal.aborted).toBe(false);
+      progress();
+      await vi.advanceTimersByTimeAsync(5);
+      expect(signal.aborted).toBe(false);
+      complete(syncedOutcome);
+      expect((await running).error).toBeNull();
+    } finally {
+      complete?.(syncedOutcome);
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('EI-217286: aborts an active git run at the hard deadline even while progress keeps resetting idle', async () => {
     const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
     const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;

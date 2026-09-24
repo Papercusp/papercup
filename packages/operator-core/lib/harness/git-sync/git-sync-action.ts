@@ -349,6 +349,7 @@ function createGitSyncActionLivenessGuard(opts: {
 }): GitSyncActionLivenessGuard {
   const controller = new AbortController();
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let idleCheck: ReturnType<typeof setImmediate> | null = null;
   let hardTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   let timedOut = false;
@@ -378,7 +379,19 @@ function createGitSyncActionLivenessGuard(opts: {
   const armIdle = (): void => {
     if (stopped || timedOut) return;
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => expire('idle'), opts.idleTimeoutMs);
+    if (idleCheck) clearImmediate(idleCheck);
+    idleCheck = null;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      // Match the child guards: after parent-loop delay, queued pipe progress
+      // must be delivered in POLL before the action commits an idle verdict.
+      // touch() cancels this candidate; the hard deadline remains independent.
+      idleCheck = setImmediate(() => {
+        idleCheck = null;
+        expire('idle');
+      });
+      idleCheck.unref?.();
+    }, opts.idleTimeoutMs);
     idleTimer.unref?.();
   };
 
@@ -463,8 +476,10 @@ function createGitSyncActionLivenessGuard(opts: {
       stopped = true;
       if (idleTimer) clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);
+      if (idleCheck) clearImmediate(idleCheck);
       idleTimer = null;
       hardTimer = null;
+      idleCheck = null;
     },
   };
 }
