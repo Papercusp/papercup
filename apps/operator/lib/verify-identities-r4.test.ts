@@ -49,6 +49,28 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
     expect(script).toContain("hostActivationProven: false");
   });
 
+  it("has a real-backend recovery leg: nuqs round-trip, provider boundary, forced CAS failure, retry, SSE invalidation", () => {
+    expect(script).toContain('realBackend && process.env.P015_R4_REAL_RECOVERY === "1"');
+    expect(script).toContain("nuqs-state-restored-from-url");
+    expect(script).toContain("provider-bindings boundary exposes a selectable control");
+    // The failure must come from the real compare-and-swap, not a patched response.
+    expect(script).toContain("jsonb_set(launch_spec, '{launchedBy}'");
+    expect(script).toContain('includes("changed concurrently")');
+    // Deterministic, not a race: the writer holds the row lock until the switch's
+    // compare-and-swap is observed waiting on it, then commits.
+    expect(script).toContain("wait_event_type = 'Lock'");
+    expect(script).toContain("the switch never blocked on the concurrent writer's row lock");
+    expect(script).toContain("forced failure mutated prior state");
+    expect(script).toContain("retry is not reachable after the forced failure");
+    expect(script).toContain("bySseName?.['identities.surface']");
+    expect(script).toContain("window.__p015R4NoReload === 'p015-r4-no-reload'");
+    expect(script).toContain("forcedRealFailureProven: false");
+    // Selected-tab reads are scoped to the identity tablist: the app shell renders
+    // other tablists earlier in the document, so a bare [role="tab"] query reads theirs.
+    expect(script).not.toMatch(/querySelector\('\[role=\\"tab\\"\]\[aria-selected/);
+    expect(script).toContain(`[aria-label=\\"Identity management sections\\"] [role=\\"tab\\"][aria-selected=\\"true\\"]`);
+  });
+
   it("fails fast and writes an evidence artifact on both pass and failure", () => {
     expect(script).toContain("status = \"fail\"");
     expect(script).toContain("throw error");
