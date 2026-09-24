@@ -538,10 +538,19 @@ export interface MergeCursor {
    * what `[?, scannedTo)` held). A far-behind cursor looks for a set ahead of it on
    * every pass while it catches up. Without the memo each pass would re-read the
    * whole remaining backlog. With it, a pass reads only the ops appended since the
-   * last scan. Lives on the cursor, so every reset (log removal, truncation,
-   * re-fold) drops it together with the positions it was measured against.
+   * last scan. Lives on the cursor, so every reset (log removal, truncation, a
+   * rekey re-fold) drops it together with the positions it was measured against.
+   * The P-522 eviction re-fold rewinds in place (`rewindMergeCursor`) and keeps it.
    */
   snapshotScans?: Map<string, SnapshotScanMemo>;
+  /**
+   * p2p-join-catchup-speed P-522 (WI-10002899): FRESH logs held out of the fold
+   * because their snapshot-seed scan has not concluded yet (keyHex → when the
+   * first inconclusive scan held it). The fold skips a held log that has no
+   * position, and `seedCursorFromSnapshots` releases it once the scan concludes
+   * or `SNAPSHOT_SEED_DEFER_MAX_MS` has passed. See `holdFreshSeed`.
+   */
+  snapshotSeedPending?: Map<string, number>;
   /**
    * P-004: logs whose DURABLE apply-failure state is unknown. The PG cursor load
    * failed and the log was pinned at 0 (the F4 rule: an unreadable durable cursor
@@ -1113,23 +1122,29 @@ export async function seedCursorFromSnapshots(
   const jump = opts?.jumpFarBehind ?? true;
   const minBacklog = Math.max(1, opts?.jumpMinBacklogOps ?? SNAPSHOT_JUMP_MIN_BACKLOG_OPS);
   const budgetMs = opts?.scanBudgetMs ?? SNAPSHOT_SEED_SCAN_BUDGET_MS;
+  const deferMaxMs = opts?.seedDeferMaxMs ?? SNAPSHOT_SEED_DEFER_MAX_MS;
   for (const log of logs) {
     const key = log.keyHex;
     if (cursor.snapshotSkipUnsafe?.has(key)) continue; // F4: durable failure state unknown
     const pos = cursor.positions.get(key);
     if (pos === undefined) {
       // Fresh log (P-007): seed at the newest complete set anywhere in the log.
-      const set = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
-      if (set && set.seed.seedIndex > 0) {
-        cursor.positions.set(key, set.seed.seedIndex);
+      const scan = await latestCompleteSnapshotMemoized(log, cursor, 0, maxLookback, getTimeoutMs, budgetMs);
+      // P-522: an inconclusive scan with nothing known yet holds the fold rather than
+      // starting it at 0, which would forfeit the seed for good.
+      if (!scan.set && !scan.conclusive && holdFreshSeed(cursor, key, deferMaxMs)) continue;
+      cursor.snapshotSeedPending?.delete(key);
+      if (scan.set && scan.set.seed.seedIndex > 0) {
+        cursor.positions.set(key, scan.set.seed.seedIndex);
         // P-008: the seeded set is the ONE set this cursor must apply row by row.
-        markSnapshotSeeded(cursor, key, set.seed.coversUpTo);
+        markSnapshotSeeded(cursor, key, scan.set.seed.coversUpTo);
       }
       continue;
     }
+    cursor.snapshotSeedPending?.delete(key); // positioned by another seed (PG): no longer held
     // P-004 (R-4): a far-behind cursor jumps forward to a complete set AHEAD of it.
     if (!jump || log.length - pos < minBacklog || !snapshotJumpIsSafe(cursor, key)) continue;
-    const set = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs, budgetMs);
+    const { set } = await latestCompleteSnapshotMemoized(log, cursor, pos, maxLookback, getTimeoutMs, budgetMs);
     if (!set || set.seed.seedIndex <= pos) continue; // never rewinds
     if (!(await snapshotSetCoversSkip(log, pos, set.meta, getTimeoutMs))) continue;
     jumpCursorToSnapshot(cursor, key, pos, set.seed.seedIndex);
@@ -1189,11 +1204,58 @@ export interface SeedCursorFromSnapshotsOpts {
    *  next call from where it stopped. Default `SNAPSHOT_SEED_SCAN_BUDGET_MS`;
    *  `<= 0` means unbounded. */
   scanBudgetMs?: number;
+  /** P-522: how long a FRESH log is held out of the fold while its seed scan is
+   *  inconclusive. Default `SNAPSHOT_SEED_DEFER_MAX_MS`; `<= 0` never holds, so an
+   *  inconclusive scan folds from 0 at once (the pre-P-522 behaviour). */
+  seedDeferMaxMs?: number;
 }
 
 /** P-004: per-log, per-pass wall-clock budget for the seed/jump scan. It runs
- *  before the fold, so it must never be able to keep the fold from starting. */
+ *  before the fold, so one pass's scan never delays the fold of the other logs. */
 export const SNAPSHOT_SEED_SCAN_BUDGET_MS = 20_000;
+
+/**
+ * P-522: the give-up bound on holding a fresh log out of the fold while its seed scan
+ * is inconclusive. The scan resumes across passes, so it normally concludes well
+ * inside this. The bound exists for a huge log with no complete set at all, which
+ * would otherwise wait for a scan down to index 0 before its first fold. Folding from
+ * 0 is still the right fallback there. For scale: the P-007 joiner folded about 385
+ * ops/s, so 30 min of waiting is worth it whenever the set spares more than ~700k ops.
+ */
+export const SNAPSHOT_SEED_DEFER_MAX_MS = 30 * 60_000;
+
+/**
+ * P-522 (WI-10002899): hold a FRESH log out of the fold while its seed scan is
+ * inconclusive (the budget ran out, or a block was unreadable) and nothing is known
+ * yet. Folding it from 0 instead forfeits the seed for good. Once the log has a
+ * position, only the P-004 jump can still reach a set, and the jump refuses a skipped
+ * range older than half the tombstone horizon, which every range starting at an old
+ * prefix is. Measured in P-007 run #1: the 20s budget ran out on a 7.76M-op remote log
+ * whose complete set sat about 50k ops below the tail, and the joiner replayed from 0.
+ *
+ * Returns true to keep holding. Returns false when `maxMs <= 0` or once `maxMs` has
+ * passed since the first hold; the caller then lets the log fold from 0.
+ */
+function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number): boolean {
+  if (maxMs <= 0) return false;
+  const pending = (cursor.snapshotSeedPending ??= new Map<string, number>());
+  const now = Date.now();
+  const since = pending.get(keyHex);
+  if (since === undefined) {
+    pending.set(keyHex, now);
+    console.warn(
+      `[read-merge] P-522 snapshot seed pending: log ${keyHex.slice(0, 12)} is held out of the fold ` +
+        `until its seed scan concludes (give-up after ${Math.round(maxMs / 1000)}s).`,
+    );
+    return true;
+  }
+  if (now - since < maxMs) return true;
+  console.warn(
+    `[read-merge] P-522 snapshot seed GAVE UP: log ${keyHex.slice(0, 12)} scan still inconclusive after ` +
+      `${Math.round((now - since) / 1000)}s; folding it from 0.`,
+  );
+  return false;
+}
 
 /**
  * P-004 — when may a positioned cursor skip `[pos, seedIndex)`?
@@ -1219,6 +1281,34 @@ function snapshotJumpIsSafe(cursor: MergeCursor, keyHex: string): boolean {
   if (cursor.applyFailures?.has(keyHex)) return false;
   if (cursor.snapshotSkipUnsafe?.has(keyHex)) return false;
   return true;
+}
+
+/**
+ * P-522 (WI-10002899): move each positioned log back to its floor, never forward, so
+ * the fold re-reads the ops a content-deferral buffer evicted. The in-memory winners
+ * are dropped too. An evicted op may already stand as its key's winner, and a re-read
+ * op that does not beat the standing winner never reaches apply. This is the same
+ * state a fresh cursor starts from; PG-level LWW keeps the re-applies idempotent
+ * (see mergeAdmittedLogsIncremental).
+ *
+ * Unlike `createMergeCursor()`, a rewind keeps everything that describes the LOG rather
+ * than the fold: the P-008 snapshot marks (a floor inside the seeded set still
+ * re-applies it), apply-failure holds, and the snapshot scan memo. A log with no floor
+ * goes back to 0. Returns the keys that moved.
+ */
+export function rewindMergeCursor(cursor: MergeCursor, floors: ReadonlyMap<string, number>): string[] {
+  const moved: string[] = [];
+  for (const [keyHex, pos] of cursor.positions) {
+    const floor = Math.max(0, floors.get(keyHex) ?? 0);
+    if (floor >= pos) continue;
+    cursor.positions.set(keyHex, floor);
+    moved.push(keyHex);
+  }
+  if (moved.length > 0) {
+    cursor.winners.clear();
+    cursor.applyThrows?.clear();
+  }
+  return moved;
 }
 
 /** Move `keyHex` from `from` to `to` and drop per-position read bookkeeping below
@@ -1253,6 +1343,10 @@ function jumpCursorToSnapshot(cursor: MergeCursor, keyHex: string, from: number,
  * was verified complete when it was found, and any complete set is a
  * correct seed (R-5), so the memo can make a seed older than the newest. It
  * cannot make one unsafe.
+ *
+ * P-522: `conclusive` is false when the answer is only what is known SO FAR: the
+ * budget ran out, or a block was unreadable. A null `set` then means "not found
+ * yet", not "none".
  */
 async function latestCompleteSnapshotMemoized(
   log: AdmittedLog,
@@ -1261,14 +1355,17 @@ async function latestCompleteSnapshotMemoized(
   maxLookback: number,
   getTimeoutMs: number,
   budgetMs: number,
-): Promise<KnownSnapshotSet | null> {
+): Promise<SnapshotScanAnswer> {
   if (maxLookback > 0) {
     const r = await scanForCompleteSnapshot(log, {
       from: log.length - 1,
       floor: Math.max(floor, log.length - maxLookback, 0),
       getTimeoutMs,
     });
-    return r.kind === 'found' ? { seed: r.seed, meta: r.meta } : null;
+    return {
+      set: r.kind === 'found' ? { seed: r.seed, meta: r.meta } : null,
+      conclusive: r.kind !== 'unreadable',
+    };
   }
   const memos = (cursor.snapshotScans ??= new Map<string, SnapshotScanMemo>());
   const len = log.length;
@@ -1282,7 +1379,7 @@ async function latestCompleteSnapshotMemoized(
     memo.unreadableAtLength !== undefined &&
     Date.now() - (memo.unreadableAtMs ?? 0) < SNAPSHOT_UNREADABLE_RETRY_MS
   ) {
-    return memo.set;
+    return { set: memo.set, conclusive: false };
   }
   if (
     memo &&
@@ -1290,12 +1387,12 @@ async function latestCompleteSnapshotMemoized(
     memo.resumeBelow === undefined &&
     len === memo.scannedTo
   ) {
-    return memo.set;
+    return { set: memo.set, conclusive: true };
   }
   const key = log.keyHex;
   const known = memo?.set ?? null;
   const deadlineAt = budgetMs > 0 ? Date.now() + budgetMs : undefined;
-  const unreadable = (): KnownSnapshotSet | null => {
+  const unreadable = (): SnapshotScanAnswer => {
     // Not evidence about any set. Keep what is known and retry later.
     memos.set(key, {
       scannedTo: memo?.scannedTo ?? 0,
@@ -1304,7 +1401,7 @@ async function latestCompleteSnapshotMemoized(
       unreadableAtLength: len,
       unreadableAtMs: Date.now(),
     });
-    return known;
+    return { set: known, conclusive: false };
   };
 
   // 1. The newest region first: the ops appended since the last scan (all of the log on
@@ -1320,14 +1417,14 @@ async function latestCompleteSnapshotMemoized(
     if (top.kind === 'found') {
       const set = { seed: top.seed, meta: top.meta };
       memos.set(key, { scannedTo: len, set });
-      return set;
+      return { set, conclusive: true };
     }
     if (top.kind === 'unreadable') return unreadable();
     if (top.kind === 'budget') {
       // Out of time inside the new region. Resume below it next pass. Keep a known
       // older set as the answer meanwhile: any complete set is a correct seed.
       memos.set(key, { scannedTo: len, set: known, resumeBelow: top.resumeBelow });
-      return known;
+      return { set: known, conclusive: false };
     }
   }
 
@@ -1337,15 +1434,21 @@ async function latestCompleteSnapshotMemoized(
     if (rest.kind === 'unreadable') return unreadable();
     if (rest.kind === 'budget') {
       memos.set(key, { scannedTo: len, set: known, resumeBelow: rest.resumeBelow });
-      return known;
+      return { set: known, conclusive: false };
     }
     // Nothing above `resumeBelow` held a set, so a set found here is the newest.
     const set = rest.kind === 'found' ? { seed: rest.seed, meta: rest.meta } : known;
     memos.set(key, { scannedTo: len, set });
-    return set;
+    return { set, conclusive: true };
   }
   memos.set(key, { scannedTo: len, set: known });
-  return known;
+  return { set: known, conclusive: true };
+}
+
+/** P-522: a memoized scan's answer, and whether the scan behind it has concluded. */
+interface SnapshotScanAnswer {
+  set: KnownSnapshotSet | null;
+  conclusive: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2600,6 +2703,11 @@ async function mergeIncrementalPass(
   }
 
   for (const log of logs) {
+    // P-522: a fresh log whose snapshot-seed scan has not concluded is not folded yet.
+    if (cursor.snapshotSeedPending?.has(log.keyHex) && !cursor.positions.has(log.keyHex)) {
+      if (log.length > 0) caughtUp = false;
+      continue;
+    }
     const from = cursor.positions.get(log.keyHex) ?? 0;
     const upper = budget > 0 ? Math.min(log.length, from + budget) : log.length;
     if (upper <= from) {
