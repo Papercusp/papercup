@@ -65,6 +65,12 @@ import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
  * from a bug.
  */
 const PUSH_EXEMPT: Record<string, string> = {
+  // The only production writer is consult-expert-routing-set, which pushes this
+  // singleton query after its committed write. RE-ARM: bridge the table when a
+  // second writer is introduced or that explicit producer push is removed.
+  'consult.expertRouting :: harness_shared.operator_consult_expert_routing':
+    'the sole write route pushes consult.expertRouting after commit; bridge this table if another writer appears or the route stops pushing.',
+
   // P-030 foreign conversation projection: these are deliberately NOT given
   // another per-row invalidation producer. session_turns/tool_invocations are
   // the two hottest append ledgers, while plan_item_claims is renewed on every

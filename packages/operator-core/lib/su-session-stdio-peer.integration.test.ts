@@ -170,8 +170,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         cache_eval_case: 'native-correlation-control',
       });
     } finally {
-      if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      try {
+        if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
     }
   }, 90_000);
 

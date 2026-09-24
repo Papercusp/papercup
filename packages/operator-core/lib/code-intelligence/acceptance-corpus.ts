@@ -177,7 +177,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'libs/generic/scheduled-registry/src/index.ts',
-        line1: 315,
+        line1: 338,
         symbolOnLine: 'export function managedSetInterval',
       },
     ],

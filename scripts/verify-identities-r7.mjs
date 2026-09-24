@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import postgres from "postgres";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { checkedCommand, serializeEvidence, toolArgs } from "./verify-identities-r4.mjs";
+import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
 
 const required = (name) => {
   const value = process.env[name];
@@ -87,9 +88,8 @@ export async function main() {
     throw new Error("R-7 acts on a REAL launched agent; refusing an isolated verifier database");
   }
   const owner = required("R7_OWNER");
-  // The shared-DB wrapper exports no DSN; resolve it the canonical way, never a hardcoded port.
-  const dsn = process.env.HARNESS_ADMIN_DATABASE_URL
-    || (await import("@papercusp/operator-core/lib/embedded-pg-discovery")).getHarnessAdminUrl();
+  // The shared-DB wrapper exports no DSN; use the scripts-wide resolution order.
+  const dsn = resolveScriptPgUrl().url;
   if (process.argv.includes("--preflight")) process.exit(0);
   const pid = required("VERIFY_TAURI_PID");
   const target = process.env.R7_TARGET_IDENTITY || "research-steward";

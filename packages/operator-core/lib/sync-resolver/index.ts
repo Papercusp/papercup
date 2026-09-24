@@ -6347,6 +6347,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // and the "same as the default policy" hint from the module that OWNS them
   // rather than re-declaring 0.5/365 and the seed order in client code.
   'consult.expertRouting': {
+    backingTables: ['harness_shared.operator_consult_expert_routing'],
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const {

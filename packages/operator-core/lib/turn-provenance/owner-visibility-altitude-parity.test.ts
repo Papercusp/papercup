@@ -62,6 +62,7 @@ const MACHINE_TURNS: ReadonlyArray<readonly [label: string, text: string]> = [
   ['stop-hook wall', 'Stop hook feedback: This turn ends by handing the next move back to the owner.'],
   ['mcp auto-heal advisory', '⚠ MCP transport auto-heal (mcp-dark-watchdog): your MCP server was restarted.'],
   ['skill-loader preamble', 'Base directory for this skill: /tmp/claude-1000/bundled-skills/2.1.228'],
+  ['claude usage reset', 'Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.'],
 ];
 
 /**
