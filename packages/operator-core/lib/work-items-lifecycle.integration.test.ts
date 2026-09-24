@@ -27,6 +27,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -42,6 +44,8 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 import { getKeyFireLatch } from './events/await/store';
+import { setAutoPumpEnabledForTests } from './events/await/engine';
+import { reconcileWorkItemCompletionEventIntents } from './work-item-completion-event-reconciler';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from './blueprint/project-to-pg';
 import { acceptBlueprintDirectWorkItem, readAcceptedBlueprintDirectWorkItem } from './blueprint/operation-admission';
@@ -160,6 +164,7 @@ function fanoutCalls(): FanoutCall[] {
 
 let db: FreshPgDb;
 let links: PgLinkStore;
+let legacyBackfillProbe: { before: string | null; after: string | null };
 
 beforeAll(async () => {
   db = await createFreshPgDb('work-items-lifecycle');
@@ -173,13 +178,17 @@ beforeAll(async () => {
   for (const migration of [
     '163-await-event-subscriptions.sql',
     '175-watch-floor-coalesce-cols.sql',
+    '387-event-wake-delivery-source.sql',
+    '533-add-event-awaits-payload-filter.sql',
     '541-predicate-watches.sql',
+    '599-event-announcement-generation.sql',
     '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
   ]) {
     await db.sql.unsafe(readMigration(migration)).simple();
   }
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(readMigration('698-work-items-closed-ts.sql')).simple();
   await db.sql.unsafe(`
     CREATE TABLE harness_shared.blueprints (
       workspace_id text NOT NULL, harness_slug text NOT NULL, blueprint_id text NOT NULL,
@@ -197,6 +206,34 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
+  // Seed a pre-1214 terminal item with an existing waiter. The migration must
+  // backfill its intent BEFORE installing the trigger that rejects invented
+  // tokens on terminal-to-terminal updates.
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, title, status, item_kind, workspace_id, created_ts, updated_ts)
+    VALUES ('papercup', 'WI-P020-BACKFILL', 'pre-migration close', 'open', 'feature',
+            'default', ${Date.now()}, ${Date.now()})
+  `;
+  await db.sql`
+    INSERT INTO harness_shared.event_awaits
+      (workspace_id, subscriber_id, event_key, policy)
+    VALUES ('default', 'su-pre-migration-waiter', 'work-item:done:WI-P020-BACKFILL', 'wake')
+  `;
+  await db.sql`
+    UPDATE harness_shared.work_items SET status = 'done'
+     WHERE feature_id = 'WI-P020-BACKFILL'
+  `;
+  const before1214 = await db.sql<{ intent: string | null }[]>`
+    SELECT payload->>'_completionEventIntentId' AS intent
+      FROM harness_shared.work_items WHERE feature_id = 'WI-P020-BACKFILL'
+  `;
+  await db.sql.unsafe(readMigration('1214-work-item-completion-event-intent.sql')).simple();
+  const after1214 = await db.sql<{ intent: string | null }[]>`
+    SELECT payload->>'_completionEventIntentId' AS intent
+      FROM harness_shared.work_items WHERE feature_id = 'WI-P020-BACKFILL'
+  `;
+  legacyBackfillProbe = { before: before1214[0]?.intent ?? null, after: after1214[0]?.intent ?? null };
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -211,7 +248,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
-});
+}, 30_000);
 
 beforeEach(async () => {
   resetAgentStateStamps();
@@ -220,7 +257,8 @@ beforeEach(async () => {
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
                        harness_shared.coord_event_log, harness_shared.event_awaits,
-                       harness_shared.event_wake_deliveries, harness_shared.predicate_watches,
+                       harness_shared.event_wake_deliveries, harness_shared.event_key_fires,
+                       harness_shared.predicate_watches,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.watchdog_ticks, harness_shared.work_item_claims,
                        harness_shared.blueprints, harness_shared.blueprint_specifications RESTART IDENTITY`;
@@ -275,6 +313,168 @@ describe('blueprint direct-item revision pin', () => {
     });
     expect(resolved.operation).toMatchObject({ version: 'A', policy: { model: { models: ['gpt-6-sol'] } } });
     expect(JSON.stringify(stored!.payload)).not.toContain('gpt-6-sol');
+  });
+});
+
+describe('P-020 completion event intent', () => {
+  it('backfills an older committed completion only when an existing waiter needs it', () => {
+    expect(legacyBackfillProbe.before).toBeNull();
+    expect(legacyBackfillProbe.after).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('recovers an existing waiter after its isolated producer is killed between commit and event publication', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'feature', title: 'completion crash window', harness: 'papercup',
+      workspaceId: 'default', createdBy: 'test-producer',
+    });
+    const key = `work-item:done:${item.id}`;
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy)
+      VALUES ('default', 'su-crash-waiter', ${key}, 'wake')
+    `;
+
+    // This subprocess is the isolated producer. It commits to the SAME
+    // canonical work_items base table used by setWorkItemState, reports that
+    // commit, and is then SIGKILLed before it can publish an event.
+    const producerProgram = [
+      "const postgres = require('postgres');",
+      "const sql = postgres(process.env.P020_DATABASE_URL, { max: 1, prepare: false });",
+      "sql.unsafe('UPDATE harness_shared.work_items SET status = $1 WHERE workspace_id = $2 AND feature_id = $3', ['done', 'default', process.env.P020_ITEM_ID])",
+      ".then(() => { process.stdout.write('COMMITTED'); setInterval(() => {}, 1000); })",
+      ".catch((error) => { process.stderr.write(String(error)); process.exitCode = 1; });",
+    ].join(' ');
+    const child = spawn(process.execPath, ['-e', producerProgram], {
+      cwd: resolve(__dirname, '../../..'),
+      env: { ...process.env, P020_DATABASE_URL: db.url, P020_ITEM_ID: item.id },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const exited = once(child, 'exit');
+    try {
+      await new Promise<void>((done, fail) => {
+        const timeout = setTimeout(() => fail(new Error('producer did not commit: ' + stderr)), 15_000);
+        child.stdout.on('data', (chunk) => {
+          if (String(chunk).includes('COMMITTED')) { clearTimeout(timeout); done(); }
+        });
+        child.once('exit', (code) => {
+          clearTimeout(timeout);
+          fail(new Error(`producer exited before marker (${code}): ${stderr}`));
+        });
+      });
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      await exited;
+    }
+
+    const committed = await db.sql<{ status: string; closed_ts: number; intent: string }[]>`
+      SELECT status, closed_ts, payload->>'_completionEventIntentId' AS intent
+        FROM harness_shared.work_items WHERE feature_id = ${item.id}
+    `;
+    expect(committed[0]).toMatchObject({ status: 'done', intent: expect.any(String) });
+    expect(committed[0].closed_ts).toBeGreaterThan(0);
+    expect(await getKeyFireLatch(key)).toBeNull();
+    const beforeAwait = await db.sql<{ fired_at: Date | null }[]>`
+      SELECT fired_at FROM harness_shared.event_awaits WHERE event_key = ${key}
+    `;
+    expect(beforeAwait[0].fired_at).toBeNull();
+
+    // An unrelated terminal-row update cannot erase an unacknowledged intent.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = payload - '_completionEventIntentId'
+       WHERE feature_id = ${item.id}
+    `;
+    const protectedIntent = await db.sql<{ intent: string }[]>`
+      SELECT payload->>'_completionEventIntentId' AS intent
+        FROM harness_shared.work_items WHERE feature_id = ${item.id}
+    `;
+    expect(protectedIntent[0].intent).toBe(committed[0].intent);
+
+    const priorAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      const repaired = await reconcileWorkItemCompletionEventIntents('default', {
+        sql: db.sql, nowMs: Date.now() + 2_000,
+      });
+      expect(repaired).toEqual({ considered: 1, emitted: 1, acknowledged: 1, failed: 0 });
+      expect((await getKeyFireLatch(key))?.lastPayload).toMatchObject({
+        completionIntentId: committed[0].intent,
+      });
+      const afterAwait = await db.sql<{ fired_at: Date | null }[]>`
+        SELECT fired_at FROM harness_shared.event_awaits WHERE event_key = ${key}
+      `;
+      expect(afterAwait[0].fired_at).not.toBeNull();
+      const deliveries = await db.sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.event_wake_deliveries
+         WHERE event_key = ${key}
+      `;
+      expect(deliveries[0].n).toBe(1);
+      expect(await reconcileWorkItemCompletionEventIntents('default', {
+        sql: db.sql, nowMs: Date.now() + 2_000,
+      })).toEqual({ considered: 0, emitted: 0, acknowledged: 0, failed: 0 });
+    } finally {
+      setAutoPumpEnabledForTests(priorAutoPump);
+    }
+  });
+
+  it('normal canonical settlement publishes its own intent token without a duplicate sweep fire', async () => {
+    const priorAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      const item = await wi.createWorkItem({
+        kind: 'feature', title: 'normal completion event', harness: 'papercup',
+        workspaceId: 'default', createdBy: 'test-producer',
+      });
+      await wi.setWorkItemState(item.id, 'done', {
+        harness: 'papercup', by: 'test-producer', completionRef: 'verified in integration test',
+      });
+      const intent = await db.sql<{ token: string }[]>`
+        SELECT payload->>'_completionEventIntentId' AS token
+          FROM harness_shared.work_items WHERE feature_id = ${item.id}
+      `;
+      expect(intent[0].token).toMatch(/^[0-9a-f-]{36}$/);
+      const key = `work-item:done:${item.id}`;
+      await vi.waitFor(async () => {
+        expect((await getKeyFireLatch(key))?.lastPayload).toMatchObject({
+          completionIntentId: intent[0].token,
+        });
+      });
+      expect(await reconcileWorkItemCompletionEventIntents('default', {
+        sql: db.sql, nowMs: Date.now() + 2_000,
+      })).toEqual({ considered: 1, emitted: 0, acknowledged: 1, failed: 0 });
+      expect((await getKeyFireLatch(key))?.fireCount).toBe(1);
+    } finally {
+      setAutoPumpEnabledForTests(priorAutoPump);
+    }
+  });
+
+  it('issue-family canonical settlement carries the same token into its normal event', async () => {
+    const priorAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      const item = await wi.createWorkItem({
+        kind: 'bug', title: 'issue completion event', harness: 'papercup',
+        workspaceId: 'default', createdBy: 'test-producer',
+      });
+      await wi.setWorkItemState(item.id, 'resolved', {
+        harness: 'papercup', by: 'test-producer', completionRef: 'verified in integration test',
+      });
+      const intent = await db.sql<{ token: string }[]>`
+        SELECT payload->>'_completionEventIntentId' AS token
+          FROM harness_shared.work_items WHERE feature_id = ${item.id}
+      `;
+      expect(intent[0].token).toMatch(/^[0-9a-f-]{36}$/);
+      const key = `work-item:done:${item.id}`;
+      await vi.waitFor(async () => {
+        expect((await getKeyFireLatch(key))?.lastPayload).toMatchObject({
+          completionIntentId: intent[0].token,
+        });
+      });
+      expect(await reconcileWorkItemCompletionEventIntents('default', {
+        sql: db.sql, nowMs: Date.now() + 2_000,
+      })).toEqual({ considered: 1, emitted: 0, acknowledged: 1, failed: 0 });
+    } finally {
+      setAutoPumpEnabledForTests(priorAutoPump);
+    }
   });
 });
 
