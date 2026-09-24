@@ -1900,10 +1900,10 @@ mod tests {
         );
         // The launcher runs the COPY in the release store, not the source dir.
         fs::remove_dir_all(&unit).unwrap();
-        let output = Command::new(layout.launcher())
-            .args(["self", "stamp"])
-            .output()
-            .unwrap();
+        let output = output_of_fresh_executable(
+            Command::new(layout.launcher()).args(["self", "stamp"]),
+        )
+        .unwrap();
         assert!(output.status.success());
         let status = status(&layout, Some(layout.bin_dir.as_os_str()));
         assert_eq!(status.current.unwrap().problem, None);
