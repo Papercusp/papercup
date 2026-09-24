@@ -415,6 +415,64 @@ def _mode_marker():
     return os.path.join(d, re.sub(r'[^A-Za-z0-9._-]', '_', sid)[:120] + '.json')
 
 
+# (pinned base, base that actually answered) for every call that had to leave a dead pin.
+_MCP_REROUTED = []
+
+
+def _mcp_candidate_bases():
+    """The pinned operator first, then the local MCP proxy.
+
+    EI-24091823697677465: a session launched from a staging console inherits
+    PAPERCUSP_OPERATOR_URL=http://localhost:3170, and carry-respawns keep that pin.
+    Staging restarts many times a day, so while it is down every call from this
+    hook was refused and the owner's turn went unrecorded. The proxy
+    (PAPERCUSP_MCP_PROXY_PORT, default 9071, as in scripts/mcp-call.mjs) is the
+    door session MCP clients already use; it forwards to :3070 and bridges its
+    restarts, so it also covers a restarting default pin. It is the ONLY fallback
+    so a test can make the chain hermetic with one variable.
+
+    Only a LOOPBACK pin falls back: a pin to another host names a different
+    operator, and quietly writing to the local one instead would be wrong.
+    """
+    import urllib.parse
+    pinned = os.environ.get('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070').rstrip('/')
+    try:
+        host = (urllib.parse.urlsplit(pinned).hostname or '').lower()
+    except ValueError:
+        return [pinned]
+    if host not in ('localhost', '127.0.0.1', '::1'):
+        return [pinned]
+    raw_port = os.environ.get('PAPERCUSP_MCP_PROXY_PORT', '').strip()
+    proxy_port = raw_port if raw_port.isdigit() and 0 < int(raw_port) <= 65535 else '9071'
+    out, seen = [], set()
+    for base in (pinned, 'http://127.0.0.1:' + proxy_port):
+        try:
+            port = urllib.parse.urlsplit(base).port
+        except ValueError:
+            port = None
+        key = port if port is not None else base
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(base)
+    return out
+
+
+def _connection_never_opened(exc):
+    """True only when the request provably never reached a server.
+
+    A refused or unroutable connection is safe to send elsewhere. Anything else —
+    an HTTP status, a timeout, a reset mid-response — may mean the server already
+    applied the call, and retrying a write there would apply it twice.
+    """
+    import errno, urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, OSError) and reason.errno in (
+        errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EADDRNOTAVAIL)
+
+
 def _mcp_call(tool, args, timeout=4):
     """One MCP tool call; parsed result or None. Never raises."""
     import urllib.request, urllib.parse
@@ -425,20 +483,32 @@ def _mcp_call(tool, args, timeout=4):
         return None
     if not token:
         return None
-    url = os.environ.get('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070').rstrip('/')
+    resp = None
     try:
         body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                            'params': {'name': tool, 'arguments': args}}).encode()
-        req = urllib.request.Request(
-            url + '/api/mcp?superuser=1&origin=hook&format=json&client=' + urllib.parse.quote(sid, safe=''),
-            data=body,
-            headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                     'Accept': 'application/json, text/event-stream'},
-            method='POST')
         # localhost operator: never via an egress http(s)_proxy.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        resp = opener.open(req, timeout=timeout).read().decode('utf-8', 'replace')
+        bases = _mcp_candidate_bases()
+        for base in bases:
+            req = urllib.request.Request(
+                base + '/api/mcp?superuser=1&origin=hook&format=json&client=' + urllib.parse.quote(sid, safe=''),
+                data=body,
+                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                         'Accept': 'application/json, text/event-stream'},
+                method='POST')
+            try:
+                resp = opener.open(req, timeout=timeout).read().decode('utf-8', 'replace')
+            except Exception as exc:
+                if _connection_never_opened(exc):
+                    continue
+                return None
+            if base != bases[0]:
+                _MCP_REROUTED.append((bases[0], base))
+            break
     except Exception:
+        return None
+    if resp is None:
         return None
     inner, _rpc_error, phase = parse_mcp_response(resp)
     if phase != 'ok':
@@ -724,6 +794,16 @@ else:
             _note = None  # fail-open: a mode-registration fault never costs the turn
         if _note:
             stamp += "\n\n" + _note
+
+if _MCP_REROUTED:
+    # Loud on purpose: the fallback kept this turn working, but the pin is still dead
+    # and will stay dead for every other client in this session until relaunch.
+    _pinned, _used = _MCP_REROUTED[0]
+    stamp += (
+        f"\n\n⚠ OPERATOR PIN DEAD — {_pinned} (PAPERCUSP_OPERATOR_URL) refused the "
+        f"connection, so this hook used {_used} instead. Your session is still pinned to "
+        "the dead address; see EI-24091823697677465."
+    )
 
 print(json.dumps({
     'hookSpecificOutput': {

@@ -169,7 +169,10 @@ function writeMachineRow(over: Record<string, unknown> = {}): void {
  * with spawnSync every capture assertion failed while the identical hook
  * invocation from a shell recorded `orders:capture` on the first try.
  */
-function runHook(payload: unknown): Promise<{ stdout: string; status: number | null }> {
+function runHook(
+  payload: unknown,
+  env: Record<string, string> = {},
+): Promise<{ stdout: string; status: number | null }> {
   return new Promise((done, fail) => {
     const child = spawn('bash', [SCRIPT], {
       env: {
@@ -184,6 +187,7 @@ function runHook(payload: unknown): Promise<{ stdout: string; status: number | n
         http_proxy: '',
         https_proxy: '',
         no_proxy: '127.0.0.1,localhost',
+        ...env,
       },
     });
     let stdout = '';
@@ -509,5 +513,117 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     // Fail-OPEN: the owner's turn is never blocked and the stamp survives.
     expect(out.status).toBe(0);
     expect(ctx).toContain('OWNER (interactive)');
+  });
+});
+
+/**
+ * EI-24091823697677465 — a DEAD operator pin must not cost the owner's turn.
+ *
+ * Measured 2026-09-23: a session launched from a staging console inherited
+ * PAPERCUSP_OPERATOR_URL=http://localhost:3170 and kept it across every
+ * carry-respawn. Each time staging restarted, the hook's only target refused the
+ * connection and the owner's words went unrecorded (directives #404, #416 had to be
+ * recorded by hand). The hook now retries a REFUSED loopback pin once against the
+ * local MCP proxy (PAPERCUSP_MCP_PROXY_PORT). In these cases the stub plays the
+ * proxy, so nothing here can reach a real :9071.
+ */
+describe('userpromptsubmit-provenance.sh — dead operator pin falls back to the MCP proxy', () => {
+  /** A loopback port with nothing listening: bind an ephemeral port, then free it. */
+  async function deadLoopbackPort(): Promise<number> {
+    const probe = createServer();
+    await new Promise<void>((done) => probe.listen(0, '127.0.0.1', done));
+    const port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((done) => probe.close(() => done()));
+    return port;
+  }
+
+  function stubPort(): string {
+    return String((server!.address() as AddressInfo).port);
+  }
+
+  it('a REFUSED loopback pin is retried against the proxy, the capture lands, and the dead pin is named', async () => {
+    writeMachineRow();
+    const dead = `http://localhost:${await deadLoopbackPort()}`;
+    const prompt = 'record me even though staging is down';
+    const ctx = contextOf(
+      await runHook(
+        { prompt, session_id: 'native-session-pin-1' },
+        { PAPERCUSP_OPERATOR_URL: dead, PAPERCUSP_MCP_PROXY_PORT: stubPort() },
+      ),
+    );
+
+    const captures = captureCalls();
+    expect(captures).toHaveLength(1);
+    expect(captures[0]!.args.verbatim).toBe(prompt);
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    // Loud, and it names the dead address, so the session learns its pin is broken.
+    expect(ctx).toContain('OPERATOR PIN DEAD');
+    expect(ctx).toContain(dead);
+  });
+
+  it('CALIBRATION: a LIVE pin answers directly and reports no dead pin', async () => {
+    writeMachineRow();
+    const ctx = contextOf(
+      await runHook(
+        { prompt: 'a normal turn', session_id: 'native-session-pin-2' },
+        { PAPERCUSP_MCP_PROXY_PORT: stubPort() },
+      ),
+    );
+    expect(captureCalls()).toHaveLength(1);
+    expect(ctx).not.toContain('OPERATOR PIN DEAD');
+  });
+
+  it('a pin to ANOTHER host never falls back to the local proxy', async () => {
+    writeMachineRow();
+    const ctx = contextOf(
+      await runHook(
+        { prompt: 'this belongs to a different operator', session_id: 'native-session-pin-3' },
+        { PAPERCUSP_OPERATOR_URL: 'http://operator.invalid:3170', PAPERCUSP_MCP_PROXY_PORT: stubPort() },
+      ),
+    );
+    // The stub is the configured proxy and was never contacted.
+    expect(calls).toHaveLength(0);
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('a pin that ANSWERED with an error is not retried elsewhere, so a write can never apply twice', async () => {
+    writeMachineRow();
+    const pinnedVerbs: string[] = [];
+    const failing = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          pinnedVerbs.push(String(JSON.parse(body)?.params?.name ?? ''));
+        } catch {
+          pinnedVerbs.push('');
+        }
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('internal error after the request was received');
+      });
+    });
+    await new Promise<void>((done) => failing.listen(0, '127.0.0.1', done));
+    try {
+      const pinned = `http://127.0.0.1:${(failing.address() as AddressInfo).port}`;
+      const ctx = contextOf(
+        await runHook(
+          { prompt: 'do not record me twice', session_id: 'native-session-pin-4' },
+          { PAPERCUSP_OPERATOR_URL: pinned, PAPERCUSP_MCP_PROXY_PORT: stubPort() },
+        ),
+      );
+      // CALIBRATION: the pinned server really was reached (once per capture verb),
+      // so the zero below is a decision not to retry, not a request that never left.
+      expect(pinnedVerbs.filter((v) => CAPTURE_VERBS.has(v))).toEqual([
+        'orders:capture',
+        'orders:capture-pending',
+      ]);
+      expect(calls).toHaveLength(0);
+      expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+      expect(ctx).not.toContain('OPERATOR PIN DEAD');
+    } finally {
+      await new Promise<void>((done) => failing.close(() => done()));
+    }
   });
 });
