@@ -6,7 +6,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -190,6 +190,22 @@ describe('native JSON-line pipe transport', () => {
     await expect(p.request({ method: 'turn/start' })).rejects.toThrow(`cannot retain ${phase}`);
     await expect(p.done).rejects.toThrow(`cannot retain ${phase}`);
     expect(receipts.filter(r => r.phase === 'write-started')).toHaveLength(1);
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow('connection is closed');
+  });
+
+  it('contains a real broken stdin pipe, rejects the request and closes without replay', async () => {
+    const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
+    const p = await peer(process.execPath, ['-e', `
+      require('node:fs').closeSync(0);
+      process.stdout.write(JSON.stringify({method:'stdin-closed'})+'\\n');
+      setInterval(()=>{},1000);
+    `], {}, frame => events.push(frame), undefined, receipt => receipts.push(receipt));
+    await vi.waitFor(() => expect(events.some(frame => frame.method === 'stdin-closed')).toBe(true));
+    await expect(p.request({ method: 'turn/start' })).rejects.toThrow('EPIPE');
+    await expect(p.done).rejects.toThrow('EPIPE');
+    await p.close();
+    expect(receipts.filter(r => r.frame.method === 'turn/start').map(r => r.phase)).toEqual(['write-started', 'write-failed']);
+    expect(p.receiptState!()).toMatchObject({ exited: true, pendingWrites: 0 });
     await expect(p.request({ method: 'turn/start' })).rejects.toThrow('connection is closed');
   });
 
@@ -782,12 +798,15 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }, 90_000);
   }
 
-  it.each(['ok', 'preparation-drift'] as const)(
+  it.each(['ok', 'preparation-drift', 'source-writer-busy', 'source-guard-conflict', 'source-guard-exited', 'source-lock-replaced'] as const)(
     'composes an unpaid frozen-source control and managed-carry candidate across native processes (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
     const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
-    const { mintCarryRespawnArgs } = await vi.importActual<{ mintCarryRespawnArgs: (args: string[], options: Record<string, unknown>) => {
+    const { mintCarryRespawnArgs, codexThreadWriterLockPath, codexThreadWriterHolder } = await vi.importActual<{
+      codexThreadWriterLockPath: (home: string, threadId: string) => string;
+      codexThreadWriterHolder: (home: string, threadId: string) => { held: boolean; pid: number | null; reason: string };
+      mintCarryRespawnArgs: (args: string[], options: Record<string, unknown>) => {
       args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
     resetGovernorRegistry();
@@ -822,8 +841,21 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       concurrency: 1, maxQueueWaitMs: 2000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const captures: Parameters<typeof inspectCarryNativePopulation>[0][] = [];
     const manifests: Awaited<ReturnType<typeof captureCarryArtifactManifest>>[] = [];
+    const runtimeBoundaries: Array<{ threadId: string; turnId?: string; phase: string;
+      runtime: Awaited<ReturnType<typeof captureCarryRuntimeSnapshot>> }> = [];
+    const sourceGuards: Array<{ peer: SuStdioPeer; threadId: string; path: string; device: bigint; inode: bigint }> = [];
     let source: CarrySourceSnapshot | undefined;
     try {
+      const assertSourceGuards = () => {
+        for (const guard of sourceGuards) {
+          const file = lstatSync(guard.path, { bigint: true });
+          const holder = codexThreadWriterHolder(nativeHome, guard.threadId);
+          if (!file.isFile() || file.dev !== guard.device || file.ino !== guard.inode ||
+            guard.peer.receiptState?.().exited !== false || !holder.held || holder.pid !== guard.peer.pid()) {
+            throw new Error('frozen source native writer guard lost');
+          }
+        }
+      };
       const port = await gateway.listen(0);
       const config = stringifyToml({ model_provider: 'cache_protocol_probe', model_reasoning_effort: 'medium',
         model_providers: { cache_protocol_probe: { name: 'Unpaid loopback', base_url: `http://127.0.0.1:${port}/v1`,
@@ -849,6 +881,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         // can open after initialize. Preserve mutable observations as evidence,
         // without pretending their live bytes are immutable dependencies.
         const runtime = await captureCarryRuntimeSnapshot(live.p.pid()!);
+        runtimeBoundaries.push({ threadId, phase: 'before-first-turn', runtime });
         const mutablePaths = [...new Set([...runtime.writableSharedFiles, ...runtime.writableOpenFiles])].sort();
         const frozenRuntime = runtime.artifacts.filter(a => !mutablePaths.includes(a.filePath));
         const runtimePath = join(nativeHome, `runtime-${manifests.length}.json`);
@@ -862,6 +895,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           ...frozenRuntime,
           { id: 'runtime-observation', filePath: runtimePath, maxBytes: 1024 * 1024 },
           { id: 'wrapper-script', filePath: argv[1], maxBytes: 1024 * 1024 },
+          { id: 'source-writer-flock', filePath: '/usr/bin/flock', maxBytes: 1024 * 1024 },
+          { id: 'source-writer-node', filePath: process.execPath, maxBytes: 512 * 1024 * 1024 },
           { id: 'base', filePath: basePath, maxBytes: 1024 * 1024 },
           { id: 'recipe-data', filePath: recipePath, maxBytes: 1024 * 1024 },
           ...[
@@ -879,7 +914,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const manifest = await captureCarryArtifactManifest({ protocolRef: 'D017:unpaid-local-T1-pair', configuration, artifacts,
           dependencyScope: { recipeSha256: recipe.sha256,
             roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'launcher', artifactIds: ['launcher'] },
-              { role: 'native-runtime', artifactIds: frozenRuntime.map(a => a.id) }, { role: 'scripts', artifactIds: ['wrapper-script'] },
+              { role: 'native-runtime', artifactIds: frozenRuntime.map(a => a.id) },
+              { role: 'scripts', artifactIds: ['wrapper-script', 'source-writer-flock', 'source-writer-node'] },
               { role: 'task', artifactIds: ['recipe-data'] }, { role: 'seed', artifactIds: ['recipe-data'] },
               { role: 'pricing', artifactIds: ['pricing', 'pricing-package'] }, { role: 'checker', artifactIds: ['recipe-checker'] },
               ...extra.roots],
@@ -898,6 +934,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string,
         manifest: Awaited<ReturnType<typeof captureManifest>>) => {
         await recheckCarryArtifactManifest(manifest, live.p);
+        assertSourceGuards();
         if (source) await recheckCarrySourceSnapshot(source);
         const eventStart = live.events.length;
         const response = await live.p.request({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text }] } });
@@ -911,7 +948,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           allowedMcpCalls: [], expectedInputText: text });
         expect(trace.status).toBe('verified');
         await recheckCarryArtifactManifest(manifest, live.p);
-        return { turnId, threadRead, trace };
+        assertSourceGuards();
+        const runtimeAfter = await captureCarryRuntimeSnapshot(live.p.pid()!);
+        runtimeBoundaries.push({ threadId, turnId, phase, runtime: runtimeAfter });
+        return { turnId, threadRead, trace, runtimeAfter };
       };
       const options = { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: nativeHome,
         approvalPolicy: 'never', sandbox: 'read-only' };
@@ -941,9 +981,81 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       expect(inspectCarryNativePopulation(captures[0]).status).toBe('closed-peer-reconciled');
       const preparationCloseoutPath = join(nativeHome, 'preparation-closeout.json');
       const sourceFiles = [source, ...source.ancestors];
+      // Reuse the launcher's native lock identity, never infer exclusion from
+      // thread/read or unchanged hashes. These advisory locks exclude Codex
+      // writers that honor the native protocol, not arbitrary filesystem edits.
+      let competingWriter: Awaited<ReturnType<typeof openNative>> | undefined;
+      if (mode === 'source-writer-busy') {
+        competingWriter = await openNative();
+        await competingWriter.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } });
+      }
+      for (const member of [...sourceFiles].sort((a, b) => a.threadId.localeCompare(b.threadId))) {
+        const path = codexThreadWriterLockPath(nativeHome, member.threadId);
+        // Native teardown removes its lock file. flock creates a fresh lock
+        // inode in this owned test home; bind the inode AFTER acquisition.
+        const guard = await peer('/usr/bin/flock', ['--exclusive', '--nonblock', '--no-fork', path, process.execPath, '-e', `
+          require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+            const request = JSON.parse(line);
+            process.stdout.write(JSON.stringify({ id: request.id, result: { locked: true } }) + '\\n');
+          });
+        `], {}, undefined, undefined, () => {});
+        if (mode === 'source-writer-busy') {
+          await expect(guard.request({ method: 'ready' }, 5000)).rejects.toThrow(/exited|closed|EPIPE/);
+          await expect(guard.done).rejects.toThrow(/exited|EPIPE/);
+          expect(codexThreadWriterHolder(nativeHome, member.threadId).held).toBe(true);
+          expect(requests.map(request => request.phase)).toEqual(['preparation']);
+          await competingWriter!.p.close(); await competingWriter!.p.done;
+          return;
+        }
+        expect(await guard.request({ method: 'ready' }, 5000)).toEqual({ locked: true });
+        const file = lstatSync(path, { bigint: true });
+        expect(file.isFile()).toBe(true);
+        sourceGuards.push({ peer: guard, threadId: member.threadId, path, device: file.dev, inode: file.ino });
+      }
+      assertSourceGuards();
+      // Acquiring a lock cannot repair a source that changed in the interval
+      // after its producing peer closed. Recheck the original cut unchanged.
+      await recheckCarrySourceSnapshot(source);
+      if (mode === 'source-guard-conflict') {
+        const competitor = await openNative();
+        await expect(competitor.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } }))
+          .rejects.toThrow(/active writer/);
+        assertSourceGuards();
+        await recheckCarrySourceSnapshot(source);
+        expect(requests.map(request => request.phase)).toEqual(['preparation']);
+        await competitor.p.close(); await competitor.p.done;
+        await sourceGuards[0].peer.close(); await sourceGuards[0].peer.done;
+        sourceGuards.length = 0;
+        const afterRelease = await openNative();
+        expect((await afterRelease.p.request({ method: 'thread/resume', params: { ...options, threadId: sourceId } })).thread)
+          .toMatchObject({ id: sourceId });
+        await afterRelease.p.close(); await afterRelease.p.done;
+        return;
+      }
+      if (mode === 'source-guard-exited' || mode === 'source-lock-replaced') {
+        const candidate = await openNative();
+        const opened = await candidate.p.request({ method: 'thread/start', params: options });
+        const threadId = String((opened.thread as RpcFrame).id);
+        const manifest = await captureManifest(candidate, threadId);
+        if (mode === 'source-guard-exited') {
+          await sourceGuards[0].peer.close(); await sourceGuards[0].peer.done;
+        } else {
+          // Only the owned disposable fixture lock is replaced. Never do this
+          // to a production/native peer lock to bypass its writer exclusion.
+          rmSync(sourceGuards[0].path); writeFileSync(sourceGuards[0].path, '');
+        }
+        await expect(turn(candidate, threadId, task.prompt, manifest)).rejects.toThrow('frozen source native writer guard lost');
+        expect(candidate.receipts.some(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start')).toBe(false);
+        expect(requests.map(request => request.phase)).toEqual(['preparation']);
+        await candidate.p.close(); await candidate.p.done;
+        return;
+      }
       const preparationCloseout = { evidenceKind: 'observation-only', manifestSha256: preparationManifest.sha256,
         recipeSha256: recipe.sha256, inputSha256: prepared.trace.inputSha256,
         nativeCaptureSha256: createHash('sha256').update(JSON.stringify(captures[0])).digest('hex'),
+        runtimeAfter: prepared.runtimeAfter,
+        sourceWriterGuards: sourceGuards.map(guard => ({ threadId: guard.threadId, path: guard.path,
+          device: guard.device.toString(), inode: guard.inode.toString(), pid: guard.peer.pid() })),
         source: sourceFiles.map(s => ({ threadId: s.threadId, turnId: s.turnId, filePath: s.filePath,
           sha256: s.snapshot.sha256, bytes: s.snapshot.highWaterBytes, forkedFromId: s.forkedFromId })),
         admission: 'not-established', accountingComplete: false };
@@ -959,6 +1071,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       expect(readFileSync(basePath, 'utf8')).not.toContain(recipe.seedText);
       expect(readFileSync(carry.launchContextPath, 'utf8')).toContain(recipe.seedText);
       for (const arm of ['control', 'candidate'] as const) {
+        assertSourceGuards();
         await recheckCarrySourceSnapshot(source);
         const live = await openNative();
         const opened = await live.p.request({ method: arm === 'control' ? 'thread/fork' : 'thread/start',
@@ -986,8 +1099,17 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
         expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
         await recheckCarrySourceSnapshot(source);
+        assertSourceGuards();
       }
       expect(requests.map(request => request.phase)).toEqual(['preparation', 'control', 'carry', 'candidate']);
+      expect(runtimeBoundaries.map(boundary => boundary.phase)).toEqual([
+        'before-first-turn', 'preparation', 'before-first-turn', 'control', 'before-first-turn', 'carry', 'candidate',
+      ]);
+      expect(runtimeBoundaries.every(boundary => boundary.runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path)))).toBe(true);
+      // The preparation closeout hashes its post-turn observation; each arm
+      // also retains its boundary outputs separately from pre-dispatch inputs.
+      // This cannot witness a file opened and closed between boundaries.
+      const runtimeBoundarySha256 = createHash('sha256').update(JSON.stringify(runtimeBoundaries)).digest('hex');
       expect(failures).toEqual([]);
       // Full isolated gateway lifetime plus all native peers: no per-arm
       // filtering may hide preparation, failed attempts or a missing process.
@@ -1018,10 +1140,15 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, sourceSha256: source.snapshot.sha256,
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
           preparationManifestSha256: preparationManifest.sha256,
+          runtimeBoundarySha256, runtimeBoundaryCount: runtimeBoundaries.length,
+          sourceWriterGuardCount: sourceGuards.length, sourceWriterGuardScope: 'cooperating-native-thread-writers',
+          mutableFileNames: [...new Set(runtimeBoundaries.flatMap(boundary => boundary.runtime.writableOpenFiles
+            .map(path => path.slice(path.lastIndexOf('/') + 1))))].sort(),
           captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
           canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
       } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org.cleanup(); }
     } finally {
+      for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
       await gateway.close();
       await new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); });
       resetGovernorRegistry();

@@ -447,8 +447,12 @@ export async function captureCarryRuntimeSnapshot(rootPid: number): Promise<Carr
       const openFiles: CarryRuntimeSnapshot['processes'][number]['openFiles'] = [];
       for (const fd of descriptors.sort((a, b) => Number(a) - Number(b))) {
         const fdPath = `/proc/${pid}/fd/${fd}`, path = await readlink(fdPath);
-        if (/^(?:pipe|socket):\[\d+\]$/.test(path) || /^anon_inode:\[[^\]\n]+\]$/.test(path)) continue;
-        if (!isAbsolute(path) || path.endsWith(' (deleted)')) throw new Error('carry runtime open pathname unavailable or ambiguous');
+        if (/^(?:pipe|socket):\[\d+\]$/.test(path) || /^anon_inode:\[[^\]\n]+\]$/.test(path) || path === 'anon_inode:inotify') continue;
+        if (!isAbsolute(path) || path.endsWith(' (deleted)')) {
+          const kind = path.startsWith('anon_inode:') ? path.slice(0, 80).replace(/[^a-zA-Z0-9_:\[\]-]/g, '?')
+            : isAbsolute(path) ? 'deleted-file' : 'non-absolute';
+          throw new Error(`carry runtime open pathname unavailable or ambiguous (${kind}; fd ${fd})`);
+        }
         const descriptor = await stat(fdPath, { bigint: true });
         // Directories and devices are not regular-file artifacts. Do not open
         // or read the descriptor itself: that could advance a live file offset.
