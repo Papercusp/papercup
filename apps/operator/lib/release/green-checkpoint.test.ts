@@ -96,6 +96,9 @@ import {
   checkpointRunLockSkipSummary,
   activateScheduledCheckpointRunner,
   startScheduledQualificationProgress,
+  createCheckpointTerminalEventBuffer,
+  emitTerminalCheckpointResult,
+  type CheckpointResult,
   checkpointRunLockDir,
   buildTerminationCheckpointResult,
   createTerminationSignalHandler,
@@ -3040,6 +3043,34 @@ describe("in-flight candidate retirement ownership", () => {
 });
 
 describe("acquireCheckpointRunLock", () => {
+  it("records one exact-candidate terminal result before releasing buffered green/red wakes", async () => {
+    const order: string[] = [];
+    const emitted: string[] = [];
+    const buffer = createCheckpointTerminalEventBuffer(async (event) => {
+      order.push('wake');
+      emitted.push(event.key);
+    }, (message) => order.push(`warn:${message}`));
+    const red = { key: 'green-checkpoint:red:papercusp', summary: 'red', payload: { sha: 'candidate-1', runId: 'run-1' } };
+    await buffer.emit(red);
+    await buffer.emit(red); // replay of the same exact key/candidate/run is one wake
+    await buffer.emit({ key: 'green-checkpoint:red:papercusp', summary: 'other', payload: { sha: 'candidate-2', runId: 'run-1' } });
+    expect(emitted).toEqual([]);
+    const result = { candidate: 'candidate-1', runId: 'run-1', green: false, reason: 'not-green' } as CheckpointResult;
+    await emitTerminalCheckpointResult(result, {
+      record: async () => { order.push('record'); return true; },
+      writeHuman: () => order.push('human'),
+      writeMarker: () => order.push('marker'),
+      emitTerminalEvents: buffer.flush,
+      emitInconclusive: async () => { order.push('inconclusive'); },
+      retire: async () => { order.push('retire'); },
+    });
+    expect(emitted).toEqual(['green-checkpoint:red:papercusp']);
+    expect(order.slice(0, 4)).toEqual(['record', 'human', 'marker', 'wake']);
+    expect(order.some((entry) => entry.includes('identity does not match'))).toBe(true);
+    await buffer.emit(red);
+    await buffer.flush(result, false);
+    expect(emitted).toHaveLength(1);
+  });
   it("reports scheduled runner phases against the reserved attempt and stops before terminal output", async () => {
     const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
