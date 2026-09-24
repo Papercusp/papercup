@@ -57,7 +57,6 @@ import {
 } from './release/checkpoint-qualification-transaction';
 import { parseCandidateSnapshot, type CandidateSnapshot } from './release/candidate-snapshot';
 import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
-import { releaseCheckpointConfig } from './release-checkpoint-config';
 import { highestRungCrossed } from './release/stall-escalation-ladder';
 
 /** Compact read health projected beside the normalized queue diagnostic. */
@@ -1477,6 +1476,11 @@ export async function gitPipelineSnapshot(
       : null;
   const rawConsecutiveReds = measuredConsecutiveReds ?? 0;
   const lastGreenAtMs = num(gateHealth.lastGreenAt);
+  // Keep the release override reader out of this module's import graph. Pot
+  // wake tools import pipeline types transitively and must perform no DB I/O
+  // merely by loading their definitions.
+  const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await import('./release-checkpoint-config');
+  await releaseCheckpointConfigReady;
   const stallConfig = releaseCheckpointConfig();
   const inRoutineStalled = deriveInRoutineGateStalled({
     consecutiveReds: measuredConsecutiveReds,
