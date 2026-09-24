@@ -22,15 +22,15 @@
  * builder seam reached only after this resolution, not a wire field.)
  *
  * ── WHERE THE TEXT LIVES ─────────────────────────────────────────────────────
- * `apps/operator/prompts/su-role-<role>.addendum.md`, alongside the su playbooks
- * (`papercusp-su-{engineer,power}.tools.md`) it is appended to. Prompt prose is a
- * SOURCE in this repo, never a TS string constant — see CLAUDE.md, "Prompts are
- * auto-generated — edit the source, never the rendered output". Resolution reuses
- * the playbook's own prompts-dir candidates so the bundled Tauri sidecar layout
- * resolves identically.
+ * The planner role is a compatibility selector for the built-in
+ * `su.specialist-planner` identity's practice document. The role allow-list
+ * still controls superuser-tier admission; it does not author a second prompt.
+ * An explicit operatorAppRoot keeps the old file-root resolver available to
+ * callers testing a legacy prompt layout.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 
 import {
   operatorAppRootForPrompts,
@@ -75,6 +75,15 @@ export function resolveSuRoleAddendum(
   opts: { operatorAppRoot?: string } = {},
 ): string | null {
   if (!role || !isSuTierRole(role)) return null;
+  if (role === 'planner' && !opts.operatorAppRoot) {
+    const source = path.join(path.dirname(builtinBlueprintPath('su.specialist-planner')), 'prompts', 'practice.md');
+    try {
+      const text = readFileSync(source, 'utf8').trim();
+      return text || null;
+    } catch {
+      return null;
+    }
+  }
   const explicitRoot = !!opts.operatorAppRoot;
   const root = opts.operatorAppRoot ?? operatorAppRootForPrompts();
   const fileName = suRoleAddendumFileName(role);

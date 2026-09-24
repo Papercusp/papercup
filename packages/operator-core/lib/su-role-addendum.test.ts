@@ -10,14 +10,14 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 
 import {
   SU_TIER_ROLES,
   isSuTierRole,
   resolveSuRoleAddendum,
-  suRoleAddendumFileName,
 } from './su-role-addendum';
 
 const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
@@ -48,19 +48,20 @@ describe('su-tier role allow-list', () => {
     }
   });
 
-  it('every su-tier role has a real prompt source in the repo', () => {
-    // The failure this catches is silent: a role on the list with no addendum
-    // file launches at the superuser tier with NO role lines at all — it looks
-    // configured and behaves like a plain su session.
+  it('every su-tier role has a real canonical identity prompt', () => {
+    // The compatibility role still needs a real document or it would launch
+    // with superuser authority but no specialization.
     for (const role of SU_TIER_ROLES) {
-      const text = resolveSuRoleAddendum(role, { operatorAppRoot: OPERATOR_APP_ROOT });
-      expect(text, `missing prompts/${suRoleAddendumFileName(role)}`).toBeTruthy();
+      const text = resolveSuRoleAddendum(role);
+      expect(text, `missing identity document for ${role}`).toBeTruthy();
       expect(text!.length).toBeGreaterThan(40);
     }
   });
 
-  it('the planner addendum names the plans:* surface it exists to point at', () => {
-    const text = resolveSuRoleAddendum('planner', { operatorAppRoot: OPERATOR_APP_ROOT })!;
+  it('the planner role uses exactly the authored specialist identity document', () => {
+    const text = resolveSuRoleAddendum('planner')!;
+    const source = join(dirname(builtinBlueprintPath('su.specialist-planner')), 'prompts', 'practice.md');
+    expect(text).toBe(readFileSync(source, 'utf8').trim());
     expect(text).toContain('PLANNER');
     expect(text).toContain('plans:');
   });
