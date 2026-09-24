@@ -122,6 +122,7 @@ const REPLAY_SPLIT_RATINGS: ObservationRatings = {
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorBuild: { sha: 'graded-evaluator-sha', version: '1.2.2' },
   evaluatorRevision: 2,
   classRef: 'plan-class-feature-ship' as const,
   args: {
@@ -222,8 +223,12 @@ const replayConsistencyGradedCard = () => ({
   },
 });
 
-const targetReplay = (rating: 'pass' | 'fail') => ({
+const targetReplay = (
+  rating: 'pass' | 'fail',
+  evaluatorBuild = RERUN_RECIPE.evaluatorBuild,
+) => ({
   ok: true,
+  evaluatorBuild,
   rows: [
     {
       specId: 'SPEC-003-01',
@@ -648,6 +653,53 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res.ok).toBe(true);
     expect(captureImprovement).toHaveBeenCalledOnce();
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it('defers the grading audit when the exact evaluator replay reports build drift', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
+    const dispatchTool = vi.fn().mockResolvedValue({
+      ...targetReplay('fail', liveEvaluatorBuild),
+      evaluatorBuildDrift: { recorded: RERUN_RECIPE.evaluatorBuild, live: liveEvaluatorBuild },
+    });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
+    expect((res as { error?: string }).error).toContain('evaluator-build-drift');
+    expect(dispatchTool).toHaveBeenCalledWith(
+      'plans:evaluate-spec-test-adequacy',
+      expect.objectContaining({
+        slug: 'reconnect-plan',
+        evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
+        payloadTier: 'full',
+      }),
+    );
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when replay build identity differs without a drift marker', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail', liveEvaluatorBuild));
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
+    expect((res as { error?: string }).error).toContain('changed build identity');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
   it('requires re-emitting a legacy card when a newer evaluator revision changes its rating', async () => {
