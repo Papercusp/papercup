@@ -180,6 +180,7 @@ describe('extractLaunchUsage', () => {
       },
     });
     expect(usage).toEqual({
+      usageCountsComplete: true,
       inputTokens: 2,
       cacheCreationTokens: 128_745,
       cacheReadTokens: 103_666,
@@ -195,9 +196,10 @@ describe('extractLaunchUsage', () => {
     expect(extractLaunchUsage([{ message: { usage: {} } }])).toBeNull();
   });
 
-  it('treats missing individual fields as zero rather than throwing', () => {
+  it('marks missing individual fields as incomplete rather than claiming a complete prompt sum', () => {
     const usage = extractLaunchUsage({ message: { usage: { input_tokens: 5 } } });
     expect(usage).toEqual({
+      usageCountsComplete: false,
       inputTokens: 5,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
@@ -297,6 +299,12 @@ describe('extractSampleContext', () => {
 });
 
 describe('summarizeOverall', () => {
+  it('discloses missing usage counters in aggregate lower bounds', () => {
+    const complete = sample({ totalPromptTokens: 10, usageCountsComplete: true });
+    const partial = sample({ totalPromptTokens: 5, usageCountsComplete: false });
+    expect(summarizeOverall([complete, partial])?.incompleteCount).toBe(1);
+    expect(summarizeByDay([complete, partial])[0]?.incompleteCount).toBe(1);
+  });
   it('returns null for an empty sample set instead of a zero-filled record', () => {
     // The load-bearing assertion of this file. A zero-filled summary over no data reads as
     // "launch cost is 0" — a spectacular apparent success — and is indistinguishable at the

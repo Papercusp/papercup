@@ -30,6 +30,8 @@
 
 /** The three prompt-side token fields, plus their sum. */
 export type LaunchUsage = {
+  /** False/absent means the numeric sum is only a known lower bound, not a complete prompt count. */
+  usageCountsComplete?: boolean;
   inputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
@@ -58,6 +60,8 @@ export type LaunchSample = LaunchUsage & {
 
 export type LaunchStats = {
   count: number;
+  /** Samples with missing/invalid usage fields; totals/medians are lower bounds when nonzero. */
+  incompleteCount?: number;
   medianTotal: number;
   p10Total: number;
   p90Total: number;
@@ -131,6 +135,8 @@ export function extractLaunchUsage(entry: unknown): LaunchUsage | null {
   const cacheCreationTokens = readFiniteNumber(usage.cache_creation_input_tokens);
   const cacheReadTokens = readFiniteNumber(usage.cache_read_input_tokens);
   return {
+    usageCountsComplete: ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']
+      .every(key => typeof usage[key] === 'number' && Number.isSafeInteger(usage[key]) && (usage[key] as number) >= 0),
     inputTokens,
     cacheCreationTokens,
     cacheReadTokens,
@@ -204,6 +210,7 @@ function statsOver(samples: readonly LaunchSample[]): LaunchStats {
   const totals = samples.map((s) => s.totalPromptTokens);
   return {
     count: samples.length,
+    incompleteCount: samples.filter(s => s.usageCountsComplete !== true).length,
     medianTotal: median(totals),
     p10Total: percentile(totals, 0.1),
     p90Total: percentile(totals, 0.9),
