@@ -437,6 +437,34 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
 });
 
 describe('native boot migration/backup rendezvous (EI-21443484375613585)', () => {
+  it('boots without waiting when a new backup starts after target preflight applied its migrations', async () => {
+    const filename = '957-staging-pre-cutover.sql';
+    const dir = makeSqlDir({ [filename]: 'CREATE TABLE harness_shared.staging_pre_cutover (id int);' });
+    await seedMigrationReservations([filename]);
+    expect(await applyPendingMigrationsNow({ sqlDir: dir, broadcast: false }))
+      .toMatchObject({ applied: 1, failed: [] });
+    const holder = postgres(dbUrl, { max: 1, prepare: false, onnotice: () => {} });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      const boot = await Promise.race([
+        applyPendingMigrationsNow({ sqlDir: dir, broadcast: false }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('late backup blocked prepared target boot')), 5_000);
+        }),
+      ]);
+      expect(boot).toMatchObject({ applied: 0, failed: [] });
+      // This observer must still be unable to acquire the held lock: success
+      // above happened before backup release, not just shortly after it.
+      expect(await rootSql`SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`)
+        .toEqual([{ acquired: false }]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await holder.end({ timeout: 5 });
+    }
+  });
+
   it('does not keep a request-only host dark behind a backup when no migration is pending', async () => {
     const filename = '956-native-boot-already-applied.sql';
     const dir = makeSqlDir({
