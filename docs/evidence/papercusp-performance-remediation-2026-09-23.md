@@ -632,3 +632,10 @@ full lifecycle suite passed 15 tests, zero skipped (19274002), at HEAD
 and test passed; diagnostics outside these files remain. This verifies the
 server's exit decision and real child cleanup, not recovery from SIGKILL or a
 lost transport response. Those failure modes remain P-003 work.
+
+The final suite adds an idle-shutdown liveness check and asserts repeated
+shutdown retains the signal handler until settlement, then removes it. It
+passed **16 tests, zero skipped** (19274010) at stable `cb4aa8932b`, with the
+named test path clean after the background commit. The prior 15-test run and
+scoped typecheck above remain the source-change validation; this final run
+strengthens lifecycle coverage without changing the server implementation.
