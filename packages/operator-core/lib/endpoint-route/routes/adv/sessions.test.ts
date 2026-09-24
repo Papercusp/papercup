@@ -49,4 +49,10 @@ describe('adv/sessions ensure-codex-home — legacy rows remain repairable', () 
   it('surfaces that the repair used the bounded legacy-row fallback', () => {
     expect(src).toContain("recoveredFrom: 'adv-session-row'");
   });
+
+  it('supplies a resolved model to the canonical writer for model-less legacy rows', () => {
+    expect(src).toContain('const repairModel = requestedModel ? resolveCodexModel(requestedModel) : record.model ?? CODEX_DEFAULT_MODEL');
+    expect(src).toContain('model: repairModel,');
+    expect(src).not.toContain('model: record.model,');
+  });
 });

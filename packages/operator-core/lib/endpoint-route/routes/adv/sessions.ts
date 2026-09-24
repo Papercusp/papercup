@@ -1361,7 +1361,7 @@ const ensureClaudeConfig = defineTool({
 /**
  * POST /api/adv/sessions/ensure-codex-home — make a session's per-session
  * `CODEX_HOME` launch-ready for a codex resume, and report whether it had to be
- * repaired. Body: `{ owner: string, advSessionId: number, requireGatewayProvider?: boolean }`.
+ * repaired. Body: `{ owner: string, advSessionId: number, requireGatewayProvider?: boolean, model?: string }`.
  * Returns `{ ok, codexHome, repaired, reason? }`.
  *
  * WI-38706, and the exact codex counterpart of `ensure-claude-config` above —
@@ -1394,7 +1394,7 @@ const ensureCodexHome = defineTool({
   path: '/adv/sessions/ensure-codex-home',
   auth: 'loopback',
   async handler(req) {
-    let body: { owner?: unknown; advSessionId?: unknown; requireGatewayProvider?: unknown } = {};
+    let body: { owner?: unknown; advSessionId?: unknown; requireGatewayProvider?: unknown; model?: unknown } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
@@ -1414,16 +1414,24 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner }, { parseSuLaunchSpecRecord }, { buildLaunchSpec }, { ensureSuCodexHomeConfig }, { readSuperuserToken }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
-        import('../../../role-launch-spec'),
+        import('../agent-mcp/bootstrap-su'),
         import('../../../role-codex-home'),
         import('../../../superuser-token'),
+        import('../../../agent-tools/coordination/control-anchor'),
+        import('../../../model-context-budget.mjs'),
       ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
-    const sessionRow = persistedRecord ? null : await getAdvSession(advSessionId);
+    const sessionRow = await getAdvSession(advSessionId);
+    if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
+      return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'owner-mismatch' }), {
+        status: 200,
+        headers: JSON_HEADERS,
+      });
+    }
     const record = persistedRecord ?? fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner);
     // Fail SOFT like persona-refresh: the caller's only sane response to any of
     // these is "launch anyway with what is on disk", and a resume that died
@@ -1444,28 +1452,67 @@ const ensureCodexHome = defineTool({
     if (record.agent !== 'codex') {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'unsupported-agent', agent: record.agent }), { status: 200, headers: JSON_HEADERS });
     }
-    const spec = await buildLaunchSpec({
-      kind: 'su',
-      agent: 'codex',
-      workspaceId: record.workspaceId,
+    // Legacy ADV rows predate launch_spec and carry no model. Prefer the
+    // launcher's current model when supplied; otherwise explicitly select the
+    // approved configured default. Passing null to the canonical config writer
+    // throws before it can restore a missing home or prompt.
+    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+    const repairModel = requestedModel ? resolveCodexModel(requestedModel) : record.model ?? CODEX_DEFAULT_MODEL;
+    const repairRecord = requestedModel || !record.model ? {
+      ...record,
+      model: repairModel,
+      modelSource: requestedModel ? 'inherited' as const : 'configured-default' as const,
+    } : record;
+    const rebuilt = await rebuildSuLaunchArtifact({
+      ownerId: owner,
       operatorBaseUrl: new URL(req.url).origin,
-      harnessSlug: record.harnessSlug,
-      profile: record.profile,
-      contextSize: record.contextSize,
-      personaTier: record.personaTier,
-      model: record.model,
-      planSlug: record.planSlug,
+      record: repairRecord,
+      modeSection: composeModePromptSection({
+        autoMode: record.autoMode,
+        drainMode: record.drainMode,
+        loopArmed: record.loopArmed,
+      }),
     });
     const r = ensureSuCodexHomeConfig({
       sessionKey: advSessionId,
-      mcpUrl: spec.mcpUrl,
+      mcpUrl: rebuilt.spec.mcpUrl,
       sid: owner,
-      model: record.model,
+      model: repairModel,
       token: readSuperuserToken(),
       codexGatewayAuto: body.requireGatewayProvider === true,
       codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
       trustDir: null, // the home's inherited trust tables already cover the cwd
+      promptText: rebuilt.promptText,
+      recoverMissingHome: sessionRow?.coordOwnerId === owner,
     });
+    if (r.promptRepaired) {
+      const artifact = rebuilt.artifact;
+      const updatedRecord = {
+        ...repairRecord,
+        stack: artifact.stack,
+        specificationRevision: artifact.specificationRevision,
+        stateRevision: artifact.stateRevision,
+        specificationArtifact: artifact.specificationArtifact,
+      };
+      if (!(await recordSuLaunchSpec(null, owner, updatedRecord))) {
+        throw new Error('repaired Codex launch specification receipt was not persisted');
+      }
+      await requestSessionIdentityActivation({
+        ownerId: owner,
+        workspaceId: record.workspaceId,
+        revision: {
+          specificationRevision: artifact.specificationRevision,
+          stateRevision: artifact.stateRevision,
+        },
+        attribution: {
+          actorId: owner,
+          principalId: record.principalId ?? owner,
+          sessionId: owner,
+        },
+        source: 'restart',
+        restart: true,
+      });
+    }
     return new Response(
       JSON.stringify({
         ok: true,
