@@ -29,6 +29,7 @@
  */
 
 import { pairedBootstrapCI } from '@papercusp/bench-metrics';
+import { costFromTokens, normalizeModelId } from '@papercusp/model-pricing';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -547,6 +548,100 @@ export function inspectCarrySourceRead(input: CarryNativeTurnEvidence, source: C
   return { status, violations: [...violations], missing: [...missing],
     sourceRef: status === 'verified' ? source.sourceRef : null,
     itemId: status === 'verified' ? String(item!.id) : null };
+}
+
+export interface CarryBudgetCharge {
+  /** Canonical charged identity, including failed/aborted/preparation requests. */
+  id: string;
+  armId: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  estimatedListUsd: number | null;
+}
+
+export interface CarryBudgetRequest {
+  /** Frozen request slot, unique across the spent and unstarted populations. */
+  id: string;
+  armId: string;
+  model: string;
+  inputTokenLimit: number | null;
+  outputTokenLimit: number | null;
+  /** The controller establishes these native bounds; a prompt asking for a
+   * short answer, unsupported API knob, or expected average is not a bound. */
+  boundsVerified: boolean;
+  boundsEvidenceRef: string | null;
+}
+
+/** D017 pre-request arithmetic, NOT authorization to dispatch. Caller must bind
+ * the complete population, native bound receipts, runtime/auth/pricing manifest
+ * and approval separately. Unknown cache input reserves its most expensive
+ * applicable category; it is never used as measured acceptance cost. Every
+ * remaining required request is reserved, not just the next convenient slot.
+ */
+export function evaluateCarryBudgetReservation(input: {
+  accountingComplete: boolean;
+  remainingRequestsComplete: boolean;
+  spent: readonly CarryBudgetCharge[];
+  remaining: readonly CarryBudgetRequest[];
+  limits: { inputTokens: number; outputTokens: number; estimatedListUsd: number; chargedRequestsPerArm: number };
+}) {
+  const missing = new Set<string>(), exceeded = new Set<string>();
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const money = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 &&
+    Number.isSafeInteger(Math.ceil(n * 1_000_000));
+  if (!input.accountingComplete) missing.add('incomplete-spent-accounting');
+  if (!input.remainingRequestsComplete) missing.add('incomplete-remaining-population');
+  if (!input.remaining.length) missing.add('no-next-request');
+  if (!count(input.limits.inputTokens) || !count(input.limits.outputTokens) || !money(input.limits.estimatedListUsd) ||
+    !count(input.limits.chargedRequestsPerArm) || input.limits.chargedRequestsPerArm === 0) missing.add('invalid-budget-limits');
+  const ids = new Set<string>(), arms = new Map<string, number>();
+  let inputTokens = 0, outputTokens = 0, microUsd = 0;
+  const register = (id: string, armId: string) => {
+    if (!id.trim() || !armId.trim()) missing.add('missing-request-or-arm-identity');
+    if (ids.has(id)) missing.add(`duplicate-request:${id}`);
+    ids.add(id); arms.set(armId, (arms.get(armId) ?? 0) + 1);
+  };
+  const accumulate = (id: string, tokensIn: number | null, tokensOut: number | null, usd: number | null) => {
+    if (!count(tokensIn) || !count(tokensOut) || !money(usd)) { missing.add(`invalid-or-unknown-charge:${id}`); return; }
+    inputTokens += tokensIn; outputTokens += tokensOut;
+    // Round each reservation UP to microdollars; never round an expense down
+    // or use a tolerance that admits a total beyond the hard budget.
+    microUsd += Math.ceil(usd * 1_000_000);
+    if (![inputTokens, outputTokens, microUsd].every(Number.isSafeInteger)) missing.add('budget-arithmetic-overflow');
+  };
+  for (const charge of input.spent) {
+    register(charge.id, charge.armId);
+    accumulate(charge.id, charge.inputTokens, charge.outputTokens, charge.estimatedListUsd);
+  }
+  for (const request of input.remaining) {
+    register(request.id, request.armId);
+    if (!request.boundsVerified || !request.boundsEvidenceRef?.trim() ||
+      !count(request.inputTokenLimit) || !count(request.outputTokenLimit) || request.outputTokenLimit === 0) {
+      missing.add(`unverified-native-bounds:${request.id}`); continue;
+    }
+    const common = { requestInputTokens: request.inputTokenLimit, outputTokens: request.outputTokenLimit };
+    const categories = [
+      { inputTokens: request.inputTokenLimit }, { cacheReadTokens: request.inputTokenLimit },
+      { cacheCreationTokens: request.inputTokenLimit },
+      // Public Anthropic cache-write TTL tiers do not apply to Codex routes.
+      ...(normalizeModelId(request.model).startsWith('claude-') ? [
+        { cacheCreation5mTokens: 0, cacheCreation1hTokens: request.inputTokenLimit },
+      ] : []),
+    ];
+    const estimates = categories.map(category => costFromTokens(request.model, { ...common, ...category }));
+    if (estimates.some(estimate => !estimate.priced || !money(estimate.usd))) {
+      missing.add(`unpriceable-request:${request.id}`); continue;
+    }
+    accumulate(request.id, request.inputTokenLimit, request.outputTokenLimit, Math.max(...estimates.map(estimate => estimate.usd)));
+  }
+  if (inputTokens > input.limits.inputTokens) exceeded.add('input-token-cap');
+  if (outputTokens > input.limits.outputTokens) exceeded.add('output-token-cap');
+  if (microUsd > Math.floor(input.limits.estimatedListUsd * 1_000_000)) exceeded.add('estimated-list-cost-cap');
+  for (const [arm, requests] of arms) if (requests > input.limits.chargedRequestsPerArm) exceeded.add(`request-cap:${arm}`);
+  return { fitsBudget: missing.size === 0 && exceeded.size === 0, missing: [...missing], exceeded: [...exceeded],
+    // Partial sums are not a usable reservation.
+    projected: missing.size ? null : { inputTokens, outputTokens, estimatedListUsd: microUsd / 1_000_000,
+      chargedRequestsByArm: Object.fromEntries(arms) } };
 }
 
 export interface CarryTaskEvaluation {

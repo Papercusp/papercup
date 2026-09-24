@@ -8,6 +8,7 @@ import {
   evaluateCarryStartup,
   type CarryStartupObservation,
   evaluateCarryTaskPairs,
+  evaluateCarryBudgetReservation,
   inspectCarryNativeTurn,
   inspectCarrySourceRead,
   type CarryTaskEvaluation,
@@ -21,6 +22,110 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry conservative request reservation', () => {
+  const request = (id = 'next', armId = 'candidate') => ({ id, armId, model: 'gpt-6-sol',
+    inputTokenLimit: 100_000, outputTokenLimit: 1000, boundsVerified: true, boundsEvidenceRef: 'fixture:native-bound' });
+  const fixture = () => ({ accountingComplete: true, remainingRequestsComplete: true,
+    spent: [{ id: 'preparation', armId: 'candidate', inputTokens: 10_000, outputTokens: 100, estimatedListUsd: 0.01 }],
+    remaining: [request()],
+    limits: { inputTokens: 50_000_000, outputTokens: 1_000_000, estimatedListUsd: 250, chargedRequestsPerArm: 8 } });
+
+  it('reserves worst-case writes and all spent preparation, never claims dispatch authorization', () => {
+    const result = evaluateCarryBudgetReservation(fixture());
+    expect(result).toEqual({ fitsBudget: true, missing: [], exceeded: [], projected: {
+      inputTokens: 110_000, outputTokens: 1100, estimatedListUsd: 0.27, chargedRequestsByArm: { candidate: 2 },
+    } });
+    expect(result).not.toHaveProperty('authorized');
+    expect(result).not.toHaveProperty('accountingComplete');
+  });
+
+  it('prices the full request above the long-context threshold, including output multiplier', () => {
+    const input = fixture(); input.spent = []; input.remaining[0].inputTokenLimit = 272_001;
+    const result = evaluateCarryBudgetReservation(input);
+    expect(result.projected?.estimatedListUsd).toBeCloseTo(1.375005, 6);
+    input.remaining[0].inputTokenLimit = 272_000;
+    expect(evaluateCarryBudgetReservation(input).projected?.estimatedListUsd).toBe(0.69);
+  });
+
+  it('reserves Anthropic one-hour writes but does not apply that tier to Codex', () => {
+    const input = fixture(); input.spent = []; input.remaining[0].model = 'anthropic/claude-opus-5:high';
+    expect(evaluateCarryBudgetReservation(input).projected?.estimatedListUsd).toBe(1.025);
+  });
+
+  it.each(['accountingComplete', 'remainingRequestsComplete'] as const)('refuses incomplete %s', field => {
+    const input = fixture(); input[field] = false;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+  });
+
+  it.each(['id', 'armId', 'boundsEvidenceRef'] as const)('refuses an empty request %s', field => {
+    const input = fixture(); input.remaining[0][field] = '';
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+  });
+
+  it('refuses unverified native limits and unknown model prices', () => {
+    const input = fixture(); input.remaining[0].boundsVerified = false;
+    expect(evaluateCarryBudgetReservation(input).missing).toContain('unverified-native-bounds:next');
+    input.remaining[0].boundsVerified = true; input.remaining[0].model = 'gpt-future-unpriced';
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null,
+      missing: ['unpriceable-request:next'] });
+  });
+
+  it.each([null, NaN, Infinity, -1, 1.5])('refuses malformed/unknown token counts (%s)', value => {
+    const input = fixture(); input.remaining[0].outputTokenLimit = value as number;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+    input.remaining[0] = request(); input.spent[0].inputTokens = value as number;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+  });
+
+  it('does not substitute zero for missing charged cost', () => {
+    const input = fixture(); input.spent[0].estimatedListUsd = null as unknown as number;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+  });
+
+  it('rejects duplicate identities across spent and reserved requests', () => {
+    const input = fixture(); input.remaining[0].id = 'preparation';
+    expect(evaluateCarryBudgetReservation(input).missing).toContain('duplicate-request:preparation');
+    input.remaining = [request(), request()];
+    expect(evaluateCarryBudgetReservation(input).missing).toContain('duplicate-request:next');
+  });
+
+  it.each(['inputTokens', 'outputTokens', 'estimatedListUsd'] as const)('enforces %s including the next request', field => {
+    const input = fixture(); input.limits[field] = 0;
+    expect(evaluateCarryBudgetReservation(input).fitsBudget).toBe(false);
+  });
+
+  it('counts spent and reserved requests per arm, including failed attempts retained by the caller', () => {
+    const input = fixture(); input.remaining = Array.from({ length: 8 }, (_, i) => request(`slot-${i}`));
+    expect(evaluateCarryBudgetReservation(input).exceeded).toContain('request-cap:candidate');
+    input.remaining[7].armId = 'control';
+    expect(evaluateCarryBudgetReservation(input).fitsBudget).toBe(true);
+  });
+
+  it('reserves unstarted required work rather than admitting only an affordable first request', () => {
+    const input = fixture(); input.spent = [];
+    input.remaining = Array.from({ length: 60 }, (_, i) => ({ ...request(`slot-${i}`, `arm-${i}`), outputTokenLimit: 128_000 }));
+    const result = evaluateCarryBudgetReservation(input);
+    expect(result.fitsBudget).toBe(false);
+    expect(result.exceeded).toContain('output-token-cap');
+    expect(result.projected?.outputTokens).toBe(7_680_000);
+  });
+
+  it('rounds each tiny expense upward and never rounds a hard budget upward', () => {
+    const input = fixture(); input.spent[0].estimatedListUsd = 0.0000001;
+    input.limits.estimatedListUsd = 0.2600009;
+    expect(evaluateCarryBudgetReservation(input).exceeded).toContain('estimated-list-cost-cap');
+  });
+
+  it('fails closed for overflow, malformed limits and an empty remaining population', () => {
+    const input = fixture(); input.remaining[0].inputTokenLimit = Number.MAX_SAFE_INTEGER;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+    input.remaining = [request()]; input.limits.chargedRequestsPerArm = NaN;
+    expect(evaluateCarryBudgetReservation(input)).toMatchObject({ fitsBudget: false, projected: null });
+    input.limits.chargedRequestsPerArm = 8; input.remaining = [];
+    expect(evaluateCarryBudgetReservation(input).missing).toContain('no-next-request');
+  });
+});
 
 describe('carry native action evidence (unpaid trial preparation)', () => {
   const allowed = { server: 'papercusp-su', tool: 'capability:read', arguments: { file_path: '/fixture/source', byte_offset: 0 } };
