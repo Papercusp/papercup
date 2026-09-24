@@ -25,6 +25,11 @@ import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-
 import type { KasmvncSessionCredentials } from '../desktop/kasmvnc-credentials';
 import { desktopViewerHeartbeatMs } from '../desktop/desktop-lifecycle';
 import {
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS,
+  WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
+} from '@papercusp/deployment-driver';
+import {
   assertLoopbackDesktopEndpoint,
   desktopViewersHold,
   hostedDesktopGrant,
@@ -622,23 +627,41 @@ export class SafeRootFileService {
   }
 }
 
-function defaultPty(input: HostedHostPtyFactoryInput): HostedHostPty {
-  const handle = spawnPty({
+/** Exact loopback SSH vector: the remote shell belongs to the customer workspace account. */
+export function hostedWorkspacePtySpawnSpec(input: HostedHostPtyFactoryInput) {
+  if (process.platform !== 'linux') throw new Error('hosted_workspace_pty_requires_linux');
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  const home = `/home/${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}`;
+  return {
     accessScope: input.scope,
-    command: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
-    args: process.platform === 'win32' ? ['-NoLogo'] : ['--noprofile', '--norc'],
+    command: '/usr/bin/ssh',
+    args: [
+      '-F', '/dev/null', '-tt', '-i', WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
+      '-o', `UserKnownHostsFile=${WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS}`,
+      '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=yes',
+      '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
+      '-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no',
+      '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no',
+      '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
+      '-l', DEFAULT_WORKSPACE_HOST_WORKSPACE_USER, '127.0.0.1',
+      `cd -- ${quote(input.workspaceRoot)} && exec env -i HOME=${quote(home)} PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=xterm-256color /bin/bash --noprofile --norc`,
+    ],
     cwd: input.workspaceRoot,
     inheritEnv: false,
     taskId: input.hostedSessionId,
     cols: input.cols,
     rows: input.rows,
     env: {
-      HOME: input.workspaceRoot,
-      PATH: process.env.PATH,
-      LANG: process.env.LANG ?? 'C.UTF-8',
+      HOME: '/',
+      PATH: '/usr/bin:/bin',
+      LANG: 'C.UTF-8',
       TERM: 'xterm-256color',
     },
-  });
+  };
+}
+
+function defaultPty(input: HostedHostPtyFactoryInput): HostedHostPty {
+  const handle = spawnPty(hostedWorkspacePtySpawnSpec(input));
   return ptyHandleAdapter(handle, input.scope);
 }
 
