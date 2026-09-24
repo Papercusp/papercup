@@ -1384,6 +1384,7 @@ export async function getFeedbackCore(
       await sql`
         UPDATE harness_shared.consult_state
            SET state = 'no_qualified_responder',
+               responder_id = NULL,
                expires_at = NULL,
                updated_at = ${now.toISOString()}::timestamptz
          WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}

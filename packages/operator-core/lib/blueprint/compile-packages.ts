@@ -8,10 +8,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   compileAgentSpecification,
   CompositionCompilerError,
+  BlueprintSourceDocumentSchema,
+  resolveBlueprintSource,
   snapshotPackageDirectory,
   validateAgentInputClosure,
   replayAgentSpecification,
   type LoadedBlueprint,
+  type ResolveExtendsPath,
   type CompiledAgentSpecification,
   type CompositionCompilerInput,
   type ResolvedCapabilityProviderInput,
@@ -121,6 +124,9 @@ export async function resolveBlueprintPackageInputs(
 export interface CompileBlueprintPackagesOptions {
   workspaceId: string;
   harnessSlug: string;
+  /** Preserve the authored source path and inheritance resolver for abstract identities. */
+  sourcePath?: string;
+  resolve?: ResolveExtendsPath;
   /** For a not-yet-registered target; existing harnesses resolve through the shared registry. */
   memoryTarget?: KnowledgePackMemoryTarget;
   /** Pin the selection, so replay never consults changing detection or hive settings. */
@@ -134,17 +140,30 @@ export interface CompileBlueprintPackagesOptions {
 }
 
 export async function compileBlueprintWithPackages(
-  loaded: LoadedBlueprint,
+  loaded: LoadedBlueprint | Record<string, unknown>,
   options: CompileBlueprintPackagesOptions,
 ): Promise<CompiledAgentSpecification> {
-  const requests: PackageRequest[] = [...loaded.blueprint.bundles];
-  const knowledge = resolveSeedPackKey(loaded.blueprint).packId;
+  const isLoaded = 'blueprint' in loaded && 'validation' in loaded && 'layers' in loaded;
+  const resolve = options.resolve ?? options.input?.resolve;
+  const resolved = isLoaded ? loaded as LoadedBlueprint : resolveBlueprintSource(loaded, {
+    ...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
+    ...(resolve ? { resolve } : {}),
+    ...(options.input?.lint ? { lint: options.input.lint } : {}),
+  });
+  if (!resolved.validation.ok) {
+    throw new CompositionCompilerError('source-invalid',
+      'package composition source has validation errors', options.sourcePath);
+  }
+  const blueprint = isLoaded ? (resolved as LoadedBlueprint).blueprint
+    : BlueprintSourceDocumentSchema.parse((resolved as ReturnType<typeof resolveBlueprintSource>).merged);
+  const requests: PackageRequest[] = [...(blueprint.bundles ?? [])];
+  const knowledge = resolveSeedPackKey(blueprint).packId;
   if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
     requests.push({ kind: 'knowledge-pack', ref: knowledge });
   }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
-  const requiredClasses = new Set(loaded.blueprint.grants?.requires ?? []);
-  const optionalClasses = (loaded.blueprint.grants?.optional ?? [])
+  const requiredClasses = new Set(blueprint.grants?.requires ?? []);
+  const optionalClasses = (blueprint.grants?.optional ?? [])
     .filter((ref) => !requiredClasses.has(ref));
   const classRefs = [...requiredClasses, ...optionalClasses];
   let resolvedPotSlug = options.potSlug;
@@ -199,6 +218,7 @@ export async function compileBlueprintWithPackages(
   return compileAgentSpecification({
     ...options.input,
     source: loaded,
+    ...(isLoaded ? {} : { sourcePath: options.sourcePath, resolve }),
     inputClosure: [
       ...packages,
       ...capabilityProviders,

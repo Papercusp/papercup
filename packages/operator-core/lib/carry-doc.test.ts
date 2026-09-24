@@ -583,13 +583,34 @@ describe('same-session retracted continuation guard (EI-22416629442936687)', () 
     provenance: null,
   };
 
-  it('records ids from a withdrawn machine continuation, including prose-only withdrawals', () => {
+  it('records ids only from an explicitly withdrawn machine continuation', () => {
     expect(detectRetractedContinuationRefs([machineContinuation, withdrawal])).toEqual([
       'EI-20191442676357637',
     ]);
-    expect(detectRetractedContinuationRefs([{ speaker: 'assistant', text: 'I corrected EI-7', ts: null }])).toEqual([
-      'EI-7',
+    const explicitCorrection: CarryDocTailTurn = {
+      speaker: 'assistant',
+      text: 'I retract the preceding continuation instruction for EI-20191442676357637.',
+      ts: null,
+      provenance: null,
+    };
+    expect(detectRetractedContinuationRefs([machineContinuation, explicitCorrection])).toEqual([
+      'EI-20191442676357637',
     ]);
+    expect(detectRetractedContinuationRefs([{ speaker: 'assistant', text: 'I corrected EI-7', ts: null }])).toEqual([]);
+  });
+
+  it('ignores an unrelated audit-request withdrawal even when it names held continuation items', () => {
+    const heldItemsContinuation: CarryDocTailTurn = {
+      ...machineContinuation,
+      text: 'Continue work on WI-10002911 and EI-24129745455846833.',
+    };
+    const auditRequestWithdrawal: CarryDocTailTurn = {
+      speaker: 'assistant',
+      text: 'The audit request for WI-10002911 and EI-24129745455846833 was withdrawn after I rerouted it to another agent.',
+      ts: null,
+      provenance: null,
+    };
+    expect(detectRetractedContinuationRefs([heldItemsContinuation, auditRequestWithdrawal])).toEqual([]);
   });
 
   it('renders a high-priority guard that makes the tail non-operative', () => {

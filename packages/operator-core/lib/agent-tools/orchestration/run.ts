@@ -15,6 +15,10 @@ import codeRunTool, {
   withCodeRunContract,
 } from '../code/run';
 import { inspectScriptContract } from './contract-preflight';
+import { inspectDurability } from './durability-inspection';
+import { inspectOrchestration } from './inspect';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import type { ProjectedTool } from '@papercusp/tooldef';
 import {
   orchestrationPolicyFailure,
   orchestrationSourceArgsSchema,
@@ -93,6 +97,16 @@ export interface ServerScriptRunDeps {
   /** Synthetic-catalog seam for focused composition tests. Production calls
    * omit this and preflight against the live current-caller registry. */
   inspectScript?: typeof inspectScriptContract;
+  projectedTools?: readonly ProjectedTool[];
+}
+
+function pinMatches(
+  expected: NonNullable<OrchestrationSourceArgs['inspectionPin']>,
+  actual: { sourceSha256: string; bindingsSha256: string; recipeRevision?: string },
+): boolean {
+  return expected.sourceSha256 === actual.sourceSha256 &&
+    expected.bindingsSha256 === actual.bindingsSha256 &&
+    expected.recipeRevision === actual.recipeRevision;
 }
 
 const DEFAULT_DEPS: ServerScriptRunDeps = {
@@ -361,6 +375,18 @@ export async function runServerScriptAdapter(
   });
   if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args, ctx);
 
+  if (args.inspectionPin) {
+    const durability = await inspectDurability({
+      script: args.script.source,
+      bindings: checked.contract.bindings,
+      calls: checked.staticCalls,
+      tools: deps.projectedTools ?? listAllProjectedTools(),
+    });
+    if (!pinMatches(args.inspectionPin, durability.pin)) {
+      return preflightError('inspection_pin_stale', 'script or validated bindings changed since orchestrate:inspect', args, ctx);
+    }
+  }
+
   const captureMode = args.capture?.mode ?? 'auto';
   const startedAt = Date.now();
   try {
@@ -585,6 +611,23 @@ export async function runOrchestration(
   const startedAt = Date.now();
   try {
     const adapter = deps.recipes ?? savedRecipeAdapterFor(ctx);
+    if (args.inspectionPin) {
+      const inspected = await inspectOrchestration(args, ctx, {
+        recipes: adapter,
+        ...(deps.server?.inspectScript ? { inspectScript: deps.server.inspectScript } : {}),
+        ...(deps.server?.projectedTools ? { projectedTools: deps.server.projectedTools } : {}),
+      });
+      const data = (inspected as ToolResult & { data?: unknown }).data;
+      const record = asRecord(data);
+      const normalized = asRecord(record?.normalized);
+      const durability = asRecord(normalized?.durability);
+      const pin = asRecord(durability?.pin);
+      if (!record?.ok || !pin || !pinMatches(args.inspectionPin, pin as {
+        sourceSha256: string; bindingsSha256: string; recipeRevision?: string;
+      })) {
+        return preflightError('inspection_pin_stale', 'saved recipe revision, source or validated bindings changed since orchestrate:inspect', args, ctx);
+      }
+    }
     const raw = await adapter.run({
       recipe: args.recipe as SavedRecipeSelector,
       ...(args.bindings ? { bindings: args.bindings } : {}),

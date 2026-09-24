@@ -39,6 +39,35 @@ const reference = ({ packageKind, ref, revision, contentHash }: ResolvedPackageI
 });
 
 describe('compileBlueprintWithPackages production composition (integration)', () => {
+  it('resolves an abstract identity resource through the existing recipe provisioner', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'identity-resource-integration-'));
+    roots.push(root);
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    const recipeId = 'identity-pinned-recipe';
+    const recipeDir = join(root, 'home', 'recipes', recipeId);
+    mkdirSync(recipeDir, { recursive: true });
+    writeFileSync(join(recipeDir, 'recipe.json'), JSON.stringify({
+      id: recipeId, title: 'Identity recipe', script: 'return "identity resource"',
+    }));
+    writeFileSync(join(recipeDir, 'listing.json'), JSON.stringify({ version: '1.0.0' }));
+    const identity = {
+      id: 'integration-resource-identity', extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+      bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
+    };
+    const artifact = await compileBlueprintWithPackages(identity, {
+      workspaceId: 'integration-workspace', harnessSlug: 'integration-harness',
+    });
+    expect(artifact.inputs).toContainEqual(expect.objectContaining({
+      kind: 'package', packageKind: 'recipe', ref: recipeId,
+    }));
+    await provisionBlueprintPackages(artifact, blueprintPackageProvisioners(db.adminSql));
+    expect(await getRecipe(db.adminSql, recipeId)).toMatchObject({
+      script: 'return "identity resource"', authorRole: 'blueprint-bundle',
+    });
+    expect(artifact.configuration).not.toHaveProperty('spine');
+    expect(artifact.configuration).not.toHaveProperty('workItem');
+  });
+
   it('compiles a complete transitive package closure and replays the exact prompt bytes', async () => {
     const leaf = pinPackageInput({
       packageKind: 'recipe',

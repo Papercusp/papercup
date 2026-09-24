@@ -66,4 +66,29 @@ describe('orchestration durability inspection', () => {
     ]);
     expect(inspected.diagnostics.map((d) => d.code)).not.toContain('wall-clock');
   });
+
+  it('does not treat an unresolvable dynamic tool target as an empty safe script', async () => {
+    const inspected = await inspectDurability({
+      script: 'const t = tools; return await t.call(input.toolName, { id: "x" });',
+      bindings,
+      calls: [],
+      tools: [tool('coord:presence', 'read')],
+    });
+    expect(inspected.steps).toEqual([]);
+    expect(inspected.replayCandidate).toBe(false);
+    expect(inspected.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'dynamic-tool-target' }),
+    ]));
+  });
+
+  it('marks an uncheckpointed wait as a replay hazard', async () => {
+    const inspected = await inspectDurability({
+      script: 'await sleep(1000); return await tools.coord.presence({ fleet: "a" });',
+      bindings,
+      calls: [{ tool: 'coord:presence', args: { fleet: 'a' }, dynamicArgs: false }],
+      tools: [tool('coord:presence', 'read')],
+    });
+    expect(inspected.replayCandidate).toBe(false);
+    expect(inspected.diagnostics.map((d) => d.code)).toContain('uncheckpointed-wait');
+  });
 });

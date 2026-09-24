@@ -1,13 +1,48 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { stringify as stringifyYaml } from 'yaml';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  bindSelectedIdentityOutputs, getSelectedModeCatalog, getSelectedModeDefinitions,
+  bindSelectedIdentityOutputs, compileSelectedIdentityResources,
+  getSelectedModeCatalog, getSelectedModeDefinitions,
 } from './source';
 
 const scope = { workspace: 'ws-test', goal: 'goal-1', ownerId: 'su-goal-1' };
 const observedAt = '2026-09-24T13:00:00.000Z';
 
 describe('selected identity producer output binding', () => {
+  it('resolves a selected abstract identity recipe with the existing package compiler', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'selected-resource-identity-'));
+    const id = 'resource-domain';
+    const blueprintDir = join(root, '.papercusp', 'blueprints', id);
+    const recipeDir = join(root, 'home', 'recipes', 'selected-recipe');
+    try {
+      mkdirSync(blueprintDir, { recursive: true });
+      mkdirSync(recipeDir, { recursive: true });
+      writeFileSync(join(blueprintDir, 'blueprint.yaml'), stringifyYaml({
+        id, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+        bundles: [{ kind: 'recipe', ref: 'selected-recipe', version: '1.0.0' }],
+      }));
+      writeFileSync(join(recipeDir, 'recipe.json'), JSON.stringify({
+        id: 'selected-recipe', title: 'Selected recipe', script: 'return 1',
+      }));
+      writeFileSync(join(recipeDir, 'listing.json'), JSON.stringify({ version: '1.0.0' }));
+      vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+      const artifact = await compileSelectedIdentityResources({
+        identityId: id, repoDir: root, workspaceId: 'ws-test', harnessSlug: 'harness-test',
+      });
+      expect(artifact?.inputs).toContainEqual(expect.objectContaining({
+        kind: 'package', packageKind: 'recipe', ref: 'selected-recipe',
+      }));
+      expect(artifact?.configuration).not.toHaveProperty('workItem');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads one selected mode catalog revision for direct and implied definitions', async () => {
     const catalog = await getSelectedModeCatalog();
     const selected = await getSelectedModeDefinitions(['goal', 'auto', 'goal', 'cold-auto']);

@@ -11,6 +11,7 @@ import orchestrateRunTool, {
   type ServerScriptRunDeps,
 } from './run';
 import type { SavedRecipeAdapter } from './saved-recipe-adapter';
+import { inspectOrchestration } from './inspect';
 
 function codeResult(payload: Record<string, unknown>, media: ToolResult['content'] = []): ToolResult {
   return {
@@ -25,6 +26,31 @@ function envelope(result: ToolResult) {
 }
 
 describe('orchestrate:run server-script adapter', () => {
+  it('checks an inspect pin before executing a fresh script', async () => {
+    const ctx = {} as UnifiedToolContext;
+    const source = 'return "pinned";';
+    const inspected = await inspectOrchestration({ script: { source } }, ctx);
+    const data = (inspected as ToolResult & { data?: Record<string, unknown> }).data as {
+      normalized: { durability: { pin: { sourceSha256: string; bindingsSha256: string } } };
+    };
+    const pin = data.normalized.durability.pin;
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>().mockResolvedValue(codeResult({
+      ok: true, summary: 'pinned', plannedMutations: [],
+    }));
+    const matching = await runServerScriptAdapter({ script: { source }, inspectionPin: pin }, ctx, { runCode });
+    expect(envelope(matching)).toMatchObject({ state: 'complete', summary: 'pinned' });
+    expect(runCode).toHaveBeenCalledTimes(1);
+
+    runCode.mockClear();
+    const changed = await runServerScriptAdapter({
+      script: { source: source + ' ' }, inspectionPin: pin,
+    }, ctx, { runCode });
+    expect(envelope(changed)).toMatchObject({
+      state: 'error', error: { code: 'inspection_pin_stale' },
+      metrics: { phase: 'preflight', executed: false },
+    });
+    expect(runCode).not.toHaveBeenCalled();
+  });
   it('uses the read-only facade capability while preserving the write-effect outer contract', () => {
     const projected = listAllProjectedTools().find((tool) => tool.expose.mcp?.name === 'orchestrate:run');
     expect(projected).toBeDefined();

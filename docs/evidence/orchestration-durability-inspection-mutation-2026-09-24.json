@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Orchestration durability inspection registry-idempotency mutation",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=180",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/agent-tools/orchestration/durability-inspection.ts",
+    "--mutate 's|tool\\?\\.idempotent === true|true|'",
+    "--test 'cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/agent-tools/orchestration/durability-inspection.integration.test.ts --reporter=dot'",
+    "--expect caught",
+    "--in-tree --sweep-lock-held --fake-destructive"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-24T15:49:17Z",
+  "finishedAt": "2026-09-24T15:50:47Z",
+  "summary": "Against the final source with dynamic-tool and wait diagnostics, the real projected-registry inspection baseline passed both cases. Replacing the registered idempotent marker check with true made an ordinary work_items:create write appear idempotent, and the integration guard failed. The mutation was caught and the tracked source restored byte for byte.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real registry and caller-policy integration baseline: 2 passed, 0 failed."
+    },
+    {
+      "id": "idempotency-guard-mutant-killed",
+      "passed": true,
+      "evidence": "Replacing tool?.idempotent === true with true made work_items:create classify as replay:idempotent instead of uncertain; its integration assertion failed, guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1; tree integrity VERIFIED for durability-inspection.ts."
+    }
+  ],
+  "workItemId": "WI-10002938",
+  "specId": "GBE-P-018-contract",
+  "testFile": "packages/operator-core/lib/agent-tools/orchestration/durability-inspection.integration.test.ts",
+  "sourceFile": "packages/operator-core/lib/agent-tools/orchestration/durability-inspection.ts"
+}

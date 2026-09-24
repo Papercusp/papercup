@@ -77,6 +77,22 @@ export async function inspectDurability(input: {
   const ts = loaded.default ?? loaded;
   const file = ts.createSourceFile('orchestration.ts', input.script, ts.ScriptTarget.Latest, true);
   const hazards = new Set<string>();
+  const toolAliases = new Set(['tools']);
+  function collectAliases(node: import('typescript').Node): void {
+    if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.initializer) &&
+        toolAliases.has(node.initializer.text)) {
+      if (ts.isIdentifier(node.name)) toolAliases.add(node.name.text);
+      if (ts.isObjectBindingPattern(node.name)) {
+        for (const binding of node.name.elements) {
+          if (ts.isIdentifier(binding.name)) toolAliases.add(binding.name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, collectAliases);
+  }
+  collectAliases(file);
+  const isLiteralKey = (node: import('typescript').Node | undefined): boolean =>
+    !!node && (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node));
   function visit(node: import('typescript').Node): void {
     if (
       ts.isIfStatement(node) || ts.isSwitchStatement(node) ||
@@ -89,6 +105,15 @@ export async function inspectDurability(input: {
     }
     if (ts.isCallExpression(node)) {
       const target = node.expression;
+      if (ts.isIdentifier(target) &&
+          (target.text === 'sleep' || target.text === 'setTimeout' || target.text === 'setInterval')) {
+        hazards.add('uncheckpointed-wait');
+      }
+      if (ts.isPropertyAccessExpression(target) && ts.isIdentifier(target.expression) &&
+          toolAliases.has(target.expression.text) && target.name.text === 'call' &&
+          !isLiteralKey(node.arguments[0])) {
+        hazards.add('dynamic-tool-target');
+      }
       if (ts.isIdentifier(target) && target.text === 'Date') hazards.add('wall-clock');
       if (ts.isPropertyAccessExpression(target)) {
         const owner = target.expression.getText(file);
@@ -96,9 +121,18 @@ export async function inspectDurability(input: {
         if (owner === 'Date' && member === 'now') hazards.add('wall-clock');
         if (owner === 'performance' && member === 'now') hazards.add('wall-clock');
         if (owner === 'Math' && member === 'random') hazards.add('random-control');
-        if (owner === 'crypto' && (member === 'randomUUID' || member === 'randomBytes')) {
+        if ((owner === 'crypto' || owner === 'globalThis.crypto') &&
+            (member === 'randomUUID' || member === 'randomBytes' || member === 'getRandomValues')) {
           hazards.add('random-control');
         }
+      }
+    }
+    if (ts.isElementAccessExpression(node) && !isLiteralKey(node.argumentExpression)) {
+      const base = node.expression;
+      if ((ts.isIdentifier(base) && toolAliases.has(base.text)) ||
+          (ts.isPropertyAccessExpression(base) && ts.isIdentifier(base.expression) &&
+           toolAliases.has(base.expression.text))) {
+        hazards.add('dynamic-tool-target');
       }
     }
     if (ts.isPropertyAccessExpression(node) && node.expression.getText(file) === 'process' && node.name.text === 'env') {

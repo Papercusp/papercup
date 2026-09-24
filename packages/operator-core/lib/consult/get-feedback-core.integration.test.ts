@@ -2210,6 +2210,7 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     expect(res.hint).toContain('Nothing is coming, so do not park');
     const row = await stateRow(res.conversation_id);
     expect(row.state).toBe('no_qualified_responder');
+    expect(row.responder_id).toBeNull();
     expect(row.expires_at).toBeNull();
     // The retrieval fallback survives: the refs are still the caller's next move.
     expect(res.remaining_candidates.length).toBeGreaterThan(0);

@@ -721,25 +721,40 @@ const RETRACTION_WORK_ITEM_ID_RE = /\b((?:WI|EI|F)-\d+)\b/gi;
 /** Language that marks an assistant withdrawal of a preceding continuation. */
 const RETRACTED_CONTINUATION_LANGUAGE_RE =
   /\b(?:retract(?:ed|ing|ion)?|correct(?:ion|ed)?|supersed(?:ed|ing)?|withdraw(?:n|al|ing)?|disregard|scratch that|i was wrong|no longer (?:true|valid|applies)|(?:do|will|should|would) not (?:take over|claim|act on|follow|resume)|not (?:my|this session's) (?:work|lane|item)|another (?:agent|owner)'s (?:live )?(?:work|item|lane)|wrong (?:lane|item|owner))\b/i;
+/** The assistant turn must identify the continuation itself; ordinary request
+ *  cancellation (for example, withdrawing an audit request to a peer) is not a
+ *  retraction of the machine-injected continuation. */
+const CONTINUATION_REFERENT_RE =
+  /\b(?:carry(?:[- ]over)?(?: note)?|continuation|machine[- ]injected)\b/i;
 
 function workItemIdsInText(text: string): string[] {
   return Array.from(new Set(Array.from(text.matchAll(RETRACTION_WORK_ITEM_ID_RE), (m) => m[1].toUpperCase())));
 }
 
 /**
- * Detect a same-session withdrawal of a machine continuation. A machine user
- * turn supplies the ids when the assistant correction says only that it will
- * not take over the covered work. Bare owner prose never becomes a retraction
- * source. Pure so all carry consumers share the same decision.
+ * Detect an explicit same-session withdrawal of a machine continuation. The
+ * assistant must refer to that continuation, and any ids it names only narrow
+ * the ids supplied by the immediately preceding machine-injected turn. This
+ * prevents unrelated assistant prose such as cancelling a peer audit request
+ * from turning co-mentioned held items into retracted directives. Bare owner
+ * prose never becomes a retraction source. Pure so all carry consumers share
+ * the same decision.
  */
 export function detectRetractedContinuationRefs(tail: ReadonlyArray<CarryDocTailTurn>): string[] {
   const refs = new Set<string>();
   let pendingMachineRefs: string[] = [];
   for (const turn of tail) {
     if (turn.speaker === 'assistant') {
-      if (RETRACTED_CONTINUATION_LANGUAGE_RE.test(turn.text)) {
+      if (
+        pendingMachineRefs.length > 0 &&
+        RETRACTED_CONTINUATION_LANGUAGE_RE.test(turn.text) &&
+        CONTINUATION_REFERENT_RE.test(turn.text)
+      ) {
         const explicitRefs = workItemIdsInText(turn.text);
-        for (const id of explicitRefs.length > 0 ? explicitRefs : pendingMachineRefs) refs.add(id);
+        const retractedRefs = explicitRefs.length > 0
+          ? pendingMachineRefs.filter((id) => explicitRefs.includes(id))
+          : pendingMachineRefs;
+        for (const id of retractedRefs) refs.add(id);
       }
       pendingMachineRefs = [];
       continue;

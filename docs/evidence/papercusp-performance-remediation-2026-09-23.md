@@ -1223,3 +1223,167 @@ scorecard **EI-24154001676167368** is filed for the automatic independent audit.
 The broad P-004 acceptance and shipment are still open. Logs and frozen mutant
 are at `/tmp/p004-lineage-mutation-20260924.log` and
 `/tmp/mutation-probe.TneDEs/`; the canonical scorecard retains its replay recipe.
+
+## P-004 independent lineage audit (2026-09-24 14:41Z)
+
+Scorecard **EI-24154001676167368** now records a passed independent audit via
+**EI-24154238373657663**, auditor `role-063527fe-25e9-444c-90b5-ee7a8b184221`.
+This covers the exact lineage clause, not broader P-004 acceptance or shipment.
+
+## P-006 memory cancellation source unit (2026-09-24 15:10Z)
+
+Work item **WI-10002828**. The two-second contract is the existing cold prompt
+cache deadline (`MEMORY_BLOCK_COLD_DEADLINE_MS`); the five-second value is an
+individual background injection phase limit (`MEMORY_INJECT_TIMEOUT_MS`). They
+measure different waits. Neither limit was changed by this source unit.
+
+The cancellation gap originates between the memory query and its embedder:
+`embedWithinBudget` rejected only its own timer, `mem0-client` passed text alone,
+and `embed-coalesce` had no consumer lifetime. The sidecar client already
+accepted a signal, but this path never delivered one. The existing coalescer,
+backend options, client seam and deadline wrapper were extended; there is no
+new scheduler, admission store, service or flag.
+
+Each coalesced consumer now carries an optional signal. Cancelling one leaves
+live siblings intact; the last cancellation aborts upstream. An abandoned
+generation cannot populate the vector cache or remove a replacement flight.
+Raw promises still settle only when upstream settles: abort is not proof that
+native inference exited. The existing tracked deadline/admission mechanism
+therefore retains its host lease while non-cooperative work drains. The
+injection search phase forwards its existing timeout through this path.
+Cancelled query embeds throw instead of returning null, preventing per-scope
+legacy re-embedding after cancellation. A cancelled local model initialization
+does not proceed into inference.
+
+The original coalescer failed five newly added guards (eight existing cases
+passed). The final focused project runs are:
+
+| Suite | Ledger run | Passed |
+|---|---:|---:|
+| Coalescer cancellation, cache and generation safety | 19303705 | 13 |
+| Actual loopback HTTP sidecar and local startup | 19303706 | 18 |
+| Memory backend scope, budget and cancellation | 19303378 | 72 |
+| Existing client compatibility | 19302433 | 7 |
+| Existing hybrid ranking contract | 19302434 | 60 |
+| Deadline and raw-work tracking | 19303379 | 27 |
+| Injection wiring and existing recall semantics | 19303424 | 83 |
+| Cross-worker admission including cancelled native work | 19303707 | 7 |
+
+These runs had zero failures and zero skips. Two exact-shape injection fixtures
+initially failed because they lacked the added signal field; they now assert
+that field explicitly. A test-mock type error was also corrected. The generic
+memory package typecheck passed; the four changed injection/deadline paths
+passed scoped operator typecheck (`/tmp/p006-operator-tsc.log`). This does not
+assert that the whole operator tree typechecks.
+
+The HTTP tests observe actual request closure after query-budget expiry, one
+request and no legacy/retry amplification, and successful delivery to a sibling
+with a longer budget. The admission test verifies that a second worker remains
+at capacity until a cancelled but non-cooperative embed completes. Those tests
+protect transport and resource lifetime; they do not measure production recall
+quality. Single-scope legacy mem0 search and already-running native/SQL work
+are not claimed physically cancellable.
+
+Still open: end-to-end phase attribution and budget allocation, missing-table
+admission diagnosis, the frozen 100-call normal and concurrency-8 delivery
+workloads, broader acceptance, and shipment. No 95% within-two-seconds recall
+claim is made from these source tests.
+
+## P-006 rendered-delivery measurement (2026-09-24)
+
+`packages/operator-core/lib/memory/bench/prompt-delivery.integration.test.ts`
+extends the existing corpus/gold-set/seed and bench-host seams. It runs the
+actual hybrid backend, injection renderer and bounded rendered-block cache.
+Memory, feedback, surfaced-memory ledgers and recall telemetry all use a migrated
+throwaway org database. The separate prose-corpus leg is explicitly disabled,
+and advisory feature flags are pinned false. This profile therefore measures
+the memory leg in isolation; it cannot establish combined prose delivery or
+deployed-runtime acceptance.
+
+The request list is the complete frozen gold set. Eligibility is fixed from
+nonempty `expected` keys before searching; failures and empty results remain in
+the denominator. A useful delivery must contain a rendered memory ID mapped to
+one of those expected keys, with a `ready` caller result within the unchanged
+2000ms deadline. Any-context delivery is reported separately. The normal cold
+query, normal immediately primed query, and concurrency-eight cold query windows
+use the same corpus and ordered requests. Every measured turn has an independent
+session and cold rendered-block cache. The client is recreated before each
+window; this does not mean the native model or PostgreSQL caches are cold.
+
+Per-call records retain caller/build/availability/search/embed timings, hybrid
+leg statistics, retrieved and delivered keys, errors and deadlines. Late builds
+are joined after recording the caller outcome, so late delivery cannot be
+credited within deadline. Source/corpus/request hashes and resolved embedder
+profile are emitted with the measurement.
+
+The first invocation (`/tmp/p006-prompt-delivery.log`) seeded successfully but
+failed before measurement because source fingerprint paths assumed the repo
+root while `test:file` runs from the package directory. Module-relative path
+resolution fixes that instrument error. No delivery result is inferred from
+that invocation. The corrected invocation is recorded separately.
+
+The original `agent-obligations:waiting-on` missing-table error is already
+corrected in `agent-obligation-reader.ts`: it bootstraps and reads through the
+lock package's transaction pool instead of the org pool. The real PostgreSQL
+guard `agent-obligation-waiting-on.integration.test.ts` has historical local
+failure/pass receipts 19149327/19149335. This is existing source/test evidence,
+not a fresh production observation or a new fix in this continuation.
+
+Corrected measurement receipt **19307105** passed both integration tests with
+zero skips, on `fc794d786897159f742fe4981242689d54fa1e75` plus local test changes.
+The raw per-call records, source/fixture hashes, model profile and units are in
+[`tests/evidence/p006-prompt-delivery-2026-09-24.json`](../../tests/evidence/p006-prompt-delivery-2026-09-24.json).
+The corpus has 114 entries; each measured window runs all 150 gold queries, of
+which 120 have expected relevant keys. Warm priming calls are setup, excluded
+from the measured population. Resolved model: Harrier OSS 0.6b, native 1024;
+live push contract: cosine 0.58, lexical 0.4, cosine-gated fusion.
+
+| Profile | Calls | Eligible | Useful by 2000ms | Caller p50 / p95 | Search p95 | Post-search p95 |
+|---|---:|---:|---:|---:|---:|---:|
+| Normal cold query | 150 | 120 | 114 (95%) | 240.14 / 318.36ms | 311.93ms | 8.17ms |
+| Normal immediately primed query | 150 | 120 | 114 (95%) | 54.48 / 106.24ms | 62.68ms | 42.17ms |
+| Eight-reader cold-query burst | 150 | 120 | 114 (95%) | 240.89 / 469.33ms | 168.86ms | 324.88ms |
+
+Each window had zero caller deadlines and zero recorded errors. Each retained
+the same six gold misses (`lg-015`, `lg-030`, `lg-033`, `ei-003`, `ei-016`,
+`ss-043`). The expected keys were absent from retrieval on those calls;
+`ei-003` delivered a different key. Thus these six misses cannot be attributed
+to deadline expiry or renderer removal. Any-context delivery was 115/120,
+which is deliberately not substituted for the useful-delivery numerator.
+
+`embedMs` in the raw readings sums individual embed-call durations, which can
+overlap; it is work-duration attribution, not wall-clock critical-path latency.
+The table's post-search metric is `max(0, buildMs - availableMs - searchMs)`;
+it includes remaining rendering/hygiene/composition work, not pure CPU render
+time. The burst's larger post-search time is a finding requiring attribution,
+not evidence by itself of a CPU or resource bottleneck.
+
+This establishes the 95% clause on the named isolated profile only. The broader
+P-006 end-to-end budget/allocation and combined prose path, independent evidence
+audit, sustained acceptance and final shipment remain open. No baseline speedup
+or production percentile is claimed.
+
+### Falsifiability and exact-clause adequacy
+
+The existing `injection-block-cache.test.ts` guards were run through
+`scripts/mutation-probe.sh` with a verified `mutation probe` file lock. Baseline
+19307551 passed all eight tests; mutation 19307552 replaced only the delivered
+ready block with `null` and failed five delivery assertions. The script recorded
+`verdict=caught` and verified byte-identical restoration; the lock was released.
+This is a transport/delivery counterexample, while 19307105 supplies the real
+corpus quality and timing measurement. No failed mutant remains in the tree.
+
+Bindings 11632 (measurement) and 11630 (caught mutation) target PERF-P-006@1.
+The evaluator passed this exact clause and filed card
+**EI-24158413223694826**. Independent audit was not yet verified at this write.
+Binding 11632 supersedes 11626 to distinguish the active frozen-workload clause
+from the broader plan residue; the combined prose path and shipment limitations
+remain explicitly recorded above and in the binding. This does not close P-006.
+
+The final benchmark file passes Prettier and `git diff --check`. Scoped
+`build:typecheck` reports zero diagnostics in this file with a complete scoped
+verdict (15.6 seconds); 23 import-graph diagnostics outside it remain. The full
+operator compiler also completed with errors outside this file, and no diagnostic
+in this file (`/tmp/p006-bench-tsc.log`). Neither result establishes a clean whole
+operator build. A later scorecard read confirmed the independent audit was
+pending with a dispatch reservation; no audit PASS is claimed here.

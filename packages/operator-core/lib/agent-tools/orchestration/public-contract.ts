@@ -59,6 +59,14 @@ export const orchestrationSourceArgsSchema = z
     timeoutSec: z.number().int().min(1).max(FOREGROUND_TIMEOUT_CEILING_MS / 1000).optional(),
     /** Compatibility preview carried through code:run / recipes:run. */
     dryRun: z.boolean().optional(),
+    /** Exact revision + binding pin returned by orchestrate:inspect. Optional
+     * for existing foreground callers; when supplied run rechecks it before
+     * any nested tool dispatch. It does not enable durable execution. */
+    inspectionPin: z.object({
+      sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      bindingsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      recipeRevision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    }).strict().optional(),
   })
   .strict();
 
