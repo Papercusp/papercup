@@ -953,6 +953,7 @@ let initializeWarnings: Array<Record<string, unknown>> = [];
 let optionalMemoryWarnings: string[] = [];
 let configurationWarnings: string[] = [];
 let intentPivotWarnings: string[] = [];
+let timeoutDegradations: string[] = [];
 let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
 let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
 let nativeProviderOrigin: string | undefined;
@@ -1635,6 +1636,7 @@ beforeEach(async () => {
   optionalMemoryWarnings = [];
   configurationWarnings = [];
   intentPivotWarnings = [];
+  timeoutDegradations = [];
   nativeFrameDiagnostics = [];
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
@@ -1671,10 +1673,18 @@ beforeEach(async () => {
         // still fail, and this says nothing about embedding service health.
         intentPivotWarnings.push(String(args[0]));
         console.info('PUI_INTENT_PIVOT_DIAGNOSTIC', args[0]);
+      } else if (args.length === 1 && typeof args[0] === 'string'
+        && /^\[bounded-timeout\] \S.* exceeded \d+ms — degrading to fallback$/.test(args[0])) {
+        // D-024: a read that outran its budget and returned its declared
+        // fallback is the product's designed behaviour on a slow host, and the
+        // exact reads differ run to run with box load (turn-start surface,
+        // obligations, frontier). Keep each as evidence and let the journey's
+        // own assertions judge correctness. The ERROR form ("… failed: …") and
+        // every other warning still fail the test.
+        traceTiming('diagnostic-warning', { label: args[0] });
+        timeoutDegradations.push(args[0]);
+        console.info('PUI_TIMEOUT_DEGRADATION_DIAGNOSTIC', args[0]);
       } else {
-        if (typeof args[0] === 'string' && /^\[bounded-timeout\].* exceeded \d+ms/.test(args[0])) {
-          traceTiming('diagnostic-warning', { label: args[0] });
-        }
         warn(...args);
       }
     });
@@ -4574,6 +4584,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             expected,
             questionFrame,
             answeredFrame: pane.screen(),
+            timeoutDegradations,
             toolEvents:
               start?.type === 'tool'
                 ? scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId)
@@ -4583,7 +4594,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       } catch (error) {
         console.info(
           'PUI_INSTALLED_NATIVE_QUESTION_FAILURE',
-          JSON.stringify({ ...pane.failureEvidence(), cardReplies }),
+          JSON.stringify({ ...pane.failureEvidence(), cardReplies, timeoutDegradations }),
         );
         throw error;
       } finally {
@@ -5186,6 +5197,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           optionalMemoryWarnings,
           configurationWarnings,
           intentPivotWarnings,
+          timeoutDegradations,
           nativeFrames: nativeFrameDiagnostics,
           nativeProviderEvents,
           assistantReplies: scriptedEngine.events.filter(
@@ -5208,6 +5220,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           frames,
           nativeState,
           intentPivotWarnings,
+          timeoutDegradations,
           ...pane.failureEvidence(),
         }),
       );
