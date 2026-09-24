@@ -147,6 +147,27 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(h.finished).not.toHaveBeenCalled();
   });
 
+  it.each(['inherit', 'ignore'] as const)('terminates a descendant with %s pipes before settling cancellation', async (stdio) => {
+    const readyPath = join(dir, 'descendant-ready');
+    const descendant = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, String(process.pid)); setInterval(() => {}, 1000);`;
+    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ${JSON.stringify(stdio)} }); setInterval(() => {}, 1000);`;
+    const controller = new AbortController();
+    const result = execProcess({
+      command: process.execPath, args: ['-e', parent], timeoutMs: 5000,
+    }, { signal: controller.signal, onPid: (pid) => pids.add(pid) });
+    let descendantPid = 0;
+    await vi.waitFor(async () => {
+      descendantPid = Number(await readFile(readyPath, 'utf8'));
+      expect(descendantPid).toBeGreaterThan(0);
+    });
+    pids.add(descendantPid);
+    expect(alive(descendantPid)).toBe(true);
+    controller.abort();
+    expect(await result).toMatchObject({ code: -1 });
+    expect(alive(descendantPid)).toBe(false);
+    expect(h.finished).toHaveBeenCalledOnce();
+  }, 5000);
+
   it('escalates an ignored abort and reports completion only after the child is dead', async () => {
     const controller = new AbortController();
     let pid = 0;
