@@ -19,6 +19,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  assertPrivateIpcFixture,
   hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
@@ -568,6 +569,7 @@ export const config: WebdriverIO.Config = {
     resetMeasures();
     assertNativeWebDriverAvailable();
     assertInstallationComplete();
+    assertPrivateIpcFixture();
     // Announce WHAT is being measured, with its age. This is the detector that was
     // missing: the resolver silently fell back to a six-week-old in-tree debug
     // binary for this suite's entire existence (see cargoTargetDir), and nothing in

@@ -209,6 +209,22 @@ describe('expandWikiLinks — pure helper', () => {
 });
 
 describe('MarkdownPreview — readable frontmatter/code styling', () => {
+  it('does not duplicate the computed theme read during an unchanged mount', async () => {
+    document.documentElement.dataset.theme = 'custom:test';
+    document.documentElement.style.setProperty('--bg', '#191817');
+    const original = window.getComputedStyle.bind(window);
+    let rootReads = 0;
+    const read = vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+      if (element === document.documentElement) rootReads++;
+      return original(element, pseudo);
+    });
+    try {
+      render(<MarkdownPreview value="# Theme" />);
+      await waitFor(() => expect(MockVditor.preview).toHaveBeenCalled());
+      expect(rootReads).toBe(1);
+    } finally { read.mockRestore(); }
+  });
+
   it('adds the shared preview class and readable YAML/frontmatter CSS', async () => {
     const { container } = render(<MarkdownPreview value={'---\ntitle: Demo\n---\n\n# Demo'} />);
 

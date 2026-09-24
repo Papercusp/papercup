@@ -195,14 +195,28 @@ export function resolveMarkdownColorScheme(
     : "dark";
 }
 
+function markdownThemeInputs(): string | null {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return null;
+  return JSON.stringify([
+    document.documentElement.getAttribute('data-theme'),
+    document.documentElement.getAttribute('style'),
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? null,
+  ]);
+}
+
 function useMarkdownColorScheme(): MarkdownColorScheme {
-  const [scheme, setScheme] = useState<MarkdownColorScheme>(() =>
-    resolveMarkdownColorScheme(),
-  );
+  const observedInputs = useRef<string | null>(null);
+  const [scheme, setScheme] = useState<MarkdownColorScheme>(() => {
+    observedInputs.current = markdownThemeInputs();
+    return resolveMarkdownColorScheme();
+  });
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined")
       return;
-    const sync = () => setScheme(resolveMarkdownColorScheme());
+    const sync = () => {
+      observedInputs.current = markdownThemeInputs();
+      setScheme(resolveMarkdownColorScheme());
+    };
     window.addEventListener("papercusp:theme-changed", sync);
     window.addEventListener("storage", sync);
     const observer =
@@ -219,7 +233,7 @@ function useMarkdownColorScheme(): MarkdownColorScheme {
         : null;
     media?.addEventListener?.("change", sync);
     media?.addListener?.(sync);
-    sync();
+    if (observedInputs.current !== markdownThemeInputs()) sync();
     return () => {
       window.removeEventListener("papercusp:theme-changed", sync);
       window.removeEventListener("storage", sync);

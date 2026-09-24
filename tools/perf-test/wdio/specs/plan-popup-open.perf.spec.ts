@@ -82,16 +82,32 @@ async function spaNavigate(path: string): Promise<void> {
 
 describe("Packaged Papercusp desktop — plan popup open interaction", () => {
   it("opens a plan from the sidebar within the warm-render budget", async () => {
+    // useWorkspaceId snapshots at mount. A private packaged SPA has no HTTP
+    // bootstrap injection, so an explicit fixture scope must precede that mount.
+    const requestedWorkspace = process.env.PAPERCUSP_PERF_WORKSPACE_ID;
+    if (requestedWorkspace) {
+      const scopedUrl = await browser.execute((workspace: string) => {
+        const url = new URL(location.href);
+        url.pathname = '/adv';
+        url.search = new URLSearchParams({ ws: workspace, opcv: 'plans' }).toString();
+        url.hash = '';
+        return url.toString();
+      }, requestedWorkspace);
+      await browser.url(scopedUrl);
+    }
     // 1. Wait for the operator UI to mount real app content.
     await waitForAppMount(browser);
 
     // 2. Select the op-chat sidebar Plans face (?opcv=plans) — where the real
     //    "open a plan" interaction lives (WI-5547: the sidebar Plans view).
-    const plansUrl = await browser.execute(() => {
+    const plansUrl = await browser.execute((requestedSlug: string | null) => {
       const u = new URL(location.href);
       u.searchParams.set("opcv", "plans");
+      // The list is virtualized: a pinned row need not be in the mounted window.
+      // Use its existing search control before looking for that row in the DOM.
+      if (requestedSlug) u.searchParams.set("plq", requestedSlug);
       return u.pathname + u.search + u.hash;
-    });
+    }, process.env.PAPERCUSP_PERF_PLAN_SLUG ?? null);
     await spaNavigate(plansUrl);
 
     // Compact desktop profiles can present the chat as a collapsed rail.
@@ -277,6 +293,80 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         return metrics?.snapshot().scheduler ?? null;
       });
       console.log('[perf] plan-popup scheduler before click', JSON.stringify(schedulerBefore));
+
+      if (process.env.PAPERCUSP_PERF_MICROTASK_DIAGNOSTIC === '1') {
+        await browser.execute((name) => {
+          const original = performance.measure;
+          performance.measure = function (...args: Parameters<Performance['measure']>) {
+            const result = original.apply(this, args);
+            if (args[0] === `${name}:phase:content-ready`) {
+              performance.measure = original;
+              queueMicrotask(() => original.call(performance, `${name}:phase:content-microtask`, `${name}:start`));
+            }
+            return result;
+          };
+        }, INTERACTION_NAME);
+      }
+
+      if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
+        await browser.execute(() => {
+          const records: Array<{ api: string; ms: number; at: number; stack?: string }> = [];
+          const restores: Array<() => void> = [];
+          const observe = (proto: object, key: string) => {
+            const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+            if (!descriptor?.configurable) return;
+            const fn = descriptor.get ?? descriptor.value;
+            if (typeof fn !== 'function') return;
+            const wrapped = function (this: unknown, ...args: unknown[]) {
+              const at = performance.now();
+              try { return fn.apply(this, args); }
+              finally {
+                const ms = performance.now() - at;
+                if (ms >= 10) records.push({ api: key, ms, at, stack: new Error().stack?.slice(0, 1600) });
+              }
+            };
+            Object.defineProperty(proto, key, descriptor.get ? { ...descriptor, get: wrapped } : { ...descriptor, value: wrapped });
+            restores.push(() => Object.defineProperty(proto, key, descriptor));
+          };
+          for (const key of ['getBoundingClientRect', 'getClientRects', 'scrollIntoView', 'clientWidth', 'clientHeight', 'scrollHeight']) observe(Element.prototype, key);
+          for (const key of ['offsetWidth', 'offsetHeight', 'focus', 'innerText']) observe(HTMLElement.prototype, key);
+          (window as unknown as { __perfLayoutProbe: { records: typeof records; restore(): void } }).__perfLayoutProbe = {
+            records, restore: () => restores.forEach((restore) => restore()),
+          };
+        });
+      }
+
+      if (process.env.PAPERCUSP_PERF_REACT_MODULE) {
+        const installed = await browser.executeAsync((url: string, done: (value: unknown) => void) => {
+          const load = new Function('url', 'return import(url)') as (url: string) => Promise<{ t(): Record<string, Function> }>;
+          load(url).then((module) => {
+            const react = module.t();
+            const records: Array<{ hook: string; ms: number; at: number; stack?: string }> = [];
+            const restore: Array<() => void> = [];
+            for (const hook of ['useEffect', 'useLayoutEffect', 'useInsertionEffect']) {
+              const original = react[hook];
+              if (typeof original !== 'function') continue;
+              react[hook] = function (effect: () => unknown, deps: unknown) {
+                const stack = new Error().stack?.slice(0, 1800);
+                return original.call(react, () => {
+                  const at = performance.now();
+                  try { return effect(); }
+                  finally {
+                    const ms = performance.now() - at;
+                    if (ms >= 5) records.push({ hook, ms, at, stack });
+                  }
+                }, deps);
+              };
+              restore.push(() => { react[hook] = original; });
+            }
+            (window as unknown as { __perfReactProbe: { records: typeof records; restore(): void } }).__perfReactProbe = {
+              records, restore: () => restore.forEach((fn) => fn()),
+            };
+            done({ installed: true });
+          }).catch((error) => done({ error: String(error) }));
+        }, process.env.PAPERCUSP_PERF_REACT_MODULE);
+        console.log('[perf] React effect probe', JSON.stringify(installed));
+      }
 
       // Clear the previous attempt's measure + any dangling start immediately
       // before the CURRENT trigger, so a later plan can never be credited with
@@ -499,7 +589,6 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
     // Record BEFORE the asserts — `expect` throws on a breach, and a breach is
     // exactly the observation the release gate exists to catch.
-    recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
     const phases = await browser.execute((name) =>
       performance.getEntriesByType('measure')
         .filter((entry) => entry.name.startsWith(`${name}:phase:`))
@@ -507,6 +596,28 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       INTERACTION_NAME,
     );
     console.log('[perf] plan-popup phases (cumulative click-to-phase ms)', JSON.stringify(phases));
+    if (process.env.PAPERCUSP_PERF_REACT_MODULE) {
+      const effects = await browser.execute(() => {
+        const probe = (window as unknown as { __perfReactProbe?: { records: unknown[]; restore(): void } }).__perfReactProbe;
+        probe?.restore();
+        return probe?.records ?? [];
+      });
+      console.log('[perf] React effects', JSON.stringify(effects));
+    }
+    if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
+      const layout = await browser.execute(() => {
+        const probe = (window as unknown as { __perfLayoutProbe?: { records: unknown[]; restore(): void } }).__perfLayoutProbe;
+        probe?.restore();
+        return probe?.records ?? [];
+      });
+      console.log('[perf] layout operations', JSON.stringify(layout));
+    }
+    for (const phase of (process.env.PAPERCUSP_PERF_REQUIRED_PHASES ?? '').split(',').filter(Boolean)) {
+      if (!phases.some((entry) => entry.key === `${INTERACTION_NAME}:phase:${phase}`)) {
+        throw new Error(`UNMEASURABLE: required phase ${phase} is missing; verify the SPA actually loaded by this native artifact`);
+      }
+    }
+    recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
     const resources = await browser.execute((name) => {
       const measure = performance.getEntriesByName(name, 'measure').at(-1);
       if (!measure) return [];

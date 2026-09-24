@@ -29,8 +29,32 @@
  * It also degrades safely: a worker killed mid-write leaves one unparseable
  * trailing line, which `readMeasures` skips, instead of corrupting the whole file.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+
+/** Explicit Linux current-build fixtures use the same default discovery as Rust.
+ * Validate before spawning: a dead default alongside a fresh per-port advert
+ * otherwise silently falls back to HTTP and measures the wrong transport. */
+export function assertPrivateIpcFixture(
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+): void {
+  if (platform !== 'linux' || !env.PAPERCUSP_HOME || !env.PAPERCUSP_DEV_API_TARGET) return;
+  const port = Number(env.PAPERCUSP_DEV_API_TARGET);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+  const file = path.join(env.PAPERCUSP_HOME, 'endpoint-ipc.json');
+  try {
+    const record = JSON.parse(readFileSync(file, 'utf8')) as { pid?: number; port?: number; socketPath?: string };
+    if (!Number.isInteger(record.pid) || record.pid! <= 0 || record.port !== port ||
+        typeof record.socketPath !== 'string' || !statSync(record.socketPath).isSocket()) {
+      throw new Error('default discovery has a missing socket or mismatched PID/port');
+    }
+    process.kill(record.pid!, 0);
+  } catch (error) {
+    throw new Error(`Invalid private native IPC fixture at ${file}: ${String(error)}. ` +
+      `Refresh endpoint-ipc.json from the verified live endpoint-ipc.${port}.json before measuring.`);
+  }
+}
 
 /**
  * Mirrors `DesktopPerfMetricUnit` in packages/operator-core/lib/admin-test-suites-shared.ts.
