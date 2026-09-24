@@ -24,6 +24,8 @@
 
 /** Anthropic hard limit — a 5th `cache_control` marker in one request is a 400. */
 export const ANTHROPIC_MAX_BREAKPOINTS = 4;
+/** Published by each serving process; a changed policy must advance this identity. */
+export const CACHE_POLICY_VERSION = '2026-09-24-ttl-order-budget-v2';
 
 /** The extended cache tier [owner 2026-07-19 "just enable 1h everywhere"]. Accepted values
  *  are '5m' (default when absent) and '1h'. 1h writes cost 2× base input vs 1.25× for 5m, and
@@ -68,6 +70,8 @@ export interface AnthropicCacheStats {
   /** We wanted the tools breakpoint but EVERY tool is defer_loading (tool-search sessions):
    *  a tool may not carry both `defer_loading` and `cache_control` — the API 400s. */
   toolsBreakpointSkippedAllDeferred: boolean;
+  /** Adding the requested tools marker would put a short TTL before a long TTL. */
+  toolsBreakpointSkippedTtlOrder?: boolean;
   /** P-004: the stable/volatile system-block split happened this request (set by the buffer
    *  wrapper, not applyAnthropicCachePolicy — the split runs one layer up). */
   boundarySplit?: boolean;
@@ -322,8 +326,9 @@ function ephemeralMarker(block: Record<string, unknown>): Record<string, unknown
 /**
  * Apply the fleet prompt-cache policy to a parsed Anthropic `/v1/messages` body, IN PLACE.
  *
- * 1. TTL (P-001): every ephemeral `cache_control` without an explicit `ttl` gets the extended
- *    tier. A client-set ttl (either value) is left alone — client intent wins.
+ * 1. TTL (P-001): omitted TTLs get the extended tier only before any short marker.
+ *    A client-set ttl (either value) is left alone — client intent wins. After a short
+ *    marker, an omitted TTL stays at the provider's 5m default to preserve legal ordering.
  * 2. Shared tools breakpoint (P-003) — OFF BY DEFAULT, see `injectToolsBreakpoint`. The theory
  *    was that the `tools` array (prefix position 0, byte-identical across same-variant sessions)
  *    would be shareable only if we marked its end, because the earliest client breakpoint sits
@@ -370,12 +375,18 @@ export function applyAnthropicCachePolicy(
   }
 
   const blocks = cacheableBlocks(body);
+  let shortMarkerSeen = false;
   for (const b of blocks) {
     const cc = ephemeralMarker(b);
     if (!cc) continue;
     stats.breakpointsBefore++;
-    if (typeof cc.ttl === 'string' && cc.ttl.length > 0) continue; // explicit client intent
+    if (typeof cc.ttl === 'string' && cc.ttl.length > 0) {
+      if (cc.ttl === '5m') shortMarkerSeen = true;
+      continue; // explicit client intent
+    }
+    if (shortMarkerSeen && ttl === '1h') continue;
     cc.ttl = ttl;
+    if (ttl === '5m') shortMarkerSeen = true;
     stats.ttlUpgraded++;
     stats.changed = true;
   }
@@ -385,7 +396,7 @@ export function applyAnthropicCachePolicy(
   const topLevel = isRecord(body.cache_control) && body.cache_control.type === 'ephemeral' ? body.cache_control : null;
   if (topLevel) {
     stats.breakpointsBefore++;
-    if (!(typeof topLevel.ttl === 'string' && topLevel.ttl.length > 0)) {
+    if (!(typeof topLevel.ttl === 'string' && topLevel.ttl.length > 0) && !(shortMarkerSeen && ttl === '1h')) {
       topLevel.ttl = ttl;
       stats.ttlUpgraded++;
       stats.changed = true;
@@ -416,9 +427,20 @@ export function applyAnthropicCachePolicy(
         const anchor = tools[idx];
         if (isRecord(anchor) && !isRecord(anchor.cache_control)) {
           if (stats.breakpointsBefore < ANTHROPIC_MAX_BREAKPOINTS) {
-            anchor.cache_control = { type: 'ephemeral', ttl };
-            stats.toolsBreakpointInjected = true;
-            stats.changed = true;
+            const at = blocks.indexOf(anchor);
+            const priorShort = blocks.slice(0, at).some((b) => {
+              const marker = ephemeralMarker(b);
+              return marker && (marker.ttl === '5m' || marker.ttl === undefined);
+            });
+            const anchorTtl = priorShort && ttl === '1h' ? '5m' : ttl;
+            const laterLong = blocks.slice(at + 1).some((b) => ephemeralMarker(b)?.ttl === '1h') || topLevel?.ttl === '1h';
+            if (anchorTtl === '5m' && laterLong) {
+              stats.toolsBreakpointSkippedTtlOrder = true;
+            } else {
+              anchor.cache_control = { type: 'ephemeral', ttl: anchorTtl };
+              stats.toolsBreakpointInjected = true;
+              stats.changed = true;
+            }
           } else {
             // At budget: a 5th marker is a 400. Skipping costs the shared span, never the request.
             stats.toolsBreakpointSkippedNoBudget = true;
@@ -453,7 +475,11 @@ export interface SplitBoundaryResult {
  *    (still correct, just unshared);
  *  - an empty stable half (sentinel at block start) is refused — there is nothing to share.
  */
-export function splitSystemAtBoundary(system: unknown, ttl: string = ANTHROPIC_EXTENDED_TTL): SplitBoundaryResult {
+export function splitSystemAtBoundary(
+  system: unknown,
+  ttl: string = ANTHROPIC_EXTENDED_TTL,
+  context: { markersOutsideSystem?: number; laterLongMarker?: boolean } = {},
+): SplitBoundaryResult {
   if (!Array.isArray(system)) return { system: null, split: false };
   const idx = system.findIndex(
     (b) => isRecord(b) && b.type === 'text' && typeof b.text === 'string' && b.text.includes(PSU_CACHE_BOUNDARY),
@@ -473,8 +499,14 @@ export function splitSystemAtBoundary(system: unknown, ttl: string = ANTHROPIC_E
   const stableBlock: Record<string, unknown> = { ...block, text: before };
   if (movedCc) {
     stableBlock.cache_control = movedCc; // budget-neutral move from the (now-removed) full block
-  } else if (existingMarkers < ANTHROPIC_MAX_BREAKPOINTS) {
-    stableBlock.cache_control = { type: 'ephemeral', ttl };
+  } else if (existingMarkers + (context.markersOutsideSystem ?? 0) < ANTHROPIC_MAX_BREAKPOINTS) {
+    const priorShort = system.slice(0, idx).some((b) => isRecord(b) && ephemeralMarker(b)?.ttl === '5m');
+    const stableTtl = priorShort && ttl === '1h' ? '5m' : ttl;
+    if (stableTtl === '5m' && (context.laterLongMarker ||
+      system.slice(idx + 1).some((b) => isRecord(b) && ephemeralMarker(b)?.ttl === '1h'))) {
+      return { system: null, split: false };
+    }
+    stableBlock.cache_control = { type: 'ephemeral', ttl: stableTtl };
   } else {
     return { system: null, split: false }; // no budget to add one; splitting would gain nothing
   }
@@ -510,7 +542,20 @@ export function rewriteAnthropicCacheBody(
     // ttl upgrade too. A no-op split leaves the body for the policy alone.
     let splitDone = false;
     if (opts.splitBoundary) {
-      const r = splitSystemAtBoundary(parsed.system, opts.ttl ?? ANTHROPIC_EXTENDED_TTL);
+      const tools = Array.isArray(parsed.tools) ? parsed.tools.filter(isRecord) : [];
+      const outside = cacheableBlocks({ tools: parsed.tools, messages: parsed.messages })
+        .filter((b) => isRecord(b.cache_control)).length + (isRecord(parsed.cache_control) ? 1 : 0);
+      const requestedTtl = opts.ttl ?? ANTHROPIC_EXTENDED_TTL;
+      const priorShort = tools.some((b) => ephemeralMarker(b)?.ttl === '5m');
+      const splitTtl = priorShort && requestedTtl === '1h' ? '5m' : requestedTtl;
+      // An inserted short system marker must also precede no explicit long
+      // message/automatic marker. Existing caller markers are never rewritten.
+      const laterLong = cacheableBlocks({ messages: parsed.messages }).some((b) => ephemeralMarker(b)?.ttl === '1h') ||
+        ephemeralMarker(parsed)?.ttl === '1h';
+      const r = splitSystemAtBoundary(parsed.system, splitTtl, {
+        markersOutsideSystem: outside,
+        laterLongMarker: laterLong,
+      });
       if (r.system) {
         parsed.system = r.system;
         splitDone = r.split;

@@ -62,6 +62,19 @@ describe('applyAnthropicCachePolicy — ttl upgrade (P-001)', () => {
     expect(s.breakpointsBefore).toBe(1);
   });
 
+  it('keeps omitted markers short after an explicit short marker, including automatic caching', () => {
+    const body = {
+      tools: [{ name: 'first', cache_control: { type: 'ephemeral', ttl: '5m' } }],
+      system: [{ type: 'text', text: 'system', cache_control: cc() }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'tail', cache_control: cc() }] }],
+      cache_control: cc(),
+    };
+    applyAnthropicCachePolicy(body);
+    const markers = [body.tools[0], body.system[0], body.messages[0].content[0], body];
+    expect(markers.map((b) => (b.cache_control as { ttl?: string }).ttl ?? '5m')).toEqual(['5m', '5m', '5m', '5m']);
+    expect(applyAnthropicCachePolicy(body).changed).toBe(false);
+  });
+
   it('leaves a non-ephemeral cache_control type alone', () => {
     const body: Record<string, unknown> = { system: [{ type: 'text', cache_control: { type: 'persistent' } }] };
     const s = applyAnthropicCachePolicy(body, { injectToolsBreakpoint: false });
@@ -227,6 +240,68 @@ describe('splitSystemAtBoundary — stable/volatile split (P-004, MEASURED +66k 
     const joined = out.map((b) => b.text).join('');
     expect(joined).toBe(original.replace(boundary, ''));
   };
+
+  it.each([false, true])('counts the whole request budget before adding a system marker (automatic=%s)', (automatic) => {
+    const marker = () => ({ type: 'ephemeral', ttl: '1h' });
+    const body = {
+      tools: [{ name: 'a', cache_control: marker() }, { name: 'b', cache_control: marker() }],
+      system: [{ type: 'text', text: `stable${boundary}tail` }],
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: 'one', cache_control: marker() },
+        ...(automatic ? [] : [{ type: 'text', text: 'two', cache_control: marker() }]),
+      ] }],
+      ...(automatic ? { cache_control: marker() } : {}),
+    };
+    const input = Buffer.from(JSON.stringify(body));
+    const out = rewriteAnthropicCacheBody(input, { splitBoundary: true });
+    expect(out.body).toBe(input);
+    expect(out.stats?.boundarySplit).toBe(false);
+    expect(out.stats?.breakpointsBefore).toBe(4);
+  });
+
+  it('does not insert a long system or tool marker after an explicit short marker', () => {
+    const input = Buffer.from(JSON.stringify({
+      tools: [{ name: 'a', cache_control: { type: 'ephemeral', ttl: '5m' } }, { name: 'b' }],
+      system: [{ type: 'text', text: `stable${boundary}tail` }],
+    }));
+    const out = rewriteAnthropicCacheBody(input, { splitBoundary: true, injectToolsBreakpoint: true });
+    const body = JSON.parse(out.body.toString());
+    expect(body.tools.map((b: any) => b.cache_control.ttl)).toEqual(['5m', '5m']);
+    expect(body.system[0].cache_control.ttl).toBe('5m');
+    expect(body.system.map((b: any) => b.text).join('')).toBe('stabletail');
+    expect(rewriteAnthropicCacheBody(out.body, { splitBoundary: true, injectToolsBreakpoint: true }).body).toBe(out.body);
+  });
+
+  it.each(['messages', 'automatic', 'system'])('does not introduce a short marker before an explicit long %s marker', (location) => {
+    const long = { type: 'ephemeral', ttl: '1h' };
+    const body = {
+      tools: [{ name: 'a' }],
+      system: [
+        { type: 'text', text: `stable${boundary}tail` },
+        ...(location === 'system' ? [{ type: 'text', text: 'other', cache_control: long }] : []),
+      ],
+      ...(location === 'messages' ? { messages: [{ role: 'user', content: [{ type: 'text', text: 'message', cache_control: long }] }] } : {}),
+      ...(location === 'automatic' ? { cache_control: long } : {}),
+    };
+    const input = Buffer.from(JSON.stringify(body));
+    const out = rewriteAnthropicCacheBody(input, { ttl: '5m', splitBoundary: true, injectToolsBreakpoint: true });
+    expect(out.body).toBe(input);
+    expect(out.stats?.toolsBreakpointSkippedTtlOrder).toBe(true);
+    expect(out.stats?.boundarySplit).toBe(false);
+  });
+
+  it('still moves an existing system marker when the whole request budget is full', () => {
+    const marker = () => ({ type: 'ephemeral', ttl: '1h' });
+    const input = Buffer.from(JSON.stringify({
+      tools: [{ name: 'a', cache_control: marker() }, { name: 'b', cache_control: marker() }],
+      system: [{ type: 'text', text: `stable${boundary}tail`, cache_control: marker() }],
+      cache_control: marker(),
+    }));
+    const out = rewriteAnthropicCacheBody(input, { splitBoundary: true });
+    expect(out.stats?.boundarySplit).toBe(true);
+    expect(out.stats?.breakpointsBefore).toBe(4);
+    expect(JSON.parse(out.body.toString()).system.map((b: any) => b.text).join('')).toBe('stabletail');
+  });
 
   it('splits the block at the sentinel, moves cache_control to the STABLE half, drops the sentinel', () => {
     const original = `CLAUDE BASE + stable playbook${boundary}per-session launch context`;
