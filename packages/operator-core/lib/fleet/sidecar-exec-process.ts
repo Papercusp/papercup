@@ -142,9 +142,14 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   // Admission may have waited while the caller cancelled. Do not create a
   // child after cancellation merely because the admission promise settled.
   if (deps.signal?.aborted) {
-    await execution.cancel('sidecar process aborted before spawn');
-    await stdinHandle?.close().catch(() => {});
-    await stdoutHandle?.close().catch(() => {});
+    try {
+      await execution.cancel('sidecar process aborted before spawn');
+    } catch (e) {
+      return { ...aborted(), stderr: `sidecar process aborted before spawn; admission cancellation failed: ${String(e)}` };
+    } finally {
+      await stdinHandle?.close().catch(() => {});
+      await stdoutHandle?.close().catch(() => {});
+    }
     return aborted();
   }
 
@@ -246,16 +251,26 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       child.on('error', async (e) => {
         spawnFailed = true;
         stderr += String(e);
-        await execution.cancel(`sidecar process spawn error: ${String(e)}`);
-        finish(-1);
+        try {
+          await execution.cancel(`sidecar process spawn error: ${String(e)}`);
+        } catch (settlementError) {
+          stderr += `; admission cancellation failed: ${String(settlementError)}`;
+        } finally {
+          finish(-1);
+        }
       });
       child.on('close', async (code) => {
         childClosed = true;
         // Admission settlement can itself wait on IO. Remove kill timers now,
         // before awaiting it, so an exited child's recycled pid is never hit.
         stopGuards();
-        if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
-        finish(code ?? -1);
+        try {
+          if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
+          finish(code ?? -1);
+        } catch (settlementError) {
+          stderr += `${stderr ? '\n' : ''}sidecar process admission settlement failed: ${String(settlementError)}`;
+          finish(-1);
+        }
       });
     });
   } catch (e) {

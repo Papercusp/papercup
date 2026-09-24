@@ -173,4 +173,32 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(result).toMatchObject({ code: 0, stdout: 'ok' });
     expect(h.finished).toHaveBeenCalledOnce();
   });
+
+  it('returns after child exit even when admission settlement fails', async () => {
+    h.finished.mockRejectedValueOnce(new Error('settlement unavailable'));
+    const result = await execProcess({
+      command: process.execPath, args: ['-e', "process.stdout.write('done')"], timeoutMs: 5000,
+    });
+    expect(result).toMatchObject({ code: -1, stdout: 'done' });
+    expect(result.stderr).toContain('admission settlement failed: Error: settlement unavailable');
+    expect(h.finished).toHaveBeenCalledOnce();
+  });
+
+  it('releases handoff files when cancellation settlement fails before spawn', async () => {
+    const handoffPath = join(dir, 'handoff-output');
+    const controller = new AbortController();
+    let admit!: (value: GovernedExecution) => void;
+    h.begin.mockImplementation(() => new Promise<GovernedExecution>((resolve) => { admit = resolve; }));
+    h.cancelled.mockRejectedValueOnce(new Error('cancellation unavailable'));
+    const result = execProcess({
+      command: process.execPath, args: ['-e', "process.stdout.write('must not run')"],
+      stdoutPath: handoffPath,
+    }, { signal: controller.signal });
+    await vi.waitFor(() => expect(h.begin).toHaveBeenCalledOnce());
+    controller.abort();
+    admit(receipt());
+    expect(await result).toMatchObject({ code: -1 });
+    expect(h.cancelled).toHaveBeenCalledOnce();
+    await rm(handoffPath);
+  });
 });
