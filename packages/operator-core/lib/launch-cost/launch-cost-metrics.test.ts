@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compileJsonSchema } from '../json-schema-validation';
 
 import {
   DEFAULT_MIN_PROMPT_TOKENS,
@@ -17,6 +18,56 @@ import {
   utcDay,
   type LaunchSample,
 } from './launch-cost-metrics';
+
+describe('carry task response oracles (D017 draft 1143234)', () => {
+  // Reuse the standard schema engine, not a second acceptance scorer. These
+  // synthetic answers validate only response correctness: live quality still
+  // requires complete attributed action receipts, exact source-read evidence
+  // for T2, and witnessed native model provenance for T5.
+  const cases: Array<{ id: string; expected: Record<string, unknown> }> = [
+    { id: 'T1', expected: { pendingDirective: 'finish the existing task', route: 'self',
+      nextAction: 'verify the pending test result before repeating any action' } },
+    { id: 'T2', expected: { sourceSentinel: 'cedar-48f6e9a2', sourceRef: 'fixture:source/completed-cut' } },
+    { id: 'T3', expected: { chosenApproach: 'correlate bounded native identifiers',
+      rejectedAlternative: 'infer a join from owner and time proximity',
+      rejectionReason: 'proximity does not prove request identity' } },
+    { id: 'T4', expected: { workItemLabel: 'WI-example', grantsClaim: false,
+      allowedActions: ['capability:read supplied fixture and exact source', 'coord:whoami this session'],
+      providerCacheExpiry: 'unknown' } },
+    { id: 'T5', expected: { currentTarget: 'amber-29', supersededTarget: 'scarlet-17' } },
+  ];
+
+  it.each(cases)('$id accepts the exact response regardless of object key order', ({ expected }) => {
+    const validate = compileJsonSchema({ type: 'object', const: expected });
+    const reordered = Object.fromEntries(Object.entries(expected).reverse());
+    expect(validate(JSON.parse(JSON.stringify(reordered)))).toBe(true);
+  });
+
+  it.each(cases)('$id rejects missing, invented, unknown and wrong-typed facts', ({ expected }) => {
+    const validate = compileJsonSchema({ type: 'object', const: expected });
+    for (const key of Object.keys(expected)) {
+      const missing = { ...expected }; delete missing[key];
+      expect(validate(missing), `missing ${key}`).toBe(false);
+      expect(validate({ ...expected, [key]: 'UNKNOWN' }), `unknown ${key}`).toBe(false);
+      expect(validate({ ...expected, [key]: null }), `null ${key}`).toBe(false);
+    }
+    expect(validate({ ...expected, selfRatedQuality: 'pass' })).toBe(false);
+    expect(validate(JSON.stringify(expected))).toBe(false);
+    expect(validate([expected])).toBe(false);
+  });
+
+  it('rejects false authority, a different source cut, and a superseded model-switch fact', () => {
+    const validate = (id: string, changes: Record<string, unknown>) => {
+      const expected = cases.find(row => row.id === id)!.expected;
+      return compileJsonSchema({ type: 'object', const: expected })({ ...expected, ...changes });
+    };
+    expect(validate('T2', { sourceRef: 'fixture:source/later-cut' })).toBe(false);
+    expect(validate('T4', { grantsClaim: true })).toBe(false);
+    expect(validate('T4', { allowedActions: ['work_items:claim'] })).toBe(false);
+    expect(validate('T4', { providerCacheExpiry: 'warm' })).toBe(false);
+    expect(validate('T5', { currentTarget: 'scarlet-17', supersededTarget: 'amber-29' })).toBe(false);
+  });
+});
 
 describe('carry startup recurrence detectors (P-009)', () => {
   const rows = (): CarryStartupObservation[] => [
