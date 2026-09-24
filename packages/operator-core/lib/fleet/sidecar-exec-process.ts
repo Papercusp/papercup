@@ -169,6 +169,9 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
         },
         stdio,
+        // Own the command's helper processes too. Keep the child referenced;
+        // detached here creates a POSIX process group, not a fire-and-forget job.
+        detached: process.platform !== 'win32',
       });
       // Decode across chunk boundaries: a multi-byte UTF-8 character split between
       // two `data` events decodes to replacement chars under a plain
@@ -186,6 +189,42 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
       let removeAbortListener = (): void => {};
+      const processGroup = process.platform !== 'win32' ? child.pid : undefined;
+      const signalCommand = (signal: NodeJS.Signals): void => {
+        if (processGroup === undefined) {
+          child.kill(signal);
+          return;
+        }
+        try {
+          process.kill(-processGroup, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+            stderr += `\nsidecar process-group ${signal} failed: ${String(error)}`;
+          }
+        }
+      };
+      const waitForCommandExit = async (): Promise<void> => {
+        if (processGroup === undefined) return;
+        // A parent can close its pipes while a helper still runs with its own
+        // stdio. Keep the cancellation escalation armed until the GROUP exits.
+        // No deadline may manufacture an exit receipt and release caller locks.
+        let probeFailureReported = false;
+        for (;;) {
+          try {
+            process.kill(-processGroup, 0);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+            // A failed liveness probe is not proof of exit. Keep the request
+            // pending (and its escalation armed), rather than letting the
+            // admission-error handler manufacture completion for a live group.
+            if (!probeFailureReported) {
+              stderr += `\nsidecar process-group exit unverified: ${String(error)}`;
+              probeFailureReported = true;
+            }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      };
       const clearTimers = (): void => {
         if (hardTimer) clearTimeout(hardTimer);
         if (idleTimer) clearTimeout(idleTimer);
@@ -211,8 +250,8 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         terminating = true;
         clearTimers();
         stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
-        child.kill('SIGTERM');
-        killTimer = setTimeout(() => child.kill('SIGKILL'), deps.killGraceMs ?? 10_000);
+        signalCommand('SIGTERM');
+        killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? 10_000);
         killTimer.unref?.();
         // A kill signal is not an exit receipt. Only close (or a spawn error)
         // may settle this call and let the caller release repository locks.
@@ -261,10 +300,11 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       });
       child.on('close', async (code) => {
         childClosed = true;
-        // Admission settlement can itself wait on IO. Remove kill timers now,
-        // before awaiting it, so an exited child's recycled pid is never hit.
-        stopGuards();
         try {
+          if (terminating) await waitForCommandExit();
+          // Admission settlement can itself wait on IO. Remove kill timers
+          // after command exit, before awaiting admission settlement.
+          stopGuards();
           if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
           finish(code ?? -1);
         } catch (settlementError) {
