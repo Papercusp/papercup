@@ -31,10 +31,12 @@ let fx: PlanPgFixture;
 let admin: postgres.Sql;
 let wsId: string;
 
+// `draft`, not `active`: a non-template plan entering an activation status is refused by the
+// conversation-audit gate, which reports kind:'applied' with a refusal VALUE and writes nothing.
 const body = (slug: string, marker: string) => `---
 title: ${slug}
 slug: ${slug}
-status: active
+status: draft
 created: 2026-09-24
 updated: 2026-09-24
 ---
@@ -60,7 +62,14 @@ async function unhookedWrite(slug: string, content: string, intent = 'wi10002881
     { slug, intent, harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30 },
     async () => ({ newBody: content, value: { ok: true } }),
   );
+  expectWritten(res);
+}
+
+/** `kind:'applied'` alone does not prove bytes were written — a gate refusal is also
+ *  'applied' with a refusal value — so assert the mutator's own value came back. */
+function expectWritten(res: Awaited<ReturnType<typeof withPlanLock<{ ok: true }>>>): void {
   expect(res.kind).toBe('applied');
+  expect((res as { value: unknown }).value).toEqual({ ok: true });
 }
 
 async function hookedWrite(slug: string, content: string): Promise<void> {
@@ -70,7 +79,7 @@ async function hookedWrite(slug: string, content: string): Promise<void> {
     { slug, intent: 'wi10002881 hooked write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30, afterWrite: rev.afterWrite },
     async () => ({ newBody: content, value: { ok: true } }),
   );
-  expect(res.kind).toBe('applied');
+  expectWritten(res);
 }
 
 interface RevisionRow { seq: number; content_hash: string; author_kind: string; author_id: string; rationale: string | null }
@@ -177,7 +186,7 @@ describe('WI-10002881 — the with-plan-lock revision-spine guard', () => {
       { slug, intent: 'wi10002881 strict write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30, revisionInTransaction: rev.inTransaction! },
       async () => ({ newBody: body(slug, 'strict'), value: { ok: true } }),
     );
-    expect(res.kind).toBe('applied');
+    expectWritten(res);
     const rows = await revisions(slug);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.author_id).not.toBe(REVISION_SPINE_GUARD_AUTHOR);
