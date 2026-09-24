@@ -46,6 +46,7 @@ import {
   scorecardRatingsClaimPass,
   ratingVerdict,
   recordGradingAudit,
+  markGradingAuditAwaitingReemit,
   isCurrentSourceAuditResponder,
   scorecardEvidenceFingerprint,
   parseGradedGeneration,
@@ -74,11 +75,13 @@ import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
 import { closeSourceAuditConsults } from '../../grading-audit-routing';
 import {
+  assessGenerationAncestry,
   dispatchPendingGradingAudits,
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditGateEnabled,
   needsGradingAudit,
   readGradingAuditDispatchSuppression,
+  type GenerationAncestryProbe,
   type GradingAuditLaunchContext,
 } from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
@@ -520,38 +523,6 @@ type SpecTestAdequacyReplayRow = {
 };
 
 type SpecTestAdequacyEvaluatorBuild = z.infer<typeof specTestAdequacyEvaluatorBuildSchema>;
-
-type GenerationAncestryProbe = (root: string, ancestor: string, descendant: string) => boolean | null;
-
-const GENERATION_SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
-
-function assessGenerationAncestry(
-  gradedSha: unknown,
-  auditorSha: unknown,
-  root: string,
-  probe: GenerationAncestryProbe,
-): { ok: true } | { ok: false; reason: string } {
-  if (
-    typeof gradedSha !== 'string' ||
-    !GENERATION_SHA_PATTERN.test(gradedSha.trim()) ||
-    typeof auditorSha !== 'string' ||
-    !GENERATION_SHA_PATTERN.test(auditorSha.trim())
-  ) {
-    return { ok: false, reason: 'generation-sha-missing-or-invalid' };
-  }
-  const graded = gradedSha.trim().toLowerCase();
-  const auditor = auditorSha.trim().toLowerCase();
-  // A short SHA is a valid identity when it is a prefix of the full form emitted by
-  // another process. Treat that as equality without asking git to resolve an ambiguous
-  // object; the ancestry probe remains reserved for distinct identities.
-  if (graded === auditor || graded.startsWith(auditor) || auditor.startsWith(graded)) return { ok: true };
-  const isAncestor = probe(root, gradedSha.trim(), auditorSha.trim());
-  if (isAncestor === true) return { ok: true };
-  return {
-    ok: false,
-    reason: isAncestor === false ? 'auditor-build-older-than-graded-build' : 'generation-ancestry-unknown',
-  };
-}
 
 function isSameEvaluatorBuild(a: SpecTestAdequacyEvaluatorBuild, b: SpecTestAdequacyEvaluatorBuild): boolean {
   return a.sha === b.sha && a.version === b.version;
@@ -2064,19 +2035,37 @@ export async function emitScorecard(
       }
       const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
       const suppliedDispatchReservation = args.gradingAuditReservation;
+      if (gradedObservation.gradingAudit.state === 'pending' && activeDispatchReservation && !suppliedDispatchReservation) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_missing' as const,
+          error:
+            `audit subject '${args.subject.ref}' has an active dispatch reservation, but gradingAuditReservation is missing; ` +
+            `re-read the target and pass the exact lease key '${activeDispatchReservation.key}' and reservedAt '${activeDispatchReservation.reservedAt}'`,
+        };
+      }
       if (
         gradedObservation.gradingAudit.state === 'pending' &&
-        (activeDispatchReservation || suppliedDispatchReservation) &&
-        (!activeDispatchReservation ||
-          !suppliedDispatchReservation ||
-          suppliedDispatchReservation.key !== activeDispatchReservation.key ||
+        activeDispatchReservation &&
+        suppliedDispatchReservation &&
+        (suppliedDispatchReservation.key !== activeDispatchReservation.key ||
           suppliedDispatchReservation.reservedAt !== activeDispatchReservation.reservedAt)
       ) {
         return {
           ok: false as const,
+          code: 'grading_audit_reservation_mismatch' as const,
           error:
-            `audit subject '${args.subject.ref}' has a different active dispatch reservation; ` +
-            'pass gradingAuditReservation with the exact key and reservedAt from your dispatch brief, then retry only if that lease is still current',
+            `audit subject '${args.subject.ref}' gradingAuditReservation does not match its current active dispatch reservation; ` +
+            're-read the target and use the exact current lease key and reservedAt, or stop if the lease changed',
+        };
+      }
+      if (gradedObservation.gradingAudit.state === 'pending' && !activeDispatchReservation && suppliedDispatchReservation) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_unavailable' as const,
+          error:
+            `audit subject '${args.subject.ref}' has no active dispatch reservation to match the supplied gradingAuditReservation; ` +
+            're-read the target and emit only if its current pending lease is present',
         };
       }
       if (
@@ -2094,6 +2083,14 @@ export async function emitScorecard(
           error:
             `audit subject '${args.subject.ref}' is assigned to a different active consult answerer; ` +
             'only the current answering session may emit under this dispatch reservation',
+        };
+      }
+      if (gradedObservation.gradingAudit.state === 'awaiting-reemit') {
+        return {
+          ok: false as const,
+          error:
+            `audit subject '${args.subject.ref}' is awaiting a source-card re-emit because its evaluator changed; ` +
+            're-emit the target under the current evaluator before auditing it again',
         };
       }
       if (gradedObservation.gradingAudit.state !== 'pending') {
@@ -2173,7 +2170,17 @@ export async function emitScorecard(
         args.ratings,
         deps.dispatchTool,
       );
-      if (replayConsistencyError) return { ok: false as const, ...replayConsistencyError };
+      if (replayConsistencyError) {
+        if (
+          replayConsistencyError.code === 'grading_audit_evaluator_changed' &&
+          gradedObservation.gradingAudit.state === 'pending'
+        ) {
+          await markGradingAuditAwaitingReemit(args.subject.ref, gradedObservation.gradingAudit, {
+            reason: replayConsistencyError.error,
+          });
+        }
+        return { ok: false as const, ...replayConsistencyError };
+      }
       // Every grading-integrity rating on re-runnable-evidence depends on the
       // target card's evaluator. An older/diverged auditor can return pass,
       // fail, or unknown using different evaluator semantics; none can settle
@@ -2727,16 +2734,30 @@ export async function emitScorecard(
     let auditSettlement: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
     let auditCleanupError: string | undefined;
     if (auditContext && result.created && result.issue?.id) {
-      auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
-        auditIssueId: result.issue.id,
-        auditor: auditContext.auditor,
-        verdict: auditVerdictFromRatings(ratings),
-        requireCurrentIdentity: true,
-        ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
-        ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
-        ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
-        ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
-      });
+      const auditVerdict = auditVerdictFromRatings(ratings);
+      if (auditVerdict === null) {
+        auditSettlement = {
+          ok: false,
+          issueId: auditContext.subjectIssueId,
+          error:
+            "grading-integrity audit card '" +
+            result.issue.id +
+            "' has unknown or unrecognized ratings; graded scorecard '" +
+            auditContext.subjectIssueId +
+            "' remains pending",
+        };
+      } else {
+        auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
+          auditIssueId: result.issue.id,
+          auditor: auditContext.auditor,
+          verdict: auditVerdict,
+          requireCurrentIdentity: true,
+          ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
+          ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
+          ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
+          ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+        });
+      }
       if (auditSettlement.ok) {
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
