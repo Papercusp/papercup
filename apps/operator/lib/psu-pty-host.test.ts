@@ -14,6 +14,9 @@ import {
   controlBytes,
   controlWrites,
   controlWritesForAgent,
+  bracketedPasteFrame,
+  bracketedPasteModeAfter,
+  BRACKETED_PASTE_TAIL_CHARS,
   contextClearCommandForAgent,
   coldResetModeForAgent,
   respawnTerminalHandoffBytes,
@@ -830,6 +833,63 @@ describe('controlWritesForAgent', () => {
   it('does not add submit bytes to osc (recolor) messages for any backend', () => {
     const d = decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#000000\x07' }));
     expect(controlWritesForAgent(d, 'codex', {})).toEqual([{ data: '\x1b]11;#000000\x07', delayMs: 0 }]);
+  });
+  // EI-24141825238362808: unframed, a long Claude turn fragments when Claude is
+  // busy between pty reads, and its tail + CR are read as typed keys.
+  it('frames Claude turn text as one bracketed paste once the child enabled mode 2004', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWritesForAgent(d, 'claude', {}, { bracketedPaste: true })).toEqual([
+      { data: '\x1b[200~wake-turn\x1b[201~', delayMs: 0 },
+      { data: '\r', delayMs: 150 },
+    ]);
+  });
+  it('keeps Claude turns unframed while the child has not enabled bracketed paste', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWritesForAgent(d, 'claude', {}, { bracketedPaste: false })[0]).toEqual({
+      data: 'wake-turn',
+      delayMs: 0,
+    });
+  });
+  it('never frames Codex or OMP turns, whose paste handling is measured separately', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    for (const agent of ['codex', 'omp', '']) {
+      expect(controlWritesForAgent(d, agent, {}, { bracketedPaste: true })[0].data).toBe('wake-turn');
+    }
+  });
+  it('frames the carry turn of a Claude reset but not its clear command', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'carry' }));
+    const steps = controlWritesForAgent(d, 'claude', {}, { bracketedPaste: true });
+    expect(steps[0].data).toBe(contextClearCommandForAgent('claude'));
+    expect(steps.some((step) => step.data === '\x1b[200~carry\x1b[201~')).toBe(true);
+  });
+});
+
+describe('bracketedPasteFrame', () => {
+  it('strips embedded paste markers so the payload cannot close the frame early', () => {
+    const framed = bracketedPasteFrame('head\x1b[201~\rinjected\x1b[200~tail');
+    expect(framed).toBe('\x1b[200~head\rinjectedtail\x1b[201~');
+    expect(framed.indexOf('\x1b[201~')).toBe(framed.length - '\x1b[201~'.length);
+  });
+});
+
+describe('bracketedPasteModeAfter', () => {
+  it('turns on at ESC[?2004h and off at ESC[?2004l; the last toggle in a chunk wins', () => {
+    expect(bracketedPasteModeAfter(false, '', 'x\x1b[?2004l\x1b[?2004hy')).toBe(true);
+    expect(bracketedPasteModeAfter(true, '', '\x1b[?2004h\x1b[?2004l')).toBe(false);
+  });
+  it('leaves the mode unchanged when the output carries no 2004 toggle', () => {
+    expect(bracketedPasteModeAfter(true, '', 'plain \x1b[?25h text')).toBe(true);
+    expect(bracketedPasteModeAfter(false, '', 'plain \x1b[?25l text')).toBe(false);
+  });
+  it('reads 2004 inside a combined DEC private-mode sequence', () => {
+    expect(bracketedPasteModeAfter(false, '', '\x1b[?1004;2004h')).toBe(true);
+    expect(bracketedPasteModeAfter(true, '', '\x1b[?2004;1004l')).toBe(false);
+  });
+  it('sees a toggle split across two pty chunks through the carried tail', () => {
+    const first = 'frame bytes \x1b[?20';
+    const tail = first.slice(-BRACKETED_PASTE_TAIL_CHARS);
+    expect(bracketedPasteModeAfter(false, '', first)).toBe(false);
+    expect(bracketedPasteModeAfter(false, tail, '04h rest')).toBe(true);
   });
 });
 
