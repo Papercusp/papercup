@@ -694,7 +694,7 @@ rotates the anchor after each window. Run **19278072 passed 2 tests, zero
 skipped**, at `db87ad0325` with the new test uncommitted. Every capture contained
 multiple samples of fixture work. All 49 anchors ended, with at most two live
 at once. Ordinary starts took 103.03/81.36 ms; the median overlapping start
-was 0.044 ms and median rotation 0.217 ms. The largest anchor held 84 samples
+was 0.043 ms and median rotation 0.214 ms. The largest anchor held 84 samples
 and 4,018 serialized bytes. Across four GC observations, heap varied by
 12,712 bytes and RSS stayed at 109,133,824 bytes. This short fixture is not a
 long-duration leak test or a bound during arbitrary main-thread stalls.
@@ -736,3 +736,20 @@ whitespace checks passed. The new EI's claim was admission-pending, so this
 repair was implemented under the already-held WI-10002825/P-003 lane. Source
 verification is not independent acceptance or shipment. Transport-loss fencing,
 profiler startup remediation and the remaining P-003 performance proof stay open.
+
+The lifecycle repair's completion subsequently succeeded with state **done**
+and **committed** completion authority. This does not promote P-003 as a whole.
+
+A follow-up parameterized experiment, **19280662**, passed **4 tests, zero
+skipped**, at `befef09f6b` plus the edited integration test. Sampling intervals
+were set explicitly through `Profiler.setSamplingInterval` before recording.
+At 1 ms / 10 ms intervals respectively, median overlapping starts were
+0.052 / 0.044 ms and median rotations were 0.244 / 0.191 ms; both versions
+produced 50 useful captures and ended their 49 anchors. The 10 ms fidelity
+fixture deliberately uses a 100 ms work interval (versus 30 ms at 1 ms) to
+provide enough samples; these are not comparable throughput measurements.
+The **idle CPU comparison does use identical 500 ms windows**: added median
+CPU fractions were 0.0391 and 0.00808, or about 3.91% and 0.81% of one core.
+The coarser sampler is promising but does not resolve the remaining lifecycle,
+dynamic gate, saturation and long-duration recording-policy questions. It has
+not been integrated. Scoped typechecking of the updated integration test passed.
