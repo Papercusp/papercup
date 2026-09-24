@@ -1321,7 +1321,7 @@ export type StoredQualificationCancellation =
   | { status: 'stop-failed'; transaction: CheckpointQualificationTransaction; error: string };
 
 /**
- * A terminal logical attempt may leave its pre-suite frozen candidate behind. Retire it
+ * A terminal or provably abandoned logical attempt may leave its frozen queue behind. Retire it
  * only for an explicitly distinct successor and only while the queue is still the exact,
  * unstarted row created by that predecessor. Any legacy, mismatched, dispatched, repaired,
  * or otherwise advanced queue stays authoritative and blocks the successor fail-closed.
@@ -1487,11 +1487,12 @@ async function mutateStoredQualification(
       };
       const successorInput =
         typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
+      // A distinct successor may replace a proved-dead nonterminal runner as well as a
+      // terminal attempt. Both inherit the predecessor's queue, so both must reconcile and
+      // re-stamp its owner in the same row write. Leaving the abandoned queue's old id in
+      // place makes a later gate self-heal fail its handoff guard despite a matching CAS.
       const predecessor =
-        successorInput &&
-        current &&
-        isTerminalQualificationOutcome(current.outcome) &&
-        current.attemptId !== transition.transaction.attemptId
+        successorInput && current && current.attemptId !== transition.transaction.attemptId
           ? current
           : null;
       const reconciliation =
