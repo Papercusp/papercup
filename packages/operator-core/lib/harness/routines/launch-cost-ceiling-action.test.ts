@@ -49,6 +49,24 @@ describe('launch scan cohort and telemetry guards', () => {
     expect(result.cohorts.every(c => c.regressionComparable)).toBe(true);
   });
 
+  it('keeps the routine quiet when only model mix changes across full calendar windows', async () => {
+    const baseline = Array.from({ length: 7 }, (_, i) => 9 - i).flatMap(age => [
+      ...launches('small', age, 10000, 90), ...launches('large', age, 100000, 30),
+    ]);
+    const recent = [2, 1].flatMap(age => [
+      ...launches('small', age, 10000, 30), ...launches('large', age, 100000, 90),
+    ]);
+    const escalate = vi.fn();
+    const result = await runLaunchCostCeiling({}, {
+      now, scan: async () => scan([...baseline, ...recent]), openEscalation: escalate,
+    });
+    expect(result.outcome).toBe('ok');
+    expect(result.telemetry?.unknown).toEqual([]);
+    expect(result.telemetry?.cohorts).toHaveLength(2);
+    expect(result.telemetry?.cohorts.every(c => c.regressionComparable)).toBe(true);
+    expect(escalate).not.toHaveBeenCalled();
+  });
+
   it('detects an injected within-cohort regression and respects existing kill switches', () => {
     const report = scan([...launches('model', 4, 100000), ...launches('model', 1, 300000)]);
     expect(evaluateLaunchScan(report, { now }).legs.map(l => l.key)).toEqual(['ceiling', 'regression']);
