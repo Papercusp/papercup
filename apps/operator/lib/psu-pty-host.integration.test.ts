@@ -507,21 +507,15 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupFallbackElapsed({ agent: 'omp', firstOutputAt, fallbackMs, nowMs: 15_999, backendFirstFrameAt: 0 })).toBe(false);
   });
 
-  // WI-10002745 host wiring: the pure clock above is only half the fix. This
-  // drives the real host with a fake Codex that swallows stdin between its
-  // probe and its first frame, the way the real TUI's reply parser does.
-  // With the 500ms fallback measured from the probe (the previous fix) or from
-  // the banner (the original code), the kickoff lands inside the 1.2s swallow
-  // window and the child reports it. The widened no-frame window (4 x 500ms
-  // from the probe) is deliberately longer than the swallow, so only a clock
-  // anchored on the frame can pass.
-  // The fake Codex paints its pre-session chrome (`model: loading` + composer)
-  // right after the probe, as 0.156.1 does, and keeps swallowing until the
-  // session header arrives 1.2s later. A clock started at the pre-session chrome
-  // (the 16:45Z fix) types at ~0.6s and is swallowed.
-  it('never types a Codex kickoff between the startup probe and the session frame', async () => {
+  // WI-10002776: exercise the real host with a fake Codex that swallows stdin
+  // until its first session frame. The 260ms setting makes the old 4x no-frame
+  // fallback expire at 1.04s, just before the frame at about 1.2s. A tagged
+  // kickoff must wait for that frame instead of spending the fallback write.
+  it('waits for the Codex session frame when the no-frame fallback expires first', async () => {
     const ownerId = `su-codex-first-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:fedcba9876543210⟧';
+    const kickoff = marker + '\nKICKOFF-AFTER-FRAME';
     const { captured, io } = fakeIo();
     const childCode =
       "process.stdout.write('psu: launcher banner\\n');" +
@@ -541,7 +535,8 @@ describe('session-port managed seed + native persistence helpers', () => {
         ...process.env,
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
-        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '500',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
@@ -552,7 +547,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       io,
       bridgeTty: false,
       signalSource: new EventEmitter(),
-      kickoff: 'KICKOFF-AFTER-FRAME',
+      kickoff,
     });
     try {
       await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-FRAME'), { timeout: 8000 });
@@ -570,8 +565,9 @@ describe('session-port managed seed + native persistence helpers', () => {
       }, { timeout: 8000 });
       const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
       expect(frame?.msAfterTuiStart).toBeGreaterThanOrEqual(1_000);
-      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'startup-fallback' });
-      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(500);
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
+      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(0);
+      expect(Date.parse(written.ts)).toBeGreaterThanOrEqual(Date.parse(frame.ts));
     } finally {
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       await done;
