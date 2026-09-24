@@ -58,9 +58,41 @@ export const SNAPSHOT_FOLD_WORKER_MIN_HEAP_MB = 2048;
  * worker below the recycle limit makes a runaway fold end as a worker OOM, which
  * `SnapshotFoldWorker` reports as a failed compaction while the host keeps serving.
  * The remaining ~55% is for the host's own heap, its in-flight read windows and native memory.
+ *
+ * ⚠ `resourceLimits` ALONE DOES NOT ENFORCE THIS. V8 flags are process-global, and a
+ * process-wide `--max-old-space-size` (argv or NODE_OPTIONS) OVERRIDES a Worker's
+ * `maxOldGenerationSizeMb`. bg-host runs with NODE_OPTIONS=--max-old-space-size=12288, so
+ * there the worker's real limit stayed 12 GB. MEASURED 2026-09-24 on node 22.21:
+ * `resourceLimits.maxOldGenerationSizeMb: 96` gives heap_size_limit 12336 MB under
+ * `--max-old-space-size=12288`, and 4144 MB under `NODE_OPTIONS=--max-old-space-size=4096`.
+ * So the cap is enforced as a SOFT cap: the worker reports its used heap after every window
+ * (GC-confirmed once over the cap), and `SnapshotFoldWorker.fold` fails the fold when it is
+ * exceeded. `resourceLimits` remains a hard backstop at `SNAPSHOT_FOLD_WORKER_HARD_LIMIT_FACTOR`
+ * above it, effective only on a host with no global flag.
  */
 export function snapshotFoldWorkerHeapMb(limitMb: number = resolveMemoryWatchdogLimitMb()): number {
   return Math.max(SNAPSHOT_FOLD_WORKER_MIN_HEAP_MB, Math.floor(limitMb * SNAPSHOT_FOLD_WORKER_HEAP_FRACTION));
+}
+
+/**
+ * The hard `resourceLimits` backstop sits this far ABOVE the soft cap. Far enough that the
+ * per-window soft check fires first (one window adds a few MB), so a runaway fold fails with a
+ * named error instead of a V8 abort, wherever the backstop is honoured at all.
+ */
+export const SNAPSHOT_FOLD_WORKER_HARD_LIMIT_FACTOR = 1.25;
+
+/** The error a fold fails with when the worker's live set outgrows its soft heap cap. */
+export class SnapshotFoldHeapCapError extends Error {
+  constructor(
+    readonly usedBytes: number,
+    readonly capBytes: number,
+  ) {
+    super(
+      `snapshot fold worker exceeded its heap cap: ${Math.round(usedBytes / 1048576)} MB used after GC > ` +
+        `${Math.round(capBytes / 1048576)} MB cap (WI-10002836) — the fold is abandoned so the host keeps serving`,
+    );
+    this.name = 'SnapshotFoldHeapCapError';
+  }
 }
 
 /**
@@ -139,6 +171,8 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
   private constructor(
     private readonly worker: Worker,
     private readonly releaseSlot: () => void = () => {},
+    /** The SOFT heap cap `fold()` enforces from the worker's own reports (see snapshotFoldWorkerHeapMb). */
+    private readonly heapCapBytes: number = Number.POSITIVE_INFINITY,
   ) {
     worker.on('message', (res: SnapshotFoldResponse) => {
       const waiter = this.pending.get(res.id);
@@ -170,13 +204,17 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     opts: { workerPath?: string; maxOldGenerationSizeMb?: number; signal?: AbortSignal } = {},
   ): Promise<SnapshotFoldWorker> {
     const releaseSlot = await acquireSnapshotFoldSlot(opts.signal);
+    const capMb = opts.maxOldGenerationSizeMb ?? snapshotFoldWorkerHeapMb();
+    const heapCapBytes = capMb * 1024 * 1024;
     let client: SnapshotFoldWorker;
     try {
       client = new SnapshotFoldWorker(
         new Worker(opts.workerPath ?? snapshotFoldWorkerPath(), {
-          resourceLimits: { maxOldGenerationSizeMb: opts.maxOldGenerationSizeMb ?? snapshotFoldWorkerHeapMb() },
+          workerData: { heapCapBytes },
+          resourceLimits: { maxOldGenerationSizeMb: Math.ceil(capMb * SNAPSHOT_FOLD_WORKER_HARD_LIMIT_FACTOR) },
         }),
         releaseSlot,
+        heapCapBytes,
       );
     } catch (e) {
       releaseSlot();
@@ -201,6 +239,11 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
       [buf],
     );
     if (res.kind !== 'folded') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to fold`);
+    if (res.heapUsedBytes !== undefined && res.heapUsedBytes > this.heapCapBytes) {
+      const e = new SnapshotFoldHeapCapError(res.heapUsedBytes, this.heapCapBytes);
+      this.failAll(e); // every later request fails fast; the producer's finally closes the worker
+      throw e;
+    }
     return {
       decodedOps: res.decodedOps,
       decodedBytes: res.decodedBytes,

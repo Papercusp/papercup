@@ -11,9 +11,12 @@
  *  (c) the fold from 0 re-expanded every prior set it passed (~1.9M rows, ~4 GB each),
  *      ~120 GB of decoding in the last 3.5% of the log, in 1 GiB windows of 4 MiB chunks;
  *  (d) the worker had no heap cap of its own, so the HOST recycled instead of the fold failing.
+ *      Its `resourceLimits` cap is IGNORED under a global --max-old-space-size (bg-host sets
+ *      one), so the cap is a soft cap the host enforces from the worker's own heap reports.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,7 +34,13 @@ import {
   type SnapshotPayload,
   type SnapshotRow,
 } from '../log-snapshot';
-import { SnapshotFoldWorker, snapshotFoldWorkerHeapMb, SNAPSHOT_FOLD_WORKER_MIN_HEAP_MB } from '../snapshot-fold-offload';
+import {
+  SnapshotFoldHeapCapError,
+  SnapshotFoldWorker,
+  snapshotFoldWorkerHeapMb,
+  SNAPSHOT_FOLD_WORKER_HARD_LIMIT_FACTOR,
+  SNAPSHOT_FOLD_WORKER_MIN_HEAP_MB,
+} from '../snapshot-fold-offload';
 import { createSnapshotFoldHandler, encodeStoredBlock, packBlocks } from '../snapshot-fold-protocol';
 import { SEED_EXCLUDED_TABLES, SELF_REGENERATING_TABLES } from '../seed-excluded-tables';
 import { discoverOwnCompactionAnchor } from '../own-compaction-anchor';
@@ -338,9 +347,40 @@ describe('(d) the fold worker is capped below the host and reports its own heap'
         failure = e;
       });
     }
-    expect(failure).toBeInstanceOf(Error);
-    expect(String((failure as Error).message)).toMatch(/snapshot fold worker/);
+    // The SOFT cap, not a V8 abort: this must hold whether or not the test process carries a
+    // global --max-old-space-size (the batch router's NODE_OPTIONS does; bg-host's does). The
+    // first version asserted any Error and went red exactly when the flag was present, because
+    // `resourceLimits` was then silently ignored and nothing ever failed.
+    expect(failure).toBeInstanceOf(SnapshotFoldHeapCapError);
+    expect(String((failure as Error).message)).toMatch(/snapshot fold worker exceeded its heap cap/);
+    const capErr = failure as unknown as SnapshotFoldHeapCapError;
+    expect(capErr.capBytes).toBe(96 * 1024 * 1024);
+    expect(capErr.usedBytes).toBeGreaterThan(capErr.capBytes);
+    await expect(worker.fold([]), 'a capped worker refuses further folds').rejects.toBe(failure);
   }, 60_000);
+
+  it('PREMISE: a global --max-old-space-size overrides a Worker resourceLimits cap (why the soft cap exists)', () => {
+    const probe =
+      "const { Worker } = require('node:worker_threads');" +
+      "const w = new Worker(\"const v8=require('node:v8');require('node:worker_threads').parentPort.postMessage(" +
+      "v8.getHeapStatistics().heap_size_limit)\", { eval: true, resourceLimits: { maxOldGenerationSizeMb: 96 } });" +
+      "w.on('message', (m) => { process.stdout.write(String(Math.round(m / 1048576))); w.terminate(); });";
+    const limitMb = (flags: string[]) =>
+      Number(
+        execFileSync(process.execPath, [...flags, '-e', probe], {
+          env: { ...process.env, NODE_OPTIONS: '' },
+          encoding: 'utf8',
+        }),
+      );
+    expect(limitMb([]), 'no global flag: the Worker cap is honoured').toBeLessThan(512);
+    // If this ever starts honouring the Worker cap, the soft cap can be retired in favour of
+    // resourceLimits alone — update snapshotFoldWorkerHeapMb's doc and this test together.
+    expect(limitMb(['--max-old-space-size=3072']), 'global flag: the Worker cap is IGNORED').toBeGreaterThan(3000);
+  }, 20_000);
+
+  it('the hard resourceLimits backstop sits above the soft cap', () => {
+    expect(SNAPSHOT_FOLD_WORKER_HARD_LIMIT_FACTOR).toBeGreaterThan(1);
+  });
 });
 
 describe('snapshot block recognition and the worker-side skip', () => {
