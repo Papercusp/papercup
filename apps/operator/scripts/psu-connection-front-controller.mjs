@@ -21,7 +21,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
@@ -32,11 +32,19 @@ import {
 
 export const PSU_CONNECTION_STORE_VERSION = "psu-connection-profiles-v1";
 export const DEFAULT_REMOTE_OPERATOR_PORT = 3070;
+/** The Papercusp cloud portal a bare `psu --connect-login` signs in to. */
+export const DEFAULT_HOSTED_PORTAL_ORIGIN = "https://app.papercusp.com";
+/** Picker value for "sign in to Papercusp cloud". Not a legal profile name, so it cannot collide. */
+export const HOSTED_LOGIN_CHOICE = ":login";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const GCP_RESOURCE_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,126}[A-Za-z0-9]$/;
 const GCP_ZONE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const SSH_USER_RE = /^[A-Za-z_][A-Za-z0-9._-]{0,63}$/;
+const HOSTED_TOKEN_RE = /^pct_[A-Za-z0-9_-]{43}$/;
+const HOSTED_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const HOSTED_TICKET_RE = /^ht_[A-Za-z0-9_-]{43}$/;
+const HOSTED_SESSION_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const VALUE_FLAGS = new Map([
   ["--connect", "selection"],
   ["--connect-add-gcp-iap", "addName"],
@@ -45,6 +53,15 @@ const VALUE_FLAGS = new Map([
   ["--connect-zone", "zone"],
   ["--connect-instance", "instanceName"],
   ["--connect-user", "sshUser"],
+  ["--connect-login", "loginOrigin"],
+  ["--connect-logout", "logoutName"],
+  ["--connect-session", "sessionKey"],
+]);
+/** Flags whose value is optional; the bare form sets the paired boolean. */
+const OPTIONAL_VALUE_FLAGS = new Map([
+  ["--connect", "explicitConnect"],
+  ["--connect-login", "login"],
+  ["--connect-logout", "logout"],
 ]);
 
 function requiredValue(value, label, pattern) {
@@ -77,6 +94,11 @@ export function parsePsuConnectionArgs(argv) {
     zone: null,
     instanceName: null,
     sshUser: null,
+    login: false,
+    loginOrigin: null,
+    logout: false,
+    logoutName: null,
+    sessionKey: null,
   };
   let passthrough = false;
 
@@ -104,7 +126,8 @@ export function parsePsuConnectionArgs(argv) {
       continue;
     }
 
-    if (key === "--connect") transport.explicitConnect = true;
+    const flag = OPTIONAL_VALUE_FLAGS.get(key);
+    if (flag) transport[flag] = true;
     if (equals !== -1) {
       const value = cell.slice(equals + 1);
       if (!value) throw new Error(`${key} requires a value after '='`);
@@ -112,7 +135,7 @@ export function parsePsuConnectionArgs(argv) {
       continue;
     }
     if (
-      key === "--connect" &&
+      flag &&
       (argv[index + 1] == null || argv[index + 1].startsWith("--"))
     ) {
       continue;
@@ -125,13 +148,23 @@ export function parsePsuConnectionArgs(argv) {
     transport.list,
     Boolean(transport.addName),
     Boolean(transport.removeName),
+    transport.login,
+    transport.logout,
   ].filter(Boolean).length;
   if (actions > 1)
     throw new Error(
-      "Choose only one of --connect-list, --connect-add-gcp-iap, or --connect-remove",
+      "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-remove, --connect-login, or --connect-logout",
     );
-  if (actions && transport.explicitConnect)
+  if (actions && (transport.explicitConnect || transport.sessionKey))
     throw new Error("Profile maintenance commands cannot also use --connect");
+  if (
+    transport.sessionKey != null &&
+    !HOSTED_SESSION_KEY_RE.test(transport.sessionKey)
+  ) {
+    throw new Error(
+      "--connect-session must be 1-64 letters, digits, '-' or '_'",
+    );
+  }
   if (
     !transport.addName &&
     [
@@ -211,13 +244,95 @@ export function normalizeGcpIapProfile(input) {
   };
 }
 
-function validateStoredProfile(value) {
-  if (!value || value.kind !== "gcp-iap-ssh") {
+/**
+ * A Papercusp cloud portal origin. https only, except a loopback test server;
+ * credentials in the URL are refused so a token can never be sent to a
+ * look-alike host spelled inside the userinfo part.
+ */
+export function normalizeHostedPortalOrigin(value) {
+  let url;
+  try {
+    url = new URL(value ?? DEFAULT_HOSTED_PORTAL_ORIGIN);
+  } catch {
     throw new Error(
-      `Unsupported saved psu connection kind '${value?.kind ?? "missing"}'`,
+      `The Papercusp portal must be a URL like ${DEFAULT_HOSTED_PORTAL_ORIGIN}`,
     );
   }
-  return normalizeGcpIapProfile(value);
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error(
+      "The Papercusp portal must use https:// (http:// is accepted only for a loopback test server)",
+    );
+  }
+  if (url.username || url.password)
+    throw new Error("The Papercusp portal URL must not carry credentials");
+  return url.origin;
+}
+
+export function hostedProfileName(origin) {
+  return requiredValue(
+    new URL(origin).host.replace(/[^A-Za-z0-9._-]/g, "-"),
+    "Connection profile name",
+    PROFILE_NAME_RE,
+  );
+}
+
+/**
+ * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal;
+ * it reaches every hosted workspace the signed-in person's organization role
+ * allows, through the workspace machine's own outbound connector — the machine
+ * accepts no inbound connection, so there is no SSH or IAP leg to configure.
+ */
+export function normalizeHostedProfile(input) {
+  const origin = normalizeHostedPortalOrigin(input.origin);
+  const name = requiredValue(
+    input.name ?? hostedProfileName(origin),
+    "Connection profile name",
+    PROFILE_NAME_RE,
+  );
+  const expiresAt = new Date(input.expiresAt);
+  if (Number.isNaN(expiresAt.getTime()))
+    throw new Error("Papercusp CLI token expiry has an invalid value");
+  return {
+    name,
+    kind: "papercusp-hosted",
+    origin,
+    accessToken: requiredValue(
+      input.accessToken,
+      "Papercusp CLI token",
+      HOSTED_TOKEN_RE,
+    ),
+    tokenId: requiredValue(input.tokenId, "Papercusp CLI token id", HOSTED_ID_RE),
+    organizationId: requiredValue(
+      input.organizationId,
+      "Papercusp organization id",
+      HOSTED_ID_RE,
+    ),
+    userId: requiredValue(input.userId, "Papercusp user id", HOSTED_ID_RE),
+    expiresAt: expiresAt.toISOString(),
+    supportedClientPlatforms: ["linux", "macos", "windows"],
+    features: {
+      command: true,
+      pty: true,
+      tcpForward: false,
+      fileTransfer: false,
+    },
+    prerequisites: ["A Papercusp cloud sign-in (psu --connect-login)"],
+    constraints: [
+      "Terminal only: no port forwarding or bulk file transfer",
+      "Your organization role decides which workspaces you can open",
+    ],
+    reconnect: "resume",
+    audited: true,
+  };
+}
+
+function validateStoredProfile(value) {
+  if (value?.kind === "gcp-iap-ssh") return normalizeGcpIapProfile(value);
+  if (value?.kind === "papercusp-hosted") return normalizeHostedProfile(value);
+  throw new Error(
+    `Unsupported saved psu connection kind '${value?.kind ?? "missing"}'`,
+  );
 }
 
 export function defaultPsuConnectionStorePath(home = homedir()) {
@@ -303,7 +418,18 @@ function gcpIapExtraArgs(profile) {
 }
 
 export function describePsuConnectionProfile(profile) {
+  if (profile.kind === "papercusp-hosted")
+    return `${profile.name} — Papercusp cloud workspaces at ${profile.origin}`;
   return `${profile.name} — GCP IAP ${profile.projectId}/${profile.zone}/${profile.instanceName} as ${profile.sshUser}`;
+}
+
+export function describeHostedWorkspace(profile, workspace) {
+  const label =
+    workspace.displayName && workspace.displayName !== workspace.id
+      ? `${workspace.displayName} (${workspace.id})`
+      : workspace.id;
+  const state = workspace.reachable ? "" : ` — not connected (${workspace.state})`;
+  return `${profile.name}/${workspace.id} — Papercusp cloud workspace ${label}${state}`;
 }
 
 function defaultCommandAvailable(command) {
@@ -355,17 +481,136 @@ function defaultRunInteractive(command, args) {
   });
 }
 
-async function defaultPickConnection(profiles) {
+async function defaultPickConnection(choices) {
   const { select } = await import("@inquirer/prompts");
-  return select({
-    message: "Where should psu run?",
-    choices: [
-      { name: "Local — this computer", value: "local" },
-      ...profiles.map((profile) => ({
-        name: describePsuConnectionProfile(profile),
-        value: profile.name,
-      })),
-    ],
+  return select({ message: "Where should psu run?", choices });
+}
+
+/** Best effort: the URL is always printed too, so a headless box loses nothing. */
+function defaultOpenBrowser(url) {
+  const [command, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+        ? ["cmd", ["/c", "start", '""', url]]
+        : ["xdg-open", [url]];
+  try {
+    const child = nodeSpawn(command, args, { stdio: "ignore", shell: false });
+    child.once("error", () => {});
+    child.unref();
+  } catch {
+    // No opener on this machine; the printed URL is the fallback.
+  }
+}
+
+/**
+ * Bridge this terminal to a hosted workspace PTY over the connector relay —
+ * the same `papercusp-hosted-workspace.v1` socket the portal's Terminal tab
+ * uses (apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol.ts).
+ * Resolves when the socket closes; `exit` is set only if the remote shell ended.
+ */
+function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const socket = new WebSocket(socketUrl);
+  return new Promise((resolve) => {
+    let role = null;
+    let exit = null;
+    let resumed = false;
+    const send = (message) => {
+      if (socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify(message));
+    };
+    const size = () => ({
+      cols: stdout.columns || 120,
+      rows: stdout.rows || 32,
+    });
+    const onInput = (chunk) => {
+      if (role === "controller")
+        send({ type: "pty.input", data: Buffer.from(chunk).toString("base64") });
+    };
+    const onResize = () => {
+      if (role === "controller") send({ type: "pty.resize", ...size() });
+    };
+    const onLocalHangup = () => {
+      send({ type: "session.detach" });
+      socket.close(1000, "psu_detached");
+    };
+    const wasRaw = stdin.isTTY ? stdin.isRaw : false;
+    let attached = false;
+    const cleanup = () => {
+      if (!attached) return;
+      attached = false;
+      stdin.off("data", onInput);
+      process.off("SIGWINCH", onResize);
+      process.off("SIGTERM", onLocalHangup);
+      process.off("SIGHUP", onLocalHangup);
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+      stdin.pause();
+    };
+    socket.addEventListener("open", () => {
+      attached = true;
+      if (stdin.isTTY) stdin.setRawMode(true);
+      stdin.resume();
+      stdin.on("data", onInput);
+      process.on("SIGWINCH", onResize);
+      process.on("SIGTERM", onLocalHangup);
+      process.on("SIGHUP", onLocalHangup);
+    });
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data !== "string") return;
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      switch (message?.type) {
+        case "session.bound":
+          role = message.role;
+          return;
+        case "session.role":
+          role = message.role;
+          if (role === "observer")
+            notice(
+              "psu: another viewer took control of this shell; output stays live here",
+            );
+          return;
+        case "pty.ready":
+          role = message.role;
+          resumed = message.resumed === true;
+          onResize();
+          if (resumed) notice("psu: resumed your detached shell");
+          else if (initialInput)
+            send({
+              type: "pty.input",
+              data: Buffer.from(initialInput, "utf8").toString("base64"),
+            });
+          return;
+        case "pty.output":
+        case "pty.snapshot":
+          if (typeof message.data === "string")
+            stdout.write(Buffer.from(message.data, "base64"));
+          return;
+        case "pty.exit":
+          exit = { code: message.code, signal: message.signal };
+          socket.close(1000, "pty_exited");
+          return;
+        case "session.denied":
+          notice(
+            `psu: the workspace refused ${message.requestType ?? "a request"}: ${message.reason}`,
+          );
+          return;
+        default:
+          return;
+      }
+    });
+    // An error is always followed by close, which is where this settles.
+    socket.addEventListener("error", () => {});
+    socket.addEventListener("close", (event) => {
+      cleanup();
+      resolve({ exit, resumed, closeCode: event.code, closeReason: event.reason });
+    });
   });
 }
 
@@ -414,6 +659,7 @@ function assertProfileUsable(profile, deps) {
       `Connection '${profile.name}' does not support this ${clientPlatform} client`,
     );
   }
+  if (profile.kind === "papercusp-hosted") return;
   for (const command of ["ssh", "gcloud"]) {
     if (!deps.commandAvailable(command)) {
       throw new Error(

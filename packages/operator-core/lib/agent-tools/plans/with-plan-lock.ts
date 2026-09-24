@@ -63,6 +63,44 @@ import {
   VALID_PLAN_SLUG,
 } from './source';
 
+/** System author of the EI-14579 resurrection marker revision. */
+export const TEMPLATE_DATA_LOSS_GUARD_AUTHOR = 'with-plan-lock:template-data-loss-guard';
+/** System author of a revision recorded for a plan write whose caller wired no revision
+ *  hook (WI-10002881 — the revision-spine guard). */
+export const REVISION_SPINE_GUARD_AUTHOR = 'with-plan-lock:revision-spine-guard';
+
+/**
+ * Append a SYSTEM-attributed plan_revisions row inside the plan write's own transaction.
+ * `COALESCE(MAX(seq),0)+1` is the same allocation recordPlanRevision uses; the plan's
+ * advisory xact lock (held by the caller) serializes same-plan writers, so it is race-free.
+ */
+async function insertSystemPlanRevision(
+  tx: TransactionSql,
+  row: {
+    workspaceId: string;
+    harnessSlug: string;
+    slug: string;
+    hash: string;
+    body: string;
+    rationale: string;
+    authorId: string;
+  },
+): Promise<void> {
+  await tx`
+    INSERT INTO harness_shared.plan_revisions (
+      workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+      author_kind, author_id, session_id, session_kind, created_at
+    )
+    SELECT
+      ${row.workspaceId}, ${row.harnessSlug}, ${row.slug}, COALESCE(MAX(seq), 0) + 1,
+      ${row.hash}, ${row.body}, ${row.rationale},
+      'system', ${row.authorId}, null, null, ${Date.now()}
+    FROM harness_shared.plan_revisions
+    WHERE workspace_id = ${row.workspaceId} AND harness_slug = ${row.harnessSlug}
+      AND plan_slug = ${row.slug}
+  `;
+}
+
 /**
  * plan-federation-regrain P-010 — ONGOING per-part capture for a committed plan
  * write. Flag-gated (papercusp-plan-part-federation), best-effort, and run in its
@@ -690,19 +728,30 @@ export async function withPlanLock<T>(
       // depending on the calling ctx resolving one.
       if (resurrectionWarning) {
         console.warn(`[with-plan-lock] ${resurrectionWarning}`);
-        await tx`
-          INSERT INTO harness_shared.plan_revisions (
-            workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
-            author_kind, author_id, session_id, session_kind, created_at
-          )
-          SELECT
-            ${workspaceId}, ${harnessSlug}, ${slug}, COALESCE(MAX(seq), 0) + 1,
-            ${hash}, ${newBody}, ${resurrectionWarning},
-            'system', 'with-plan-lock:template-data-loss-guard', null, null, ${Date.now()}
-          FROM harness_shared.plan_revisions
-          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-            AND plan_slug = ${slug}
-        `;
+        await insertSystemPlanRevision(tx, {
+          workspaceId, harnessSlug, slug, hash, body: newBody,
+          rationale: resurrectionWarning,
+          authorId: TEMPLATE_DATA_LOSS_GUARD_AUTHOR,
+        });
+      } else if (!opts.afterWrite && !opts.revisionInTransaction) {
+        // WI-10002881 — the REVISION-SPINE guard. Every write of plan BYTES must leave a
+        // plan_revisions row whose hash matches them: the activation audit, the BAR subject
+        // revision and the revision transcript all key off that spine, and plans:audit refuses
+        // `plan_revision_unavailable` when the current bytes have none. The plans:* verbs
+        // record through afterWrite / revisionInTransaction; internal writers (the P-030/P-031
+        // scope-write cascade's Now restamps, plan-drain-transition, spawn-child, cupboard
+        // install, scout revise) wire neither and silently left the spine behind. Seven prior
+        // bugs fixed this one caller at a time; this closes it HERE, once, for every caller that
+        // wires no hook — in the same transaction, so the bytes and their revision commit or
+        // roll back together.
+        await insertSystemPlanRevision(tx, {
+          workspaceId, harnessSlug, slug, hash, body: newBody,
+          rationale:
+            `unhooked plan write (${opts.intent})` +
+            (authenticatedActorId ? ` by ${authenticatedActorId}` : '') +
+            ' — revision recorded by the with-plan-lock revision-spine guard (WI-10002881)',
+          authorId: REVISION_SPINE_GUARD_AUTHOR,
+        });
       }
     }
     if (

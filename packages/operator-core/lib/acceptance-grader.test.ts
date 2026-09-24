@@ -493,6 +493,40 @@ describe('launchAcceptanceGrader', () => {
     expect(readLogTail).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['an observed real turn', true],
+    ['an unconfirmed start', null],
+  ])('does not retire a task on kickoff-proof timeout with %s', async (_label, agentStarted) => {
+    const kill = vi.fn(async () => ({ ok: true }));
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: {
+        deduped: false,
+        launch: {
+          agentStarted,
+          tasks: [
+            {
+              taskId: 'task-late-kickoff-proof',
+              logPath: '/tmp/judge.log',
+              kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' },
+            },
+          ],
+        },
+      },
+    }));
+
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      readLogTail: () => '',
+    });
+
+    expect(result.state).toBe('launched');
+    expect(result.agentStarted).toBe(agentStarted);
+    expect(result).not.toHaveProperty('terminalRecovery');
+    expect(kill).not.toHaveBeenCalled();
+  });
+
   it('WI-10002155: POSITIVE CONTROL — a persisted kickoff, and an ABSENT receipt, stay non-terminal', async () => {
     const kill = vi.fn(async () => ({ ok: true }));
 
@@ -545,6 +579,7 @@ describe('launchAcceptanceGrader', () => {
       data: {
         deduped: true,
         launch: {
+          agentStarted: false,
           tasks: [
             {
               taskId: 'task-zombie',

@@ -1,16 +1,20 @@
 //! Central style palette (SP-TUI A5). The PUI runs in terminals first, so the
 //! palette favors high-contrast ANSI-safe RGB values over subtle web tints.
 //!
-//! Themes-as-data (workbench-theme-system-2026-06-05 D-001). Every colour the
-//! workbench renders lives in a [`ThemeSpec`] slot — there are **no colour
-//! literals outside this file** (the call sites in `ui.rs`/`fleet.rs`/`glyph.rs`
-//! draw exclusively through the named `Theme::*` accessors below). `theme.rs` is
+//! Themes-as-data (workbench-theme-system-2026-06-05 D-001). Palette colours
+//! live in [`ThemeSpec`] slots and the draw sites reach them through the named
+//! `Theme::*` accessors below. A few sites still name a colour directly
+//! (`fleet.rs`'s fleet accents, `agent_pane_kind.rs`'s pane-kind hues), which
+//! is why colour-disabled mode clears the finished frame rather than relying on
+//! a colourless palette ([`Theme::finish_frame`]). `theme.rs` is
 //! a registry over `ThemeSpec`; the accessors read the *active* spec, so a future
 //! `:theme` switcher (P1) only needs to flip which spec [`Theme::active`] returns.
 
+use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders};
+use ratatui::widgets::{Block, BorderType, Borders};
+use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::glyph;
@@ -327,6 +331,59 @@ fn surface_bg(slot: Color) -> Color {
     resolve_surface_bg(TRANSPARENT_SURFACES.load(Ordering::Relaxed), slot)
 }
 
+/// Colour-disabled rendering (pui-first-party-public-release P-013;
+/// <https://no-color.org>). With it on the workbench paints no colour at all:
+/// [`Theme::finish_frame`] clears every cell's foreground and background once
+/// the frame is drawn. Meaning a palette carried by hue alone moves to a
+/// terminal attribute instead: the selected row and the focused pane's title
+/// render reversed, a focused pane or popup gets a thick border, and muted
+/// text renders dim. `main.rs` turns it on at startup when `NO_COLOR` is set.
+/// Atomic for the same reason as [`TRANSPARENT_SURFACES`].
+static MONOCHROME: AtomicBool = AtomicBool::new(false);
+
+/// `NO_COLOR` as no-color.org defines it: set to any non-empty value, even
+/// `0` or `false`.
+pub fn no_color_requested(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+/// Pure core of [`mono_cue`] (the atomic read injected) so both modes are
+/// unit-testable without touching the process-global flag.
+#[inline]
+fn resolve_mono_cue(mono: bool, style: Style, cue: Modifier) -> Style {
+    if mono {
+        style.add_modifier(cue)
+    } else {
+        style
+    }
+}
+
+/// `style` plus the attribute that carries its meaning once colour is gone,
+/// only in colour-disabled mode.
+#[inline]
+fn mono_cue(style: Style, cue: Modifier) -> Style {
+    resolve_mono_cue(MONOCHROME.load(Ordering::Relaxed), style, cue)
+}
+
+/// Pure core of the emphasised-border weight: a focused pane or popup is told
+/// apart by a thick border in colour-disabled mode, by its border hue otherwise.
+#[inline]
+fn resolve_block_border(block: Block<'static>, emphasised: bool, mono: bool) -> Block<'static> {
+    if emphasised && mono {
+        block.border_type(BorderType::Thick)
+    } else {
+        block
+    }
+}
+
+/// Clear every cell's colours, keeping its symbol and attributes.
+pub fn strip_colors(buf: &mut Buffer) {
+    for cell in &mut buf.content {
+        cell.fg = Color::Reset;
+        cell.bg = Color::Reset;
+    }
+}
+
 pub struct Theme;
 
 impl Theme {
@@ -373,6 +430,20 @@ impl Theme {
         TRANSPARENT_SURFACES.store(on, Ordering::Relaxed);
     }
 
+    /// Turn colour-disabled rendering on/off — see [`MONOCHROME`]. `main.rs`
+    /// sets it from `NO_COLOR` before the first frame.
+    pub fn set_monochrome(on: bool) {
+        MONOCHROME.store(on, Ordering::Relaxed);
+    }
+
+    /// Last step of every frame (`ui::draw`): in colour-disabled mode, clear
+    /// the colours the draw sites painted, whichever branch painted them.
+    pub fn finish_frame(buf: &mut Buffer) {
+        if MONOCHROME.load(Ordering::Relaxed) {
+            strip_colors(buf);
+        }
+    }
+
     /// Base pane surface. Blocks use this so adjacent panes read as an intentional
     /// dashboard instead of raw terminal cells.
     pub fn panel() -> Style {
@@ -414,10 +485,11 @@ impl Theme {
 
     pub fn title_active() -> Style {
         let t = Self::active();
-        Style::default()
+        let style = Style::default()
             .fg(t.on_accent)
             .bg(t.accent_hot)
-            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::BOLD);
+        mono_cue(style, Modifier::REVERSED)
     }
 
     pub fn status_bar() -> Style {
@@ -437,14 +509,15 @@ impl Theme {
     /// Selected list row / active tab.
     pub fn selected() -> Style {
         let t = Self::active();
-        Style::default()
+        let style = Style::default()
             .fg(t.on_accent)
             .bg(t.accent_hot)
-            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::BOLD);
+        mono_cue(style, Modifier::REVERSED)
     }
 
     pub fn dim() -> Style {
-        Style::default().fg(Self::active().muted)
+        mono_cue(Style::default().fg(Self::active().muted), Modifier::DIM)
     }
     pub fn warn() -> Style {
         Style::default()
@@ -482,7 +555,7 @@ impl Theme {
     /// Standard bordered workbench pane. Use this instead of hand-rolled
     /// `Block::default()` so every tab participates in the same palette.
     pub fn block(title: Line<'static>, active: bool) -> Block<'static> {
-        Block::default()
+        let block = Block::default()
             .borders(Borders::ALL)
             .style(if active {
                 Self::panel_active()
@@ -499,18 +572,20 @@ impl Theme {
             } else {
                 Self::title()
             })
-            .title(title)
+            .title(title);
+        resolve_block_border(block, active, MONOCHROME.load(Ordering::Relaxed))
     }
 
     /// Floating modal block. Popups get a distinct surface but share the active
     /// border/title treatment so they read as focused workbench chrome.
     pub fn popup_block(title: Line<'static>) -> Block<'static> {
-        Block::default()
+        let block = Block::default()
             .borders(Borders::ALL)
             .style(Self::popup())
             .border_style(Self::border_active())
             .title_style(Self::title_active())
-            .title(title)
+            .title(title);
+        resolve_block_border(block, true, MONOCHROME.load(Ordering::Relaxed))
     }
     // ---- Semantic glyph styling (Brief 27 / tui-glyph-vocabulary) ----
     // The glyph SHAPE comes from `crate::glyph`; the COLOUR is paired here.
@@ -755,5 +830,92 @@ mod tests {
         let cell = buf.cell((0, 0)).expect("cell 0,0");
         assert_eq!(cell.symbol(), glyph::status_for("needs-human"));
         assert_eq!(cell.fg, t.human);
+    }
+
+    /// Colour-disabled mode (P-013) follows no-color.org: `NO_COLOR` counts
+    /// whenever it is set to anything but the empty string.
+    #[test]
+    fn no_color_is_any_non_empty_value() {
+        assert!(!no_color_requested(None));
+        assert!(!no_color_requested(Some(OsStr::new(""))));
+        for value in ["1", "0", "false", "yes"] {
+            assert!(
+                no_color_requested(Some(OsStr::new(value))),
+                "NO_COLOR={value} must disable colour"
+            );
+        }
+    }
+
+    /// `strip_colors` removes every fg/bg the draw sites painted — palette
+    /// slots and direct literals alike — and keeps the text and attributes.
+    #[test]
+    fn strip_colors_keeps_symbols_and_attributes() {
+        let area = Rect::new(0, 0, 6, 1);
+        let mut buf = Buffer::empty(area);
+        let style = Style::default()
+            .fg(Color::Rgb(0x86, 0xef, 0xac))
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        Paragraph::new(Line::styled("queen", style)).render(area, &mut buf);
+        strip_colors(&mut buf);
+        for cell in &buf.content {
+            assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset));
+        }
+        let cell = buf.cell((0, 0)).expect("cell 0,0");
+        assert_eq!(cell.symbol(), "q");
+        assert!(cell.modifier.contains(Modifier::BOLD | Modifier::REVERSED));
+    }
+
+    /// The cue is added only in colour-disabled mode; the coloured path is
+    /// byte-identical to the style the accessor built.
+    #[test]
+    fn mono_cue_applies_only_in_monochrome() {
+        let style = Theme::selected();
+        assert_eq!(resolve_mono_cue(false, style, Modifier::REVERSED), style);
+        let mono = resolve_mono_cue(true, style, Modifier::REVERSED);
+        assert!(mono
+            .add_modifier
+            .contains(Modifier::REVERSED | Modifier::BOLD));
+        assert_eq!((mono.fg, mono.bg), (style.fg, style.bg));
+    }
+
+    /// With every colour cleared, a focused pane must still read differently
+    /// from an unfocused one: a thick border and a reversed title. Renders the
+    /// monochrome forms into a real buffer and strips it as `finish_frame` does.
+    #[test]
+    fn monochrome_focus_is_visible_without_colour() {
+        let render = |active: bool| {
+            let title_style = if active {
+                resolve_mono_cue(true, Theme::title_active(), Modifier::REVERSED)
+            } else {
+                Theme::title()
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(if active {
+                    Theme::border_active()
+                } else {
+                    Theme::border()
+                })
+                .title_style(title_style)
+                .title("chat");
+            let area = Rect::new(0, 0, 8, 3);
+            let mut buf = Buffer::empty(area);
+            resolve_block_border(block, active, true).render(area, &mut buf);
+            strip_colors(&mut buf);
+            buf
+        };
+        let focused = render(true);
+        let unfocused = render(false);
+        assert_eq!(focused.cell((0, 0)).expect("corner").symbol(), "┏");
+        assert_eq!(unfocused.cell((0, 0)).expect("corner").symbol(), "┌");
+        let title = |buf: &Buffer| buf.cell((1, 0)).expect("title cell").modifier;
+        assert!(title(&focused).contains(Modifier::REVERSED));
+        assert!(!title(&unfocused).contains(Modifier::REVERSED));
+        // The coloured path keeps the plain border.
+        let mut plain = Buffer::empty(Rect::new(0, 0, 8, 3));
+        resolve_block_border(Block::default().borders(Borders::ALL), true, false)
+            .render(Rect::new(0, 0, 8, 3), &mut plain);
+        assert_eq!(plain.cell((0, 0)).expect("corner").symbol(), "┌");
     }
 }

@@ -16,6 +16,11 @@ export function parsePsuConnectionArgs(argv: any): {
         zone: null;
         instanceName: null;
         sshUser: null;
+        login: boolean;
+        loginOrigin: null;
+        logout: boolean;
+        logoutName: null;
+        sessionKey: null;
     };
     forwardedArgv: any[];
 };
@@ -42,6 +47,40 @@ export function normalizeGcpIapProfile(input: any): {
     reconnect: string;
     audited: boolean;
 };
+/**
+ * A Papercusp cloud portal origin. https only, except a loopback test server;
+ * credentials in the URL are refused so a token can never be sent to a
+ * look-alike host spelled inside the userinfo part.
+ */
+export function normalizeHostedPortalOrigin(value: any): string;
+export function hostedProfileName(origin: any): string;
+/**
+ * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal;
+ * it reaches every hosted workspace the signed-in person's organization role
+ * allows, through the workspace machine's own outbound connector — the machine
+ * accepts no inbound connection, so there is no SSH or IAP leg to configure.
+ */
+export function normalizeHostedProfile(input: any): {
+    name: string;
+    kind: string;
+    origin: string;
+    accessToken: string;
+    tokenId: string;
+    organizationId: string;
+    userId: string;
+    expiresAt: string;
+    supportedClientPlatforms: string[];
+    features: {
+        command: boolean;
+        pty: boolean;
+        tcpForward: boolean;
+        fileTransfer: boolean;
+    };
+    prerequisites: string[];
+    constraints: string[];
+    reconnect: string;
+    audited: boolean;
+};
 export function defaultPsuConnectionStorePath(home?: string): string;
 export function loadPsuConnectionStore(path?: string): {
     version: string;
@@ -49,6 +88,7 @@ export function loadPsuConnectionStore(path?: string): {
 };
 export function savePsuConnectionStore(store: any, path?: string): void;
 export function describePsuConnectionProfile(profile: any): string;
+export function describeHostedWorkspace(profile: any, workspace: any): string;
 /**
  * @returns {Promise<{ handled: boolean, argv: string[], exitCode?: number }>}
  */
@@ -59,3 +99,7 @@ export function runPsuConnectionFrontController(argv: any, overrides?: {}): Prom
 }>;
 export const PSU_CONNECTION_STORE_VERSION: "psu-connection-profiles-v1";
 export const DEFAULT_REMOTE_OPERATOR_PORT: 3070;
+/** The Papercusp cloud portal a bare `psu --connect-login` signs in to. */
+export const DEFAULT_HOSTED_PORTAL_ORIGIN: "https://app.papercusp.com";
+/** Picker value for "sign in to Papercusp cloud". Not a legal profile name, so it cannot collide. */
+export const HOSTED_LOGIN_CHOICE: ":login";

@@ -51,6 +51,13 @@ pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 160;
 pub(crate) const SURFACE_B_MIN_HEIGHT: u16 = 24;
 
 pub fn draw(f: &mut Frame, app: &App) {
+    draw_frame(f, app);
+    // Colour-disabled mode (NO_COLOR, P-013) clears the finished frame, so it
+    // holds whichever branch below painted it and however a site named a colour.
+    Theme::finish_frame(f.buffer_mut());
+}
+
+fn draw_frame(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
     // desktop-docked native terminal's panes render JUST one tab's body — no
     // tab strip, no HUD, no work area. The tab's state + data wiring are
