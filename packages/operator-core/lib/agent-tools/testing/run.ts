@@ -765,13 +765,14 @@ export function normalizeTestFilePaths(
  */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
 
-export type RouterNotMeasuredReason = 'admission-starved' | 'undetermined';
+export type RouterNotMeasuredReason = 'admission-starved' | 'undetermined' | 'router-watchdog';
 
 export interface RouterNotMeasuredMarker {
   requested: number;
   executed: number;
   matched: number;
-  measuredFiles: 0;
+  /** Admission knows zero files ran; a watchdog may have partial evidence. */
+  measuredFiles?: 0;
   status: 'not-measured';
   reason: RouterNotMeasuredReason;
 }
@@ -2427,18 +2428,34 @@ export function parseRouterTerminalCompletion(output: string): RouterTerminalCom
 /**
  * Parse the router's typed NOT-MEASURED terminal marker.
  *
- * A governed admission refusal exits with the same reserved code as an ordinary
- * route refusal, so the marker is the only safe discriminator at this layer.
- * Keep this parser strict: malformed numbers, non-zero measuredFiles, unknown
- * reasons, or a different status must fall through to the existing route_error
- * result rather than being treated as a typed admission refusal.
+ * A governed admission refusal and a router watchdog exit with the same
+ * reserved code as an ordinary route refusal, so the markers are the only
+ * safe discriminators at this layer. A watchdog may leave SOME files measured;
+ * never label that partial result measuredFiles=0 or a test failure.
  */
 export function parseRouterNotMeasuredMarker(output: string): RouterNotMeasuredMarker | null {
   const markerRe =
     /^TEST_FILE_NOT_MEASURED\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+measuredFiles=(\d+)\s+status=(not-measured)\s+reason=(admission-starved|undetermined)(?:\s+—.*)?$/gm;
   let marker: RegExpExecArray | null = null;
   for (const match of output.matchAll(markerRe)) marker = match;
-  if (!marker) return null;
+  if (!marker) {
+    // WI-10003090: scorecard checks previously surfaced a four-file router
+    // watchdog as generic route_error, hiding the exact missing-proof reason.
+    // Require both the watchdog's own line and its terminal aggregate marker;
+    // one test's arbitrary output cannot manufacture this typed refusal.
+    if (!/^TEST_FILE_WATCHDOG\b[^\r\n]*\bstatus=timed-out\b/m.test(output)) return null;
+    const watchdogRe =
+      /^TEST_FILE_NOT_MEASURED\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+status=not-measured\s+— a watchdog reaped at least one run before\b[^\r\n]*$/gm;
+    let watchdog: RegExpExecArray | null = null;
+    for (const match of output.matchAll(watchdogRe)) watchdog = match;
+    if (!watchdog) return null;
+    const requested = Number(watchdog[1]);
+    const executed = Number(watchdog[2]);
+    const matched = Number(watchdog[3]);
+    if (![requested, executed, matched].every(Number.isSafeInteger) || requested < 1
+      || matched < 1 || matched > requested || executed < 0 || executed > matched) return null;
+    return { requested, executed, matched, status: 'not-measured', reason: 'router-watchdog' };
+  }
 
   const requested = Number(marker[1]);
   const executed = Number(marker[2]);
