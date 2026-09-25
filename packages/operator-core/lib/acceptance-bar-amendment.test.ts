@@ -488,6 +488,33 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
   });
 
+  it('resolves a reviewer pointer to one inline approval JSON line surrounded by preview prose', async () => {
+    let call = 0;
+    const preview = [
+      'R3 live-evidence amendment preview at subject plan revision 14.',
+      'Exact approval JSON:',
+      JSON.stringify(RECEIPT),
+      'The test check remains required; runtime evidence is owed after apply.',
+    ].join('\n');
+    const sql = (() => {
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{ author_id: 'su-reviewer', body: 'approve thread-post:456', approved_at: '2026-09-25T00:00:00.000Z' }]
+        : [{ author_id: 'su-requester', body: preview }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({ approvedBy: 'su-reviewer', approvalRef: 'thread-post:123' });
+  });
+
+  it('refuses ambiguous prose with two inline approval receipts', () => {
+    const body = ['Exact approval JSON:', JSON.stringify(RECEIPT), JSON.stringify(RECEIPT)].join('\n');
+    expect(approvalReceiptJsonSource(body)).toBe(body);
+  });
+
   it('refuses a compact pointer whose preview post is absent in this workspace', async () => {
     let call = 0;
     const sql = ((strings: TemplateStringsArray) => {

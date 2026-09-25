@@ -230,6 +230,20 @@ export function approvalReceiptJsonSource(body: string): string {
   const parsable = fences.find((f) => parses(f.content));
   if (parsable) return parsable.content;
 
+  // Requesters also paste the compact preview JSON on its own line between
+  // explanatory paragraphs. Accept exactly one schema-valid approval in that
+  // shape; multiple receipts are ambiguous and must fail closed below.
+  const inlineApprovals = body.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
+    if (!line.startsWith('{') || !line.endsWith('}')) return false;
+    try {
+      return acceptanceBarApprovalSchema.safeParse(JSON.parse(line)).success;
+    } catch {
+      return false;
+    }
+  });
+  if (inlineApprovals.length === 1) return inlineApprovals[0]!;
+  if (inlineApprovals.length > 1) return body;
+
   // Preserve the historical shape: first fence if any, else the whole body, so
   // a malformed receipt still reaches JSON.parse and reports its own error.
   return fences[0]?.content ?? body;
