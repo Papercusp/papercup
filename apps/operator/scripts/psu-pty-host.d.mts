@@ -541,6 +541,13 @@ export function eventLogPathForOwner(ownerId: any, dir?: string): string;
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
 export function appendHostEvent(ownerId: any, kind: any, extra?: {}, dir?: string): boolean;
+/** Small, non-secret error identity for durable host events. Exception messages can
+ * contain command arguments or credentials; the local stderr keeps the full
+ * diagnostic while the shared event store gets only a stable error class/code. */
+export function hostErrorEvidence(error: any): {
+    errorCode?: string | undefined;
+    errorName: string;
+};
 export function sharedDrillLedgerPath(dir?: string): string;
 /** EI-12655 (fix b): mirror a carry-drill lifecycle event into the SHARED drill
  *  ledger. The tool side records only requested/queued there; every HOST-side

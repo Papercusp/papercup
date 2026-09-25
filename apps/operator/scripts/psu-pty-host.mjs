@@ -1685,6 +1685,20 @@ export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
   }
 }
 
+/** Small, non-secret error identity for durable host events. Exception messages can
+ * contain command arguments or credentials; the local stderr keeps the full
+ * diagnostic while the shared event store gets only a stable error class/code. */
+export function hostErrorEvidence(error) {
+  const value = error && typeof error === 'object' ? error : {};
+  const tag = (raw, max) =>
+    typeof raw === 'string' && /^[A-Za-z][A-Za-z0-9_-]*$/.test(raw)
+      ? raw.slice(0, max)
+      : null;
+  const errorName = tag(value.name, 64) ?? 'Error';
+  const errorCode = tag(value.code, 64);
+  return { errorName, ...(errorCode ? { errorCode } : {}) };
+}
+
 /** Shared drill-lifecycle roll-up file — the SAME carry-drills.events.jsonl the
  *  tool side (cold-boot-drill-live.ts) writes requested/queued rows into. */
 const DRILL_LEDGER_MAX_BYTES = 1024 * 1024;
@@ -6246,17 +6260,19 @@ export function hostThroughPty(o) {
     ? createHeadlessNormalizedLogWriter(normalizedLogPath)
     : null;
 
+  // Startup failures need the same durable log as failures after the child exists.
+  ensureDir();
   let pty;
   try {
     pty = require('@lydell/node-pty');
   } catch (e) {
+    appendHostEvent(ownerId, 'pty-load-failed', hostErrorEvidence(e));
     process.stderr.write(
       `psu: failed to load @lydell/node-pty (${e.message}); falling back to a plain launch is the caller's job.\n`,
     );
     throw e;
   }
 
-  ensureDir();
   pruneDead();
   const sock = socketPathFor(ownerId);
   const metaPath = metaPathFor(ownerId);
@@ -6271,6 +6287,7 @@ export function hostThroughPty(o) {
   const priorMeta = readDiscoveryMeta(ownerId);
   const hostAdmission = duplicateHostAdmission(ownerId, priorMeta);
   if (!hostAdmission.admitted) {
+    appendHostEvent(ownerId, 'duplicate-host-startup-refused', { holderPid: hostAdmission.pid ?? null });
     throw new Error(
       `psu-pty-host: refusing duplicate startup for ${ownerId} — live psu host pid ` +
         `${hostAdmission.pid} already owns this logical session; its socket and child were left intact`,
@@ -6306,17 +6323,20 @@ export function hostThroughPty(o) {
   try {
     child = spawnChild();
   } catch (e) {
+    appendHostEvent(ownerId, 'pty-spawn-failed', { command, ...hostErrorEvidence(e) });
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
   try {
     const acknowledgement = onSpawn();
     void Promise.resolve(acknowledgement).catch((error) => {
+      appendHostEvent(ownerId, 'resume-finalization-report-failed', hostErrorEvidence(error));
       process.stderr.write(
         `psu: child spawned under pty, but its resume finalization report failed: ${error?.message ?? error}\n`,
       );
     });
   } catch (error) {
+    appendHostEvent(ownerId, 'resume-finalization-callback-failed', hostErrorEvidence(error));
     process.stderr.write(
       `psu: child spawned under pty, but its resume finalization callback failed: ${error?.message ?? error}\n`,
     );
@@ -6599,6 +6619,10 @@ export function hostThroughPty(o) {
     const now = Date.now();
     if (now - lastHealNoticeAt > 60_000) {
       lastHealNoticeAt = now;
+      appendHostEvent(ownerId, 'discovery-reasserted', {
+        metadataRewritten: !metaMine,
+        socketRebound: !sockOnDisk,
+      });
       try {
         process.stderr.write(
           `psu-pty-host: discovery re-asserted for ${ownerId} ` +
@@ -7325,6 +7349,12 @@ export function hostThroughPty(o) {
     } catch {
       /* the drop trace must never break the session */
     }
+    appendHostEvent(ownerId, 'startup-turn-dropped', {
+      label,
+      reason: dropReason,
+      attempts,
+      budgetMs,
+    });
     try {
       process.stderr.write(
         `psu-pty-host: ${label} DROPPED for ${ownerId} (${
@@ -7586,12 +7616,14 @@ export function hostThroughPty(o) {
           `psu: session port delivered — verified the exact seed checksum in the target native transcript.\n`,
         );
       } catch (error) {
+        appendHostEvent(ownerId, 'session-port-delivery-ack-failed', hostErrorEvidence(error));
         process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
         if (!quotaBlockDetector.isBlocked()) {
           try { child.kill(); } catch { /* already exited */ }
         }
       }
     })().catch((error) => {
+      appendHostEvent(ownerId, 'managed-kickoff-failed', hostErrorEvidence(error));
       if (!managedKickoff) {
         publishKickoffProofReceipt({
           persisted: false,
@@ -7924,8 +7956,13 @@ export function hostThroughPty(o) {
             : false;
         const duplicateReason =
           duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id';
+        appendHostEvent(ownerId, 'duplicate-delivery-id', {
+          state: duplicateState,
+          mode: msg.mode,
+          refreshedPendingTurn,
+        });
         try {
-          process.stderr.write(
+          writeHostDiagnostic(
             `psu-pty-host: duplicate delivery id ${msg.deliveryId} for ${ownerId} short-circuited ` +
               `(${duplicateState}, mode:${msg.mode}${refreshedPendingTurn ? ', queued text refreshed' : ''})\n`,
           );
@@ -8055,8 +8092,9 @@ export function hostThroughPty(o) {
         return claimed;
       };
       if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data, coalesceMetadata, msg.deliveryId)) {
+        appendHostEvent(ownerId, 'queued-turn-folded', { mode: msg.mode, routineId: msg.routineId ?? null });
         try {
-          process.stderr.write(
+          writeHostDiagnostic(
             `psu-pty-host: duplicate queued turn FOLDED for ${ownerId} (same-source coalesce, P-001a)\n`,
           );
         } catch {
@@ -8760,6 +8798,10 @@ export function hostThroughPty(o) {
         })
         .catch((err) => {
           for (const deliveryId of coalescedDeliveryIds) deliveryDedup.clearPending(deliveryId);
+          appendHostEvent(ownerId, 'gated-delivery-pipeline-error', {
+            mode: msg.mode,
+            ...hostErrorEvidence(err),
+          });
           try {
             process.stderr.write(
               `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
@@ -8806,7 +8848,10 @@ export function hostThroughPty(o) {
       }
     });
   });
-  server.on('error', (e) => process.stderr.write(`psu: control socket error: ${e.message}\n`));
+  server.on('error', (e) => {
+    appendHostEvent(ownerId, 'control-socket-error', hostErrorEvidence(e));
+    process.stderr.write(`psu: control socket error: ${e.message}\n`);
+  });
   // Tight umask around bind so the node is never even briefly world-accessible,
   // then pin 0600 (owner-only). Shared by the initial bind and the WI-3455
   // self-heal re-bind (the sock path was unlinked while we were live).
@@ -8841,6 +8886,7 @@ export function hostThroughPty(o) {
         try {
           listenControlSocket();
         } catch (e) {
+          appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
           process.stderr.write(`psu: control socket re-bind failed: ${e.message}\n`);
         }
       });
@@ -9185,6 +9231,12 @@ export function hostThroughPty(o) {
           const residue = reapScopeResidue({
             allowManagedScope: String(env.PAPERCUSP_PSU_HEADLESS ?? '').trim() === '1',
           });
+          if (residue?.failedPids?.length) {
+            appendHostEvent(ownerId, 'session-scope-cleanup-partial', {
+              killed: residue.killedPids?.length ?? 0,
+              failed: residue.failedPids.length,
+            });
+          }
           if (residue?.killedPids?.length || residue?.failedPids?.length) {
             process.stderr.write(
               `psu-pty-host: session scope cleanup for ${ownerId} killed ` +
@@ -9195,6 +9247,7 @@ export function hostThroughPty(o) {
         } catch (error) {
           // Group cleanup already ran and the host must still finish its durable
           // session-end record. Surface the residue failure without stranding exit.
+          appendHostEvent(ownerId, 'session-scope-cleanup-failed', hostErrorEvidence(error));
           try {
             process.stderr.write(
               `psu-pty-host: session scope cleanup failed for ${ownerId}: ${error?.message ?? error}\n`,
@@ -9333,6 +9386,7 @@ export function hostThroughPty(o) {
           renderedHash: managedKickoff.renderedHash,
           error: `target child exited (${code ?? 0}) before native session-port persistence was verified`,
         }).catch((error) => {
+          appendHostEvent(ownerId, 'session-port-failure-ack-failed', hostErrorEvidence(error));
           try { process.stderr.write(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
           catch { /* diagnostics are best-effort */ }
         }).finally(finishExit);
