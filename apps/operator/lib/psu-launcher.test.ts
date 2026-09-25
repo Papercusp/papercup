@@ -392,6 +392,8 @@ describe("interactive role picker", () => {
     ], nextAfter: "first" });
     expect(choices).toContainEqual(expect.objectContaining({ value: 'domain:needs-producer',
       disabled: 'Needs live producer binding' }));
+    expect(choices.find((choice) => choice.value === 'domain:needs-producer')?.name)
+      .toContain(revision.slice(0, 12));
     expect(choices).toContainEqual(expect.objectContaining({
       name: expect.stringContaining("broken  ·  invalid: attestation-missing"),
       disabled: "attestation-missing",
