@@ -72,14 +72,21 @@ function unquoteStatus(v: string | null): string {
 async function fetchReverts(): Promise<RevertRecord[]> {
   const { sql } = getOrgPg();
   const rows = await sql<
-    { feature_id: string; harness_slug: string | null; old_value: string | null; new_value: string | null; actor: string | null; ts: string }[]
+    { feature_id: string; harness_slug: string | null; old_value: string | null; new_value: string | null; actor: string | null; ts: string; deprecation_reason: string | null }[]
   >`
-    SELECT feature_id, harness_slug, old_value, new_value, actor, ts
-      FROM harness_shared.feature_audit_consolidated
-     WHERE field = 'status'
-       AND old_value IS NOT NULL
-       AND new_value IS NOT NULL
-     ORDER BY ts DESC
+    SELECT a.feature_id, a.harness_slug, a.old_value, a.new_value,
+           a.actor, a.ts,
+           CASE WHEN a.new_value = '"deprecated"' THEN f.deprecation_reason
+                ELSE NULL END AS deprecation_reason
+      FROM harness_shared.feature_audit_consolidated a
+      LEFT JOIN harness_shared.harness_features_consolidated f
+        ON f.workspace_id = a.workspace_id
+       AND f.harness_slug = a.harness_slug
+       AND f.feature_id = a.feature_id
+     WHERE a.field = 'status'
+       AND a.old_value IS NOT NULL
+       AND a.new_value IS NOT NULL
+     ORDER BY a.ts DESC
      LIMIT 2000`;
 
   return rows
@@ -90,6 +97,7 @@ async function fetchReverts(): Promise<RevertRecord[]> {
       to: unquoteStatus(r.new_value),
       actor: r.actor,
       ts: epochMsToIso(r.ts),
+      reason: r.deprecation_reason,
     }))
     // Keep only genuine regressions — the core ranks; here we shrink the payload.
     .filter((r) => revertWeight(r.from, r.to) > 0);

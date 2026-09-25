@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   applyCodexGatewayRoute, applyOmpResumeAccountRoute, buildResumeEnv,
   codexThreadWriterHolder, ensureCodexHomeViaOperator, ensureInteractiveConfigViaOperator,
@@ -71,7 +72,18 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     try { process.kill(row.pid, 0); throw new Error('The saved native process is still alive'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
   }
-  const processHolder = native.backend === 'codex' ? null : sessionProcessHolder(nativeId);
+  let processHolder = native.backend === 'codex' ? null : sessionProcessHolder(nativeId);
+  // A native child can briefly outlive a hard-killed operator while its closed
+  // stdio is draining. Its argv match is real, so never mint an absence witness
+  // while it remains; wait for a fresh complete scan instead of refusing an
+  // otherwise recoverable saved conversation on the first snapshot.
+  if (processHolder?.held === true && processHolder.reason === 'argv-match') {
+    const deadline = Date.now() + 60_000;
+    while (processHolder.held === true && Date.now() < deadline) {
+      await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+      processHolder = sessionProcessHolder(nativeId);
+    }
+  }
   const writerHolder = native.backend === 'codex' ? codexThreadWriterHolder(native.codexHome, nativeId) : null;
   const evidence = native.backend === 'codex'
     ? normalizeCodexResumeLocalLivenessEvidence({ agent: 'codex', liveHost,

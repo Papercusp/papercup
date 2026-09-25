@@ -144,15 +144,29 @@ describe('structured exact resume preparation', () => {
 
   it('reports bounded refusal-time process evidence without exposing argv or native identity', async () => {
     const saved = fixture('claude');
-    m.holder.mockReturnValue({ held: true, reason: 'argv-match', pid: 1234,
+    m.holder.mockReturnValue({ held: false, reason: 'no-proc', pid: null,
       cmdline: 'secret --resume saved-native' });
     m.witness.mockReturnValue(null);
     const error = await prepareStructuredSuResume(saved).catch((value: unknown) => value);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('probe=argv-match, held=true, pid=1234, force=false');
+    expect((error as Error).message).toContain('probe=no-proc, held=false, pid=none, force=false');
     expect((error as Error).message).not.toContain('secret');
     expect((error as Error).message).not.toContain('saved-native');
     expect(m.acquire).not.toHaveBeenCalled();
+  });
+
+  it('waits for the old Claude process to exit before reserving an exact resume', async () => {
+    m.holder.mockReturnValueOnce({ held: true, reason: 'argv-match', pid: 1234 })
+      .mockReturnValue({ held: false, reason: 'clean-scan', pid: null });
+    m.witness.mockImplementation(({ processHolder }) => processHolder?.reason === 'clean-scan'
+      ? { version: 1, kind: 'no-live-claude-process' } : null);
+
+    await expect(prepareStructuredSuResume(fixture('claude'))).resolves.toMatchObject({ exact: true });
+    expect(m.holder).toHaveBeenCalledTimes(2);
+    expect(m.acquire).toHaveBeenCalledTimes(1);
+    expect(m.witness).toHaveBeenCalledWith(expect.objectContaining({
+      processHolder: { held: false, reason: 'clean-scan', pid: null },
+    }));
   });
 
   it('releases the reservation when the transcript or selected account cannot be restored', async () => {

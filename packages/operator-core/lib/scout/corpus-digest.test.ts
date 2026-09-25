@@ -15,6 +15,7 @@ import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { CorpusDigest, MetaPattern as TypesMetaPattern } from './types';
 import {
   buildFederatedMapLane,
+  buildReworkLessons,
   synthesizeStateOfHive,
   revertWeight,
   DigestSchema,
@@ -25,7 +26,7 @@ import {
   type DeferralRecord,
   type StructuredObservationRecord,
 } from './corpus-digest';
-import { renderDigest } from './lenses';
+import { flattenDigest, renderDigest } from './lenses';
 
 const NOW = Date.parse('2026-06-08T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
@@ -529,6 +530,25 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       // reverts is a substrate, not one of the 4 CorpusDigest lanes — no category.
       expect(f1.category).toBeUndefined();
     });
+  });
+
+  it('only promotes explicit deprecation causes into flattened rework lessons', () => {
+    const lessons = buildReworkLessons([
+      { workItemId: 'F-BARE', from: 'passed', to: 'failing', ts: daysAgo(1) },
+      { workItemId: 'F-GENERIC', from: 'passed', to: 'deprecated', reason: 'deprecated', ts: daysAgo(1) },
+      {
+        workItemId: 'F-CAUSE', from: 'passed', to: 'deprecated',
+        reason: 'The release assertion used a stale worktree and must be rebuilt',
+        ts: daysAgo(1),
+      },
+    ], 10);
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({ category: 'rework-lesson', ref: 'wi:F-CAUSE' });
+    expect(lessons[0]?.summary).toContain('stale worktree');
+    expect(flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      reworkLessons: lessons,
+    }).map((pattern) => pattern.ref)).toEqual(['wi:F-CAUSE']);
   });
 
   describe('rubricRatings (P-006)', () => {

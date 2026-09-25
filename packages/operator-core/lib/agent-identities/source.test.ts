@@ -14,6 +14,35 @@ const scope = { workspace: 'ws-test', goal: 'goal-1', ownerId: 'su-goal-1' };
 const observedAt = '2026-09-24T13:00:00.000Z';
 
 describe('selected identity producer output binding', () => {
+  it('requires both root SU mode and assignment outputs with their declared turn producers', async () => {
+    const bound = await bindSelectedIdentityOutputArtifact({
+      identityId: 'su', sourceTier: 'builtin',
+      outputs: [
+        { contributionId: 'current-mode-state', value: [{ mode: 'auto' }] },
+        { contributionId: 'current-assignment', value: { itemId: 'WI-9' } },
+      ],
+      scope,
+      observedAt,
+    });
+    expect(bound.artifact.provenance).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'contribution.current-mode-state',
+        decision: 'provider:turn', producerRef: 'modes/store:agent_modes' }),
+      expect.objectContaining({ path: 'contribution.current-assignment',
+        decision: 'provider:turn', producerRef: 'coord:presence' }),
+      expect.objectContaining({ path: 'contribution.su-practice-text',
+        decision: 'fixed:source-change' }),
+    ]));
+    expect(bound.artifact.inputs).toContainEqual(expect.objectContaining({
+      kind: 'prompt-file', ref: 'base:su.practice',
+    }));
+    await expect(bindSelectedIdentityOutputArtifact({
+      identityId: 'su', sourceTier: 'builtin',
+      outputs: [{ contributionId: 'current-mode-state', value: [{ mode: 'auto' }] }],
+      scope,
+      observedAt,
+    })).rejects.toThrow(/declared operational input is absent/);
+  });
+
   it('resolves a selected abstract identity recipe with the existing package compiler', async () => {
     const root = mkdtempSync(join(tmpdir(), 'selected-resource-identity-'));
     const id = 'resource-domain';
