@@ -5095,7 +5095,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
           console.error(
-            `[A-003] ${new Date().toISOString()} reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
+            `[A-003] ${new Date().toISOString()} reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)} ` +
+              `device=${frame.device_pubkey.slice(0, 10)} gh=${frame.github_login}/${frame.github_user_id} gist=${frame.attestation_gist_id || '<empty>'}`,
           );
         }
         return { admit: false, reason: 'pending' };
