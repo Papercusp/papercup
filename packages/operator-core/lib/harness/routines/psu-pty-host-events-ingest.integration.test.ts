@@ -27,7 +27,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { ingestPsuPtyHostEvents } from './psu-pty-host-events-ingest';
@@ -168,18 +168,27 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
     });
 
     const exploding = new Proxy(sql, {
-      apply: () => {
-        throw new Error('simulated driver bind failure');
+      apply: (target, thisArg, args) => {
+        if (Array.isArray(args[0]) && args[0].join(' ').includes('INSERT INTO harness_shared.psu_pty_host_events')) {
+          throw new Error('simulated driver bind failure');
+        }
+        return Reflect.apply(target, thisArg, args);
       },
     }) as unknown as Sql;
 
-    const res = await ingestPsuPtyHostEvents({ sql: exploding, workspaceId: WS, dir });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await ingestPsuPtyHostEvents({ sql: exploding, workspaceId: WS, dir });
 
-    expect(res.rowsRead).toBe(1);
-    expect(res.rowsInserted).toBe(0);
-    expect(res.ingestErrors).toBeGreaterThan(0);
-    expect(res.firstIngestError).toMatch(/simulated driver bind failure/);
-    // And the file must survive, because its rows exist nowhere else.
-    expect(res.filesIngested).toBe(0);
+      expect(res.rowsRead).toBe(1);
+      expect(res.rowsInserted).toBe(0);
+      expect(res.ingestErrors).toBeGreaterThan(0);
+      expect(res.firstIngestError).toMatch(/simulated driver bind failure/);
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('simulated driver bind failure'));
+      // And the file must survive, because its rows exist nowhere else.
+      expect(res.filesIngested).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

@@ -19,10 +19,16 @@ import { getOctokit } from './octokit-client';
 
 export type LocalGithubIdentity =
   | { kind: 'ok'; token: string; githubUserId: number; githubLogin: string }
-  | { kind: 'gh_auth_required' };
+  /**
+   * `transient: true` = the identity could not be resolved THIS time for a reason a
+   * retry can clear (the `gh` spawn failed or timed out, or `/user` failed without an
+   * auth status) — NOT evidence the machine is signed out. Absent = definitive: gh is
+   * missing, not logged in, or GitHub rejected the token. `reason` says which.
+   */
+  | { kind: 'gh_auth_required'; transient?: true; reason?: string };
 
 export interface ResolveLocalGithubIdentityOpts {
-  getToken?: () => Promise<{ kind: string; token?: string }>;
+  getToken?: () => Promise<{ kind: string; token?: string; error?: { kind: string; reason?: string } }>;
   getUser?: () => Promise<{ id: number; login: string } | null>;
   /**
    * Test seam only: force cache participation even with injected fns. In
@@ -51,6 +57,10 @@ export interface ResolveLocalGithubIdentityOpts {
 const IDENTITY_CACHE_TTL_MS = 60_000;
 let identityCache: { token: string; identity: Extract<LocalGithubIdentity, { kind: 'ok' }>; at: number } | null = null;
 
+function errMessage(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).slice(0, 160);
+}
+
 /** Drop the cached identity (e.g. on a detected auth change). Also a test seam. */
 export function invalidateLocalGithubIdentityCache(): void {
   identityCache = null;
@@ -75,8 +85,9 @@ export async function getAuthenticatedGithubUser(): Promise<{ id: number; login:
  *
  * Returns `{ kind: 'ok', token, githubUserId, githubLogin }` when both the gh
  * token and the `/user` call succeed.
- * Returns `{ kind: 'gh_auth_required' }` when gh isn't authenticated or the
- * user can't be resolved — never throws.
+ * Returns `{ kind: 'gh_auth_required', reason }` when gh isn't authenticated or the
+ * user can't be resolved — never throws. `transient: true` marks the failures a retry
+ * can clear (gh failed to run, or `/user` got no real answer).
  */
 export async function resolveLocalGithubIdentity(
   opts: ResolveLocalGithubIdentityOpts = {},
@@ -87,9 +98,21 @@ export async function resolveLocalGithubIdentity(
   // in explicitly via `_cache` so no cached value crosses unrelated cases.
   const useCache = opts._cache ?? (!opts.getToken && !opts.getUser);
 
-  const tok = await getToken().catch(() => null);
-  if (!tok) return { kind: 'gh_auth_required' };
-  if (tok.kind !== 'ok' || !tok.token) return { kind: 'gh_auth_required' };
+  let tok: Awaited<ReturnType<typeof getToken>>;
+  try {
+    tok = await getToken();
+  } catch (e) {
+    return { kind: 'gh_auth_required', transient: true, reason: `gh token read threw: ${errMessage(e)}` };
+  }
+  if (tok.kind !== 'ok' || !tok.token) {
+    // A `gh` that ran and said "not logged in" (or is not installed) is definitive; one
+    // that failed to RUN — a spawn timeout on a starved first boot is the measured case
+    // (P-007 run #13, Mac VM) — says nothing about sign-in, so a retry may clear it.
+    if (tok.error?.kind === 'gh_cli_failed') {
+      return { kind: 'gh_auth_required', transient: true, reason: `gh auth token failed: ${tok.error.reason ?? 'unknown'}` };
+    }
+    return { kind: 'gh_auth_required', reason: tok.error?.kind ?? 'no gh token' };
+  }
 
   // Serve the cached identity for this exact token within the TTL — skips the
   // GET /user network hop. A rotated token (re-auth) is a key miss.
@@ -97,8 +120,19 @@ export async function resolveLocalGithubIdentity(
     return identityCache.identity;
   }
 
-  const user = await getUser().catch(() => null);
-  if (!user) return { kind: 'gh_auth_required' };
+  let user: { id: number; login: string } | null;
+  try {
+    user = await getUser();
+  } catch (e) {
+    // GitHub answering 401/403 rejects the token; anything else (no status, 5xx: the
+    // request never got a real answer) is a network failure a retry can clear.
+    const status = (e as { status?: unknown })?.status;
+    if (status === 401 || status === 403) {
+      return { kind: 'gh_auth_required', reason: `GitHub rejected the token (${status})` };
+    }
+    return { kind: 'gh_auth_required', transient: true, reason: `GET /user failed: ${errMessage(e)}` };
+  }
+  if (!user) return { kind: 'gh_auth_required', reason: 'GET /user returned no user' };
   const identity = { kind: 'ok' as const, token: tok.token, githubUserId: user.id, githubLogin: user.login };
   if (useCache) identityCache = { token: tok.token, identity, at: Date.now() };
   return identity;
