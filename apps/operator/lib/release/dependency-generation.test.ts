@@ -1932,9 +1932,9 @@ describe('dependency-generation publish-lock waiter', () => {
       // the parent blocks on EOF long after the child was killed — the run then
       // takes ~40s per timeout case instead of the budget under test.
       'case "$SCENARIO" in',
-      // A pid we have already reaped is definitively dead, so cleanup_abandoned
-      // must reclaim it rather than the waiter burning its budget on it.
-      '  dead-writer) sleep 0 </dev/null >/dev/null 2>&1 & holder=$!; wait "$holder" 2>/dev/null || true ;;',
+      // An impossible PID stays dead even if the host reuses PIDs rapidly.
+      // This isolates stale-lock recovery from process scheduling.
+      '  dead-writer) holder=99999999 ;;',
       '  live-then-release) sleep 300 </dev/null >/dev/null 2>&1 & holder=$!; ( sleep 2; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & ;;',
       '  live-holder) sleep 45 </dev/null >/dev/null 2>&1 & holder=$! ;;',
       'esac',
@@ -1962,12 +1962,12 @@ describe('dependency-generation publish-lock waiter', () => {
 
   it('reclaims a lock whose writer PID is dead instead of waiting out the budget', () => {
     // This is the premise that makes a generous budget safe: an abandoned lock is
-    // never what the waiter is waiting for. A 1s budget is far too short to outlast
-    // anything, so acquiring proves the reclaim path ran, not that we waited it out.
+    // never what the waiter is waiting for. A zero-second budget proves cleanup
+    // is followed by one immediate acquire before the timeout can reject it.
     const result = publishLockScenario('dead-writer', {
-      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '1',
+      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '0',
     });
-    expect(result.stdout).toContain('ACQUIRED');
+    expect(result.stdout, result.stderr).toContain('ACQUIRED');
     expect(result.stderr).toContain('quarantined abandoned publish lock');
   }, NATIVE_SHELL_TIMEOUT_MS);
 

@@ -895,6 +895,12 @@ dependency_generation_acquire_publish_lock() {
   next_notice=30
   while ! mkdir "$lock" 2>/dev/null; do
     dependency_generation_cleanup_abandoned "$generation_root"
+    # Cleanup may have just quarantined a dead writer's lock. Retry acquisition
+    # before enforcing the deadline; otherwise a short budget can return 73
+    # while the lock is already free (the dead-writer test uses a zero budget).
+    if mkdir "$lock" 2>/dev/null; then
+      break
+    fi
     now="$(date +%s)"
     waited=$((now - started))
     if [ "$waited" -ge "$timeout_sec" ]; then
