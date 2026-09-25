@@ -2989,11 +2989,17 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
   deltaServed: boolean,
   metadata?: (data: Record<string, unknown>) => void,
   binder?: typeof import('../../../agent-identities/source').bindSelectedIdentityOutputs,
+  modeRows?: ReadonlyArray<{ mode: string }> | null,
+  assignmentReader?: (ownerId: string) => Promise<Pick<
+    import('../presence').PresenceRecord,
+    'ownerId' | 'workspaceId' | 'intent' | 'currentPlanSlug' | 'stale'
+  > | null>,
 ): Promise<T> {
   if (!metadata) return result;
   const invocationMetadata: Record<string, unknown> = deltaServed ? { deltaServed: true } : {};
+  let bind = binder;
   try {
-    const bind = binder ?? (await import('../../../agent-identities/source')).bindSelectedIdentityOutputs;
+    bind ??= (await import('../../../agent-identities/source')).bindSelectedIdentityOutputs;
     invocationMetadata.identityContribution = await bind({
       identityId: 'su.practice',
       sourceTier: 'builtin',
@@ -3007,6 +3013,43 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
       status: 'unavailable', errorRef: 'coord:orient:identity-binding-failed',
       detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
     };
+  }
+  if (modeRows !== undefined) {
+    if (!scope.ownerId || modeRows === null || !bind) {
+      invocationMetadata.rootIdentityContribution = {
+        identityId: 'su', status: 'unavailable', errorRef: 'coord:orient:mode-state-unavailable',
+      };
+    } else {
+      const readAssignment = assignmentReader ?? (async (ownerId: string) =>
+        (await import('../presence')).getPresence(ownerId));
+      const root = await withBoundedTimeout<unknown>(Promise.resolve().then(async () => {
+        const presence = await readAssignment(scope.ownerId!);
+        if (!presence || presence.stale || presence.ownerId !== scope.ownerId ||
+          presence.workspaceId !== scope.workspaceId) {
+          throw new Error('current assignment presence is absent, stale or mismatched');
+        }
+        return bind({
+          identityId: 'su', sourceTier: 'builtin',
+          outputs: [
+            { contributionId: 'current-mode-state', value: modeRows },
+            { contributionId: 'current-assignment', value: {
+              ownerId: presence.ownerId, intent: presence.intent,
+              currentPlanSlug: presence.currentPlanSlug,
+            } },
+          ],
+          scope,
+          observedAt: new Date().toISOString(),
+        });
+      }).catch((error) => ({
+        identityId: 'su', status: 'unavailable', errorRef: 'coord:orient:root-binding-failed',
+        detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+      })), {
+        fallback: { identityId: 'su', status: 'unavailable', errorRef: 'coord:orient:root-binding-timeout' },
+        timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS,
+        label: 'orient:root-identity-binding',
+      });
+      invocationMetadata.rootIdentityContribution = root.value;
+    }
   }
   metadata(invocationMetadata);
   return result;
@@ -4106,7 +4149,7 @@ export default defineTool({
     // no cursor, or a baseline/first read), same convention as the formal protocol.
     await bindOrientOutputResult(out, {
       ownerId: ownerId ?? null, workspaceId: orientWorkspaceId, harness: args.harness ?? null,
-    }, orientServedDelta(result), ctx.metadata);
+    }, orientServedDelta(result), ctx.metadata, undefined, runtimeModeRows);
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path

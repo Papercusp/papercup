@@ -29,7 +29,55 @@ import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
+// Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
+// targeted presence read at the module seam; dedicated tests inject a value.
+vi.mock('../presence', async (original) => ({
+  ...(await original<typeof import('../presence')>()),
+  getPresence: vi.fn(async () => null),
+}));
+
 describe('coord:orient component receipt', () => {
+  it('binds root SU from the already-read modes and matching presence assignment', async () => {
+    const result = { ok: true, self: { ownerId: 'su-1' } };
+    const metadata = vi.fn();
+    const binder = vi.fn(async (input: { identityId: string }) => ({ identityId: input.identityId }));
+    const modeRows = [{ mode: 'auto' }];
+    const assignmentReader = vi.fn(async () => ({ ownerId: 'su-1', workspaceId: 'ws-1',
+      intent: 'WI-9 current task', currentPlanSlug: 'plan-1', stale: false }));
+    const returned = await bindOrientOutputResult(result,
+      { ownerId: 'su-1', workspaceId: 'ws-1', harness: 'papercusp' }, false,
+      metadata, binder as never, modeRows, assignmentReader);
+    expect(returned).toBe(result);
+    expect(assignmentReader).toHaveBeenCalledExactlyOnceWith('su-1');
+    expect(binder).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: 'su', sourceTier: 'builtin', outputs: [
+        { contributionId: 'current-mode-state', value: modeRows },
+        { contributionId: 'current-assignment', value: {
+          ownerId: 'su-1', intent: 'WI-9 current task', currentPlanSlug: 'plan-1',
+        } },
+      ],
+    }));
+    expect(metadata).toHaveBeenCalledExactlyOnceWith({
+      identityContribution: { identityId: 'su.practice' },
+      rootIdentityContribution: { identityId: 'su' },
+    });
+  });
+
+  it('reports unavailable root assignment without changing the public orient result', async () => {
+    const result = { ok: true, self: { ownerId: 'su-1' } };
+    const metadata = vi.fn();
+    const binder = vi.fn(async (input: { identityId: string }) => ({ identityId: input.identityId }));
+    expect(await bindOrientOutputResult(result,
+      { ownerId: 'su-1', workspaceId: 'ws-1', harness: 'papercusp' }, false,
+      metadata, binder as never, [{ mode: 'auto' }], async () => null)).toBe(result);
+    expect(binder).not.toHaveBeenCalledWith(expect.objectContaining({ identityId: 'su' }));
+    expect(metadata.mock.calls[0]![0]).toMatchObject({
+      rootIdentityContribution: {
+        identityId: 'su', status: 'unavailable', errorRef: 'coord:orient:root-binding-failed',
+      },
+    });
+  });
+
   it('keeps the same assembled result and merges the delta marker into one metadata write', async () => {
     const result = { ok: true, inbox: { summary: { total: 2 } } };
     const metadata = vi.fn();
