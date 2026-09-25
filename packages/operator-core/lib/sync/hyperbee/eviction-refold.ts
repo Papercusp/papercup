@@ -132,7 +132,20 @@ export class DeferralEvictionReFold {
       keyHex,
       floor: floors.get(keyHex) ?? 0,
     }));
+    // P-541: a moved log is behind again, whatever the last pass ended at.
+    if (moved.length > 0) this.caughtUp = false;
     return { kind: 'rewound', moved };
+  }
+
+  /**
+   * P-541: after `settle` (and any cursor replacement), before seeding. A log that has ops
+   * but no position was admitted since the last pass, belongs to a replaced cursor, or was
+   * rewound to 0, so this pass starts it from its seed: the fold is catching up. The last
+   * pass's {@link isCaughtUp} never saw it, and P-007 run #15 folded a 1,206 s snapshot set
+   * on a log admitted that way with the member TTL live, which dropped 12 deferrals mid-set.
+   */
+  noteUnpositioned(logs: readonly AdmittedLog[], cursor: MergeCursor): void {
+    if (logs.some((log) => log.length > 0 && !cursor.positions.has(log.keyHex))) this.caughtUp = false;
   }
 
   private clearOwed(): void {
