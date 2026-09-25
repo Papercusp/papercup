@@ -183,7 +183,8 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(batchDb.count('SAVEPOINT read_merge_op')).toBe(writes);
     expect(batchDb.count('RELEASE SAVEPOINT read_merge_op')).toBe(writes);
     expect(batchDb.count('COMMIT')).toBe(Math.ceil(writes / 25));
-    expect(res.batch).toEqual({ commits: Math.ceil(writes / 25), ops: writes, rewinds: 0 });
+    // P-536: the tail's batch never groups; only snapshot lanes do.
+    expect(res.batch).toEqual({ commits: Math.ceil(writes / 25), ops: writes, rewinds: 0, grouped: 0, groupReplays: 0 });
     expect(batchDb.releases).toBe(batchDb.reserves);
   });
 
@@ -223,7 +224,7 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(cursor.winners.size).toBe(0);
     expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'retryable' });
     expect(cursor.applyFailures?.get('A')?.reason).toContain('batch transaction lost');
-    expect(first.batch).toEqual({ commits: 0, ops: 0, rewinds: 1 });
+    expect(first.batch).toEqual({ commits: 0, ops: 0, rewinds: 1, grouped: 0, groupReplays: 0 });
 
     // The lost window [0, 5) is marked for a SERIAL replay, so whatever lost it
     // cannot lose the replay the same way.

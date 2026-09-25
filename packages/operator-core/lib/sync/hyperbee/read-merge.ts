@@ -31,6 +31,7 @@ import {
   lwwPick,
   runInProjectionBatch,
   type ProjectionBatchSession,
+  type ProjectionGroupWriter,
   type StoredOrderPrefetch,
 } from './projection';
 import { encodeHlc } from '@papercusp/locks-core';
@@ -2380,6 +2381,10 @@ export interface MergeBatchStats {
   ops: number;
   /** Batches lost (commit or savepoint failure, or an apply timeout inside one) and replayed from their first op. */
   rewinds: number;
+  /** P-536: records written by a group write ({@link ProjectionGroupWriter.writeMany}). */
+  grouped: number;
+  /** P-536: groups whose write failed and were replayed record by record. */
+  groupReplays: number;
 }
 
 type MergeApplyFn = (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
@@ -2393,6 +2398,15 @@ export class MergeBatchLostError extends Error {
 }
 
 const BATCH_SAVEPOINT = 'read_merge_op';
+/** P-536: one group write, and one record of a group being replayed record by record. */
+const GROUP_SAVEPOINT = 'read_merge_group';
+const GROUP_ROW_SAVEPOINT = 'read_merge_group_row';
+
+/** P-536: the records one writer's group holds, in the order their ops handed them over. */
+interface PendingGroup {
+  records: { opId: number; record: unknown }[];
+  rows: Set<string>;
+}
 
 class FoldBatch {
   private reserved: postgres.ReservedSql | null = null;
@@ -2404,11 +2418,18 @@ class FoldBatch {
   private readonly overlay = new Map<string, { meta: WinnerMeta; ident: string }>();
   /** Timed-out ops whose statements may still be running inside a lost transaction. */
   private readonly poisoned = new Set<string>();
+  /** P-536: records waiting for their writer's group write, per writer in first-use order. */
+  private readonly groups = new Map<ProjectionGroupWriter<unknown>, PendingGroup>();
   private currentOp = 0;
   private nextOpId = 1;
   private opPos = -1;
+  /** The current op wrote into transaction {@link opTxGen}: a savepoint's statements, or a record handed to a group. */
   private opTouched = false;
   private opTxGen = -1;
+  /** The transaction the current op's savepoint lives in; -1 when it has none. */
+  private opSavepointGen = -1;
+  /** P-536: a group write included one of the current op's records before the op ended. */
+  private opGroupWritten = false;
   private opsInTx = 0;
   private openedAt = 0;
   private failureReason: string | null = null;
@@ -2421,6 +2442,12 @@ class FoldBatch {
    * holds for that whole transaction ({@link MERGE_COALESCE_NOTIFY_MIN_BACKLOG}).
    */
   coalesceNotify = false;
+  /**
+   * P-536 (D-034 #1): ops may hand their records to a group write ({@link ProjectionGroupWriter}).
+   * Set on snapshot lane batches only. A group reports a refused record as applied, which
+   * the tail's P-528 superseded-put skip cannot allow; a snapshot chunk skips no puts.
+   */
+  groupWrites = false;
   readonly stats: MergeBatchStats;
   /** P-527: sibling batches for the lanes of a snapshot chunk, created on first use. */
   private readonly lanes: FoldBatch[] = [];
@@ -2435,7 +2462,7 @@ class FoldBatch {
     private readonly onWinnersEvicted?: (evictedCount: number, size: number) => void,
     stats?: MergeBatchStats,
   ) {
-    this.stats = stats ?? { commits: 0, ops: 0, rewinds: 0 };
+    this.stats = stats ?? { commits: 0, ops: 0, rewinds: 0, grouped: 0, groupReplays: 0 };
   }
 
   /**
@@ -2445,18 +2472,18 @@ class FoldBatch {
    */
   laneBatches(k: number): FoldBatch[] {
     while (this.lanes.length < k) {
-      this.lanes.push(
-        new FoldBatch(
-          this.cursor,
-          this.maxOps,
-          this.maxMs,
-          this.commitTimeoutMs,
-          this.reserveTimeoutMs,
-          this.maxWinnersEntries,
-          this.onWinnersEvicted,
-          this.stats,
-        ),
+      const lane = new FoldBatch(
+        this.cursor,
+        this.maxOps,
+        this.maxMs,
+        this.commitTimeoutMs,
+        this.reserveTimeoutMs,
+        this.maxWinnersEntries,
+        this.onWinnersEvicted,
+        this.stats,
       );
+      lane.groupWrites = true;
+      this.lanes.push(lane);
     }
     return this.lanes.slice(0, k);
   }
@@ -2487,10 +2514,13 @@ class FoldBatch {
     this.opPos = pos;
     this.opTouched = false;
     this.opTxGen = -1;
+    this.opSavepointGen = -1;
+    this.opGroupWritten = false;
     const session: ProjectionBatchSession = {
       sqlFor: (target) => this.sqlFor(opId, target),
       flush: () => this.flushFor(opId),
       recover: () => this.recoverFor(opId),
+      defer: (target, writer, record) => this.deferFor(opId, target, writer, record),
     };
     return { opId, apply: (env) => runInProjectionBatch(session, () => apply(env)) };
   }
@@ -2518,8 +2548,10 @@ class FoldBatch {
       // rewind discards it).
       return this.failureReason !== null;
     }
+    // An op that only handed records to a group has no savepoint of its own.
+    const savepoint = this.opSavepointGen === this.txGen;
     if (applied) {
-      this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`));
+      if (savepoint) this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`));
       this.overlay.delete(groupKey);
       this.overlay.set(groupKey, { meta: toMeta(env), ident });
       this.opsInTx++;
@@ -2532,6 +2564,14 @@ class FoldBatch {
       this.poisoned.add(ident);
       return true;
     }
+    // Take back what the op wrote. A record a group already wrote cannot be taken back
+    // on its own, so the batch is lost and the fold replays it outside any batch.
+    if (this.opGroupWritten) {
+      this.fail(`an op that did not apply already had its record written by a group (${groupKey})`);
+      return true;
+    }
+    this.dropGroupRecords(opId);
+    if (!savepoint) return true;
     try {
       await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
       await reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`);
@@ -2549,6 +2589,9 @@ class FoldBatch {
     if (this.opening) await this.opening;
     const reserved = this.reserved;
     if (!reserved) return this.failureReason === null;
+    // P-536: the records the groups hold belong to this transaction.
+    if (this.failureReason === null && this.groups.size > 0) await this.writeGroups();
+    this.groups.clear();
     this.reserved = null;
     this.target = null;
     const pipelined = this.pipelined;
@@ -2591,6 +2634,7 @@ class FoldBatch {
     this.reserved = null;
     this.target = null;
     this.pipelined = [];
+    this.groups.clear();
     for (const ident of this.poisoned) this.cursor.pendingApplies?.delete(ident);
     this.poisoned.clear();
     this.overlay.clear();
@@ -2649,31 +2693,161 @@ class FoldBatch {
       this.opening ??= this.open(target);
       await this.opening;
     }
+    // P-536: records handed over before this statement are written first, so the
+    // connection sees every write in the order its op made it.
+    if (this.groups.size > 0 && !(await this.writeGroups())) return target;
     const reserved = this.reserved;
     if (!reserved || opId !== this.currentOp || this.failureReason !== null) return target;
-    if (!this.opTouched) {
+    if (this.opSavepointGen !== this.txGen) {
       this.opTouched = true;
       this.opTxGen = this.txGen;
+      this.opSavepointGen = this.txGen;
       this.pipe(reserved.unsafe(`SAVEPOINT ${BATCH_SAVEPOINT}`));
     }
-    return this.guard(reserved, opId, this.txGen);
+    const gen = this.txGen;
+    return this.guard(
+      reserved,
+      () => opId === this.currentOp && gen === this.txGen && this.reserved === reserved && this.failureReason === null,
+    );
   }
 
   /**
-   * The op's handle refuses once the op is over or its transaction is gone. An
-   * op that timed out keeps running and keeps this handle. Unguarded, its next
+   * P-536: take `record` into the pending group for `writer`, to be written with the
+   * group's other records before this transaction commits. False when this batch runs
+   * no groups or could not take it; the op then writes the record itself.
+   */
+  private async deferFor(
+    opId: number,
+    target: postgres.Sql,
+    writer: ProjectionGroupWriter<unknown>,
+    record: unknown,
+  ): Promise<boolean> {
+    if (!this.groupWrites || opId !== this.currentOp || this.failureReason !== null) return false;
+    if (this.reserved && this.target !== target && !(await this.commit())) return false;
+    if (!this.reserved) {
+      if (Date.now() < this.reserveBackoffUntil) return false;
+      this.opening ??= this.open(target);
+      await this.opening;
+    }
+    const row = writer.rowOf(record);
+    // A group never holds two records for one row: the later record's reads must see
+    // the earlier one's write, so the group is written first.
+    if (this.groups.get(writer)?.rows.has(row) && !(await this.writeGroups())) return false;
+    if (!this.reserved || opId !== this.currentOp || this.failureReason !== null) return false;
+    let group = this.groups.get(writer);
+    if (!group) {
+      group = { records: [], rows: new Set() };
+      this.groups.set(writer, group);
+    }
+    group.records.push({ opId, record });
+    group.rows.add(row);
+    this.opTouched = true;
+    this.opTxGen = this.txGen;
+    return true;
+  }
+
+  /** P-536: forget the records op `opId` handed over (the op did not apply). */
+  private dropGroupRecords(opId: number): void {
+    for (const [writer, group] of this.groups) {
+      const kept = group.records.filter((r) => r.opId !== opId);
+      if (kept.length === group.records.length) continue;
+      if (kept.length === 0) {
+        this.groups.delete(writer);
+        continue;
+      }
+      group.records = kept;
+      group.rows = new Set(kept.map((r) => writer.rowOf(r.record)));
+    }
+  }
+
+  /**
+   * P-536: write every pending group on the open transaction, each under its own
+   * savepoint. A group whose write fails rolls back to that savepoint and is written
+   * again record by record through {@link ProjectionGroupWriter.writeOne}, exactly as
+   * each op would have written it alone. A record that fails there too loses the batch,
+   * and the fold replays the window outside any batch. False when the batch is lost.
+   */
+  private async writeGroups(): Promise<boolean> {
+    const reserved = this.reserved;
+    const groups = [...this.groups];
+    this.groups.clear();
+    if (!reserved) {
+      // Records are only taken while a transaction is open, and both ways it closes clear them.
+      if (groups.length > 0) this.fail('group records outlived their transaction');
+      return this.failureReason === null;
+    }
+    const gen = this.txGen;
+    const sql = this.guard(
+      reserved,
+      () => gen === this.txGen && this.reserved === reserved && this.failureReason === null,
+    );
+    for (const [writer, group] of groups) {
+      if (this.failureReason !== null) return false;
+      if (this.currentOp !== 0 && group.records.some((r) => r.opId === this.currentOp)) this.opGroupWritten = true;
+      const records = group.records.map((r) => r.record);
+      this.pipe(reserved.unsafe(`SAVEPOINT ${GROUP_SAVEPOINT}`));
+      let failure: string;
+      try {
+        await raceMergeDeadline(writer.writeMany(sql, records), this.commitTimeoutMs, `${writer.name} group write`);
+        this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${GROUP_SAVEPOINT}`));
+        this.stats.grouped += records.length;
+        continue;
+      } catch (err) {
+        failure = (err instanceof Error ? err.message : String(err)).replaceAll('\0', '').slice(0, 400);
+      }
+      if (this.failureReason !== null) return false;
+      this.stats.groupReplays++;
+      console.warn(
+        `[read-merge] P-536 ${writer.name}: a group write of ${records.length} record(s) failed (${failure}); ` +
+          `writing them one at a time`,
+      );
+      try {
+        await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${GROUP_SAVEPOINT}`);
+      } catch (err) {
+        this.fail(err);
+        return false;
+      }
+      for (const record of records) {
+        this.pipe(reserved.unsafe(`SAVEPOINT ${GROUP_ROW_SAVEPOINT}`));
+        const session: ProjectionBatchSession = {
+          sqlFor: async () => sql,
+          flush: async () => {
+            throw new MergeBatchLostError('a group record cannot commit its batch');
+          },
+          recover: async () => {
+            await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${GROUP_ROW_SAVEPOINT}`);
+          },
+        };
+        try {
+          await raceMergeDeadline(
+            runInProjectionBatch(session, () => writer.writeOne(record)),
+            this.commitTimeoutMs,
+            `${writer.name} record write`,
+          );
+        } catch (err) {
+          this.fail(err);
+          return false;
+        }
+        this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${GROUP_ROW_SAVEPOINT}`));
+      }
+      this.pipe(reserved.unsafe(`RELEASE SAVEPOINT ${GROUP_SAVEPOINT}`));
+    }
+    return this.failureReason === null;
+  }
+
+  /**
+   * A handle that refuses once `live` is false: its op is over or its transaction is
+   * gone. An op that timed out keeps running and keeps this handle. Unguarded, its next
    * statement would run on a connection already handed back to the pool, possibly
    * inside another caller's transaction.
    */
-  private guard(reserved: postgres.ReservedSql, opId: number, gen: number): postgres.Sql {
-    const live = (): void => {
-      if (opId !== this.currentOp || gen !== this.txGen || this.reserved !== reserved || this.failureReason !== null) {
-        throw new MergeBatchLostError('statement issued after its op or batch ended');
-      }
+  private guard(reserved: postgres.ReservedSql, live: () => boolean): postgres.Sql {
+    const check = (): void => {
+      if (!live()) throw new MergeBatchLostError('statement issued after its op or batch ended');
     };
     return new Proxy(reserved, {
       apply: (t, thisArg, args) => {
-        live();
+        check();
         return Reflect.apply(t, thisArg, args);
       },
       get: (t, prop, recv) => {
@@ -2681,7 +2855,7 @@ class FoldBatch {
         if (typeof v !== 'function') return v;
         if (prop === 'unsafe' || prop === 'file') {
           return (...a: unknown[]) => {
-            live();
+            check();
             return (v as (...x: unknown[]) => unknown).apply(t, a);
           };
         }
@@ -2703,8 +2877,13 @@ class FoldBatch {
    */
   private async recoverFor(opId: number): Promise<void> {
     const reserved = this.reserved;
-    if (opId !== this.currentOp || !this.opTouched || !reserved || this.opTxGen !== this.txGen) return;
+    if (opId !== this.currentOp || !reserved || this.opSavepointGen !== this.txGen) return;
     if (this.failureReason !== null) return;
+    // P-536: rolling back could not take back a record a group already wrote for this op.
+    if (this.opGroupWritten) {
+      this.fail('an op rolled back to its savepoint after a group wrote one of its records');
+      return;
+    }
     try {
       await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
     } catch (err) {
