@@ -642,6 +642,29 @@ export function buildScoutCycleDeps(
       } catch {
         /* best-effort */
       }
+      // Keep gate file-run evidence separate from local flakiness, and only
+      // call a local pass a divergence when it used the same clean commit.
+      try {
+        const { buildCiTestHealthLane } = await import('./ci-test-health-lane');
+        const lane = await buildCiTestHealthLane();
+        if (lane.length > 0) digest.ciTestHealth = lane;
+      } catch {
+        /* best-effort */
+      }
+      try {
+        const { buildWorkspaceHostHealthLane } = await import('./workspace-host-health-lane');
+        const lane = await buildWorkspaceHostHealthLane();
+        if (lane.length > 0) digest.workspaceHostHealth = lane;
+      } catch {
+        /* best-effort */
+      }
+      try {
+        const { buildSystemHealthFlapLane } = await import('./system-health-flap-lane');
+        const lane = await buildSystemHealthFlapLane();
+        if (lane.length > 0) digest.systemHealthFlaps = lane;
+      } catch {
+        /* best-effort */
+      }
       // GATE / PIPELINE-HEALTH lane (blender-self-learning-2026-07-12 P-010 /
       // WI-4455): the release ship-path — standing gate reds + stall,
       // promotion/deploy lag, and chronic pipeline_events failures, joined into

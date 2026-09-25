@@ -93,6 +93,9 @@ export type MetaPatternCategory =
   // 15min, fed to ideation directly instead of waiting for a human filing.
   | 'watchdog-health'
   | 'pty-host-health'
+  | 'ci-test-health'
+  | 'workspace-host-health'
+  | 'system-health-flap'
   // blender-self-learning-2026-07-12 P-010: the release pipeline's ship-path
   // health — standing gate reds + stall, promotion/deploy lag, and chronic
   // pipeline_events failure classes, JOINED into one incident (WI-4455).
@@ -191,6 +194,13 @@ export interface CorpusDigest {
   /** PTY host delivery failures and recovered retries from the existing
    *  per-owner event ingest. OPTIONAL: populated by the cycle seam. */
   ptyHostHealth?: MetaPattern[];
+  /** Repeated CI file failures and clean, same-commit local-pass divergence
+   * from test_runs. CI rows remain separate from local flakiness analytics. */
+  ciTestHealth?: MetaPattern[];
+  /** Managed workspace-host operation failures and later host recovery. */
+  workspaceHostHealth?: MetaPattern[];
+  /** Repeated critical health transitions and observed time back to OK. */
+  systemHealthFlaps?: MetaPattern[];
   /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
    *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
    *  chronic pipeline_events failure classes, joined into one incident

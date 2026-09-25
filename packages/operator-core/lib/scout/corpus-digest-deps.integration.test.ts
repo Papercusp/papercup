@@ -29,6 +29,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 const { buildStateOfHiveReaders } = await import('./corpus-digest-deps');
 const { buildPtyHostHealthLane } = await import('./pty-host-health-lane');
+const { buildCiTestHealthLane } = await import('./ci-test-health-lane');
+const { buildWorkspaceHostHealthLane } = await import('./workspace-host-health-lane');
+const { buildSystemHealthFlapLane } = await import('./system-health-flap-lane');
 const { synthesizeStateOfHive } = await import('./corpus-digest');
 const { flattenDigest } = await import('./lenses');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -107,6 +110,103 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(sample.from).toBe('passed'); // unquoted (not '"passed"')
     expect(sample.to).toBe('deprecated');
     expect(sample.harness).toBe('papercup');
+  });
+
+  it('CI corpus reader separates repeated gate failures from clean same-commit local divergence', async () => {
+    const sql = db.adminSql;
+    await sql`
+      INSERT INTO harness_shared.test_runs
+        (file_path, framework, status, started_at, finished_at, run_group_id,
+         source, commit_sha, worktree_dirty)
+      VALUES
+        ('repeat-ci.test.ts', 'vitest', 'fail', '2026-06-08T08:00:00Z', '2026-06-08T08:01:00Z', 'gate-a', 'ci', 'abc123', false),
+        ('repeat-ci.test.ts', 'vitest', 'error', '2026-06-08T09:00:00Z', '2026-06-08T09:01:00Z', 'gate-b', 'ci', 'abc123', false),
+        ('repeat-ci.test.ts', 'vitest', 'pass', '2026-06-08T09:03:00Z', '2026-06-08T09:04:00Z', 'local-a', 'local', 'abc123', false),
+        ('one-off-ci.test.ts', 'vitest', 'fail', '2026-06-08T08:00:00Z', '2026-06-08T08:01:00Z', 'gate-a', 'ci', 'abc123', false),
+        ('one-off-ci.test.ts', 'vitest', 'pass', '2026-06-08T09:03:00Z', '2026-06-08T09:04:00Z', 'local-a', 'local', 'abc123', true),
+        ('other-commit.test.ts', 'vitest', 'fail', '2026-06-08T08:00:00Z', '2026-06-08T08:01:00Z', 'gate-a', 'ci', 'abc123', false),
+        ('other-commit.test.ts', 'vitest', 'pass', '2026-06-08T09:03:00Z', '2026-06-08T09:04:00Z', 'local-a', 'local', 'def456', false)
+    `;
+    const lane = await buildCiTestHealthLane({ nowMs: T });
+    expect(lane).toHaveLength(1);
+    expect(lane[0]).toMatchObject({ category: 'ci-test-health' });
+    expect(lane[0]?.summary).toContain('repeat-ci.test.ts: 2 failing CI run group(s)');
+    expect(lane[0]?.summary).toContain('clean local pass at the same commit');
+    expect(lane[0]?.detail).toContain('2 failed CI file-run row(s)');
+    expect(lane[0]?.detail).toMatch(/test_runs\.id=\d+/);
+    expect(flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      ciTestHealth: lane,
+    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
+  });
+
+  it('workspace-host corpus reader groups failed event rows and cites later host success separately', async () => {
+    const sql = db.adminSql;
+    await sql`
+      INSERT INTO harness_shared.workspace_host_connections
+        (workspace_id, id, target, label, credential_ref)
+      VALUES (${WS}, 'corpus-conn', 'gcp', 'corpus test', 'test:credential')
+    `;
+    await sql`
+      INSERT INTO harness_shared.workspace_hosts
+        (workspace_id, id, name, connection_id, target, scope_label, region, size, image,
+         disk_gib, network, desired_state, observed_state)
+      VALUES (${WS}, 'corpus-host', 'corpus host', 'corpus-conn', 'gcp', 'test-project',
+              'us-central1', 'e2-standard-4', 'image-v1', 64, 'default', 'running', 'running')
+    `;
+    await sql`
+      INSERT INTO harness_shared.workspace_host_operations
+        (workspace_id, id, host_id, action, status)
+      VALUES
+        (${WS}, 'corpus-op-failed', 'corpus-host', 'initialize', 'failed'),
+        (${WS}, 'corpus-op-success', 'corpus-host', 'initialize', 'succeeded')
+    `;
+    await sql`
+      INSERT INTO harness_shared.workspace_host_events
+        (workspace_id, id, host_id, operation_id, occurred_at, phase, status, message)
+      VALUES
+        (${WS}, 'corpus-failure-1', 'corpus-host', 'corpus-op-failed',
+         '2026-06-08T08:00:00Z', 'initialize:failed', 'failed', 'failed once'),
+        (${WS}, 'corpus-failure-2', 'corpus-host', 'corpus-op-failed',
+         '2026-06-08T08:01:00Z', 'initialize:failed', 'failed', 'failed twice'),
+        (${WS}, 'corpus-recovery', 'corpus-host', 'corpus-op-success',
+         '2026-06-08T08:05:00Z', 'initialize:complete', 'succeeded', 'later success')
+    `;
+    const lane = await buildWorkspaceHostHealthLane({ workspaceId: WS, nowMs: T });
+    expect(lane).toHaveLength(1);
+    expect(lane[0]).toMatchObject({ category: 'workspace-host-health', ref: 'workspace-host:event:corpus-failure-2' });
+    expect(lane[0]?.summary).toContain('1 failed managed workspace-host operation(s)');
+    expect(lane[0]?.detail).toContain('2 failed event row(s)');
+    expect(lane[0]?.detail).toContain('workspace_host_events.id=corpus-recovery');
+    expect(lane[0]?.detail).toContain('may be a separate operation');
+    expect(flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      workspaceHostHealth: lane,
+    }).map((pattern) => pattern.ref)).toEqual(['workspace-host:event:corpus-failure-2']);
+  });
+
+  it('health-flap corpus reader measures time to OK and leaves an open critical entry incomplete', async () => {
+    const sql = db.adminSql;
+    await sql`
+      INSERT INTO harness_shared.system_health_transitions
+        (workspace_id, panel, from_status, to_status, at)
+      VALUES
+        (${WS}, 'infrastructure', 'ok', 'crit', '2026-06-08T08:00:00Z'),
+        (${WS}, 'infrastructure', 'crit', 'warn', '2026-06-08T08:05:00Z'),
+        (${WS}, 'infrastructure', 'warn', 'ok', '2026-06-08T08:20:00Z'),
+        (${WS}, 'infrastructure', 'ok', 'crit', '2026-06-08T09:00:00Z')
+    `;
+    const lane = await buildSystemHealthFlapLane({ workspaceId: WS, nowMs: T });
+    expect(lane).toHaveLength(1);
+    expect(lane[0]).toMatchObject({ category: 'system-health-flap' });
+    expect(lane[0]?.ref).toMatch(/^health-transition:\d+$/);
+    expect(lane[0]?.summary).toContain('2 time(s) in 14d; 1 return(s) to OK not observed');
+    expect(lane[0]?.detail).toContain('median 20 min to OK');
+    expect(lane[0]?.detail).toMatch(/latest OK transition id=\d+/);
+    expect(flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      systemHealthFlaps: lane,
+    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
   });
 
   it('spend reader scopes to the workspace and trailing 7d window', async () => {
