@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getWorkItem, readAcceptedBlueprintDirectWorkItem, getIdentitySource } = vi.hoisted(() => ({
+const { getWorkItem, readAcceptedBlueprintDirectWorkItem, getIdentitySource, sqlMock } = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
   readAcceptedBlueprintDirectWorkItem: vi.fn(),
   getIdentitySource: vi.fn(),
+  sqlMock: vi.fn(),
 }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('../work-items', () => ({ getWorkItem }));
 vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem }));
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
 
-import { matchOperationWorkerClaim, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
+import { matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
@@ -131,6 +133,45 @@ describe('accepted blueprint operation worker binding', () => {
       modelPolicy: { ...binding.modelPolicy, mode: 'preferred' },
     }, null, 'codex')?.model).toBe('gpt-5.6-terra:high');
     expect(selectAcceptedOperationWorkerModel({ ...binding, modelPolicy: undefined }, 'gpt-5.6-luna', 'codex')).toBeNull();
+  });
+
+  it('checks the active launch receipt against the immutable accepted model policy', async () => {
+    const modelPolicy = { mode: 'exact' as const, models: ['claude-opus-4'], onUnavailable: 'fail' as const };
+    const modelSelection = { model: 'claude-opus-4', requestedModel: null,
+      backend: 'claude' as const, source: 'operation-policy' as const };
+    const accepted = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-1', operationId: 'run',
+      specificationRevision: REVISION, pin,
+      identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
+      requiredTools: ['work_items:get'], modelPolicy, modelSelection,
+    };
+    const revision = { specificationRevision: HASH, stateRevision: 'state-a' };
+    const row = {
+      accepted_operation: accepted, launch_workspace_id: 'ws-a', launch_harness_slug: 'harness-a',
+      launch_role: 'worker', specification_revision: HASH, state_revision: 'state-a',
+      grants_kind: 'object', activation: {
+        schemaVersion: 1, status: 'applied', attribution: {
+          actorId: 'worker-a', principalId: 'system:superuser', sessionId: 'worker-a',
+        }, desired: revision, prepared: null, applied: revision,
+      },
+    };
+    sqlMock.mockImplementation((strings: TemplateStringsArray) =>
+      strings.join('').includes('SELECT id, role') ? [{ id: 7, role: 'worker' }] : [row]);
+    readAcceptedBlueprintDirectWorkItem.mockResolvedValue({ pin, operation: {
+      ...operation, id: 'run', policy: { ...operation.policy, model: modelPolicy },
+    } });
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({ status: 'bound', policy: modelPolicy });
+
+    row.accepted_operation = { ...accepted, modelPolicy: { ...modelPolicy, models: ['claude-sonnet-4-6'] } };
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
+      status: 'unavailable', reason: 'accepted operation model policy differs from its launch receipt',
+    });
+    row.accepted_operation = accepted;
+    readAcceptedBlueprintDirectWorkItem.mockResolvedValueOnce({ pin: { ...pin, input: { changed: true } },
+      operation: { ...operation, id: 'run', policy: { ...operation.policy, model: modelPolicy } } });
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
+      status: 'unavailable', reason: 'accepted operation model pin changed',
+    });
   });
 
   it('refuses a different role or harness', async () => {

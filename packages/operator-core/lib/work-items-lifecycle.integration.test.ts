@@ -26,6 +26,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import type { JSONValue } from 'postgres';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -214,6 +215,22 @@ beforeAll(async () => {
       PRIMARY KEY (workspace_id, harness_slug, specification_revision),
       CHECK (artifact->>'specificationRevision' = specification_revision));
   `);
+  // P-008 result admission joins the accepted role launch to request-grain
+  // usage. Keep these fixture projections limited to the columns it reads.
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, feature text,
+      agent text, session_id text, launch_spec jsonb, coord_owner_id text,
+      role text, started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz,
+      ended_by text);
+    CREATE TABLE harness_shared.session_briefs (
+      workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
+      PRIMARY KEY (workspace_id, owner_id));
+    CREATE TABLE harness_shared.agent_usage_samples (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, session_id text,
+      source text NOT NULL, provider text NOT NULL, model text,
+      usage_provenance jsonb);
+  `);
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
@@ -280,12 +297,175 @@ beforeEach(async () => {
                        harness_shared.watchdog_ticks, harness_shared.work_item_claims,
                        harness_shared.blueprints, harness_shared.blueprint_specifications,
                        harness_shared.blueprint_operation_invocations, harness_shared.plan_runs RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs,
+                        harness_shared.agent_usage_samples RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   await setLeaseFlag(false);
   fh.spy.mockClear();
 });
 
 describe('blueprint direct-item revision pin', () => {
+  it('admits a model-bound result only with compatible actual request reports', async () => {
+    const source = {
+      id: 'model-result-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
+      spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' },
+        inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } },
+        policy: { model: { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' } },
+      }],
+    };
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup',
+      blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }),
+    });
+    const handle = await submitBlueprintOperation(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', callerId: 'model-consumer',
+      operationId: 'extract', requestKey: 'model-result', input: {},
+    });
+    if (handle.target.kind !== 'work-item') throw new Error('expected direct target');
+    const item = await wi.getWorkItem(handle.target.id, 'papercup');
+    const pin = (item?.payload as Record<string, unknown> | null)?.blueprintOperation;
+    await db.sql`
+      UPDATE harness_shared.work_items SET status = 'passed', authority = 'committed',
+        payload = payload || ${JSON.stringify({ blueprintResult: {
+          operationId: 'extract', specificationRevision: handle.specificationRevision,
+          output: {}, evidenceRef: 'verification:model-result-fixture',
+        } })}::text::jsonb
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${handle.target.id}
+    `;
+    const result = () => getBlueprintOperationResult(db.sql, handle, 'model-consumer');
+    expect(await result()).toMatchObject({ state: 'unavailable' });
+
+    const nativeSession = `model-result-${handle.target.id}`;
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, feature, agent, session_id, launch_spec)
+      VALUES ('default', ${handle.target.id}, 'claude', ${nativeSession},
+        ${db.sql.json({ acceptedOperation: { pin: pin as JSONValue } })})
+    `;
+    const report = async (model: string | null, modelSource = 'transcript') => {
+      await db.sql`TRUNCATE harness_shared.agent_usage_samples RESTART IDENTITY`;
+      await db.sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, session_id, source, provider, model, usage_provenance)
+        VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', ${model},
+          ${db.sql.json({ grain: 'request', modelSource })})
+      `;
+    };
+    await report('claude-opus-4-8');
+    expect(await result()).toMatchObject({ state: 'ready' });
+    await report('anthropic/claude-opus-4-8:high');
+    expect(await result()).toMatchObject({ state: 'ready' });
+    await report('claude-sonnet-4-6');
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('outside the exact policy') });
+    await report('claude-opus-4-8');
+    await db.sql`
+      INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, source, provider, model, usage_provenance)
+      VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', 'claude-sonnet-4-6',
+        ${db.sql.json({ grain: 'request', modelSource: 'transcript' })})
+    `;
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('outside the exact policy') });
+    await report(null);
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unreported') });
+    await report('claude-opus-4-8', 'request');
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unreported') });
+    await report('claude-opus-4-8');
+    await db.sql`UPDATE harness_shared.adv_sessions SET agent = 'codex' WHERE session_id = ${nativeSession}`;
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unsupported') });
+  });
+
+  it.each(['feature', 'task'] as const)(
+    'refuses invalid blueprint output and atomically persists valid %s result on worker completion',
+    async (itemKind) => {
+      const modelPolicy = { mode: 'exact' as const, models: ['claude-opus-4-8'], onUnavailable: 'fail' as const };
+      const source = {
+        id: `completion-${itemKind}`, workItem: { kind: itemKind }, roles: [{ id: 'worker' }],
+        spine: { edges: { DONE: { to: 'done' } } },
+        operations: [{
+          id: 'extract', version: 'A', target: { kind: 'work-item', itemKind },
+          execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
+          acceptance: { resultSchema: { type: 'object', required: ['answer', 'note'],
+            properties: { answer: { type: 'string' }, note: { type: 'null' } }, additionalProperties: false } },
+          policy: { model: modelPolicy },
+        }],
+      };
+      await projectBlueprintToPg(db.sql, {
+        workspaceId: 'default', harnessSlug: 'papercup',
+        blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }),
+      });
+      const handle = await submitBlueprintOperation(db.sql, {
+        workspaceId: 'default', harnessSlug: 'papercup', callerId: 'model-consumer',
+        operationId: 'extract', requestKey: `complete-${itemKind}`, input: {},
+      });
+      if (handle.target.kind !== 'work-item') throw new Error('expected direct work-item');
+      const itemId = handle.target.id;
+      const item = await wi.getWorkItem(itemId, 'papercup');
+      const pin = (item?.payload as Record<string, unknown>).blueprintOperation;
+      const owner = `model-worker-${itemKind}`;
+      const sessionId = `native-model-worker-${itemKind}`;
+      const launchRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
+      const acceptedOperation = {
+        kind: 'blueprint-operation-worker', workItemId: itemId,
+        operationId: 'extract', specificationRevision: handle.specificationRevision, pin,
+        identity: { ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+        requiredTools: ['work_items:complete'], modelPolicy,
+        modelSelection: { model: 'claude-opus-4-8', requestedModel: null,
+          backend: 'claude', source: 'operation-policy' },
+      };
+      await db.sql`
+        INSERT INTO harness_shared.adv_sessions
+          (workspace_id, feature, agent, session_id, coord_owner_id, role, launch_spec)
+        VALUES ('default', ${itemId}, 'claude', ${sessionId}, ${owner}, 'worker',
+          ${db.sql.json({ workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+            ...launchRevision, specificationArtifact: { configuration: { grants: {} } },
+            acceptedOperation } as JSONValue)})
+      `;
+      await db.sql`
+        INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+        VALUES ('default', ${owner}, ${db.sql.json({ activation: { schemaVersion: 1,
+          attribution: { actorId: owner, principalId: owner, sessionId: owner },
+          desired: launchRevision, prepared: null, applied: launchRevision, status: 'applied',
+        } })})
+      `;
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
+        WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+      await db.sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, session_id, source, provider, model, usage_provenance)
+        VALUES ('default', ${sessionId}, 'interactive', 'anthropic', 'claude-opus-4-8',
+          ${db.sql.json({ grain: 'request', modelSource: 'transcript' })})
+      `;
+
+      const close = (outputPayload?: unknown) => wi.setWorkItemState(itemId, 'done', {
+        harness: 'papercup', by: owner, completionAuthority: 'committed', outputPayload,
+      });
+      await expect(close()).rejects.toThrow('requires outputPayload');
+      await expect(close({ answer: 4, note: null })).rejects.toThrow('output is invalid');
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET model = 'claude-sonnet-4-6'
+        WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+      await expect(close({ answer: 'done', note: null }))
+        .rejects.toThrow('model attestation failed');
+      expect((await wi.getWorkItem(itemId, 'papercup'))?.state).toBe('open');
+      expect((await wi.getWorkItem(itemId, 'papercup'))?.payload).not.toHaveProperty('blueprintResult');
+
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET model = 'claude-opus-4-8'
+        WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+      const closed = await close({ answer: 'done', note: null });
+      expect(closed?.state).toBe('done');
+      expect((closed?.payload as Record<string, unknown>).blueprintResult).toMatchObject({
+        operationId: 'extract', specificationRevision: handle.specificationRevision,
+        output: { answer: 'done', note: null }, evidenceRef: `work-item:completion:${itemId}`,
+      });
+      expect(await getBlueprintOperationResult(db.sql, handle, 'model-consumer')).toMatchObject({
+        state: 'ready', output: { answer: 'done', note: null },
+      });
+    },
+  );
+
   it('shares a durable direct handle across submission replay, scoped status and typed result reads', async () => {
     const source = {
       id: 'operation-service-fixture', workItem: { kind: 'feature' },

@@ -31,7 +31,7 @@ import { recordAdvSession, recordSuLaunchSpec } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { roleConsumes } from '../../../role-registry';
-import { buildRoleLaunchSpec } from '../../../role-launch-spec';
+import { buildRoleLaunchSpec, mintRoleLaunchIdentity } from '../../../role-launch-spec';
 import { papercuspPathForWorkspace } from '../../../papercusp-root';
 import { getPlanContextBySlug } from '../../../plan-context-for-feature';
 import { FLAGS } from '@papercusp/flags';
@@ -58,7 +58,7 @@ import { backendFeatureGuard } from '../../../backend-feature-capabilities';
 import { resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProjectDir } from '../../../spawn-config';
-import { resolveAcceptedOperationWorkerBinding } from '../../../blueprint/operation-worker-binding';
+import { resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from '../../../blueprint/operation-worker-binding';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -91,6 +91,8 @@ export interface BootstrapRoleResult {
   sessionId: number | null;
   role: string;
   agent: SuAgent;
+  /** Server-selected model; an accepted operation policy outranks launch args. */
+  model: string | null;
   workspaceId: string;
   /** null = a workspace-level (harness-less) role session (P-003). */
   harnessSlug: string | null;
@@ -278,13 +280,36 @@ const post = defineTool({
     }
     const headless = body.headless === true;
     const requestedModel = body.model?.trim() || null;
-    let model = requestedModel;
+    let acceptedOperation;
+    try {
+      acceptedOperation = feature && harnessSlug
+        ? await resolveAcceptedOperationWorkerBinding({
+            sql: getOrgPg().sql,
+            workspaceId: workspace,
+            harnessSlug,
+            workItemId: feature,
+            role,
+            repoDir: await resolveProjectDir(harnessSlug, workspace) ?? '',
+          })
+        : null;
+    } catch (error) {
+      return jsonRes({ status: 'error', code: 'operation_worker_denied',
+        error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+    let modelSelection;
+    try {
+      modelSelection = selectAcceptedOperationWorkerModel(acceptedOperation, requestedModel, agent);
+    } catch (error) {
+      return jsonRes({ status: 'error', code: 'operation_model_denied',
+        error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+    let model = modelSelection?.model ?? requestedModel;
     let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
     if (agent === 'codex') {
       try {
-        const selection = resolveCodexModelSelection(requestedModel, {
+        const selection = resolveCodexModelSelection(model, {
           source:
-            body.model_source ??
+            (modelSelection ? 'explicit' : body.model_source) ??
             (requestedModel ? 'explicit' : headless ? 'explicit' : 'configured-default'),
         });
         model = selection.model;
@@ -293,11 +318,14 @@ const post = defineTool({
         return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
       }
     }
-    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, model);
+    // Mint from the shared role-launch primitive before account preflight.
+    // Gateway-routed requests then carry this exact owner ID, while a refused
+    // account route still exits before composition writes any launch artifact.
+    const launchIdentity = mintRoleLaunchIdentity();
+    const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, launchIdentity.sid, false, model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
     }
-
     // Feature + plan gating from the single source (roleConsumes / consumes).
     const consumes = roleConsumes(role, harnessSlug ?? '');
     if (consumes.feature === 'required' && !feature) {
@@ -356,16 +384,6 @@ const post = defineTool({
     // Build the shared spec: role prompt + signed role-scoped MCP URL + cwd.
     let spec;
     try {
-      const acceptedOperation = feature && harnessSlug
-        ? await resolveAcceptedOperationWorkerBinding({
-            sql: getOrgPg().sql,
-            workspaceId: workspace,
-            harnessSlug,
-            workItemId: feature,
-            role,
-            repoDir: await resolveProjectDir(harnessSlug, workspace) ?? '',
-          })
-        : null;
       spec = await buildRoleLaunchSpec({
         role,
         workspaceId: workspace,
@@ -376,12 +394,17 @@ const post = defineTool({
         featureId: feature,
         contextSize,
         stack: body.stack?.map((ref) => ref.trim()) ?? null,
-        acceptedOperation,
+        acceptedOperation: acceptedOperation && modelSelection
+          ? { ...acceptedOperation, modelSelection } : acceptedOperation,
+        launchIdentity,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
     }
-
+    if (spec.sid !== launchIdentity.sid || spec.nativeSessionId !== launchIdentity.nativeSessionId) {
+      return jsonRes({ status: 'error', code: 'role_identity_mismatch',
+        error: 'role launch identity changed after account routing' }, 500);
+    }
     // Stale-harness guard (owner 2026-06-23): a harness whose registered project
     // dir was deleted — classically a `/tmp` e2e test bed (e.g.
     // `/tmp/sched-e2e-test-bed`) — yields a cwd that no longer exists, so the
@@ -519,6 +542,10 @@ const post = defineTool({
           pin: spec.acceptedOperation.pin,
           identity: spec.acceptedOperation.identity,
           requiredTools: spec.acceptedOperation.requiredTools,
+          ...(spec.acceptedOperation.modelPolicy ? {
+            modelPolicy: spec.acceptedOperation.modelPolicy,
+            modelSelection: spec.acceptedOperation.modelSelection,
+          } : {}),
         } } : {}),
       });
       if (!recorded) {
@@ -700,6 +727,7 @@ const post = defineTool({
       sessionId,
       role,
       agent,
+      model,
       workspaceId: workspace,
       harnessSlug,
       feature,

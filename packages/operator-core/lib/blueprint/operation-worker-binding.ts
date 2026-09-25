@@ -97,6 +97,60 @@ export type ActiveOperationWorkerClaimRead =
   | { status: 'none' }
   | { status: 'unavailable'; reason: string };
 
+export type ActiveOperationModelPolicyRead =
+  | { status: 'bound'; policy: NonNullable<AcceptedOperationWorkerBinding['modelPolicy']> }
+  | { status: 'none' }
+  | { status: 'unavailable'; reason: string };
+
+/** Re-read the immutable accepted operation before the gateway changes a model.
+ * The applied session receipt identifies the worker; its model-policy copy must
+ * still agree with the specification pinned by the canonical work item. */
+export async function readActiveOperationModelPolicy(
+  workspaceId: string,
+  ownerId: string,
+): Promise<ActiveOperationModelPolicyRead> {
+  const active = await readActiveOperationWorkerClaimBinding(workspaceId, ownerId);
+  if (active.status !== 'bound') return active;
+  try {
+    return await runWithWorkspace(workspaceId, async () => {
+      const item = await getWorkItem(active.binding.workItemId, active.binding.harnessSlug);
+      if (!item || item.harness !== active.binding.harnessSlug) {
+        return { status: 'unavailable', reason: 'accepted operation work item is missing' } as const;
+      }
+      const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(getOrgPg().sql, workspaceId, item);
+      if (!isDeepStrictEqual(pin, active.binding.pin) ||
+          operation.id !== active.binding.operationId ||
+          pin.specificationRevision !== active.binding.specificationRevision) {
+        return { status: 'unavailable', reason: 'accepted operation model pin changed' } as const;
+      }
+      const policy = operation.policy.model;
+      const receiptPolicy = active.receipt.acceptedOperation.modelPolicy;
+      if (!policy && receiptPolicy == null) return { status: 'none' } as const;
+      if (!policy || !isDeepStrictEqual(policy, receiptPolicy)) {
+        return { status: 'unavailable', reason: 'accepted operation model policy differs from its launch receipt' } as const;
+      }
+      const selection = active.receipt.acceptedOperation.modelSelection;
+      if (!selection || typeof selection !== 'object' || Array.isArray(selection)) {
+        return { status: 'unavailable', reason: 'accepted operation model selection is missing' } as const;
+      }
+      const selected = selection as Record<string, unknown>;
+      if (selected.backend !== 'claude' ||
+          (selected.requestedModel !== null && typeof selected.requestedModel !== 'string') ||
+          !isDeepStrictEqual(
+            selectAcceptedOperationWorkerModel(
+              { ...active.binding, modelPolicy: policy }, selected.requestedModel as string | null, 'claude',
+            ),
+            selection,
+          )) {
+        return { status: 'unavailable', reason: 'accepted operation model selection differs from its policy' } as const;
+      }
+      return { status: 'bound', policy } as const;
+    });
+  } catch {
+    return { status: 'unavailable', reason: 'accepted operation model policy could not be verified' };
+  }
+}
+
 /** A worker can claim only the direct item named by its applied launch receipt.
  * Ordinary sessions retain ordinary items; a pinned item requires its worker.
  * The SQL claim writer must repeat these pin comparisons in its UPDATE so a

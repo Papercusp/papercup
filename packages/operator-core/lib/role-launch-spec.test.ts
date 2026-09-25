@@ -85,6 +85,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   buildRoleLaunchSpec,
+  mintRoleLaunchIdentity,
   buildLaunchSpec,
   compileLaunchSpecificationArtifact,
   SU_EXTRA_MCP_TOOL_NAMES,
@@ -370,10 +371,14 @@ describe('buildRoleLaunchSpec', () => {
         meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
           stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1' },
       });
+      const launchIdentity = mintRoleLaunchIdentity();
       const accepted = await buildRoleLaunchSpec({
         role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
         featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070', acceptedOperation,
+        launchIdentity,
       });
+      expect(accepted.sid).toBe(launchIdentity.sid);
+      expect(accepted.nativeSessionId).toBe(launchIdentity.nativeSessionId);
       expect(accepted.acceptedOperation).toEqual(acceptedOperation);
       expect(accepted.stack).toEqual(['domain:plain-domain']);
       expect(accepted.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
@@ -482,7 +487,8 @@ describe('buildRoleLaunchSpec', () => {
 
   it('compiles a named composition root with its selected component prompts and source pins', async () => {
     const { saveNamedIdentityComposition, previewNamedIdentityComposition } = await import('./identity-management');
-    const { resolveNamedIdentityCompositionSelection } = await import('./agent-identities/source');
+    const { resolveNamedIdentityCompositionSelection, resolvePinnedIdentityLaunchSelection } =
+      await import('./agent-identities/source');
     const dir = mkdtempSync(join(tmpdir(), 'named-launch-composition-'));
     try {
       for (const [id, slot, prompt] of [
@@ -519,6 +525,10 @@ describe('buildRoleLaunchSpec', () => {
       expect(launch.promptText).toContain('NAMED DOMAIN RULES');
       expect(launch.promptText).toContain('NAMED PRACTICE RULES');
       const selected = await resolveNamedIdentityCompositionSelection(selection.id, dir);
+      await expect(resolvePinnedIdentityLaunchSelection({
+        ref: `composition:${selection.id}`, sourceRevision: selected.sourceRevision,
+        repoDir: dir, stack: selection.componentRefs,
+      })).resolves.toMatchObject({ compositionRootId: selection.id });
       expect(selected.layers.every((layer) => launch.specificationArtifact.inputs.some((entry) =>
         entry.kind === 'blueprint-layer' && entry.ref === layer.id &&
         entry.contentHash === layer.contentHash))).toBe(true);
@@ -531,6 +541,12 @@ describe('buildRoleLaunchSpec', () => {
         promptText: 'ROLE KERNEL', cwd: dir, role: 'su', stack: ['practice:named-practice'],
         compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
       })).rejects.toThrow(/stack changed/);
+      writeFileSync(join(dir, '.papercusp', 'blueprints', 'named-domain', 'blueprint.yaml'),
+        'id: named-domain\nextends: base\nversion: 1.0.1\nslots:\n  - slot: domain\n');
+      await expect(resolvePinnedIdentityLaunchSelection({
+        ref: `composition:${selection.id}`, sourceRevision: selected.sourceRevision,
+        repoDir: dir, stack: selection.componentRefs,
+      })).rejects.toThrow(/source revision or component stack changed/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

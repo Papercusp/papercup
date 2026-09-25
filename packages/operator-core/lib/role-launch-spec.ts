@@ -180,6 +180,17 @@ import type { BlueprintSourceDocument, CompiledAgentSpecification, CompositionPr
 import type { Sql } from 'postgres';
 import type { AcceptedOperationWorkerBinding } from './blueprint/operation-worker-binding';
 
+export interface RoleLaunchIdentity {
+  sid: string;
+  nativeSessionId: string;
+}
+
+/** Mint once at the shared launch seam so account routing can bind the owner
+ * before prompt composition or transcript provenance writes begin. */
+export function mintRoleLaunchIdentity(): RoleLaunchIdentity {
+  return { sid: `role-${randomUUID()}`, nativeSessionId: randomUUID() };
+}
+
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
   role: string;
@@ -217,6 +228,8 @@ export interface BuildRoleLaunchSpecInput {
   stack?: readonly string[] | null;
   /** Host-resolved accepted operation binding; never copied from a launch request. */
   acceptedOperation?: AcceptedOperationWorkerBinding | null;
+  /** Identity minted by mintRoleLaunchIdentity for pre-composition routing. */
+  launchIdentity?: RoleLaunchIdentity;
   /**
    * Initial MCP tool-surface size. There is only ONE effective value —
    * 'trimmed' — for EVERY role (trimmed-only-agent-context-launch-2026-08-27
@@ -727,8 +740,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // caller — so the identity, the config-dir key, and the resume key are all
   // derived from the same `sid`. `role-` prefix mirrors the prior bootstrap-role
   // value so coord/lock owners read identically.
-  const sid = `role-${randomUUID()}`;
-  const nativeSessionId = randomUUID();
+  const { sid, nativeSessionId } = input.launchIdentity ?? mintRoleLaunchIdentity();
 
   let cwd: string;
   let promptText: string;

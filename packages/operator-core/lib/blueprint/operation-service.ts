@@ -1,11 +1,13 @@
 /** Shared, internal blueprint operation service. Public defineTool registrations
  * are deliberately separate; every transport uses this service and its handles. */
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import type { TransactionSql } from 'postgres';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { operationFromSpecification } from '@papercusp/orchestrator/blueprint';
+import { normalizeModelId } from '@papercusp/model-pricing';
+import { readAcceptedBlueprintDirectWorkItem } from './operation-admission';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { getWorkItem, type WorkItem } from '../work-items';
@@ -162,9 +164,11 @@ export function projectBlueprintOperationStatus(
   const cancelling = controls.cancellationRequested || items.some(cancellationRequested);
   let outcome: BlueprintOperationOutcome | null = null;
   if (allSettled) {
-    if (cancelling && items.every((item) => item.state === 'deprecated' || item.state === 'closed')) outcome = 'cancelled';
-    else if (items.some((item) => item.state === 'deprecated' || item.state === 'closed')) outcome = 'dropped';
-    else if (items.every((item) => item.state === 'passed' || item.state === 'resolved')) {
+    const dropped = (item: WorkItem) => item.state === 'dropped' || item.state === 'deprecated' || item.state === 'closed';
+    const succeeded = (item: WorkItem) => item.state === 'done' || item.state === 'passed' || item.state === 'resolved';
+    if (cancelling && items.every(dropped)) outcome = 'cancelled';
+    else if (items.some(dropped)) outcome = 'dropped';
+    else if (items.every(succeeded)) {
       outcome = items.every((item) => item.completionAuthority === 'committed' || item.completionAuthority === 'validated')
         ? 'succeeded' : 'unverified';
     }
@@ -366,16 +370,16 @@ function eventIdentity(kind: string, handle: BlueprintOperationHandle, key: stri
   return kind + ':' + createHash('sha256').update(canonicalJson({ receiptId: handle.receiptId, key })).digest('hex');
 }
 
-function exactJsonValue(value: unknown): unknown {
+function exactJsonValue(value: unknown, kind: 'input' | 'output' = 'input'): unknown {
   let saved: unknown;
   try {
     const encoded = JSON.stringify(value);
     if (encoded === undefined) throw new Error('not JSON');
     saved = JSON.parse(encoded);
   } catch {
-    throw new Error('blueprint operation input must be lossless JSON');
+    throw new Error(`blueprint operation ${kind} must be lossless JSON`);
   }
-  if (!isDeepStrictEqual(saved, value)) throw new Error('blueprint operation input must be lossless JSON');
+  if (!isDeepStrictEqual(saved, value)) throw new Error(`blueprint operation ${kind} must be lossless JSON`);
   return saved;
 }
 
@@ -582,6 +586,80 @@ export type BlueprintOperationResult =
   | { state: 'failed' | 'cancelled' | 'dropped' | 'unavailable'; status: BlueprintOperationStatus; reason: string }
   | { state: 'ready'; status: BlueprintOperationStatus; output: unknown; evidenceRef: string };
 
+/** A launch selector or a requested model cannot prove what served a turn.
+ * Read only transcript request observations from the session whose launch
+ * receipt carries this exact accepted item pin. Other backends need their own
+ * independently reported model seam before they can satisfy this policy. */
+async function verifyDirectOperationModel(
+  sql: Sql,
+  workspaceId: string,
+  workItemId: string,
+  pin: Record<string, unknown>,
+  policy: { mode: 'exact' | 'allowed' | 'preferred'; models: readonly string[]; effort?: string },
+): Promise<string | null> {
+  if (policy.effort) return 'actual reasoning effort is not attested by the worker transcript';
+  const rows = await sql<Array<{
+    agent: string | null; model: string | null; provider: string | null;
+    model_source: string | null; grain: string | null;
+  }>>`
+    SELECT s.agent, u.model, u.provider,
+           u.usage_provenance->>'modelSource' AS model_source,
+           u.usage_provenance->>'grain' AS grain
+      FROM harness_shared.adv_sessions s
+      LEFT JOIN harness_shared.agent_usage_samples u
+        ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
+       AND u.source = 'interactive'
+     WHERE s.workspace_id = ${workspaceId}
+       AND s.feature = ${workItemId}
+       AND s.launch_spec->'acceptedOperation'->'pin' = ${sql.json(pin as JSONValue)}
+     ORDER BY s.id, u.id
+     LIMIT 1001
+  `;
+  if (!rows.length) return 'no accepted worker session reported an actual model';
+  if (rows.length > 1000) return 'model evidence exceeds the bounded verification window';
+  const allowed = new Set(policy.models.map(normalizeModelId));
+  for (const row of rows) {
+    if (row.agent !== 'claude' || row.provider !== 'anthropic' ||
+        row.model_source !== 'transcript' || row.grain !== 'request' || !row.model) {
+      return 'accepted worker has an unreported or unsupported actual model';
+    }
+    if (!allowed.has(normalizeModelId(row.model))) {
+      return `accepted worker reported a model outside the ${policy.mode} policy`;
+    }
+  }
+  return null;
+}
+
+/** Prepare the result before a successful terminal state write. The state
+ * writer merges this receipt with completion evidence in the same transaction;
+ * a missing or incompatible actual model cannot become a successful close. */
+export async function prepareDirectOperationCompletion(
+  sql: Sql,
+  workspaceId: string,
+  item: WorkItem,
+  outputPayload: unknown,
+): Promise<{ operationId: string; specificationRevision: string; output: unknown; evidenceRef: string }> {
+  if (!item.harness) throw new Error('blueprint operation completion requires a harness');
+  const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(sql, workspaceId, item);
+  if (pin.harnessSlug !== item.harness) throw new Error('blueprint operation completion harness differs from its pin');
+  if (outputPayload === undefined) throw new Error('blueprint operation completion requires outputPayload');
+  const output = exactJsonValue(outputPayload, 'output');
+  const valid = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
+  if (!valid.ok) throw new Error(`blueprint operation output is invalid: ${valid.errors.join('; ')}`);
+  if (operation.policy.model) {
+    const modelFailure = await verifyDirectOperationModel(
+      sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model,
+    );
+    if (modelFailure) throw new Error(`blueprint operation model attestation failed: ${modelFailure}`);
+  }
+  return {
+    operationId: pin.operationId,
+    specificationRevision: pin.specificationRevision,
+    output,
+    evidenceRef: `work-item:completion:${item.id}`,
+  };
+}
+
 /** Read a typed output from the canonical target only. P-008 owns the write-side
  * completion validator; a terminal row without validated output is explicit. */
 export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationResult> {
@@ -601,6 +679,19 @@ export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperation
     );
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
     const { operation } = operationFromSpecification(specification, handle.operationId);
+    if (operation.policy.model) {
+      const pin = handle.target.kind === 'work-item' && items[0]?.payload &&
+        typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
+        ? (items[0].payload as Record<string, unknown>).blueprintOperation : null;
+      if (!pin || typeof pin !== 'object' || Array.isArray(pin) ||
+          handle.target.kind !== 'work-item' || operation.execution?.kind !== 'agent') {
+        return { state: 'unavailable', status, reason: 'model policy has no attested agent worker result' };
+      }
+      const modelFailure = await verifyDirectOperationModel(
+        sql, handle.workspaceId, handle.target.id, pin as Record<string, unknown>, operation.policy.model,
+      );
+      if (modelFailure) return { state: 'unavailable', status, reason: modelFailure };
+    }
     const raw = handle.target.kind === 'plan' ? run?.outputs :
       (items[0]?.payload && typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
         ? (items[0].payload as Record<string, unknown>).blueprintResult : null);

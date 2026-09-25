@@ -28,7 +28,9 @@ const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const recordSuLaunchSpecMock = vi.fn(async () => true);
 const requestSessionIdentityActivationMock = vi.fn(async () => ({}));
 const buildRoleLaunchSpecMock = vi.fn();
+const mintRoleLaunchIdentityMock = vi.fn(() => ({ sid: 'role-abc', nativeSessionId: 'nsid-abc' }));
 const resolveAcceptedOperationWorkerBindingMock = vi.fn(async (_input: unknown) => null as unknown);
+const selectAcceptedOperationWorkerModelMock = vi.fn((_binding: unknown, _requested: unknown, _agent: unknown) => null as unknown);
 const resolveProjectDirMock = vi.fn(async (_slug: string, _workspace: string) => LC_DIR);
 const roleConsumesMock = vi.fn();
 const writeRoleCodexHomeMock = vi.fn();
@@ -91,9 +93,14 @@ vi.mock('../../agent-tools/coordination/control-anchor', async (orig) => ({
   requestSessionIdentityActivation: requestSessionIdentityActivationMock,
 }));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
-vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
+vi.mock('../../role-launch-spec', () => ({
+  buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a),
+  mintRoleLaunchIdentity: () => mintRoleLaunchIdentityMock(),
+}));
 vi.mock('../../blueprint/operation-worker-binding', () => ({
   resolveAcceptedOperationWorkerBinding: (input: unknown) => resolveAcceptedOperationWorkerBindingMock(input),
+  selectAcceptedOperationWorkerModel: (binding: unknown, requested: unknown, agent: unknown) =>
+    selectAcceptedOperationWorkerModelMock(binding, requested, agent),
 }));
 vi.mock('../../spawn-config', async (orig) => ({
   ...(await orig<typeof import('../../spawn-config')>()),
@@ -198,6 +205,7 @@ beforeEach(() => {
   recordSuLaunchSpecMock.mockResolvedValue(true);
   requestSessionIdentityActivationMock.mockResolvedValue({});
   resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+  selectAcceptedOperationWorkerModelMock.mockReset().mockReturnValue(null);
   resolveProjectDirMock.mockResolvedValue(LC_DIR);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
   resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
@@ -230,6 +238,52 @@ beforeEach(() => {
 });
 
 describe('bootstrap-role', () => {
+  it('selects the accepted operation model before account routing and persists its selection', async () => {
+    const modelPolicy = { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' };
+    const modelSelection = { model: 'claude-opus-4-8', requestedModel: 'claude-opus-4-8',
+      backend: 'claude', source: 'operation-policy' };
+    resolveAcceptedOperationWorkerBindingMock.mockResolvedValueOnce({
+      workItemId: 'F-001', harnessSlug: 'papercup', modelPolicy,
+      pin: { kind: 'blueprint-operation' }, identity: {}, stack: [], requiredTools: [],
+    });
+    selectAcceptedOperationWorkerModelMock.mockReturnValueOnce(modelSelection);
+    const json = await (await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
+      feature: 'F-001', model: 'claude-opus-4-8' })).json();
+    expect(json.status).toBe('ok');
+    expect(json.model).toBe('claude-opus-4-8');
+    expect(selectAcceptedOperationWorkerModelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ modelPolicy }), 'claude-opus-4-8', 'claude',
+    );
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'claude', 'role-abc', false, 'claude-opus-4-8');
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      acceptedOperation: expect.objectContaining({ modelPolicy, modelSelection }),
+    }));
+  });
+
+  it('refuses a model-policy mismatch before routing an account or recording a session', async () => {
+    resolveAcceptedOperationWorkerBindingMock.mockResolvedValueOnce({ modelPolicy: {
+      mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail',
+    } });
+    selectAcceptedOperationWorkerModelMock.mockImplementationOnce(() => {
+      throw new Error('requested model is outside the accepted exact model policy');
+    });
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
+      feature: 'F-001', model: 'claude-sonnet-4-6' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'operation_model_denied' });
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a role spec whose signed owner differs from the account-routed owner', async () => {
+    buildRoleLaunchSpecMock.mockResolvedValueOnce({ sid: 'role-other', nativeSessionId: 'nsid-abc' });
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ code: 'role_identity_mismatch' });
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'claude', 'role-abc', false, null);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
   it('persists and activates a restricted role artifact before returning its launch', async () => {
     const restrictedArtifact = { configuration: { grants: { requires: [], optional: [], suggestedProviders: {} } } };
     const acceptedOperation = {
@@ -238,8 +292,12 @@ describe('bootstrap-role', () => {
         specificationRevision: 'c'.repeat(64), operationVersion: '1.0.0', input: {} },
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
       stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
+      modelPolicy: { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' },
     };
+    const modelSelection = { model: 'claude-opus-4-8', requestedModel: null,
+      backend: 'claude', source: 'operation-policy' };
     resolveAcceptedOperationWorkerBindingMock.mockResolvedValueOnce(acceptedOperation);
+    selectAcceptedOperationWorkerModelMock.mockReturnValueOnce(modelSelection);
     buildRoleLaunchSpecMock.mockImplementationOnce(async (input: { stack?: string[] | null; acceptedOperation?: unknown }) => ({
       role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
       cwd: LC_DIR, promptText: 'RESTRICTED WORKER', promptFile: '/h/prompts/worker.md',
@@ -265,6 +323,8 @@ describe('bootstrap-role', () => {
         specificationRevision: 'c'.repeat(64), identity: acceptedOperation.identity,
         pin: acceptedOperation.pin,
         requiredTools: ['work_items:get'],
+        modelPolicy: acceptedOperation.modelPolicy,
+        modelSelection,
       },
     }));
     expect(resolveAcceptedOperationWorkerBindingMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -416,15 +476,15 @@ describe('bootstrap-role', () => {
 
   it('allows a no-feature role (scoper) when consumes.feature=none', async () => {
     roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'optional' });
-    buildRoleLaunchSpecMock.mockResolvedValue({
+    buildRoleLaunchSpecMock.mockImplementation(async (input: { launchIdentity: { sid: string; nativeSessionId: string } }) => ({
       role: 'scoper', runId: 'scoper-1', spawnId: 'sp-2', harnessSlug: 'papercup', featureId: null,
       cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
       mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&sig=y',
       mcpJsonContents: '{}',
-      sid: 'role-sco', nativeSessionId: 'nsid-sco',
-      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-sco'),
-      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-sco'),
-    });
+      ...input.launchIdentity,
+      claudeConfigDir: join(LC_DIR, 'session-claude', input.launchIdentity.sid),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', input.launchIdentity.sid),
+    }));
     const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup' });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -434,14 +494,14 @@ describe('bootstrap-role', () => {
 
   it('plan-consuming role (scoper, consumes.plan=optional) → fetches + injects plan context', async () => {
     roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'optional' });
-    buildRoleLaunchSpecMock.mockResolvedValue({
+    buildRoleLaunchSpecMock.mockImplementation(async (input: { launchIdentity: { sid: string; nativeSessionId: string } }) => ({
       role: 'scoper', runId: 'scoper-1', spawnId: 'sp-3', harnessSlug: 'papercup', featureId: null,
       cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
       mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&sig=z', mcpJsonContents: '{}',
-      sid: 'role-sco2', nativeSessionId: 'nsid-sco2',
-      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-sco2'),
-      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-sco2'),
-    });
+      ...input.launchIdentity,
+      claudeConfigDir: join(LC_DIR, 'session-claude', input.launchIdentity.sid),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', input.launchIdentity.sid),
+    }));
     const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup', plan: 'my-plan' });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -545,7 +605,7 @@ describe('bootstrap-role', () => {
     const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001', account: 'codex-main' });
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', undefined, false, 'gpt-5.6-sol:xhigh');
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', 'role-abc', false, 'gpt-5.6-sol:xhigh');
     expect(json.accountNotice).toMatch(/pinned to Codex account codex-main/i);
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
@@ -630,15 +690,15 @@ describe('bootstrap-role — WI-4608 context_size threading', () => {
   // depends on the retired tier being launchable. Coverage that a mug CAN
   // bootstrap with the flag ON lives in the D-022 SHOW control below.
   it('explicit context_size:"trimmed" is forwarded to buildRoleLaunchSpec and surfaced on the response', async () => {
-    buildRoleLaunchSpecMock.mockResolvedValueOnce({
+    buildRoleLaunchSpecMock.mockImplementationOnce(async (input: { launchIdentity: { sid: string; nativeSessionId: string } }) => ({
       role: 'scoper', runId: 'scoper-ctx-1', spawnId: 'sp-scoper', harnessSlug: 'papercup', featureId: null,
       cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
       mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&tools=a%2Cb&sig=x', mcpJsonContents: '{}',
-      sid: 'role-scoper', nativeSessionId: 'nsid-scoper',
-      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-scoper'),
-      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-scoper'),
+      ...input.launchIdentity,
+      claudeConfigDir: join(LC_DIR, 'session-claude', input.launchIdentity.sid),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', input.launchIdentity.sid),
       contextSize: 'trimmed',
-    });
+    }));
     roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
     const res = await callPost({ role: 'scoper', agent: 'claude', harness_slug: 'papercup', context_size: 'trimmed' });
     expect(res.status).toBe(200);
