@@ -35,7 +35,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervi
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { processMonotonicClock } from './process-monotonic-clock';
 import { inspectCarryNativeTurn, inspectCarrySourceRead, createCarryTrialRecipe, inspectCarryTaskResponse, inspectCarryPreparationResponse,
-  inspectCarryRequestPopulation, inspectCarryNativePopulation, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
+  inspectCarryRequestPopulation, inspectCarryNativePopulation, measureCarryArmTiming, type CarryCanonicalUsageRow } from './launch-cost/launch-cost-metrics';
 import { captureCarryCanonicalUsagePopulation, captureCarryRequestEvidence } from './launch-cost/scan-launch-transcripts';
 import { GatewayRequestTelemetry } from './inference-gateway/request-stage-telemetry';
 import * as dbOrg from '@papercusp/db-org';
@@ -45,7 +45,7 @@ import { ingestInteractiveUsage } from './interactive-usage/ingest-claude-transc
 import { parseCodexChunk, codexSessionIdForFile } from './interactive-usage/ingest-adapters';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import sourceReadTool from './agent-tools/capability/read';
-import { captureCompletedCarrySource, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
+import { captureCompletedCarrySource, captureCarrySourcePreflight, recheckCarrySourceSnapshot, captureCarryNativeConfiguration,
   captureCarryArtifactManifest, recheckCarryArtifactManifest, captureCarryRuntimeSnapshot, recheckCarryRuntimeSnapshot,
   type CarrySourceSnapshot, type CarryArtifactInput, type CarryDependencyScope } from './launch-cost/scan-launch-transcripts';
 
@@ -888,6 +888,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       codexPool: createFailoverPool([{ accountId: 'fixture', token: async () => 'PRIVATE_UNPAID' }]),
       concurrency: 1, maxQueueWaitMs: 2000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const captures: Parameters<typeof inspectCarryNativePopulation>[0][] = [];
+    const armTimings: Array<{ arm: string; preflightAgeMs: number; firstDispatchRef: string;
+      measurement: ReturnType<typeof measureCarryArmTiming> }> = [];
     const manifests: Awaited<ReturnType<typeof captureCarryArtifactManifest>>[] = [];
     const runtimeBoundaries: Array<{ threadId: string; turnId?: string; phase: string;
       runtime: Awaited<ReturnType<typeof captureCarryRuntimeSnapshot>> }> = [];
@@ -962,13 +964,18 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             ['usage-parser', './interactive-usage/ingest-adapters.ts'], ['usage-writer', './interactive-usage/ingest-claude-transcripts.ts'],
             ['gateway', './inference-gateway/gateway.ts'], ['gateway-observer', './inference-gateway/request-stage-telemetry.ts'],
             ['clock', './process-monotonic-clock.ts'],
+            ['import-extractor', '../../../scripts/check-transitive-boundary.mjs'],
             ...(readSource ? [['source-read-tool', './agent-tools/capability/read.ts']] : []),
           ].map(([id, path]) => ({ id, filePath: fileURLToPath(new URL(path, import.meta.url)), maxBytes: 1024 * 1024 })),
           { id: 'pricing', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing')), maxBytes: 1024 * 1024 },
           { id: 'pricing-package', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing/package.json')), maxBytes: 1024 * 1024 },
+          { id: 'typescript-parser', filePath: fileURLToPath(import.meta.resolve('typescript')), maxBytes: 32 * 1024 * 1024 },
           ...extra.artifacts,
         ];
         const manifest = await captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
+          scriptArtifactIds: ['driver', 'transport', 'scanner', 'recipe-checker', 'launcher', 'usage-parser',
+            'usage-writer', 'gateway', 'gateway-observer', 'clock', 'wrapper-script', 'pricing', 'import-extractor',
+            ...(readSource ? ['source-read-tool'] : [])],
           dependencyScope: { recipeSha256: recipe.sha256,
             roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'launcher', artifactIds: ['launcher'] },
               { role: 'native-runtime', artifactIds: frozenRuntime.map(a => a.id) },
@@ -978,10 +985,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
               ...extra.roots],
             nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
             unresolved: [...mutablePaths.map(path => `unfrozen writable native file: ${path}`),
-              'selected JS imports only; transitive wrapper/launcher/instrument scripts are not censused',
+              'AST sites from selected frozen scripts only; unresolved relatives, packages, computed/indirect loaders and runtime export conditions remain uncensused',
               'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
               'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
         manifests.push(manifest);
+        expect(manifest.scriptCensus).toMatchObject({ runtimeClosureEstablished: false });
+        expect(manifest.scriptCensus!.sites.some(site => site.disposition === 'unbound-relative')).toBe(true);
+        expect(manifest.scriptCensus!.sites.some(site => site.disposition === 'external-module')).toBe(true);
         expect(manifest.dependencyScope!.unresolved).toEqual(expect.arrayContaining(
           mutablePaths.map(path => `unfrozen writable native file: ${path}`)));
         expect(runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path))).toBe(true);
@@ -1025,6 +1035,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       };
       const options = { model: 'gpt-6-sol', modelProvider: 'cache_protocol_probe', cwd: nativeHome,
         approvalPolicy: 'never', sandbox: 'read-only' };
+      const preparationStartedAt = processMonotonicClock.now();
       const preparation = await openNative();
       const started = await preparation.p.request({ method: 'thread/start', params: options });
       let sourceId = String((started.thread as RpcFrame).id);
@@ -1062,6 +1073,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       source = await captureCompletedCarrySource(preparation.p, sourceId, prepared.turnId);
       expect(source.ancestors).toHaveLength(ancestorDepth);
+      // Read the installed native rollout and its actual completion receipt.
+      // The loopback provider scripts 1,200 input tokens, below both registered
+      // history bands; never turn fixture byte size into a qualified cohort.
+      const sourcePreflight = await captureCarrySourcePreflight({ source, sourceId: 'S-I0', receipts: preparation.receipts });
+      expect(sourcePreflight).toMatchObject({ dispatchAuthorized: false, missing: [],
+        history: { inputTokens: 1200, inBand: false }, idle: { clockId: processMonotonicClock.id } });
+      expect(sourcePreflight.idle!.ageMs).toBeGreaterThanOrEqual(0);
+      console.info('CARRY_SOURCE_PREFLIGHT_RECEIPT', JSON.stringify(sourcePreflight));
       // A stopped wrapper alone is insufficient evidence of a closed native
       // storage writer. Check every process observed in this preparation peer.
       if (homeExperiment) await vi.waitFor(() => {
@@ -1277,9 +1296,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       for (const arm of armOrder) {
         assertSourceGuards();
-        await recheckCarrySourceSnapshot(source);
+        const armPreflight = await captureCarrySourcePreflight({ source, sourceId: 'S-I0', receipts: preparation.receipts });
+        expect(armPreflight.history).toEqual(sourcePreflight.history);
+        expect(armPreflight.idle!.completedAtMs).toBe(sourcePreflight.idle!.completedAtMs);
         // Each arm starts from the same closed mutable bytes at the same paths.
         if (resetHome) expect(homeSnapshot(nativeHome)).toEqual(initialHome);
+        const armStartedAt = processMonotonicClock.now();
         const live = await openNative();
         const opened = await live.p.request({ method: arm === 'control' ? 'thread/fork' : 'thread/start',
           params: { ...options, ...(arm === 'control' ? { threadId: sourceId } : {}) } });
@@ -1358,7 +1380,51 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(modelWitnesses.find(witness => witness.turnId === previousTurn)?.model).toBe('gpt-6-sol');
         }
         captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
-        expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
+        const armPopulation = inspectCarryNativePopulation(captures.at(-1)!);
+        expect(armPopulation.status).toBe('closed-peer-reconciled');
+        // Include candidate carry/startup writes as well as task/recovery writes.
+        // Observe the HTTP send boundary; native turn/start is earlier and cannot
+        // establish the idle gap. The whole gateway population is reconciled below.
+        const armRows = gateway.stats().requestStages!.recent.filter(row => row.ownerId === owner &&
+          row.nativeCorrelation.status === 'observed' && row.nativeCorrelation.threadId === threadId);
+        const dispatches = armRows.flatMap(row => {
+          expect(armPopulation.turns.some(turn => turn.turnId === row.nativeCorrelation.turnId)).toBe(true);
+          expect(row.upstreamWrites.droppedCalls).toBe(0);
+          expect(row.upstreamWrites.calls).toHaveLength(row.attempts);
+          return row.upstreamWrites.calls.map(call => {
+            expect(call).toMatchObject({ clockId: processMonotonicClock.id, matchedRequests: 1,
+              unexpectedRequests: 0, droppedRequests: 0, droppedEvents: 0 });
+            const headers = call.events.filter(event => event.phase === 'headers-write-start');
+            expect(headers).toHaveLength(1);
+            return { clockId: call.clockId, atMs: headers[0].atMs,
+              evidenceRef: `gateway:${row.requestId}:call:${call.ordinal}:headers-write-start` };
+          });
+        }).sort((a, b) => a.atMs - b.atMs);
+        expect(dispatches.length).toBeGreaterThan(0);
+        const useful = live.receipts.filter(receipt => receipt.phase === 'received' && receipt.frame.method === 'item/completed' &&
+          (receipt.frame.params as RpcFrame).threadId === threadId && (receipt.frame.params as RpcFrame).turnId === result.turnId &&
+          ((receipt.frame.params as RpcFrame).item as RpcFrame).type === 'agentMessage' &&
+          ((receipt.frame.params as RpcFrame).item as RpcFrame).text === result.trace.finalResponse);
+        expect(useful).toHaveLength(1);
+        const chargeToArmId = recipe.sources.find(source => source.id === 'S-I0')!.chargeToArmId;
+        const measurement = measureCarryArmTiming({
+          preparationStarted: { clockId: processMonotonicClock.id, atMs: preparationStartedAt,
+            evidenceRef: `controller:${processMonotonicClock.id}:preparation-start` },
+          predecessorCompleted: { clockId: armPreflight.idle!.clockId, atMs: armPreflight.idle!.completedAtMs,
+            evidenceRef: armPreflight.idle!.evidenceRef },
+          armStarted: { clockId: processMonotonicClock.id, atMs: armStartedAt,
+            evidenceRef: `controller:${processMonotonicClock.id}:${arm}:start` },
+          firstRequestDispatched: dispatches[0],
+          firstUsefulResponse: { clockId: useful[0].clockId, atMs: useful[0].atMs,
+            evidenceRef: `native:${useful[0].peerId}:${useful[0].sequence}` },
+          preparationAllocation: chargeToArmId === `S-I0-${taskId}:${arm}` ? 'this-arm' : 'other-arm',
+          allocationEvidenceRef: `recipe:${recipe.sha256}:${chargeToArmId}`, idleBand: 'under-60s',
+        });
+        expect(measurement.missing).toEqual([]);
+        expect(['measured', 'out-of-band']).toContain(measurement.status);
+        expect(measurement.metrics!.observedIdleMs).toBeGreaterThanOrEqual(armPreflight.idle!.ageMs);
+        armTimings.push({ arm, preflightAgeMs: armPreflight.idle!.ageMs,
+          firstDispatchRef: dispatches[0].evidenceRef, measurement });
         await recheckCarrySourceSnapshot(source);
         assertSourceGuards();
         if (resetHome) {
@@ -1433,11 +1499,17 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(incomplete.population!.unmatchedGatewayRequestIds.length).toBeGreaterThan(0);
         }
         console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
+          armTimings, timingScope: 'local HTTP headers write to scripted task response; not remote receipt or natural-first-two acceptance',
           sourceReadCount: observedReads.length, sourceWindow, responseQuality: 'not-established',
           modelWitnesses, modelWitnessScope: 'native-client-request-and-persisted-context; no authenticated serving account',
           homeRestored: resetHome, armOrder, homeEntries: initialHome.length, rolloutMoves,
           homeInputSha256: resetHome ? createHash('sha256').update(readFileSync(homeProofPath)).digest('hex') : null,
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
+          scriptCensus: manifests.map(manifest => ({ scriptArtifactIds: manifest.scriptCensus!.scriptArtifactIds,
+            sites: manifest.scriptCensus!.sites.length,
+            dispositions: Object.fromEntries([...new Set(manifest.scriptCensus!.sites.map(site => site.disposition))].sort()
+              .map(disposition => [disposition, manifest.scriptCensus!.sites.filter(site => site.disposition === disposition).length])),
+            runtimeClosureEstablished: false })),
           preparationManifestSha256: preparationManifest.sha256,
           runtimeBoundarySha256, runtimeBoundaryCount: runtimeBoundaries.length,
           sourceWriterGuardCount: sourceGuards.length, sourceWriterGuardScope: 'cooperating-native-thread-writers',
