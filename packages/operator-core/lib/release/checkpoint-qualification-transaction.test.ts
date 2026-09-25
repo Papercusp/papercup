@@ -517,6 +517,56 @@ describe('logical checkpoint qualification transaction', () => {
     }).status).toBe('conflict');
   });
 
+  it('never lets a fresh runner inherit the run id bound to an ended runner (WI-10002602 re-wedge)', () => {
+    // First scheduled runner binds run-1, then settles pre-suite (waiting, runner released).
+    const reserved1 = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', leaseDurationMs: 1_000, started: false, nowMs: 200,
+    }).transaction;
+    const started1 = reserveQualificationRunner(reserved1, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', runId: 'run-1', candidate: 'candidate-1',
+      pid: 11, pidIdentity: 'boot-a:11', leaseDurationMs: 2_000, started: true, nowMs: 300,
+      evidenceRefs: ['checkpoint-run:run-1'],
+    }).transaction;
+    const waiting = settleQualificationTransaction(started1, {
+      attemptId: 'attempt-1', reason: 'repair-in-progress', candidate: 'candidate-1', runId: 'run-1', nowMs: 400,
+    });
+    expect(waiting).toMatchObject({ status: 'updated', transaction: { phase: 'waiting', runId: 'run-1', currentPhysicalRunner: null } });
+
+    // A later fire reserves a NEW runner: run-1 belongs to the consumed runner, so it is not inherited.
+    const reserved2 = reserveQualificationRunner(waiting.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-2', leaseDurationMs: 1_000, started: false, nowMs: 500,
+    });
+    expect(reserved2).toMatchObject({ status: 'updated', transaction: { runId: null, phase: 'running' } });
+    const attach = (from: typeof waiting.transaction) => reserveQualificationRunner(from, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-2', runId: 'run-2', candidate: 'candidate-1',
+      pid: 22, pidIdentity: 'boot-a:22', leaseDurationMs: 2_000, started: true, nowMs: 600,
+      evidenceRefs: ['checkpoint-run:run-2'],
+    });
+    expect(attach(reserved2.transaction)).toMatchObject({ status: 'updated', transaction: { runId: 'run-2' } });
+
+    // A row ALREADY wedged by the old code (the new runner inherited run-1) still activates.
+    const wedged = { ...reserved2.transaction, runId: 'run-1' };
+    const unwedged = attach(wedged);
+    expect(unwedged).toMatchObject({
+      status: 'updated',
+      transaction: { runId: 'run-2', currentPhysicalRunner: { id: 'gate-fire-2', phase: 'materializing' } },
+    });
+    // ... and a verdict from the new run settles against it instead of being discarded.
+    expect(settleQualificationTransaction(wedged, {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, candidate: 'candidate-1', runId: 'run-2', nowMs: 650,
+    }).status).toBe('updated');
+
+    // Single flight is intact: once run-2 is bound to the live runner, a different run id conflicts
+    // on activation, and a zombie verdict from ended run-1 cannot settle the attempt.
+    expect(reserveQualificationRunner(unwedged.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-2', runId: 'run-3', leaseDurationMs: 1_000,
+      started: true, nowMs: 700, evidenceRefs: ['checkpoint-run:run-3'],
+    }).status).toBe('conflict');
+    expect(settleQualificationTransaction(unwedged.transaction, {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, candidate: 'candidate-1', runId: 'run-1', nowMs: 800,
+    }).status).toBe('conflict');
+  });
+
   it('lets a live physical-run lease outrank a stale eligibility action', () => {
     const running = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',
