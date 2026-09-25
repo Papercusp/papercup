@@ -2771,6 +2771,22 @@ if [ "$_coalesce_enabled" = 1 ]; then
         _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
         [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
       fi
+      # A superproject records only the gitlink's dirty marker; its status and
+      # diff do not contain edits to tracked files inside an initialized
+      # submodule. Hash each recursive submodule's own status and tracked diff
+      # so a second edit while it is already dirty cannot replay the prior
+      # source verdict.
+      if _submodule_state="$(
+        git submodule foreach --quiet --recursive '
+          _pc_sub_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" || exit 1
+          printf "%s\0%s\0" "$displaypath" "$_pc_sub_status"
+          git diff --no-ext-diff --binary HEAD -- || exit 1
+          printf "\0"
+        ' 2>/dev/null | sha1sum
+      )"; then
+        _submodule_state="${_submodule_state%% *}"
+        [ -n "$_submodule_state" ] && _tree_token="$_tree_token|submodules:$_submodule_state"
+      fi
     fi
     if [ "$_git_is_worktree" = 0 ]; then
       _fs_state="$(_pc_heavy_non_git_tree_token 2>/dev/null || true)"
