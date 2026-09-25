@@ -13,13 +13,19 @@ const h = vi.hoisted(() => ({
   setPresenceFleet: vi.fn(),
   recolorCallerTerminal: vi.fn(),
   takeFleetLeadership: vi.fn(),
+  getModeSubject: vi.fn(),
+}));
+
+vi.mock('../../modes/store', () => ({
+  getModeSubject: (...args: unknown[]) => h.getModeSubject(...args),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (...args: unknown[]) => h.getFleet(...args),
 }));
-vi.mock('../coordination/presence', () => ({
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence')>()),
   heartbeatPresence: (...args: unknown[]) => h.heartbeatPresence(...args),
   setPresenceFleet: (...args: unknown[]) => h.setPresenceFleet(...args),
 }));
@@ -52,6 +58,7 @@ const invoke = (args: Record<string, unknown>) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.getModeSubject.mockResolvedValue(null);
   h.getFleet.mockResolvedValue({
     fleetSlug: 'alpha',
     leaderOwnerId: 'su-leader',
@@ -68,6 +75,16 @@ beforeEach(() => {
 });
 
 describe('fleet:join P-016 suggested watches', () => {
+  it('refuses both member and leader joins for a GOAL holder before membership writes', async () => {
+    h.getModeSubject.mockResolvedValue('goal-1');
+    const member = parse(await invoke({ fleet: 'alpha', as: 'member' }));
+    const leader = parse(await invoke({ fleet: 'alpha', as: 'leader' }));
+    expect(member.error).toBe('goal_execution_fleet_membership_forbidden');
+    expect(leader.error).toBe('goal_plan_fleet_self_leadership');
+    expect(h.getFleet).not.toHaveBeenCalled();
+    expect(h.setPresenceFleet).not.toHaveBeenCalled();
+    expect(h.takeFleetLeadership).not.toHaveBeenCalled();
+  });
   it('advertises only the growable trimmed context for leader joins', () => {
     expect(tool.args.safeParse({ fleet: 'alpha', as: 'leader', contextSize: 'trimmed' }).success).toBe(true);
     expect(tool.args.safeParse({ fleet: 'alpha', as: 'leader', contextSize: 'full' }).success).toBe(false);

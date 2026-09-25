@@ -25,6 +25,8 @@ import {
   type LeaderControlOutcome,
 } from './leader-control';
 import { clearOperatorCancelledAwaits } from '../../events/await/store';
+import { getModeSubject } from '../../modes/store';
+import { resolveGoalFleetLeadership } from './goal-fleet-leadership';
 
 /** P-009: the outcome of the become-a-leader compaction-cap re-seed (below). */
 export interface LeaderReseedOutcome {
@@ -187,6 +189,26 @@ export async function takeFleetLeadership(
 ): Promise<TakeLeadershipOutcome> {
   const slug = fleet.fleetSlug;
   const previousLeader = fleet.leaderOwnerId; // may be null, or already === caller
+
+  // All leadership transfers, including leader-brief's automatic recovery,
+  // converge here. A tool-level refusal alone leaves that internal path open.
+  let goalHolderSubject: string | null;
+  try {
+    goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+  } catch (error) {
+    throw Object.assign(new Error(`GOAL holder role could not be verified: ${String(error)}`), {
+      code: 'goal_holder_role_unreadable',
+    });
+  }
+  const leadership = resolveGoalFleetLeadership({
+    goalHolderSubject,
+    requested: 'caller',
+    callerOwnerId: ownerId,
+    existingLeaderOwnerId: previousLeader,
+  });
+  if (!leadership.ok) {
+    throw Object.assign(new Error(leadership.message), { code: 'goal_plan_fleet_self_leadership' });
+  }
 
   // Validate the scope BEFORE the registry write. A successful leadership transfer
   // without a concrete fleet binding makes every subsequent scoped request stale.

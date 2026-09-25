@@ -101,6 +101,7 @@ import {
   getClaimSpec,
 } from '../../scheduler/claim-spec-store';
 import { getPresence, heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
+import { declareCoupling } from '../../coord/couplings';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { checkPlanStartable, startVerdictForRow } from '../plans/plan-start-gate';
@@ -2965,6 +2966,7 @@ export default defineTool({
     // is already recorded. That retry must remain a delegator, not join the fleet as a member.
     // An unrelated pre-existing fleet keeps the historical ignored-spawn/top-up behavior.
     let delegatedSpawnRetry = false;
+    let delegatedRecordedLeaderOwnerId: string | null = null;
     try {
       const { record, created } = await createFleetIfAbsent({
         workspaceId,
@@ -3007,6 +3009,7 @@ export default defineTool({
           // mint a rival leader while the recorded leader is live or liveness is unknown.
           delegatedSpawnRetry =
             record.owner === ownerId && record.leaderOwnerId != null && record.leaderOwnerId !== ownerId;
+          if (delegatedSpawnRetry) delegatedRecordedLeaderOwnerId = record.leaderOwnerId;
           leaderSpawnSkipped = delegatedSpawnRetry
             ? `\`leader:'spawn'\` retry recognized: fleet \`${fleetSlug}\` was already handed to spawned leader ` +
               `\`${record.leaderOwnerId}\`; no second leader was spawned and the caller remains outside the fleet.`
@@ -4992,6 +4995,42 @@ export default defineTool({
       };
     }
 
+    // The GOAL holder and its delegated leader must be coupled by the launch
+    // itself. A returned instruction to call coord:couple is easy to miss, and a
+    // retry against an already-led fleet must repair a missing edge as well.
+    // The leader may already be running, so a coupling-store failure is reported
+    // as a typed partial result rather than pretending the launch did not happen.
+    let goalLeaderCoupling: {
+      status: 'coupled' | 'failed' | 'no-registered-leader';
+      peerOwnerId: string | null;
+      error: string | null;
+    } | null = null;
+    if (goalHolderSubject && callerExcludedFromFleet) {
+      const peerOwnerId = spawnedLeader?.registered
+        ? spawnedLeader.ownerId
+        : delegatedSpawnRetry
+          ? delegatedRecordedLeaderOwnerId
+          : null;
+      if (!peerOwnerId) {
+        goalLeaderCoupling = { status: 'no-registered-leader', peerOwnerId: null, error: null };
+      } else {
+        try {
+          const edge = await declareCoupling({
+            workspaceId,
+            agentA: ownerId,
+            agentB: peerOwnerId,
+            declaredBy: ownerId,
+            reason: `GOAL ${goalHolderSubject} delegated fleet ${fleetSlug} leadership`,
+          });
+          goalLeaderCoupling = edge
+            ? { status: 'coupled', peerOwnerId, error: null }
+            : { status: 'failed', peerOwnerId, error: 'coupling-store-returned-no-edge' };
+        } catch (error) {
+          goalLeaderCoupling = { status: 'failed', peerOwnerId, error: String(error) };
+        }
+      }
+    }
+
     const waveIndices: number[][] = [];
     // EI-20437060078324174: members whose verification window expired WITHOUT an
     // observation either way. Not failures — no 502, no failed[] entry. They are
@@ -5551,8 +5590,7 @@ export default defineTool({
               `with it at launch.`,
           );
           lines.push(
-            `  ↳ Stay connected without polling: \`coord:couple { b: "${spawnedLeader.ownerId}" }\` makes its state ` +
-              `visible to you, and \`coord:send\` reaches it directly. It is addressable NOW — the identity was pinned ` +
+            `  ↳ \`coord:send\` reaches ${spawnedLeader.ownerId} directly. It is addressable NOW — the identity was pinned ` +
               `before the fleet row was written — even though it is still booting.`,
           );
         } else if (spawnedLeader) {
@@ -5585,6 +5623,14 @@ export default defineTool({
         // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
         LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       }
+      if (goalLeaderCoupling?.status === 'coupled') {
+        lines.push(`  ↳ GOAL holder automatically coupled to delegated leader \`${goalLeaderCoupling.peerOwnerId}\`.`);
+      } else if (goalLeaderCoupling?.status === 'failed') {
+        lines.push(
+          `  ⚠ GOAL leader coupling failed for \`${goalLeaderCoupling.peerOwnerId}\`: ${goalLeaderCoupling.error}. ` +
+            `The fleet launch remains in effect; repair with \`coord:couple { b: "${goalLeaderCoupling.peerOwnerId}" }\`.`,
+        );
+      }
       if (leaderSpawnSkipped) lines.push(leaderSpawnSkipped);
       if (baselineApplied) {
         lines.push(
@@ -5616,6 +5662,7 @@ export default defineTool({
         // (coord:send / coord:presence / coord:couple) from the moment this returns —
         // before that agent has finished booting.
         spawnedLeader,
+        goalLeaderCoupling,
         // Non-null when `leader:'spawn'` was asked for and deliberately NOT honored
         // (the fleet already existed with a leader). Surfaced rather than silent: the
         // caller believes it is not leading, and on this path it may well be.

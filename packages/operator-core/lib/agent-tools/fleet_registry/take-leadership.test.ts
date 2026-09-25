@@ -31,6 +31,11 @@ const h = vi.hoisted(() => ({
   resolveAgentIdentity: vi.fn(),
   recolorViaPty: vi.fn(),
   getClaimSpecRecord: vi.fn(),
+  getModeSubject: vi.fn(),
+}));
+
+vi.mock('../../modes/store', () => ({
+  getModeSubject: (...a: unknown[]) => h.getModeSubject(...a),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
@@ -39,7 +44,8 @@ vi.mock('../../agent-fleets-store', () => ({
   setFleetLeader: (...a: unknown[]) => h.setFleetLeader(...a),
   resolveFleetScheme: (...a: unknown[]) => h.resolveFleetScheme(...a),
 }));
-vi.mock('../coordination/presence', () => ({
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence')>()),
   heartbeatPresence: (...a: unknown[]) => h.heartbeatPresence(...a),
   setPresenceFleet: (...a: unknown[]) => h.setPresenceFleet(...a),
 }));
@@ -92,6 +98,7 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.getModeSubject.mockResolvedValue(null);
   h.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-bob', workspaceId: 'ws' });
   h.getFleet.mockResolvedValue(fleet());
   // setFleetLeader now returns the updated fleet record (or null when the CAS
@@ -113,6 +120,14 @@ beforeEach(() => {
 });
 
 describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not just presence', () => {
+  it('refuses a GOAL holder before changing fleet leadership', async () => {
+    h.getModeSubject.mockResolvedValue('goal-1');
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.error).toBe('goal_plan_fleet_self_leadership');
+    expect(h.getFleet).not.toHaveBeenCalled();
+    expect(h.setFleetLeader).not.toHaveBeenCalled();
+    expect(h.setPresenceFleet).not.toHaveBeenCalled();
+  });
   it('advertises only the growable trimmed launch context', () => {
     expect(takeLeadershipTool.args.safeParse({ fleet: 'rocket', contextSize: 'trimmed' }).success).toBe(true);
     expect(takeLeadershipTool.args.safeParse({ fleet: 'rocket', contextSize: 'full' }).success).toBe(false);

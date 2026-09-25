@@ -18,6 +18,8 @@ import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import { ensureFleetLeaderControl } from './leader-control';
+import { getModeSubject } from '../../modes/store';
+import { resolveGoalFleetLeadership } from './goal-fleet-leadership';
 
 export default defineTool({
   name: 'fleet:create',
@@ -57,6 +59,17 @@ export default defineTool({
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
     const fleetSlug = fleetSlugFromName(args.name);
+    let goalHolderSubject: string | null;
+    try {
+      goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+    } catch (error) {
+      return json({ ok: false, error: 'goal_holder_role_unreadable', detail: String(error) }, true);
+    }
+    const leadership = resolveGoalFleetLeadership({ goalHolderSubject, requested: 'caller', callerOwnerId: ownerId });
+    if (!leadership.ok) {
+      return json({ ok: false, error: 'goal_plan_fleet_self_leadership', detail: leadership.message,
+        recovery: "Use fleet:launch-on-plan with leader:'spawn' so a separate agent leads." }, true);
+    }
 
     const { record, created } = await createFleetIfAbsent({
       workspaceId,

@@ -16,6 +16,8 @@ import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 import { takeFleetLeadership } from './take-leadership-core';
 import { suggestedWatchesForContext } from '../../interest-profiles';
+import { getModeSubject } from '../../modes/store';
+import { resolveGoalFleetLeadership } from './goal-fleet-leadership';
 
 export default defineTool({
   name: 'fleet:join',
@@ -55,6 +57,23 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
+    let goalHolderSubject: string | null;
+    try {
+      goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+    } catch (error) {
+      return json({ ok: false, error: 'goal_holder_role_unreadable', detail: String(error) }, true);
+    }
+    if (goalHolderSubject) {
+      const leadership = resolveGoalFleetLeadership({ goalHolderSubject, requested: 'caller', callerOwnerId: ownerId });
+      return json({
+        ok: false,
+        error: args.as === 'leader' ? 'goal_plan_fleet_self_leadership' : 'goal_execution_fleet_membership_forbidden',
+        detail: args.as === 'leader'
+          ? (leadership.ok ? 'GOAL holder cannot lead an execution fleet.' : leadership.message)
+          : `GOAL holder ${ownerId} is a portfolio steward and cannot join execution fleet ${args.fleet} as a member.`,
+        recovery: "Use fleet:launch-on-plan with leader:'spawn' and couple to the delegated leader.",
+      }, true);
+    }
     const fleet = await getFleet(workspaceId, args.fleet);
     if (!fleet) {
       return json(

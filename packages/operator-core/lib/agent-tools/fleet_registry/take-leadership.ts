@@ -15,6 +15,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 import { takeFleetLeadership } from './take-leadership-core';
+import { getModeSubject } from '../../modes/store';
+import { resolveGoalFleetLeadership } from './goal-fleet-leadership';
 
 export default defineTool({
   name: 'fleet:take-leadership',
@@ -55,6 +57,17 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
+    let goalHolderSubject: string | null;
+    try {
+      goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+    } catch (error) {
+      return json({ ok: false, error: 'goal_holder_role_unreadable', detail: String(error) }, true);
+    }
+    const leadership = resolveGoalFleetLeadership({ goalHolderSubject, requested: 'caller', callerOwnerId: ownerId });
+    if (!leadership.ok) {
+      return json({ ok: false, error: 'goal_plan_fleet_self_leadership', detail: leadership.message,
+        recovery: "Keep the delegated leader, or use fleet:launch-on-plan with leader:'spawn' for a new fleet." }, true);
+    }
     const fleet = await getFleet(workspaceId, args.fleet);
     if (!fleet) {
       return json(

@@ -18,6 +18,11 @@ const retireFleetLeaderWatches = vi.fn();
 const resolveFleetLeaderTransitionEventKeys = vi.fn();
 const clearOperatorCancelledAwaits = vi.fn();
 const getClaimSpecRecord = vi.fn();
+const getModeSubject = vi.fn();
+
+vi.mock('../../modes/store', () => ({
+  getModeSubject: (...a: unknown[]) => getModeSubject(...a),
+}));
 
 vi.mock('../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
@@ -69,6 +74,7 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getModeSubject.mockResolvedValue(null);
   fetchPresenceFleet.mockResolvedValue(new Map()); // default: prior leader carries no fleet label
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
   setFleetLeader.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
@@ -95,6 +101,15 @@ beforeEach(() => {
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
+  it('refuses GOAL holder leadership before any registry or presence mutation', async () => {
+    getModeSubject.mockResolvedValue('goal-1');
+    await expect(takeFleetLeadership(WS, fleet(), identity, 'su-bob')).rejects.toMatchObject({
+      code: 'goal_plan_fleet_self_leadership',
+    });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+    expect(setFleetLeader).not.toHaveBeenCalled();
+    expect(setPresenceFleet).not.toHaveBeenCalled();
+  });
   it('refuses before writing leadership when the fleet claim spec has no concrete harness binding', async () => {
     getClaimSpecRecord.mockResolvedValueOnce({
       source: 'default',

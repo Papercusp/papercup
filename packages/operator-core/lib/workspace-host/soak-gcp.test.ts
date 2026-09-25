@@ -96,3 +96,40 @@ describe('soak instance read (WI-10002796)', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 });
+
+describe('hosted GCP soak credential binding (EI-24251466668871395)', () => {
+  const credentialRef = 'delegation://ws-soak/conn-soak';
+  const hostedDesired = {
+    ...desired,
+    credentials: { cloudCredentialRef: { kind: 'cloud', ref: credentialRef } },
+  } as WorkspaceHostDesiredSpec;
+
+  it('uses the recorded host connection for delegated Compute reads', async () => {
+    const provider = { hostedDelegation: { marker: 'recorded-connection' } };
+    const readConnection = vi.fn(async () => ({ connection: { provider } }));
+    const resolveHostedAuth = vi.fn(async () => ({ accessToken: 'hosted-test-token' }));
+    const gcpFetch = vi.fn(async () => new Response('', { status: 404 }));
+    const seams = await resolveGcpWorkspaceHostSoakSeams({
+      workspaceId: 'workspace-1',
+      hostId: hostedDesired.hostId,
+      readDesiredSpec: (async () => ({ desired: hostedDesired, connectionId: 'connection-1' })) as never,
+      readConnection: readConnection as never,
+      resolveHostedAuth,
+      gcpFetch: gcpFetch as typeof fetch,
+    });
+
+    expect(await seams.readInstance()).toEqual({ kind: 'absent' });
+    expect(readConnection).toHaveBeenCalledWith('workspace-1', 'connection-1');
+    expect(resolveHostedAuth).toHaveBeenCalledWith({ credentialRef, provider });
+    expect(gcpFetch).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a hosted delegation whose saved connection is missing', async () => {
+    await expect(resolveGcpWorkspaceHostSoakSeams({
+      workspaceId: 'workspace-1',
+      hostId: hostedDesired.hostId,
+      readDesiredSpec: (async () => ({ desired: hostedDesired, connectionId: 'connection-1' })) as never,
+      readConnection: (async () => null) as never,
+    })).rejects.toThrow('gcp_workspace_host_hosted_connection_missing');
+  });
+});

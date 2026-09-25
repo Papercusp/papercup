@@ -21,6 +21,7 @@ const getFleetMock = vi.fn();
 const getFleetHeadcountTargetMock = vi.fn();
 const setFleetHeadcountTargetMock = vi.fn();
 const setFleetLeaderMock = vi.fn();
+const declareCouplingMock = vi.fn();
 const getPresenceMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
@@ -141,6 +142,10 @@ vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
   releaseFleetLaunchSlot: vi.fn(async () => {}),
   setFleetLeader: (...args: unknown[]) => setFleetLeaderMock(...args),
   setFleetLaunchTransaction: (...args: unknown[]) => launchTransaction.persist(...args),
+}));
+
+vi.mock('../../../coord/couplings', () => ({
+  declareCoupling: (...args: unknown[]) => declareCouplingMock(...args),
 }));
 
 vi.mock('../../../agent-launch-core', async (importOriginal) => ({
@@ -570,6 +575,8 @@ beforeEach(() => {
   });
   setFleetLeaderMock.mockReset();
   setFleetLeaderMock.mockResolvedValue({ leaderOwnerId: 'leader-1' });
+  declareCouplingMock.mockReset();
+  declareCouplingMock.mockResolvedValue({ state: 'coupled' });
   getPresenceMock.mockReset();
   getPresenceMock.mockResolvedValue({ ownerId: 'live-leader' });
   heartbeatPresenceMock.mockReset();
@@ -1068,6 +1075,13 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(payload.ok).toBe(true);
     expect(payload.spawnedLeader).toMatchObject({ registered: true });
     expect(payload.spawnedLeader.ownerId).not.toBe('owner-1');
+    expect(payload.goalLeaderCoupling).toEqual({
+      status: 'coupled', peerOwnerId: payload.spawnedLeader.ownerId, error: null,
+    });
+    expect(declareCouplingMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', agentA: 'owner-1', agentB: payload.spawnedLeader.ownerId,
+      declaredBy: 'owner-1', reason: 'GOAL parent-goal delegated fleet steward-delegates leadership',
+    });
     expect(setPresenceFleetMock).not.toHaveBeenCalledWith('ws-1', 'owner-1', expect.anything(), 'leader');
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
   });
@@ -1085,6 +1099,31 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(res.isError).toBe(true);
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(declareCouplingMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a coupling failure without denying a leader that already launched', async () => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
+    declareCouplingMock.mockRejectedValueOnce(new Error('coupling store unavailable'));
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { leaderOwnerId: null, colorScheme: { name: 'Ocean' } }, created: true,
+    });
+
+    const res = await invokeLaunchHandler({
+      name: 'Coupling Failure', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(payload.goalLeaderCoupling).toMatchObject({
+      status: 'failed', peerOwnerId: payload.spawnedLeader.ownerId,
+      error: 'Error: coupling store unavailable',
+    });
+    expect(payload.message).toContain('repair with `coord:couple');
   });
 
   it('refuses an unprofiled local launch when visibility is omitted', async () => {
@@ -1895,6 +1934,11 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
   });
 
   it('keeps the caller outside on a same-owner spawned-leader retry', async () => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
     setClaimSpecMock.mockReset();
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 2 });
     createFleetIfAbsentMock.mockResolvedValueOnce({
@@ -1913,6 +1957,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
         harness: 'papercusp',
         count: 1,
         leader: 'spawn',
+        headless: true,
       } as never,
       {} as never,
     );
@@ -1925,11 +1970,18 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     });
     expect(payload.leaderRole).toBe('delegator');
     expect(payload.leaderSpawnIgnored).toContain('caller remains outside the fleet');
+    expect(payload.goalLeaderCoupling).toEqual({
+      status: 'coupled', peerOwnerId: 'spawned-leader', error: null,
+    });
+    expect(declareCouplingMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', agentA: 'owner-1', agentB: 'spawned-leader',
+      declaredBy: 'owner-1', reason: 'GOAL parent-goal delegated fleet spawn-retry leadership',
+    });
     expect(setPresenceFleetMock).not.toHaveBeenCalled();
     expect(setFleetLeaderMock).not.toHaveBeenCalled();
     expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
     expect(setClaimSpecMock).not.toHaveBeenCalled();
-    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     expect(payload.message).toContain('kept you outside the fleet');
   });
 

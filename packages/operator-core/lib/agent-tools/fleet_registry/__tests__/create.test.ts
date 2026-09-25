@@ -6,6 +6,11 @@ const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
 const recolorCallerTerminalMock = vi.fn();
 const ensureFleetLeaderControlMock = vi.fn();
+const getModeSubjectMock = vi.fn();
+
+vi.mock('../../../modes/store', () => ({
+  getModeSubject: (...args: unknown[]) => getModeSubjectMock(...args),
+}));
 
 vi.mock('../../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
@@ -13,7 +18,8 @@ vi.mock('../../../agent-fleets-store', () => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
 }));
 
-vi.mock('../../coordination/presence', () => ({
+vi.mock('../../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../coordination/presence')>()),
   heartbeatPresence: (...args: unknown[]) => heartbeatPresenceMock(...args),
   setPresenceFleet: (...args: unknown[]) => setPresenceFleetMock(...args),
 }));
@@ -46,6 +52,7 @@ import tool from '../create';
 describe('fleet:create', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getModeSubjectMock.mockResolvedValue(null);
     createFleetIfAbsentMock.mockResolvedValue({
       record: { title: 'Alpha Fleet', leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
       created: true,
@@ -61,6 +68,16 @@ describe('fleet:create', () => {
 
   it('accepts planned fleet sizes above the retired local 12-member ceiling', () => {
     expect(tool.args.safeParse({ name: 'Wide Fleet', count: 64 }).success).toBe(true);
+  });
+
+  it('refuses GOAL-holder self-leadership before creating or joining a fleet', async () => {
+    getModeSubjectMock.mockResolvedValue('goal-1');
+    const res = await tool.handler({ name: 'Goal Fleet' } as never, {} as never);
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.error).toBe('goal_plan_fleet_self_leadership');
+    expect(payload.recovery).toContain("leader:'spawn'");
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
   });
 
   it('surfaces a sizing advisory only when planned members exceed healthy account headroom', async () => {

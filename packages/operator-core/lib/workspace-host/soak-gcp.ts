@@ -17,6 +17,7 @@ import {
   type GcpIapWorkspaceHostInitializationCommandRunner,
 } from './gcp-iap-initialization-operations';
 import { resolveGcpWorkspaceHostInstanceIdentity, type GcpWorkspaceHostApiClient } from './gcp-provider';
+import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gcp-auth';
 import {
   WorkspaceHostDesiredSpecUnavailableError,
   createGcpWorkspaceHostApiClientForDesired,
@@ -24,7 +25,7 @@ import {
   resolveWorkspaceHostInitializationControllerProfile,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
-import { readWorkspaceHostDesiredSpec } from './observability-store';
+import { readWorkspaceHostConnection, readWorkspaceHostDesiredSpec } from './observability-store';
 import type {
   WorkspaceHostSoakInstanceReading,
   WorkspaceHostSoakProbe,
@@ -50,8 +51,11 @@ export interface GcpWorkspaceHostSoakSeamsInput {
   hostId: string;
   /** Test seams; production reads the durable host record, the controller env and real Compute. */
   readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
+  readConnection?: typeof readWorkspaceHostConnection;
   controller?: WorkspaceHostInitializationControllerProfile;
   gcpClient?: Pick<GcpWorkspaceHostApiClient, 'getInstance'>;
+  resolveHostedAuth?: typeof resolveHostedGcpAuth;
+  gcpFetch?: typeof fetch;
   runner?: GcpIapWorkspaceHostInitializationCommandRunner;
   timing?: { now?: () => number; sleep?: (ms: number) => Promise<void> };
   now?: () => Date;
@@ -76,7 +80,19 @@ export async function resolveGcpWorkspaceHostSoakSeams(
   }
   const desired = lookup.desired;
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
-  const client = input.gcpClient ?? createGcpWorkspaceHostApiClientForDesired(desired);
+  let connectionProvider: Readonly<Record<string, unknown>> | undefined;
+  if (!input.gcpClient && isHostedProviderCredentialRef(desired.credentials.cloudCredentialRef.ref)) {
+    const stored = lookup.connectionId
+      ? await (input.readConnection ?? readWorkspaceHostConnection)(input.workspaceId, lookup.connectionId)
+      : null;
+    if (!stored) throw new Error('gcp_workspace_host_hosted_connection_missing');
+    connectionProvider = stored.connection.provider ?? {};
+  }
+  const client = input.gcpClient ?? createGcpWorkspaceHostApiClientForDesired(desired, {
+    ...(connectionProvider ? { connectionProvider } : {}),
+    ...(input.resolveHostedAuth ? { resolveHostedAuth: input.resolveHostedAuth } : {}),
+    ...(input.gcpFetch ? { gcpFetch: input.gcpFetch } : {}),
+  });
   const now = input.now ?? (() => new Date());
   const sleep = input.timing?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
