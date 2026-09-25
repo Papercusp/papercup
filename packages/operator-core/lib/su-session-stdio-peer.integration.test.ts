@@ -800,7 +800,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
 
   it.each(['ok', 'preparation-drift', 'source-writer-busy', 'source-guard-conflict', 'source-guard-exited', 'source-lock-replaced',
     'ancestor', 'ancestor-writer-busy', 'ancestor-guard-conflict', 'source-acquisition-race', 'source-read', 'model-switch',
-    'rejected-alternative', 'authority-boundary', 'home-reset', 'home-reset-candidate-first', 'foreign-source-home'] as const)(
+    'rejected-alternative', 'authority-boundary', 'home-reset', 'home-reset-candidate-first',
+    'home-reset-source-read', 'home-reset-source-read-candidate-first',
+    'home-reset-rejected-alternative', 'home-reset-rejected-alternative-candidate-first',
+    'home-reset-authority-boundary', 'home-reset-authority-boundary-candidate-first',
+    'home-reset-model-switch', 'home-reset-model-switch-candidate-first',
+    'home-reset-ancestor', 'home-reset-ancestor-candidate-first', 'foreign-source-home'] as const)(
     'composes an unpaid frozen-source control and managed-carry candidate across native processes (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
@@ -812,16 +817,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
     resetGovernorRegistry();
-    const readSource = mode === 'source-read';
-    const switchModel = mode === 'model-switch';
+    const readSource = mode.includes('source-read');
+    const switchModel = mode.includes('model-switch');
     const resetHome = mode.startsWith('home-reset');
     const homeExperiment = resetHome || mode === 'foreign-source-home';
-    const armOrder: Array<'control' | 'candidate'> = mode === 'home-reset-candidate-first'
+    const armOrder: Array<'control' | 'candidate'> = mode.endsWith('candidate-first')
       ? ['candidate', 'control'] : ['control', 'candidate'];
-    const taskId = readSource ? 'T2' : mode === 'rejected-alternative' ? 'T3'
-      : mode === 'authority-boundary' ? 'T4' : switchModel ? 'T5' : 'T1';
+    const taskId = readSource ? 'T2' : mode.includes('rejected-alternative') ? 'T3'
+      : mode.includes('authority-boundary') ? 'T4' : switchModel ? 'T5' : 'T1';
     const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === taskId)!;
-    const ancestorDepth = mode.startsWith('ancestor') ? 2 : 0;
+    const ancestorDepth = mode.includes('ancestor') ? 2 : 0;
     const owner = 'su-unpaid-carry-pair';
     const nativeHome = mkdtempSync(join(tmpdir(), 'unpaid-carry-pair-')); homes.push(nativeHome);
     const nativeHomes = [nativeHome];
@@ -891,12 +896,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     try {
       const assertSourceGuards = () => {
         for (const guard of sourceGuards) {
-          const file = lstatSync(guard.path, { bigint: true });
+          const file = (() => { try { return lstatSync(guard.path, { bigint: true }); } catch { return null; } })();
           const holder = codexThreadWriterHolder(nativeHome, guard.threadId);
-          if (!file.isFile() || file.dev !== guard.device || file.ino !== guard.inode ||
-            guard.peer.receiptState?.().exited !== false || !holder.held || holder.pid !== guard.peer.pid()) {
-            throw new Error('frozen source native writer guard lost');
-          }
+          const missing = [
+            !file?.isFile() && 'lock-file-missing',
+            file && (file.dev !== guard.device || file.ino !== guard.inode) && 'lock-inode-changed',
+            guard.peer.receiptState?.().exited !== false && 'guard-peer-exited',
+            !holder.held && `flock-${holder.reason}`,
+            holder.held && holder.pid !== guard.peer.pid() && 'flock-holder-mismatch',
+          ].filter(Boolean);
+          if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')})`);
         }
       };
       const port = await gateway.listen(0);
@@ -1381,7 +1390,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       expect(requests.map(request => request.phase)).toEqual([...preparationPhases,
         ...armOrder.flatMap(arm => [...(arm === 'candidate' ? ['carry'] : []), arm, ...(readSource ? [arm] : [])])]);
       if (switchModel) expect(modelWitnesses.map(witness => [witness.phase, witness.model])).toEqual([
-        ['preparation', 'gpt-6-sol'], ['control', 'gpt-6-luna'], ['carry', 'gpt-6-sol'], ['candidate', 'gpt-6-luna'],
+        ['preparation', 'gpt-6-sol'],
+        ...armOrder.flatMap(arm => arm === 'candidate'
+          ? [['carry', 'gpt-6-sol'], ['candidate', 'gpt-6-luna']]
+          : [['control', 'gpt-6-luna']]),
       ]);
       expect(runtimeBoundaries.map(boundary => boundary.phase)).toEqual([
         ...preparationArms.flatMap(() => ['before-first-turn', 'preparation']),
