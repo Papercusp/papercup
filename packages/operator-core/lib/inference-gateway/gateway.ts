@@ -988,7 +988,9 @@ const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-
 export interface GatewayDeps {
   /** Server-side accepted-operation policy read at a model substitution boundary.
    * A failed read is an explicit unavailable verdict, never permission to downgrade. */
-  readAcceptedOperationModelPolicy?: (ownerId: string) => Promise<ActiveOperationModelPolicyRead>;
+  readAcceptedOperationModelPolicy?: (
+    ownerId: string, backend?: 'claude' | 'codex',
+  ) => Promise<ActiveOperationModelPolicyRead>;
   /** Persist provider-observed evidence before a bound worker sees a successful response. */
   recordAcceptedOperationModelAttestation?: (
     context: ActiveOperationAttestationContext,
@@ -8198,6 +8200,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     const adapter = providerAdapters.codex;
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
+    if (preBody && wantOwner && deps.readAcceptedOperationModelPolicy) {
+      let operationModelPolicy: ActiveOperationModelPolicyRead;
+      try {
+        operationModelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner, 'codex');
+      } catch {
+        operationModelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
+      }
+      if (operationModelPolicy.status === 'unavailable') {
+        sendJson(res, 503, { type: 'error',
+          error: { type: 'api_error',
+            message: `accepted operation model policy unavailable: ${operationModelPolicy.reason}` },
+          gateway: true }, { 'x-should-retry': 'false' });
+        return;
+      }
+      if (operationModelPolicy.status === 'bound') {
+        // TEMPORARY MITIGATION (P-008): the bearer/OAuth relays have not yet
+        // persisted provider-authored response model and usage, and cli-exec
+        // synthesizes its response model from the request. A successful Codex
+        // reply would claim evidence we do not possess. Refuse before account
+        // selection or upstream work until the durable response seam is wired.
+        sendJson(res, 503, { type: 'error',
+          error: { type: 'api_error',
+            message: 'accepted Codex operation requires provider-authored model attestation' },
+          gateway: true }, { 'x-should-retry': 'false' });
+        return;
+      }
+    }
     const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
     const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
     const wantAccount = dynPin

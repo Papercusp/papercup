@@ -121,6 +121,7 @@ export type ActiveOperationModelPolicyRead =
 export async function readActiveOperationModelPolicy(
   workspaceId: string,
   ownerId: string,
+  backend: 'claude' | 'omp' | 'codex' = 'claude',
 ): Promise<ActiveOperationModelPolicyRead> {
   const active = await readActiveOperationWorkerClaimBinding(workspaceId, ownerId);
   if (active.status !== 'bound') return active;
@@ -147,11 +148,11 @@ export async function readActiveOperationModelPolicy(
         return { status: 'unavailable', reason: 'accepted operation model selection is missing' } as const;
       }
       const selected = selection as Record<string, unknown>;
-      if (selected.backend !== 'claude' ||
+      if (selected.backend !== backend ||
           (selected.requestedModel !== null && typeof selected.requestedModel !== 'string') ||
           !isDeepStrictEqual(
             selectAcceptedOperationWorkerModel(
-              { ...active.binding, modelPolicy: policy }, selected.requestedModel as string | null, 'claude',
+              { ...active.binding, modelPolicy: policy }, selected.requestedModel as string | null, backend,
             ),
             selection,
           )) {
@@ -163,9 +164,11 @@ export async function readActiveOperationModelPolicy(
       // have no attestation sink; a later writer must fail closed on null.
       const [receipt] = await getOrgPg().sql<Array<{
         native_session_id: string | null;
+        session_backend: string | null;
         operation_receipt_id: string | number | null;
       }>>`
-        SELECT s.session_id AS native_session_id, i.id AS operation_receipt_id
+        SELECT s.session_id AS native_session_id, s.agent AS session_backend,
+               i.id AS operation_receipt_id
           FROM harness_shared.adv_sessions s
           LEFT JOIN harness_shared.blueprint_operation_invocations i
             ON i.workspace_id = s.workspace_id
@@ -181,6 +184,9 @@ export async function readActiveOperationModelPolicy(
            AND s.ended_at IS NULL AND s.ended_by IS NULL
       `;
       if (!receipt) return { status: 'unavailable', reason: 'accepted operation worker session ended' } as const;
+      if (receipt.session_backend !== backend) {
+        return { status: 'unavailable', reason: 'accepted operation backend differs from its active worker session' } as const;
+      }
       const operationReceiptId = Number(receipt.operation_receipt_id);
       const attestation = receipt.native_session_id && Number.isSafeInteger(operationReceiptId) && operationReceiptId > 0
         ? { operationReceiptId, advSessionId: active.receipt.sessionId,

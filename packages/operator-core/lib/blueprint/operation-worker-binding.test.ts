@@ -147,7 +147,7 @@ describe('accepted blueprint operation worker binding', () => {
     };
     const revision = { specificationRevision: HASH, stateRevision: 'state-a' };
     const row = {
-      accepted_operation: accepted, launch_workspace_id: 'ws-a', launch_harness_slug: 'harness-a',
+      accepted_operation: accepted as Record<string, unknown>, launch_workspace_id: 'ws-a', launch_harness_slug: 'harness-a',
       launch_role: 'worker', specification_revision: HASH, state_revision: 'state-a',
       grants_kind: 'object', activation: {
         schemaVersion: 1, status: 'applied', attribution: {
@@ -156,7 +156,7 @@ describe('accepted blueprint operation worker binding', () => {
       },
     };
     let attestationRow = { native_session_id: 'native-worker-a' as string | null,
-      operation_receipt_id: 19 as number | null };
+      session_backend: 'claude' as 'claude' | 'codex', operation_receipt_id: 19 as number | null };
     sqlMock.mockImplementation((strings: TemplateStringsArray) => {
       const query = strings.join('');
       if (query.includes('SELECT id, role')) return [{ id: 7, role: 'worker' }];
@@ -176,10 +176,33 @@ describe('accepted blueprint operation worker binding', () => {
         specificationRevision: REVISION },
     });
 
-    attestationRow = { native_session_id: null, operation_receipt_id: null };
+    attestationRow = { native_session_id: null, session_backend: 'claude', operation_receipt_id: null };
     expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
       status: 'bound', policy: modelPolicy, attestation: null,
     });
+
+    const codexPolicy = { mode: 'exact' as const, models: ['gpt-5.6-sol'],
+      effort: 'high', onUnavailable: 'fail' as const };
+    row.accepted_operation = { ...accepted, modelPolicy: codexPolicy,
+      modelSelection: { model: 'gpt-5.6-sol:high', requestedModel: null,
+        backend: 'codex', source: 'operation-policy' } };
+    readAcceptedBlueprintDirectWorkItem.mockResolvedValue({ pin, operation: {
+      ...operation, id: 'run', policy: { ...operation.policy, model: codexPolicy },
+    } });
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a', 'codex')).toEqual({
+      status: 'unavailable', reason: 'accepted operation backend differs from its active worker session',
+    });
+    attestationRow.session_backend = 'codex';
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a', 'codex')).toEqual({
+      status: 'bound', policy: codexPolicy, attestation: null,
+    });
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a', 'claude')).toEqual({
+      status: 'unavailable', reason: 'accepted operation model selection differs from its policy',
+    });
+    readAcceptedBlueprintDirectWorkItem.mockResolvedValue({ pin, operation: {
+      ...operation, id: 'run', policy: { ...operation.policy, model: modelPolicy },
+    } });
+    attestationRow.session_backend = 'claude';
 
     row.accepted_operation = { ...accepted, modelPolicy: { ...modelPolicy, models: ['claude-sonnet-4-6'] } };
     expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
