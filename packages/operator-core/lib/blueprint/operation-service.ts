@@ -13,6 +13,7 @@ import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { getWorkItem, type WorkItem } from '../work-items';
 import { isSettledWorkItem } from '../work-items-events';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import {
   acceptBlueprintDirectWorkItem,
@@ -528,7 +529,7 @@ export function cancelBlueprintOperation(
              SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{blueprintCancellation}',
                                      ${marker}::text::jsonb, true)
            WHERE workspace_id = ${handle.workspaceId} AND harness_slug = ${item.harness}
-             AND feature_id = ${item.id} AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')
+             AND feature_id = ${item.id} AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
         `;
       }
       return saved;
