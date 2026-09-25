@@ -159,6 +159,16 @@ describe('P-006 operator package adapter', () => {
     expect((await compile([])).specificationRevision).not.toBe(artifact.specificationRevision);
   });
 
+  it('refuses schema-valid bundle kinds that have no installed consumer instead of only naming them', async () => {
+    for (const kind of ['plan', 'goal', 'datatype', 'event', 'rule'] as const) {
+      const source = { id: `unsupported-${kind}`, slots: [{ slot: 'domain' }],
+        bundles: [{ kind, ref: `selected-${kind}` }] };
+      await expect(compileBlueprintWithPackages(source, {
+        workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+      })).rejects.toThrow(`no installed content resolver for package kind ${kind}`);
+    }
+  });
+
   it('uses the default local stores and preserves precedence, exact files and version errors', async () => {
     const root = mkdtempSync(join(tmpdir(), 'blueprint-local-packages-'));
     const put = (relative: string, bytes: string) => {
