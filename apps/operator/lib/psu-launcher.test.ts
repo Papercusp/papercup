@@ -426,7 +426,10 @@ describe("interactive role picker", () => {
     const page = { status: 'ok', identities: [{ id: 'named-review', tier: 'local',
       version: '1.0.0', sourceRevision: revision, slots: [],
       launchCompatibility: { eligible: true, reason: null } }], unreadable: [], nextAfter: null };
-    expect(identityPickerChoices(page)).toContainEqual(expect.objectContaining({
+    const pickerChoices = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+      ? (await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)).identityPickerChoices
+      : identityPickerChoices;
+    expect(pickerChoices(page)).toContainEqual(expect.objectContaining({
       value: 'composition:named-review',
     }));
     const select = vi.fn().mockResolvedValue('composition:named-review');
