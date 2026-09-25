@@ -11,7 +11,8 @@ import { getWorkItem, setWorkItemState } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import {
   coordProgramWorkflowId, findUnstartedAcceptedCoordPrograms, loadAcceptedCoordProgramBlueprint,
-  settleAcceptedCoordProgram,
+  loadAcceptedCoordProgramChild, settleAcceptedCoordProgram, submitAcceptedCoordProgramChild,
+  awaitAcceptedCoordProgramChild,
 } from '../dbos/coord-program-workflow';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
@@ -69,6 +70,44 @@ const definition = (version: string) => compileAgentSpecification({
 });
 
 describe('program child admission pins the root specification', () => {
+  it('replays a child step against its root receipt and refuses a stale root attempt', async () => {
+    const first = definition('child-A');
+    const second = definition('child-B');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: first.configuration as Blueprint, specification: first });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'program-child-caller', operationId: 'root',
+      requestKey: 'child-parent', input: {}, title: 'Parent program',
+    });
+    const pending = await findUnstartedAcceptedCoordPrograms(sql);
+    const parent = pending.find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+    expect(parent).toBeDefined();
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: second.configuration as Blueprint, specification: second });
+    const call = { stepId: 'op-create-leaf', operationId: 'leaf', input: { value: 'pinned' }, title: 'Child leaf' };
+    const child = await submitAcceptedCoordProgramChild(sql, parent!, call);
+    expect(child.specificationRevision).toBe(first.specificationRevision);
+    expect(child.target.kind).toBe('work-item');
+    expect(await submitAcceptedCoordProgramChild(sql, parent!, call)).toEqual(child);
+    expect(await loadAcceptedCoordProgramChild(sql, parent!, 'create-leaf', 'leaf')).toEqual(child);
+    await expect(loadAcceptedCoordProgramChild(sql, parent!, 'other-leaf', 'leaf'))
+      .rejects.toThrow('receipt is missing');
+    await expect(awaitAcceptedCoordProgramChild(sql, parent!, {
+      invokeStepId: 'create-leaf', operationId: 'leaf', deadlineAt: new Date(0).toISOString(),
+    })).rejects.toThrow('did not settle before its deadline');
+    await expect(submitAcceptedCoordProgramChild(sql, parent!, { ...call, input: { value: 'changed' } }))
+      .rejects.toThrow('reused with different input');
+    await expect(submitAcceptedCoordProgramChild(sql, parent!, { ...call, operationId: 'root' }))
+      .rejects.toThrow('distinct declared operation');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 1
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${(root.target as { id: string }).id}`;
+    await expect(submitAcceptedCoordProgramChild(sql, parent!, { ...call, stepId: 'late-leaf' }))
+      .rejects.toThrow('root attempt changed');
+    await expect(awaitAcceptedCoordProgramChild(sql, parent!, {
+      invokeStepId: 'create-leaf', operationId: 'leaf', deadlineAt: new Date(0).toISOString(),
+    })).rejects.toThrow('root attempt changed');
+  }, 90_000);
+
   it('accepts revision A after pointer B and refuses a changed replay', async () => {
     const first = definition('A');
     const second = definition('B');
@@ -116,7 +155,7 @@ describe('program child admission pins the root specification', () => {
     expect(pinned.version).toBe('A');
     expect(pinned.spine.steps?.[0]?.id).toBe('open');
     const pending = await findUnstartedAcceptedCoordPrograms(sql);
-    expect(pending.map((input) => input.acceptedOperation?.receiptId)).toEqual([accepted.receiptId]);
+    expect(pending.map((input) => input.acceptedOperation?.receiptId)).toContain(accepted.receiptId);
     const run = { blueprintId: pinned.id, payload: {}, callerId: 'program-caller',
       workspaceId, harnessSlug, workItemId: rootId, runId: 'first',
       acceptedOperation: accepted };
@@ -124,9 +163,11 @@ describe('program child admission pins the root specification', () => {
     expect(coordProgramWorkflowId({ ...run, runId: 'lost-response-retry' })).toBe(coordProgramWorkflowId(run));
     await sql`INSERT INTO dbos.workflow_status (workflow_uuid, status)
       VALUES (${coordProgramWorkflowId(run)}, 'PENDING')`;
-    expect(await findUnstartedAcceptedCoordPrograms(sql)).toEqual([]);
+    expect((await findUnstartedAcceptedCoordPrograms(sql))
+      .some((input) => input.acceptedOperation?.receiptId === accepted.receiptId)).toBe(false);
     await sql`DELETE FROM dbos.workflow_status WHERE workflow_uuid = ${coordProgramWorkflowId(run)}`;
-    expect((await findUnstartedAcceptedCoordPrograms(sql)).length).toBe(1);
+    expect((await findUnstartedAcceptedCoordPrograms(sql))
+      .filter((input) => input.acceptedOperation?.receiptId === accepted.receiptId)).toHaveLength(1);
     await expect(loadAcceptedCoordProgramBlueprint(sql, accepted, 'different-caller'))
       .rejects.toThrow('handle does not match its durable receipt');
     await expect(loadAcceptedCoordProgramBlueprint(sql,
@@ -148,7 +189,8 @@ describe('program child admission pins the root specification', () => {
     expect(closed?.state).toBe('done');
     expect(await getBlueprintOperationResult(sql, accepted, 'program-caller'))
       .toMatchObject({ state: 'ready', output: { outcome: 'done', resolved: true } });
-    expect(await findUnstartedAcceptedCoordPrograms(sql)).toEqual([]);
+    expect((await findUnstartedAcceptedCoordPrograms(sql))
+      .some((input) => input.acceptedOperation?.receiptId === accepted.receiptId)).toBe(false);
   }, 90_000);
 
   it('fences a successful program close after cancellation and settles the canonical root as cancelled', async () => {

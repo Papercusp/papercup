@@ -25,17 +25,18 @@ import { getOrgPg } from '@papercusp/db-org';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { BlueprintSchema, loadBuiltinBlueprint, operationFromSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
-import { FEATURE_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, FEATURE_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import '../coord-ops/index.js'; // register every coord op
 import '../blueprint-steps/index.js'; // register every deterministic step-op (P-010)
 import { requireCoordOp } from '../coord-ops/registry.js';
+import { awaitChildArgsSchema, invokeChildArgsSchema } from '../coord-ops/ops/blueprint-child.js';
 import { runProgramCore, type RunOp } from '../coord-ops/program-runner.js';
 import { buildCoordOpCtx, setProgramBlueprintResolver, type ProgramBlueprintResolver } from '../coord-ops/prod-caps.js';
 import type { ProgramOutcome } from '../coord-ops/types.js';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
-  getBlueprintOperationResult, getBlueprintOperationStatus,
+  getBlueprintOperationResult, getBlueprintOperationStatus, submitBlueprintOperation,
   type BlueprintOperationHandle, type BlueprintOperationStatus,
 } from '../blueprint/operation-service.js';
 import { readBlueprintSpecificationSnapshot } from '../blueprint/project-to-pg.js';
@@ -104,6 +105,146 @@ export async function loadAcceptedCoordProgramBlueprint(
     if (!blueprint.spine.steps) throw new Error('accepted coord program has no program spine');
     return blueprint;
   });
+}
+
+/** Recheck the canonical attempt on every effect and after every durable wait.
+ * A DBOS checkpoint cannot stand in for a current work-item row. */
+async function requireCurrentAcceptedCoordProgramRoot(
+  sql: Sql, parent: CoordProgramInput,
+): Promise<BlueprintOperationHandle & { target: { kind: 'work-item'; id: string } }> {
+  const root = parent.acceptedOperation;
+  if (!root || root.target.kind !== 'work-item' || parent.workItemId !== root.target.id ||
+      parent.workspaceId !== root.workspaceId || parent.harnessSlug !== root.harnessSlug ||
+      !Number.isSafeInteger(parent.acceptedAttemptUpdatedTs) || !parent.acceptedAttemptUpdatedTs) {
+    throw new Error('program child invocation requires a current accepted root attempt');
+  }
+  const rootId = root.target.id;
+  return runWithWorkspace(root.workspaceId, async () => {
+    const status = await getBlueprintOperationStatus(sql, root, parent.callerId);
+    if (status.phase === 'terminal' || status.cancellationRequested) {
+      throw new Error('program root is terminal or cancellation was requested');
+    }
+    const rows = await sql<Array<{ updated_ts: string | number }>>`
+      SELECT updated_ts FROM harness_shared.work_items
+       WHERE workspace_id = ${root.workspaceId}
+         AND harness_slug IN (${root.harnessSlug}, ${`harness:${root.harnessSlug}`})
+         AND feature_id = ${rootId}
+         AND status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+         AND payload->'blueprintOperation'->>'operationId' = ${root.operationId}
+         AND payload->'blueprintOperation'->>'specificationRevision' = ${root.specificationRevision}
+         AND NOT (payload ? 'blueprintCancellation')
+    `;
+    if (Number(rows[0]?.updated_ts) !== parent.acceptedAttemptUpdatedTs) {
+      throw new Error('program root attempt changed before child invocation');
+    }
+    return { ...root, target: { kind: 'work-item' as const, id: rootId } };
+  });
+}
+
+/** Invoke a declared child against the root's retained specification. The
+ * receipt ID and authored step ID are the durable child identity: repeating a
+ * DBOS step after a lost reply recovers the same direct item or plan run. */
+export async function submitAcceptedCoordProgramChild(
+  sql: Sql,
+  parent: CoordProgramInput,
+  child: { stepId: string; operationId: string; input: Record<string, unknown>; title?: string; summary?: string },
+): Promise<BlueprintOperationHandle> {
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/.test(child.stepId)) {
+    throw new Error('program child invocation requires a bounded authored step ID');
+  }
+  const root = await requireCurrentAcceptedCoordProgramRoot(sql, parent);
+  if (!child.operationId || child.operationId === root.operationId) {
+    throw new Error('program child invocation requires a distinct declared operation');
+  }
+  return runWithWorkspace(root.workspaceId, async () => {
+    await loadAcceptedCoordProgramBlueprint(sql, root, parent.callerId);
+    const specification = await readBlueprintSpecificationSnapshot(
+      sql, root.workspaceId, root.harnessSlug, root.specificationRevision,
+    );
+    if (!specification) throw new Error('program root specification snapshot is missing');
+    operationFromSpecification(specification, child.operationId);
+    return submitBlueprintOperation(sql, {
+      workspaceId: root.workspaceId, harnessSlug: root.harnessSlug,
+      callerId: parent.callerId, operationId: child.operationId,
+      requestKey: `program:${root.receiptId}:${child.stepId}`,
+      input: child.input, title: child.title, summary: child.summary,
+    }, { expectedSpecificationRevision: root.specificationRevision });
+  });
+}
+
+/** Resolve only a child of this exact root and authored invocation step. The
+ * receipt is durable across a lost step response; a handle supplied through
+ * interpolated payload cannot redirect the wait to another operation. */
+export async function loadAcceptedCoordProgramChild(
+  sql: Sql, parent: CoordProgramInput, invokeStepId: string, operationId: string,
+): Promise<BlueprintOperationHandle> {
+  const root = parent.acceptedOperation;
+  if (!root || root.target.kind !== 'work-item' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/.test(invokeStepId) ||
+      parent.workspaceId !== root.workspaceId || parent.harnessSlug !== root.harnessSlug ||
+      parent.workItemId !== root.target.id) {
+    throw new Error('program child wait requires an accepted root and authored invocation step');
+  }
+  return runWithWorkspace(root.workspaceId, async () => {
+    const rows = await sql<Array<{ id: string | number; target_kind: string; target_ref: string | null }>>`
+      SELECT id, target_kind, target_ref
+        FROM harness_shared.blueprint_operation_invocations
+       WHERE workspace_id = ${root.workspaceId} AND harness_slug = ${root.harnessSlug}
+         AND caller_id = ${parent.callerId} AND operation_id = ${operationId}
+         AND request_key = ${`program:${root.receiptId}:op-${invokeStepId}`}
+         AND specification_revision = ${root.specificationRevision}
+    `;
+    const row = rows[0];
+    const receiptId = Number(row?.id);
+    if (!row || !Number.isSafeInteger(receiptId) || receiptId <= 0 || !row.target_ref) {
+      throw new Error('program child invocation receipt is missing or incomplete');
+    }
+    if (row.target_kind === 'work-item') {
+      return { workspaceId: root.workspaceId, harnessSlug: root.harnessSlug,
+        receiptId, operationId, specificationRevision: root.specificationRevision,
+        target: { kind: 'work-item', id: row.target_ref } };
+    }
+    if (row.target_kind !== 'plan') throw new Error('program child receipt has an unknown target');
+    const runs = await sql<Array<{ id: string | number }>>`
+      SELECT id FROM harness_shared.plan_runs
+       WHERE workspace_id = ${root.workspaceId} AND harness_slug = ${root.harnessSlug}
+         AND instance_plan_slug = ${row.target_ref}
+       LIMIT 1
+    `;
+    const runId = Number(runs[0]?.id);
+    if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('program child plan run is missing');
+    return { workspaceId: root.workspaceId, harnessSlug: root.harnessSlug,
+      receiptId, operationId, specificationRevision: root.specificationRevision,
+      target: { kind: 'plan', runId, instanceSlug: row.target_ref } };
+  });
+}
+
+/** Canonical reads are deliberately outside DBOS.runStep so a replay sees a
+ * reopened child or a newly requested root cancellation. DBOS.sleep provides
+ * the durable interval between observations. */
+export async function awaitAcceptedCoordProgramChild(
+  sql: Sql, parent: CoordProgramInput,
+  child: { invokeStepId: string; operationId: string; deadlineAt: string },
+  sleep: (ms: number) => Promise<void> = (ms) => DBOS.sleep(ms),
+): Promise<{ state: 'ready'; output: unknown; evidenceRef: string }> {
+  const deadline = Date.parse(child.deadlineAt);
+  if (!Number.isFinite(deadline)) throw new Error('program child wait requires an absolute deadline');
+  const root = await requireCurrentAcceptedCoordProgramRoot(sql, parent);
+  await loadAcceptedCoordProgramBlueprint(sql, root, parent.callerId);
+  const handle = await loadAcceptedCoordProgramChild(sql, parent, child.invokeStepId, child.operationId);
+  for (;;) {
+    await requireCurrentAcceptedCoordProgramRoot(sql, parent);
+    const result = await getBlueprintOperationResult(sql, handle, parent.callerId);
+    if (result.state === 'ready') {
+      await requireCurrentAcceptedCoordProgramRoot(sql, parent);
+      return { state: 'ready', output: result.output, evidenceRef: result.evidenceRef };
+    }
+    if (result.state !== 'pending') {
+      throw new Error(`program child ${child.invokeStepId} settled without validated success: ${result.state}`);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`program child ${child.invokeStepId} did not settle before its deadline`);
+    await sleep(Math.min(10_000, remaining));
+  }
 }
 
 /** Admission's canonical receipt is the durable launch intent. This bounded
@@ -287,6 +428,23 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
       if (status.phase === 'terminal' || status.cancellationRequested) {
         throw new Error('accepted coord program is terminal or cancellation was requested');
       }
+    }
+    if (accepted && call.op === 'blueprint:invoke-child') {
+      const parsed = invokeChildArgsSchema.parse(call.args);
+      return DBOS.runStep(
+        () => submitAcceptedCoordProgramChild(getOrgPg().sql, input, {
+          stepId: call.label, ...parsed,
+        }),
+        { name: call.label },
+      );
+    }
+    if (accepted && call.op === 'blueprint:await-child') {
+      const parsed = awaitChildArgsSchema.parse(call.args);
+      const deadlineAt = await DBOS.runStep(
+        async () => new Date(Date.now() + parsed.timeoutSec * 1000).toISOString(),
+        { name: `${call.label}:deadline` },
+      );
+      return awaitAcceptedCoordProgramChild(getOrgPg().sql, input, { ...parsed, deadlineAt });
     }
     return DBOS.runStep(
       async () => {
