@@ -275,8 +275,10 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
 // best-effort integration side effect. Keep this unit suite hermetic by
 // replacing the PG-backed reconciler with a deterministic no-op.
 const reconcileImpliedModesMock = vi.fn(async () => [] as Array<{ status: string }>);
+const getModesMock = vi.fn(async () => [] as Array<{ mode: string; subject: string | null; impliedBy: { mode: string; subject: string | null } | null }>);
 vi.mock('../../modes/store', () => ({
   reconcileImpliedModes: (...a: unknown[]) => reconcileImpliedModesMock(...(a as [])),
+  getModes: (...a: unknown[]) => getModesMock(...(a as [])),
 }));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
@@ -584,6 +586,35 @@ beforeEach(() => {
 });
 
 describe('bootstrap-su', () => {
+  it('waits for the attached GOAL cascade and refuses wrong provenance before returning a runnable session', async () => {
+    const goal = { mode: 'goal', subject: 'goal-1', impliedBy: null };
+    const auto = { mode: 'auto', subject: null, impliedBy: { mode: 'goal', subject: 'goal-1' } };
+    const ideate = { mode: 'ideate', subject: null, impliedBy: { mode: 'goal', subject: 'goal-1' } };
+    getModesMock.mockResolvedValueOnce([]).mockResolvedValueOnce([goal, auto, ideate]);
+    const ready = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-goalboot', goal_bootstrap_subject: 'goal-1' });
+    expect(ready.status).toBe(200);
+    expect(getModesMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(getModesMock).toHaveBeenCalledWith('default', 'su-goalboot');
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ modes: ['goal', 'auto', 'ideate'] }));
+
+    getModesMock.mockReset().mockResolvedValue([goal, { ...auto, impliedBy: null }, ideate]);
+    const invalid = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-goalbad', goal_bootstrap_subject: 'goal-1' });
+    expect(invalid.status).toBe(409);
+    expect(await invalid.json()).toMatchObject({ code: 'goal_bootstrap_attestation_failed', error: expect.stringContaining('auto lacks GOAL cascade provenance') });
+  });
+
+  it('attests exact GOAL subject and AUTO/IDEATE cascade provenance before turn one', async () => {
+    const { attestGoalBootstrapModes } = await import('../routes/agent-mcp/bootstrap-su');
+    const goal = { mode: 'goal', subject: 'goal-1', impliedBy: null };
+    const auto = { mode: 'auto', subject: null, impliedBy: { mode: 'goal', subject: 'goal-1' } };
+    const ideate = { mode: 'ideate', subject: null, impliedBy: { mode: 'goal', subject: 'goal-1' } };
+    expect(attestGoalBootstrapModes('goal-1', [])).toEqual({ status: 'pending' });
+    expect(attestGoalBootstrapModes('goal-1', [goal, auto, ideate])).toEqual({ status: 'ready' });
+    expect(attestGoalBootstrapModes('goal-2', [goal, auto, ideate])).toMatchObject({ status: 'invalid', reason: expect.stringContaining('does not match') });
+    expect(attestGoalBootstrapModes('goal-1', [goal, { ...auto, impliedBy: null }, ideate])).toMatchObject({ status: 'invalid', reason: expect.stringContaining('auto lacks GOAL cascade provenance') });
+    expect(attestGoalBootstrapModes('goal-1', [goal, auto])).toMatchObject({ status: 'invalid', reason: expect.stringContaining('ideate lacks GOAL cascade provenance') });
+  });
+
   it('stampPresenceAtBoot accepts a role override while preserving the SU default', async () => {
     const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
 
