@@ -105,6 +105,7 @@ import {
   hostIdleMs,
   eventLogPathForOwner,
   appendHostEvent,
+  hostErrorEvidence,
   sharedDrillLedgerPath,
   appendSharedDrillLedgerEvent,
   stripAnsi,
@@ -3672,6 +3673,25 @@ describe('appendHostEvent / eventLogPathForOwner (EI-10412 — durable lifecycle
   });
   it('is fail-soft: an unwritable dir returns false, never throws', () => {
     expect(appendHostEvent('su-x', 'compact-submitted', {}, '/nonexistent-root-dir/nope')).toBe(false);
+  });
+});
+
+describe('hostErrorEvidence (durable PTY-host failure metadata)', () => {
+  it('retains stable error class and code without persisting the exception message', () => {
+    const error = Object.assign(new Error('token=do-not-persist'), { code: 'EACCES' });
+    const evidence = hostErrorEvidence(error);
+    expect(evidence).toEqual({ errorName: 'Error', errorCode: 'EACCES' });
+    expect(JSON.stringify(evidence)).not.toContain('do-not-persist');
+  });
+
+  it('bounds or rejects untrusted names and codes', () => {
+    expect(hostErrorEvidence({ name: 'Error with secret', code: 'EACCES token' })).toEqual({
+      errorName: 'Error',
+    });
+    expect(hostErrorEvidence({ name: 'X'.repeat(200), code: 'E'.repeat(200) })).toEqual({
+      errorName: 'X'.repeat(64),
+      errorCode: 'E'.repeat(64),
+    });
   });
 });
 
