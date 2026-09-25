@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "p2p-join-catchup-speed-2026-09-23 R-1 (P-001, P-007): fresh snapshot-seeded join of the papercusp pot on the Mac VM rig, long-history run #16 vs short-history W2b",
+  "framework": "operational",
+  "command": [
+    "tower: bash .papercusp/scratch/p007/w2b-drive.sh  # POST /api/harness/join-link with a bare hello-world-3-pot link on the Mac VM (build papercusp-staging b09cfebff815); exit W2B-DRIVE2-EXIT=0",
+    "mac-vm: timeline probe on the joined harness -> ~/p007-w2b-probe.out",
+    "tower: bash .papercusp/scratch/p007/run16-drive.sh  # verify papercusp-staging source, archive the prior serve log, reset the Mac VM to a fresh hyperbee store + embedded PG, compose the sidecar bundle, start the timeline probe; drive log ends '=== 2026-09-25T20:36:41Z DONE'",
+    "mac-vm: timeline probe -> ~/p007-run16-probe.out; sidecar serve log -> /tmp/serve-current.log",
+    "tower: 39-log liveness read of the joined papercusp harness -> .papercusp/scratch/p007/run16-live-all.txt",
+    "mac-vm: psql postgresql://harness_admin@127.0.0.1:18213/papercusp -f p007-applyfail.sql  # SELECT count(*), count(*) FILTER (WHERE apply_failure IS NOT NULL) FROM harness_shared.substrate_merge_cursor WHERE harness_slug='papercusp'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T20:24:46Z",
+  "finishedAt": "2026-09-25T21:45:58Z",
+  "summary": "R-1 method on the Mac VM rig. Long history: a fresh device joined the papercusp pot (log 5b00878b, 7,798,537 merged ops) on papercusp-staging 14d91e00e7c5 and converged +27:02 after join_started, well under the 1 h bound. The join seeded from snapshot set set@7789069 (622,335 rows applied in 1325.9 s, in one pass) plus a ~9k-op tail, and did not replay the op history. All 39 papercusp logs read live at +28:25, and at +1:07 no merge cursor had an apply_failure. Short history: a member-link join of hello-world-3-pot (251,059 ops, 463 snapshot rows) on b09cfebff815 converged 5.2 s after join_start. The unit layer of R-1 (log-snapshot.test.ts, read-merge-snapshot-lanes.test.ts) passed in testing:run group 4717f51e-a044-431c-a08c-a967cb039f60, bound separately. NOT CONSTRUCTED: the falsifier's discriminating case, a pot with a LONGER op history but a SMALLER snapshot set; both pots measured here differ in both dimensions. Plan Decisions: D-044 (run #16), D-043 (W2b), D-027/D-036/D-038 (earlier long-history runs +27:55, +26:45, +27:08).",
+  "assertions": [
+    {
+      "id": "r1-long-history-converged-under-1h",
+      "passed": true,
+      "evidence": "VM /tmp/serve-current.log: '[2026-09-25T20:38:57.369Z] [boot-history] join_started harness=papercusp binding=hive'. VM ~/p007-run16-probe.out: '2026-09-25T21:05:59.324Z logs=6 notConverged=0 backlog=0 seed merged=7798537/7798537'. Elapsed 27:01.955 < 60:00. Build: run16-drive.log step 1 'HEAD=14d91e00e7c5fcc0f24880a95f06340a04bca0bc porcelain=0 p541ref=1 p541boot=1 p540=1 wi3134=2'."
+    },
+    {
+      "id": "r1-every-admitted-log-merged-equals-known",
+      "passed": true,
+      "evidence": "Tower .papercusp/scratch/p007/run16-live-all.txt: 'LIVE-ALL at=2026-09-25T21:07:22.543Z logs=39 notConverged=0 truncated=false'; tower log row 'OK  5b00878b7df0 merged=7798542 known=7798542 local=7798542 backlog=0 verdict=live'. Still converged later: probe '2026-09-25T21:44:57.597Z logs=6 notConverged=0 backlog=0 seed merged=7800468/7800468'."
+    },
+    {
+      "id": "r1-no-apply-failure-one-hour-after-join",
+      "passed": true,
+      "evidence": "VM embedded PG at 2026-09-25 17:45:58.331137-04 (21:45:58Z, +1:07:01 after join_started): harness_shared.substrate_merge_cursor WHERE harness_slug='papercusp' -> cursors 40, apply_failures 0."
+    },
+    {
+      "id": "r1-join-seeds-from-snapshot-not-history",
+      "passed": true,
+      "evidence": "VM /tmp/serve-current.log: '[2026-09-25T21:04:20.741Z] [read-merge] [papercusp-workspace/papercusp] P-008 snapshot set: log 5b00878b7df0 set@7789069: APPLIED 478 chunk(s), 622335 row(s) in 1325.9s (this cursor was seeded at it).' Probe milestone seed_applied at 21:04:58.023Z merged=7798344 setEnd=7789547, so the tail after the set was ~8.8k ops, not the 7.8M-op history. 'P-522 eviction re-fold' count in the serve log = 0 (no rewind into the set); bootstrap-pot POST count = 0 (join started in-process)."
+    },
+    {
+      "id": "r1-short-history-join",
+      "passed": true,
+      "evidence": "VM ~/p007-w2b-probe.out: 'MILESTONE {\"milestone\":\"join_start\",\"at\":\"2026-09-25T20:25:49.532Z\",\"logs\":1}', 'MILESTONE {\"milestone\":\"seed_applied\",\"at\":\"2026-09-25T20:25:54.750Z\",\"merged\":251059,\"setEnd\":251020}', 'MILESTONE {\"milestone\":\"converged\",\"at\":\"2026-09-25T20:25:54.750Z\",\"logs\":2}'. 5.2 s; set@251019 applied 463 rows in 2.7 s, applyFailures [] (plan D-043)."
+    },
+    {
+      "id": "r1-history-comparison",
+      "passed": true,
+      "evidence": "Short vs long: op history 251,059 vs 7,798,537 (31x); snapshot rows 463 vs 622,335 (1,344x); join_start->converged 5.2 s vs 1,622 s (312x). Per snapshot row the long join was cheaper (2.6 ms vs 11.3 ms); per history op it was 10x dearer (0.21 ms vs 0.02 ms). In the long join, 1,325.9 s of 1,622 s was the snapshot-set apply. Earlier long-history runs on other builds, as the op history grew: run #9 +27:55, run #11 +26:45, run #14 +27:08, run #16 +27:02 (plan D-027/D-036/D-038/D-044). Limitation stated in summary: the longer-history, smaller-snapshot pot was not constructed."
+    }
+  ]
+}
