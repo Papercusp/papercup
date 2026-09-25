@@ -24,7 +24,7 @@
  * retried — see `hosted-connector-client.ts` for why retrying it is harmful.
  */
 import { pinModuleState } from '@papercusp/module-singleton';
-import { activeWorkspaceId } from '../workspace-registry';
+import { DEFAULT_WORKSPACE_ID, activeWorkspaceId, ensureCurrentWorkspace } from '../workspace-registry';
 import {
   listDesktopSessions,
   reconcileLocalDesktopSessions,
@@ -73,6 +73,13 @@ export interface HostedWorkspaceHostRuntimeOptions {
   onAudit?: (event: HostedHostAuditEvent) => void;
   onTerminal?: (reason: HostedConnectorTerminalReason, detail: string) => void;
   onWarning?: (message: string) => void;
+  /**
+   * Called with every binding BEFORE its adapter is built. The production default
+   * (`ensureHostedWorkspaceHostRuntime`) is {@link registerHostedCustomerWorkspace}.
+   * A throw is reported through `onWarning`, never fatal: a registry write failure
+   * must not cost the customer their connector.
+   */
+  onBinding?: (binding: HostedConnectorBinding) => void;
   /** Test seam — swap the transport. */
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
@@ -159,15 +166,19 @@ export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
  * or a test — can compose the runtime without pulling a registry dependency in.
  */
 export function createDefaultDesktopBackend(
-  workspaceId: string,
+  workspaceId: string | (() => string),
   overrides: Partial<HostedDesktopBackendDeps> = {},
 ): HostedDesktopBackend {
+  // A resolver, not a value, in production: the backend is composed at boot, BEFORE the
+  // first `bound` registers this host's workspace (WI-10003163), so a value captured
+  // here would pin every desktop row to whatever the registry said pre-registration.
+  const scope = typeof workspaceId === 'function' ? workspaceId : () => workspaceId;
   return createHostedDesktopBackend({
     leasedDesktop: leasedDesktopBySessionId,
     // Not filtered by caller (D-025 ruling 2): the connector binding already scopes
     // this adapter to ONE organization + customer workspace, and that binding IS the
     // authorization boundary. A second, weaker filter here would imply it is not.
-    listSessions: () => listDesktopSessions({ workspaceId }),
+    listSessions: () => listDesktopSessions({ workspaceId: scope() }),
     touchSession: (id) => touchDesktopSession(id),
     // The desktop pack's socket service (D-363) is what `ensureHiveDesktop`
     // provisions through on a workspace host, so this needs no pack-specific code.
@@ -182,7 +193,7 @@ export function createDefaultDesktopBackend(
       const liveIds = leasedHiveDesktops()
         .map(hiveDesktopSessionId)
         .filter((id): id is string => Boolean(id));
-      return (await reconcileLocalDesktopSessions({ workspaceId, liveIds, soleOwner: true })).reaped;
+      return (await reconcileLocalDesktopSessions({ workspaceId: scope(), liveIds, soleOwner: true })).reaped;
     },
     ...overrides,
   });
@@ -230,6 +241,11 @@ export function createHostedWorkspaceHostRuntime(
       // the new adapter adopts them (same connector identity only).
       release('rebinding');
       binding = next;
+      try {
+        options.onBinding?.(next);
+      } catch (error) {
+        warn(`binding hook failed: ${String(error)}`);
+      }
       adapter = new HostedWorkspaceHostSessionAdapter({
         binding: next,
         workspaceRoot: options.workspaceRoot,
@@ -300,14 +316,42 @@ export function ensureHostedWorkspaceHostRuntime(
   if (!config) return null;
   const runtime = createHostedWorkspaceHostRuntime({
     ...config,
+    onBinding: registerHostedCustomerWorkspace,
     ...(overrides.desktop === undefined
-      ? { desktop: createDefaultDesktopBackend(activeWorkspaceId()) }
+      ? { desktop: createDefaultDesktopBackend(activeWorkspaceId) }
       : { desktop: overrides.desktop }),
     ...overrides,
   });
   started.runtime = runtime;
   runtime.start();
   return runtime;
+}
+
+/** Display name, matching the desktop's fresh-install workspace (workspaces.rs ensure_initialized). */
+export const HOSTED_CUSTOMER_WORKSPACE_NAME = 'Default';
+
+/** The id becomes a directory under the workspaces root, so only a plain slug is accepted. */
+const WORKSPACE_ID_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * Make the bound customer workspace this operator's registered, current workspace (WI-10003163).
+ *
+ * A hosted host has no desktop shell, so nothing ran the desktop's first-run
+ * `ensure_initialized()`: the registry stayed empty, New Session listed no workspace, and
+ * every unscoped write fell through to the literal `'default'`, which fails closed as the
+ * p2p coordination sentinel (WI-5321 / WI-1564). The binding names exactly one customer
+ * workspace, and the operator-http relay deliberately forwards no workspace header because
+ * "this operator serves exactly one workspace — its own pin is the only right scope"; this
+ * is where that pin is set. Idempotent on every rebind.
+ *
+ * Throws on an id that is not a plain slug rather than joining it into a filesystem path.
+ */
+export function registerHostedCustomerWorkspace(binding: HostedConnectorBinding): void {
+  const id = binding.customerWorkspaceId;
+  if (!WORKSPACE_ID_SLUG.test(id) || id === DEFAULT_WORKSPACE_ID) {
+    throw new Error(`refusing to register hosted customer workspace id ${JSON.stringify(id)}: not a plain workspace slug`);
+  }
+  ensureCurrentWorkspace(id, HOSTED_CUSTOMER_WORKSPACE_NAME);
 }
 
 /** Test seam — drop the pinned runtime so a suite can start a fresh one. */

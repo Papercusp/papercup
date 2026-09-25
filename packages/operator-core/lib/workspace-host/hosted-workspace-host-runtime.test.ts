@@ -4,9 +4,14 @@ import {
   ensureHostedWorkspaceHostRuntime,
   hostedAuditRow,
   readHostedWorkspaceHostConfig,
+  registerHostedCustomerWorkspace,
   __resetHostedWorkspaceHostRuntime,
 } from './hosted-workspace-host-runtime';
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readRegistry } from '../workspace-registry';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
 
@@ -455,5 +460,100 @@ describe('createHostedWorkspaceHostRuntime', () => {
     expect(terminal).toEqual([{ reason: 'stopped', detail: 'host_stopped' }]);
     vi.advanceTimersByTime(60_000);
     expect(sockets).toHaveLength(1);
+  });
+});
+
+// WI-10003163: a hosted host has no desktop shell to run first-run `ensure_initialized()`,
+// so the bound customer workspace must become the operator's registered, current workspace.
+describe('hosted customer workspace registration (WI-10003163)', () => {
+  let root: string;
+  let prevRoot: string | undefined;
+  beforeEach(() => {
+    prevRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+    root = mkdtempSync(join(tmpdir(), 'hosted-ws-registration-'));
+    process.env.PAPERCUSP_WORKSPACES_ROOT = root;
+  });
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+    else process.env.PAPERCUSP_WORKSPACES_ROOT = prevRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const bind = (sockets: FakeSocket[], index: number, binding: Record<string, unknown>) => {
+    sockets[index]!.emitOpen();
+    sockets[index]!.emitMessage({ type: 'bound', role: 'connector', binding });
+  };
+
+  it('registers the bound customer workspace as the current "Default" workspace, once, across rebinds', () => {
+    const { value, sockets } = runtime({ onBinding: registerHostedCustomerWorkspace });
+    value.start();
+    expect(readRegistry()).toEqual({ workspaces: [] });
+    bind(sockets, 0, BINDING);
+    let reg = readRegistry();
+    expect(reg.current).toBe('cust_1');
+    expect(reg.workspaces).toEqual([expect.objectContaining({ id: 'cust_1', name: 'Default' })]);
+    // The registry entry and its data dir are one invariant (desktop switch() refuses a missing dir).
+    expect(existsSync(join(root, 'cust_1'))).toBe(true);
+
+    sockets[0]!.emitClose(1006);
+    vi.advanceTimersByTime(10);
+    bind(sockets, 1, { ...BINDING, generation: 4 });
+    reg = readRegistry();
+    expect(reg.workspaces).toHaveLength(1);
+    expect(reg.current).toBe('cust_1');
+  });
+
+  it.each(['../escape', 'default', 'a/b'])(
+    'refuses customer workspace id %j without writing, and still binds the connector',
+    (customerWorkspaceId) => {
+      const warnings: string[] = [];
+      const { value, sockets } = runtime({
+        onBinding: registerHostedCustomerWorkspace,
+        onWarning: (message: string) => warnings.push(message),
+      });
+      value.start();
+      bind(sockets, 0, { ...BINDING, customerWorkspaceId });
+      expect(value.adapter).not.toBeNull();
+      expect(readRegistry()).toEqual({ workspaces: [] });
+      expect(warnings.join('\n')).toMatch(/refusing to register hosted customer workspace/);
+    },
+  );
+
+  it('is the boot default: ensure() registers the workspace on bind without any override', () => {
+    __resetHostedWorkspaceHostRuntime();
+    const sockets: FakeSocket[] = [];
+    const env = {
+      PAPERCUSP_HOSTED_CONNECTOR_BEARER: 'b',
+      PAPERCUSP_HOSTED_CONTROL_PLANE_URL: 'https://app.papercusp.com',
+      PAPERCUSP_HOSTED_WORKSPACE_ROOT: '/srv/workspace',
+    } as NodeJS.ProcessEnv;
+    const runtimeValue = ensureHostedWorkspaceHostRuntime(env, {
+      desktop: {
+        lookup: async () => null,
+        dial: async () => {
+          throw new Error('unused');
+        },
+        heartbeat: () => {},
+        roster: async () => [],
+        thumbnail: async () => null,
+        start: async () => null,
+      },
+      onWarning: () => {},
+      createClient: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) =>
+        new HostedWorkspaceConnectorClient({
+          ...options,
+          minBackoffMs: 10,
+          random: () => 1,
+          createSocket: (url, headers) => {
+            const socket = new FakeSocket(url, headers);
+            sockets.push(socket);
+            return socket;
+          },
+        }),
+    });
+    expect(runtimeValue).not.toBeNull();
+    bind(sockets, 0, BINDING);
+    expect(readRegistry().current).toBe('cust_1');
+    __resetHostedWorkspaceHostRuntime();
   });
 });
