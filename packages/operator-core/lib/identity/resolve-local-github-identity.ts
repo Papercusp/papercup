@@ -27,8 +27,11 @@ export type LocalGithubIdentity =
    */
   | { kind: 'gh_auth_required'; transient?: true; reason?: string };
 
+/** What a token source returns; `GhTokenResult` (the default source) is assignable to it. */
+type TokenRead = { kind: string; token?: string; error?: { kind: string; reason?: string } };
+
 export interface ResolveLocalGithubIdentityOpts {
-  getToken?: () => Promise<{ kind: string; token?: string; error?: { kind: string; reason?: string } }>;
+  getToken?: () => Promise<TokenRead>;
   getUser?: () => Promise<{ id: number; login: string } | null>;
   /**
    * Test seam only: force cache participation even with injected fns. In
@@ -92,13 +95,13 @@ export async function getAuthenticatedGithubUser(): Promise<{ id: number; login:
 export async function resolveLocalGithubIdentity(
   opts: ResolveLocalGithubIdentityOpts = {},
 ): Promise<LocalGithubIdentity> {
-  const getToken = opts.getToken ?? getGhAuthToken;
+  const getToken: () => Promise<TokenRead> = opts.getToken ?? getGhAuthToken;
   const getUser = opts.getUser ?? getAuthenticatedGithubUser;
   // Cache participates on the default (production) path; injected-mock tests opt
   // in explicitly via `_cache` so no cached value crosses unrelated cases.
   const useCache = opts._cache ?? (!opts.getToken && !opts.getUser);
 
-  let tok: Awaited<ReturnType<typeof getToken>>;
+  let tok: TokenRead;
   try {
     tok = await getToken();
   } catch (e) {

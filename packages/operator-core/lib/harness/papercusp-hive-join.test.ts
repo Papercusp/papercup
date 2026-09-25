@@ -91,6 +91,23 @@ describe('joinCanonicalPapercuspHive', () => {
     expect(res.retryable).toBeUndefined();
   });
 
+  it('transient gh identity failure → skipped, retryable, not parked on sign-in (P-007 run #13)', async () => {
+    const records: Array<[string, string, { detail?: string } | undefined]> = [];
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      resolveGithub: async () => ({
+        kind: 'gh_auth_required' as const,
+        transient: true as const,
+        reason: 'gh auth token failed: Command failed: gh auth token (timed out)',
+      }),
+      record: (s, st, e) => records.push([s, st, e]),
+    });
+    expect(res.state).toBe('skipped');
+    expect(res.retryable).toBe(true);
+    expect(res.reason).toMatch(/GitHub identity unavailable: gh auth token failed/);
+    expect(records.some((r) => /sign in to github/i.test(r[2]?.detail ?? ''))).toBe(false);
+  });
+
   it('no directory wiring → skipped, retryable (the invite topic was never joined; P-539)', async () => {
     const res = await joinCanonicalPapercuspHive(INVITE, { ...baseDeps(), ensureWired: async () => null });
     expect(res.state).toBe('skipped');
