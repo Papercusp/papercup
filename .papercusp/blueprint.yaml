@@ -8,7 +8,7 @@
 id: papercusp
 extends: papercusp-engineer
 kind: pot
-version: 0.1.0
+version: 0.1.1
 description: >-
   Papercusp's own engineering pot: senior su collaborators work the shared
   staging tree, coordinate through work items and plans, and ship through the
@@ -26,6 +26,11 @@ spine:
 roles:
   - id: su
     description: Senior engineer-collaborator with operator and admin authority.
+  - id: operator
+    description: >-
+      Executes a bounded, owner-authorized operator-config or release operation
+      with independent preflight and verification. Launched explicitly; the
+      pot's su decider never dispatches this role automatically.
 
 lexicon:
   workUnit: work item
@@ -38,4 +43,6 @@ fleet:
     # ceiling (and the universal never-auto protected floor remains independent).
     - id: su
       capabilities: ["*"]
+    - id: operator
+      capabilities: ["operator:write"]
   watcher: papercup
