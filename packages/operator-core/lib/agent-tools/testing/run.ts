@@ -112,7 +112,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { activeWorkspaceId } from '../../workspace-registry';
 import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
-import { activeMutationProbePaths } from './mutation-probe-fence';
+import { mutationProbeRefusal } from './mutation-probe-fence';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -141,7 +141,18 @@ import {
   remeasureTestEvidenceSchema,
   buildTestEvidenceRemeasure,
   retireRemeasuredPredecessors,
+  retractRefusedTestEvidence,
+  RECOVERY_WAIT_DEFAULT_MS,
 } from './evidence';
+
+/**
+ * Core refusals returned before any test process is started. A run refused this way
+ * measured nothing, so evidence it prepared is retracted rather than finished
+ * (EI-24100872054224181).
+ */
+const PRE_LAUNCH_REFUSALS: ReadonlySet<string> = new Set([
+  'invalid_root', 'ambiguous_workspace_path', 'mutation_probe_active', 'mutation_probe_state_unknown',
+]);
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -2616,33 +2627,13 @@ export async function runTestFilesCore(opts: {
   const root = checkoutRootForTestFiles(requestedPaths.ok ? requestedPaths.files : opts.files, opts.root);
 
   // An in-tree mutation probe holds its subject's file lock for the dirty
-  // window. Tests can import that source through any test file, so path-level
-  // lock overlap is not enough: refuse test execution for the whole checkout
-  // while the marker is active. The lock read is fail-closed; without a current
-  // answer, this runner cannot claim it avoided a mutant.
-  let mutationProbePaths: string[] = [];
-  if (existsSync(root)) {
-    try {
-      mutationProbePaths = await activeMutationProbePaths(root);
-    } catch (error) {
-      return {
-        ok: false,
-        runId,
-        root,
-        error: 'mutation_probe_state_unknown',
-        hint: `could not verify whether an in-tree mutation probe is active; no test process was started (${error instanceof Error ? error.message : String(error)})`,
-      };
-    }
-  }
-  if (mutationProbePaths.length > 0) {
-    return {
-      ok: false,
-      runId,
-      root,
-      error: 'mutation_probe_active',
-      hint: `no test process was started because this checkout has an active mutation probe on ${mutationProbePaths.join(', ')}; retry after the probe restores its source`,
-    };
-  }
+  // window. Path-level lock overlap is not enough, because a test can import
+  // that source indirectly; the preflight admits only test files whose import
+  // closure provably cannot observe it. The evidence handler runs the same
+  // preflight before registering anything; this repeat covers every other
+  // caller and a probe that started in between.
+  const mutationProbe = await mutationProbeRefusal(root, requestedPaths.ok ? requestedPaths.files : opts.files);
+  if (mutationProbe) return { ok: false, runId, root, ...mutationProbe };
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
   // a file that happens to exist (with stale content) at the resolved root ran
@@ -3230,8 +3221,12 @@ export default defineTool({
     if (evidenceRequest && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
     if (evidenceRequest) {
+      const selected = normalizeTestFilePaths(files, rootSelection.root);
+      // EI-24100872054224181: refuse BEFORE registering pending rows. The core repeats
+      // this preflight; a refusal there after preparation is retracted below.
+      const mutationProbe = await mutationProbeRefusal(rootSelection.root, selected.ok ? selected.files : files);
+      if (mutationProbe) return { data: { ok: false, runId, root: rootSelection.root, ...mutationProbe } };
       try {
-        const selected = normalizeTestFilePaths(files, rootSelection.root);
         if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
         prepared = await prepareTestEvidence(evidenceRequest, runId, selected.files, evidenceScope!);
       } catch (error) {
@@ -3299,6 +3294,10 @@ export default defineTool({
         ? {
             evidenceBundle: result.error === 'timeout'
               ? deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, evidenceRunId, evidenceScope!.harnessSlug)
+              : result.error !== undefined && PRE_LAUNCH_REFUSALS.has(result.error)
+                ? await retractRefusedTestEvidence(prepared, runId, evidenceScope!, result.error).catch((error) => ({
+                    status: 'retirement-incomplete' as const, reason: result.error, message: String(error),
+                  }))
               : await finishTestEvidence(
                   prepared,
                   runId,
@@ -3351,10 +3350,15 @@ export default defineTool({
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             testingRunTimeoutClampDisclosure(requestedTimeoutMs, timeoutMs) +
-            detachedRecoveryHint({
-              runId: result.detachedRunId,
-              durable: result.detachedDurable === true,
-            }) +
+            // EI-24207525450988644: an evidence run recovers in ONE call — recoverEvidence
+            // waits for the detached run itself — so steer away from a run-status loop.
+            (prepared && result.detachedRunId
+              ? 'To bind this evidence, call evidenceBundle.recovery (testing:run { recoverEvidence }) now: it waits up to ' +
+                `${Math.round(RECOVERY_WAIT_DEFAULT_MS / 1000)}s for the detached run and binds in the same call; skip testing:run-status polling. `
+              : detachedRecoveryHint({
+                  runId: result.detachedRunId,
+                  durable: result.detachedDurable === true,
+                })) +
             detachedTestTimeoutHint(files),
         },
       };

@@ -1,7 +1,7 @@
-import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
@@ -11,6 +11,7 @@ vi.mock('../locks/su-lock-store', () => ({
 
 import { readQueue } from '../locks/su-lock-store';
 import { runTestFilesCore } from './run';
+import { mutationProbeRefusal } from './mutation-probe-fence';
 
 const readQueueMock = vi.mocked(readQueue);
 let root: string;
@@ -65,4 +66,78 @@ it('continues to ordinary root validation when no mutation-probe lock is active'
   const result = await runTestFilesCore({ root: makeRoot(), files: ['tests/subject.test.ts'] });
 
   expect(result).toMatchObject({ ok: false, error: 'invalid_root' });
+});
+
+// EI-24100872054224181 secondary: the fence used to refuse the WHOLE checkout. It now admits a
+// test file only when its import closure provably cannot observe the probed source.
+describe('mutationProbeRefusal narrowing', () => {
+  const probe = (...paths: string[]) => ({ probePaths: async () => paths });
+  function checkout(files: Record<string, string>): string {
+    const dir = makeRoot();
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    return dir;
+  }
+  const base = {
+    'src/subject.ts': 'export const subject = 1;\n',
+    'src/other.ts': 'export const other = 2;\n',
+    'src/mid.ts': "export { subject } from './subject';\n",
+    'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', main: 'index.js' }),
+    'node_modules/pkg/index.js': 'exports.value = 3;\n',
+  };
+
+  it('admits a test whose closure excludes the probed source, including packages it imports', async () => {
+    const dir = checkout({ ...base,
+      'tests/other.test.ts': "import { other } from '../src/other';\nimport { value } from 'pkg';\nimport { join } from 'node:path';\nexport default [other, value, join];\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/other.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+  });
+
+  it('refuses a test that imports the probed source, directly or transitively', async () => {
+    const dir = checkout({ ...base,
+      'tests/direct.test.ts': "import { subject } from '../src/subject';\nexport default subject;\n",
+      'tests/transitive.test.ts': "import { subject } from '../src/mid';\nexport default subject;\n" });
+    for (const test of ['tests/direct.test.ts', 'tests/transitive.test.ts']) {
+      const refusal = await mutationProbeRefusal(dir, [test], probe('src/subject.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain(`${test} may observe it: imports`);
+    }
+  });
+
+  it('refuses when any one requested test can observe the probe', async () => {
+    const dir = checkout({ ...base,
+      'tests/other.test.ts': "import { other } from '../src/other';\nexport default other;\n",
+      'tests/direct.test.ts': "import { subject } from '../src/subject';\nexport default subject;\n" });
+    const refusal = await mutationProbeRefusal(dir, ['tests/other.test.ts', 'tests/direct.test.ts'], probe('src/subject.ts'));
+    expect(refusal!.hint).toContain('tests/direct.test.ts may observe it');
+  });
+
+  it('fails closed on every reach the import graph cannot see', async () => {
+    const dir = checkout({ ...base,
+      'src/data.sql': 'select 1;\n',
+      'src/loader.ts': "import { readFileSync } from 'node:fs';\nexport const text = () => readFileSync(`src/${'subject'}.ts`, 'utf8');\n",
+      'tests/dynamic.test.ts': "export const load = (name: string) => import(name);\n",
+      'tests/named.test.ts': "import { text } from '../src/loader';\nexport default text;\n",
+      'tests/walks.test.ts': "import { readdirSync } from 'node:fs';\nexport default readdirSync('src');\n",
+      'tests/unresolved.test.ts': "import { gone } from '../src/gone';\nexport default gone;\n",
+      'tests/other.test.ts': "import { other } from '../src/other';\nexport default other;\n" });
+    const cases: Array<[string, string, string]> = [
+      ['tests/dynamic.test.ts', 'src/subject.ts', 'import closure could not be established'],
+      ['tests/named.test.ts', 'src/subject.ts', 'loader.ts names subject'],
+      ['tests/walks.test.ts', 'src/subject.ts', 'reads the filesystem or spawns a process'],
+      ['tests/unresolved.test.ts', 'src/subject.ts', 'import closure could not be established'],
+      ['tests/missing.test.ts', 'src/subject.ts', 'could not be resolved'],
+      ['tests/other.test.ts', 'src/data.sql', 'is not a code module'],
+    ];
+    for (const [test, probed, why] of cases) {
+      const refusal = await mutationProbeRefusal(dir, [test], probe(probed));
+      expect(refusal, test).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint, test).toContain(why);
+    }
+  });
+
+  it('makes no closure walk when no probe is active', async () => {
+    await expect(mutationProbeRefusal(makeRoot(), ['tests/absent.test.ts'], probe())).resolves.toBeNull();
+  });
 });

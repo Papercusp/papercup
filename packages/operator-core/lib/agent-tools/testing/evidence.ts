@@ -28,9 +28,22 @@ export const testEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   bindings: z.array(bindingSchema).min(1).max(20),
 }).strict();
+/**
+ * EI-24207525450988644 — how long a recovery call waits in-process for the detached run to
+ * reach a terminal snapshot before reconciling. Without it, every foreground timeout cost
+ * the caller a separate testing:run-status polling loop before recovery (measured in the
+ * review-rework R-8 canary: 6 and 8 polls on the two groups that hit the cap). The ceiling
+ * stays below the testing:run foreground cap so the reconcile work after the wait still
+ * fits inside the ~55s MCP transport limit.
+ */
+export const RECOVERY_WAIT_DEFAULT_MS = 30_000;
+export const RECOVERY_WAIT_CEILING_MS = 40_000;
+export const RECOVERY_WAIT_POLL_MS = 2_000;
 export const recoverTestEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   originRunId: z.string().uuid(), runId: z.string().uuid(),
+  waitMs: z.number().int().min(0).max(RECOVERY_WAIT_CEILING_MS).optional()
+    .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a still-running detached run to finish before reconciling; 0 reconciles immediately.`),
 }).strict();
 type Request = z.infer<typeof testEvidenceSchema>;
 type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
@@ -49,11 +62,15 @@ type Deps = {
   pin?: typeof measureAndPinRepoFilesEvidenceAtRoot;
   /** Used only by the re-measure path to withdraw a replaced stale predecessor. */
   retract?: typeof retractSpecEvidence;
+  /** Recovery wait seam (EI-24207525450988644); fixtures inject a fake clock instead of real time. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 };
 const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEvidenceAtRoot,
   ledger: readHarnessTestRunEvidence, list: listSpecEvidence,
   unattributed: countUnattributedTestRunRows, pin: measureAndPinRepoFilesEvidenceAtRoot,
-  retract: retractSpecEvidence, runStatus: getRunAsync };
+  retract: retractSpecEvidence, runStatus: getRunAsync,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now: () => Date.now() };
 
 /**
  * The commit pin for a measurement, or null. The pin re-reads the files, so it is kept
@@ -184,6 +201,28 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     if (!succeeded(receipt.status)) throw new Error(`evidence_registration_failed:${receipt.status}`);
   }
   return prepared;
+}
+
+/**
+ * EI-24100872054224181 — withdraw the pending rows `prepareTestEvidence` registered when the
+ * run was then refused before any test process started. Finishing them instead would bind a
+ * second pending row per binding, and remeasure skips a pending row as `run-in-flight`, so the
+ * clause would stay stuck until someone retracted both by hand.
+ */
+export async function retractRefusedTestEvidence(prepared: Prepared[], runId: string, scope: Scope,
+  refusal: string, deps: Deps = defaults) {
+  const retiredIds = new Set<number>();
+  const failures: PendingRetirement['failures'] = [];
+  for (const row of prepared) {
+    const retirement = await retirePendingAttemptBindings(row, runId, runId, scope,
+      `testing:run ${runId} was refused (${refusal}) before any test process started; this attempt registered no proof.`, deps);
+    retirement.bindingIds.forEach(id => retiredIds.add(id));
+    failures.push(...retirement.failures);
+  }
+  const bindingIds = [...retiredIds].sort((a, b) => a - b);
+  return { status: failures.length === 0 ? 'not-recorded' as const : 'retirement-incomplete' as const,
+    reason: refusal, retiredCount: bindingIds.length, bindingIds: bindingIds.slice(0, 20),
+    omitted: Math.max(0, bindingIds.length - 20), failures: failures.slice(0, 20) };
 }
 
 export function testEvidenceOutcome(
@@ -647,6 +686,32 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
   return outcomes;
 }
 
+/**
+ * EI-24207525450988644 — poll the detached run's snapshot until it is terminal or the
+ * bounded wait expires, so one recovery call replaces the caller's run-status loop. A
+ * missing snapshot or a failed read stops at once: waiting cannot make an unknown or
+ * evicted run appear, and a read error is reported in-band rather than retried blind.
+ */
+async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: Deps): Promise<{
+  snapshot: RunSnapshot | null; error?: string; waitedMs: number;
+}> {
+  const sleep = deps.sleep ?? defaults.sleep!;
+  const now = deps.now ?? defaults.now!;
+  const started = now();
+  for (;;) {
+    let snapshot: RunSnapshot | null;
+    try {
+      snapshot = await deps.runStatus?.(runId) ?? null;
+    } catch (error) {
+      return { snapshot: null, error: String(error).slice(0, 300), waitedMs: now() - started };
+    }
+    const waitedMs = now() - started;
+    const remainingMs = limitMs - waitedMs;
+    if (snapshot === null || isTerminalRunSnapshot(snapshot) || remainingMs <= 0) return { snapshot, waitedMs };
+    await sleep(Math.min(RECOVERY_WAIT_POLL_MS, remainingMs));
+  }
+}
+
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
 export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps: Deps = defaults) {
   const evidence = await deps.list({ harnessSlug: scope.harnessSlug,
@@ -688,16 +753,19 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   if (prepared.length === 0) throw new Error('evidence_recovery_not_found');
   if (recoveredRunIds.size !== 1) throw new Error('evidence_recovery_ambiguous_run_id');
   const recoveredRunId = [...recoveredRunIds][0]!;
-  let runSnapshot: RunSnapshot | null = null;
-  let runStatusError: string | undefined;
-  try {
-    runSnapshot = await deps.runStatus?.(recoveredRunId) ?? null;
-  } catch (error) {
-    runStatusError = String(error).slice(0, 300);
-  }
+  const waitLimitMs = Math.min(recovery.waitMs ?? RECOVERY_WAIT_DEFAULT_MS, RECOVERY_WAIT_CEILING_MS);
+  const { snapshot: runSnapshot, error: runStatusError, waitedMs } =
+    await awaitTerminalRunSnapshot(recoveredRunId, waitLimitMs, deps);
   const terminalRun = isTerminalRunSnapshot(runSnapshot) ? runSnapshot : undefined;
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
-  return { ...bundle, detachedRunStatus: runSnapshot
+  const stillRunning = runSnapshot !== null && !terminalRun;
+  return { ...bundle,
+    recoveryWait: { limitMs: waitLimitMs, waitedMs,
+      outcome: terminalRun ? 'terminal' as const : stillRunning ? 'still-running' as const
+        : runStatusError ? 'unavailable' as const : 'not-found' as const,
+      ...(stillRunning ? { nextStep: `The detached run was still in flight after waiting ${Math.round(waitedMs / 1000)}s. `
+        + 'Call this same testing:run { recoverEvidence } again (it waits again); do not poll testing:run-status first.' } : {}) },
+    detachedRunStatus: runSnapshot
     ? { runId: runSnapshot.runId, status: runSnapshot.status, exitCode: runSnapshot.exitCode,
         finishedAt: runSnapshot.finishedAt }
     : { status: runStatusError ? 'unavailable' : 'not-found', ...(runStatusError ? { message: runStatusError } : {}) } };

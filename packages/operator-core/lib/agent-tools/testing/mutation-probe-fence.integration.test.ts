@@ -13,10 +13,12 @@ afterEach(async () => {
   releaseMarker = undefined;
 });
 
-it('refuses a real test-file launch while a mutation-probe marker is active', async () => {
+// This is a harmless existing suite with a tiny import closure.
+const SUITE = 'packages/operator-core/lib/__tests__/testing-run-source.test.ts';
+
+async function holdProbeMarker(markerPath: string): Promise<string> {
   const coordinationDomain = await realpath(REPO_ROOT);
   const owner = `mutation-probe-fence-test:${randomUUID()}`;
-  const markerPath = `packages/operator-core/lib/agent-tools/testing/.mutation-probe-${randomUUID()}.ts`;
   await ensureBootstrap();
   const acquired = await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
     tryAcquire(tx, {
@@ -29,7 +31,7 @@ it('refuses a real test-file launch while a mutation-probe marker is active', as
     }),
   );
   expect(acquired.ok).toBe(true);
-  if (!acquired.ok) return;
+  if (!acquired.ok) throw new Error('mutation-probe marker was not acquired');
 
   releaseMarker = async () => {
     const released = await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
@@ -40,14 +42,25 @@ it('refuses a real test-file launch while a mutation-probe marker is active', as
 
   const visible = await readQueue(getTxPool(), { coordinationDomain, paths: [markerPath] });
   expect(visible.active_locks).toContainEqual(expect.objectContaining({ path: markerPath, intent: 'mutation probe' }));
+  return coordinationDomain;
+}
 
-  // This is a harmless existing suite. If the lock fence regresses, the runner
+it('refuses a real test-file launch whose import closure contains the probed source', async () => {
+  // The suite is always in its own closure. If the fence regresses, the runner
   // executes it and this assertion fails on the ordinary run result.
-  const result = await runTestFilesCore({
-    root: coordinationDomain,
-    files: ['packages/operator-core/lib/__tests__/testing-run-source.test.ts'],
-  });
+  const root = await holdProbeMarker(SUITE);
+
+  const result = await runTestFilesCore({ root, files: [SUITE] });
 
   expect(result).toMatchObject({ ok: false, error: 'mutation_probe_active' });
-  expect("hint" in result ? result.hint : undefined).toContain(markerPath);
+  expect("hint" in result ? result.hint : undefined).toContain(SUITE);
 });
+
+it('runs a real test file whose import closure cannot observe the probed source', async () => {
+  const markerPath = `packages/operator-core/lib/agent-tools/testing/.mutation-probe-${randomUUID()}.ts`;
+  const root = await holdProbeMarker(markerPath);
+
+  const result = await runTestFilesCore({ root, files: [SUITE] });
+
+  expect(result).toMatchObject({ ok: true, files: 1 });
+}, 90_000);

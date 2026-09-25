@@ -5,8 +5,11 @@ import {
   prepareTestEvidence,
   finishTestEvidence,
   recoverTestEvidence,
+  recoverTestEvidenceSchema,
+  retractRefusedTestEvidence,
   testEvidenceOutcome,
   testEvidenceSchema,
+  RECOVERY_WAIT_CEILING_MS,
 } from './evidence';
 import type { TestFilesCoreResult } from './run';
 import { parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
@@ -341,12 +344,85 @@ describe('test-time evidence continuity', () => {
     d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'running', null, null));
 
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
-      originRunId: runId, runId: detached }, scope, d);
+      originRunId: runId, runId: detached, waitMs: 0 }, scope, d);
 
     expect(bundle.rows[0]).toMatchObject({ phase: 'pending', outcome: 'unknown' });
     expect(bundle.detachedRunStatus).toMatchObject({ status: 'running' });
+    expect(bundle.recoveryWait).toMatchObject({ limitMs: 0, outcome: 'still-running' });
     expect(d.retract).not.toHaveBeenCalled();
     expect(d.bind).toHaveBeenCalledTimes(2);
+  });
+
+  // EI-24207525450988644: one recovery call waits for the detached run itself, replacing the
+  // caller's testing:run-status loop (6 and 8 polls on the two R-8 canary groups that timed out).
+  async function waitingRecovery(configure: (d: ReturnType<typeof deps>) => void, waitMs?: number) {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    await finishTestEvidence(prepared, runId, detached, scope,
+      { ok: false, runId, root: scope.root, error: 'timeout' }, d);
+    const stored = d.bind.mock.calls.at(-1)![0];
+    d.list.mockResolvedValue([{ ...stored, id: 2, fingerprints: {
+      sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
+    configure(d);
+    let clockMs = 0;
+    const clock = { now: () => clockMs, sleep: vi.fn(async (ms: number) => { clockMs += ms; }) };
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1', originRunId: runId,
+      runId: detached, ...(waitMs === undefined ? {} : { waitMs }) }, scope, { ...d, ...clock });
+    const sleptMs = clock.sleep.mock.calls.reduce((total, [ms]) => total + ms, 0);
+    return { d, clock, bundle, sleptMs };
+  }
+  const running = () => detachedRunSnapshot(detached, 'running', null, null);
+
+  it('waits in one recovery call for a still-running detached run, then settles it', async () => {
+    const { d, clock, bundle } = await waitingRecovery((d) => {
+      d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+        finished_at: '2026-09-09T00:00:00Z', execution_details: measured }]);
+      d.runStatus.mockResolvedValueOnce(running()).mockResolvedValueOnce(running())
+        .mockResolvedValueOnce(detachedRunSnapshot(detached, 'pass', 0));
+    });
+
+    expect(d.runStatus).toHaveBeenCalledTimes(3);
+    expect(clock.sleep).toHaveBeenCalledTimes(2);
+    expect(bundle.recoveryWait).toMatchObject({ outcome: 'terminal', waitedMs: 4_000, limitMs: 30_000 });
+    expect(bundle.recoveryWait).not.toHaveProperty('nextStep');
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+  });
+
+  it('stops exactly at the wait bound and says to repeat recovery rather than poll run-status', async () => {
+    const { d, bundle, sleptMs } = await waitingRecovery((d) => { d.runStatus.mockResolvedValue(running()); }, 5_000);
+
+    // 2s + 2s + the 1s remainder: the last sleep is clamped so the wait never overshoots its bound.
+    expect(sleptMs).toBe(5_000);
+    expect(d.runStatus).toHaveBeenCalledTimes(4);
+    expect(bundle.recoveryWait).toMatchObject({ outcome: 'still-running', waitedMs: 5_000, limitMs: 5_000 });
+    expect(bundle.recoveryWait.nextStep).toMatch(/testing:run \{ recoverEvidence \} again/);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'pending', outcome: 'unknown' });
+  });
+
+  it('waits the default bound when the caller passes no waitMs', async () => {
+    const { sleptMs, bundle } = await waitingRecovery((d) => { d.runStatus.mockResolvedValue(running()); });
+
+    expect(sleptMs).toBe(30_000);
+    expect(bundle.recoveryWait).toMatchObject({ outcome: 'still-running', limitMs: 30_000 });
+  });
+
+  it('does not wait on an unknown run or a failed snapshot read', async () => {
+    const unknown = await waitingRecovery((d) => { d.runStatus.mockResolvedValue(null); });
+    expect(unknown.clock.sleep).not.toHaveBeenCalled();
+    expect(unknown.bundle.recoveryWait).toMatchObject({ outcome: 'not-found', waitedMs: 0 });
+
+    const failed = await waitingRecovery((d) => { d.runStatus.mockRejectedValue(new Error('snapshot store down')); });
+    expect(failed.clock.sleep).not.toHaveBeenCalled();
+    expect(failed.bundle.recoveryWait).toMatchObject({ outcome: 'unavailable' });
+    expect(failed.bundle.detachedRunStatus).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('refuses a recovery wait above the ceiling', () => {
+    const base = { workItemId: 'WI-1', originRunId: runId, runId: detached };
+    expect(recoverTestEvidenceSchema.safeParse({ ...base, waitMs: RECOVERY_WAIT_CEILING_MS }).success).toBe(true);
+    expect(recoverTestEvidenceSchema.safeParse({ ...base, waitMs: RECOVERY_WAIT_CEILING_MS + 1 }).success).toBe(false);
   });
 
   it('retires pending twins after a terminal run yielded a settled file-level result', async () => {
@@ -356,6 +432,39 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
     expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 1, bindingIds: [2] });
     expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([2]);
+  });
+
+  // EI-24100872054224181: a run refused before launch used to be FINISHED, which bound a second
+  // pending row per binding that remeasure then skipped as run-in-flight.
+  it('retracts only this attempt\'s pending rows when the run was refused before launch', async () => {
+    const d = deps();
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    const otherAttempt = { ...initial.details, testExecution: { ...initial.details.testExecution,
+      runId: 'other-run', originRunId: 'other-run' } };
+    const settled = { ...initial.details, testExecution: { ...initial.details.testExecution, phase: 'settled' } };
+    d.list.mockResolvedValue([
+      pendingEvidenceRow(1, initial.details), pendingEvidenceRow(2, otherAttempt), pendingEvidenceRow(3, settled),
+    ]);
+
+    const bundle = await retractRefusedTestEvidence(prepared, runId, scope, 'mutation_probe_active', d);
+
+    expect(bundle).toMatchObject({ status: 'not-recorded', reason: 'mutation_probe_active', retiredCount: 1, bindingIds: [1] });
+    expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([1]);
+    expect(d.retract.mock.calls[0]![0].reason).toContain('mutation_probe_active');
+    expect(d.bind).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an incomplete retraction instead of claiming the refusal left nothing behind', async () => {
+    const d = deps();
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    d.list.mockResolvedValue([pendingEvidenceRow(1, d.bind.mock.calls[0]![0].details)]);
+    d.retract.mockRejectedValueOnce(new Error('store unavailable'));
+
+    const bundle = await retractRefusedTestEvidence(prepared, runId, scope, 'mutation_probe_active', d);
+
+    expect(bundle).toMatchObject({ status: 'retirement-incomplete', retiredCount: 0,
+      failures: [{ bindingId: 1, error: expect.stringContaining('store unavailable') }] });
   });
 
   it('settles a current reporter row with mutationPhase:null from complete measured details', async () => {
