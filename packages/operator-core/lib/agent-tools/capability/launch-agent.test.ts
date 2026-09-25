@@ -22,6 +22,7 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
 }));
 
 const goalContextSqlMock = vi.hoisted(() => vi.fn(async () => []));
+const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   // resolveGoalLaunch now reads the holder-authority fence before resolving
@@ -29,6 +30,16 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   // rather than allowing the PG-backed default to leak into the test.
   getOrgPg: () => ({ sql: goalContextSqlMock }),
 }));
+vi.mock('../../goal-launch-settings', async (orig) => {
+  const actual = await orig<typeof import('../../goal-launch-settings')>();
+  return {
+    ...actual,
+    resolveGoalLaunch: (args: Parameters<typeof actual.resolveGoalLaunch>[0]) =>
+      goalLaunchResolveMock.getMockImplementation()
+        ? goalLaunchResolveMock(args)
+        : actual.resolveGoalLaunch(args),
+  };
+});
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 
@@ -286,6 +297,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  goalLaunchResolveMock.mockReset();
   rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/repo' } });
   readPsuLaunchLogTailMock.mockReturnValue(null);
@@ -560,6 +572,19 @@ describe('published launch args schema', () => {
 });
 
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
+  it('passes the live GOAL width to an ad-hoc child in its first-turn brief', async () => {
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: 'goal-1', settings: { intendedParallelPlanFleets: 2 },
+      effective: {}, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 12, maxPerFleet: 5 },
+      headcount: { total: 1, fleet: null }, degraded: false, degradedReasons: [],
+    });
+    const res = await launchAgent.handler({ brief: 'Grade the evidence' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('Grade the evidence');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('intended concurrent plan fleets = 2');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).not.toContain('fleet member target');
+  });
   it('forwards an explicit work-item subject to the work-scope gate', async () => {
     await launchAgent.handler({ brief: 'audit the release script', harness: 'portal', workItem: 'EI-audit-1' }, ctx);
 

@@ -67,6 +67,7 @@ import {
   formatFreshLaunchEvidenceSummary,
   injectFleetArg,
   injectLaunchedByArg,
+  renderGoalFleetAllocation,
   isStaleHeadlessAgentHost,
   memberSpecSchema,
   recordAgentLaunchResult,
@@ -1641,11 +1642,18 @@ export default defineTool({
     // evidence separate from the SpawnConsoleResult status: turning an `ok`
     // result into `{ status: 'error' }` loses the identity, makes `opened` lie,
     // and releases the idempotency claim so a caller retry can duplicate it.
-    const memberBriefs = memberCommands.map((_, i) =>
-      isSuccessor
-        ? (successorBrief ?? undefined)
-        : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined),
-    );
+    const goalAllocationBrief = goalLaunch.goalId && !sourceAction
+      ? renderGoalFleetAllocation({
+          goalId: goalLaunch.goalId,
+          intendedParallelPlanFleets: goalLaunch.settings?.intendedParallelPlanFleets ?? null,
+        })
+      : null;
+    const memberBriefs = memberCommands.map((_, i) => {
+      const custom = isSuccessor
+        ? successorBrief
+        : (memberSpecs[i]?.brief?.trim() || args.brief);
+      return [custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
+    });
     const kickoffProofRequired = memberBriefs.map((brief) => Boolean(brief || args.plan));
     const results = await Promise.all(
       memberCommands.map(async (cmd, i) => {
@@ -2072,7 +2080,7 @@ export default defineTool({
             `${o.normalizedLogPath ? `; grep-safe log: ${o.normalizedLogPath}` : ''}`,
         );
       }
-      const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
+      const hasLaunchBrief = memberBriefs.some(Boolean);
       const hasLaunchPlan = Boolean(!isSuccessor && !isResume && args.plan);
       if (hasLaunchBrief) {
         lines.push(
