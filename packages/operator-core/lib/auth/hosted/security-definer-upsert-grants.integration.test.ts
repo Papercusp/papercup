@@ -34,12 +34,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /**
  * The chain that creates legal_acceptances (907), the SECURITY DEFINER signup
  * functions + their grants (1188), and the SELECT grant this guard exists for
- * (1191). 907 is a self-described "parallel-safe, additive leaf" and 1188 creates
- * its own schema with no FK prerequisites, so this trio applies standalone.
+ * (1191). Migration 978 also needs the customer workspace directory from 906.
  */
 const MIGRATIONS = [
   '903-customer-organization-boundary.sql',
   '904-hosted-identity-links.sql',
+  '906-customer-workspace-directory.sql',
   '907-hosted-governance.sql',
   // 978 carries the hosted_owner grants on the organization/membership tables.
   // Omitting it makes this guard fire on bootstrap_hosted_self_signup_membership(),
@@ -87,6 +87,16 @@ beforeAll(async () => {
   db = await createFreshTestDb({ prefix: 'secdefupsertgrants' });
   sql = postgres(db.url, { max: 1, onnotice: () => {} });
   await provisionMigrationRoles();
+  // Fresh test databases have no baseline. 906 needs the existing host identity
+  // table, and 978 needs the directory tables 906 creates.
+  await sql.unsafe(`
+    CREATE SCHEMA harness_shared;
+    CREATE TABLE harness_shared.workspace_hosts (
+      workspace_id text NOT NULL,
+      id text NOT NULL,
+      PRIMARY KEY (workspace_id, id)
+    );
+  `);
   for (const file of MIGRATIONS) {
     await sql.unsafe(readFileSync(migrationPath(file), 'utf8'));
   }
