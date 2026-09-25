@@ -1162,7 +1162,9 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       updatedAtMs: Date.parse('2026-08-28T02:15:00.000Z'),
       note: 'Placed P-001; P-002 is next.',
     },
-    last_owner_report_at: '2026-08-28T02:20:00Z',
+    report_movements: [],
+    owner_walls: [{ ref: 'WI-43', action: 'provide billing access' }],
+    killed_work: [],
     blender_pending: 2,
     acceptance_rubric: {
       id: 'goal-mode-e2e',
@@ -1214,8 +1216,14 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       queue: { total: 7, terminal: 2, inFlight: 2, blocked: 1, needsHuman: 1, claimable: 0 },
       continuity: {
         checkpoint: { workItemId: 'WI-42', updatedAt: '2026-08-28T02:15:00.000Z' },
-        lastOwnerReportAt: '2026-08-28T02:20:00Z',
+        lastOwnerReportAt: null,
       },
+      reporting: { draft: { fields: {
+        moved: expect.stringContaining('no previous report watermark'),
+        cost: expect.stringContaining('coverage=measured-pot'),
+        ownerWalled: expect.stringContaining('WI-43: provide billing access'),
+        killed: 'none evidenced in the current portfolio',
+      } } },
       operatingInputs: { status: 'ready', canExecute: true, spendCoverage: 'measured-pot' },
       attribution: { status: 'healthy', checked: { pots: 1, plans: 1, workItems: 1 }, issues: [] },
     });
@@ -1233,6 +1241,8 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     const rendered = renderGoalPortfolioBrief(brief!);
     expect(rendered).toContain('intendedParallelPlanFleets=undeclared');
     expect(rendered).toContain('Independent plan-lane placement candidates: plan:papercusp/alpha');
+    expect(rendered).toContain('OWNER REPORT DRAFT');
+    expect(rendered).toContain('OWNER-WALLED: work-item:WI-43: provide billing access');
     expect(renderGoalPortfolioBrief({
       ...brief!,
       launch: { ...brief!.launch, settings: { intendedParallelPlanFleets: 2 }, intendedParallelPlanFleets: 2 },
