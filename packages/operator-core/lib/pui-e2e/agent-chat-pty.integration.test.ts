@@ -3477,6 +3477,26 @@ function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
   return events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
 }
 
+/** A deferred tools:invoke AskUserQuestion is the same native question path,
+ * but its event name is the wrapper. Bind it to the exact prompt and turn so
+ * an unrelated MCP call cannot satisfy installed question acceptance. */
+function nativeQuestionToolStart(events: SuSessionEvent[], turnId: string, directName: string, question: string) {
+  return events.find((event) => {
+    if (event.type !== 'tool' || event.phase !== 'started' || event.turnId !== turnId) return false;
+    if (event.name === directName && event.name !== 'mcp__papercusp-su__tools_invoke') return true;
+    if (event.name !== 'mcp__papercusp-su__tools_invoke') return false;
+    const input = event.input;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+    const wrapper = input as Record<string, unknown>;
+    const args = wrapper.args;
+    if (wrapper.name !== 'AskUserQuestion' || !args || typeof args !== 'object' || Array.isArray(args)) return false;
+    const questions = (args as Record<string, unknown>).questions;
+    return Array.isArray(questions) && questions.some((value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+      && (value as Record<string, unknown>).question === question);
+  });
+}
+
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
@@ -4113,10 +4133,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       const closed = scriptedEngine.events.find(
         (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
       );
-      const askedBy = scriptedEngine.events.find(
-        (event) => event.type === 'tool' && event.phase === 'started' && event.name === toolName,
-      );
-      if (opened?.type !== 'card' || closed?.type !== 'card' || askedBy?.type !== 'tool') {
+      if (opened?.type !== 'card' || closed?.type !== 'card') {
+        throw new Error('The question did not produce a matched tool/card open/close triple');
+      }
+      const askedBy = nativeQuestionToolStart(scriptedEngine.events, opened.turnId, toolName, scriptedEngine.questionPrompt);
+      if (askedBy?.type !== 'tool') {
         throw new Error('The question did not produce a matched tool/card open/close triple');
       }
       expect(closed).toMatchObject({ resolution: 'submitted' });
@@ -4925,9 +4946,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         expect(cardReplies[repliesBefore]).toMatchObject({ status: 200 });
         const chat = await waitForCorrelatedReply(request, expected);
         await pane.waitForReply(expected);
-        const start = scriptedEngine.events.find(
-          (event) => event.type === 'tool' && event.phase === 'started' && event.name === questionTool,
+        const opened = scriptedEngine.events.find(
+          (event) => event.type === 'card' && event.phase === 'opened' && event.card.correlationId === card.correlationId,
         );
+        const closed = scriptedEngine.events.find(
+          (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
+        );
+        if (opened?.type !== 'card' || closed?.type !== 'card' || opened.turnId !== closed.turnId) {
+          throw new Error('The native question card was not closed on its asking turn');
+        }
+        const start = nativeQuestionToolStart(scriptedEngine.events, opened.turnId, questionTool, question);
         expect(scriptedEngine.events).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -4939,14 +4967,21 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           ]),
         );
         // Codex exposes this built-in as a server request, without tool-item
-        // start/completion notifications. Claude and OMP also expose tool events.
+        // start/completion notifications. Claude may route AskUserQuestion
+        // directly or through its deferred MCP wrapper; both must name this
+        // exact question on the same turn as the card and finish the same call.
         if (scriptedEngine.backend !== 'codex') {
           if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
-          expect(scriptedEngine.events).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
-            ]),
+          const completion = scriptedEngine.events.find(
+            (event) => event.type === 'tool' && event.phase === 'completed'
+              && event.callId === start.callId && event.turnId === opened.turnId,
           );
+          if (completion?.type !== 'tool' || completion.phase !== 'completed') {
+            throw new Error('The native question tool did not finish on the card turn');
+          }
+          // The wrapper is deliberately denied after PUI returns its selected
+          // answer to Claude in that denial message. The direct tool succeeds.
+          if (start.name === questionTool) expect(completion.isError).toBe(false);
         }
         expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened'
           && !isSuToolApprovalCard(event.card))).toHaveLength(1);
@@ -4977,7 +5012,21 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       } catch (error) {
         console.info(
           'PUI_INSTALLED_NATIVE_QUESTION_FAILURE',
-          JSON.stringify({ ...pane.failureEvidence(), cardReplies, timeoutDegradations }),
+          JSON.stringify({
+            ...pane.failureEvidence(), cardReplies, timeoutDegradations,
+            // The screen can show a completed answer even when Claude routed
+            // the question through a deferred MCP wrapper. Keep only event
+            // identifiers here: the raw tool input may contain the owner's
+            // prompt, while these fields distinguish direct, wrapped, or
+            // missing tool evidence after this real-engine test exits.
+            toolEvents: scriptedEngine.events.filter((event) => event.type === 'tool')
+              .map((event) => ({ phase: event.phase, name: event.name,
+                callId: event.callId, turnId: event.turnId,
+                ...(event.phase === 'completed' ? { isError: event.isError } : {}) })),
+            cardEvents: scriptedEngine.events.filter((event) => event.type === 'card')
+              .map((event) => ({ phase: event.phase, turnId: event.turnId,
+                correlationId: event.phase === 'opened' ? event.card.correlationId : event.correlationId })),
+          }),
         );
         throw error;
       } finally {
