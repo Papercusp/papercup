@@ -386,6 +386,18 @@ async function acceptBlueprintPlanRunScoped(
       'plan operation admission requires workspace, harness, operation, authenticated caller and request key',
     );
   }
+  // A plan item is an execution leaf. Its accepted worker may submit direct
+  // work through the normal item queue, but cannot turn its own plan target
+  // into another plan run. Recheck the live applied launch receipt here, not a
+  // caller-supplied ancestry hint that can be omitted on transport replay.
+  const { readActiveOperationWorkerClaimBinding } = await import('./operation-worker-binding');
+  const worker = await readActiveOperationWorkerClaimBinding(request.workspaceId, callerId);
+  if (worker.status === 'bound') {
+    throw new Error('plan leaf operation cannot recursively relaunch a plan');
+  }
+  if (worker.status === 'unavailable') {
+    throw new Error(`plan operation caller authority unavailable: ${worker.reason}`);
+  }
   const input = exactJsonInput(request.input);
   const fingerprint = createHash('sha256')
     .update(
