@@ -140,9 +140,8 @@ function makeFakes(
 }
 
 describe('planDispatchOperation (D-009 walk shape)', () => {
-  it('same backend forks; claude → other backend converts', () => {
+  it('a claude source forks; claude → other backend converts', () => {
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'claude' })).toEqual({ operation: 'fork' });
-    expect(planDispatchOperation({ agent: 'codex', live: false }, { agent: 'codex' })).toEqual({ operation: 'fork' });
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'codex' })).toEqual({ operation: 'convert' });
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'omp' })).toEqual({ operation: 'convert' });
   });
@@ -152,6 +151,17 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
       operation: null,
       reason: 'fork-unsupported',
     });
+  });
+
+  it('a codex source cannot fork: the pre-pinned consult identity needs a tracked fork, which is claude-only', () => {
+    // The launcher refuses an untracked fork for a pinned id, so planning this as
+    // a fork launched a session that died at boot (conv-muhi8wkf, 2026-09-25).
+    for (const live of [false, true]) {
+      expect(planDispatchOperation({ agent: 'codex', live }, { agent: 'codex' })).toMatchObject({
+        operation: null,
+        reason: 'fork-unsupported',
+      });
+    }
   });
 
   it('a non-Claude source cannot convert: the transform is claude-source-only, so the rank is SKIPPED', () => {

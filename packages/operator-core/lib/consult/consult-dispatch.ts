@@ -305,6 +305,21 @@ export function planDispatchOperation(
         detail: 'OMP has no native branch command, so an OMP source cannot be forked',
       };
     }
+    // A consult fork PRE-PINS its answering identity (--owner-id), and the
+    // launcher carries a pre-pinned identity only on the TRACKED fork, which is
+    // claude-only (psu-launcher `launchTrackedFork`). It refuses the untracked
+    // fallback for a pinned id, so a codex fork dies at boot every time — and
+    // launching it anyway costs a session and strands the consult on a
+    // responder that never existed (conv-muhi8wkf, 2026-09-25).
+    if (rank.agent !== 'claude') {
+      return {
+        operation: null,
+        reason: 'fork-unsupported',
+        detail:
+          `a consult fork needs a tracked fork to carry its pre-pinned identity, and tracked forks ` +
+          `are claude-only, so a ${rank.agent} source cannot be forked`,
+      };
+    }
     return { operation: 'fork' };
   }
   // D-009 §3: the session-port transform is claude-source-only by construction
