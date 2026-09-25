@@ -26,9 +26,13 @@ import type { OwnLog, PeerLogOp } from './peer-log';
 // Dependency-free constants module, so this file stays safe to bundle into the fold worker.
 import { SELF_REGENERATING_TABLES } from './seed-excluded-tables';
 import {
+  governorReceiptEnvelopeOpener,
   shouldDropGovernorReceiptSnapshotRow,
   type GovernorReceiptSnapshotFilter,
 } from './governor-receipt-snapshot-filter';
+import type { OpAAD } from './hive-epoch-crypto';
+// Lazy native load only (no keychain), so still safe in the fold worker bundle.
+import { loadSodium, openOpCiphertext } from './hive-epoch-aead';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
@@ -149,24 +153,44 @@ export type SnapshotValueTransform = (
     hbKey: string;
     /** Physical source-log index; absent outside a streaming producer fold. */
     sourceIndex?: number;
+    /** The row's rekey epoch — with `authorPubkey`, what an envelope's AAD needs (D-024). */
+    epoch?: number;
+    /** The row's ORIGINAL `author_pubkey`. */
+    authorPubkey?: string;
   },
 ) => unknown;
 
 export interface GovernorReceiptSnapshotFilterStats {
   dropped: number;
+  /**
+   * D-024 — candidate rows whose `{__rekey}` envelope could not be opened (no key for
+   * its epoch, or an auth failure). They are kept; a non-zero count on a run that
+   * dropped nothing is the signal that the filter could not see the receipts.
+   */
+  unopened: number;
 }
 
-/** Reconstitute P-530's serializable filter as the existing value-transform seam. */
-export function governorReceiptSnapshotValueTransform(filter: GovernorReceiptSnapshotFilter): {
+/**
+ * Reconstitute P-530's serializable filter as the existing value-transform seam. `open`
+ * is a synchronous AEAD open (`openOpCiphertext` bound to a loaded sodium); without it,
+ * or without `filter.envelopeKeys`, encrypted rows are kept.
+ */
+export function governorReceiptSnapshotValueTransform(
+  filter: GovernorReceiptSnapshotFilter,
+  opts: { open?: (ciphertext: Uint8Array, key: Uint8Array, ad: OpAAD) => Uint8Array } = {},
+): {
   transform: SnapshotValueTransform;
   stats: GovernorReceiptSnapshotFilterStats;
 } {
-  const stats: GovernorReceiptSnapshotFilterStats = { dropped: 0 };
+  const stats: GovernorReceiptSnapshotFilterStats = { dropped: 0, unopened: 0 };
   const liveKeys = new Set(filter.liveQualifiedKeys);
+  const openEnvelope = governorReceiptEnvelopeOpener(filter.envelopeKeys, opts.open, () => {
+    stats.unopened += 1;
+  });
   return {
     stats,
     transform: (value, context) => {
-      if (shouldDropGovernorReceiptSnapshotRow(value, context, filter, liveKeys)) {
+      if (shouldDropGovernorReceiptSnapshotRow(value, context, filter, liveKeys, openEnvelope)) {
         stats.dropped += 1;
         return DROP_SNAPSHOT_ROW;
       }
@@ -315,7 +339,13 @@ export class SnapshotRowFolder {
           if (this.excludeTables.has(r.table)) continue;
           const key = `${r.table}::${r.hbKey}`;
           const value = this.transformValue
-            ? this.transformValue(r.value, { table: r.table, hbKey: r.hbKey, sourceIndex })
+            ? this.transformValue(r.value, {
+                table: r.table,
+                hbKey: r.hbKey,
+                sourceIndex,
+                epoch: r.epoch,
+                authorPubkey: r.author_pubkey,
+              })
             : r.value;
           if (value === DROP_SNAPSHOT_ROW) {
             // A prior raw op for the same key may already be in the fold. The newest
@@ -332,7 +362,13 @@ export class SnapshotRowFolder {
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
       const rowValue = this.transformValue
-        ? this.transformValue(decoded, { table: op.table, hbKey: op.hbKey, sourceIndex })
+        ? this.transformValue(decoded, {
+            table: op.table,
+            hbKey: op.hbKey,
+            sourceIndex,
+            epoch: op.epoch ?? undefined,
+            authorPubkey: op.author_pubkey,
+          })
         : decoded;
       if (rowValue === DROP_SNAPSHOT_ROW) {
         // The key may have an earlier accepted winner. Dropping the latest PUT must
@@ -1169,6 +1205,8 @@ export interface ProduceSnapshotResult {
   chunkCount: number;
   /** P-530 — absent-from-PG legacy governor receipt rows omitted from this set. */
   droppedGovernorReceipts?: number;
+  /** D-024 — candidate `{__rekey}` rows the filter could not open (kept). */
+  unopenedGovernorEnvelopes?: number;
 }
 
 /**
@@ -1368,8 +1406,14 @@ export async function produceLogSnapshot(
   // `produceFilteredSnapshotIntoLog`; `excludeTables` is an `Iterable` and there are now
   // three consumers here too.
   const ownExcluded = new Set(opts.excludeTables ?? []);
+  // D-024: with envelope keys, the filter opens `{__rekey}` rows; a sodium load failure
+  // leaves it keyless, which keeps every encrypted row and counts it as unopened.
+  const envelopeSodium = opts.governorReceiptFilter?.envelopeKeys ? await loadSodium().catch(() => null) : null;
   const governorProjection = opts.governorReceiptFilter
-    ? governorReceiptSnapshotValueTransform(opts.governorReceiptFilter)
+    ? governorReceiptSnapshotValueTransform(
+        opts.governorReceiptFilter,
+        envelopeSodium ? { open: (ct, key, ad) => openOpCiphertext(envelopeSodium, ct, key, ad) } : {},
+      )
     : null;
   const folder = new SnapshotRowFolder({
     excludeTables: ownExcluded,
@@ -1510,7 +1554,12 @@ export async function produceLogSnapshot(
     coversUpTo,
     rowCount,
     chunkCount: snapshotOps.length,
-    ...(governorProjection ? { droppedGovernorReceipts: governorProjection.stats.dropped } : {}),
+    ...(governorProjection
+      ? {
+          droppedGovernorReceipts: governorProjection.stats.dropped,
+          unopenedGovernorEnvelopes: governorProjection.stats.unopened,
+        }
+      : {}),
   };
 }
 
@@ -1556,7 +1605,12 @@ export interface SnapshotFoldWorkerLike {
     schema_version: number;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
-  }): Promise<{ blocks: Uint8Array[]; rowCount: number; droppedGovernorReceipts?: number }>;
+  }): Promise<{
+    blocks: Uint8Array[];
+    rowCount: number;
+    droppedGovernorReceipts?: number;
+    unopenedGovernorEnvelopes?: number;
+  }>;
   close(): Promise<void>;
 }
 
@@ -1685,7 +1739,7 @@ async function produceLogSnapshotOffloaded(
     }
     coversUpTo = foldedUpTo;
 
-    const { blocks, rowCount, droppedGovernorReceipts } = await worker.finish({
+    const { blocks, rowCount, droppedGovernorReceipts, unopenedGovernorEnvelopes } = await worker.finish({
       now: opts.now,
       coversUpTo,
       author_pubkey: ownLog.keyHex,
@@ -1708,6 +1762,7 @@ async function produceLogSnapshotOffloaded(
       rowCount,
       chunkCount: blocks.length,
       ...(droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts } : {}),
+      ...(unopenedGovernorEnvelopes !== undefined ? { unopenedGovernorEnvelopes } : {}),
     };
   } finally {
     await worker.close().catch(() => {});

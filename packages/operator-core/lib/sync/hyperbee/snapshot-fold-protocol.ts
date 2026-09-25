@@ -25,9 +25,11 @@ import {
   isSnapshotBlock,
   isSnapshotOp,
   SnapshotRowFolder,
+  type GovernorReceiptSnapshotFilterStats,
   type SnapshotPayload,
 } from './log-snapshot';
 import type { GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
+import type { OpAAD } from './hive-epoch-crypto';
 import type { PeerLogOp } from './peer-log';
 
 export type SnapshotFoldRequest =
@@ -74,6 +76,7 @@ export type SnapshotFoldResponse =
       lengths: number[];
       rowCount: number;
       droppedGovernorReceipts?: number;
+      unopenedGovernorEnvelopes?: number;
     }
   | { kind: 'error'; id: number; message: string };
 
@@ -164,10 +167,16 @@ export function createSnapshotFoldHandler(
      * report the TEST's heap and read as the fold's.
      */
     heapUsedBytes?: () => number;
+    /**
+     * D-024 — a synchronous AEAD open (`openOpCiphertext` bound to the worker's loaded
+     * sodium), so the P-530 filter can judge an encrypted row's plaintext. Absent ⇒
+     * encrypted rows are kept and counted as unopened.
+     */
+    openEnvelope?: (ciphertext: Uint8Array, key: Uint8Array, ad: OpAAD) => Uint8Array;
   } = {},
 ): (req: SnapshotFoldRequest) => SnapshotFoldReply {
   let folder: SnapshotRowFolder | null = null;
-  let droppedGovernorReceipts: { dropped: number } | null = null;
+  let governorStats: GovernorReceiptSnapshotFilterStats | null = null;
 
   const requireFolder = (): SnapshotRowFolder => {
     if (!folder) throw new Error('snapshot fold worker: fold/finish before init (or after finish)');
@@ -179,9 +188,12 @@ export function createSnapshotFoldHandler(
       switch (req.kind) {
         case 'init': {
           const projection = req.governorReceiptFilter
-            ? governorReceiptSnapshotValueTransform(req.governorReceiptFilter)
+            ? governorReceiptSnapshotValueTransform(
+                req.governorReceiptFilter,
+                opts.openEnvelope ? { open: opts.openEnvelope } : {},
+              )
             : null;
-          droppedGovernorReceipts = projection?.stats ?? null;
+          governorStats = projection?.stats ?? null;
           folder = new SnapshotRowFolder({
             excludeTables: req.excludeTables,
             ...(projection ? { transformValue: projection.transform } : {}),
@@ -253,8 +265,8 @@ export function createSnapshotFoldHandler(
           const rowCount = ops.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
           const packed = packBlocks(ops.map(encodeStoredBlock));
           folder = null; // release the live-key Map before the reply crosses back
-          const dropped = droppedGovernorReceipts?.dropped;
-          droppedGovernorReceipts = null;
+          const stats = governorStats;
+          governorStats = null;
           return {
             res: {
               kind: 'finished',
@@ -262,7 +274,9 @@ export function createSnapshotFoldHandler(
               buf: packed.buf,
               lengths: packed.lengths,
               rowCount,
-              ...(dropped !== undefined ? { droppedGovernorReceipts: dropped } : {}),
+              ...(stats
+                ? { droppedGovernorReceipts: stats.dropped, unopenedGovernorEnvelopes: stats.unopened }
+                : {}),
             },
             transfer: [packed.buf],
           };

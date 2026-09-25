@@ -569,8 +569,11 @@ fi
 # by design, since the inline fold it replaced froze the host for 30+ minutes.
 FOLD_WORKER_SRC="../../packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts"
 if [[ -f "$FOLD_WORKER_SRC" ]]; then
+  # sodium-native stays external (D-024: the P-530 filter opens `{__rekey}` rows in
+  # this thread); it resolves from node_modules beside the entry, as for the host.
   npx --yes esbuild@0.25.0 "$FOLD_WORKER_SRC" \
     --bundle --platform=node --format=esm --target=node22 \
+    --external:sodium-native \
     --outfile="$OUTDIR/snapshot-fold.worker.mjs" \
     --log-limit=5 \
     && echo "    ✓ bundled snapshot-fold worker beside the entry" \

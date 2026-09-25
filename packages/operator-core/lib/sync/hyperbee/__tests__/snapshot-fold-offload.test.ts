@@ -36,6 +36,9 @@ import {
   type SnapshotFoldResponse,
 } from '../snapshot-fold-protocol';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
+import { createHiveEpochCrypto } from '../hive-epoch-crypto-impl';
+import type { EpochKey } from '../hive-epoch-crypto';
+import { buildOpAAD } from '../hive-epoch-serving';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -97,8 +100,17 @@ async function rawRange(log: OwnLog, from: number, to: number): Promise<string[]
   return out;
 }
 
+/** Every row of the snapshot set at `[coversUpTo, coversUpTo + chunkCount)`. */
+async function setRows(log: OwnLog, coversUpTo: number, chunkCount: number): Promise<SnapshotPayload['rows']> {
+  const rows: SnapshotPayload['rows'] = [];
+  for (let i = 0; i < chunkCount; i++) {
+    rows.push(...(((await log.get(coversUpTo + i))?.value as SnapshotPayload | undefined)?.rows ?? []));
+  }
+  return rows;
+}
+
 const NOW = 50_000;
-const inlineOpts = { now: NOW, schemaVersion: CURRENT_SCHEMA_VERSION, maxChunkBytes: 2_048 };
+const inlineOpts ={ now: NOW, schemaVersion: CURRENT_SCHEMA_VERSION, maxChunkBytes: 2_048 };
 const offloadOpts = {
   ...inlineOpts,
   foldWorker: (init: { excludeTables: readonly string[] }) => SnapshotFoldWorker.open(init),
@@ -185,6 +197,94 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     await expect(rows).resolves.not.toEqual(
       expect.arrayContaining([expect.objectContaining({ hbKey: 'papercusp/WI-DEAD' })]),
     );
+  });
+
+  /**
+   * D-024 — own-log engineer-issues rows are `{__rekey}` envelopes, so P-530 only sees a
+   * receipt through the epoch key. Sealed with the REAL encryptOp + AAD derivation, so a
+   * framing drift between the writer and the filter fails here.
+   */
+  const epochCrypto = createHiveEpochCrypto();
+  const EPOCH1_KEY = new Uint8Array(32).fill(9) as EpochKey;
+  const EPOCH2_KEY = new Uint8Array(32).fill(4) as EpochKey;
+  const sealedIssue = async (hbKey: string, value: unknown, epoch = 1): Promise<PeerLogOp> => {
+    const ct = await epochCrypto.encryptOp(
+      new TextEncoder().encode(JSON.stringify(value)),
+      epoch === 1 ? EPOCH1_KEY : EPOCH2_KEY,
+      buildOpAAD('papercusp', epoch, { tableTag: 'engineer-issues', rowKey: hbKey, authorPubkey: '' }),
+    );
+    return {
+      type: 'put',
+      table: 'engineer-issues',
+      hbKey,
+      value: { __rekey: Buffer.from(ct).toString('base64') },
+      epoch,
+      ts: 20_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: '',
+    };
+  };
+  const governorReceipt = { payload: { resource_governor: { schemaVersion: 1, state: 'completed' } } };
+  const envelopeKeys = { potId: 'papercusp', keys: [{ epoch: 1, key: EPOCH1_KEY }] };
+
+  it('D-024: opens encrypted rows and drops an absent receipt identically inline and in the worker', async () => {
+    const ops = [
+      await sealedIssue('papercusp/WI-DEAD', governorReceipt),
+      await sealedIssue('papercusp/WI-LIVE', governorReceipt),
+      await sealedIssue('papercusp/WI-NORMAL', { payload: { real_work: true } }),
+      // No key for epoch 2 here: kept, and counted so the gap is visible.
+      await sealedIssue('papercusp/WI-EPOCH2', governorReceipt, 2),
+    ];
+    const filter = { maxSourceIndexExclusive: ops.length, liveQualifiedKeys: ['papercusp/WI-LIVE'], envelopeKeys };
+    const a = await freshLog();
+    const b = await freshLog();
+    await a.appendBatch(ops);
+    await b.appendBatch(ops);
+
+    const inline = await produceLogSnapshot(a, { ...inlineOpts, governorReceiptFilter: filter });
+    const offloaded = await produceLogSnapshot(b, { ...offloadOpts, governorReceiptFilter: filter });
+
+    expect(offloaded).toEqual(inline);
+    expect(inline).toMatchObject({ droppedGovernorReceipts: 1, unopenedGovernorEnvelopes: 1, rowCount: 3 });
+    const keys = (await setRows(a, inline.coversUpTo, inline.chunkCount)).map((r) => r.hbKey).sort();
+    expect(keys).toEqual(['papercusp/WI-EPOCH2', 'papercusp/WI-LIVE', 'papercusp/WI-NORMAL']);
+  });
+
+  it('D-024: without envelope keys an encrypted receipt is kept (the 00:07Z tower outcome)', async () => {
+    const log = await freshLog();
+    await log.appendBatch([await sealedIssue('papercusp/WI-DEAD', governorReceipt)]);
+    const snap = await produceLogSnapshot(log, {
+      ...offloadOpts,
+      governorReceiptFilter: { maxSourceIndexExclusive: 1, liveQualifiedKeys: [] },
+    });
+    // Kept, but no longer silent: the unopened count is what 00:07Z lacked.
+    expect(snap).toMatchObject({ droppedGovernorReceipts: 0, unopenedGovernorEnvelopes: 1, rowCount: 1 });
+  });
+
+  it('D-024: a seeded worker fold drops a receipt carried in by the prior set', async () => {
+    const log = await freshLog();
+    await log.appendBatch([
+      await sealedIssue('papercusp/WI-DEAD', governorReceipt),
+      await sealedIssue('papercusp/WI-NORMAL', { payload: { real_work: true } }),
+    ]);
+    // The keyless compaction publishes a set that still carries the dead receipt.
+    const first = await produceLogSnapshot(log, {
+      ...offloadOpts,
+      governorReceiptFilter: { maxSourceIndexExclusive: log.length, liveQualifiedKeys: [] },
+    });
+    expect(first).toMatchObject({ droppedGovernorReceipts: 0, unopenedGovernorEnvelopes: 2, rowCount: 2 });
+    await log.append(await sealedIssue('papercusp/WI-TAIL', { payload: { real_work: true } }));
+
+    // The keyed compaction seeds from that set: the receipt reaches the filter as a
+    // snapshot ROW, so its epoch + author_pubkey must be threaded from the row.
+    const second = await produceLogSnapshot(log, {
+      ...offloadOpts,
+      priorSnapshotHint: { coversUpTo: first.coversUpTo, chunkCount: first.chunkCount },
+      governorReceiptFilter: { maxSourceIndexExclusive: log.length, liveQualifiedKeys: [], envelopeKeys },
+    });
+    expect(second).toMatchObject({ appended: true, droppedGovernorReceipts: 1, unopenedGovernorEnvelopes: 0 });
+    const keys = (await setRows(log, second.coversUpTo, second.chunkCount)).map((r) => r.hbKey).sort();
+    expect(keys).toEqual(['papercusp/WI-NORMAL', 'papercusp/WI-TAIL']);
   });
 
   it('seeded fold: a prior complete set on the log is found by the summary seek and folded in the worker', async () => {

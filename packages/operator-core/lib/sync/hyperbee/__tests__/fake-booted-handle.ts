@@ -96,6 +96,8 @@ export function makeFakeBootedHandle(opts: {
       rowCount: 0,
       droppedGovernorReceipts: 0,
       liveGovernorReceiptKeys: 0,
+      unopenedGovernorEnvelopes: 0,
+      envelopeKeyEpochs: 0,
       elapsedMs: 0,
     })),
     onAnnounce: vi.fn(

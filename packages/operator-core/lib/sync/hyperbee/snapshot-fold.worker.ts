@@ -11,6 +11,7 @@ import { getHeapStatistics, setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { parentPort, workerData } from 'node:worker_threads';
 import { createSnapshotFoldHandler, type SnapshotFoldRequest } from './snapshot-fold-protocol.ts';
+import { loadSodium, openOpCiphertext } from './hive-epoch-aead.ts';
 
 if (!parentPort) throw new Error('snapshot-fold.worker must run as a worker thread');
 const port = parentPort;
@@ -47,7 +48,17 @@ function heapUsedBytes(): number {
   fullGc();
   return getHeapStatistics().used_heap_size;
 }
-const handle = createSnapshotFoldHandler({ heapUsedBytes });
+// D-024: the P-530 receipt filter opens `{__rekey}` rows, and the fold is synchronous,
+// so sodium is loaded once here. A load failure leaves the handler without an opener:
+// encrypted rows are then kept and reported as `unopenedGovernorEnvelopes`.
+const sodium = await loadSodium().catch((e: unknown) => {
+  console.error(`[snapshot-fold.worker] sodium-native unavailable; encrypted rows stay unfiltered: ${String(e)}`);
+  return null;
+});
+const handle = createSnapshotFoldHandler({
+  heapUsedBytes,
+  ...(sodium ? { openEnvelope: (ct, key, ad) => openOpCiphertext(sodium, ct, key, ad) } : {}),
+});
 port.on('message', (req: SnapshotFoldRequest) => {
   const { res, transfer } = handle(req);
   port.postMessage(res, transfer);

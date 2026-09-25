@@ -284,7 +284,12 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     schema_version: number;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
-  }): Promise<{ blocks: Uint8Array[]; rowCount: number; droppedGovernorReceipts?: number }> {
+  }): Promise<{
+    blocks: Uint8Array[];
+    rowCount: number;
+    droppedGovernorReceipts?: number;
+    unopenedGovernorEnvelopes?: number;
+  }> {
     const res = await this.request({ kind: 'finish', ...args, excludeTables: [...args.excludeTables] });
     if (res.kind !== 'finished') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to finish`);
     const blocks = unpackBlocks(res.buf, res.lengths).map((b, i) => {
@@ -295,6 +300,9 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
       blocks,
       rowCount: res.rowCount,
       ...(res.droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts: res.droppedGovernorReceipts } : {}),
+      ...(res.unopenedGovernorEnvelopes !== undefined
+        ? { unopenedGovernorEnvelopes: res.unopenedGovernorEnvelopes }
+        : {}),
     };
   }
 

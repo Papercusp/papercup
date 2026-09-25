@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  governorReceiptEnvelopeOpener,
   isLegacyGovernorReceiptSnapshotValue,
   shouldDropGovernorReceiptSnapshotRow,
   type GovernorReceiptSnapshotFilter,
 } from '../governor-receipt-snapshot-filter';
+import { createHiveEpochCrypto } from '../hive-epoch-crypto-impl';
+import type { EpochKey } from '../hive-epoch-crypto';
+import { buildOpAAD } from '../hive-epoch-serving';
+import { loadSodium, openOpCiphertext } from '../hive-epoch-aead';
 
 const receipt = (state = 'completed') => ({
   payload: { resource_governor: { schemaVersion: 1, state } },
@@ -58,5 +63,55 @@ describe('P-530 governor receipt snapshot filter', () => {
     expect(isLegacyGovernorReceiptSnapshotValue(receipt())).toBe(true);
     expect(isLegacyGovernorReceiptSnapshotValue({ payload: { resource_governor: null } })).toBe(false);
     expect(isLegacyGovernorReceiptSnapshotValue({ payload: { resource_governor: 'x' } })).toBe(false);
+  });
+});
+
+describe('D-024 encrypted own-log rows', () => {
+  const KEY = new Uint8Array(32).fill(3) as EpochKey;
+  const keys = { potId: 'papercusp', keys: [{ epoch: 1, key: KEY }] };
+  const seal = async (hbKey: string, value: unknown, authorPubkey = '') => {
+    const ct = await createHiveEpochCrypto().encryptOp(
+      new TextEncoder().encode(JSON.stringify(value)),
+      KEY,
+      buildOpAAD('papercusp', 1, { tableTag: 'engineer-issues', rowKey: hbKey, authorPubkey }),
+    );
+    return { __rekey: Buffer.from(ct).toString('base64') };
+  };
+  const context = (hbKey: string) => ({ table: 'engineer-issues', hbKey, sourceIndex: 10, epoch: 1, authorPubkey: '' });
+
+  it('judges the plaintext, and never opens a row the live census already keeps', async () => {
+    const sodium = await loadSodium();
+    const open = vi.fn((ct: Uint8Array, key: Uint8Array, ad: Parameters<typeof openOpCiphertext>[3]) =>
+      openOpCiphertext(sodium, ct, key, ad),
+    );
+    const opener = governorReceiptEnvelopeOpener(keys, open);
+    const dead = await seal('papercusp/WI-DEAD', receipt());
+    const live = await seal('papercusp/WI-LIVE', receipt());
+    const normal = await seal('papercusp/WI-NORMAL', { payload: { real_work: true } });
+
+    expect(shouldDropGovernorReceiptSnapshotRow(dead, context('papercusp/WI-DEAD'), filter, undefined, opener)).toBe(true);
+    expect(shouldDropGovernorReceiptSnapshotRow(normal, context('papercusp/WI-NORMAL'), filter, undefined, opener)).toBe(false);
+    open.mockClear();
+    expect(shouldDropGovernorReceiptSnapshotRow(live, context('papercusp/WI-LIVE'), filter, undefined, opener)).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('keeps and counts an envelope whose AAD does not match (wrong author) or that has no opener', async () => {
+    const sodium = await loadSodium();
+    let unopened = 0;
+    const opener = governorReceiptEnvelopeOpener(
+      keys,
+      (ct, key, ad) => openOpCiphertext(sodium, ct, key, ad),
+      () => (unopened += 1),
+    );
+    const otherAuthor = await seal('papercusp/WI-DEAD', receipt(), 'someone-else');
+    expect(shouldDropGovernorReceiptSnapshotRow(otherAuthor, context('papercusp/WI-DEAD'), filter, undefined, opener)).toBe(false);
+    expect(unopened).toBe(1);
+
+    let keyless = 0;
+    const noKeys = governorReceiptEnvelopeOpener(undefined, undefined, () => (keyless += 1));
+    const dead = await seal('papercusp/WI-DEAD', receipt());
+    expect(shouldDropGovernorReceiptSnapshotRow(dead, context('papercusp/WI-DEAD'), filter, undefined, noKeys)).toBe(false);
+    expect(keyless).toBe(1);
   });
 });

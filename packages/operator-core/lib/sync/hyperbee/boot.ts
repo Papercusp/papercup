@@ -98,7 +98,11 @@ import {
   type SnapshotFoldWorkerFactory,
 } from './log-snapshot';
 import { SnapshotFoldWorker } from './snapshot-fold-offload';
-import { loadLiveGovernorReceiptSnapshotKeys } from './governor-receipt-snapshot-census';
+import {
+  loadLiveGovernorReceiptSnapshotKeys,
+  loadOwnCompactionEnvelopeKeys,
+} from './governor-receipt-snapshot-census';
+import type { GovernorReceiptEnvelopeKeys } from './governor-receipt-snapshot-filter';
 
 /**
  * WI-10002836 — how often a long own-log compaction reports its fold position. One
@@ -422,6 +426,11 @@ export interface BootHarnessOpts {
    * without touching PostgreSQL.
    */
   loadOwnCompactionGovernorReceiptKeys?: (workspaceId: string) => Promise<readonly string[]>;
+  /**
+   * D-024 test seam. Production loads the Hive's epoch keys (load-only, never minting) so
+   * the P-530 filter can open `{__rekey}` rows; tests inject keys or none.
+   */
+  loadOwnCompactionEnvelopeKeys?: (workspaceId: string, potId: string) => Promise<GovernorReceiptEnvelopeKeys>;
   /**
    * WI-6324 test seam: managed recurring timers are inert under Vitest by
    * default. The zombie-socket integration repro opts in ONLY the independent
@@ -795,6 +804,10 @@ export type OwnCompactionOutcome =
       droppedGovernorReceipts: number;
       /** P-530: size of the PG census the drop was checked against. */
       liveGovernorReceiptKeys: number;
+      /** D-024: candidate `{__rekey}` rows the filter could not open (kept). */
+      unopenedGovernorEnvelopes: number;
+      /** D-024: epochs the filter held a key for (0 ⇒ every encrypted row is kept). */
+      envelopeKeyEpochs: number;
       elapsedMs: number;
     }
   | { ok: false; error: string; elapsedMs: number };
@@ -3482,12 +3495,29 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const liveGovernorReceiptKeys = await (
         opts.loadOwnCompactionGovernorReceiptKeys ?? loadLiveGovernorReceiptSnapshotKeys
       )(opts.workspaceId);
+      // D-024: own-log engineer-issues rows are hive-epoch envelopes, so the filter sees a
+      // receipt only through these keys. A failed load keeps every encrypted row; the
+      // outcome then reports them as unopened instead of reading as "no receipts".
+      const envelopePotId = rekeyDeps?.potHomeSlug;
+      const envelopeKeys = envelopePotId
+        ? await (opts.loadOwnCompactionEnvelopeKeys ?? loadOwnCompactionEnvelopeKeys)(
+            opts.workspaceId,
+            envelopePotId,
+          ).catch((e: unknown) => {
+            console.error(
+              `[snapshot] own compaction: epoch keys for ${envelopePotId} unavailable; ` +
+                `encrypted receipts stay in the set: ${e instanceof Error ? e.message : String(e)}`,
+            );
+            return null;
+          })
+        : null;
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         governorReceiptFilter: {
           maxSourceIndexExclusive: receiptFilterCoversUpTo,
           liveQualifiedKeys: liveGovernorReceiptKeys,
+          ...(envelopeKeys ? { envelopeKeys } : {}),
         },
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
         shouldAbort: () => stopped,
@@ -3529,6 +3559,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         rowCount: snap.rowCount,
         droppedGovernorReceipts: snap.droppedGovernorReceipts ?? 0,
         liveGovernorReceiptKeys: liveGovernorReceiptKeys.length,
+        unopenedGovernorEnvelopes: snap.unopenedGovernorEnvelopes ?? 0,
+        envelopeKeyEpochs: envelopeKeys?.keys.length ?? 0,
         elapsedMs: Date.now() - startedAt,
       };
       if (!snap.appended) return outcome;
@@ -3543,6 +3575,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `own log compaction: coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount} ` +
             `droppedGovernorReceipts=${snap.droppedGovernorReceipts ?? 0} ` +
             `liveGovernorReceiptKeys=${liveGovernorReceiptKeys.length} ` +
+            `unopenedGovernorEnvelopes=${snap.unopenedGovernorEnvelopes ?? 0} ` +
+            `envelopeKeyEpochs=${envelopeKeys?.keys.length ?? 0} ` +
             `grewBy=${snap.coversUpTo - previousCoversUpTo} nextThreshold=${snapshotCompactThreshold(snap.rowCount)} ` +
             `elapsedMs=${Date.now() - startedAt} mergeGateHeld=false`,
         );

@@ -34,6 +34,7 @@ import type { HiveEpochCrypto, EpochKey, OpAAD } from './hive-epoch-crypto';
 import { keychainLoad, keychainStore } from '../../identity/keychain';
 import { privateKeyFromDer } from '../../identity/ed25519';
 import { currentStageAttempt, traceStageAwait, traceStageSync } from './stage-stall-log';
+import { encodeOpAAD, loadSodium, openOpCiphertext } from './hive-epoch-aead';
 
 /** Keychain service namespace for the per-(hive,epoch) symmetric content keys —
  *  distinct from the device/hive identity-key services so they never collide. */
@@ -42,13 +43,7 @@ const EPOCH_KEY_SERVICE = 'papercusp-hive-epoch-key';
 const EPOCH_KEY_BYTES = 32;
 
 // Lazy native load — import-safe in the SPA bundle; resolved on first real call.
-type Sodium = typeof import('sodium-native');
-let _sodiumP: Promise<Sodium> | null = null;
-function sodium(): Promise<Sodium> {
-  return (_sodiumP ??= import('sodium-native').then(
-    (m) => (m as unknown as { default?: Sodium }).default ?? (m as unknown as Sodium),
-  ));
-}
+const sodium = loadSodium;
 
 function epochKeyId(potId: string, epoch: number): string {
   return `${potId}:${epoch}`;
@@ -58,22 +53,6 @@ function asEpochKey(b: Uint8Array): EpochKey {
   return b as EpochKey;
 }
 
-/**
- * Canonical associated-data bytes — LENGTH-PREFIXED so the (potId, epoch, opId)
- * fields can't be re-split into a different but equal concatenation (e.g.
- * potId="a",opId="b" vs potId="a",opId... — a delimiter could be forged; a
- * 4-byte length prefix per field is unambiguous).
- */
-function encodeAAD(ad: OpAAD): Buffer {
-  const parts = [Buffer.from(ad.potId, 'utf8'), Buffer.from(String(ad.epoch), 'utf8'), Buffer.from(ad.opId, 'utf8')];
-  const out: Buffer[] = [];
-  for (const p of parts) {
-    const len = Buffer.allocUnsafe(4);
-    len.writeUInt32BE(p.length);
-    out.push(len, p);
-  }
-  return Buffer.concat(out);
-}
 
 /** Raw 32-byte Ed25519 seed + pubkey from a PKCS8-DER device private key (via JWK). */
 function rawEd25519SeedFromDer(der: Buffer): Buffer {
@@ -166,7 +145,7 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
         s.randombytes_buf(nonce);
         const m = Buffer.from(payload);
         const c = Buffer.allocUnsafe(m.length + s.crypto_aead_xchacha20poly1305_ietf_ABYTES);
-        s.crypto_aead_xchacha20poly1305_ietf_encrypt(c, m, encodeAAD(ad), null, nonce, Buffer.from(key));
+        s.crypto_aead_xchacha20poly1305_ietf_encrypt(c, m, encodeOpAAD(ad), null, nonce, Buffer.from(key));
         // Self-framing: [24-byte nonce][ciphertext+tag].
         return Uint8Array.from(Buffer.concat([nonce, c]));
       });
@@ -175,17 +154,8 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
     async decryptOp(ciphertext: Uint8Array, key: EpochKey, ad: OpAAD): Promise<Uint8Array> {
       const s = await sodium();
       if (key.length !== EPOCH_KEY_BYTES) throw new Error(`epoch key must be ${EPOCH_KEY_BYTES} bytes`);
-      const NP = s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
-      const AB = s.crypto_aead_xchacha20poly1305_ietf_ABYTES;
-      const buf = Buffer.from(ciphertext);
-      if (buf.length < NP + AB) throw new Error('ciphertext too short');
-      const nonce = buf.subarray(0, NP);
-      const c = buf.subarray(NP);
-      const m = Buffer.allocUnsafe(c.length - AB);
-      // sodium-native throws on auth failure (wrong key / wrong AAD / tamper) —
-      // which is the correct fail-closed behavior the interface requires.
-      s.crypto_aead_xchacha20poly1305_ietf_decrypt(m, null, c, encodeAAD(ad), nonce, Buffer.from(key));
-      return Uint8Array.from(m);
+      // Throws on auth failure (wrong key / wrong AAD / tamper) — fail-closed.
+      return Uint8Array.from(openOpCiphertext(s, ciphertext, key, ad));
     },
   };
 }
