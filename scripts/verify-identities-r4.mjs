@@ -183,6 +183,37 @@ const click = (selector, label) => {
   evidence.steps.push({ label, input: "X11 pointer", selector, window, display, client: rect });
 };
 
+const selectIdentity = (id, label) => {
+  const selector = `[aria-label="Inspect identity ${id}"]`;
+  let previousPage = null;
+  for (let scanned = 1; scanned <= 100; scanned++) {
+    const page = JSON.parse(evalFile(`JSON.stringify((() => {
+      const pages = document.querySelector('[aria-label="Identity catalog pages"]');
+      const next = pages?.querySelector('button:last-child');
+      return {
+        marker: pages?.querySelector('span')?.textContent ?? null,
+        found: !!document.querySelector(${JSON.stringify(selector)}),
+        canAdvance: !!next && !next.disabled && next.textContent.trim() === 'Load more',
+      };
+    })())`, `${label}-catalog-page-${scanned}`));
+    if (page.marker === previousPage) {
+      throw new Error(`identity catalog did not advance while looking for ${id}: ${page.marker}`);
+    }
+    if (page.found) {
+      click(selector, label);
+      evidence.steps.push({ label: `${label}-catalog-search`, id, pagesScanned: scanned });
+      return;
+    }
+    if (!page.canAdvance) {
+      throw new Error(`identity ${id} is absent after ${scanned} catalog page(s)`);
+    }
+    previousPage = page.marker;
+    click('[aria-label="Identity catalog pages"] button:last-child', `${label}-next-page-${scanned}`);
+    settle();
+  }
+  throw new Error(`identity ${id} was not found within 100 catalog pages`);
+};
+
 const evalFile = (source, name) => {
   const file = resolve(outDir, `${name}.js`);
   writeFileSync(file, source);
@@ -247,7 +278,7 @@ const syncInvalidations = (label) => {
 const recoveryUrlStateAndBindings = () => {
   run(["navigate", `/settings/identities?identityAgent=${encodeURIComponent(owner)}`], "recovery-navigate-bare");
   settle();
-  click('[aria-label="Inspect identity research-steward"]', "recovery-select-identity");
+  selectIdentity("research-steward", "recovery-select-identity");
   settle();
   check(["--eval", "new URLSearchParams(location.search).get('identityId') === 'research-steward'"], "nuqs-selection-written");
   click('[aria-label="Identity management sections"] [role="tab"]:nth-child(3)', "recovery-bindings-tab");
@@ -540,7 +571,7 @@ try {
       // A navigation may replace the document; keep exactly one fetch observer either way.
       evalFile(`window.__p015R4RealCalls ? 'p015-r4-real-fetch-observer-kept' : ${captureRealFetch.trim()}`, "observe-real-fetch-after-navigation");
     }
-    click('[aria-label="Inspect identity research-steward"]', "real-select-identity");
+    selectIdentity("research-steward", "real-select-identity");
     settle();
     click(".pc-identities__actions button", "real-review-switch");
     settle();
@@ -593,7 +624,18 @@ try {
         throw new Error(`real switch did not preserve the fresh-context boundary: ${JSON.stringify(switchApplied)}`);
       }
     }
+    const callsBeforeRollback = Number(evalFile("window.__p015R4RealCalls.length", "real-rollback-call-count-before"));
     click('button[aria-label="Roll back identity"]', "real-rollback");
+    checkedCommand("bash", [required("VERIFY_TAURI_POLL"), "--require", "body", "--eval",
+      `window.__p015R4RealCalls?.slice(${callsBeforeRollback}).some((call) => call.request?.action === 'rollback')`]);
+    const rollbackCall = JSON.parse(evalFile(
+      `window.__p015R4RealCalls.slice(${callsBeforeRollback}).find((call) => call.request?.action === 'rollback')`,
+      "real-rollback-response",
+    ));
+    evidence.steps.push({ label: "real-rollback-response", response: rollbackCall });
+    if (rollbackCall?.status !== 200 || JSON.parse(rollbackCall.body).ok !== true) {
+      throw new Error(`real rollback route refused the mutation: ${JSON.stringify(rollbackCall)}`);
+    }
     settle();
     check(["--eval", "document.body.innerText.includes('Change requested')"], "real-rollback-change-requested");
     const rollbackRequested = await observeActivation("real-rollback-requested");
@@ -628,7 +670,7 @@ try {
     }
     evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", switchApplied?.status === "applied" ? "real-switch-applied" : "real-switch-pending-after-fresh-context-boundary", "real-rollback-change-requested", rollbackApplied?.status === "applied" ? "real-rollback-applied" : "real-rollback-pending-after-fresh-context-boundary"];
   } else {
-    click('[aria-label="Inspect identity research-steward"]', "select-identity");
+    selectIdentity("research-steward", "select-identity");
     settle();
     click(".pc-identities__actions button", "review-switch");
     settle();
