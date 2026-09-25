@@ -32,7 +32,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'respawn-carry-fresh-epoch-retry' ||
     kind === 'respawn-carry-turn-start-retry' ||
     kind === 'operator-pin-healed' ||
-    kind === 'owner-composer-cleared-on-respawn'
+    kind === 'owner-composer-cleared-on-respawn' ||
+    kind === 'inject-mutex-force-released' ||
+    kind === 'mcp-reconnect-completed'
   ) return 'recovered';
 
   if (

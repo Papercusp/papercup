@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { buildPtyHostHealthPatterns, classifyPtyHostEvent, type PtyHostEventAggregate } from './pty-host-health-lane';
 import { flattenDigest } from './lenses';
@@ -11,6 +12,65 @@ const row = (kind: string, count: number, latestId = '42'): PtyHostEventAggregat
   latestId,
   lastAt: '2026-09-25 14:00:00+00',
 });
+
+/** Walk the host's emitter expressions instead of counting only literal calls.
+ * A new computed form must be resolved here before its class can silently pass. */
+function emittedHostKinds(hostSource: string): string[] {
+  const source = ts.createSourceFile('psu-pty-host.mjs', hostSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+        (node.expression.text === 'appendHostEvent' || node.expression.text === 'emitEvent')) calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+
+  const bindingBefore = (name: string, use: ts.Node): ts.Expression | undefined => {
+    for (let scope = use.parent; scope; scope = scope.parent) {
+      if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+      const declarations = scope.statements
+        .filter(ts.isVariableStatement)
+        .flatMap((statement) => [...statement.declarationList.declarations])
+        .filter((declaration) => ts.isIdentifier(declaration.name) &&
+          declaration.name.text === name && declaration.getStart(source) < use.getStart(source));
+      const initializer = declarations.at(-1)?.initializer;
+      if (initializer) return initializer;
+    }
+    return undefined;
+  };
+
+  const resolve = (expression: ts.Expression, seen = new Set<ts.Node>()): string[] => {
+    if (seen.has(expression)) throw new Error(`cyclic PTY event kind: ${expression.getText(source)}`);
+    seen.add(expression);
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) return [expression.text];
+    if (ts.isParenthesizedExpression(expression)) return resolve(expression.expression, seen);
+    if (ts.isConditionalExpression(expression)) {
+      return [...resolve(expression.whenTrue, new Set(seen)), ...resolve(expression.whenFalse, new Set(seen))];
+    }
+    if (ts.isIdentifier(expression)) {
+      const initializer = bindingBefore(expression.text, expression);
+      if (initializer) return resolve(initializer, seen);
+    }
+    if (ts.isTemplateExpression(expression) && expression.getText(source) === '`${msg.mode}-inject-error`') {
+      const guarded = hostSource.includes("if (msg.mode === 'reset' || msg.mode === 'recycle')");
+      if (!guarded) throw new Error('PTY inject-error mode guard changed');
+      return ['reset-inject-error', 'recycle-inject-error'];
+    }
+    throw new Error(`unresolved PTY event kind: ${expression.getText(source)}`);
+  };
+
+  const hostCalls = calls.filter((call) => (call.expression as ts.Identifier).text === 'appendHostEvent');
+  const delegated = hostCalls.filter((call) => call.arguments[1]?.getText(source) === 'kind');
+  expect(delegated).toHaveLength(1); // makeCarryRearm's pass-through into appendHostEvent.
+  const direct = hostCalls.filter((call) => !delegated.includes(call));
+  const emitted = calls.filter((call) => (call.expression as ts.Identifier).text === 'emitEvent');
+  expect(emitted).toHaveLength(7); // every pass-through producer is included in this census.
+  return [...new Set([...direct, ...emitted].flatMap((call) => {
+    const kind = call.arguments[call.expression.getText(source) === 'emitEvent' ? 0 : 1];
+    if (!kind || !ts.isExpression(kind)) throw new Error('PTY event kind argument missing');
+    return resolve(kind);
+  }))].sort();
+}
 
 describe('PTY host event classification for Blender', () => {
   it('separates the reported recovered retry from a terminal submit failure', () => {
@@ -63,17 +123,17 @@ describe('PTY host event classification for Blender', () => {
     expect(observed.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified')).toEqual([]);
   });
 
-  it('classifies every literal event kind emitted by the PTY host', () => {
+  it('classifies every direct and computed event kind emitted by the PTY host', () => {
     const hostSource = readFileSync(
-      new URL('../../../../apps/operator/scripts/psu-pty-host.mjs', import.meta.url),
+      process.env.PAPERCUSP_PTY_HOST_SOURCE_PROBE ||
+        new URL('../../../../apps/operator/scripts/psu-pty-host.mjs', import.meta.url),
       'utf8',
     );
-    const kinds = [...new Set(
-      [...hostSource.matchAll(/appendHostEvent\(\s*ownerId,\s*['"]([^'"]+)['"]/g)]
-        .map((match) => match[1]!),
-    )].sort();
+    const kinds = emittedHostKinds(hostSource);
     expect(kinds.length).toBeGreaterThan(0);
     expect(kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified')).toEqual([]);
+    expect(classifyPtyHostEvent('inject-mutex-force-released')).toBe('recovered');
+    expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('persona-refresh-skipped')).toBe('failure');
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
