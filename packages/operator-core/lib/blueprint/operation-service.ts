@@ -282,7 +282,7 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
 }
 
 export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationStatus> {
-  return runWithWorkspace(handle.workspaceId, async () => (await readCanonicalOperation(sql, handle, callerId)).status);
+  return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId)).status);
 }
 
 const OperationEventBodySchema = z.discriminatedUnion('kind', [
@@ -851,54 +851,73 @@ export async function prepareDirectOperationCompletion(
   };
 }
 
-/** Read a typed output from the canonical target only. P-008 owns the write-side
- * completion validator; a terminal row without validated output is explicit. */
+interface ValidatedCanonicalOperation {
+  status: BlueprintOperationStatus;
+  result?: { output: unknown; evidenceRef: string };
+  invalidReason?: string;
+}
+
+/** A terminal lifecycle state is successful only when its pinned result is
+ * readable and valid. Status and result use this same canonical read. */
+async function readValidatedCanonicalOperation(
+  sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+): Promise<ValidatedCanonicalOperation> {
+  const { status, items, run } = await readCanonicalOperation(sql, handle, callerId);
+  if (status.phase !== 'terminal' || status.outcome !== 'succeeded') return { status };
+  const invalid = (reason: string): ValidatedCanonicalOperation => ({
+    status: { ...status, outcome: 'unverified' }, invalidReason: reason,
+  });
+  if (handle.target.kind === 'work-item' &&
+      items[0]?.completionAuthority !== 'committed' && items[0]?.completionAuthority !== 'validated') {
+    return invalid('canonical completion has no validated authority for its operation output');
+  }
+  const operation = await declaredOperation(sql, handle);
+  if (operation.policy.model) {
+    const pin = handle.target.kind === 'work-item' && items[0]?.payload &&
+      typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
+      ? (items[0].payload as Record<string, unknown>).blueprintOperation : null;
+    if (!pin || typeof pin !== 'object' || Array.isArray(pin) ||
+        handle.target.kind !== 'work-item' || operation.execution?.kind !== 'agent') {
+      return invalid('model policy has no attested agent worker result');
+    }
+    const modelFailure = await verifyDirectOperationModel(
+      sql, handle.workspaceId, handle.target.id, pin as Record<string, unknown>, operation.policy.model,
+    );
+    if (modelFailure) return invalid(modelFailure);
+  }
+  const raw = handle.target.kind === 'plan' ? run?.outputs :
+    (items[0]?.payload && typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
+      ? (items[0].payload as Record<string, unknown>).blueprintResult : null);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return invalid('canonical target has no validated operation output');
+  }
+  const result = raw as Record<string, unknown>;
+  if (handle.target.kind === 'work-item' && !Object.prototype.hasOwnProperty.call(result, 'output')) {
+    return invalid('canonical target has no validated operation output');
+  }
+  const output = handle.target.kind === 'plan' ? raw : result.output;
+  const evidenceRef = handle.target.kind === 'plan' ? `plan-run:${handle.target.runId}` : result.evidenceRef;
+  if (typeof evidenceRef !== 'string' || !evidenceRef.trim() ||
+      (handle.target.kind === 'work-item' &&
+        (result.operationId !== handle.operationId || result.specificationRevision !== handle.specificationRevision))) {
+    return invalid('canonical target output has no matching validation receipt');
+  }
+  const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
+  if (!validation.ok) return invalid(`canonical target output is invalid: ${validation.errors.join('; ')}`);
+  return { status, result: { output, evidenceRef } };
+}
+
+/** Read a typed output from the canonical target only. */
 export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationResult> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationResult> => {
-    const { status, items, run } = await readCanonicalOperation(sql, handle, callerId);
+    const { status, result, invalidReason } = await readValidatedCanonicalOperation(sql, handle, callerId);
     if (status.phase !== 'terminal') return { state: 'pending', status };
     if (status.outcome !== 'succeeded') {
       return { state: status.outcome === 'unverified' ? 'unavailable' : (status.outcome ?? 'failed'),
-        status, reason: 'canonical target settled without a validated successful result' };
+        status, reason: invalidReason ?? 'canonical target settled without a validated successful result' };
     }
-    if (handle.target.kind === 'work-item' &&
-        items[0]?.completionAuthority !== 'committed' && items[0]?.completionAuthority !== 'validated') {
-      return { state: 'unavailable', status, reason: 'canonical completion has no validated authority for its operation output' };
-    }
-    const specification = await readBlueprintSpecificationSnapshot(
-      sql, handle.workspaceId, handle.harnessSlug, handle.specificationRevision,
-    );
-    if (!specification) throw new Error('blueprint operation specification snapshot is missing');
-    const { operation } = operationFromSpecification(specification, handle.operationId);
-    if (operation.policy.model) {
-      const pin = handle.target.kind === 'work-item' && items[0]?.payload &&
-        typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
-        ? (items[0].payload as Record<string, unknown>).blueprintOperation : null;
-      if (!pin || typeof pin !== 'object' || Array.isArray(pin) ||
-          handle.target.kind !== 'work-item' || operation.execution?.kind !== 'agent') {
-        return { state: 'unavailable', status, reason: 'model policy has no attested agent worker result' };
-      }
-      const modelFailure = await verifyDirectOperationModel(
-        sql, handle.workspaceId, handle.target.id, pin as Record<string, unknown>, operation.policy.model,
-      );
-      if (modelFailure) return { state: 'unavailable', status, reason: modelFailure };
-    }
-    const raw = handle.target.kind === 'plan' ? run?.outputs :
-      (items[0]?.payload && typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
-        ? (items[0].payload as Record<string, unknown>).blueprintResult : null);
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { state: 'unavailable', status, reason: 'canonical target has no validated operation output' };
-    }
-    const result = raw as Record<string, unknown>;
-    const output = handle.target.kind === 'plan' ? raw : result.output;
-    const evidenceRef = handle.target.kind === 'plan' ? `plan-run:${handle.target.runId}` : result.evidenceRef;
-    if (typeof evidenceRef !== 'string' || !evidenceRef.trim() ||
-        (handle.target.kind === 'work-item' &&
-          (result.operationId !== handle.operationId || result.specificationRevision !== handle.specificationRevision))) {
-      return { state: 'unavailable', status, reason: 'canonical target output has no matching validation receipt' };
-    }
-    const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
-    if (!validation.ok) return { state: 'unavailable', status, reason: `canonical target output is invalid: ${validation.errors.join('; ')}` };
-    return { state: 'ready', status, output, evidenceRef };
+    if (!result) return { state: 'unavailable', status: { ...status, outcome: 'unverified' },
+      reason: 'canonical target has no validated operation output' };
+    return { state: 'ready', status, ...result };
   });
 }
