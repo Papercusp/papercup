@@ -6,9 +6,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
@@ -799,7 +799,8 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
   }
 
   it.each(['ok', 'preparation-drift', 'source-writer-busy', 'source-guard-conflict', 'source-guard-exited', 'source-lock-replaced',
-    'ancestor', 'ancestor-writer-busy', 'ancestor-guard-conflict', 'source-acquisition-race', 'source-read'] as const)(
+    'ancestor', 'ancestor-writer-busy', 'ancestor-guard-conflict', 'source-acquisition-race', 'source-read', 'model-switch',
+    'rejected-alternative', 'authority-boundary', 'home-reset', 'home-reset-candidate-first', 'foreign-source-home'] as const)(
     'composes an unpaid frozen-source control and managed-carry candidate across native processes (%s)', async mode => {
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
@@ -812,10 +813,18 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
     resetGovernorRegistry();
     const readSource = mode === 'source-read';
-    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === (readSource ? 'T2' : 'T1'))!;
+    const switchModel = mode === 'model-switch';
+    const resetHome = mode.startsWith('home-reset');
+    const homeExperiment = resetHome || mode === 'foreign-source-home';
+    const armOrder: Array<'control' | 'candidate'> = mode === 'home-reset-candidate-first'
+      ? ['candidate', 'control'] : ['control', 'candidate'];
+    const taskId = readSource ? 'T2' : mode === 'rejected-alternative' ? 'T3'
+      : mode === 'authority-boundary' ? 'T4' : switchModel ? 'T5' : 'T1';
+    const recipe = createCarryTrialRecipe(), task = recipe.tasks.find(task => task.id === taskId)!;
     const ancestorDepth = mode.startsWith('ancestor') ? 2 : 0;
     const owner = 'su-unpaid-carry-pair';
     const nativeHome = mkdtempSync(join(tmpdir(), 'unpaid-carry-pair-')); homes.push(nativeHome);
+    const nativeHomes = [nativeHome];
     const basePath = join(nativeHome, 'AGENTS.md');
     const base = '# Unpaid synthetic fixture\nThe seed grants no platform authority.\n';
     writeFileSync(basePath, base);
@@ -826,6 +835,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const failures: string[] = [];
     const mcpHosts: McpServer[] = [];
     const observedReads: Array<{ phase: string; args: unknown }> = [];
+    const modelWitnesses: Array<{ phase: string; threadId: string; turnId: string; model: string; requests: number }> = [];
     let sourceWindow: Parameters<typeof inspectCarrySourceRead>[1] | undefined;
     let readArgs: { file_path: string; byte_offset: number; byte_limit: number } | undefined;
     const upstream = createServer(async (req, res) => {
@@ -861,7 +871,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const response = phase === 'preparation' ? recipe.sourcePreparation.expectedAcknowledgement
           : phase === 'carry' ? { carryReceived: true } : readSource ? { ...task.expected, sourceRef: sourceWindow!.sourceRef } : task.expected;
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+        res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: String(requests.at(-1)!.body.model),
           text: JSON.stringify(response), inputTokens: 1200, outputTokens: 40 })));
       } catch { failures.push('unpaid fixture request failed'); res.destroy(); }
     });
@@ -899,15 +909,15 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         ...(readSource ? { mcp_servers: { cache_receipts: { url: `http://127.0.0.1:${address.port}/mcp`,
           http_headers: { Authorization: 'Bearer offline-fixture' } } } } : {}),
       } as Parameters<typeof stringifyToml>[0]);
-      const openNative = async () => {
+      const openNative = async (home = nativeHome) => {
         const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
         const p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config,
-          receipt => receipts.push(receipt), nativeHome);
+          receipt => receipts.push(receipt), home);
         await p.request({ method: 'initialize', params: { clientInfo: { name: 'unpaid_carry_pair', version: '1' } } });
         const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
         await recheckCarryRuntimeSnapshot(runtime);
         p.send({ method: 'initialized', params: {} });
-        return { p, events, receipts, runtime };
+        return { p, events, receipts, runtime, home };
       };
       const captureManifest = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string,
         extra: { artifacts: CarryArtifactInput[]; roots: CarryDependencyScope['roots'] } = { artifacts: [], roots: [] }) => {
@@ -975,7 +985,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         assertSourceGuards();
         if (source) await recheckCarrySourceSnapshot(source);
         const eventStart = live.events.length;
-        const response = await live.p.request({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text }] } });
+        const requestStart = requests.length;
+        const model = switchModel && (phase === 'control' || phase === 'candidate') ? 'gpt-6-luna' : 'gpt-6-sol';
+        const response = await live.p.request({ method: 'turn/start', params: { threadId, input: [{ type: 'text', text }],
+          ...(switchModel ? { model } : {}) } });
         const turnId = String((response.turn as RpcFrame).id);
         const terminal = () => live.events.find(event => event.method === 'turn/completed' &&
           (event.params as RpcFrame).threadId === threadId && ((event.params as RpcFrame).turn as RpcFrame).id === turnId);
@@ -987,6 +1000,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             ? [{ server: 'cache_receipts', tool: 'capability_read', arguments: readArgs }] : [], expectedInputText: text };
         const trace = inspectCarryNativeTurn(evidence);
         expect(trace.status).toBe('verified');
+        const turnRequests = requests.slice(requestStart);
+        expect(turnRequests.length).toBeGreaterThan(0);
+        for (const request of turnRequests) {
+          expect(request.body).toMatchObject({ model, reasoning: { effort: 'medium' } });
+          const metadata = JSON.parse((request.body.client_metadata as Record<string, string>)['x-codex-turn-metadata']);
+          expect(metadata).toMatchObject({ thread_id: threadId, turn_id: turnId });
+        }
+        modelWitnesses.push({ phase, threadId, turnId, model, requests: turnRequests.length });
         await recheckCarryArtifactManifest(manifest, live.p);
         assertSourceGuards();
         const runtimeAfter = await captureCarryRuntimeSnapshot(live.p.pid()!);
@@ -1032,6 +1053,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       }
       source = await captureCompletedCarrySource(preparation.p, sourceId, prepared.turnId);
       expect(source.ancestors).toHaveLength(ancestorDepth);
+      // A stopped wrapper alone is insufficient evidence of a closed native
+      // storage writer. Check every process observed in this preparation peer.
+      if (homeExperiment) await vi.waitFor(() => {
+        for (const process of preparation.runtime.processes) expect(existsSync(`/proc/${process.pid}`)).toBe(false);
+      }, { timeout: 5000 });
       const sourceWindowPath = join(nativeHome, 'source-window.json');
       if (readSource) {
         const window = Buffer.from(String(task.expected.sourceSentinel));
@@ -1181,9 +1207,70 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       expect(carry.args).toEqual([]);
       expect(readFileSync(basePath, 'utf8')).not.toContain(recipe.seedText);
       expect(readFileSync(carry.launchContextPath, 'utf8')).toContain(recipe.seedText);
-      for (const arm of ['control', 'candidate'] as const) {
+      const excluded = new Set([...sourceFiles.map(member => relative(nativeHome, member.filePath)),
+        ...sourceGuards.map(guard => relative(nativeHome, guard.path))]);
+      const sourceInodes = () => sourceFiles.map(member => {
+        const stat = lstatSync(member.filePath, { bigint: true });
+        return { path: member.filePath, device: stat.dev.toString(), inode: stat.ino.toString() };
+      });
+      const frozenSourceInodes = sourceInodes();
+      const homeSnapshot = (home: string) => {
+        const entries: Array<{ path: string; kind: string; mode: number; size?: number; sha256?: string; target?: string }> = [];
+        let bytes = 0;
+        const walk = (directory: string) => {
+          for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+            const path = join(directory, entry.name), name = relative(home, path);
+            if (excluded.has(name)) continue;
+            const stat = lstatSync(path);
+            if (entries.length >= 1024) throw new Error('fixture home inventory exceeds file bound');
+            if (stat.isSymbolicLink()) entries.push({ path: name, kind: 'symlink', mode: stat.mode, target: readlinkSync(path) });
+            else if (stat.isDirectory()) { entries.push({ path: name, kind: 'directory', mode: stat.mode }); walk(path); }
+            else if (stat.isFile()) {
+              bytes += stat.size;
+              if (bytes > 64 * 1024 * 1024) throw new Error('fixture home inventory exceeds byte bound');
+              entries.push({ path: name, kind: 'file', mode: stat.mode, size: stat.size,
+                sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
+            } else throw new Error(`unsupported closed fixture home entry: ${name}`);
+          }
+        };
+        walk(home); return entries;
+      };
+      const initialHome = homeExperiment ? homeSnapshot(nativeHome) : [];
+      const resetArtifacts = homeExperiment ? mkdtempSync(join(tmpdir(), 'unpaid-carry-home-reset-')) : '';
+      if (homeExperiment) homes.push(resetArtifacts);
+      const baselineHome = join(resetArtifacts, 'baseline');
+      const homeProofPath = join(resetArtifacts, 'home-inputs.json');
+      const rolloutMoves: Array<{ arm: string; original: string; archived: string; sha256: string; bytes: number }> = [];
+      if (homeExperiment) {
+        expect(initialHome.some(entry => /state_\d+\.sqlite$/.test(entry.path))).toBe(true);
+        cpSync(nativeHome, baselineHome, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true,
+          filter: path => !excluded.has(relative(nativeHome, path)) });
+        expect(homeSnapshot(baselineHome)).toEqual(initialHome);
+        for (const entry of initialHome.filter(entry => entry.kind === 'file')) {
+          const original = lstatSync(join(nativeHome, entry.path)), copy = lstatSync(join(baselineHome, entry.path));
+          expect(`${copy.dev}:${copy.ino}`).not.toBe(`${original.dev}:${original.ino}`);
+        }
+        for (const path of excluded) expect(existsSync(join(baselineHome, path))).toBe(false);
+        if (mode === 'foreign-source-home') {
+          // A copied state DB cannot fork a source outside its new home.
+          // Preserve the native refusal instead of bypassing the path boundary.
+          const foreign = await openNative(baselineHome);
+          await expect(foreign.p.request({ method: 'thread/fork', params: { ...options, threadId: sourceId } }))
+            .rejects.toThrow('must be in Codex home directory');
+          expect(foreign.receipts.some(receipt => receipt.phase === 'write-started' && receipt.frame.method === 'turn/start')).toBe(false);
+          expect(requests.map(request => request.phase)).toEqual(preparationPhases);
+          await foreign.p.close(); await foreign.p.done; return;
+        }
+        nativeHomes.push(resetArtifacts);
+        mkdirSync(join(resetArtifacts, 'sessions'));
+        writeFileSync(homeProofPath, JSON.stringify({ initialHome, excluded: [...excluded], armOrder,
+          scope: 'same-path closed local home byte restoration; guarded source/lock inodes preserved; not full runtime reset equivalence' }));
+      }
+      for (const arm of armOrder) {
         assertSourceGuards();
         await recheckCarrySourceSnapshot(source);
+        // Each arm starts from the same closed mutable bytes at the same paths.
+        if (resetHome) expect(homeSnapshot(nativeHome)).toEqual(initialHome);
         const live = await openNative();
         const opened = await live.p.request({ method: arm === 'control' ? 'thread/fork' : 'thread/start',
           params: { ...options, ...(arm === 'control' ? { threadId: sourceId } : {}) } });
@@ -1196,6 +1283,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           { id: 'preparation-manifest', filePath: preparationManifestPath, maxBytes: 1024 * 1024 },
           { id: 'preparation-closeout', filePath: preparationCloseoutPath, maxBytes: 1024 * 1024 },
           ...(readSource ? [{ id: 'source-window', filePath: sourceWindowPath, maxBytes: 1024 * 1024 }] : []),
+          ...(resetHome ? [{ id: 'home-inputs', filePath: homeProofPath, maxBytes: 1024 * 1024 }] : []),
         ], roots: [{ role: 'source', artifactIds: sourceFiles.map((_, i) => `source-${i}`) }] });
         expect(manifest.dependencyScope!.missingRoles).toEqual([]);
         expect(JSON.parse(readFileSync(preparationManifestPath, 'utf8'))).toEqual(preparationManifest);
@@ -1207,6 +1295,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         phase = arm;
         const prompt = readSource ? `${task.prompt}\nRecovery reference: ${sourceWindow!.sourceRef}\nByte window: ${JSON.stringify(readArgs)}` : task.prompt;
         const result = await turn(live, threadId, prompt, manifest);
+        // Check the native request actually carries the frozen task state for
+        // each arm. Scripted expected output is only an oracle wiring test.
+        const firstTaskRequest = requests.find(request => request.phase === arm)!;
+        expect(JSON.stringify(firstTaskRequest.body.input)).toContain(JSON.stringify(recipe.seedText).slice(1, -1));
         expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse!,
           boundSourceRef: sourceWindow?.sourceRef }).matches).toBe(true);
         if (readSource) {
@@ -1224,21 +1316,76 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(inspectCarrySourceRead(missingRead, sourceWindow!).status).not.toBe('verified');
           expect(inspectCarrySourceRead(result.evidence, { ...sourceWindow!, byteOffset: sourceWindow!.byteOffset + 1 }).status).not.toBe('verified');
           expect(inspectCarrySourceRead(result.evidence, { ...sourceWindow!, sha256: '0'.repeat(64) }).status).toBe('violation');
-          expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! }).matches).toBe(false);
+          expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse! })).toMatchObject({
+            matches: null, missing: ['unbound-native-source-cut'] });
           expect(inspectCarryTaskResponse({ taskId: task.id, response: result.trace.finalResponse!,
             boundSourceRef: `codex:${randomUUID()}/${source.turnId}@${source.snapshot.sha256}` }).matches).toBe(false);
         }
         await live.p.close(); await live.p.done;
+        if (resetHome) {
+          await vi.waitFor(() => {
+            for (const process of live.runtime.processes) expect(existsSync(`/proc/${process.pid}`)).toBe(false);
+          }, { timeout: 5000 });
+          const after = homeSnapshot(nativeHome);
+          expect(after).not.toEqual(initialHome);
+          const sqliteFamily = (entries: typeof after) => entries.filter(entry => /state_\d+\.sqlite(?:-(?:wal|shm))?$/.test(entry.path));
+          expect(sqliteFamily(after)).not.toEqual(sqliteFamily(initialHome));
+          const writes = runtimeBoundaries.filter(boundary => boundary.threadId === threadId)
+            .flatMap(boundary => [...boundary.runtime.writableOpenFiles, ...boundary.runtime.writableSharedFiles]);
+          expect(writes.length).toBeGreaterThan(0);
+          expect(writes.every(path => path.startsWith(`${nativeHome}/`)), JSON.stringify(writes)).toBe(true);
+        }
+        if (switchModel) {
+          // Inspect the native persisted context after close as well as the
+          // actual HTTP request; a prompt label or scripted reply is no witness.
+          const contexts = readFileSync(String((result.threadRead.thread as RpcFrame).path), 'utf8').trim().split('\n')
+            .map(line => JSON.parse(line) as RpcFrame).filter(row => row.type === 'turn_context');
+          expect(contexts.filter(row => (row.payload as RpcFrame).turn_id === result.turnId)
+            .map(row => (row.payload as RpcFrame).model)).toEqual(['gpt-6-luna']);
+          const previousTurn = arm === 'control' ? source.turnId
+            : modelWitnesses.find(witness => witness.threadId === threadId && witness.phase === 'carry')!.turnId;
+          if (arm === 'candidate') expect(contexts.filter(row => (row.payload as RpcFrame).turn_id === previousTurn)
+            .map(row => (row.payload as RpcFrame).model)).toEqual(['gpt-6-sol']);
+          expect(modelWitnesses.find(witness => witness.turnId === previousTurn)?.model).toBe('gpt-6-sol');
+        }
         captures.push({ receipts: live.receipts, state: live.p.receiptState?.(), arms: [{ threadId, armId: arm }] });
         expect(inspectCarryNativePopulation(captures.at(-1)!).status).toBe('closed-peer-reconciled');
         await recheckCarrySourceSnapshot(source);
         assertSourceGuards();
+        if (resetHome) {
+          const original = String((result.threadRead.thread as RpcFrame).path);
+          expect(original.startsWith(`${nativeHome}/sessions/`)).toBe(true);
+          expect(sourceFiles.some(member => member.filePath === original)).toBe(false);
+          const bytes = readFileSync(original), sha256 = createHash('sha256').update(bytes).digest('hex');
+          const archiveDir = join(resetArtifacts, 'sessions', arm); mkdirSync(archiveDir);
+          const archived = join(archiveDir, basename(original)); renameSync(original, archived);
+          expect(existsSync(original)).toBe(false);
+          expect(createHash('sha256').update(readFileSync(archived)).digest('hex')).toBe(sha256);
+          rolloutMoves.push({ arm, original, archived, sha256, bytes: bytes.length });
+          // Destructive only inside this owned disposable fixture, after every
+          // observed native writer exited and its new rollout was archived once.
+          // Never replace the guarded source or held lock inode.
+          const current = homeSnapshot(nativeHome);
+          for (const entry of current.filter(entry => entry.kind !== 'directory')) rmSync(join(nativeHome, entry.path));
+          const baselineDirs = new Set(initialHome.filter(entry => entry.kind === 'directory').map(entry => entry.path));
+          for (const entry of [...current].reverse().filter(entry => entry.kind === 'directory' && !baselineDirs.has(entry.path))) {
+            rmdirSync(join(nativeHome, entry.path));
+          }
+          cpSync(baselineHome, nativeHome, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+          expect(homeSnapshot(nativeHome)).toEqual(initialHome);
+          expect(homeSnapshot(baselineHome)).toEqual(initialHome);
+          expect(sourceInodes()).toEqual(frozenSourceInodes);
+          await recheckCarrySourceSnapshot(source); assertSourceGuards();
+        }
       }
       expect(requests.map(request => request.phase)).toEqual([...preparationPhases,
-        ...(readSource ? ['control', 'control', 'carry', 'candidate', 'candidate'] : ['control', 'carry', 'candidate'])]);
+        ...armOrder.flatMap(arm => [...(arm === 'candidate' ? ['carry'] : []), arm, ...(readSource ? [arm] : [])])]);
+      if (switchModel) expect(modelWitnesses.map(witness => [witness.phase, witness.model])).toEqual([
+        ['preparation', 'gpt-6-sol'], ['control', 'gpt-6-luna'], ['carry', 'gpt-6-sol'], ['candidate', 'gpt-6-luna'],
+      ]);
       expect(runtimeBoundaries.map(boundary => boundary.phase)).toEqual([
         ...preparationArms.flatMap(() => ['before-first-turn', 'preparation']),
-        'before-first-turn', 'control', 'before-first-turn', 'carry', 'candidate',
+        ...armOrder.flatMap(arm => ['before-first-turn', ...(arm === 'candidate' ? ['carry'] : []), arm]),
       ]);
       expect(runtimeBoundaries.every(boundary => boundary.runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path)))).toBe(true);
       // The preparation closeout hashes its post-turn observation; each arm
@@ -1253,15 +1400,16 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const dbSpy = vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql } as ReturnType<typeof dbOrg.getOrgPg>);
       const workspaceSpy = vi.spyOn(workspaceRegistry, 'activeWorkspaceId').mockReturnValue(workspace);
       try {
-        const adapters = [{ name: 'codex', root: join(nativeHome, 'sessions'), parse: parseCodexChunk,
-          replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+        const adapters = nativeHomes.map(home => ({ name: 'codex', root: join(home, 'sessions'), parse: parseCodexChunk,
+          replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }));
         expect((await ingestInteractiveUsage({ adapters, includeIsolationRoots: false })).errors).toEqual([]);
         const gatewayCapture = gateway.stats().requestStages!;
         const evidence = await captureCarryRequestEvidence(sql, { workspaceId: workspace, ownerId: owner,
           native: captures, gateway: gatewayCapture });
         expect(evidence).toMatchObject({ status: 'observations-linked', missing: [], violations: [],
           accountingComplete: false, admission: 'not-established' });
-        expect(evidence.native.turns.map(turn => turn.armId)).toEqual([...preparationArms.map(arm => arm.armId), 'control', 'candidate', 'candidate']);
+        expect(evidence.native.turns.map(turn => turn.armId)).toEqual([...preparationArms.map(arm => arm.armId),
+          ...armOrder.flatMap(arm => arm === 'candidate' ? ['candidate', 'candidate'] : ['control'])]);
         expect(evidence.canonical!.rows).toHaveLength(4 + ancestorDepth + (readSource ? 2 : 0));
         expect(evidence.inheritedUsage).toEqual([]);
         expect(evidence.population!.turns.flatMap(turn => turn.usageEventKeys)).toHaveLength(4 + ancestorDepth + (readSource ? 2 : 0));
@@ -1274,6 +1422,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         }
         console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
           sourceReadCount: observedReads.length, sourceWindow, responseQuality: 'not-established',
+          modelWitnesses, modelWitnessScope: 'native-client-request-and-persisted-context; no authenticated serving account',
+          homeRestored: resetHome, armOrder, homeEntries: initialHome.length, rolloutMoves,
+          homeInputSha256: resetHome ? createHash('sha256').update(readFileSync(homeProofPath)).digest('hex') : null,
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
           preparationManifestSha256: preparationManifest.sha256,
           runtimeBoundarySha256, runtimeBoundaryCount: runtimeBoundaries.length,
