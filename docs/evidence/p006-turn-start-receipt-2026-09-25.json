@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 turn-start identity delivery receipt after installed v2 and warm Codex resume",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the disposable host: Cupboard install v1, bootstrap selected Codex, run one model turn, Cupboard update v2, restore the pinned Codex home, enable IDEATE, resume the same native thread, then query the existing orientation cursor's identityComponentDeliveryV1 receipt"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-25T10:32:12.211Z",
+  "finishedAt": "2026-09-25T10:33:21.500Z",
+  "summary": "The warm resume and identity receipt checks passed: the model retained the installed v1 definition, received current IDEATE, and the existing orientation cursor reported identityComponentDeliveryV1 status=bound. The subsequent raw new-thread experiment failed its IDEATE assertion because it bypassed the supported managed carry context wipe; that experiment is excluded from P-006 acceptance.",
+  "assertions": [
+    {
+      "id": "installed-v1-v2-and-warm-model",
+      "passed": true,
+      "evidence": "Cupboard returned install v1 then update v2 with retainedVersions=[1.0.1,1.0.0]. Native home repair returned pinned-source-stale with preservedSpecificationRevision=0454f6d745668c965d2544705d834f94dfb295b35665564b9c93f8fca78a7d0b. The same Codex thread 01a0d81f-6814-7a81-8607-7f6dd6339d9a completed two model turns; the resumed reply quoted only the v1 definition and named ideate."
+    },
+    {
+      "id": "existing-identity-delivery-receipt",
+      "passed": true,
+      "evidence": "After the warm model turn, a read of harness_shared.coord_read_cursors for that exact isolated owner and surface=orientation returned identityComponentDeliveryV1 status=bound from the pending or committed cursor. The output was P006_PROVIDER_RECEIPT status=bound. This proves the existing turn-start identity binder completed; the full receipt value was not exported."
+    },
+    {
+      "id": "raw-fresh-thread-excluded",
+      "passed": false,
+      "evidence": "A raw new codex exec thread under the same owner retained the v1 definition but received no CTRL injection and answered no active mode. This command did not call buildCarryDoc or rearmControlWitnessForContextWipe. The owner-scoped delivery watermark had already advanced after warm resume, so this is an unsupported test setup, not a measured failure of the managed cold-carry route. EI-24229332042912808 was retracted and dropped."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host, disposable Tauri/Postgres, native Codex model turns and read cursor",
+  "transcriptHashes": {
+    "firstTurnJsonl": "e5e5830bc082656016d4542dcdeef45f71c938627cfc7d0590f7b019a2dc148a",
+    "resumedTurnJsonl": "24543b2371a6a423c2cfe9b83d5c626c5961cd003689c7f409d86241f5dab43d",
+    "warmNativeTranscript": "af9b729f614049380655a9aa20f591f160bd9e78d3680a13dd4c926c53068cd6"
+  },
+  "limitation": "This file records a passing warm model and receipt sub-check inside an overall exit-1 verifier run. It cannot be recorded as a passing operational test run and must not be used to certify P-006. The receipt's status was observed, but its full source/value payload was not retained. A supported managed cold-carry run remains open."
+}
