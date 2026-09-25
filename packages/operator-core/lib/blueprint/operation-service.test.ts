@@ -69,4 +69,14 @@ describe('projectBlueprintOperationStatus', () => {
     expect(projectBlueprintOperationStatus(plan, [item('WI-pending', 'open')], { status: 'done', outcome: 'success' }))
       .toMatchObject({ phase: 'accepted', outcome: null });
   });
+
+  it('requires the plan run to settle successfully even after every child passes', () => {
+    const children = [item('WI-a', 'passed'), item('WI-b', 'passed')];
+    expect(projectBlueprintOperationStatus(plan, children, { status: 'running', outcome: null }))
+      .toMatchObject({ outcome: null });
+    expect(projectBlueprintOperationStatus(plan, children, { status: 'done', outcome: 'partial' }))
+      .toMatchObject({ phase: 'terminal', outcome: 'failed' });
+    expect(projectBlueprintOperationStatus(plan, children, { status: 'done', outcome: 'success' }))
+      .toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
+  });
 });

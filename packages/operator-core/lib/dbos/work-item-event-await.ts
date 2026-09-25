@@ -8,6 +8,7 @@
  * The event is an executor signal; the work item remains the outcome authority.
  */
 import { runWithWorkspace } from '../workspace-als';
+import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem, isSettledWorkItemState, type WorkItem } from '../work-items';
 import { ALL_SUCCESSFUL_STATUSES } from '../work-item-blocking';
@@ -133,14 +134,32 @@ export async function awaitWorkItemCompletionEvent(
         const currentIntent = current ? completionEventIntentIdOf(current) : null;
         if (current && current.harness === input.harnessSlug && isSettledWorkItemState(current.state) &&
             (!currentIntent || currentIntent === pendingIntent)) {
-          return {
-            kind: 'settled', itemId: input.itemId, state: current.state,
-            successful: await hasValidatedSuccess(current, input),
-            source: pendingIntent ? 'completion-event' : 'current-state',
-            completionIntentId: pendingIntent,
-          };
+          const successful = await hasValidatedSuccess(current, input);
+          // Pinned result validation reads the specification and current item
+          // asynchronously. Recheck after it: a reopen during that read must
+          // not return the old cycle's settlement to this waiter.
+          const confirmed = await readItem(input);
+          if (confirmed && confirmed.harness !== input.harnessSlug) {
+            throw new Error('work-item event wait read outside harness');
+          }
+          if (confirmed && confirmed.state === current.state &&
+              confirmed.completionAuthority === current.completionAuthority &&
+              isSettledWorkItemState(confirmed.state) &&
+              completionEventIntentIdOf(confirmed) === currentIntent &&
+              isDeepStrictEqual(
+                (confirmed.payload as Record<string, unknown> | null)?.blueprintResult,
+                (current.payload as Record<string, unknown> | null)?.blueprintResult,
+              )) {
+            return {
+              kind: 'settled', itemId: input.itemId, state: confirmed.state,
+              successful, source: pendingIntent ? 'completion-event' : 'current-state',
+              completionIntentId: pendingIntent,
+            };
+          }
+          lastState = confirmed?.state ?? null;
+        } else {
+          lastState = current?.state ?? null;
         }
-        lastState = current?.state ?? null;
       }
     }
     const remaining = deadline - now();

@@ -329,6 +329,8 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
        WHERE workspace_id = ${WS} AND payload->'plan_run'->>'runId' = ${String(first.runId)}
          AND payload->'plan_run'->>'instancePlanSlug' = ${first.instanceSlug}
     `;
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ phase: 'terminal', outcome: 'failed' });
     await sql`
       UPDATE harness_shared.plan_runs SET status = 'done', outcome = 'success', outputs = '[]'::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${first.runId}

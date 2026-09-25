@@ -165,23 +165,34 @@ export function projectBlueprintOperationStatus(
   const allSettled = items.length > 0 && items.every(isSettledWorkItem);
   const cancelling = controls.cancellationRequested || items.some(cancellationRequested);
   let outcome: BlueprintOperationOutcome | null = null;
-  if (allSettled) {
-    const dropped = (item: WorkItem) => item.state === 'dropped' || item.state === 'deprecated' || item.state === 'closed';
-    const succeeded = (item: WorkItem) => item.state === 'done' || item.state === 'passed' || item.state === 'resolved';
-    if (cancelling && items.every(dropped)) outcome = 'cancelled';
-    else if (items.some(dropped)) outcome = 'dropped';
-    else if (items.every(succeeded)) {
-      outcome = items.every((item) => item.completionAuthority === 'committed' || item.completionAuthority === 'validated')
-        ? 'succeeded' : 'unverified';
+  const dropped = (item: WorkItem) => item.state === 'dropped' || item.state === 'deprecated' || item.state === 'closed';
+  const succeeded = (item: WorkItem) => item.state === 'done' || item.state === 'passed' || item.state === 'resolved';
+  const childOutcome = (): BlueprintOperationOutcome => {
+    if (cancelling && items.every(dropped)) return 'cancelled';
+    if (items.some(dropped)) return 'dropped';
+    if (!items.every(succeeded)) return 'failed';
+    return items.every((item) => item.completionAuthority === 'committed' || item.completionAuthority === 'validated')
+      ? 'succeeded' : 'unverified';
+  };
+  if (handle.target.kind === 'plan') {
+    // A child can settle before the plan run has reconciled its final outcome
+    // and output. Neither child success nor DBOS dispatch alone finishes the plan.
+    if (planRun?.status === 'done' && planRun.outcome === 'success') {
+      if (items.length === 0) outcome = 'succeeded';
+      else if (allSettled) outcome = childOutcome();
+    } else if (planRun?.status === 'done' || planRun?.status === 'failed') {
+      if (cancelling && allSettled && items.every(dropped)) outcome = 'cancelled';
+      else if (planRun.outcome === 'skipped') outcome = 'dropped';
+      else if (planRun.status === 'failed' || ['failed', 'partial', 'timed-out'].includes(planRun.outcome ?? '')) {
+        outcome = 'failed';
+      }
     }
-    else outcome = 'failed';
-  } else if (planRun?.outcome) {
-    if (planRun.outcome === 'success' && items.length === 0) outcome = 'succeeded';
-    else if (planRun.outcome === 'skipped') outcome = 'dropped';
-    else if (['failed', 'partial', 'timed-out'].includes(planRun.outcome)) outcome = 'failed';
+  } else if (allSettled) {
+    outcome = childOutcome();
   }
   const phase: BlueprintOperationPhase = outcome ? 'terminal' :
     controls.wait ? 'waiting' :
+    handle.target.kind === 'plan' && allSettled ? 'waiting' :
     items.some((item) => item.state === 'blocked' || item.state === 'needs-human') ? 'waiting' :
     items.some((item) => item.assignee !== null || item.state === 'wip' || item.state === 'in-progress') ? 'dispatched' :
     'accepted';
