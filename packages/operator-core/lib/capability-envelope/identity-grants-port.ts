@@ -4,6 +4,7 @@
  * Mutable policy is read again for every preflight AND enforce invocation.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
 import {
   loadBlueprintFromFile,
@@ -67,6 +68,39 @@ interface IdentityGrantKernelState extends KernelContextState {
   identityLaunchRecordMissing?: boolean;
   /** Database-owned row identity/version, never supplied by the tool caller. */
   identityLaunchRecordVersion?: { sessionId: string; rowVersion: string };
+  /** Server-resolved coordination owner; never taken from a tool argument. */
+  operationOwnerId?: string;
+}
+
+interface OperationEffectClaim {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  ownerId: string | null;
+  advSessionId: string | null;
+  acceptedOperation: Record<string, unknown>;
+}
+
+type OperationEffectClaimReader = (claim: OperationEffectClaim) => Promise<boolean>;
+
+async function readCurrentOperationEffectClaim(claim: OperationEffectClaim): Promise<boolean> {
+  if (!claim.ownerId || !claim.advSessionId) return false;
+  const { readActiveOperationWorkerClaimBinding, operationWorkerEffectWhereSql } =
+    await import('../blueprint/operation-worker-binding');
+  const read = await readActiveOperationWorkerClaimBinding(claim.workspaceId, claim.ownerId);
+  if (read.status !== 'bound' || String(read.receipt.sessionId) !== claim.advSessionId ||
+      !isDeepStrictEqual(read.receipt.acceptedOperation, claim.acceptedOperation)) return false;
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ ok: number }>>`
+    SELECT 1 AS ok FROM harness_shared.work_items AS wi
+     WHERE wi.workspace_id = ${claim.workspaceId}
+       AND wi.feature_id = ${claim.workItemId}
+       AND wi.harness_slug = ${claim.harnessSlug}
+       AND ${operationWorkerEffectWhereSql(sql, read, {
+         payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug', holder: 'wi.taken_by',
+       })}
+     LIMIT 1`;
+  return rows.length > 0;
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -538,6 +572,7 @@ export async function checkIdentityGrantKernel(
   state: IdentityGrantKernelState,
   rawRecord: unknown,
   readPolicy: PolicyReader = readIdentityGrantPolicy,
+  readOperationEffectClaim: OperationEffectClaimReader = readCurrentOperationEffectClaim,
 ): Promise<KernelEnforcementResult | null> {
   // WI-10002721: the live resolver passes a header + loader instead of the
   // (hundreds-of-KB) record. The header carries exactly the fields this gate
@@ -634,13 +669,18 @@ export async function checkIdentityGrantKernel(
   // The accepted operation's requested tools are a further ceiling carried by
   // the host-owned launch receipt. Tool arguments and nested dispatch cannot
   // alter this list. An empty list deliberately permits no operation tools.
+  const accepted = 'acceptedOperation' in record ? object(record.acceptedOperation) : null;
   if ('acceptedOperation' in record) {
-    const accepted = object(record.acceptedOperation);
     const tools = accepted?.requiredTools;
+    const pin = object(accepted?.pin);
     if (accepted?.kind !== 'blueprint-operation-worker' ||
         typeof accepted.workItemId !== 'string' || !accepted.workItemId ||
         typeof accepted.specificationRevision !== 'string' ||
         !/^[0-9a-f]{64}$/.test(accepted.specificationRevision) ||
+        pin?.kind !== 'blueprint-operation' ||
+        pin.operationId !== accepted.operationId ||
+        pin.specificationRevision !== accepted.specificationRevision ||
+        pin.harnessSlug !== record.harnessSlug ||
         !Array.isArray(tools) || !tools.every((name) => typeof name === 'string' && name.length > 0) ||
         !tools.includes(toolName)) {
       return denyUnlessRecoveryDoor(
@@ -667,6 +707,32 @@ export async function checkIdentityGrantKernel(
         request, 'outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision,
       );
     }
+  }
+  // The accepted tool list narrows WHAT a role may call. A separate live
+  // claim check narrows WHEN it may cause an effect. Read-only and claim doors
+  // remain usable for pickup/recovery; every other direct, native or nested
+  // dispatch checks the same current holder and immutable receipt.
+  const claimDoors = new Set(['work_items:claim', 'work_items:claim_next', 'scheduler:get_next']);
+  const readOnly = request.capabilities.length > 0 &&
+    request.capabilities.every((capability) => capability.endsWith(':read'));
+  if (accepted && !claimDoors.has(toolName) && !readOnly && toolName !== 'coord:orient') {
+    const claim = {
+      workspaceId: workspaceId as string,
+      harnessSlug: record.harnessSlug as string,
+      workItemId: accepted.workItemId as string,
+      ownerId: state.operationOwnerId ?? null,
+      advSessionId: state.identityLaunchRecordVersion?.sessionId ?? null,
+      acceptedOperation: accepted,
+    };
+    let current = false;
+    try { current = await readOperationEffectClaim(claim); } catch {
+      return { decision: 'deny', code: 'operation-claim-unavailable',
+        reason: 'current operation claim authority could not be read', availability: 'unavailable', applied: true,
+        policyRevision: policy.policyRevision };
+    }
+    if (!current) return { decision: 'deny', code: 'operation-claim-stale',
+      reason: 'operation worker no longer holds the item under its applied launch receipt',
+      availability: 'available', applied: true, policyRevision: policy.policyRevision };
   }
   return {
     decision: 'allow', availability: 'available', applied: true,
