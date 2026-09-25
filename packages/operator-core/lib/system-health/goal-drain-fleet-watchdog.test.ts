@@ -10,9 +10,12 @@ import {
   GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
   claimSpecFilterConstrainsGoal,
   claimSpecIsGoalScoped,
+  classifyDelegatedDrainFleetLiveness,
+  classifyDrainWorkerLiveness,
   decideGoalDrainFleetRelaunch,
   goalDrainRelaunchEligibility,
   goalPinnedRemedySpec,
+  makeResolveFleetLiveness,
   resolveGoalPinWritability,
   type GoalPinWritabilityProbe,
   parseGoalDrainRespawnLedger,
@@ -71,6 +74,65 @@ function makeVerdict(
 const verdicts = (...vs: LivenessVerdict[]) => new Map(vs.map((v) => [v.ownerId, v]));
 const fleets = (entries: Record<string, DrainFleetLiveness>) => new Map(Object.entries(entries));
 const scopes = (entries: Record<string, DrainFleetSpecScope> = {}) => new Map(Object.entries(entries));
+
+describe('P-014 drain worker liveness', () => {
+  it('does not let a healthy leader conceal a fleet with zero live workers', () => {
+    expect(classifyDrainWorkerLiveness('su-leader', ['su-leader'], verdicts(
+      makeVerdict('su-leader', 'live'),
+    ))).toBe('dead');
+    expect(classifyDrainWorkerLiveness('su-leader', ['su-leader', 'su-dead-worker'], verdicts(
+      makeVerdict('su-leader', 'live'), makeVerdict('su-dead-worker', 'ended'),
+    ))).toBe('dead');
+  });
+
+  it('keeps verified worker coverage even with an unresolved peer, and suppresses when no worker is verified', () => {
+    const members = ['su-leader', 'su-unresolved', 'su-worker'];
+    expect(classifyDrainWorkerLiveness('su-leader', members, verdicts(
+      makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'live'),
+    ))).toBe('alive');
+    expect(classifyDrainWorkerLiveness('su-leader', members, verdicts(
+      makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'ended'),
+    ))).toBe('unknown');
+  });
+
+  it('requires a distinct live delegated leader and holder coupling', () => {
+    const members = ['su-holder', 'su-leader', 'su-worker'];
+    const live = verdicts(makeVerdict('su-holder', 'live'), makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'live'));
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', null, false, members, live)).toBe('dead');
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-holder', true, members, live)).toBe('dead');
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', false, members, live)).toBe('dead');
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', true, members, live)).toBe('alive');
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', true, members,
+      verdicts(makeVerdict('su-worker', 'live')))).toBe('unknown');
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', true, members,
+      verdicts(makeVerdict('su-leader', 'ended'), makeVerdict('su-worker', 'live')))).toBe('dead');
+  });
+
+  it('uses the current holder for coupling, even when the fleet owner column is stale', async () => {
+    const read = vi.fn(async (parts: TemplateStringsArray) => {
+      const statement = parts.join(' ');
+      if (statement.includes('FROM harness_shared.agent_fleets')) return [{
+        workspace_id: 'ws', fleet_slug: 'drain-1', owner: 'su-old-holder', leader_owner_id: 'su-leader',
+      }];
+      if (statement.includes('FROM harness_shared.coord_presence')) return [
+        { workspace_id: 'ws', fleet_slug: 'drain-1', owner_id: 'su-leader' },
+        { workspace_id: 'ws', fleet_slug: 'drain-1', owner_id: 'su-worker' },
+      ];
+      if (statement.includes('FROM harness_shared.agent_couplings')) return [{
+        workspace_id: 'ws', agent_a: 'su-current-holder', agent_b: 'su-leader',
+      }];
+      throw new Error(`unexpected query: ${statement}`);
+    });
+    const resolve = makeResolveFleetLiveness(read as unknown as Sql, async () => verdicts(
+      makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'live'),
+    ));
+    const drain = await resolve([{ workspaceId: 'ws', fleetSlug: 'drain-1', holderOwnerId: 'su-current-holder' }]);
+    expect(drain.get(fleetKey('ws', 'drain-1'))).toBe('alive');
+    // Plan fleets use this resolver too; they do not require a GOAL coupling.
+    const plan = await resolve([{ workspaceId: 'ws', fleetSlug: 'drain-1' }]);
+    expect(plan.get(fleetKey('ws', 'drain-1'))).toBe('alive');
+  });
+});
 
 describe('classifyGoalDrainFleet', () => {
   it('alerts no-drain-fleet-declared on a live-held goal past the kickoff grace', () => {
@@ -690,7 +752,9 @@ describe('runGoalDrainFleetSweepOnce', () => {
     }));
     await runGoalDrainFleetSweepOnce(sql, deps);
     expect(deps.resolveLiveness).toHaveBeenCalledWith(['su-a']);
-    expect(deps.resolveFleetLiveness).toHaveBeenCalledWith([{ workspaceId: 'ws', fleetSlug: 'drain-1' }]);
+    expect(deps.resolveFleetLiveness).toHaveBeenCalledWith([{
+      workspaceId: 'ws', fleetSlug: 'drain-1', holderOwnerId: 'su-a',
+    }]);
   });
 
   it('a failed escalate is contained and the emit still runs', async () => {

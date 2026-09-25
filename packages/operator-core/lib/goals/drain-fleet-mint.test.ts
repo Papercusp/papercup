@@ -14,11 +14,86 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/goals/drain-fleet-mint.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { createFleetMock, setLeaderMock, setSpecMock, presenceMock, couplingMock } = vi.hoisted(() => ({
+  createFleetMock: vi.fn(), setLeaderMock: vi.fn(), setSpecMock: vi.fn(),
+  presenceMock: vi.fn(), couplingMock: vi.fn(),
+}));
+vi.mock('../agent-fleets-store', async (load) => ({
+  ...(await load<Record<string, unknown>>()),
+  createFleetIfAbsent: createFleetMock,
+  setFleetLeader: setLeaderMock,
+}));
+vi.mock('../scheduler/claim-spec-store', async (load) => ({
+  ...(await load<Record<string, unknown>>()),
+  setClaimSpec: setSpecMock,
+}));
+vi.mock('../agent-tools/coordination/presence', async (load) => ({
+  ...(await load<Record<string, unknown>>()),
+  setPresenceFleet: presenceMock,
+}));
+vi.mock('../coord/couplings', async (load) => ({
+  ...(await load<Record<string, unknown>>()),
+  declareCoupling: couplingMock,
+}));
 
 import { validateClaimSpec } from '../scheduler/claim-spec';
 import { claimSpecIsGoalScoped } from '../system-health/goal-drain-fleet-watchdog';
-import { buildGoalDrainClaimSpec, drainFleetSlugForGoal } from './drain-fleet-mint';
+import { buildGoalDrainClaimSpec, drainFleetSlugForGoal, mintDrainFleetForGoal, registerGoalDrainFleetLeader } from './drain-fleet-mint';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  createFleetMock.mockResolvedValue({ created: true, record: {} });
+  setLeaderMock.mockResolvedValue({});
+  setSpecMock.mockResolvedValue({ ok: true, revision: 1, errors: [] });
+  presenceMock.mockResolvedValue(null);
+  couplingMock.mockResolvedValue({ state: 'coupled' });
+});
+
+describe('P-014 delegated drain leadership', () => {
+  it('mints a positive goal lane under a truthfully leaderless fleet row', async () => {
+    const goalTx = vi.fn(async () => []);
+    await mintDrainFleetForGoal({
+      workspaceId: 'ws', goalId: 'g-1', goalTitle: 'Goal', agentOwnerId: 'su-holder',
+      goalTx: goalTx as never,
+    });
+    expect(createFleetMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'su-holder', leaderOwnerId: null,
+    }));
+    expect(setSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws', spec: expect.objectContaining({
+        view: { filter: { field: 'goal', op: '=', value: 'g-1' } },
+      }),
+    }));
+  });
+
+  it('does not couple or label a leader whose compare-and-set lost', async () => {
+    setLeaderMock.mockResolvedValueOnce(null);
+    const result = await registerGoalDrainFleetLeader({
+      workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
+      holderOwnerId: 'su-holder', leaderOwnerId: 'su-leader',
+      declaredBy: 'goal-drain-fleet-watchdog', expectedLeaderOwnerId: 'su-old',
+    });
+    expect(result.registered).toBe(false);
+    expect(setLeaderMock).toHaveBeenCalledWith('ws', 'goal-drain-g-1', 'su-leader', undefined, 'su-old');
+    expect(presenceMock).not.toHaveBeenCalled();
+    expect(couplingMock).not.toHaveBeenCalled();
+  });
+
+  it('records the actual recovery actor and returns missing coupling as a partial result', async () => {
+    couplingMock.mockResolvedValueOnce(null);
+    const result = await registerGoalDrainFleetLeader({
+      workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
+      holderOwnerId: 'su-holder', leaderOwnerId: 'su-new',
+      declaredBy: 'goal-drain-fleet-watchdog', expectedLeaderOwnerId: 'su-old',
+    });
+    expect(result).toMatchObject({ registered: true, coupled: false });
+    expect(couplingMock).toHaveBeenCalledWith(expect.objectContaining({
+      agentA: 'su-holder', agentB: 'su-new', declaredBy: 'goal-drain-fleet-watchdog',
+    }));
+  });
+});
 
 describe('drainFleetSlugForGoal', () => {
   it('is goal-drain-<goalId> when the id fits the slug budget', () => {

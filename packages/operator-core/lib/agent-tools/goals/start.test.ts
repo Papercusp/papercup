@@ -107,9 +107,13 @@ const mintMock = vi.fn(async (_a: unknown) => {
 const teardownMock = vi.fn(async (_a: unknown) => {
   order.push('drain-teardown');
 });
+const registerLeaderMock = vi.fn(async (_a: unknown): Promise<{
+  registered: boolean; coupled: boolean; warning: string | null;
+}> => ({ registered: true, coupled: true, warning: null }));
 vi.mock('../../goals/drain-fleet-mint', () => ({
   drainFleetAutoMintEnabled: async () => automintEnabled,
   mintDrainFleetForGoal: (a: unknown) => mintMock(a),
+  registerGoalDrainFleetLeader: (a: unknown) => registerLeaderMock(a),
   teardownDrainFleetMint: (a: unknown) => teardownMock(a),
 }));
 
@@ -221,6 +225,7 @@ beforeEach(() => {
     order.push('drain-mint');
     return { fleetSlug: 'goal-drain-test', created: true, specRevision: 1 };
   });
+  registerLeaderMock.mockImplementation(async () => ({ registered: true, coupled: true, warning: null }));
   spawnConsoleMock.mockImplementation(async () => {
     order.push('spawn');
     return okSpawn();
@@ -277,10 +282,12 @@ describe('goals:start — the happy path', () => {
   it('stamps GOAL mode with the goal id as its SUBJECT', async () => {
     const res = await call();
     const goalId = dataOf(res).id as string;
-    expect(setModeCalls).toHaveLength(1);
+    expect(setModeCalls).toHaveLength(2);
     expect(setModeCalls[0].modeId).toBe('goal');
     expect(setModeCalls[0].enabled).toBe(true);
     expect(setModeCalls[0].subject).toBe(goalId);
+    expect(setModeCalls[1].modeId).toBe('auto');
+    expect(setModeCalls[1].ownerId).toBe(dataOf(res).drain_leader_owner_id);
   });
 
   it('spawns the SAME owner id it stamped, pre-pinned via --owner-id', async () => {
@@ -454,7 +461,9 @@ describe('goals:start — the happy path', () => {
       .greetingCmd;
     const drainCommand = (spawnHeadlessMock.mock.calls[1][0] as { envelope: { greetingCmd: string } }).envelope
       .greetingCmd;
-    for (const command of [goalCommand, drainCommand]) {
+    const workerCommand = (spawnHeadlessMock.mock.calls[2][0] as { envelope: { greetingCmd: string } }).envelope
+      .greetingCmd;
+    for (const command of [goalCommand, drainCommand, workerCommand]) {
       expect(command).toContain('--model=sonnet:xhigh');
       expect(command).toContain('--account=default');
       expect(command).toContain('--carry=cold');
@@ -465,10 +474,9 @@ describe('goals:start — the happy path', () => {
 
   it('routes a headless launch through spawnHeadless', async () => {
     await call({ headless: true });
-    // TWO headless spawns since P-001: the goal agent AND the drain-fleet
-    // member. The agent is the first, identified by its pre-pinned identity.
+    // The goal agent, delegated leader, and drain worker all open headless.
     expect(spawnConsoleMock).not.toHaveBeenCalled();
-    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(3);
     const agentCmd = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(agentCmd).toContain('--owner-id=');
   });
@@ -500,7 +508,7 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
 
     expect(isError(res)).toBe(false);
     expect(mintMock).toHaveBeenCalledTimes(1);
-    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
     expect(dataOf(res).drain_fleet).toBe('goal-drain-test');
   });
 
@@ -516,12 +524,20 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     expect(args.agentOwnerId).toBe(dataOf(res).agent_owner_id);
   });
 
-  it('spawns ONE headless drain member bound to the fleet, without the goal kickoff brief', async () => {
+  it('opens and registers a delegated leader before the worker, without giving the worker the goal brief', async () => {
     await call(); // goal agent itself is NOT headless here
-    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
-    const member = spawnHeadlessMock.mock.calls[0][0] as {
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    const leader = spawnHeadlessMock.mock.calls[0][0] as {
       envelope: { greetingCmd: string; env: Record<string, string> };
     };
+    const member = spawnHeadlessMock.mock.calls[1][0] as {
+      envelope: { greetingCmd: string; env: Record<string, string> };
+    };
+    expect(leader.envelope.greetingCmd).toContain('--owner-id=su-');
+    expect(leader.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('delegated leader');
+    expect(registerLeaderMock).toHaveBeenCalledWith(expect.objectContaining({
+      fleetSlug: 'goal-drain-test', expectedLeaderOwnerId: null,
+    }));
     // --fleet is the membership fact: it makes bootstrap-su stamp what
     // getClaimSpec's fleet-inheritance resolves through, so the member pulls
     // the goal-scoped lane instead of the pot-wide default.
@@ -559,9 +575,12 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
   });
 
   it('a member-spawn failure keeps the goal AND the fleet, with a warning', async () => {
+    let opens = 0;
     spawnHeadlessMock.mockImplementation(async () => {
       order.push('spawn');
-      return { status: 'error', error: 'no slots' } as unknown as SpawnConsoleResult;
+      return ++opens === 2
+        ? { status: 'error', error: 'no slots' } as unknown as SpawnConsoleResult
+        : { ...okSpawn(), terminal: 'headless', pid: 777, display: null, desktopEnvResolvedVia: null };
     });
     const res = await call(); // agent via spawnConsole (ok); member via spawnHeadless (fails)
     expect(isError(res)).toBe(false);
@@ -569,6 +588,16 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     expect(dataOf(res).drain_member_pid).toBeNull();
     expect(String(dataOf(res).warning)).toContain('member failed to launch');
     expect(teardownMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the goal but does not open workers if delegated leadership cannot register', async () => {
+    registerLeaderMock.mockResolvedValueOnce({ registered: false, coupled: false, warning: 'CAS lost' });
+    const res = await call();
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(dataOf(res).drain_leader_owner_id).toBeNull();
+    expect(dataOf(res).drain_member_pid).toBeNull();
+    expect(String(dataOf(res).warning)).toContain('could not be registered');
   });
 
   it('the flag OFF skips the mint entirely — the watchdog remains the only guard', async () => {
