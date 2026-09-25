@@ -49,12 +49,17 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     CREATE TABLE harness_shared.adv_sessions (
       id bigint PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      role text,
       launch_spec jsonb, started_at timestamptz NOT NULL DEFAULT now(),
       ended_at timestamptz, ended_by text
     );
     CREATE TABLE harness_shared.session_briefs (
       owner_id text PRIMARY KEY, workspace_id text NOT NULL,
       control_state jsonb, control_generation integer
+    );
+    CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL, feature_id text NOT NULL, harness_slug text NOT NULL,
+      payload jsonb, taken_by text
     );
   `);
 }, 90_000);
@@ -74,21 +79,27 @@ describe('accepted operation worker at the real PostgreSQL identity receipt', ()
       prompt: { role: 'worker', text: 'Execute the accepted operation.' }, inputClosure: [provider],
     });
     const revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'state-a' };
+    const pin = { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+      specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} };
     const acceptedOperation = { kind: 'blueprint-operation-worker', workItemId: 'WI-1',
-      specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'] };
-    const launchSpec = { workspaceId: WS, harnessSlug: 'sales', ...revision,
+      operationId: 'send', specificationRevision: 'a'.repeat(64), pin,
+      identity: { ref: 'operation-worker-fixture', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+      requiredTools: ['mail:send'] };
+    const launchSpec = { workspaceId: WS, harnessSlug: 'sales', role: 'worker', ...revision,
       specificationArtifact: artifact, acceptedOperation };
     const activation = { schemaVersion: 1,
       attribution: { actorId: OWNER, principalId: OWNER, sessionId: OWNER },
       desired: revision, prepared: null, applied: revision, status: 'applied' };
     await db.sql`
-      INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
-      VALUES (1, ${WS}, ${OWNER}, ${db.sql.json(JSON.parse(JSON.stringify(launchSpec)))})
+      INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, role, launch_spec)
+      VALUES (1, ${WS}, ${OWNER}, 'worker', ${db.sql.json(JSON.parse(JSON.stringify(launchSpec)))})
     `;
     await db.sql`
       INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state, control_generation)
       VALUES (${OWNER}, ${WS}, ${db.sql.json({ activation })}, 1)
     `;
+    await db.sql`INSERT INTO harness_shared.work_items (workspace_id, feature_id, harness_slug, payload, taken_by)
+      VALUES (${WS}, 'WI-1', 'sales', ${db.sql.json({ blueprintOperation: pin })}, ${OWNER})`;
     const binding = {
       classRef: CLASS, providerPackage: provider.providerPackage,
       providerVersion: provider.providerVersion, conformanceRunId: provider.conformanceRunId,
@@ -111,6 +122,16 @@ describe('accepted operation worker at the real PostgreSQL identity receipt', ()
       kernelEnforcement: controlAnchorKernelResolver,
     })).ok).toBe(true);
     expect(send).toHaveBeenCalledOnce();
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'replacement-worker' WHERE feature_id = 'WI-1'`;
+    for (const boundary of ['dispatch', 'indirect-dispatch'] as const) {
+      const stale = await dispatchProjectedTool(tool('mail:send', send), 'mail:send', {}, ctx(boundary), {
+        kernelEnforcement: controlAnchorKernelResolver,
+      });
+      expect(stale.ok).toBe(false);
+      expect(stale.error?.message).toContain('no longer holds the item');
+    }
+    expect(send).toHaveBeenCalledOnce();
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = ${OWNER} WHERE feature_id = 'WI-1'`;
     for (const boundary of ['dispatch', 'indirect-dispatch'] as const) {
       const refused = await dispatchProjectedTool(tool('mail:read', read), 'mail:read', {}, ctx(boundary), {
         kernelEnforcement: controlAnchorKernelResolver,

@@ -1432,7 +1432,8 @@
             "apps/operator/scripts/**/*.test.ts",
             "scripts/*.test.ts",
             "scripts/*.test.mjs",
-            "scripts/lib/**/*.test.ts"
+            "scripts/lib/**/*.test.ts",
+            "scripts/lib/**/*.test.mjs"
           ]
         },
         {

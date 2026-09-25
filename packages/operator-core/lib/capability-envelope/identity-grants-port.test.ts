@@ -86,12 +86,16 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       const read = vi.fn(async () => f.policy);
       const acceptedOperation = {
         kind: 'blueprint-operation-worker', workItemId: 'WI-1',
-        specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+        operationId: 'send', specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+        pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+          specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} },
       };
       const record = { ...f.record, acceptedOperation };
       const request = { ...f.request, boundary };
-      expect(await checkIdentityGrantKernel(request, f.state, record, read))
+      expect(await checkIdentityGrantKernel(request, f.state, record, read, async () => true))
         .toMatchObject({ decision: 'allow', applied: true });
+      expect(await checkIdentityGrantKernel(request, f.state, record, read, async () => false))
+        .toMatchObject({ decision: 'deny', code: 'operation-claim-stale' });
       expect(await checkIdentityGrantKernel(request, f.state,
         { ...record, acceptedOperation: { ...acceptedOperation, requiredTools: [] } }, read))
         .toMatchObject({ decision: 'deny', obligations: {
@@ -269,13 +273,15 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       const read = vi.fn(async () => f.policy);
       const acceptedOperation = {
         kind: 'blueprint-operation-worker', workItemId: 'WI-1',
-        specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+        operationId: 'send', specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+        pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+          specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} },
       };
       const record = { ...f.record, acceptedOperation };
       const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'operation-header-test', rowVersion: '67' } };
       const { handle, load } = lazyFor(record, '67');
-      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
-      expect(await checkIdentityGrantKernel(f.request, state, handle, read)).toMatchObject({ decision: 'allow' });
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read, async () => true)).toMatchObject({ decision: 'allow' });
+      expect(await checkIdentityGrantKernel(f.request, state, handle, read, async () => true)).toMatchObject({ decision: 'allow' });
       expect(load).toHaveBeenCalledTimes(1);
 
       const narrowed = lazyFor({ ...record, acceptedOperation: { ...acceptedOperation, requiredTools: [] } }, '68');

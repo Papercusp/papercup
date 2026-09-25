@@ -1595,12 +1595,50 @@ describe('template_data persistence boundary — the set-template-data door', ()
           ...criterion,
           method: 'Execute the seeded acceptance fixture.',
           check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+          requiredTestLayers: ['unit'],
         })),
       };
       await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
     }
     return { ...seeded, workspaceId, subject };
   }
+
+  it('refuses a changed automated BAR without a test layer before approval or proof', async () => {
+    const seeded = await seedBarContract('amendment-missing-proof-layer');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const testsWithoutLayer = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      reason: 'Bind the real unit check without declaring its proof layer.',
+      criteria: before.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Run the focused unit test.',
+        check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      })),
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(testsWithoutLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_test_layers_missing.*R-1.*requiredTestLayers/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+
+    const withUnitLayer = {
+      ...testsWithoutLayer,
+      criteria: testsWithoutLayer.criteria.map((criterion) => ({
+        ...criterion,
+        requiredTestLayers: ['unit'],
+      })),
+    };
+    expect((await rubrics.previewAcceptanceBarAmendment(withUnitLayer))?.changedBars).toEqual(['R-1', 'R-2']);
+
+    const manual = {
+      ...testsWithoutLayer,
+      criteria: testsWithoutLayer.criteria.map((criterion) => ({
+        ...criterion,
+        check: { kind: 'instrument' as const, instrumentKey: 'none' },
+      })),
+    };
+    expect((await rubrics.previewAcceptanceBarAmendment(manual))?.changedBars).toEqual(['R-1', 'R-2']);
+  });
 
   it('advances meaningRevision on a meaning-changing cross-plan amendment', async () => {
     const seeded = await seedBarContract('meaning-revision-change', { authorMethods: true });
@@ -2701,6 +2739,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
         mandatory: true,
         requiredScope: ['tree'],
         evidencePlane: 'tree',
+        requiredTestLayers: ['unit'],
         passRatings: ['healthy'],
         barProvenance: {
           lifecycle: 'legacy-backfilled',
@@ -2999,7 +3038,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // clause stays pinned to the rubric revision that changed its required layers.
     expect(Number(first.at(-1)!.source_rubric_revision)).toBe(changed.revision);
     expect(first.length).toBeGreaterThan(2);
-    expect(revisions.filter((row) => row.source_bar_key === 'R-2').at(-1)!.required_test_layers).toEqual([]);
+    expect(revisions.filter((row) => row.source_bar_key === 'R-2').at(-1)!.required_test_layers).toEqual(['unit']);
   });
 
   it('previews structural plane amendments without writes and requires an actual outside-lineage approval', async () => {

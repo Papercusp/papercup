@@ -222,6 +222,8 @@ interface OperatorKernelState extends KernelContextState {
   /** The control anchor exists, but its owning adv_sessions row does not. */
   identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
+  /** The server-resolved owner whose active launch/control rows were read. */
+  operationOwnerId?: string;
 }
 
 /**
@@ -476,6 +478,7 @@ export async function readControlAnchorKernelState(
   const launchSessionId = stateRow?.adv_session_id ?? null;
   const launchHeader = resolveLaunchHeader(memoKey, knownHeader, stateRow);
   return {
+    operationOwnerId: ownerId,
     ...(controlReadFailed ? { authorityUnavailable: true } : {}),
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec_type')

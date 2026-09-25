@@ -95,6 +95,7 @@ import {
   acquireCheckpointRunLock,
   checkpointRunLockSkipSummary,
   activateScheduledCheckpointRunner,
+  scheduledAttemptPinnedCandidate,
   startScheduledQualificationProgress,
   checkpointRunIdFromScheduledEnv,
   createCheckpointTerminalEventBuffer,
@@ -3116,6 +3117,27 @@ describe("acquireCheckpointRunLock", () => {
     expect((await activateScheduledCheckpointRunner({ ...input, scheduled: false }, reserve)).status)
       .toBe('not-scheduled');
     expect(reserve).toHaveBeenCalledTimes(1);
+  });
+  it("a scheduled fire that joined a pinned attempt judges that attempt's candidate, not tip (WI-10002602)", async () => {
+    // Without this the child resolved staging tip, activation refused the candidate mismatch
+    // with `conflict`, and every later fire re-joined the same wedged attempt.
+    const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+    const present = (attemptId: string, candidate: string | null) => vi.fn(async () => ({
+      status: 'present' as const,
+      transaction: { attemptId, candidate } as never,
+    }));
+    const base = { scheduled: true, candidateArg: undefined, target, attemptId: 'attempt-1' };
+    expect(await scheduledAttemptPinnedCandidate(base, present('attempt-1', 'repair-head-sha'))).toBe('repair-head-sha');
+    // A fresh attempt has no candidate yet: resolve as before.
+    expect(await scheduledAttemptPinnedCandidate(base, present('attempt-1', null))).toBeNull();
+    // A different attempt, a manual run, an explicit --candidate, or a missing row never pins.
+    expect(await scheduledAttemptPinnedCandidate(base, present('attempt-2', 'other-sha'))).toBeNull();
+    const unread = present('attempt-1', 'repair-head-sha');
+    expect(await scheduledAttemptPinnedCandidate({ ...base, scheduled: false }, unread)).toBeNull();
+    expect(await scheduledAttemptPinnedCandidate({ ...base, candidateArg: 'explicit-sha' }, unread)).toBeNull();
+    expect(unread).not.toHaveBeenCalled();
+    expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => ({ status: 'none' as const })))).toBeNull();
+    expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => { throw new Error('pg down'); }))).toBeNull();
   });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(

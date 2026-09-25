@@ -57,7 +57,7 @@ const db = vi.hoisted(() => {
   });
   return { rows, sql, bodies, loadOverrides, failClient: false };
 });
-const grants = vi.hoisted(() => ({ read: vi.fn(), kernelThrows: false }));
+const grants = vi.hoisted(() => ({ read: vi.fn(), claim: vi.fn(async () => true), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
 vi.mock('./capability-envelope/identity-grants-port', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./capability-envelope/identity-grants-port')>();
@@ -68,7 +68,7 @@ vi.mock('./capability-envelope/identity-grants-port', async (importOriginal) => 
       // is reached by DYNAMIC import, so a module that fails to load and one
       // that throws are the same event from the caller's side. Defaults off.
       if (grants.kernelThrows) throw new Error('identity policy module unavailable');
-      return actual.checkIdentityGrantKernel(request, state, record, grants.read);
+      return actual.checkIdentityGrantKernel(request, state, record, grants.read, grants.claim);
     },
   };
 });
@@ -163,6 +163,7 @@ beforeEach(() => {
   db.sql.mockClear();
   db.failClient = false;
   grants.read.mockReset();
+  grants.claim.mockReset().mockResolvedValue(true);
   setKernelEnforcementResolver(null);
 });
 
@@ -635,7 +636,9 @@ describe('P-005 grants reach actual execution boundaries', () => {
     const f = grantedRow();
     const acceptedOperation = {
       kind: 'blueprint-operation-worker', workItemId: 'WI-1',
-      specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+      operationId: 'send', specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+      pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+        specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} },
     };
     const row = { ...f.row, launch_spec: { ...f.row.launch_spec, acceptedOperation } };
     grants.read.mockResolvedValue(f.policy);
