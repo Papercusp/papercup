@@ -6,7 +6,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +67,80 @@ async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {},
     workspaceId: 'protocol-test', ownerId: 'su-protocol-test',
     spec: { class: 'test', title: 'PUI native protocol test', launchedBy: 'vitest', argv: [binary, ...args] }, onMessage, onReceipt });
   peers.push(result); return result;
+}
+
+/** Owned-fixture Node loader observations. The hook delegates to the actual
+ * loader and records its returned branch/conditions; it never guesses exports
+ * from package.json. This does not observe Rust loads, arbitrary data reads,
+ * earlier hooks, or unexecuted branches, and is not production admission. */
+function nodeLoaderProbe(home: string, name: string) {
+  const hookPath = join(home, `${name}-loader.mjs`), tracePath = join(home, `${name}-loader.jsonl`);
+  writeFileSync(hookPath, `
+    import { registerHooks } from 'node:module';
+    import { appendFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
+    import { fileURLToPath } from 'node:url';
+    const tracePath = process.env.PAPERCUSP_CARRY_LOADER_TRACE;
+    if (!tracePath) throw new Error('missing owned loader trace path');
+    let sequence = 0, bytes = 0, failed = false;
+    const hash = value => createHash('sha256').update(value).digest('hex');
+    const urlFields = url => ({ urlSha256: hash(url),
+      ...(url.startsWith('file:') ? { filePath: fileURLToPath(url) } : {}) });
+    const record = value => {
+      if (failed) throw new Error('owned loader trace bound exceeded');
+      const line = JSON.stringify({ sequence: sequence + 1, pid: process.pid, ...value }) + '\\n';
+      if (sequence >= 4096 || bytes + Buffer.byteLength(line) > 1024 * 1024) {
+        failed = true;
+        // Poison the frozen observation once, even if the program catches the
+        // loader error. Never present a silently truncated prefix as complete.
+        appendFileSync(tracePath, JSON.stringify({ sequence: ++sequence, pid: process.pid, phase: 'overflow' }) + '\\n');
+        throw new Error('owned loader trace bound exceeded');
+      }
+      appendFileSync(tracePath, line, { mode: 0o600 });
+      sequence++; bytes += Buffer.byteLength(line);
+    };
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        const input = { phase: 'resolve', specifierSha256: hash(specifier),
+          ...(context.parentURL ? { parentUrlSha256: hash(context.parentURL) } : {}),
+          conditions: [...context.conditions] };
+        try {
+          const result = nextResolve(specifier, context);
+          record({ ...input, outcome: 'resolved', ...urlFields(result.url), format: result.format ?? null });
+          return result;
+        } catch (error) {
+          record({ ...input, outcome: 'error', code: typeof error.code === 'string' ? error.code : 'unknown' });
+          throw error;
+        }
+      },
+      load(url, context, nextLoad) {
+        const result = nextLoad(url, context);
+        const source = typeof result.source === 'string' ? result.source
+          : result.source instanceof ArrayBuffer ? Buffer.from(result.source)
+          : ArrayBuffer.isView(result.source) ? Buffer.from(result.source.buffer, result.source.byteOffset, result.source.byteLength) : null;
+        record({ phase: 'load', ...urlFields(url), format: result.format ?? null,
+          sourceSha256: source === null ? null : hash(source) });
+        return result;
+      },
+    });
+    record({ phase: 'start', nodeVersion: process.version });
+  `, { mode: 0o600 });
+  return { hookPath, tracePath, env: { NODE_OPTIONS: `--import=${JSON.stringify(hookPath)}`, PAPERCUSP_CARRY_LOADER_TRACE: tracePath },
+    read(pid: number) {
+      expect(lstatSync(tracePath).size).toBeLessThan(1024 * 1024);
+      const text = readFileSync(tracePath, 'utf8');
+      expect(Buffer.byteLength(text)).toBeLessThan(1024 * 1024);
+      expect(text.endsWith('\n')).toBe(true);
+      const rows = text.trimEnd().split('\n').map(line => JSON.parse(line) as {
+        sequence: number; pid: number; phase: string; conditions?: string[];
+        filePath?: string; format?: string | null; outcome?: string; code?: string; sourceSha256?: string | null;
+      });
+      expect(rows[0]).toMatchObject({ phase: 'start', pid, sequence: 1 });
+      expect(rows.every(row => row.pid === pid)).toBe(true);
+      expect(rows.map(row => row.sequence)).toEqual(rows.map((_, index) => index + 1));
+      expect(rows.every(row => ['start', 'resolve', 'load'].includes(row.phase)), 'loader trace must not overflow').toBe(true);
+      return rows;
+    } };
 }
 
 async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: string) {
@@ -291,6 +365,66 @@ describe('native JSON-line pipe transport', () => {
     expect(message).not.toContain(secret);
     expect(message.length).toBeLessThanOrEqual(3000);
     await expect(p.done).rejects.toThrow('Native config refused');
+  });
+});
+
+describe('owned Node loader observations', () => {
+  it('rejects an overflowed trace even when the observed program catches the loader refusal', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'carry-loader-bound-')); homes.push(home);
+    const loader = nodeLoaderProbe(home, 'bounded');
+    const p = await peer(process.execPath, ['--input-type=module', '-e', `
+      import { createInterface } from 'node:readline';
+      let failure = null;
+      for (let index = 0; index < 2100; index++) {
+        try { await import('data:text/javascript,export default 1#' + index); }
+        catch (error) { failure = error.message; break; }
+      }
+      createInterface({input:process.stdin}).on('line', line => process.stdout.write(
+        JSON.stringify({id:JSON.parse(line).id,result:{failure}}) + '\\n'));
+    `], loader.env, undefined, undefined, undefined, home);
+    expect(await p.request({ method: 'ready' })).toEqual({ failure: 'owned loader trace bound exceeded' });
+    await p.close();
+    expect(() => loader.read(p.pid()!)).toThrow();
+    const text = readFileSync(loader.tracePath, 'utf8');
+    expect(text).toContain('"phase":"overflow"');
+    expect(text).not.toContain('export default');
+  });
+
+  it('records the executed import/require export branches and preserves private failure boundaries', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'carry-loader-')); homes.push(home);
+    const packagePath = join(home, 'node_modules', 'carry-probe');
+    mkdirSync(packagePath, { recursive: true });
+    writeFileSync(join(packagePath, 'package.json'), JSON.stringify({ name: 'carry-probe', type: 'module',
+      exports: { '.': { import: './import.mjs', require: './require.cjs' } } }));
+    writeFileSync(join(packagePath, 'import.mjs'), 'export default "import branch";');
+    writeFileSync(join(packagePath, 'require.cjs'), 'module.exports = "require branch";');
+    const loader = nodeLoaderProbe(home, 'conditional');
+    const p = await peer(process.execPath, ['--input-type=module', '-e', `
+      import { createRequire } from 'node:module';
+      import { createInterface } from 'node:readline';
+      const require = createRequire(import.meta.url);
+      const imported = (await import('carry-probe')).default;
+      const required = require('carry-probe');
+      let failure;
+      try { await import('carry-probe/never-emit-me'); } catch (error) { failure = error.code; }
+      createInterface({input:process.stdin}).on('line', line => process.stdout.write(
+        JSON.stringify({id:JSON.parse(line).id,result:{imported,required,failure}}) + '\\n'));
+    `], loader.env, undefined, undefined, undefined, home);
+    expect(await p.request({ method: 'ready' })).toEqual({ imported: 'import branch', required: 'require branch',
+      failure: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+    await p.close();
+    const rows = loader.read(p.pid()!);
+    expect(rows.find(row => row.phase === 'resolve' && row.filePath === join(packagePath, 'import.mjs')))
+      .toMatchObject({ outcome: 'resolved', conditions: expect.arrayContaining(['import']) });
+    expect(rows.find(row => row.phase === 'resolve' && row.filePath === join(packagePath, 'require.cjs')))
+      .toMatchObject({ outcome: 'resolved', conditions: expect.arrayContaining(['require']) });
+    expect(rows.filter(row => row.phase === 'load').map(row => row.filePath)).toEqual(expect.arrayContaining([
+      join(packagePath, 'import.mjs'), join(packagePath, 'require.cjs'),
+    ]));
+    expect(rows.find(row => row.phase === 'load' && row.filePath === join(packagePath, 'import.mjs'))!.sourceSha256)
+      .toBe(createHash('sha256').update(readFileSync(join(packagePath, 'import.mjs'))).digest('hex'));
+    expect(rows.some(row => row.phase === 'resolve' && row.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED')).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain(NEVER_EMIT_MARKER);
   });
 });
 
@@ -922,13 +1056,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       } as Parameters<typeof stringifyToml>[0]);
       const openNative = async (home = nativeHome) => {
         const events: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
-        const p = await peer('codex', ['app-server'], {}, frame => events.push(frame), config,
+        const loader = nodeLoaderProbe(home, `peer-${manifests.length}`);
+        const p = await peer('codex', ['app-server'], loader.env, frame => events.push(frame), config,
           receipt => receipts.push(receipt), home);
         await p.request({ method: 'initialize', params: { clientInfo: { name: 'unpaid_carry_pair', version: '1' } } });
         const runtime = await captureCarryRuntimeSnapshot(p.pid()!);
         await recheckCarryRuntimeSnapshot(runtime);
         p.send({ method: 'initialized', params: {} });
-        return { p, events, receipts, runtime, home };
+        return { p, events, receipts, runtime, home, loader };
       };
       const captureManifest = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string,
         extra: { artifacts: CarryArtifactInput[]; roots: CarryDependencyScope['roots'] } = { artifacts: [], roots: [] }) => {
@@ -949,6 +1084,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         const argv = readFileSync(`/proc/${live.p.pid()}/cmdline`, 'utf8').split('\0').filter(Boolean);
         expect(argv.slice(2)).toEqual(['app-server']);
         expect(isAbsolute(argv[1])).toBe(true);
+        const loaderRows = live.loader.read(live.p.pid()!);
+        expect(loaderRows.some(row => row.phase === 'load' && row.filePath === realpathSync(argv[1]))).toBe(true);
+        const loaderFiles = [...new Set(loaderRows.flatMap(row => row.filePath ? [row.filePath] : []))].sort();
         const artifacts: CarryArtifactInput[] = [
           ...frozenRuntime,
           { id: 'runtime-observation', filePath: runtimePath, maxBytes: 1024 * 1024 },
@@ -970,12 +1108,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           { id: 'pricing', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing')), maxBytes: 1024 * 1024 },
           { id: 'pricing-package', filePath: fileURLToPath(import.meta.resolve('@papercusp/model-pricing/package.json')), maxBytes: 1024 * 1024 },
           { id: 'typescript-parser', filePath: fileURLToPath(import.meta.resolve('typescript')), maxBytes: 32 * 1024 * 1024 },
+          { id: 'loader-hook', filePath: live.loader.hookPath, maxBytes: 1024 * 1024 },
+          { id: 'loader-observation', filePath: live.loader.tracePath, maxBytes: 1024 * 1024 },
           ...extra.artifacts,
         ];
+        for (const path of loaderFiles) {
+          if (!artifacts.some(artifact => realpathSync(artifact.filePath) === realpathSync(path))) {
+            artifacts.push({ id: `node-loader-${artifacts.length}`, filePath: path, maxBytes: 4 * 1024 * 1024 });
+          }
+        }
         const manifest = await captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
           relativeScriptRoots: ['scanner', 'launcher', 'usage-parser', 'recipe-checker', 'wrapper-script', 'import-extractor'],
           scriptArtifactIds: ['driver', 'transport', 'scanner', 'recipe-checker', 'launcher', 'usage-parser',
-            'usage-writer', 'gateway', 'gateway-observer', 'clock', 'wrapper-script', 'pricing', 'import-extractor',
+            'usage-writer', 'gateway', 'gateway-observer', 'clock', 'wrapper-script', 'pricing', 'import-extractor', 'loader-hook',
             ...(readSource ? ['source-read-tool'] : [])],
           dependencyScope: { recipeSha256: recipe.sha256,
             roots: [{ role: 'instrument', artifactIds: ['driver'] }, { role: 'launcher', artifactIds: ['launcher'] },
@@ -986,10 +1131,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
               ...extra.roots],
             nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
             unresolved: [...mutablePaths.map(path => `unfrozen writable native file: ${path}`),
-              'relative traversal from named roots only; transport/driver/gateway closure, packages, computed/indirect loaders and runtime export conditions remain uncensused',
+              'wrapper Node resolve/load observations only; controller loader, Rust data reads, unexercised branches and transient/default native storage remain uncensused',
               'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
               'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
         manifests.push(manifest);
+        for (const row of loaderRows.filter(row => row.phase === 'load' && row.filePath && row.sourceSha256)) {
+          expect(manifest.artifacts.find(artifact => artifact.resolvedPath === realpathSync(row.filePath!))?.sha256)
+            .toBe(row.sourceSha256);
+        }
         expect(manifest.scriptCensus).toMatchObject({ runtimeClosureEstablished: false });
         expect(manifest.scriptCensus!.relativeTraversal!.artifacts.length).toBeGreaterThan(0);
         expect(manifest.scriptCensus!.relativeTraversal!.scannedArtifactIds).toContain('recipe-checker');
@@ -999,6 +1148,14 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           mutablePaths.map(path => `unfrozen writable native file: ${path}`)));
         expect(runtime.writableOpenFiles.some(path => /\.sqlite(?:-wal)?$/.test(path))).toBe(true);
         expect(JSON.parse(readFileSync(runtimePath, 'utf8'))).toEqual(runtime);
+        console.log('CARRY_NODE_LOADER_RECEIPT', JSON.stringify({ threadId,
+          rootPid: live.p.pid(), records: loaderRows.length, phases: [...new Set(loaderRows.map(row => row.phase))].sort(),
+          conditions: [...new Set(loaderRows.flatMap(row => row.conditions ?? []))].sort(),
+          sourceBoundLoads: loaderRows.filter(row => row.phase === 'load' && row.filePath && row.sourceSha256).length,
+          sourceUnavailableLoads: loaderRows.filter(row => row.phase === 'load' && row.filePath && !row.sourceSha256).length,
+          fileArtifacts: loaderFiles.map(path => ({ filePath: path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') })),
+          traceSha256: createHash('sha256').update(readFileSync(live.loader.tracePath)).digest('hex'),
+          runtimeClosureEstablished: false }));
         return manifest;
       };
       const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string,
