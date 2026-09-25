@@ -46,6 +46,12 @@ export interface SubmitBlueprintOperationInput {
   summary?: string;
 }
 
+/** Only the durable program executor supplies this option. It stays outside the
+ * public operation input so a caller cannot select an older definition. */
+export interface InternalBlueprintOperationSubmission {
+  expectedSpecificationRevision: string;
+}
+
 type InvocationRow = {
   id: string | number;
   caller_id: string;
@@ -71,7 +77,9 @@ function checkedReceiptId(value: string | number): number {
 
 /** The receipt pins the operation target on replay, even if the mutable
  * blueprint pointer has since moved to a different revision or target. */
-export function submitBlueprintOperation(sql: Sql, input: SubmitBlueprintOperationInput): Promise<BlueprintOperationHandle> {
+export function submitBlueprintOperation(
+  sql: Sql, input: SubmitBlueprintOperationInput, internal?: InternalBlueprintOperationSubmission,
+): Promise<BlueprintOperationHandle> {
   return runWithWorkspace(input.workspaceId, async () => {
     const callerId = input.callerId?.trim();
     const requestKey = input.requestKey?.trim();
@@ -86,7 +94,12 @@ export function submitBlueprintOperation(sql: Sql, input: SubmitBlueprintOperati
          AND caller_id = ${callerId} AND operation_id = ${input.operationId}
          AND request_key = ${requestKey}
     `;
+    if (internal?.expectedSpecificationRevision && previous[0]?.specification_revision &&
+        internal.expectedSpecificationRevision !== previous[0].specification_revision) {
+      throw new Error('blueprint operation receipt differs from the expected specification revision');
+    }
     const revision = previous[0]?.specification_revision ??
+      internal?.expectedSpecificationRevision ??
       await readBlueprintHashFromPg(sql, input.workspaceId, input.harnessSlug);
     if (!revision) throw new Error('blueprint operation has no projected specification');
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
@@ -102,6 +115,7 @@ export function submitBlueprintOperation(sql: Sql, input: SubmitBlueprintOperati
         callerId, requestKey, operationId: input.operationId, input: input.input,
         title: input.title?.trim() || operation.description?.trim() || operation.id,
         summary: input.summary,
+        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
         createdBy: callerId,
       });
       target = { kind: 'work-item', id: item.id };
@@ -109,6 +123,7 @@ export function submitBlueprintOperation(sql: Sql, input: SubmitBlueprintOperati
       const run = await acceptBlueprintPlanRun(sql, {
         workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
         callerId, requestKey, operationId: input.operationId, input: input.input,
+        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
       });
       target = { kind: 'plan', runId: run.runId, instanceSlug: run.instanceSlug };
     }
