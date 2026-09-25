@@ -225,7 +225,7 @@ beforeEach(() => {
 
 describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', () => {
   it('resolves the sentinel to the same real Pot for storage and launch', async () => {
-    await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
+    const result = await call({ workspaceId: 'ws-test', harnessSlug: 'ws-test' });
 
     const values = sqlLog.find((entry) => /INSERT/i.test(entry.text))!.values;
     expect(values[1]).toBe('home-pot'); // install_slug, not workspace_id
@@ -239,6 +239,7 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
     expect(spawn.envelope.greetingCmd).toContain('--harness=home-pot');
+    expect(spawn.envelope.greetingCmd).toContain(`--goal-bootstrap-subject=${result.goalId}`);
     expect(spawn.envelope.greetingCmd).not.toContain('--harness=ws-test');
   });
 

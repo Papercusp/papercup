@@ -1,0 +1,46 @@
+# P-007 identity input and consumer census
+
+Scope: the 24 `contributions[]` declared by the built-in `su*` identity documents in `libs/papercusp/packages/harness/blueprints/` on 2026-09-25, plus the eight `BUNDLE_KINDS` in `libs/papercusp/packages/orchestrator/src/blueprint/slots.ts`. The dynamic installed-identity space is covered by the schema and selected-source adapter tests, not by pretending its future members can be enumerated now. `C` means a named canonical test exercises the source/consumer path; `U` means the path still needs a detector or live proof. These are source-test statuses, not deployed acceptance.
+
+The source reference in every row is the named identity's `blueprint.yaml` and its `contributions[]` entry. Fixed prompt refs resolve beside that source under `prompts/`; provider refs name the existing producer, never reusable live data. The compiler records `contribution.<id>` with `fixed:source-change`, `provider:<refresh>`, or an explicit `omitted:<reason>` provenance decision. Required omissions fail compilation; optional omissions require receipts. `role-launch-spec.test.ts` now tests a valid selected provider fixture alongside both explicit and silent omission of its required generated setting (focused run 19484550: 1 pass, 57 skipped).
+
+| Identity / contribution | Source ref or producer | Inclusion and refresh | Consumer and current detector | Status |
+| --- | --- | --- | --- | --- |
+| `su/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode/control anchor and turn context; `su-composition.test.ts` checks declaration; exact turn receipt pending | U |
+| `su/current-assignment` | `coord:presence` | required provider setting, turn | assignment in turn context; `su-composition.test.ts` checks declaration; exact turn receipt pending | U |
+| `su.fleet-leader/fleet-leader-brief` | `agent-tools/fleet/leader-brief:buildLeaderBrief` | optional provider setting, on demand; explicit ineligible omission | `leader-brief.ts`; `leader-brief.test.ts`, `identity-management.test.ts` | C |
+| `su.mode-audit/audit-definition` | `mode:su.mode-audit:audit` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
+| `su.mode-audit/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; exact audit-mode receipt pending | U |
+| `su.mode-auto/auto-definition` | `mode:su.mode-auto:autonomy` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `mode-identity-binding.integration.test.ts` | C |
+| `su.mode-auto/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; exact AUTO receipt pending | U |
+| `su.mode-drain/drain-definition` | `mode:su.mode-drain:objective` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
+| `su.mode-drain/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; exact DRAIN receipt pending | U |
+| `su.mode-goal/goal-definition` | `mode:su.mode-goal:goal` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `mode-identity-binding.integration.test.ts` | C |
+| `su.mode-goal/current-mode-state` | `modes/store:agent_modes` | optional provider setting, turn; explicit omission during recovery | `goals/start.ts`, `turn-start-orientation.ts`; `source.test.ts`, `agent-obligation-planning.integration.test.ts` | C |
+| `su.mode-goal/goal-kickoff` | `agent-tools/goals/start:buildGoalKickoffBrief` | optional provider prompt, launch | `goals/start.ts`; `source.test.ts`, `goals/start.test.ts` | C |
+| `su.mode-goal/goal-portfolio` | `goal-launch-settings:renderGoalPortfolioBrief` | optional provider prompt, turn | `goals/start.ts`/turn-start omission; `source.test.ts`; refreshed native recovery pending | U |
+| `su.mode-goal/goal-obligations` | `agent-obligation-reader:projectAgentTurnStartObligationBrief` | optional provider prompt, turn | `turn-start-orientation.ts`; `agent-obligation-planning.integration.test.ts` | C |
+| `su.mode-grade/grade-definition` | `mode:su.mode-grade:grade` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
+| `su.mode-grade/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; exact GRADE receipt pending | U |
+| `su.mode-ideate/ideate-definition` | `mode:su.mode-ideate:ideation` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `mode-identity-binding.integration.test.ts` | C |
+| `su.mode-ideate/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; `mode-identity-binding.integration.test.ts` exercises this mode | C |
+| `su.mode-test/test-definition` | `mode:su.mode-test:test` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
+| `su.mode-test/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; exact TEST receipt pending | U |
+| `su.practice/su-practice-text` | `base:su.practice` | required fixed prompt, source change | SU stack prompt; `su-composition.test.ts`, `source.test.ts` | C |
+| `su.practice/turn-start-orientation` | `turn-start-orientation:buildTurnStartOrientationBlock` | optional provider prompt, turn | `turn-start-orientation.ts`; `turn-start-orientation-delivery-proof.test.ts` | C |
+| `su.practice/coord-orientation` | `agent-tools/coordination/tools/orient:composeOrient` | optional provider setting, on demand | `orient.ts`; `orient.test.ts`, `source.test.ts` | C |
+| `su.specialist-planner/planner-specialization` | `specialist:su.planner` | required fixed prompt, source change | SU stack prompt; `su-composition.test.ts`, `su-role-addendum.test.ts` | C |
+
+Selected installed contributions use `getIdentitySource` and the same compiler. The concrete selected fixture in `role-launch-spec.test.ts` proves fixed prompt source-change pinning, required provider setting refresh at turn, optional provider prompt omission, source revision refusal, and the new required-output omission guard. `selected-resource-launch.integration.test.ts` proves a selected fixed/provider prompt pair reaches launch and a recipe consumer. The full installed catalog is open ended, so no count above implies all installed identities were tested.
+
+| Bundle or declaration | Existing consumer | Current proof | Classification |
+| --- | --- | --- | --- |
+| `recipe` | `provisionBlueprintPackages` → recipe store → `recipes:get/run` | `selected-resource-launch.integration.test.ts` uses real PostgreSQL and invokes both tools | C |
+| `rubric` | `provisionBlueprintPackages` → workspace rubric store → `rubrics:get` | same integration suite reads the provisioned rubric | C |
+| `knowledge-pack` | `provisionBlueprintPackages` → scoped memory seed | `selected-knowledge-launch.test.ts` checks pinned bytes, memory target, idempotence and conflict with the memory backend mocked; live memory proof remains | U |
+| `plan`, `goal`, `datatype`, `event`, `rule` | no resolver in `resolveLocalBlueprintPackage`; it throws `package-missing` for these schema-allowed kinds | inspect `compile-packages.ts` before claiming any of these available; explicit unsupported-kind guard still needed | U |
+| required capability/provider and optional grant | capability provider pin → `resolveIdentityGrantEnvelope` | `selected-capability-launch.test.ts` checks host ceiling, provider change and missing required binding; native tool use remains | U |
+| selected model default | merged `knobs.aiBackend.default.model` → launch configuration | `role-launch-spec.test.ts` and `selected-capability-launch.test.ts` check merged config; native model selection remains | U |
+| no workflow graph | SU launch `compileLaunchSpecificationArtifact` with no `workItem`/`spine`/`fleet` | selected recipe/capability tests assert this; live ReAct turn remains | U |
+
+Partition: the 24 built-in contribution rows above are 16 `C`, 8 `U`, 0 not applicable; the seven resource/declaration rows are 2 `C`, 5 `U`. This counts the five schema-only bundle kinds as one grouped row, with each kind named explicitly. Residue: exact required mode/assignment turn receipts for root and five named modes; GOAL portfolio refresh through recovery; selected knowledge/capability/model and ReAct native use; explicit refusal tests or supported adapters for the five schema-only bundle kinds; committed-source rerun and a caught mutation for the required generated omission guard; final plan-wide R-1/R-5 live acceptance in P-008. No row is silently counted as passed by its manifest alone.

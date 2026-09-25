@@ -286,6 +286,7 @@ describe('goals:start — the happy path', () => {
   it('spawns the SAME owner id it stamped, pre-pinned via --owner-id', async () => {
     const res = await call();
     const ownerId = dataOf(res).agent_owner_id as string;
+    const goalId = dataOf(res).id as string;
     expect(ownerId).toMatch(/^su-[0-9a-f-]{36}$/);
     // The stamp names the agent that is about to exist...
     expect(setModeCalls[0].ownerId).toBe(ownerId);
@@ -293,6 +294,7 @@ describe('goals:start — the happy path', () => {
     // makes writing-before-spawning meaningful.
     const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(cmd).toContain(`--owner-id=${ownerId}`);
+    expect(cmd).toContain(`--goal-bootstrap-subject=${goalId}`);
   });
 
   it("delivers the goal as the agent's first turn via the env, not the command line", async () => {
