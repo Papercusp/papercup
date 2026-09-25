@@ -1,0 +1,282 @@
+/**
+ * The operator-http relay plane (D-418, WI-10002873). The route allowlist and header
+ * filter are the authorization boundary for everything the relay reaches on the
+ * workspace machine's loopback operator, so both are pinned directly; the adapter
+ * cases run against a REAL loopback HTTP server so streaming and abort are measured,
+ * not mocked.
+ */
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  decideOperatorHttpRoute,
+  HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES,
+  HOSTED_PRINCIPAL_SESSION_HEADER,
+  HOSTED_PRINCIPAL_USER_HEADER,
+  localOperatorOrigin,
+  operatorHttpRequestHeaders,
+} from './hosted-operator-http';
+import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope } from './hosted-session-host';
+import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+
+describe('decideOperatorHttpRoute', () => {
+  it.each([
+    ['GET', '/api/zero-harness/rest-query?name=x&args=%7B%7D'],
+    ['GET', '/api/zero-harness/sse'],
+    ['GET', '/api/harness/portal/agent-chats?limit=50'],
+    ['POST', '/api/harness/portal/agent-chats/chat-1/messages'],
+    ['POST', '/api/operator/conversations'],
+    ['POST', '/api/operator/conversations/c1/turns'],
+    ['POST', '/api/agent-mcp/operator-converse'],
+    ['GET', '/api/adv/session/thinking?sessionId=s'],
+    ['POST', '/api/adv/sessions/launch-su'],
+    ['GET', '/api/agent-mcp/console/bootstrap-su/options?x=1'],
+    ['post', '/api/admin/coord/send'],
+  ])('relays the portal surface %s %s', (method, path) => {
+    expect(decideOperatorHttpRoute(method, path)).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    // Loopback admin surfaces outside the chat/session set (D-025).
+    ['POST', '/api/workspace-hosts/provision'],
+    ['POST', '/api/admin/plans/set-status'],
+    ['POST', '/api/mcp'],
+    ['GET', '/api/agent-config/secrets'],
+    // Right path, wrong method.
+    ['DELETE', '/api/harness/portal/agent-chats/chat-1'],
+    ['GET', '/api/adv/sessions/launch-su'],
+  ])('refuses %s %s as route_not_relayed', (method, path) => {
+    expect(decideOperatorHttpRoute(method, path)).toEqual({ ok: false, code: 'route_not_relayed' });
+  });
+
+  it.each([
+    'api/zero-harness/sse',
+    '//evil.example/api/zero-harness/sse',
+    'http://127.0.0.1:1/api/zero-harness/sse',
+    '/api/harness/portal/agent-chats/../../workspace-hosts/provision',
+    '/api/harness/portal%2F..%2F/agent-chats',
+    '/api/zero-harness/sse#x',
+    '/api/zero-harness\\sse',
+  ])('refuses a path that could change the resolved route: %s', (path) => {
+    expect(decideOperatorHttpRoute('GET', path)).toEqual({ ok: false, code: 'invalid_path' });
+  });
+});
+
+describe('operatorHttpRequestHeaders', () => {
+  it('forwards only the allowlisted headers and stamps the channel principal over any claim', () => {
+    const headers = operatorHttpRequestHeaders(
+      {
+        'Content-Type': 'application/json',
+        'last-event-id': '42',
+        'x-papercusp-workspace': 'customer-workspace-not-this-operators',
+        authorization: 'Bearer hc_stolen',
+        cookie: 'session=x',
+        host: 'evil.example',
+        'x-forwarded-for': '1.2.3.4',
+        [HOSTED_PRINCIPAL_USER_HEADER]: 'someone-else',
+        accept: 'text/event-stream\r\nx-injected: 1',
+      },
+      { userId: 'user-1', hostedSessionId: 'session-1' },
+    );
+    expect(headers).toEqual({
+      'content-type': 'application/json',
+      'last-event-id': '42',
+      [HOSTED_PRINCIPAL_USER_HEADER]: 'user-1',
+      [HOSTED_PRINCIPAL_SESSION_HEADER]: 'session-1',
+    });
+  });
+});
+
+describe('localOperatorOrigin', () => {
+  it('is always loopback on the operator port', () => {
+    expect(localOperatorOrigin({ PAPERCUSP_HONO_PORT: '3170' })).toBe('http://127.0.0.1:3170');
+    expect(localOperatorOrigin({ PORT: '4000' })).toBe('http://127.0.0.1:4000');
+    expect(localOperatorOrigin({})).toBe('http://127.0.0.1:3070');
+    expect(localOperatorOrigin({ PAPERCUSP_HONO_PORT: 'evil.example' })).toBe('http://127.0.0.1:3070');
+  });
+});
+
+// ── Adapter, against a real loopback server ─────────────────────────────────
+
+const binding: HostedConnectorBinding = {
+  controlPlaneWorkspaceId: 'control-1',
+  organizationId: 'org-1',
+  customerWorkspaceId: 'workspace-1',
+  hostId: 'host-1',
+  routeLabel: 'alpha',
+  generation: 4,
+  transport: 'websocket',
+  state: 'active',
+};
+
+type Seen = { method: string; url: string; headers: IncomingMessage['headers']; body: string };
+const servers: Server[] = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  })));
+});
+
+async function operator(handler: (req: IncomingMessage, res: ServerResponse, seen: Seen) => void) {
+  const seen: Seen[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const entry = { method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks).toString() };
+      seen.push(entry);
+      handler(req, res, entry);
+    });
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { seen, origin };
+}
+
+function adapterFor(origin: string) {
+  const sent: HostedHostOutboundEnvelope[] = [];
+  const audit: Array<{ action: string; userId?: string; detail?: string }> = [];
+  const adapter = new HostedWorkspaceHostSessionAdapter({
+    binding,
+    workspaceRoot: '/nonexistent-root',
+    send: (message) => sent.push(message),
+    onAudit: (event) => audit.push(event),
+    operatorHttp: { origin },
+  });
+  const payloads = (channelId = 'http-1') =>
+    sent
+      .filter((m): m is Extract<HostedHostOutboundEnvelope, { type: 'relay' }> => m.type === 'relay' && m.channelId === channelId)
+      .map((m) => m.payload as Record<string, unknown>);
+  const open = () => adapter.accept({
+    type: 'relay.open',
+    channelId: 'http-1',
+    userId: 'user-1',
+    hostedSessionId: 'session-1',
+    audience: 'workspace-operator',
+    role: 'controller',
+    kind: 'operator-http',
+  });
+  const relay = (payload: unknown) => adapter.accept({ type: 'relay', channelId: 'http-1', payload });
+  return { adapter, sent, audit, payloads, open, relay };
+}
+
+const decodeBody = (frames: Array<Record<string, unknown>>) =>
+  frames.filter((f) => f.type === 'http.body').map((f) => Buffer.from(String(f.data), 'base64').toString()).join('');
+
+describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)', () => {
+  it('forwards an allowlisted POST to the loopback operator as the ticket principal and relays the response', async () => {
+    const { seen, origin } = await operator((_req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json', 'set-cookie': 'leak=1' });
+      res.end(JSON.stringify({ ok: true, chat: { id: 'c1' } }));
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    expect(h.payloads()[0]).toEqual({ type: 'http.ready' });
+    await h.relay({
+      type: 'http.request',
+      requestId: 'r1',
+      method: 'POST',
+      path: '/api/harness/portal/agent-chats',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer nope' },
+      body: Buffer.from('{"role":"papercup"}').toString('base64'),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ method: 'POST', url: '/api/harness/portal/agent-chats', body: '{"role":"papercup"}' });
+    expect(seen[0]!.headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+    expect(seen[0]!.headers.authorization).toBeUndefined();
+    const frames = h.payloads();
+    expect(frames).toContainEqual({ type: 'http.response', requestId: 'r1', status: 201, headers: { 'content-type': 'application/json' } });
+    expect(decodeBody(frames)).toBe('{"ok":true,"chat":{"id":"c1"}}');
+    expect(frames.at(-1)).toEqual({ type: 'http.end', requestId: 'r1' });
+    expect(h.audit).toContainEqual(expect.objectContaining({ action: 'operator_http_request', userId: 'user-1', detail: 'POST /api/harness/portal/agent-chats 201' }));
+  });
+
+  it('refuses a non-allowlisted route without making any request', async () => {
+    const { seen, origin } = await operator((_req, res) => res.end('should not be reached'));
+    const h = adapterFor(origin);
+    await h.open();
+    await h.relay({ type: 'http.request', requestId: 'r1', method: 'POST', path: '/api/workspace-hosts/provision' });
+    expect(seen).toEqual([]);
+    expect(h.payloads()).toContainEqual({ type: 'http.error', requestId: 'r1', code: 'route_not_relayed', status: 403 });
+    expect(h.audit).toContainEqual(expect.objectContaining({ action: 'operator_http_denied' }));
+  });
+
+  it('refuses an oversized body with 413 rather than truncating it', async () => {
+    const { seen, origin } = await operator((_req, res) => res.end());
+    const h = adapterFor(origin);
+    await h.open();
+    const body = Buffer.alloc(HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES + 1).toString('base64');
+    await h.relay({ type: 'http.request', requestId: 'r1', method: 'POST', path: '/api/admin/coord/send', body });
+    expect(seen).toEqual([]);
+    expect(h.payloads()).toContainEqual({ type: 'http.error', requestId: 'r1', code: 'request_body_too_large', status: 413 });
+  });
+
+  it('streams an SSE body as it arrives, and a client abort tears the upstream stream down', async () => {
+    let upstreamClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { upstreamClosed = resolve; });
+    const { origin } = await operator((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: one\n\n');
+      req.socket.on('close', () => upstreamClosed());
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    const pending = h.relay({ type: 'http.request', requestId: 's1', method: 'GET', path: '/api/zero-harness/sse' });
+    await expect.poll(() => decodeBody(h.payloads())).toBe('data: one\n\n');
+    expect(h.payloads()).toContainEqual({ type: 'http.response', requestId: 's1', status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+    await h.relay({ type: 'http.abort', requestId: 's1' });
+    await pending;
+    await closed;
+    // The client asked; no error and no end frame are owed.
+    expect(h.payloads().filter((f) => f.type === 'http.error' || f.type === 'http.end')).toEqual([]);
+  });
+
+  it('detaching the channel aborts its in-flight streams', async () => {
+    let upstreamClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { upstreamClosed = resolve; });
+    const { origin } = await operator((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': open\n\n');
+      req.socket.on('close', () => upstreamClosed());
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    const pending = h.relay({ type: 'http.request', requestId: 's1', method: 'GET', path: '/api/adv/session/thinking?x=1' });
+    await expect.poll(() => decodeBody(h.payloads())).toBe(': open\n\n');
+    await h.adapter.accept({ type: 'relay.close', channelId: 'http-1', reason: 'browser_disconnected' });
+    await pending;
+    await closed;
+    expect(h.audit).toContainEqual(expect.objectContaining({ action: 'operator_http_detached' }));
+  });
+
+  it('answers 502 when the loopback operator is down', async () => {
+    const h = adapterFor('http://127.0.0.1:1');
+    await h.open();
+    await h.relay({ type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/agent-config' });
+    expect(h.payloads()).toContainEqual({ type: 'http.error', requestId: 'r1', code: 'operator_unreachable', status: 502 });
+  });
+
+  it('never runs host-level desktop operations or PTY frames on an operator-http channel', async () => {
+    const { origin } = await operator((_req, res) => res.end());
+    const h = adapterFor(origin);
+    await h.open();
+    await h.relay({ type: 'desktop.start', requestId: 'd1' });
+    await h.relay({ type: 'pty.input', data: 'aGk=' });
+    expect(h.payloads()).toContainEqual({ type: 'http.error', code: 'channel_kind_mismatch', requestType: 'desktop.start' });
+    expect(h.payloads()).toContainEqual({ type: 'http.error', code: 'channel_kind_mismatch', requestType: 'pty.input' });
+    expect(h.payloads().some((f) => f.type === 'desktop.start.result' || f.type === 'pty.ready')).toBe(false);
+  });
+
+  it('refuses an unknown channel kind instead of opening a terminal', async () => {
+    const { origin } = await operator((_req, res) => res.end());
+    const h = adapterFor(origin);
+    await h.adapter.accept({
+      type: 'relay.open', channelId: 'x', userId: 'u', hostedSessionId: 's', audience: 'workspace-operator', role: 'controller', kind: 'operator-admin',
+    });
+    expect(h.sent).toEqual([]);
+  });
+});

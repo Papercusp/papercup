@@ -4,7 +4,22 @@ import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
 import { HostedWorkspaceConnectorGateway } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
-import { createHostedHandler } from "./hosted-handler";
+import { createHostedHandler, readAttachRequest } from "./hosted-handler";
+
+describe("readAttachRequest", () => {
+  const read = (query: string) => readAttachRequest(new Request(`https://h.example/api/hosted/connectors/socket${query}`));
+  it("reads the D-418 operator-http relay kind", () => {
+    expect(read("?kind=operator-http")).toEqual({ kind: "operator-http" });
+  });
+  it("keeps an absent or unknown kind a PTY", () => {
+    expect(read("")).toEqual({});
+    expect(read("?kind=operator-admin")).toEqual({});
+  });
+  it("still reads desktop attachments", () => {
+    expect(read("?kind=desktop&desktopSessionId=s1&desktopMode=takeover"))
+      .toEqual({ kind: "desktop", desktopSessionId: "s1", desktopMode: "takeover" });
+  });
+});
 
 const servers: Array<ReturnType<typeof serve>> = [];
 afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve())))); });

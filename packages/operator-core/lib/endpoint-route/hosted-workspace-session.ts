@@ -40,8 +40,26 @@ export interface HostedWorkspaceSessionBrokerOptions {
   onAudit?: (event: HostedWorkspaceSessionAuditEvent) => void;
 }
 
-/** What a browser attached to. `role` says WHO they are; this says WHAT they carry. */
-export type HostedWorkspaceChannelKind = 'pty' | 'desktop';
+/**
+ * What a browser attached to. `role` says WHO they are; this says WHAT they carry.
+ *
+ * `operator-http` (D-418, WI-10002873) carries the portal's operator REST + SSE
+ * traffic to the workspace machine's OWN loopback operator. Its client is the
+ * portal backend acting for the ticket's user; nothing ever dials a VM address.
+ */
+export type HostedWorkspaceChannelKind = 'pty' | 'desktop' | 'operator-http';
+
+/**
+ * Client→host frames an `operator-http` channel may carry; everything else is refused.
+ * A request body travels whole inside `http.request` (the host bounds it well under
+ * the message cap — `hosted-operator-http.ts`), so there is no client body frame.
+ */
+export const OPERATOR_HTTP_CLIENT_TYPES: ReadonlySet<string> = new Set(['http.request', 'http.abort']);
+
+/** True for any frame of the operator-http family (either direction). */
+function isOperatorHttpType(type: string): boolean {
+  return type.startsWith('http.');
+}
 
 /**
  * What the browser asked for on its upgrade (P-013 / D-023 ruling 4).
@@ -212,7 +230,8 @@ export class HostedWorkspaceSessionBroker {
       socket.close(4403, 'session_binding_invalid');
       return () => {};
     }
-    const kind: HostedWorkspaceChannelKind = attach.kind === 'desktop' ? 'desktop' : 'pty';
+    const kind: HostedWorkspaceChannelKind =
+      attach.kind === 'desktop' ? 'desktop' : attach.kind === 'operator-http' ? 'operator-http' : 'pty';
     const desktopSessionId = kind === 'desktop' ? attach.desktopSessionId : undefined;
     // Refused rather than defaulted: a desktop channel with no session id can never
     // carry pixels, and opening one anyway would surface as a blank viewer instead
@@ -240,10 +259,14 @@ export class HostedWorkspaceSessionBroker {
      *     observer because someone else is already watching would contradict the
      *     server we started.
      */
+    // operator-http is a request channel, not a shared screen: there is no second
+    // viewer to demote, so it is always `controller` and never enters `controllers`.
     const role: HostedWorkspaceTabRole =
       kind === 'desktop'
         ? (attach.desktopMode === 'takeover' ? 'controller' : 'observer')
-        : this.controllers.has(controlKey) ? 'observer' : 'controller';
+        : kind === 'operator-http'
+          ? 'controller'
+          : this.controllers.has(controlKey) ? 'observer' : 'controller';
     const session: BrowserSession = {
       channelId,
       binding,
@@ -263,6 +286,10 @@ export class HostedWorkspaceSessionBroker {
       protocol: HOSTED_WORKSPACE_SESSION_PROTOCOL,
       channelId,
       role,
+      // Echoed so a client that asked for a non-PTY kind can verify it got one:
+      // an OLDER control plane degrades an unknown kind to a PTY, and an
+      // operator-http client talking to a terminal must fail loudly instead.
+      kind,
       binding: {
         organizationId: binding.organizationId,
         customerWorkspaceId: binding.customerWorkspaceId,
@@ -282,7 +309,7 @@ export class HostedWorkspaceSessionBroker {
       // `kind` as 'pty', and a workspace host runs on a pinned generation in the
       // customer's VM, so an envelope this control plane mints must keep opening
       // terminals on a host that predates the discriminator.
-      ...(kind === 'desktop' ? { kind, desktopSessionId } : {}),
+      ...(kind === 'desktop' ? { kind, desktopSessionId } : kind === 'operator-http' ? { kind } : {}),
     });
     this.audit(binding, 'browser_attached', channelId, role);
 
@@ -306,10 +333,10 @@ export class HostedWorkspaceSessionBroker {
         // control while KasmVNC went on dropping its input — a viewer that believes it
         // has the keyboard and does not. A takeover is a FRESH channel, which is also
         // what mints its own audit event.
-        if (session.kind === 'desktop') {
+        if (session.kind !== 'pty') {
           sendJson(socket, {
             type: 'session.denied',
-            reason: 'desktop_role_fixed_at_open',
+            reason: session.kind === 'desktop' ? 'desktop_role_fixed_at_open' : 'operator_http_role_fixed',
             requestType: type,
           });
           return;
@@ -319,6 +346,13 @@ export class HostedWorkspaceSessionBroker {
       }
       if (type === 'session.detach') {
         this.closeSession(session, 1000, 'browser_detached', true);
+        return;
+      }
+      // Kind fences, both directions: an operator-http channel forwards ONLY its
+      // own request frames, and a terminal/desktop channel never forwards them —
+      // so a PTY attachment cannot be replayed as an operator API call.
+      if (session.kind === 'operator-http' ? !OPERATOR_HTTP_CLIENT_TYPES.has(type) : isOperatorHttpType(type)) {
+        sendJson(socket, { type: 'session.denied', reason: 'channel_kind_mismatch', requestType: type });
         return;
       }
       if (CONTROLLER_ONLY.has(type) && session.role !== 'controller') {

@@ -39,6 +39,7 @@ import {
   type HostedDesktopEndpoint,
   type HostedDesktopGrant,
 } from '../desktop/hosted-desktop-channel';
+import { OperatorHttpChannel, type OperatorHttpFetch } from './hosted-operator-http';
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -94,7 +95,7 @@ export type HostedHostTabRole = 'controller' | 'observer';
  * What a channel carries. `observer`/`controller` says WHO the viewer is; this
  * says WHAT they attached to.
  */
-export type HostedHostChannelKind = 'pty' | 'desktop';
+export type HostedHostChannelKind = 'pty' | 'desktop' | 'operator-http';
 
 export interface HostedHostRelayOpen {
   type: 'relay.open';
@@ -272,6 +273,11 @@ export interface HostedWorkspaceHostOptions {
    * pixels.
    */
   desktop?: HostedDesktopBackend;
+  /**
+   * The `operator-http` plane's forward target (D-418). Defaults to this process's
+   * own loopback operator; overridable only so tests need no listening server.
+   */
+  operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch };
 }
 
 type HostSession = {
@@ -383,7 +389,8 @@ type PendingUpload = {
  */
 type Channel =
   | { kind: 'pty'; sessionKey: string; role: HostedHostTabRole }
-  | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole };
+  | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole }
+  | { kind: 'operator-http'; userId: string; hostedSessionId: string; http: OperatorHttpChannel };
 
 type DesktopChannel = {
   channelId: string;
@@ -756,6 +763,7 @@ export class HostedWorkspaceHostSessionAdapter {
     if (this.closed) return;
     this.closed = true;
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
+    this.closeOperatorHttpChannels();
     // notify:false — the broadcast above already told the control plane about
     // every channel, including these.
     for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
@@ -784,6 +792,7 @@ export class HostedWorkspaceHostSessionAdapter {
     if (this.closed) return handoff;
     this.closed = true;
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
+    this.closeOperatorHttpChannels();
     for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
     for (const session of [...this.sessions.values()]) {
       if (session.idleTimer) clearTimeout(session.idleTimer);
@@ -834,10 +843,31 @@ export class HostedWorkspaceHostSessionAdapter {
     // UNRECOGNISED kind is rejected rather than defaulted, so a future channel
     // type can never silently open a terminal.
     const kind: HostedHostChannelKind | null =
-      message.kind === undefined || message.kind === 'pty' ? 'pty' : message.kind === 'desktop' ? 'desktop' : null;
+      message.kind === undefined || message.kind === 'pty'
+        ? 'pty'
+        : message.kind === 'desktop' || message.kind === 'operator-http'
+          ? message.kind
+          : null;
     if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role || !kind) return;
     if (this.channels.has(channelId)) {
       this.options.send({ type: 'relay.close', channelId, reason: 'channel_already_open' });
+      return;
+    }
+
+    if (kind === 'operator-http') {
+      // D-418: the principal is the one the control plane bound from the single-use
+      // ticket; nothing a later frame carries can change it.
+      const principal = { userId, hostedSessionId };
+      const http = new OperatorHttpChannel({
+        principal,
+        send: (payload) => this.send(channelId, payload),
+        audit: (action, detail) => this.audit(action, principal, channelId, detail),
+        ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
+        ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
+      });
+      this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http });
+      this.send(channelId, { type: 'http.ready' });
+      this.audit('operator_http_attached', principal, channelId);
       return;
     }
 
@@ -1024,6 +1054,17 @@ export class HostedWorkspaceHostSessionAdapter {
     if (!payload) return;
     const type = string(payload.type, 64);
     if (!type) return;
+
+    // Checked BEFORE the host-level operations below: an operator-http channel is
+    // the portal backend's request pipe, and it carries only its own frames — never
+    // a desktop start or roster read (the broker fences this too; this is the host
+    // refusing on its own authority).
+    if (channel.kind === 'operator-http') {
+      if (type.startsWith('http.')) await channel.http.accept(type, payload);
+      else this.send(channelId, { type: 'http.error', code: 'channel_kind_mismatch', requestType: type });
+      return;
+    }
+    if (type.startsWith('http.')) return;
 
     // HOST-level operations, answered on ANY authenticated channel.
     //
@@ -1240,7 +1281,9 @@ export class HostedWorkspaceHostSessionAdapter {
    * not by desktop, because two channels can watch one desktop.
    */
   private channelIdentity(channelId: string, channel: Channel): { userId: string; hostedSessionId: string } {
-    if (channel.kind === 'desktop') {
+    if (channel.kind === 'operator-http') {
+      return { userId: channel.userId, hostedSessionId: channel.hostedSessionId };
+    } else if (channel.kind === 'desktop') {
       const desktop = this.desktopChannels.get(channelId);
       if (desktop) return { userId: desktop.userId, hostedSessionId: desktop.hostedSessionId };
     } else {
@@ -1338,7 +1381,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.audit('operation_denied', identity, channelId, `desktop.start ${code}`);
     };
     if (!requestId) return refuse('request_id_required');
-    if (channel.role !== 'controller') return refuse('controller_required');
+    if (channel.kind === 'operator-http' || channel.role !== 'controller') return refuse('controller_required');
     const backend = this.options.desktop;
     if (!backend) return refuse('desktop_unsupported');
 
@@ -1477,6 +1520,12 @@ export class HostedWorkspaceHostSessionAdapter {
     const channel = this.channels.get(channelId);
     if (!channel) return;
     this.channels.delete(channelId);
+    if (channel.kind === 'operator-http') {
+      // Aborts every in-flight forward, so a closed portal tab tears its SSE down.
+      channel.http.close();
+      this.audit('operator_http_detached', channel, channelId, reason);
+      return;
+    }
     if (channel.kind === 'desktop') {
       const desktop = this.desktopChannels.get(channelId);
       // The control plane initiated this close, so it needs no echo back.
@@ -1488,6 +1537,10 @@ export class HostedWorkspaceHostSessionAdapter {
     session.channels.delete(channelId);
     this.audit('channel_detached', session, channelId, reason);
     if (session.channels.size === 0 && !session.closed) this.startIdle(session);
+  }
+
+  private closeOperatorHttpChannels(): void {
+    for (const channel of this.channels.values()) if (channel.kind === 'operator-http') channel.http.close();
   }
 
   /** Route one PTY's output and exit through THIS adapter (a fresh session, or an adopted one). */
