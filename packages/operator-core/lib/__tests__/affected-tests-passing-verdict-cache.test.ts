@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path';
@@ -414,6 +415,67 @@ describe('gate wiring safety contract', () => {
     expect(persisted).toEqual([settledTask]);
     expect(coverage).toEqual([settledTask]);
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
+  });
+
+  it('executes the real first-pass persist path and writes a reusable cache artifact', () => {
+    const start = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
+    const end = AFFECTED_TESTS_SRC.indexOf('\n}\n', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const persistSource = AFFECTED_TESTS_SRC.slice(start, end + 2);
+    const writeCall = '    writePassingTaskVerdictCacheAtomic(';
+    expect(persistSource.split(writeCall)).toHaveLength(2);
+
+    const taskName = '@papercusp/web :: test';
+    const proof = identity({ taskKey: taskName });
+    const runPersist = (source: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'pc-first-pass-persist-'));
+      const cachePath = join(dir, 'cache.json');
+      const errors: string[] = [];
+      try {
+        const persist = runInNewContext(`${source}\npersistCleanFirstPassTaskVerdict`, {
+          capturedTaskSummaryFailure: () => null,
+          shouldStorePassingTaskVerdict,
+          TASK_VERDICT_CACHE_ENABLED: true,
+          taskKey: (task: { key: string }) => task.key,
+          readPassingTaskVerdictCache,
+          TASK_VERDICT_CACHE_PATH: cachePath,
+          TASK_VERDICT_LOCAL_CROSS_RUN_ONLY: false,
+          TASK_VERDICT_CACHE_GROUP: 'first-pass-test',
+          mergePassingTaskVerdictUpdates,
+          passingTaskVerdictEntry,
+          PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+          writePassingTaskVerdictCacheAtomic,
+          RUN_TOKEN: 'first-pass-test',
+          createHash,
+          outSync: () => undefined,
+          errSync: (message: string) => errors.push(message),
+          taskVerdictPersistDefects: [],
+        }, { timeout: 1000 }) as (settled: unknown) => void;
+        persist({
+          task: { t: { key: taskName } },
+          value: { status: 0, __cacheStatus: 'miss', __cacheIdentity: proof },
+        });
+        const read = readPassingTaskVerdictCache(cachePath);
+        return {
+          reason: read.reason,
+          entry: passingTaskVerdictCacheEntry(read.cache, 'first-pass-test', taskName),
+          errors,
+        };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    expect(runPersist(persistSource)).toMatchObject({
+      reason: 'cache-ready',
+      entry: { fingerprint: proof.fingerprint, components: proof.components },
+      errors: [],
+    });
+    // A bypass before the actual atomic write must make this test fail. The callback-only
+    // guard above would still pass because its persistence function is stubbed.
+    const bypassWrite = persistSource.replace(writeCall, `    return;\n${writeCall}`);
+    expect(runPersist(bypassWrite)).toMatchObject({ reason: 'cache-file-missing' });
   });
 
   // Anchor on the suite LAUNCH, not on an `await` spelling. P-004
