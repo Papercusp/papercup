@@ -78,6 +78,12 @@ import {
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
 import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
+import {
+  buildGoalOwnerReportDraft,
+  type GoalOwnerReportDraft,
+  type GoalOwnerReportDraftInput,
+} from './goal-owner-report';
+import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import { claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
 // Type-only: the placement compiler reads a closure VERDICT, it never resolves
 // one. Keeping this erased leaves the acceptance gate out of the portfolio
@@ -780,6 +786,14 @@ export interface GoalPortfolioBrief {
     checkpoint: { workItemId: string; updatedAt: string; note: string } | null;
     lastOwnerReportAt: string | null;
   };
+  /** P-021: one evidence-backed draft from this read, never a second report ledger. */
+  reporting?: {
+    cadence: GoalOwnerReportObligation | null;
+    draft: GoalOwnerReportDraft;
+    /** More than 100 changed records requires a targeted follow-up read. */
+    movementTruncated: boolean;
+    killedTruncated: boolean;
+  };
   /** P-018: live, typed evidence for the session receiving this snapshot. */
   holderAttestation?: GoalHolderFirstTurnAttestation | null;
   priorities: string[];
@@ -903,7 +917,9 @@ type GoalPortfolioSourceRow = {
   queue?: unknown;
   drain_fleet?: unknown;
   checkpoint?: unknown;
-  last_owner_report_at?: unknown;
+  report_movements?: unknown;
+  owner_walls?: unknown;
+  killed_work?: unknown;
   blender_pending?: unknown;
   acceptance_rubric?: unknown;
 };
@@ -1334,6 +1350,14 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       : []),
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
+    ...(brief.reporting
+      ? [
+          `Owner report cadence: ${brief.reporting.cadence?.obligation ?? 'unknown'}; due=${brief.reporting.cadence?.dueAt ?? 'unknown'}.`,
+          `Owner report evidence: movement-truncated=${brief.reporting.movementTruncated}; killed-truncated=${brief.reporting.killedTruncated}; unread terminal artifacts=${brief.reporting.draft.unreadArtifacts.join(', ') || 'none'}.`,
+          'OWNER REPORT DRAFT — read each named terminal artifact before claiming its completion; then report the four fields on an owner-facing rail:',
+          brief.reporting.draft.text,
+        ]
+      : ['Owner report evidence unavailable; re-read the canonical goal portfolio before reporting.']),
     ...(brief.holderAttestation
       ? [`Holder first-turn attestation: ${brief.holderAttestation.status}; missing=${brief.holderAttestation.missing.join(', ') || 'none'}; unavailable=${brief.holderAttestation.unavailable.join(', ') || 'none'}; act=${brief.holderAttestation.portfolioAct?.tool ?? 'none'}`]
       : []),
@@ -1412,6 +1436,8 @@ export async function readGoalPortfolioBrief(args: {
   attestOwnerId?: string;
   sql?: Sql;
   now?: Date;
+  /** Exact full-artifact reads from the caller's current session, never inferred from this projection. */
+  reportArtifactReads?: GoalOwnerReportDraftInput['artifactReads'];
   launch?: {
     goalBrief: GoalLaunchBrief;
     settings: GoalLaunchSettings | null;
@@ -1450,6 +1476,7 @@ export async function readGoalPortfolioBrief(args: {
   let liveHolderOwnerIds: string[] = [];
   let goalHolderOwnerIds: string[] | null = null;
   let holderAttestation: GoalHolderFirstTurnAttestation | null = null;
+  let reportCadence: GoalOwnerReportObligation | null = null;
   try {
     // A durable GOAL mode row is not evidence that its session is still alive.
     // Reuse the canonical holder+liveness fold before attributing current
@@ -1488,6 +1515,22 @@ export async function readGoalPortfolioBrief(args: {
       };
     }
   }
+  if (goalHolderOwnerIds?.[0]) {
+    try {
+      // The watchdog's exact three-rail, goal-stamped predicate is the cadence
+      // authority. An arbitrary escalation or attention ping is not a report.
+      const { readGoalOwnerReportObligation } = await import('./system-health/goal-owner-report-watchdog');
+      reportCadence = await readGoalOwnerReportObligation(sql, {
+        workspaceId: args.workspaceId, goalId: args.goalId, ownerId: goalHolderOwnerIds[0],
+      }, (args.now ?? new Date()).getTime());
+    } catch (error) {
+      degradedReasons.push(`goal owner report cadence read failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const reportCutoffMs = reportCadence?.lastReportAt
+    ? Date.parse(reportCadence.lastReportAt)
+    : (args.now ?? new Date()).getTime();
+  const killCutoffMs = reportCadence?.lastReportAt ? reportCutoffMs : 0;
   try {
     const rows = await sql<GoalPortfolioSourceRow[]>`
       WITH goal_row AS (
@@ -1640,7 +1683,11 @@ export async function readGoalPortfolioBrief(args: {
                        'terminal', count(*) FILTER (WHERE wi.status = ANY(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])),
                        'inFlight', count(*) FILTER (WHERE wi.taken_by IS NOT NULL AND wi.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])),
                        'blocked', count(*) FILTER (WHERE wi.status IN ('blocked','cursed')),
-                       'needsHuman', count(*) FILTER (WHERE wi.status IN ('needs-human','needs_human') OR COALESCE((wi.payload->>'needsHuman')::boolean, false)),
+                       'needsHuman', count(*) FILTER (WHERE wi.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])
+                         AND (wi.status IN ('needs-human','needs_human')
+                           OR wi.needs_human_review
+                           OR COALESCE((wi.payload->>'needsOwnerAction')::boolean, false)
+                           OR COALESCE((wi.payload->>'needsHuman')::boolean, false))),
                        'issueCandidates', COALESCE(jsonb_agg(jsonb_build_object('id', wi.feature_id, 'harness', wi.harness_slug))
                          FILTER (WHERE wi.item_kind IN ('bug','change','task') AND wi.taken_by IS NULL AND wi.status IN ('open','failing','todo')), '[]'::jsonb)
                      )
@@ -1668,15 +1715,60 @@ export async function readGoalPortfolioBrief(args: {
                  AND cn.scope = 'workitem:' || COALESCE(NULLIF(wi3.harness_slug, ''), '*') || ':' || wi3.feature_id
                WHERE wi3.workspace_id = g.workspace_id AND wi3.goal_id = g.id
                ORDER BY cn.updated_ts DESC LIMIT 1) AS checkpoint,
-             (SELECT to_char(max(report_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'ref', movement.ref, 'state', movement.state,
+                       'updatedMs', movement.updated_ms) ORDER BY movement.updated_ms DESC), '[]'::jsonb)
                 FROM (
-                  SELECT max(e.ts) AS report_at FROM harness_shared.coord_event_log e
-                   WHERE e.workspace_id = g.workspace_id AND e.surface = 'escalations'
-                     AND e.body->>'from' = ANY(${liveHolderOwnerIds}::text[])
+                  SELECT 'plan:' || hp.harness_slug || '/' || hp.plan_slug AS ref,
+                         COALESCE(hp.op_status, hp.status) AS state,
+                         (extract(epoch FROM hp.updated_at) * 1000)::bigint AS updated_ms
+                    FROM harness_shared.harness_plans hp
+                   WHERE hp.workspace_id = g.workspace_id AND hp.goal_id = g.id
+                     AND hp.updated_at IS NOT NULL
+                     AND (extract(epoch FROM hp.updated_at) * 1000)::bigint > ${reportCutoffMs}
+                     AND EXISTS (
+                       SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb)) wr(ref)
+                        WHERE hp.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                          AND (position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
+                            OR hp.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1))
+                     )
                   UNION ALL
-                  SELECT max(a.created_at) FROM harness_shared.attention_notifications a
-                   WHERE a.workspace_id = g.workspace_id AND a.data->>'goalId' = g.id
-                ) reports) AS last_owner_report_at,
+                  SELECT 'work-item:' || wi.feature_id, wi.status, wi.updated_ts
+                    FROM harness_shared.work_items wi
+                   WHERE wi.workspace_id = g.workspace_id AND wi.goal_id = g.id
+                     AND wi.updated_ts > ${reportCutoffMs}
+                   ORDER BY updated_ms DESC LIMIT 101
+                ) movement) AS report_movements,
+             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'ref', wall.feature_id,
+                       'action', COALESCE(NULLIF(wall.payload->>'ownerAction', ''),
+                         NULLIF(wall.payload->>'ownerAsk', ''), 'open this work item for the exact owner action'))
+                       ORDER BY wall.feature_id), '[]'::jsonb)
+               FROM harness_shared.work_items wall
+               WHERE wall.workspace_id = g.workspace_id AND wall.goal_id = g.id
+                 AND wall.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])
+                 AND (wall.status IN ('needs-human', 'needs_human') OR wall.needs_human_review
+                   OR COALESCE((wall.payload->>'needsOwnerAction')::boolean, false)
+                   OR COALESCE((wall.payload->>'needsHuman')::boolean, false))) AS owner_walls,
+             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'ref', stopped.ref, 'criterion', stopped.criterion,
+                       'atMs', stopped.at_ms) ORDER BY stopped.at_ms DESC), '[]'::jsonb)
+                FROM (
+                  SELECT 'pot:' || gp.harness_slug AS ref, gp.kill_criterion AS criterion,
+                         (extract(epoch FROM gp.removed_at) * 1000)::bigint AS at_ms
+                    FROM harness_shared.goal_pots gp
+                   WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
+                     AND gp.removed_at IS NOT NULL
+                     AND (extract(epoch FROM gp.removed_at) * 1000)::bigint > ${killCutoffMs}
+                  UNION ALL
+                  SELECT 'work-item:' || wi.feature_id, wi.deprecation_reason,
+                         COALESCE(wi.closed_ts, wi.updated_ts)
+                    FROM harness_shared.work_items wi
+                   WHERE wi.workspace_id = g.workspace_id AND wi.goal_id = g.id
+                     AND wi.status IN ('dropped', 'deprecated', 'closed')
+                     AND COALESCE(wi.closed_ts, wi.updated_ts) > ${killCutoffMs}
+                   ORDER BY at_ms DESC LIMIT 101
+                ) stopped) AS killed_work,
              (SELECT count(*) FROM harness_shared.scout_routed_ideas sri
                WHERE sri.workspace_id = g.workspace_id AND sri.origin = 'su-ideate'
                  AND sri.created_by = ANY(${liveHolderOwnerIds}::text[])
@@ -1792,6 +1884,54 @@ export async function readGoalPortfolioBrief(args: {
       unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
       tripwires,
     });
+    const reportMovementRows = portfolioArray(row.report_movements);
+    const movementTruncated = reportMovementRows.length > 100;
+    if (movementTruncated) degradedReasons.push('owner report movement list exceeds 100 records; read the remaining records before claiming complete coverage');
+    const reportIso = (value: unknown): string | null => {
+      const ms = portfolioNumber(value);
+      return ms > 0 && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+    };
+    const movements: GoalOwnerReportDraftInput['movements'] = reportMovementRows.slice(0, 100).flatMap((value) => {
+      const movement = portfolioObject(value);
+      const ref = portfolioString(movement?.ref);
+      const state = portfolioString(movement?.state);
+      const updatedAt = reportIso(movement?.updatedMs);
+      return ref && state && updatedAt
+        ? [{ ref, state, updatedAt, artifact: { ref, updatedAt } }]
+        : [];
+    });
+    const ownerWalls: GoalOwnerReportDraftInput['ownerWalls'] = portfolioArray(row.owner_walls).flatMap((value) => {
+      const wall = portfolioObject(value);
+      const ref = portfolioString(wall?.ref);
+      return ref ? [{ ref: `work-item:${ref}`, action: portfolioString(wall?.action) ?? 'open this work item for the exact owner action' }] : [];
+    });
+    const killedRows = portfolioArray(row.killed_work);
+    const killedTruncated = killedRows.length > 100;
+    const killed: GoalOwnerReportDraftInput['killed'] = killedRows.slice(0, 100).flatMap((value) => {
+      const stopped = portfolioObject(value);
+      const ref = portfolioString(stopped?.ref);
+      const at = reportIso(stopped?.atMs);
+      return ref && at ? [{ ref, criterion: portfolioString(stopped?.criterion), at }] : [];
+    });
+    if (killedTruncated) degradedReasons.push('owner report killed-work list exceeds 100 records; read the remaining records before claiming complete coverage');
+    const reportDraft = buildGoalOwnerReportDraft({
+      goalId: args.goalId,
+      observedAt: assembledAt.toISOString(),
+      previousReportAt: reportCadence?.lastReportAt ?? null,
+      movements,
+      cost: {
+        spentCents: launch.budget?.spentCents ?? null,
+        budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
+        source: launch.budget?.spentCentsSource ?? null,
+        coverage: operatingInputs.spendCoverage,
+        unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
+      },
+      ownerWalls,
+      killed,
+      artifactReads: args.reportArtifactReads ?? [],
+      movementTruncated,
+      killedTruncated,
+    });
     const queue = {
       total: portfolioNumber(queueRaw.total),
       terminal: portfolioNumber(queueRaw.terminal),
@@ -1901,8 +2041,9 @@ export async function readGoalPortfolioBrief(args: {
                 note: portfolioString(checkpointRaw.note) ?? '',
               }
             : null,
-        lastOwnerReportAt: portfolioString(row.last_owner_report_at),
+        lastOwnerReportAt: reportCadence?.lastReportAt ?? null,
       },
+      reporting: { cadence: reportCadence, draft: reportDraft, movementTruncated, killedTruncated },
       ...(args.attestOwnerId ? { holderAttestation } : {}),
       priorities: priorities.slice(0, 6),
       degradedReasons: [...new Set(degradedReasons)],
