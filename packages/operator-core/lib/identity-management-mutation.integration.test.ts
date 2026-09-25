@@ -211,7 +211,8 @@ beforeEach(() => {
 });
 
 /** Seed one live session running `stack`, with that revision already APPLIED. */
-async function seedSession(owner: string, stack: readonly string[]) {
+async function seedSession(owner: string, stack: readonly string[],
+  selectedIdentity?: { ref: string; sourceRevision: string }) {
   const current = artifactFor(stack);
   const record = {
     v: 1,
@@ -220,6 +221,7 @@ async function seedSession(owner: string, stack: readonly string[]) {
     harnessSlug: null,
     contextSize: 'trimmed',
     stack: current.stack,
+    ...(selectedIdentity ? { selectedIdentity } : {}),
     specificationRevision: current.specificationRevision,
     stateRevision: current.stateRevision,
     specificationArtifact: current.specificationArtifact,
@@ -249,9 +251,11 @@ async function launchSpec(owner: string) {
     SELECT launch_spec FROM harness_shared.adv_sessions WHERE workspace_id = ${WS} AND coord_owner_id = ${owner}`;
   return row!.launch_spec as {
     stack: string[];
+    selectedIdentity?: { ref: string; sourceRevision: string } | null;
     specificationRevision: string;
     stateRevision: string;
-    identityHistory?: Array<{ stack: string[]; specificationRevision: string; stateRevision: string }>;
+    identityHistory?: Array<{ stack: string[]; selectedIdentity?: { ref: string; sourceRevision: string } | null;
+      specificationRevision: string; stateRevision: string }>;
   };
 }
 
@@ -281,6 +285,20 @@ const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: strin
   });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  it('clears a named root on explicit switch and restores its exact pin on rollback', async () => {
+    const owner = 'su-p006-named-selection';
+    const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
+    await seedSession(owner, WRITER, selectedIdentity);
+    await mutate(owner, 'switch', 'other-domain');
+    const switched = await launchSpec(owner);
+    expect(switched.selectedIdentity).toBeNull();
+    expect(switched.identityHistory?.[0]?.selectedIdentity).toEqual(selectedIdentity);
+    await mutate(owner, 'rollback');
+    const restored = await launchSpec(owner);
+    expect(restored.stack).toEqual(WRITER);
+    expect(restored.selectedIdentity).toEqual(selectedIdentity);
+  });
+
   it('switch persists the new stack, receipts the prior artifact, and requests (not applies) the new revision in one transaction', async () => {
     const owner = 'su-identity-switch';
     const { revision: engineer } = await seedSession(owner, ENGINEER);
