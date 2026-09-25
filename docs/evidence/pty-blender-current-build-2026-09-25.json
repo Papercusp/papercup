@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PTY host and Blender current-tree workspace readers",
+  "framework": "node",
+  "command": [
+    "node_modules/.bin/tsx",
+    "-e",
+    "const b=\"./packages/operator-core/lib/scout/\";const l=[[\"pty-host-health-lane\",\"buildPtyHostHealthLane\"],[\"ci-test-health-lane\",\"buildCiTestHealthLane\"],[\"workspace-host-health-lane\",\"buildWorkspaceHostHealthLane\"],[\"system-health-flap-lane\",\"buildSystemHealthFlapLane\"],[\"browser-crash-health-lane\",\"buildBrowserCrashHealthLane\"]];Promise.all(l.map(async([f,n])=>{const p=await import(b+f+\".ts\");const v=await p[n]({workspaceId:\"papercusp-workspace\"});return{lane:f,count:v.length,refs:v.slice(0,3).map(x=>x.ref)}})).then(async x=>{const d=await import(b+\"corpus-digest-deps.ts\");const c=await import(b+\"corpus-digest.ts\");const v=c.buildReworkLessons(await d.buildStateOfHiveReaders({workspaceId:\"papercusp-workspace\"}).reverts(),20);console.log(JSON.stringify([...x,{lane:\"rework\",count:v.length,refs:v.slice(0,3).map(x=>x.ref)}]));process.exit(0)},e=>{console.error(e);process.exit(1)})"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T22:09:58Z",
+  "finishedAt": "2026-09-25T22:10:07Z",
+  "summary": "Read-only current-tree reader invocation against papercusp-workspace PostgreSQL completed for PTY, CI, managed workspace-host, health flap, browser crash, and rework lanes. Four lanes yielded source-cited organic patterns; browser crash and rework yielded zero organic patterns in this window. Seeded real-PG integration tests separately exercise those empty lanes.",
+  "assertions": [
+    {
+      "id": "pty-host-reader",
+      "passed": true,
+      "evidence": "Returned 21 bounded entries; first refs pty-host:kind:busy-gate-expired, pty-host:kind:respawn-carry-dropped, pty-host:kind:host-code-stale."
+    },
+    {
+      "id": "ci-reader",
+      "passed": true,
+      "evidence": "Returned 21 bounded entries; first ref test-run:19321165."
+    },
+    {
+      "id": "workspace-host-reader",
+      "passed": true,
+      "evidence": "Returned 4 source-cited entries; first ref workspace-host:event:dd0dc65a-9f85-4598-9687-efba89b63dea."
+    },
+    {
+      "id": "health-flap-reader",
+      "passed": true,
+      "evidence": "Returned 7 transition-cited entries; first ref health-transition:100422."
+    },
+    {
+      "id": "browser-crash-reader",
+      "passed": true,
+      "evidence": "Reader completed without exception and returned 0 organic entries; no organic crash is inferred. Real-PG seeded test-run 19533818 and durable telemetry run 19504121 exercise this path."
+    },
+    {
+      "id": "rework-reader",
+      "passed": true,
+      "evidence": "Reader completed without exception and returned 0 organic causal lessons; no organic rework is inferred. Real-PG seeded test-run 19533818 exercises reason-backed and status-only rows."
+    }
+  ],
+  "observed": [
+    {
+      "lane": "pty-host-health-lane",
+      "count": 21,
+      "refs": [
+        "pty-host:kind:busy-gate-expired",
+        "pty-host:kind:respawn-carry-dropped",
+        "pty-host:kind:host-code-stale"
+      ]
+    },
+    {
+      "lane": "ci-test-health-lane",
+      "count": 21,
+      "refs": [
+        "test-run:19321165",
+        "test-run:19322587",
+        "test-run:19204757"
+      ]
+    },
+    {
+      "lane": "workspace-host-health-lane",
+      "count": 4,
+      "refs": [
+        "workspace-host:event:dd0dc65a-9f85-4598-9687-efba89b63dea",
+        "workspace-host:event:d2b14a45-9b56-42a2-ae74-89bcd0921bb6",
+        "workspace-host:event:2d58ae24-df5e-4cad-8620-c0a2c30343fa"
+      ]
+    },
+    {
+      "lane": "system-health-flap-lane",
+      "count": 7,
+      "refs": [
+        "health-transition:100422",
+        "health-transition:100562",
+        "health-transition:100473"
+      ]
+    },
+    {
+      "lane": "browser-crash-health-lane",
+      "count": 0,
+      "refs": []
+    },
+    {
+      "lane": "rework",
+      "count": 0,
+      "refs": []
+    }
+  ]
+}
