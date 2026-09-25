@@ -4,6 +4,7 @@ import {
   projectBlueprintOperationStatus,
   type BlueprintOperationHandle,
 } from './operation-service';
+import { selectOperationSpecificationRevision } from './operation-admission';
 
 const revision = 'a'.repeat(64);
 const direct: BlueprintOperationHandle = {
@@ -78,5 +79,18 @@ describe('projectBlueprintOperationStatus', () => {
       .toMatchObject({ phase: 'terminal', outcome: 'failed' });
     expect(projectBlueprintOperationStatus(plan, children, { status: 'done', outcome: 'success' }))
       .toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
+  });
+});
+
+describe('program child specification pin', () => {
+  it('keeps the parent revision across pointer drift and response replay', () => {
+    const parent = 'a'.repeat(64);
+    const newer = 'b'.repeat(64);
+    expect(selectOperationSpecificationRevision(parent, undefined, newer)).toBe(parent);
+    expect(selectOperationSpecificationRevision(parent, parent, newer)).toBe(parent);
+    expect(() => selectOperationSpecificationRevision(parent, newer, newer))
+      .toThrow('receipt differs from the expected specification revision');
+    expect(() => selectOperationSpecificationRevision('invalid', undefined, newer))
+      .toThrow('specification revision is invalid');
   });
 });
