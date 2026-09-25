@@ -22,7 +22,13 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection, ProvenanceContext } from '../projection';
+import {
+  projectionAfterCommit,
+  projectionFlush,
+  projectionSql,
+  type TableProjection,
+  type ProvenanceContext,
+} from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import {
@@ -231,6 +237,11 @@ async function writeToPg(
       }
     }
     if (quarantineReason) {
+      // P-537: this path writes on other connections (the quarantine row, a receipt row in
+      // coord_event_log). Commit the merge's open batch first, so neither can wait on a row
+      // lock the batch holds while the batch waits on this op. Rare: remote, hive-bound and
+      // below tier or over rate.
+      await projectionFlush();
       try {
         await quarantineCoordMessage(
           {
@@ -341,7 +352,9 @@ async function writeToPg(
     }
     return;
   }
-  const sql = opts.sql ?? getOrgPg().sql;
+  const target = opts.sql ?? getOrgPg().sql;
+  // P-537: the apply statement runs on the merge's batch transaction when there is one.
+  const sql = await projectionSql(target);
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance.origin;
   const fedTs = provenance?.ts ?? row.ts ?? null;
@@ -421,7 +434,11 @@ async function writeToPg(
   //   - wakeRecipients brings the wake-mode (hive Pause) gate + '*'/'human'
   //     filtering for free.
   // Best-effort: a wake-fan failure must never fail the projection apply.
-  if (origin === 'remote' && applied.length > 0 && applied[0].inserted === true) {
+  if (origin !== 'remote' || applied.length === 0 || applied[0].inserted !== true) return;
+  // P-537: inside the merge's batch the row stays invisible to other connections until
+  // COMMIT, and every effect below makes a reader look for it (a woken agent, a re-fired
+  // await, the sender's receipt). So they run once it is committed, on the plain handle.
+  await projectionAfterCommit(async () => {
     const b = row.body as {
       wake?: unknown;
       to?: unknown;
@@ -498,7 +515,7 @@ async function writeToPg(
         const { FLAGS } = await import('@papercusp/flags');
         const wakeOnReplyOn = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
         if (wakeOnReplyOn) {
-          const orig = await sql<{ body: Record<string, unknown> }[]>`
+          const orig = await target<{ body: Record<string, unknown> }[]>`
             SELECT body FROM harness_shared.coord_event_log
             WHERE workspace_id = ${opts.workspaceId}
               AND msg_id = ${b.related_msg_id}
@@ -642,7 +659,7 @@ async function writeToPg(
         );
       }
     }
-  }
+  });
 }
 
 async function deleteFromPg(
@@ -652,7 +669,7 @@ async function deleteFromPg(
   delHlc?: string,
 ): Promise<void> {
   if (!key) return;
-  const sql = opts.sql ?? getOrgPg().sql;
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
@@ -677,6 +694,10 @@ export function buildCoordMessageProjection(
     tableTag: 'coord-messages',
     // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
     skipOwnOps: true,
+    // P-537 (D-034 #2): both statements go through projectionSql and no transaction-local
+    // state is set; the quarantine path commits the batch before writing elsewhere, and the
+    // wake/event/receipt effects wait for the commit (projectionAfterCommit).
+    batchable: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

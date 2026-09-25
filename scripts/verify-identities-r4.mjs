@@ -54,6 +54,49 @@ export function checkedCommand(command, args, options = {}) {
   return execFileSync(command, args, { encoding: "utf8", timeout: 45_000, ...options });
 }
 
+/**
+ * Find an identity through the catalog's paginated pointer controls.
+ * The injected page reader and pointer actions keep the live bridge in charge
+ * while allowing the same traversal to run in the maintained test suite.
+ */
+export function selectIdentityInCatalog(id, label, { readPage, click, settle, maxPages = 100 }) {
+  const selector = `[aria-label="Inspect identity ${id}"]`;
+  let previousPage = null;
+  for (let scanned = 1; scanned <= maxPages; scanned++) {
+    const page = readPage(selector, scanned);
+    if (page.marker === previousPage) {
+      throw new Error(`identity catalog did not advance while looking for ${id}: ${page.marker}`);
+    }
+    if (page.found) {
+      click(selector, label);
+      return scanned;
+    }
+    if (!page.canAdvance) {
+      throw new Error(`identity ${id} is absent after ${scanned} catalog page(s)`);
+    }
+    previousPage = page.marker;
+    click('[aria-label="Identity catalog pages"] button:last-child', `${label}-next-page-${scanned}`);
+    settle();
+  }
+  throw new Error(`identity ${id} was not found within ${maxPages} catalog pages`);
+}
+
+/** Require the rollback's own accepted response before inspecting activation. */
+export function requireRollbackResponse({ poll, readResponse }) {
+  poll();
+  const response = readResponse();
+  let body;
+  try {
+    body = JSON.parse(response?.body ?? "null");
+  } catch {
+    body = null;
+  }
+  if (response?.request?.action !== "rollback" || response?.status !== 200 || body?.ok !== true || body?.action !== "rollback") {
+    throw new Error(`real rollback route refused the mutation: ${JSON.stringify(response)}`);
+  }
+  return response;
+}
+
 const required = (name) => {
   const value = process.env[name];
   if (!value) throw new Error(`missing ${name} (run through verify-tauri-headless.sh)`);
@@ -184,10 +227,8 @@ const click = (selector, label) => {
 };
 
 const selectIdentity = (id, label) => {
-  const selector = `[aria-label="Inspect identity ${id}"]`;
-  let previousPage = null;
-  for (let scanned = 1; scanned <= 100; scanned++) {
-    const page = JSON.parse(evalFile(`JSON.stringify((() => {
+  const pagesScanned = selectIdentityInCatalog(id, label, {
+    readPage: (selector, scanned) => JSON.parse(evalFile(`JSON.stringify((() => {
       const pages = document.querySelector('[aria-label="Identity catalog pages"]');
       const next = pages?.querySelector('button:last-child');
       return {
@@ -195,23 +236,11 @@ const selectIdentity = (id, label) => {
         found: !!document.querySelector(${JSON.stringify(selector)}),
         canAdvance: !!next && !next.disabled && next.textContent.trim() === 'Load more',
       };
-    })())`, `${label}-catalog-page-${scanned}`));
-    if (page.marker === previousPage) {
-      throw new Error(`identity catalog did not advance while looking for ${id}: ${page.marker}`);
-    }
-    if (page.found) {
-      click(selector, label);
-      evidence.steps.push({ label: `${label}-catalog-search`, id, pagesScanned: scanned });
-      return;
-    }
-    if (!page.canAdvance) {
-      throw new Error(`identity ${id} is absent after ${scanned} catalog page(s)`);
-    }
-    previousPage = page.marker;
-    click('[aria-label="Identity catalog pages"] button:last-child', `${label}-next-page-${scanned}`);
-    settle();
-  }
-  throw new Error(`identity ${id} was not found within 100 catalog pages`);
+    })())`, `${label}-catalog-page-${scanned}`)),
+    click,
+    settle,
+  });
+  evidence.steps.push({ label: `${label}-catalog-search`, id, pagesScanned });
 };
 
 const evalFile = (source, name) => {
@@ -626,16 +655,15 @@ try {
     }
     const callsBeforeRollback = Number(evalFile("window.__p015R4RealCalls.length", "real-rollback-call-count-before"));
     click('button[aria-label="Roll back identity"]', "real-rollback");
-    checkedCommand("bash", [required("VERIFY_TAURI_POLL"), "--require", "body", "--eval",
-      `window.__p015R4RealCalls?.slice(${callsBeforeRollback}).some((call) => call.request?.action === 'rollback')`]);
-    const rollbackCall = JSON.parse(evalFile(
-      `window.__p015R4RealCalls.slice(${callsBeforeRollback}).find((call) => call.request?.action === 'rollback')`,
-      "real-rollback-response",
-    ));
+    const rollbackCall = requireRollbackResponse({
+      poll: () => checkedCommand("bash", [required("VERIFY_TAURI_POLL"), "--require", "body", "--eval",
+        `window.__p015R4RealCalls?.slice(${callsBeforeRollback}).some((call) => call.request?.action === 'rollback')`]),
+      readResponse: () => JSON.parse(evalFile(
+        `window.__p015R4RealCalls.slice(${callsBeforeRollback}).find((call) => call.request?.action === 'rollback')`,
+        "real-rollback-response",
+      )),
+    });
     evidence.steps.push({ label: "real-rollback-response", response: rollbackCall });
-    if (rollbackCall?.status !== 200 || JSON.parse(rollbackCall.body).ok !== true) {
-      throw new Error(`real rollback route refused the mutation: ${JSON.stringify(rollbackCall)}`);
-    }
     settle();
     check(["--eval", "document.body.innerText.includes('Change requested')"], "real-rollback-change-requested");
     const rollbackRequested = await observeActivation("real-rollback-requested");

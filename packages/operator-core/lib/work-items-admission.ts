@@ -591,27 +591,8 @@ export async function resolveVerifiedAuthorGithubId(
   sql: OrgSql,
   opts: { workspaceId: string; authorPubkey: string | null | undefined; potHomeSlug?: string },
 ): Promise<number | null> {
-  const pubkey = (opts.authorPubkey ?? '').trim();
-  if (!pubkey || !opts.workspaceId) return null;
   try {
-    const hiveFilter = opts.potHomeSlug ? sql`AND pot_home_slug = ${opts.potHomeSlug}` : sql``;
-    const rows = await sql<{ github_user_id: string | number }[]>`
-      SELECT github_user_id
-        FROM harness_shared.pot_members
-       WHERE workspace_id = ${opts.workspaceId}
-         ${hiveFilter}
-         AND binding_status = 'verified'
-         AND NOT (${pubkey} = ANY(COALESCE(revoked_pubkeys, ARRAY[]::text[])))
-         AND EXISTS (
-           SELECT 1
-             FROM jsonb_array_elements(COALESCE(device_attestations, '[]'::jsonb)) a
-            WHERE a->>'device_pubkey' = ${pubkey}
-         )
-       LIMIT 1`;
-    if (!rows[0]) return null;
-    const raw = rows[0].github_user_id;
-    const id = typeof raw === 'string' ? Number(raw) : raw;
-    return Number.isFinite(id) ? id : null;
+    return await readVerifiedAuthorGithubId(sql, opts);
   } catch {
     // Best-effort + FAIL-SAFE: an unreadable/absent hive_members (e.g. a transient
     // error, or a projection running against a partial schema) yields NULL → the
@@ -619,6 +600,37 @@ export async function resolveVerifiedAuthorGithubId(
     // the federated-ingest projection loop is never crashed by the optional stamp.
     return null;
   }
+}
+
+/**
+ * {@link resolveVerifiedAuthorGithubId} without the fail-safe: a read error throws.
+ * P-537: a batchable projection needs the error, because inside the merge's batch it
+ * aborted the transaction and must be followed by `projectionStatementFailed()`.
+ */
+export async function readVerifiedAuthorGithubId(
+  sql: OrgSql,
+  opts: { workspaceId: string; authorPubkey: string | null | undefined; potHomeSlug?: string },
+): Promise<number | null> {
+  const pubkey = (opts.authorPubkey ?? '').trim();
+  if (!pubkey || !opts.workspaceId) return null;
+  const hiveFilter = opts.potHomeSlug ? sql`AND pot_home_slug = ${opts.potHomeSlug}` : sql``;
+  const rows = await sql<{ github_user_id: string | number }[]>`
+    SELECT github_user_id
+      FROM harness_shared.pot_members
+     WHERE workspace_id = ${opts.workspaceId}
+       ${hiveFilter}
+       AND binding_status = 'verified'
+       AND NOT (${pubkey} = ANY(COALESCE(revoked_pubkeys, ARRAY[]::text[])))
+       AND EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements(COALESCE(device_attestations, '[]'::jsonb)) a
+          WHERE a->>'device_pubkey' = ${pubkey}
+       )
+     LIMIT 1`;
+  if (!rows[0]) return null;
+  const raw = rows[0].github_user_id;
+  const id = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(id) ? id : null;
 }
 
 /**

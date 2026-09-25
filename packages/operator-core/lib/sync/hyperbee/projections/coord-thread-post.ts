@@ -13,7 +13,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection, ProvenanceContext } from '../projection';
+import { projectionSql, type TableProjection, type ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 
@@ -105,7 +105,8 @@ async function writeToPg(
     }
     return;
   }
-  const sql = opts.sql ?? getOrgPg().sql;
+  // P-537: the one apply statement runs on the merge's batch transaction when there is one.
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance.origin;
   const fedTs = provenance?.ts ?? row.created_at ?? null;
@@ -141,7 +142,7 @@ async function deleteFromPg(
   delHlc?: string,
 ): Promise<void> {
   if (!key) return;
-  const sql = opts.sql ?? getOrgPg().sql;
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
@@ -162,6 +163,9 @@ export function buildCoordThreadPostProjection(
     tableTag: 'coord-thread-posts',
     // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
     skipOwnOps: true,
+    // P-537 (D-034 #2): both statements go through projectionSql, none is caught, and no
+    // transaction-local state is set, so ops fold inside the batch transaction.
+    batchable: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

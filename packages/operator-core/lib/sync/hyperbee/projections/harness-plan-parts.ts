@@ -18,7 +18,13 @@ import type postgres from 'postgres';
 import { joinFederatedParts, parsePlan, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { FLAGS } from '@papercusp/flags';
-import type { TableProjection, ProvenanceContext } from '../projection';
+import {
+  projectionAfterCommit,
+  projectionSql,
+  projectionStatementFailed,
+  type TableProjection,
+  type ProvenanceContext,
+} from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
@@ -285,13 +291,45 @@ async function recompose(
   await sink(planSlug, content, hashPlanContent(content), provenance);
 }
 
-function storeFor(opts: HarnessPlanPartsProjectionOpts): PlanPartsStore {
-  return opts.store ?? new PgPlanPartsStore(opts.sql ?? getOrgPg().sql, opts.workspaceId, opts.harnessSlug);
+/** The part store over `sql` (P-537: the batch handle for an op's part writes; absent, the plain one). */
+function storeFor(opts: HarnessPlanPartsProjectionOpts, sql?: postgres.Sql): PlanPartsStore {
+  return opts.store ?? new PgPlanPartsStore(sql ?? opts.sql ?? getOrgPg().sql, opts.workspaceId, opts.harnessSlug);
 }
 
-async function readLocalPlanContent(opts: HarnessPlanPartsProjectionOpts, planSlug: string): Promise<string | null> {
+/**
+ * P-537: the handle an op's part writes use: the merge's batch transaction when there is
+ * one. Undefined when a test store stands in, which never touches PG.
+ */
+async function partWriteSql(opts: HarnessPlanPartsProjectionOpts): Promise<postgres.Sql | undefined> {
+  return opts.store ? undefined : projectionSql(opts.sql ?? getOrgPg().sql);
+}
+
+/**
+ * P-537: the plan's recompose once the op's part write is committed. The recompose runs
+ * its own transaction (dependency admission) on its own connection, so inside the merge's
+ * batch it must neither run early (it would not see the part) nor on the batch handle.
+ * The merge pass's coalesced drain already runs after the pass's batch settles.
+ */
+async function recomposeAfterPartWrite(
+  opts: HarnessPlanPartsProjectionOpts,
+  planSlug: string,
+  provenance?: ProvenanceContext,
+): Promise<void> {
+  const store = storeFor(opts);
+  if (opts.recomposeBatch) {
+    opts.recomposeBatch.markDirty(opts, store, planSlug, provenance);
+  } else {
+    await projectionAfterCommit(() => recompose(opts, store, planSlug, provenance));
+  }
+}
+
+async function readLocalPlanContent(
+  opts: HarnessPlanPartsProjectionOpts,
+  planSlug: string,
+  partSql?: postgres.Sql,
+): Promise<string | null> {
   if (opts.readLocalContent) return opts.readLocalContent(planSlug);
-  const sql = opts.sql ?? getOrgPg().sql;
+  const sql = partSql ?? opts.sql ?? getOrgPg().sql;
   const [r] = (await sql`
     SELECT content FROM harness_shared.harness_plans
      WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
@@ -351,7 +389,10 @@ async function applyPart(
   // matching where harness-plans landed the plan document.
   const effOpts: HarnessPlanPartsProjectionOpts =
     row.harness_slug === opts.harnessSlug ? opts : { ...opts, harnessSlug: row.harness_slug };
-  const store = storeFor(effOpts);
+  // P-537: the part writes (baseline included) run on the merge's batch transaction when
+  // there is one; the recompose waits for them to commit (recomposeAfterPartWrite).
+  const sql = await partWriteSql(effOpts);
+  const store = storeFor(effOpts, sql);
   // P-010 receive-side baseline: before applying the FIRST incoming part for a
   // plan, seed the full baseline from the local harness_plans.content (deterministic
   // fed_ts=0), so the recompose merges into the WHOLE plan rather than a broken
@@ -360,11 +401,14 @@ async function applyPart(
   if (await flagOn(effOpts)) {
     try {
       if ((await store.getParts(row.plan_slug)).size === 0) {
-        const localContent = await readLocalPlanContent(effOpts, row.plan_slug);
+        const localContent = await readLocalPlanContent(effOpts, row.plan_slug, sql);
         if (localContent) await ensurePlanPartsBaseline(store, row.plan_slug, localContent);
       }
     } catch {
       /* best-effort baseline — never drop the op */
+      // Inside the batch the error aborted the transaction. Rolling back to the op's
+      // savepoint takes back only the baseline's own statements, as the part write follows.
+      await projectionStatementFailed();
     }
   }
   const part: FederatedPart = {
@@ -381,11 +425,7 @@ async function applyPart(
   // N same-plan ops into ONE recompose drained after the pass's op loop — see
   // PlanPartsRecomposeBatch. Without one (every existing direct/unit-test caller),
   // recompose inline exactly as before.
-  if (effOpts.recomposeBatch) {
-    effOpts.recomposeBatch.markDirty(effOpts, store, row.plan_slug, provenance);
-  } else {
-    await recompose(effOpts, store, row.plan_slug, provenance);
-  }
+  await recomposeAfterPartWrite(effOpts, row.plan_slug, provenance);
 }
 
 async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, delTs?: number): Promise<void> {
@@ -393,18 +433,14 @@ async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, del
   if (slash < 0) return;
   const planSlug = key.slice(0, slash);
   const partKey = key.slice(slash + 1);
-  const store = storeFor(opts);
+  const store = storeFor(opts, await partWriteSql(opts));
   await store.upsertPart(
     planSlug,
     { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true },
     'remote',
   );
   // WI-2142064: same coalescing as applyPart — see PlanPartsRecomposeBatch.
-  if (opts.recomposeBatch) {
-    opts.recomposeBatch.markDirty(opts, store, planSlug);
-  } else {
-    await recompose(opts, store, planSlug);
-  }
+  await recomposeAfterPartWrite(opts, planSlug);
 }
 
 export function buildHarnessPlanPartsProjection(
@@ -414,6 +450,10 @@ export function buildHarnessPlanPartsProjection(
     tableTag: 'plan-parts',
     // CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
     skipOwnOps: true,
+    // P-537 (D-034 #2): the part writes and their reads go through projectionSql, the caught
+    // baseline error calls projectionStatementFailed, no transaction-local state is set, and
+    // the recompose (its own transaction) runs after the commit on a plain handle.
+    batchable: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => applyPart(opts, row, provenance),
