@@ -160,7 +160,23 @@ describe('resolveWorkspaceMapConfig', () => {
 });
 
 describe('live staging workspace-map agreement', () => {
-  it('prescribes the existing worktree checked out on the staging branch', () => {
+  it('prescribes the existing worktree checked out on the staging branch', (ctx) => {
+    // LIVE-environment check: its subject is the checkout this process runs in. It is
+    // only meaningful inside the staging worktree itself, or when an explicit canonical
+    // override names the tree. The green-checkpoint gate runs the suite from its own
+    // detached checkpoint checkout, where `--show-toplevel` (the config's fallback) is
+    // that checkout — a different subject, not a regression (WI-10002602).
+    const hasCanonicalOverride = Boolean(
+      process.env.PAPERCUSP_CANONICAL_TREE?.trim() || process.env.PAPERCUSP_INTEGRATION_ROOT?.trim(),
+    );
+    const currentBranch = execFileSync('git', ['branch', '--show-current'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!hasCanonicalOverride && currentBranch !== 'staging') {
+      ctx.skip();
+      return;
+    }
     const listing = execFileSync('git', ['worktree', 'list', '--porcelain'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
