@@ -64,7 +64,10 @@ describe('isValidSuperuserBearer', () => {
     vi.mocked(statSync).mockImplementation(() => ({ mtimeMs: ++mtime }) as ReturnType<typeof statSync>);
   });
 
-  afterEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it('rejects an empty/absent bearer outright', () => {
     vi.mocked(readFileSync).mockReturnValue('a-valid-superuser-token-1234');
@@ -88,6 +91,25 @@ describe('isValidSuperuserBearer', () => {
   it('accepts a bearer that exactly matches the on-disk token', () => {
     vi.mocked(readFileSync).mockReturnValue('a-valid-superuser-token-1234');
     expect(isValidSuperuserBearer('a-valid-superuser-token-1234')).toBe(true);
+  });
+
+  it('uses the scoped operator home and rejects the real-home bearer', () => {
+    vi.stubEnv('PAPERCUSP_HOME', '/tmp/isolated-operator-home');
+    vi.mocked(readFileSync).mockReturnValue('disposable-superuser-token-1234');
+    expect(isValidSuperuserBearer('real-user-superuser-token-1234')).toBe(false);
+    expect(isValidSuperuserBearer('disposable-superuser-token-1234')).toBe(true);
+    expect(statSync).toHaveBeenCalledWith('/tmp/isolated-operator-home/superuser-token');
+    expect(readFileSync).toHaveBeenCalledWith('/tmp/isolated-operator-home/superuser-token', 'utf8');
+  });
+
+  it('does not reuse a cached bearer after the scoped home changes', () => {
+    vi.stubEnv('PAPERCUSP_HOME', '/tmp/operator-one');
+    vi.mocked(readFileSync).mockReturnValue('first-operator-token-12345678');
+    expect(isValidSuperuserBearer('first-operator-token-12345678')).toBe(true);
+    vi.stubEnv('PAPERCUSP_HOME', '/tmp/operator-two');
+    vi.mocked(readFileSync).mockReturnValue('second-operator-token-1234567');
+    expect(isValidSuperuserBearer('first-operator-token-12345678')).toBe(false);
+    expect(isValidSuperuserBearer('second-operator-token-1234567')).toBe(true);
   });
 
   it('rejects a same-length but non-matching bearer (constant-time compare)', () => {

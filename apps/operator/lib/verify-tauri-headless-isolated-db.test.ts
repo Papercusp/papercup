@@ -24,7 +24,7 @@
  * asserted at the wiring site, not by actually running it (same rationale as
  * verify-tauri-headless-spa-isolation.test.ts / tty-title-target.test.ts).
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -72,6 +72,35 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/ISOLATED_WORKSPACE="verify-tauri-isolated-\$DISPLAY_NUM"/);
     expect(src).toMatch(/PAPERCUSP_HOME=\\"\$ISOLATED_HOME\\"/);
     expect(src).toMatch(/PAPERCUSP_WORKSPACE=\\"\$ISOLATED_WORKSPACE\\"/);
+  });
+
+  it('mints a private bearer and never reuses the real user bearer', () => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-bearer-isolation-'));
+    try {
+      const helper = src.match(/prepare_isolated_bearer\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      expect(helper).toBeTruthy();
+      const realHome = join(work, 'real-home');
+      const realToken = join(realHome, '.papercusp', 'superuser-token');
+      const isolatedHome = join(work, 'isolated-home');
+      mkdirSync(join(realHome, '.papercusp'), { recursive: true });
+      writeFileSync(realToken, 'real-user-bearer-1234567890\n', { mode: 0o600 });
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', helper,
+        'ISOLATED_HOME="$1"',
+        'mkdir -p "$ISOLATED_HOME"',
+        'prepare_isolated_bearer',
+      ].join('\n'), 'probe', isolatedHome], {
+        encoding: 'utf8', env: { ...process.env, HOME: realHome },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const isolatedToken = join(isolatedHome, 'superuser-token');
+      const value = readFileSync(isolatedToken, 'utf8').trim();
+      expect(value).toMatch(/^[a-f0-9]{64}$/);
+      expect(readFileSync(realToken, 'utf8').trim()).not.toBe(value);
+      expect(statSync(isolatedToken).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 
   it('isolates the Tauri WebView profile and guards localStorage with a sentinel', () => {

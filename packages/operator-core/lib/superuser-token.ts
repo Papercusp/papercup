@@ -5,7 +5,8 @@
  * Papercusp-orchestrator-spawned child agent — both run on the same
  * machine, same user, same loopback. So `?superuser=1` requires an
  * additional `Authorization: Bearer <token>` whose value matches the
- * file at `~/.papercusp/superuser-token` (mode 0600).
+ * file at `$PAPERCUSP_HOME/superuser-token`, or
+ * `~/.papercusp/superuser-token` when no scoped home is set (mode 0600).
  *
  * The CLI installer (`apps/operator/scripts/install-standalone-mcp.sh`)
  * generates the token and writes it to the file; orchestrator-spawned
@@ -21,17 +22,20 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 
-const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
+function tokenPath(): string {
+  return join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
+}
 
-let _cached: { token: string; mtimeMs: number } | null = null;
+let _cached: { path: string; token: string; mtimeMs: number } | null = null;
 
 function loadToken(): string | null {
   try {
-    const st = statSync(TOKEN_PATH);
-    if (_cached && _cached.mtimeMs === st.mtimeMs) return _cached.token;
-    const tok = readFileSync(TOKEN_PATH, 'utf8').trim();
+    const path = tokenPath();
+    const st = statSync(path);
+    if (_cached?.path === path && _cached.mtimeMs === st.mtimeMs) return _cached.token;
+    const tok = readFileSync(path, 'utf8').trim();
     if (tok.length < 16) return null; // sanity: refuse short tokens
-    _cached = { token: tok, mtimeMs: st.mtimeMs };
+    _cached = { path, token: tok, mtimeMs: st.mtimeMs };
     return tok;
   } catch {
     _cached = null;
@@ -99,4 +103,4 @@ export function isLoopbackRequest(headers: Headers): boolean {
   return false;
 }
 
-export const SUPERUSER_TOKEN_PATH = TOKEN_PATH;
+export const SUPERUSER_TOKEN_PATH = tokenPath();

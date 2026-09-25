@@ -2272,6 +2272,23 @@ writeFileSync(join(root, 'registry.json'), JSON.stringify({ current: id, workspa
 WORKSPACE_REGISTRY_NODE
 }
 
+# The operator's bearer reader and ptool both honor PAPERCUSP_HOME. Mint a
+# disposable token there before starting the sidecar so native API checks in
+# this run cannot authenticate with the real user's token.
+prepare_isolated_bearer() {
+  ISOLATED_TOKEN_PATH="$ISOLATED_HOME/superuser-token"
+  node --input-type=module - "$ISOLATED_TOKEN_PATH" <<'ISOLATED_BEARER_NODE'
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+writeFileSync(process.argv[2], randomBytes(32).toString('hex') + '\n', { mode: 0o600 });
+ISOLATED_BEARER_NODE
+  if [ -f "$HOME/.papercusp/superuser-token" ] &&
+     cmp -s "$ISOLATED_TOKEN_PATH" "$HOME/.papercusp/superuser-token"; then
+    echo "FATAL: isolated verifier bearer matches the real user bearer" >&2
+    exit 1
+  fi
+}
+
 if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
   ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
@@ -2288,6 +2305,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_WEBVIEW_CACHE="$ISOLATED_WEBVIEW_ROOT/cache"
   ISOLATED_WEBVIEW_CONFIG="$ISOLATED_WEBVIEW_ROOT/config"
   mkdir -p "$ISOLATED_HOME" "$ISOLATED_CODEX_HOMES_DIR" "$ISOLATED_WEBVIEW_DATA" "$ISOLATED_WEBVIEW_CACHE" "$ISOLATED_WEBVIEW_CONFIG"
+  prepare_isolated_bearer
 
   # Migrations dir: monorepo path, else a packaged sidecar's own copy — same
   # resolution with-test-pg.mjs uses.
