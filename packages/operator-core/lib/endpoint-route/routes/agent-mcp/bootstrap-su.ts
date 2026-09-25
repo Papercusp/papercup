@@ -1324,17 +1324,19 @@ const optionsGet = defineTool({
     // by source candidates so an invalid entry stays visible with its reason.
     if (wantIdentities) {
       try {
-        const [{ listIdentitySources }, { resolveProjectDir }] = await Promise.all([
+        const [{ listIdentitySources }, { resolveProjectDir }, { papercuspPathForWorkspace }] = await Promise.all([
           import('../../../agent-identities/source'),
           import('../../../spawn-config'),
+          import('../../../papercusp-root'),
         ]);
-        const repoDir = harness ? await resolveProjectDir(harness, workspace) : null;
-        if (harness && !repoDir) return jsonRes({ status: 'error', error: 'harness not registered in workspace' }, 404);
+        const repoDir = harness ? await resolveProjectDir(harness, workspace)
+          : papercuspPathForWorkspace(workspace);
+        if (!repoDir) return jsonRes({ status: 'error', error: 'harness not registered in workspace' }, 404);
         const requestedLimit = Number(url.searchParams.get('limit'));
         const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
           ? Math.min(requestedLimit, 100) : 30;
         const catalog = await listIdentitySources({
-          ...(repoDir ? { repoDir } : {}),
+          repoDir,
           after: url.searchParams.get('after')?.trim() || undefined,
           limit,
         });
