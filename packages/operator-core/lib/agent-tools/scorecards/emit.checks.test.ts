@@ -81,6 +81,8 @@ vi.mock('../plans/source', () => ({
 
 import scorecardEmitTool, {
   emitScorecard,
+  runRecoverableScorecardChecks,
+  scorecardCheckRunPrefix,
   SCORECARD_EMIT_TIMEOUT_SEC,
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
@@ -91,9 +93,184 @@ import type {
   evaluateCriterionTestChecks,
   CriterionCheckRun,
 } from '../../rubrics-criterion-checks';
+import { REPO_ROOT } from '../docs/_repo-paths';
 
 type EvaluateChecks = typeof evaluateCriterionTestChecks;
 type EvaluateCargoChecks = typeof evaluateCriterionCargoChecks;
+
+describe('scorecards:emit interrupted check-run recovery (EI-24189399333592974)', () => {
+  const files = Array.from({ length: 5 }, (_, i) => `packages/operator-core/lib/check-${i}.test.ts`);
+  const root = '/repo';
+  const sha = 'a'.repeat(40);
+  const opts = { files, root, workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+  const binding = {
+    rubricRef: 'acceptance-pui-first-party-public-release-2026-09-07',
+    rubricRevision: 7,
+    criteriaHash: 'criteria-hash',
+    evidenceFingerprint: 'ratings-fingerprint',
+    createdBy: 'su-independent',
+    subjectRef: 'WI-10003073',
+  };
+  const prefix = scorecardCheckRunPrefix({ ...binding, ...opts, sourceSha: sha });
+  const rows = (runId: string, worktreeDirty = false) => files.map((file, index) => ({
+    id: index + 101,
+    file_path: file,
+    status: 'pass',
+    finished_at: '2026-09-25T04:00:00.000Z',
+    workspace_id: opts.workspaceId,
+    harness_slug: opts.harnessSlug,
+    run_group_id: runId,
+    commit_sha: sha,
+    worktree_dirty: worktreeDirty,
+    execution_details: JSON.stringify({
+      schemaVersion: 1,
+      root,
+      filePath: file,
+      runGroupId: runId,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: sha,
+      worktreeDirty,
+    }),
+  }));
+  const runFiles = vi.fn(async ({ runId }: { runId?: string } = {}) => ({
+    ok: true, runId: runId!, root, files: 5, passed: 5, failed: 0, skipped: 0,
+    byFile: Object.fromEntries(files.map((file) => [file, { passed: 1, failed: 0, skipped: 0, collectionFailed: false }])),
+    failures: [], failuresTruncated: false, durationMs: 1000, testRunIds: [101, 102, 103, 104, 105],
+  }));
+
+  beforeEach(() => runFiles.mockClear());
+
+  it('starts one request-bound group, then reuses all five durable rows after the API host dies', async () => {
+    const first = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async () => [],
+      listTaskRows: async () => [],
+      runFiles,
+    });
+    expect(first.runId).toBe(`${prefix}-0`);
+    expect(runFiles).toHaveBeenCalledOnce();
+
+    runFiles.mockClear();
+    const replay = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      // The measured interrupted PUI batch had five green but DIRTY rows.
+      readRows: async ({ runGroupId }) => rows(runGroupId, true),
+      listTaskRows: async () => [{ state: 'ended_unobserved', exitCode: null }],
+      runFiles,
+    });
+    expect(replay).toMatchObject({ ok: true, runId: `${prefix}-0`, passed: 5, failed: 0,
+      testRunIds: [101, 102, 103, 104, 105] });
+    expect(runFiles).not.toHaveBeenCalled();
+  });
+
+  it('does not start a duplicate process while the original group is still running', async () => {
+    const pending = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async () => [],
+      listTaskRows: async () => [{ state: 'running', exitCode: null }],
+      runFiles,
+    });
+    expect(pending).toMatchObject({ ok: false, error: 'timeout', runId: `${prefix}-0` });
+    expect(runFiles).not.toHaveBeenCalled();
+  });
+
+  it('refuses an indeterminate task state instead of endlessly calling it active', async () => {
+    const result = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async () => [],
+      listTaskRows: async () => [{ state: 'unaccounted', exitCode: null }],
+      runFiles,
+    });
+    expect(result).toMatchObject({ ok: false, error: 'route_error' });
+    expect(runFiles).not.toHaveBeenCalled();
+  });
+
+  it('refuses cross-source or partial evidence and advances only after a terminal attempt', async () => {
+    const seen: string[] = [];
+    const result = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async ({ runGroupId }) => {
+        seen.push(runGroupId);
+        return runGroupId.endsWith('-0') ? rows(runGroupId).slice(0, 4) : [];
+      },
+      listTaskRows: async (launchedBy) => launchedBy.endsWith('-0')
+        ? [{ state: 'ended_unobserved', exitCode: null }]
+        : [],
+      runFiles,
+    });
+    expect(seen).toEqual([`${prefix}-0`, `${prefix}-1`]);
+    expect(result.runId).toBe(`${prefix}-1`);
+    expect(runFiles).toHaveBeenCalledOnce();
+
+    runFiles.mockClear();
+    const changed = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => 'b'.repeat(40),
+      readRows: async () => [],
+      listTaskRows: async () => [],
+      runFiles,
+    });
+    expect(changed.runId).not.toBe(`${prefix}-0`);
+  });
+
+  it('does not recycle a green group whose recorded source or router exit contradicts it', async () => {
+    const stale = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async ({ runGroupId }) => runGroupId.endsWith('-0')
+        ? rows(runGroupId).map((row) => ({ ...row, commit_sha: 'b'.repeat(40) }))
+        : [],
+      listTaskRows: async (launchedBy) => launchedBy.endsWith('-0')
+        ? [{ state: 'ended_unobserved', exitCode: null }]
+        : [],
+      runFiles,
+    });
+    expect(stale.runId).toBe(`${prefix}-1`);
+    runFiles.mockClear();
+
+    const routerRed = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async ({ runGroupId }) => runGroupId.endsWith('-0') ? rows(runGroupId) : [],
+      listTaskRows: async (launchedBy) => launchedBy.endsWith('-0')
+        ? [{ state: 'exited', exitCode: 1 }]
+        : [],
+      runFiles,
+    });
+    expect(routerRed.runId).toBe(`${prefix}-1`);
+    expect(runFiles).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a dirty-row flag that disagrees with its reporter details', async () => {
+    const result = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async ({ runGroupId }) => runGroupId.endsWith('-0')
+        ? rows(runGroupId, true).map((row, index) => index === 0 ? { ...row, worktree_dirty: false } : row)
+        : [],
+      listTaskRows: async (launchedBy) => launchedBy.endsWith('-0')
+        ? [{ state: 'ended_unobserved', exitCode: null }]
+        : [],
+      runFiles,
+    });
+    expect(result.runId).toBe(`${prefix}-1`);
+    expect(runFiles).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed when it cannot read the test ledger', async () => {
+    const result = await runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: () => sha,
+      readRows: async () => null,
+      listTaskRows: async () => [],
+      runFiles,
+    });
+    expect(result).toMatchObject({ ok: false, error: 'route_error' });
+    expect(runFiles).not.toHaveBeenCalled();
+  });
+});
 
 const CHECKED_RUBRIC = {
   rubricId: 'ar-checked-plan',
@@ -205,6 +382,48 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
+  it('files a five-file card through the real evaluator and request-bound recovery seam', async () => {
+    const checkFiles = [
+      'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts',
+      'packages/operator-core/lib/agent-tools/scorecards/emit.test.ts',
+      'packages/operator-core/lib/agent-tools/scorecards/emit.replay.test.ts',
+      'packages/operator-core/lib/agent-tools/scorecards/evaluate.release-gate.test.ts',
+      'packages/operator-core/lib/agent-tools/scorecards/list.test.ts',
+    ];
+    const criteria = checkFiles.map((file, index) => ({
+      key: `det-${index}`, title: file, model: 'm', method: 'm', driftMarkers: 'd',
+      check: { kind: 'tests' as const, files: [file] },
+    }));
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria });
+    const ratings = Object.fromEntries(criteria.map((criterion) => [criterion.key, {
+      rating: 'pass', evidence: 'exact installed candidate and file run checked',
+    }]));
+    const runRecoverableChecks = vi.fn(async (runOpts: { files: string[]; root: string }) => ({
+      ok: true, runId: 'scorecard-check-recovered-0', root: runOpts.root,
+      files: runOpts.files.length, passed: runOpts.files.length, failed: 0, skipped: 0,
+      byFile: Object.fromEntries(runOpts.files.map((file) => [file, {
+        passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      }])),
+      failures: [], failuresTruncated: false, durationMs: null,
+      testRunIds: [101, 102, 103, 104, 105],
+    }));
+    const result = await emitScorecard(
+      emitArgs({ ratings }) as never,
+      { ...EMIT_INPUT, checkRoot: REPO_ROOT },
+      { runRecoverableChecks },
+    );
+    expect(result.ok).toBe(true);
+    expect(runRecoverableChecks).toHaveBeenCalledOnce();
+    expect(runRecoverableChecks.mock.calls[0][0].files).toEqual(checkFiles);
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { checkRuns?: Record<string, CriterionCheckRun> } };
+    };
+    expect(Object.keys(payload.payloadExtra.observation.checkRuns ?? {})).toEqual(criteria.map((criterion) => criterion.key));
+    expect(payload.payloadExtra.observation.checkRuns?.['det-0']).toMatchObject({
+      verdict: 'pass', runId: 'scorecard-check-recovered-0', testRunIds: [101, 102, 103, 104, 105],
+    });
+  });
+
   it('stamps observation.checkRuns from a clean evaluation and surfaces it on the result', async () => {
     const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
       ok: true,

@@ -2811,6 +2811,11 @@ export async function getNextWorkItem(
   // to the legacy activeWorkspaceId() when omitted (unchanged behavior for other callers).
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
+  const operationClaims = await import('../blueprint/operation-worker-binding');
+  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee);
+  if (operationClaimRead.status === 'unavailable') {
+    throw new Error(`operation claim authority unavailable: ${operationClaimRead.reason}`);
+  }
 
   // drain-claim-spec-hardening-2026-07-13 D-002 (fixes EI-11300): `states` is drain-wide
   // POLICY, so it rides the SPEC — a per-call `opts.states` (the caller's explicit
@@ -2871,7 +2876,10 @@ export async function getNextWorkItem(
   const excludeIds = negativeIdExclusions(spec.view.filter);
   const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
   const specOrderSql = compileRank(sql, spec, bee);
-  const featurePriorityFilterSql = compileFilter(sql, widened);
+  const featurePriorityFilterSql = sql`${compileFilter(sql, widened)} AND
+    ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
+      payload: 'payload', id: 'feature_id', harness: 'harness_slug',
+    })}`;
   const claimIssue = (priorityBeforeFeature?: boolean) =>
     claimNextIssueWorkItem(
       {
@@ -2942,6 +2950,9 @@ export async function getNextWorkItem(
          SELECT harness_slug, feature_id
            FROM harness_shared.harness_features_consolidated
           WHERE ${floors}
+            AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
+              payload: 'payload', id: 'feature_id', harness: 'harness_slug',
+            })}
             AND ${filter}
           ORDER BY ${order}
           LIMIT 1

@@ -23,7 +23,8 @@ const args = {
   repoDir: '/repo/harness-a',
 };
 const item = { id: 'WI-1', harness: 'harness-a', payload: { blueprintOperation: { kind: 'blueprint-operation' } } };
-const pin = { operationId: 'run', specificationRevision: REVISION };
+const pin = { kind: 'blueprint-operation' as const, harnessSlug: 'harness-a',
+  operationId: 'run', specificationRevision: REVISION, operationVersion: '1.0.0', input: {} };
 const operation = {
   execution: { kind: 'agent', role: 'worker' },
   policy: {
@@ -50,6 +51,7 @@ describe('accepted blueprint operation worker binding', () => {
     const binding = await resolveAcceptedOperationWorkerBinding(args);
     expect(binding).toEqual({
       workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      pin,
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'],
       requiredTools: ['coord:orient', 'work_items:get'],
@@ -60,12 +62,11 @@ describe('accepted blueprint operation worker binding', () => {
   it('matches only the exact pinned item for an active worker', () => {
     const binding = {
       workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      pin,
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
     };
-    const pinned = { id: 'WI-1', harness: 'harness-a', payload: { blueprintOperation: {
-      kind: 'blueprint-operation', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
-    } } };
+    const pinned = { id: 'WI-1', harness: 'harness-a', payload: { blueprintOperation: pin } };
     const read = { status: 'bound' as const, binding, receipt: {
       sessionId: 1, workspaceId: 'ws-a', ownerId: 'worker-a',
       specificationRevision: HASH, stateRevision: 'state-a', acceptedOperation: {},
@@ -76,6 +77,9 @@ describe('accepted blueprint operation worker binding', () => {
     expect(matchOperationWorkerClaim(read, { ...pinned, payload: {} }).allowed).toBe(false);
     expect(matchOperationWorkerClaim(read, { ...pinned, payload: {
       blueprintOperation: { ...pinned.payload.blueprintOperation, specificationRevision: 'c'.repeat(64) },
+    } }).allowed).toBe(false);
+    expect(matchOperationWorkerClaim(read, { ...pinned, payload: {
+      blueprintOperation: { ...pin, input: { changed: true } },
     } }).allowed).toBe(false);
     expect(matchOperationWorkerClaim({ status: 'none' }, pinned).allowed).toBe(false);
     expect(matchOperationWorkerClaim({ status: 'none' }, { ...pinned, payload: {} })).toEqual({ allowed: true });

@@ -34,6 +34,7 @@ import type { ClaimSpec } from './claim-spec';
 import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { acknowledgeActivation, desiredActivation, prepareActivation } from '../session-activation';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -146,6 +147,17 @@ beforeAll(async () => {
       id BIGSERIAL PRIMARY KEY,
       workspace_id text NOT NULL
     );`).simple();
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      role text, started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz, ended_by text, launch_spec jsonb
+    );
+    CREATE TABLE harness_shared.session_briefs (
+      workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
+      PRIMARY KEY (workspace_id, owner_id)
+    );
+  `).simple();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
@@ -158,7 +170,51 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps `;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
+    harness_shared.adv_sessions, harness_shared.session_briefs`;
+});
+
+describe('blueprint worker claim under a scheduler spec', () => {
+  it('serves only the exact pinned item and refuses a changed pin', async () => {
+    const operationRevision = 'c'.repeat(64);
+    const launchRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
+    const worker = 'scheduler-operation-worker';
+    const pin = {
+      kind: 'blueprint-operation', harnessSlug: H, operationId: 'execute',
+      specificationRevision: operationRevision, operationVersion: '1.0.0', input: {},
+    };
+    await seedFeature('WI-scheduler-pinned', { createdTs: 1 });
+    await seedFeature('WI-scheduler-ordinary', { createdTs: 2 });
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin })}
+      WHERE feature_id = 'WI-scheduler-pinned'`;
+    const activation = acknowledgeActivation(prepareActivation(desiredActivation(
+      { actorId: worker, principalId: worker, sessionId: worker }, launchRevision,
+    ), launchRevision), launchRevision);
+    await db.sql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, coord_owner_id, role, launch_spec)
+      VALUES (${WS}, ${worker}, 'worker', ${db.sql.json({
+        workspaceId: WS, harnessSlug: H, role: 'worker', ...launchRevision,
+        specificationArtifact: { configuration: { grants: {} } },
+        acceptedOperation: {
+          kind: 'blueprint-operation-worker', workItemId: 'WI-scheduler-pinned',
+          operationId: 'execute', specificationRevision: operationRevision,
+          pin,
+          identity: { ref: 'worker', revision: '1.0.0', contentHash: 'd'.repeat(64) },
+          requiredTools: ['scheduler:get_next'],
+        },
+      })})`;
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (workspace_id, owner_id, control_state)
+      VALUES (${WS}, ${worker}, ${db.sql.json({ activation })})`;
+
+    expect((await getNextWorkItem(DEFAULT_CLAIM_SPEC, { assignee: worker }, { harness: H }))?.workItem.id)
+      .toBe('WI-scheduler-pinned');
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL,
+      payload = ${db.sql.json({ blueprintOperation: { ...pin, specificationRevision: 'e'.repeat(64) } })}
+      WHERE feature_id = 'WI-scheduler-pinned'`;
+    expect(await getNextWorkItem(DEFAULT_CLAIM_SPEC, { assignee: worker }, { harness: H }))
+      .toBeNull();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

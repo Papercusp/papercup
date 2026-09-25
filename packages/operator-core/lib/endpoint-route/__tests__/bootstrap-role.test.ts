@@ -234,6 +234,8 @@ describe('bootstrap-role', () => {
     const restrictedArtifact = { configuration: { grants: { requires: [], optional: [], suggestedProviders: {} } } };
     const acceptedOperation = {
       workItemId: 'F-001', operationId: 'run', specificationRevision: 'c'.repeat(64),
+      pin: { kind: 'blueprint-operation', harnessSlug: 'papercup', operationId: 'run',
+        specificationRevision: 'c'.repeat(64), operationVersion: '1.0.0', input: {} },
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
       stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
     };
@@ -261,6 +263,7 @@ describe('bootstrap-role', () => {
       acceptedOperation: {
         kind: 'blueprint-operation-worker', workItemId: 'F-001', operationId: 'run',
         specificationRevision: 'c'.repeat(64), identity: acceptedOperation.identity,
+        pin: acceptedOperation.pin,
         requiredTools: ['work_items:get'],
       },
     }));

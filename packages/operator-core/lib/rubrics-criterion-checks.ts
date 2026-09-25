@@ -523,7 +523,32 @@ export type CriterionCheckRunner = (opts: {
   timeoutMs?: number;
   workspaceId?: string;
   harnessSlug?: string;
+  runId?: string;
 }) => Promise<CriterionCheckRunnerResult>;
+
+/** The normal scorecard test route, also used by restart recovery for a fresh attempt. */
+export async function runCriterionCheckFiles(opts: Parameters<CriterionCheckRunner>[0]): Promise<CriterionCheckRunnerResult> {
+  const result = await runTestFilesCore(opts);
+  if (
+    result.error !== undefined ||
+    typeof opts.workspaceId !== 'string' ||
+    opts.workspaceId.trim() === '' ||
+    opts.workspaceId === '*' ||
+    typeof opts.harnessSlug !== 'string' ||
+    opts.harnessSlug.trim() === '' ||
+    opts.harnessSlug === '*'
+  ) {
+    return result;
+  }
+  return {
+    ...result,
+    testRunIds: await findHarnessTestRunIds({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      runGroupId: result.runId,
+    }),
+  };
+}
 
 /** Injectable direct-dispatch seam for rubric ContinuityProbe checks. */
 export type CriterionProbeDispatcher = (
@@ -1192,6 +1217,8 @@ export async function evaluateCriterionTestChecks(input: {
   /** Total run budget across ALL checks (ms); each run gets what remains. */
   timeoutMs?: number;
   runner?: CriterionCheckRunner;
+  /** Exact request-bound run group supplied by a composing durable scorecard emit. */
+  runId?: string;
   nowIso?: () => string;
 }): Promise<CriterionCheckEvaluation> {
   // WI-41394: select the validation/run root over the rated tests-check subset — the
@@ -1207,30 +1234,7 @@ export async function evaluateCriterionTestChecks(input: {
   // preserve the same contract here rather than creating unattributed rows that
   // cannot later bind spec evidence. Injected runners stay untouched except for
   // receiving the same scope fields.
-  const runner: CriterionCheckRunner =
-    input.runner ??
-    (async (opts) => {
-      const result = await runTestFilesCore(opts);
-      if (
-        result.error !== undefined ||
-        typeof opts.workspaceId !== 'string' ||
-        opts.workspaceId.trim() === '' ||
-        opts.workspaceId === '*' ||
-        typeof opts.harnessSlug !== 'string' ||
-        opts.harnessSlug.trim() === '' ||
-        opts.harnessSlug === '*'
-      ) {
-        return result;
-      }
-      return {
-        ...result,
-        testRunIds: await findHarnessTestRunIds({
-          workspaceId: opts.workspaceId,
-          harnessSlug: opts.harnessSlug,
-          runGroupId: result.runId,
-        }),
-      };
-    });
+  const runner: CriterionCheckRunner = input.runner ?? runCriterionCheckFiles;
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
   const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;
   const checkRuns: Record<string, CriterionCheckRun> = {};
@@ -1276,6 +1280,7 @@ export async function evaluateCriterionTestChecks(input: {
   const run = await runner({
     files: uniqueFiles,
     root,
+    ...(input.runId ? { runId: input.runId } : {}),
     ...(budget !== undefined ? { timeoutMs: budget } : {}),
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),

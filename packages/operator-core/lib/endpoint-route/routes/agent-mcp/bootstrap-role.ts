@@ -516,6 +516,7 @@ const post = defineTool({
           workItemId: spec.acceptedOperation.workItemId,
           operationId: spec.acceptedOperation.operationId,
           specificationRevision: spec.acceptedOperation.specificationRevision,
+          pin: spec.acceptedOperation.pin,
           identity: spec.acceptedOperation.identity,
           requiredTools: spec.acceptedOperation.requiredTools,
         } } : {}),
