@@ -138,8 +138,13 @@ function decisionTextForItem(decision: PlanDecision, item: PlanItem): string {
   return explicitlyLinked ? text : itemScopedText(text, item.id);
 }
 
-function hasNarrowDeployedMainException(text: string): boolean {
+export function hasNarrowDeployedMainException(text: string): boolean {
   return EXPLICIT_DEPLOYED_ONLY_RE.test(text) && STAGING_LIMIT_RE.test(text) && CONCRETE_REASON_RE.test(text);
+}
+
+/** Gate repair itself operates the release plane; it is not ordinary plan implementation. */
+export function isLiveGateOperationText(text: string): boolean {
+  return LIVE_GATE_OPERATION_RE.test(text);
 }
 
 /**
