@@ -12,6 +12,8 @@ import type { RpcFrame, SuStdioReceipt } from '../su-session-stdio-peer';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
+const preflightClock = vi.hoisted(() => ({ id: 'preflight-test-clock', now: () => 5_000_000 }));
+vi.mock('../process-monotonic-clock', () => ({ processMonotonicClock: preflightClock }));
 
 vi.mock('node:fs/promises', async importOriginal => {
   const original = await importOriginal<typeof import('node:fs/promises')>();
@@ -24,6 +26,7 @@ import {
   ownerIdFromPath,
   scanLaunchTranscripts,
   captureCompletedCarrySource,
+  captureCarrySourcePreflight,
   recheckCarrySourceSnapshot,
   captureCarryNativeConfiguration,
   recheckCarryNativeConfiguration,
@@ -427,6 +430,77 @@ describe('frozen carry artifact bindings', () => {
       artifacts: [{ id: 'task', filePath, maxBytes: 200_000 }] } };
   }
 
+  async function scriptFixture() {
+    const { input, peer } = await fixture();
+    const sources = {
+      entry: ['import "./dep.mjs";', 'import "node:fs";', 'import(computed);',
+        `import "https://private.invalid/${NEVER_EMIT_MARKER}";`, 'require("./leaf.cjs");',
+        'import "./missing.mjs";', 'import "./outside.mjs";',
+        'const text = "import(\'never-emit-me\')";'].join('\n'),
+      dep: 'export { value } from "./entry.mjs";',
+      leaf: 'module.exports = 1;',
+    };
+    for (const [id, source] of Object.entries(sources)) {
+      const filePath = join(root, `${id}.${id === 'leaf' ? 'cjs' : 'mjs'}`);
+      await writeFile(filePath, source);
+      input.artifacts.push({ id, filePath, maxBytes: 200_000 });
+    }
+    await writeFile(join(root, 'outside.mjs'), 'export const outside = true;');
+    return { peer, input: { ...input, scriptArtifactIds: ['entry', 'dep'] } };
+  }
+
+  it('binds AST import sites from frozen bytes and keeps every unsupported boundary explicit', async () => {
+    const { input, peer } = await scriptFixture();
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.scriptCensus).toMatchObject({ evidenceKind: 'selected-static-import-sites',
+      scriptArtifactIds: ['dep', 'entry'], runtimeClosureEstablished: false });
+    expect(manifest.scriptCensus!.sites.map(({ artifactId, line, disposition, targetArtifactId }) =>
+      ({ artifactId, line, disposition, targetArtifactId }))).toEqual([
+      { artifactId: 'dep', line: 1, disposition: 'bound-script-candidate', targetArtifactId: 'entry' },
+      { artifactId: 'entry', line: 1, disposition: 'bound-script-candidate', targetArtifactId: 'dep' },
+      { artifactId: 'entry', line: 2, disposition: 'node-builtin', targetArtifactId: undefined },
+      { artifactId: 'entry', line: 3, disposition: 'computed-specifier', targetArtifactId: undefined },
+      { artifactId: 'entry', line: 4, disposition: 'external-module', targetArtifactId: undefined },
+      { artifactId: 'entry', line: 5, disposition: 'unscanned-artifact-candidate', targetArtifactId: 'leaf' },
+      { artifactId: 'entry', line: 6, disposition: 'unresolved-relative', targetArtifactId: undefined },
+      { artifactId: 'entry', line: 7, disposition: 'unbound-relative', targetArtifactId: undefined },
+    ]);
+    expect(JSON.stringify(manifest)).not.toMatch(/never-emit-me|private\.invalid|import\(|module\.exports/);
+    await expect(recheckCarryArtifactManifest(manifest, peer)).resolves.toBeUndefined();
+    await writeFile(join(root, 'missing.mjs'), 'export const late = true;');
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('manifest metadata');
+  });
+
+  it('does not arbitrarily bind duplicate artifact paths or treat unscanned leaves as a closed graph', async () => {
+    const { input } = await scriptFixture();
+    input.artifacts.push({ ...input.artifacts.find(artifact => artifact.id === 'dep')!, id: 'dep-alias' });
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.scriptCensus!.sites.find(site => site.artifactId === 'entry' && site.line === 1))
+      .toMatchObject({ disposition: 'ambiguous-relative' });
+    expect(manifest.scriptCensus!.runtimeClosureEstablished).toBe(false);
+  });
+
+  it.each([[], ['entry', 'entry'], ['missing'], ['task']].map(scriptArtifactIds => ({ scriptArtifactIds })))
+    ('refuses invalid selected script ids $scriptArtifactIds', async ({ scriptArtifactIds }) => {
+    const { input } = await scriptFixture();
+    await expect(captureCarryArtifactManifest({ ...input, scriptArtifactIds })).rejects.toThrow('unique declared script');
+  });
+
+  it('refuses syntax errors instead of accepting a partial AST as a dependency census', async () => {
+    const { input } = await scriptFixture();
+    await writeFile(join(root, 'entry.mjs'), 'import { from "bad";');
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow('cannot parse artifact entry');
+  });
+
+  it('bounds selected source bytes and import sites before accepting a census', async () => {
+    const { input } = await scriptFixture();
+    input.artifacts.find(artifact => artifact.id === 'entry')!.maxBytes = 5 * 1024 * 1024;
+    await writeFile(join(root, 'entry.mjs'), ' '.repeat(4 * 1024 * 1024 + 1));
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow('source-byte bound');
+    await writeFile(join(root, 'entry.mjs'), 'import "node:fs";\n'.repeat(4097));
+    await expect(captureCarryArtifactManifest(input)).rejects.toThrow('import-site bound');
+  });
+
   it('hashes complete binary/text bytes, binds roles and config, and roundtrips without returning contents', async () => {
     const { input, peer } = await fixture();
     const bytes = Buffer.alloc(131_079, 0xf0); bytes[131_078] = 0x17;
@@ -786,6 +860,81 @@ describe('completed native carry source capture', () => {
     ] });
     expect(source.ancestors[0].snapshot.bytes.toString()).toBe(parentBody);
     await expect(recheckCarrySourceSnapshot(source)).resolves.toBeUndefined();
+  });
+  const preflightSetup = async (inputTokens: unknown = 30_000) => {
+    const fixture = await setup();
+    const usage = { type: 'event_msg', payload: { type: 'token_count', info: {
+      last_token_usage: { input_tokens: inputTokens, cached_input_tokens: 29_000, output_tokens: 10 },
+      total_token_usage: { input_tokens: 650_000, cached_input_tokens: 600_000, output_tokens: 100 },
+    } } };
+    const rows: unknown[] = [fixture.entries[0], fixture.entries[1],
+      { type: 'turn_context', payload: { turn_id: 'native-turn', model: 'gpt-6-sol' } }, usage, usage,
+      fixture.entries[2]];
+    const write = () => writeFile(fixture.path, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    await write();
+    const receipt: SuStdioReceipt = { phase: 'received', peerId: 'preparation-peer', sequence: 12,
+      clockId: preflightClock.id, atMs: preflightClock.now() - 1000,
+      frame: { method: 'turn/completed', params: { threadId: 'native-thread', turn: { id: 'native-turn', status: 'completed' } } } };
+    const observe = async (sourceId = 'S-I0', receipts = [receipt]) => captureCarrySourcePreflight({
+      source: await captureCompletedCarrySource(fixture.peer, 'native-thread', 'native-turn'), sourceId, receipts,
+    });
+    return { ...fixture, rows, write, receipt, observe };
+  };
+  it('observes last-request input from the exact native cut, not cumulative totals, cached subsets or duplicate notices', async () => {
+    const fixture = await preflightSetup();
+    const observed = await fixture.observe();
+    expect(observed).toMatchObject({ dispatchAuthorized: false, missing: [],
+      history: { inputTokens: 30_000, model: 'gpt-6-sol', inBand: true },
+      idle: { ageMs: 1000, phase: 'window-open', evidenceRef: 'native:preparation-peer:12' } });
+    const bytes = Buffer.from(await readFile(fixture.path));
+    expect(observed.sourceRef).toBe(`codex:native-thread/native-turn@${createHash('sha256').update(bytes).digest('hex')}`);
+    expect(observed.history!.evidenceRef).toBe(`${observed.sourceRef}#usage-byte=${bytes.indexOf(Buffer.from('{"type":"event_msg","payload":{"type":"token_count"'))}`);
+    expect((await fixture.observe('L-I0')).history).toMatchObject({ inputTokens: 30_000, inBand: false });
+  });
+  it.each([
+    ['S-I0', 59_999, 'window-open'], ['S-I0', 60_000, 'expired'],
+    ['S-I1', 359_999, 'too-early'], ['S-I1', 360_000, 'window-open'],
+    ['S-I1', 600_000, 'window-open'], ['S-I1', 600_001, 'expired'],
+    ['S-I2', 3_899_999, 'too-early'], ['S-I2', 3_900_000, 'window-open'],
+    ['S-I2', 4_500_000, 'window-open'], ['S-I2', 4_500_001, 'expired'],
+  ])('retains the registered %s dispatch window at age %s', async (sourceId, age, phase) => {
+    const fixture = await preflightSetup(); fixture.receipt.atMs = preflightClock.now() - Number(age);
+    expect((await fixture.observe(String(sourceId))).idle).toMatchObject({ ageMs: age, phase });
+  });
+  it.each(['missing', 'duplicate', 'other-clock', 'future', 'failed', 'other-turn'])('refuses a %s completion receipt', async fault => {
+    const fixture = await preflightSetup();
+    if (fault === 'other-clock') fixture.receipt.clockId = 'old-controller';
+    if (fault === 'future') fixture.receipt.atMs = preflightClock.now() + 1;
+    if (fault === 'failed') ((fixture.receipt.frame.params as RpcFrame).turn as RpcFrame).status = 'failed';
+    if (fault === 'other-turn') ((fixture.receipt.frame.params as RpcFrame).turn as RpcFrame).id = 'other';
+    expect(await fixture.observe('S-I0', fault === 'missing' ? [] : fault === 'duplicate'
+      ? [fixture.receipt, fixture.receipt] : [fixture.receipt])).toMatchObject({ idle: null,
+      missing: ['same-clock-completion-receipt-unavailable'], dispatchAuthorized: false });
+  });
+  it.each([null, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('does not infer history size from invalid input %s', async input => {
+    expect(await (await preflightSetup(input)).observe()).toMatchObject({ history: null,
+      missing: ['last-completed-request-input-unavailable'] });
+  });
+  it.each(['missing-usage', 'other-turn', 'later-context', 'compacted'])('refuses stale history after %s', async fault => {
+    const fixture = await preflightSetup();
+    if (fault === 'missing-usage') fixture.rows.splice(3, 2);
+    if (fault === 'other-turn') (fixture.rows[2] as { payload: { turn_id: string } }).payload.turn_id = 'other';
+    if (fault === 'later-context') fixture.rows.splice(-1, 0, { type: 'turn_context', payload: { turn_id: 'later', model: 'gpt-6-sol' } });
+    if (fault === 'compacted') fixture.rows.splice(-1, 0, { type: 'compacted', payload: {} });
+    await fixture.write();
+    expect(await fixture.observe()).toMatchObject({ history: null, missing: ['last-completed-request-input-unavailable'] });
+  });
+  it('rejects disk drift and changed in-memory bytes before a preflight observation', async () => {
+    const fixture = await preflightSetup();
+    const source = await captureCompletedCarrySource(fixture.peer, 'native-thread', 'native-turn');
+    const observe = () => captureCarrySourcePreflight({ source, sourceId: 'S-I0', receipts: [fixture.receipt] });
+    source.snapshot.bytes[0] ^= 1;
+    await expect(observe()).rejects.toThrow('bytes do not match');
+    source.snapshot.bytes[0] ^= 1;
+    await appendFile(fixture.path, '{}\n');
+    await expect(observe()).rejects.toThrow('byte cap');
+    await writeFile(fixture.path, source.snapshot.bytes.toString().replace('gpt-6-sol', 'gpt-6-foo'));
+    await expect(observe()).rejects.toThrow('changed after its frozen cut');
   });
   it.each(['append', 'rewrite-same-length', 'delete'])('rejects parent %s even when child bytes did not change', async change => {
     const { peer, parentPath, parentBody } = await forkSetup();

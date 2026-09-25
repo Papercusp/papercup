@@ -20,10 +20,12 @@
 import { constants as fsConstants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { opendir, open, readdir, readlink, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isBuiltin } from 'node:module';
 import { createInterface } from 'node:readline';
 import type { StableSource } from '../session-port/source';
-import type { SuStdioPeer } from '../su-session-stdio-peer';
+import type { SuStdioPeer, SuStdioReceipt } from '../su-session-stdio-peer';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import type { Sql } from 'postgres';
 import type { GatewayRequestTelemetrySnapshot } from '../inference-gateway/request-stage-telemetry';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -531,6 +533,10 @@ export async function captureCarryArtifactManifest(input: {
   artifacts: readonly CarryArtifactInput[];
   configuration: Awaited<ReturnType<typeof captureCarryNativeConfiguration>>;
   dependencyScope?: CarryDependencyScope;
+  /** Opt-in AST observation of these frozen script artifacts. Unbound relative
+   * candidates, external packages and computed imports remain explicit. This
+   * does not authenticate a loader or discover files outside the declared set. */
+  scriptArtifactIds?: string[];
 }) {
   input = structuredClone(input);
   const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -542,6 +548,14 @@ export async function captureCarryArtifactManifest(input: {
   }
   const dependencyScope = input.dependencyScope === undefined ? undefined :
     bindCarryDependencyScope(input.dependencyScope, input.artifacts);
+  const scriptIds = new Set(input.scriptArtifactIds ?? []);
+  if (input.scriptArtifactIds !== undefined && (!Array.isArray(input.scriptArtifactIds) || !scriptIds.size ||
+    scriptIds.size !== input.scriptArtifactIds.length || [...scriptIds].some(id =>
+      !input.artifacts.some(artifact => artifact.id === id && /\.(?:[cm]?[jt]s|[jt]sx)$/.test(artifact.filePath))))) {
+    throw new Error('carry script census requires unique declared script artifact ids');
+  }
+  const scriptSources = new Map<string, string>();
+  let scriptBytes = 0;
   const observed = input.configuration;
   if (!observed || !Array.isArray(observed.servers) || observed.servers.some(server =>
     !nonblank(server.name) || !nonblank(server.authStatus) || !Array.isArray(server.tools) ||
@@ -572,6 +586,7 @@ export async function captureCarryArtifactManifest(input: {
       }
       const identity = (s: typeof before) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].map(String);
       const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+      const sourceChunks: Buffer[] = [];
       let bytes = 0;
       while (true) {
         const read = await fh.read(buffer, 0, Math.min(buffer.length, artifact.maxBytes - bytes + 1), bytes);
@@ -579,6 +594,13 @@ export async function captureCarryArtifactManifest(input: {
         bytes += read.bytesRead;
         if (bytes > artifact.maxBytes) throw new Error(`carry artifact ${artifact.id} exceeded its byte bound`);
         hash.update(buffer.subarray(0, read.bytesRead));
+        if (scriptIds.has(artifact.id)) {
+          scriptBytes += read.bytesRead;
+          if (bytes > 4 * 1024 * 1024 || scriptBytes > 32 * 1024 * 1024) {
+            throw new Error('carry script census exceeds source-byte bound');
+          }
+          sourceChunks.push(Buffer.from(buffer.subarray(0, read.bytesRead)));
+        }
       }
       const after = await fh.stat({ bigint: true });
       if (BigInt(bytes) !== before.size || canonicalJson(identity(before)) !== canonicalJson(identity(after)) ||
@@ -588,11 +610,50 @@ export async function captureCarryArtifactManifest(input: {
       }
       artifacts.push({ id: artifact.id, filePath: artifact.filePath, maxBytes: artifact.maxBytes,
         resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) });
+      if (scriptIds.has(artifact.id)) scriptSources.set(artifact.id, Buffer.concat(sourceChunks).toString('utf8'));
     } finally { await fh.close(); }
+  }
+  let scriptCensus;
+  if (scriptIds.size) {
+    const ts = await import('typescript');
+    const { extractImports, findFile } = await import('../../../../scripts/check-transitive-boundary.mjs');
+    const sites: Array<{ artifactId: string; line: number; kind: string; disposition: string;
+      specifierSha256?: string; targetArtifactId?: string }> = [];
+    for (const artifactId of [...scriptIds].sort()) {
+      const artifact = artifacts.find(artifact => artifact.id === artifactId)!;
+      const parsed = ts.createSourceFile(artifact.filePath, scriptSources.get(artifactId)!, ts.ScriptTarget.Latest, true);
+      if ((parsed as typeof parsed & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics?.length) {
+        throw new Error(`carry script census cannot parse artifact ${artifactId}`);
+      }
+      const imports = extractImports(parsed, { onUnresolved: site => {
+        sites.push({ artifactId, ...site, disposition: 'computed-specifier' });
+      } });
+      for (const site of imports) {
+        const base = { artifactId, line: site.line, kind: site.kind,
+          specifierSha256: createHash('sha256').update(site.spec).digest('hex') };
+        if (site.typeOnly) { sites.push({ ...base, disposition: 'erased-type' }); continue; }
+        if (isBuiltin(site.spec)) { sites.push({ ...base, disposition: 'node-builtin' }); continue; }
+        if (!site.spec.startsWith('.')) { sites.push({ ...base, disposition: 'external-module' }); continue; }
+        // Reuse the boundary checker's relative source candidate resolution.
+        // This is NOT the native loader: export conditions, hooks, aliases,
+        // indirect loaders and files read as data still need separate evidence.
+        const candidate = findFile(resolve(dirname(artifact.filePath), site.spec));
+        const resolved = candidate ? await realpath(candidate) : null;
+        const targets = resolved ? artifacts.filter(artifact => artifact.resolvedPath === resolved) : [];
+        const target = targets.length === 1 ? targets[0] : null;
+        sites.push({ ...base, disposition: !candidate ? 'unresolved-relative' : targets.length > 1 ? 'ambiguous-relative' : !target ? 'unbound-relative'
+          : scriptIds.has(target.id) ? 'bound-script-candidate' : 'unscanned-artifact-candidate',
+          ...(target ? { targetArtifactId: target.id } : {}) });
+      }
+      if (sites.length > 4096) throw new Error('carry script census exceeds import-site bound');
+    }
+    sites.sort((a, b) => a.artifactId.localeCompare(b.artifactId) || a.line - b.line || a.kind.localeCompare(b.kind));
+    scriptCensus = { evidenceKind: 'selected-static-import-sites' as const,
+      scriptArtifactIds: [...scriptIds].sort(), sites, runtimeClosureEstablished: false as const };
   }
   const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
     protocolRef: input.protocolRef, configuration: config, artifacts,
-    ...(dependencyScope ? { dependencyScope } : {}) };
+    ...(dependencyScope ? { dependencyScope } : {}), ...(scriptCensus ? { scriptCensus } : {}) };
   return { ...body, sha256: createHash('sha256').update(canonicalJson(body)).digest('hex') };
 }
 
@@ -614,6 +675,7 @@ export async function recheckCarryArtifactManifest(
   const current = await captureCarryArtifactManifest({ protocolRef: manifest.protocolRef,
     configuration: manifest.configuration,
     dependencyScope: manifest.dependencyScope,
+    scriptArtifactIds: manifest.scriptCensus?.scriptArtifactIds,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
   if (current.sha256 !== sha256) {
     const changed = current.artifacts.filter((artifact, index) =>
@@ -726,6 +788,72 @@ export async function recheckCarrySourceSnapshot(source: CarrySourceSnapshot): P
     if (current.completeBytes !== current.highWaterBytes || current.completeBytes !== member.snapshot.completeBytes ||
       current.sha256 !== member.snapshot.sha256) throw new Error('carry source changed after its frozen cut');
   }
+}
+
+/** Observe a frozen predecessor's last native request input and the remaining
+ * D017 dispatch window. Reuse the ingestion parser's request deduplication and
+ * context generations; cumulative session totals and file size are not history
+ * size. The native count describes the LAST REQUEST, not a tokenization of the
+ * next fork. These local receipts do not authenticate provider usage or authorize
+ * dispatch. A later HTTP write must still be checked against this same window.
+ */
+export async function captureCarrySourcePreflight(input: {
+  source: CarrySourceSnapshot;
+  sourceId: string;
+  receipts: readonly SuStdioReceipt[];
+}) {
+  const recipe = createCarryTrialRecipe();
+  const stratum = recipe.sources.find(source => source.id === input.sourceId);
+  if (!stratum) throw new Error('carry source preflight requires a registered stratum');
+  const source = input.source, bytes = Buffer.from(source.snapshot.bytes);
+  const receipts = structuredClone(input.receipts);
+  if (createHash('sha256').update(bytes).digest('hex') !== source.snapshot.sha256) {
+    throw new Error('carry source preflight bytes do not match the frozen cut');
+  }
+  await recheckCarrySourceSnapshot(source);
+  const { parseCodexChunk, UNKNOWN_CODEX_MODEL } = await import('../interactive-usage/ingest-adapters');
+  const parsed = parseCodexChunk(bytes.toString('utf8'));
+  const usage = parsed.events?.at(-1);
+  const missing: string[] = [];
+  const sourceRef = `codex:${source.threadId}/${source.turnId}@${source.snapshot.sha256}`;
+  const validUsage = usage?.turnId === source.turnId && parsed.parserState?.turnId === source.turnId &&
+    usage.contextGeneration === parsed.parserState?.contextGeneration &&
+    usage.model !== UNKNOWN_CODEX_MODEL && typeof usage.inputTotalTokens === 'number' &&
+    Number.isSafeInteger(usage.inputTotalTokens) && usage.inputTotalTokens >= 0;
+  if (!validUsage) missing.push('last-completed-request-input-unavailable');
+  const history = validUsage ? {
+    inputTokens: usage!.inputTotalTokens!, model: usage!.model,
+    evidenceRef: `${sourceRef}#usage-byte=${usage!.relativeOffset}`,
+    usageSourceId: usage!.sourceId,
+    inBand: usage!.inputTotalTokens! >= stratum.history.minInputTokens && usage!.inputTotalTokens! <= stratum.history.maxInputTokens,
+  } : null;
+  const completions = receipts.filter(receipt => receipt.phase === 'received' && receipt.frame.method === 'turn/completed' &&
+    (receipt.frame.params as { threadId?: unknown } | undefined)?.threadId === source.threadId &&
+    ((receipt.frame.params as { turn?: { id?: unknown } } | undefined)?.turn)?.id === source.turnId);
+  const completion = completions.length === 1 ? completions[0] : null;
+  const turn = (completion?.frame.params as { turn?: { status?: unknown; error?: unknown } } | undefined)?.turn;
+  // Sample here, after disk validation. Never let a caller backdate now, reuse a
+  // prior process clock, or substitute thread/read/poll time for completion.
+  const now = processMonotonicClock.now();
+  const validCompletion = completion && completion.clockId === processMonotonicClock.id && completion.peerId.trim() &&
+    Number.isSafeInteger(completion.sequence) && completion.sequence > 0 &&
+    Number.isFinite(completion.atMs) && completion.atMs >= 0 && completion.atMs <= now &&
+    turn?.status === 'completed' && turn.error == null;
+  if (!validCompletion) missing.push('same-clock-completion-receipt-unavailable');
+  const idle = validCompletion ? {
+    clockId: completion.clockId, completedAtMs: completion.atMs, observedAtMs: now,
+    evidenceRef: `native:${completion.peerId}:${completion.sequence}`,
+    ageMs: now - completion.atMs,
+    opensAtMs: completion.atMs + stratum.idle.minMs,
+    closesAtMs: completion.atMs + stratum.idle.maxMs,
+    closeInclusive: stratum.idle.maxInclusive,
+    phase: now - completion.atMs < stratum.idle.minMs ? 'too-early' as const
+      : (stratum.idle.maxInclusive ? now - completion.atMs > stratum.idle.maxMs : now - completion.atMs >= stratum.idle.maxMs)
+        ? 'expired' as const : 'window-open' as const,
+  } : null;
+  return { recipeSha256: recipe.sha256, sourceId: stratum.id, sourceRef,
+    evidenceKind: 'local-native-source-preflight' as const, dispatchAuthorized: false as const,
+    history, idle, missing };
 }
 
 /**
