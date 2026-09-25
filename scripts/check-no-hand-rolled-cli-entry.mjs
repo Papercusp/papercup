@@ -96,7 +96,6 @@ export const ALLOW_COUNTS = new Map([
   ['scripts/check-systemd-startlimit-placement.mjs|path-to-file-url', 2],
   ['scripts/check-timer-classification.mjs|path-to-file-url', 2],
   ['scripts/check-tracked-node-modules.mjs|path-to-file-url', 1],
-  ['scripts/check-transitive-boundary.mjs|path-to-file-url', 1],
   ['scripts/check-typeless-reexport-trap.mjs|file-url-to-path', 1],
   ['scripts/check-unbounded-inbox-read.mjs|path-to-file-url', 1],
   ['scripts/check-unenrolled-mjs-imports.mjs|path-to-file-url', 2],
