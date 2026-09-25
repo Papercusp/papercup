@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, resolveBuiltinExtends,
+import { blueprintPackageInputs, builtinBlueprintPath, layerContentHash,
+  resolveBlueprintSource, resolveBuiltinExtends,
   type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { buildBlueprintReleaseArchive, commitBlueprintRelease } from './cupboard/blueprint-release';
@@ -12,6 +13,7 @@ import { diffIdentitySpecifications, previewNamedIdentityComposition,
 import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog, listIdentitySources,
   resolveNamedIdentityCompositionSelection } from './agent-identities/source';
 import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
+import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +53,39 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  it('launches an attested installed identity at the catalog source revision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'installed-launch-selection-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    const id = 'zz-installed-launch-domain';
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const dir = join(root, 'blueprints', id);
+      await mkdir(join(dir, 'prompts'), { recursive: true });
+      const identity = { id, extends: 'base', version: '1.0.0',
+        slots: [{ slot: 'domain' }] };
+      await writeFile(join(dir, 'blueprint.yaml'), stringifyYaml({ ...identity,
+        attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' } }));
+      await writeFile(join(dir, 'prompts', 'domain.md'), 'INSTALLED SELECTED DOMAIN\n');
+      const listed = (await listIdentitySources({ after: 'zy', limit: 100 })).identities
+        .find((entry) => entry.id === id);
+      expect(listed).toMatchObject({ id, tier: 'installed', version: '1.0.0',
+        launchCompatibility: { eligible: true, reason: null } });
+      expect(listed?.sourceRevision).toMatch(/^[a-f0-9]{64}$/);
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: root, role: 'worker',
+        stack: [`domain:${id}`], renderStack: true, state: { schemaVersion: 1 },
+      });
+      expect(launch.promptText).toContain('INSTALLED SELECTED DOMAIN');
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: id, contentHash: listed!.sourceRevision,
+      }));
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('previews and atomically saves a named composition in the existing local blueprint library', async () => {
     const root = await mkdtemp(join(tmpdir(), 'named-identity-composition-'));
     const domainId = 'zz-compose-domain';
