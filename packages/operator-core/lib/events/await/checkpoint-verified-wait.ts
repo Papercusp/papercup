@@ -226,6 +226,10 @@ export async function observeCheckpointProducer(
   const producerPresent =
     observedSnapshot.activeRun?.active === true || observedSnapshot.routines?.greenCheckpoint?.active === true;
   const state = checkpointObservationState(observedSnapshot, details);
+  // An unknown candidate-bound reading does not prove the producer is inactive.
+  // Keep that uncertainty in the evidence shown to the waiting agent: `false`
+  // was previously emitted even when the run probe returned no reading at all.
+  const active = state === 'unknown' ? null : observedSnapshot.activeRun?.active ?? null;
   return {
     checkedAtMs: observedSnapshot.generatedAtMs,
     producerPresent,
@@ -235,7 +239,7 @@ export async function observeCheckpointProducer(
     completedAtMs: verdict?.createdAtMs ?? null,
     evidence: {
       pipeline: details.pipeline,
-      active: observedSnapshot.activeRun?.active ?? false,
+      active,
       candidate: observedSnapshot.activeRun?.candidate ?? null,
       ...(lock?.held && observedSnapshot.activeRun?.active === true ? { activeSource: 'run-lock' } : {}),
       ...(lock?.pid != null ? { runLockPid: lock.pid } : {}),

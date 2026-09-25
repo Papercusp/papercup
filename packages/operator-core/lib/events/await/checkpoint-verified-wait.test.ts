@@ -129,7 +129,7 @@ describe('checkpoint verified-wait producer adapter', () => {
     expect(observed).toMatchObject({
       producerPresent: true,
       state: 'unknown',
-      evidence: { active: false, candidate: null, producerState: 'unknown' },
+      evidence: { active: null, candidate: null, producerState: 'unknown' },
     });
     expect(observed.evidence).not.toHaveProperty('activeSource');
     expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
@@ -225,7 +225,7 @@ describe('checkpoint verified-wait producer adapter', () => {
       snapshot: current,
     });
     const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
-    expect(observed).toMatchObject({ state: 'idle', evidence: { producerState: 'idle' } });
+    expect(observed).toMatchObject({ state: 'idle', evidence: { active: false, producerState: 'idle' } });
     expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
       classification: 'expected-idle',
       nextAction: 're-await',
@@ -309,6 +309,7 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
     const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
     expect(observed.state).toBe('unknown');
+    expect(observed.evidence).toMatchObject({ active: null, producerState: 'unknown' });
     expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
       classification: 'unknown',
       nextAction: 're-await',
@@ -351,6 +352,7 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
     const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
     expect(observed.state).toBe('unknown');
+    expect(observed.evidence).toMatchObject({ active: null, producerState: 'unknown' });
     expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
       classification: 'unknown',
       nextAction: 're-await',
