@@ -248,7 +248,9 @@ export async function launchGoalHolderSession(
     // exactly as it did. Only an explicit `headless:false` on the goal's launch
     // settings opens the holder on a visible desktop terminal.
     headless: resolved.effective.headless ?? true,
-    mode: 'auto',
+    // The GOAL attachment below is the only authority for AUTO and IDEATE.
+    // Bootstrap waits for that exact subject and its cascade before turn one.
+    goalBootstrapSubject: goalId,
     deferSpawn: input.deferSpawn ?? false,
     kickoffPrompt,
   });

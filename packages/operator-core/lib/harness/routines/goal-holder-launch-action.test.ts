@@ -106,7 +106,7 @@ function deps(resolved: GoalLaunchResolution = resolution()): GoalHolderLaunchDe
 }
 
 describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
-  it('resolves the existing goal and launches a headless AUTO holder with the stored profile', async () => {
+  it('resolves the existing goal and launches a holder gated on the GOAL cascade', async () => {
     const d = deps(
       resolution({
         effective: {
@@ -143,7 +143,7 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
         account: 'auto',
         contextSize: 'trimmed',
         headless: true,
-        mode: 'auto',
+        goalBootstrapSubject: 'goal-1',
         deferSpawn: false,
       }),
     );

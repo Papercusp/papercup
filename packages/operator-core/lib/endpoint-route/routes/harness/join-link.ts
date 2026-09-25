@@ -46,6 +46,7 @@ import {
 } from '../../../identity/resolve-local-github-identity';
 import type { HarnessLink } from '../../../harness/url-scheme';
 import type { JoinState } from '../../../harness/join-shared-harness';
+import type { UpsertRemoteHiveIdentityInput } from '../../../hive-store';
 
 // ─── injectable deps ──────────────────────────────────────────────────────────
 
@@ -70,6 +71,10 @@ export interface JoinLinkDeps {
    *  the link is transport, not the trust anchor. Best-effort: a failure NEVER fails
    *  the join (the beacon path still backfills). Injectable for hermetic tests. */
   seedOwnerBinding: (input: SeedOwnerBindingInput) => Promise<SeedOwnerBindingOutcome>;
+  /** WI-10003134: materialize the joined Pot's identity row (the OWNER's Hive
+   *  pubkey under a remote:* keychain id) — the FK parent every inbound
+   *  pot_members op needs. Same writer join-hive's step 2b uses. */
+  upsertHiveIdentity: (input: UpsertRemoteHiveIdentityInput) => Promise<void>;
 }
 
 /** D-007 input for the verified owner-binding seed (all fields from the member link). */
@@ -168,6 +173,10 @@ export const realJoinLinkDeps: JoinLinkDeps = {
   seedGitSync: (opts) => seedGitSyncRoutineForMember(opts),
   resolveWorkspaceId: activeWorkspaceId,
   seedOwnerBinding: defaultSeedOwnerBinding,
+  upsertHiveIdentity: async (input) => {
+    const { upsertRemoteHiveIdentity } = await import('../../../hive-store');
+    await upsertRemoteHiveIdentity(input);
+  },
 };
 
 // ─── core handler (injectable, exported for tests) ────────────────────────────
@@ -303,6 +312,28 @@ export async function handleJoinLink(
         ),
       };
     });
+
+    // WI-10003134: materialize the joined Pot's identity row, exactly as
+    // join-hive's step 2b does. `pot_members_pot_fkey` needs it as the FK parent
+    // for every inbound roster op; without it the fold aborts at the first
+    // hive-members op and the joiner never converges (P-007 W2, 2026-09-25: frozen
+    // at 251019/251057 until the row existed, converged 3 s after it did), and
+    // reconcilePotCanonicalSlug declines with no_identity_row. Only a member link
+    // carries the Hive pubkey; a bare link cannot know it here. keychain_id is a
+    // NON-SIGNING remote:* placeholder — a joiner never signs for a Pot it does
+    // not own. Best-effort: a failure NEVER fails the join.
+    if (link.hivePubkey) {
+      try {
+        await deps.upsertHiveIdentity({
+          workspaceId: deps.resolveWorkspaceId(),
+          homeSlug: slug,
+          pubkeyBase64: link.hivePubkey,
+          keychainId: `remote:${link.repoName}-pot`,
+        });
+      } catch {
+        // Non-fatal — the fold retries each pass, so a later write still unwedges it.
+      }
+    }
 
     // Scaffold the harness schema (best-effort — don't fail the join if this fails).
     try {

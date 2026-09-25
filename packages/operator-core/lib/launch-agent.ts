@@ -49,6 +49,8 @@ import type { SuAgent, SuContextSize } from './su-agents';
 export const OWNER_LAUNCH_HEADLESS = true;
 
 export interface LaunchAgentOpts extends LaunchOpts {
+  /** Exact GOAL subject bootstrap must attest before the first agent turn. */
+  goalBootstrapSubject?: string | null;
   /** Selected identity layers from the existing blueprint stack. */
   stack?: readonly string[] | null;
   /** Exact source hash shown in the GUI picker; bootstrap rechecks it. */
@@ -331,6 +333,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
     kickoff_prompt: opts.kickoffPrompt ?? null,
+    ...(opts.goalBootstrapSubject ? { goal_bootstrap_subject: opts.goalBootstrapSubject } : {}),
     defer_spawn: opts.deferSpawn ?? false,
     attached_engine: opts.attachedEngine ?? false,
     // WI-6321 — psu parity. Null-safe: an omitted option keeps the previous

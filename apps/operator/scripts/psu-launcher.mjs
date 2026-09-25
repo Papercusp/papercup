@@ -278,6 +278,7 @@ Fleet and execution:
   --mode-subject=<text>              DRAIN subject
   --mode-instructions=<text>         DRAIN instructions
   --mode-owner-directed              Mark the DRAIN mode owner-directed
+  --goal-bootstrap-subject=<id>      Require exact GOAL subject and implied modes before turn one
   --carry=<warm|cold>                Fleet carry mode
   --account=<id|auto|default>        Account routing
 
@@ -1238,6 +1239,13 @@ export function parseArgs(argv) {
     else if (a.startsWith("--mode-instructions="))
       out.modeInstructions = a.slice("--mode-instructions=".length);
     else if (a === "--mode-owner-directed") out.modeOwnerDirected = true;
+    else if (a.startsWith("--goal-bootstrap-subject=")) {
+      const subject = a.slice("--goal-bootstrap-subject=".length).trim();
+      if (!subject || subject.length > 200) {
+        throw new Error("--goal-bootstrap-subject requires a non-empty goal id of at most 200 characters");
+      }
+      out.goalBootstrapSubject = subject;
+    }
     // PUI-origin marker: when PUI delegates new-session creation to this
     // launcher, hide the PUI destination so the picker cannot recurse.
     else if (a === "--tui") pendingTui = true;
@@ -1267,6 +1275,9 @@ export function parseArgs(argv) {
         `psu: warning — unrecognized flag \`${a}\` was ignored (did you mean \`${a}=<value>\`? psu --help lists supported flags).`,
       );
     }
+  }
+  if (out.goalBootstrapSubject && (out.resume || out.mode || out.auto !== null || out.fleet || out.fleetName)) {
+    throw new Error("--goal-bootstrap-subject requires a fresh, fleetless launch without separate AUTO or DRAIN flags");
   }
   // Model-family/backend coupling: a supplied native cloud model selects its
   // backend when --agent is omitted, and an explicit mismatch fails before any
@@ -12735,6 +12746,8 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
     if (launchMode.ownerDirected) argv.push("--mode-owner-directed");
   }
   if (effectiveAutoMode(args)) argv.push("--auto");
+  if (args.goalBootstrapSubject)
+    argv.push(`--goal-bootstrap-subject=${args.goalBootstrapSubject}`);
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
   if (args.launchedBy) argv.push(`--launched-by=${args.launchedBy}`);
   if (args.ownerId) argv.push(`--owner-id=${args.ownerId}`);
@@ -12787,6 +12800,9 @@ export function freshSuBootstrapBody(
     // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
     // AUTO directive into the system prompt + prepends it to the seeded kickoff.
     ...(effectiveAutoMode(args) ? { auto: true } : {}),
+    ...(args.goalBootstrapSubject
+      ? { goal_bootstrap_subject: args.goalBootstrapSubject }
+      : {}),
     // drain-mode P-003: forward the bounded named mode — bootstrap-su validates it
     // (unknown → 400), forces autoMode on, and syncs the child registry + standing
     // scope fact before baking the DRAIN directive into prompt + kickoff.

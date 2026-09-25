@@ -10,6 +10,7 @@ import { bindSelectedIdentityOutputs, getIdentitySource, resolvePinnedIdentityLa
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from './blueprint/installed-blueprints';
 import { commitBlueprintRelease, snapshotBlueprintReleaseSource } from './cupboard/blueprint-release';
 import { getModes, setMode } from './modes/store';
+import { attestGoalBootstrapModes } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 import { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt } from './su-persona-render';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -50,6 +51,8 @@ describe('GOAL plus IDEATE selects authored components from persisted mode state
     expect(rows.find((row) => row.mode === 'goal')?.subject).toBe(goalId);
     expect(rows.find((row) => row.mode === 'auto')?.impliedBy).toMatchObject({ mode: 'goal', subject: goalId });
     expect(rows.find((row) => row.mode === 'ideate')?.impliedBy).toMatchObject({ mode: 'goal', subject: goalId });
+    expect(attestGoalBootstrapModes(goalId, rows)).toEqual({ status: 'ready' });
+    expect(attestGoalBootstrapModes('another-goal', rows).status).toBe('invalid');
     const stack = composeSuStackSource({ binding: suSessionBinding({ modes: rows.map((row) => row.mode) }) });
     expect(stack.order.filter((entry) => entry.layer === 'modes').map((entry) => entry.id))
       .toEqual(['su.mode-auto', 'su.mode-ideate', 'su.mode-goal']);

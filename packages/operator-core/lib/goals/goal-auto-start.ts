@@ -322,6 +322,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       agent: goalLaunch.effective.agent ?? 'claude',
       harness: installSlug,
       ownerId,
+      goalBootstrapSubject: id,
       account: goalLaunch.effective.account ?? null,
       model: goalLaunch.effective.model ?? null,
       effort: goalLaunch.effective.effort ?? null,

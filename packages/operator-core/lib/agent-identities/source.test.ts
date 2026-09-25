@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
+import { SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
 import {
-  bindSelectedIdentityOutputs, compileSelectedIdentityResources,
+  bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, compileSelectedIdentityResources,
   getSelectedModeCatalog, getSelectedModeDefinitions,
 } from './source';
 
@@ -58,6 +59,25 @@ describe('selected identity producer output binding', () => {
     expect(selected.get('cold-auto')!.contract).toContain('## COLD AUTO');
     expect(selected.get('cold-auto')!.sourceRevision).toBe(selected.get('auto')!.sourceRevision);
     await expect(getSelectedModeDefinitions(['unknown-mode'])).rejects.toThrow(/no selected fixed definition/);
+  });
+
+  it('binds every catalogued mode state through its declared turn producer and fixed definition', async () => {
+    for (const document of SU_MODE_DOCUMENTS) {
+      const bound = await bindSelectedIdentityOutputArtifact({
+        identityId: document.id,
+        sourceTier: 'builtin',
+        outputs: [{ contributionId: 'current-mode-state', value: { mode: document.modes[0] } }],
+        scope,
+        observedAt,
+      });
+      expect(bound.artifact.provenance, document.id).toContainEqual(expect.objectContaining({
+        path: 'contribution.current-mode-state', decision: 'provider:turn',
+        producerRef: 'modes/store:agent_modes',
+      }));
+      expect(bound.artifact.provenance, document.id).toContainEqual(expect.objectContaining({
+        path: `contribution.${document.modes[0]}-definition`, decision: 'fixed:source-change',
+      }));
+    }
   });
 
   it('accepts an explicit mode-state omission before a recovery holder is attached', async () => {

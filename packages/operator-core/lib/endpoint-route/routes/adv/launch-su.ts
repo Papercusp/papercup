@@ -97,6 +97,8 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     // greeting oneliner) and never the curated `kickoff` above. NOT carried by
     // the defer_spawn (workbench) path, which records argv only.
     kickoff_prompt?: string | null;
+    /** Existing GOAL attachment bootstrap must verify before a first turn. */
+    goal_bootstrap_subject?: string | null;
     // WI-6321 (owner ask 2026-07-27): psu-parity launch options the GUI could
     // not express, so every GUI launch was silently unfleeted and on the
     // default system credential.
@@ -213,6 +215,15 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     return json({ status: 'error', error: error instanceof Error ? error.message : 'invalid model/effort' }, 400);
   }
   const resumeSessionId = body.resume_session_id?.trim() || null;
+  const goalBootstrapSubject = typeof body.goal_bootstrap_subject === 'string'
+    ? body.goal_bootstrap_subject.trim() : null;
+  if (body.goal_bootstrap_subject != null &&
+      (typeof body.goal_bootstrap_subject !== 'string' || !goalBootstrapSubject || goalBootstrapSubject.length > 200)) {
+    return json({ status: 'error', error: 'goal_bootstrap_subject must be a non-empty string of at most 200 characters' }, 400);
+  }
+  if (goalBootstrapSubject && (resumeSessionId || body.mode || body.fleet || body.fleet_name)) {
+    return json({ status: 'error', error: 'goal_bootstrap_subject requires a fresh, fleetless session without a separate launch mode' }, 400);
+  }
   if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
   if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId))
     return json({ status: 'error', error: 'invalid resume session id' }, 400);
@@ -521,6 +532,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
   if (carry) psuArgs.push(`--carry=${carry}`);
   if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
   if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
+  if (goalBootstrapSubject) psuArgs.push(`--goal-bootstrap-subject=${goalBootstrapSubject}`);
   // hive-agent-tabs P-006: a New-plan launch IS the Planner — launch the
   // planner role/persona (`=` form; psu drops the space form) so the dock
   // panes it as a typed 📋 Planner pane (responsive — auto-injection OFF).

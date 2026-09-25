@@ -71,12 +71,26 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     try { process.kill(row.pid, 0); throw new Error('The saved native process is still alive'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
   }
+  const processHolder = native.backend === 'codex' ? null : sessionProcessHolder(nativeId);
+  const writerHolder = native.backend === 'codex' ? codexThreadWriterHolder(native.codexHome, nativeId) : null;
   const evidence = native.backend === 'codex'
     ? normalizeCodexResumeLocalLivenessEvidence({ agent: 'codex', liveHost,
-      writerHolder: codexThreadWriterHolder(native.codexHome, nativeId) })
+      writerHolder })
     : normalizeArgvProbeResumeLocalLivenessEvidence({ agent: native.backend, liveHost,
-      processHolder: sessionProcessHolder(nativeId) });
-  if (!evidence) throw new Error('Could not establish exclusive ownership of the saved native session');
+      processHolder });
+  if (!evidence) {
+    // Keep the refusal fail-closed, but record which local oracle blocked it.
+    // Never expose a process command line or the native session id here.
+    const holder = native.backend === 'codex' ? writerHolder : processHolder;
+    const safeReasons = new Set(['argv-match', 'clean-scan', 'scan-empty', 'no-proc', 'no-session-id',
+      'free', 'no-lock-file']);
+    const reason = safeReasons.has(holder?.reason ?? '') ? holder!.reason : 'unknown';
+    const rawPid = holder?.pid;
+    const pid = typeof rawPid === 'number' && Number.isInteger(rawPid) && rawPid > 0 ? rawPid : 'none';
+    throw new Error(`Could not establish exclusive ownership of the saved native session `
+      + `(backend=${native.backend}, probe=${reason}, held=${holder?.held === true}, pid=${pid}, `
+      + `force=${process.env.PSU_FORCE_RESUME === '1'})`);
+  }
   const floor = await checkInteractiveSafetyFloor();
   if (!floor.ok) throw new Error(floor.reason);
   const key = `pui-resume:${randomUUID()}`;

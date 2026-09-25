@@ -64,6 +64,7 @@ function makeDeps(overrides: Partial<JoinLinkDeps> = {}): JoinLinkDeps {
     })),
     resolveWorkspaceId: vi.fn(() => 'ws-test'),
     seedOwnerBinding: vi.fn(async () => ({ seeded: true as const })),
+    upsertHiveIdentity: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -344,6 +345,37 @@ describe('handleJoinLink', () => {
     const deps = makeDeps();
     await handleJoinLink(VALID_INPUT, deps); // plain VALID_LINK — no owner-binding fields
     expect(deps.seedOwnerBinding).not.toHaveBeenCalled();
+  });
+
+  it('WI-10003134: a member link materializes the joined Pot identity row (the pot_members FK parent) under the local slug', async () => {
+    const deps = makeDeps();
+    await handleJoinLink({ ...VALID_INPUT, link: VALID_LINK_WITH_OWNER_BINDING }, deps);
+
+    expect(deps.upsertHiveIdentity).toHaveBeenCalledTimes(1);
+    expect(deps.upsertHiveIdentity).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      homeSlug: 'my-harness',
+      pubkeyBase64: VALID_LINK_WITH_OWNER_BINDING.hivePubkey,
+      // a NON-SIGNING remote:* placeholder: upsertRemoteHiveIdentity refuses anything else
+      keychainId: `remote:${VALID_LINK.repoName}-pot`,
+    });
+  });
+
+  it('WI-10003134: a bare link (no hive pubkey) writes no identity row', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps);
+    expect(deps.upsertHiveIdentity).not.toHaveBeenCalled();
+  });
+
+  it('WI-10003134: swallows identity-row write errors — the join still returns 200 and still seeds the owner binding', async () => {
+    const deps = makeDeps({
+      upsertHiveIdentity: vi.fn(async () => {
+        throw new Error('duplicate key value violates unique constraint "pots_public_key_key"');
+      }),
+    });
+    const res = await handleJoinLink({ ...VALID_INPUT, link: VALID_LINK_WITH_OWNER_BINDING }, deps);
+    expect(res.status).toBe(200);
+    expect(deps.seedOwnerBinding).toHaveBeenCalledTimes(1);
   });
 
   it('swallows seedOwnerBinding errors — the join still returns 200', async () => {

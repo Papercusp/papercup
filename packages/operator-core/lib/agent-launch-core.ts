@@ -497,6 +497,8 @@ export function buildAgentLaunchCommand(opts: {
   addDir?: string[] | null;
   /** psu --launch-context: path to a brief/markdown file injected as the launch context. */
   launchContext?: string | null;
+  /** Exact GOAL subject bootstrap must attest before the first agent turn. */
+  goalBootstrapSubject?: string | null;
   /** Durable launch-mode overlay inherited from the launching session. */
   launchMode?: LaunchMode | null;
   /**
@@ -681,6 +683,7 @@ export function buildAgentLaunchCommand(opts: {
   if (opts.allowSubagents) parts.push('--allow-subagents');
   for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
   if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
+  if (opts.goalBootstrapSubject) parts.push(`--goal-bootstrap-subject=${quoteLaunchValue(opts.goalBootstrapSubject)}`);
   if (opts.launchMode) {
     const launchMode = normalizeLaunchMode(opts.launchMode);
     if (launchMode) {

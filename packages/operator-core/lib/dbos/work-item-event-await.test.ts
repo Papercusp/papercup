@@ -81,6 +81,24 @@ describe('DBOS canonical work-item completion consumer bridge', () => {
     });
   });
 
+  it('rechecks the current cycle after validating a settled result', async () => {
+    const reads = [item('done', 'old'), item('done', 'old'), item('wip'),
+      item('done', 'new'), item('done', 'new'), item('done', 'new')];
+    let now = Date.parse('2026-09-24T11:00:00Z');
+    let latchReads = 0;
+    const result = await awaitWorkItemCompletionEvent(input, {
+      readItem: async () => reads.shift() ?? item('done', 'new'),
+      readLatch: async () => latch(latchReads++ === 0 ? 'old' : 'new'),
+      sleep: async (ms) => { now += ms; },
+      now: () => now,
+    });
+    expect(result).toMatchObject({
+      kind: 'settled', state: 'done', successful: true,
+      source: 'completion-event', completionIntentId: 'new',
+    });
+    expect(latchReads).toBe(2);
+  });
+
   it('uses an absolute deadline that a workflow replay cannot extend', async () => {
     const result = await awaitWorkItemCompletionEvent({ ...input, deadlineAt: '2026-09-24T11:00:00Z' }, {
       readItem: async () => item('wip'), now: () => Date.parse('2026-09-24T11:00:00Z'),

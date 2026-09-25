@@ -865,6 +865,7 @@ export default defineTool({
         agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
         harness: installSlug,
         ownerId,
+        goalBootstrapSubject: id,
         account: goalLaunch.effective.account ?? args.account ?? null,
         model: goalLaunch.effective.model ?? args.model ?? null,
         effort: goalLaunch.effective.effort ?? null,

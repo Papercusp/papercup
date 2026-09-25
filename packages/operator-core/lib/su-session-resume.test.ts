@@ -3,7 +3,7 @@ import type { DurableSuSessionRecord } from './su-session-persistence';
 
 const m = vi.hoisted(() => ({
   row: vi.fn(), spec: vi.fn(), acquire: vi.fn(), finalize: vi.fn(), release: vi.fn(), pid: vi.fn(), ended: vi.fn(),
-  live: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
+  live: vi.fn(), holder: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
 }));
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
@@ -13,7 +13,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   buildResumeEnv: (row: any, opts: any) => ({ PAPERCUSP_SID: row.coordOwnerId,
     PAPERCUSP_ADV_SESSION_ID: String(row.id), ...opts.accountEnv.env }),
   codexThreadWriterHolder: () => ({ held: false, reason: 'no-lock-file' }),
-  sessionProcessHolder: () => ({ held: false, reason: 'clean-scan' }),
+  sessionProcessHolder: m.holder,
   normalizeArgvProbeResumeLocalLivenessEvidence: m.witness,
   normalizeCodexResumeLocalLivenessEvidence: m.witness,
   ensureResumeTranscriptPresent: m.transcript,
@@ -63,6 +63,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
 beforeEach(() => {
   vi.resetAllMocks();
   m.live.mockReturnValue(null);
+  m.holder.mockReturnValue({ held: false, reason: 'clean-scan' });
   m.witness.mockReturnValue({ version: 1, kind: 'no-live-claude-process' });
   m.acquire.mockResolvedValue({ acquired: true, status: 'acquired' });
   m.finalize.mockResolvedValue(true);
@@ -139,6 +140,19 @@ describe('structured exact resume preparation', () => {
     m.acquire.mockResolvedValue({ acquired: false, status: 'reserved' });
     await expect(prepareStructuredSuResume(saved)).rejects.toThrow('reserved');
     expect(m.account).not.toHaveBeenCalled();
+  });
+
+  it('reports bounded refusal-time process evidence without exposing argv or native identity', async () => {
+    const saved = fixture('claude');
+    m.holder.mockReturnValue({ held: true, reason: 'argv-match', pid: 1234,
+      cmdline: 'secret --resume saved-native' });
+    m.witness.mockReturnValue(null);
+    const error = await prepareStructuredSuResume(saved).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('probe=argv-match, held=true, pid=1234, force=false');
+    expect((error as Error).message).not.toContain('secret');
+    expect((error as Error).message).not.toContain('saved-native');
+    expect(m.acquire).not.toHaveBeenCalled();
   });
 
   it('releases the reservation when the transcript or selected account cannot be restored', async () => {

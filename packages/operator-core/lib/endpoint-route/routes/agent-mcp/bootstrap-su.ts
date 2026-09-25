@@ -113,6 +113,7 @@ import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-con
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
+import type { ModeRow } from '../../../modes/store';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -1000,6 +1001,37 @@ export async function syncLaunchModeToRegistry(opts: {
   }
 }
 
+/** GOAL bootstrap may proceed only after the exact subject and derived posture commit. */
+export function attestGoalBootstrapModes(
+  subject: string,
+  rows: readonly Pick<ModeRow, 'mode' | 'subject' | 'impliedBy'>[],
+): { status: 'ready' | 'pending' | 'invalid'; reason?: string } {
+  const goal = rows.find((row) => row.mode === 'goal');
+  if (!goal) return { status: 'pending' };
+  if (goal.subject !== subject) {
+    return { status: 'invalid', reason: `GOAL subject ${goal.subject ?? 'null'} does not match ${subject}` };
+  }
+  for (const mode of ['auto', 'ideate']) {
+    const row = rows.find((candidate) => candidate.mode === mode);
+    if (!row || row.impliedBy?.mode !== 'goal' || row.impliedBy.subject !== subject) {
+      return { status: 'invalid', reason: `${mode} lacks GOAL cascade provenance for ${subject}` };
+    }
+  }
+  return { status: 'ready' };
+}
+
+async function awaitGoalBootstrapModes(workspaceId: string, ownerId: string, subject: string): Promise<string | null> {
+  const { getModes } = await import('../../../modes/store');
+  const deadline = Date.now() + 20_000;
+  do {
+    const attestation = attestGoalBootstrapModes(subject, await getModes(workspaceId, ownerId));
+    if (attestation.status === 'ready') return null;
+    if (attestation.status === 'invalid') return attestation.reason ?? 'invalid GOAL mode provenance';
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return `GOAL subject ${subject} was not attached to ${ownerId} within 20 seconds`;
+}
+
 /**
  * fleet-auto-mode (WI-1356): the durable AUTO-mode activation a fleet/auto launch
  * bakes into the session — a fleet member has no human at its keyboard, so it must
@@ -1609,6 +1641,9 @@ export const bootstrapSu = defineTool({
       mode_subject?: string | null;
       mode_instructions?: string | null;
       mode_owner_directed?: boolean | null;
+      /** A bootstrap-only assertion: wait for this GOAL attachment, then attest
+       * its subject and AUTO/IDEATE cascade before returning a runnable session. */
+      goal_bootstrap_subject?: string | null;
       /** Cross-backend port handshake. Both fields are mandatory together;
        * unknown versions fail before any adv/session artifact is created. */
       session_port_protocol?: number;
@@ -1641,6 +1676,15 @@ export const bootstrapSu = defineTool({
     }
     const agent: SuAgent = body.agent;
     const workspace = body.workspace?.trim() || activeWorkspaceId();
+    const rawGoalBootstrapSubject = body.goal_bootstrap_subject;
+    const goalBootstrapSubject = typeof rawGoalBootstrapSubject === 'string'
+      ? rawGoalBootstrapSubject.trim() : null;
+    if (rawGoalBootstrapSubject != null && (!goalBootstrapSubject || goalBootstrapSubject.length > 200)) {
+      return jsonRes({ status: 'error', error: 'goal_bootstrap_subject must be a non-empty string of at most 200 characters' }, 400);
+    }
+    if (goalBootstrapSubject && (typeof body.owner_id !== 'string' || !body.owner_id.trim() || body.auto === true || body.mode || body.fleet || body.fleet_name)) {
+      return jsonRes({ status: 'error', error: 'GOAL bootstrap requires a pre-pinned owner without separate AUTO, DRAIN, or fleet mode' }, 400);
+    }
     // isKnownWorkspace (NOT raw workspaceById): the literal 'default' sentinel — what
     // activeWorkspaceId() itself returns on a sparse/fresh registry, and what the
     // /options endpoint hands the launcher as `activeWorkspace` — is ALWAYS valid, as is
@@ -1842,7 +1886,9 @@ export const bootstrapSu = defineTool({
     const launchFleetRole = body.fleet_name?.trim() ? 'leader' : body.fleet?.trim() ? body.fleet_role?.trim() || 'member' : null;
     const launchDrain = (body.mode?.trim() || null) === 'drain';
     const launchAuto = body.auto === true || launchDrain || launchFleetRole === 'member';
-    const launchModes: string[] | null = launchAuto ? (launchDrain ? ['auto', 'drain'] : ['auto']) : null;
+    const launchModes: string[] | null = goalBootstrapSubject
+      ? ['goal', 'auto', 'ideate']
+      : launchAuto ? (launchDrain ? ['auto', 'drain'] : ['auto']) : null;
     let spec;
     try {
       spec = await buildLaunchSpec({
@@ -2484,7 +2530,7 @@ export const bootstrapSu = defineTool({
       );
     }
     const drainMode = modeRaw === 'drain';
-    const autoMode = body.auto === true || drainMode;
+    const autoMode = body.auto === true || drainMode || Boolean(goalBootstrapSubject);
 
     // Normalize before either registry/fact writes or prompt assembly. The
     // shared core is the single bound for subject/instructions, so a direct
@@ -2502,7 +2548,7 @@ export const bootstrapSu = defineTool({
     // this launch is about to bake into the prompt (see syncLaunchModeToRegistry's
     // doc comment for the full contradiction this closes). Best-effort — logged,
     // never fails the launch.
-    const modeSyncErr = await syncLaunchModeToRegistry({
+    const modeSyncErr = goalBootstrapSubject ? null : await syncLaunchModeToRegistry({
       workspaceId: workspace,
       ownerId: sid,
       autoMode,
@@ -2560,6 +2606,12 @@ export const bootstrapSu = defineTool({
         `[bootstrap-su] implied-mode reconcile failed (non-fatal — this agent may still be ` +
           `missing modes its mode implies): ${e?.message ?? String(e)}\n`,
       );
+    }
+    if (goalBootstrapSubject) {
+      const problem = await awaitGoalBootstrapModes(workspace, sid, goalBootstrapSubject);
+      if (problem) {
+        return jsonRes({ status: 'error', code: 'goal_bootstrap_attestation_failed', error: problem }, 409);
+      }
     }
 
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather

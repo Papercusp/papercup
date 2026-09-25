@@ -477,6 +477,14 @@ describe('launch-su — the terminal child gets a stable session MCP base', () =
  * uses, for the same reason: it is what the shell actually executes.
  */
 describe('launch-su — launch-time mode (P-042)', () => {
+  it('passes a GOAL bootstrap subject without emitting a separate AUTO mode', async () => {
+    const result = await launch({ goal_bootstrap_subject: 'goal-1', headless: true });
+    expect(result.status).toBe(200);
+    const cmd = headlessOneliner();
+    expect(cmd).toContain('--goal-bootstrap-subject=goal-1');
+    expect(cmd).not.toContain('--auto');
+    expect((await launch({ goal_bootstrap_subject: 'goal-1', mode: 'auto' })).status).toBe(400);
+  });
   it('mode:"drain" passes psu the NAMED-mode flag', async () => {
     await launch({ mode: 'drain', headless: false });
     expect(headedPsuCommand()).toContain('--mode=drain');
