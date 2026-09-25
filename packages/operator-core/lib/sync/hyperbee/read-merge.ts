@@ -30,6 +30,7 @@ import {
   applyHyperbeeOpToPg,
   lwwPick,
   runInProjectionBatch,
+  runOutsideProjectionBatch,
   type ProjectionBatchSession,
   type ProjectionGroupWriter,
   type StoredOrderPrefetch,
@@ -2420,6 +2421,8 @@ class FoldBatch {
   private readonly poisoned = new Set<string>();
   /** P-536: records waiting for their writer's group write, per writer in first-use order. */
   private readonly groups = new Map<ProjectionGroupWriter<unknown>, PendingGroup>();
+  /** P-537: effects ops queued until the open transaction commits, in op order. */
+  private afterCommitHooks: { opId: number; fn: () => Promise<void> }[] = [];
   private currentOp = 0;
   private nextOpId = 1;
   private opPos = -1;
@@ -2521,6 +2524,7 @@ class FoldBatch {
       flush: () => this.flushFor(opId),
       recover: () => this.recoverFor(opId),
       defer: (target, writer, record) => this.deferFor(opId, target, writer, record),
+      afterCommit: (fn) => this.afterCommitFor(opId, fn),
     };
     return { opId, apply: (env) => runInProjectionBatch(session, () => apply(env)) };
   }
@@ -2571,6 +2575,7 @@ class FoldBatch {
       return true;
     }
     this.dropGroupRecords(opId);
+    this.afterCommitHooks = this.afterCommitHooks.filter((h) => h.opId !== opId);
     if (!savepoint) return true;
     try {
       await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
@@ -2596,6 +2601,9 @@ class FoldBatch {
     this.target = null;
     const pipelined = this.pipelined;
     this.pipelined = [];
+    // P-537: a lost transaction drops its hooks; the replayed ops queue them again.
+    const hooks = this.afterCommitHooks;
+    this.afterCommitHooks = [];
     if (this.failureReason === null) {
       try {
         await raceMergeDeadline(Promise.all(pipelined), this.commitTimeoutMs, 'batch statements');
@@ -2623,7 +2631,34 @@ class FoldBatch {
     this.stats.ops += this.opsInTx;
     this.opsInTx = 0;
     this.startPos = -1;
+    await this.runAfterCommitHooks(hooks);
     return true;
+  }
+
+  /**
+   * P-537: queue `fn` when op `opId`'s writes sit in the open transaction; false when they
+   * do not (nothing written yet, autocommitted, or the batch is lost), so the op runs it now.
+   */
+  private afterCommitFor(opId: number, fn: () => Promise<void>): boolean {
+    if (opId !== this.currentOp || this.failureReason !== null || this.reserved === null) return false;
+    if (!this.opTouched || this.opTxGen !== this.txGen) return false;
+    this.afterCommitHooks.push({ opId, fn });
+    return true;
+  }
+
+  /**
+   * P-537: run a committed transaction's hooks in op order. Each is a best-effort effect
+   * the serial path ran inside its apply: one failing never stops the rest, and one
+   * outliving the commit deadline keeps running without holding up the fold.
+   */
+  private async runAfterCommitHooks(hooks: readonly { fn: () => Promise<void> }[]): Promise<void> {
+    for (const { fn } of hooks) {
+      try {
+        await raceMergeDeadline(runOutsideProjectionBatch(fn), this.commitTimeoutMs, 'after-commit effect');
+      } catch (err) {
+        console.warn(`[read-merge] after-commit effect failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /** Drop a lost batch: roll back what is open, forget its provisional winners and its poisoned in-flight applies. */
@@ -2635,6 +2670,7 @@ class FoldBatch {
     this.target = null;
     this.pipelined = [];
     this.groups.clear();
+    this.afterCommitHooks = [];
     for (const ident of this.poisoned) this.cursor.pendingApplies?.delete(ident);
     this.poisoned.clear();
     this.overlay.clear();

@@ -15,6 +15,8 @@ import { buildEngineerIssuesProjection, _testing, type EngineerIssueRow } from '
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from '../read-merge';
 import { applyOpVia, type TableProjection } from '../projection';
 import type { PeerLogOp } from '../peer-log';
+import { SNAPSHOT_TABLE_TAG, type SnapshotPayload, type SnapshotRow } from '../log-snapshot';
+import { composeEngineerIssueKey } from '../feature-issue-op-keys';
 
 const WS = 'ws-ei-proj';
 const SLUG = 'papercup';
@@ -1397,5 +1399,161 @@ describe('P-002 step 2: batched fold commits leave the same rows as the serial f
       `[P-002 parity] ${serial.n} ops: serial ${serial.ms.toFixed(0)}ms, batched ${batched.ms.toFixed(0)}ms ` +
         `(${batched.res.batch?.commits} commits)`,
     );
+  });
+});
+
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-536 (D-034 #1) — real-PG PARITY for group writes.
+ * One snapshot chunk, folded once with one lane (every row written by its own op, inside
+ * the batch) and once with four lanes (rows written in groups: one collision read and one
+ * upsert per lane transaction). The chunk meets local rows that exercise every refusal:
+ * an EI-13285 id collision, an LWW loser, and a stale reopen whose upsert raises the
+ * migration-865 watchdog 23505. That 23505 fails its whole group, which must then be
+ * written row by row and coalesce exactly as the per-op write does.
+ */
+describe('P-536: snapshot-lane group writes leave the same rows as per-op writes (real PG)', () => {
+  const TABLE = 'engineer-issues';
+  const WATCHDOG = { watchdogKey: 'federation-drain-stall:ws-ei-proj:p536' };
+  const peer = (ts: number) => ({ ts, fedHlc: `${ts}:00000:peer`, origin: 'remote' as const, authorPubkey: 'peer' });
+
+  async function seed(p: ReturnType<typeof proj>): Promise<void> {
+    // Created at 1000 (issueRow's default); the chunk's op claims a different creation instant.
+    await p.writeToPg(issueRow({ issue_id: 'EI-g-collide', title: 'local distinct issue' }), peer(100));
+    await p.writeToPg(issueRow({ issue_id: 'EI-g-older', title: 'stored older' }), peer(100));
+    await p.writeToPg(issueRow({ issue_id: 'EI-g-newer', title: 'stored newer' }), peer(900_000));
+    await p.writeToPg(
+      issueRow({ issue_id: 'EI-g-wd-loser', state: 'resolved', title: 'terminal signal', payload: WATCHDOG }),
+      peer(100),
+    );
+    await p.writeToPg(issueRow({ issue_id: 'EI-g-wd-winner', title: 'live signal', payload: WATCHDOG }), peer(200));
+  }
+
+  function chunkRows(): SnapshotRow[] {
+    const at = (id: string, ts: number, over: Partial<EngineerIssueRow>): SnapshotRow => ({
+      table: TABLE,
+      hbKey: composeEngineerIssueKey(SLUG, id),
+      value: issueRow({ issue_id: id, storage_harness_slug: SLUG, ...over }),
+      ts,
+      hlc: `${ts}:00000:peer`,
+      schema_version: 1,
+      author_pubkey: 'peer',
+    });
+    const rows: SnapshotRow[] = [];
+    for (let i = 0; i < 60; i++) {
+      rows.push(
+        at(`EI-g-${String(i).padStart(2, '0')}`, 5000 + i, {
+          title: `grouped ${i}`,
+          state: i % 4 === 0 ? 'done' : 'open',
+          assignee: i % 3 === 0 ? `agent-${i}` : null,
+          // Microseconds on purpose: a timestamptz lands at millisecond precision, as a
+          // per-parameter bind stored it before P-536.
+          assigned_at: i % 3 === 0 ? `2026-09-25T12:00:00.${String(100_000 + i).padStart(6, '0')}+00:00` : null,
+          state_changed_at: `2026-09-25T11:00:00.${String(200_000 + i).padStart(6, '0')}+00:00`,
+          terminal_owner: i % 4 === 0 ? 'owner-x' : null,
+          terminal_reason: i % 4 === 0 ? 'resolved' : null,
+          closed_ts: i % 4 === 0 ? 1_700_000_000_000 + i : null,
+          tags: i % 5 === 0 ? ['p536', `t${i}`] : undefined,
+          source_plan_item_ids: i % 6 === 0 ? ['P-536', 'P-537'] : null,
+          expected_cost_cents: i % 7 === 0 ? 1200 + i : null,
+          admission: i % 2 === 0 ? 'admitted' : null,
+          payload: { n: i, nested: { quote: `it's "${i}"` } },
+        }),
+      );
+    }
+    rows.push(at('EI-g-collide', 6000, { title: 'remote distinct issue', created_ts: 999_000 }));
+    rows.push(at('EI-g-older', 6001, { title: 'chunk wins' }));
+    rows.push(at('EI-g-newer', 6002, { title: 'chunk loses under LWW' }));
+    rows.push(
+      at('EI-g-wd-loser', 6003, {
+        state: 'open',
+        title: 'stale reopen must coalesce',
+        payload: {
+          ...WATCHDOG,
+          reopenHistory: [
+            {
+              at: new Date(300_000).toISOString(),
+              by: 'peer',
+              force: true,
+              prevState: 'resolved',
+              terminalOwner: null,
+              terminalCompletionRef: null,
+              completionAuthority: null,
+              terminalCompletionEvidence: null,
+              assumptions: null,
+            },
+          ],
+        },
+      }),
+    );
+    return rows;
+  }
+
+  async function snapshot() {
+    return db.sql`
+      SELECT feature_id, harness_slug, item_kind, title, summary, status, taken_by, taken_at, payload,
+             author_pubkey, origin, fed_ts, fed_hlc, created_ts, terminal_owner, terminal_completion_ref,
+             terminal_reason, authority, closed_ts, admission, admitted_at, admitted_by, state_changed_at,
+             tags, parent_id, source_plan_slug, source_plan_item_ids, expected_cost_cents
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id LIKE 'EI-g-%'
+       ORDER BY feature_id`;
+  }
+
+  async function fold(snapshotLanes: number) {
+    await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
+    const p = proj();
+    await seed(p);
+    const payload: SnapshotPayload = { coversUpTo: 0, chunkIdx: 0, chunkCount: 1, rows: chunkRows() };
+    const ops: PeerLogOp[] = [
+      { type: 'put', table: SNAPSHOT_TABLE_TAG, hbKey: 'snapshot/0/0-of-1', value: payload, ts: 9000, schema_version: 1, author_pubkey: '' },
+    ];
+    const log: AdmittedLog = { keyHex: 'peer-log', length: ops.length, get: async (i) => ops[i] ?? null };
+    const lookup = (t: string) => (t === TABLE ? (p as TableProjection<unknown>) : null);
+    const cursor = createMergeCursor();
+    const res = await mergeAdmittedLogsIncremental([log], cursor, {
+      applyImpl: (env) => applyOpVia(lookup, env, { ownLogKeyHex: 'own-log' }),
+      getTimeoutMs: 0,
+      batchApply: { maxOps: 25, maxMs: 60_000, snapshotLanes },
+    });
+    const winners = Object.fromEntries([...cursor.winners].map(([k, v]) => [k, v.ts]));
+    return { res, rows: await snapshot(), position: cursor.positions.get('peer-log'), cursor, winners };
+  }
+
+  it('matches per-op writes row for row, refusing the same rows, while the lanes write in groups', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const perOp = await fold(1);
+      const grouped = await fold(4);
+
+      expect(grouped.rows).toEqual(perOp.rows);
+      expect(grouped.rows).toHaveLength(65);
+      expect(grouped.position).toBe(1);
+      expect(perOp.position).toBe(1);
+      expect(grouped.cursor.applyFailures?.get('peer-log')).toBeUndefined();
+      expect(grouped.winners).toEqual(perOp.winners);
+      // CONTROL: one lane writes every row on its own; four lanes write in groups, and the
+      // group holding the watchdog reopen failed and was written row by row.
+      expect(perOp.res.batch).toMatchObject({ grouped: 0, groupReplays: 0 });
+      expect(grouped.res.batch?.grouped).toBeGreaterThan(0);
+      expect(grouped.res.batch).toMatchObject({ groupReplays: 1, rewinds: 0 });
+
+      const byId = new Map(grouped.rows.map((r) => [r.feature_id as string, r]));
+      expect(byId.get('EI-g-collide')?.title).toBe('local distinct issue');
+      expect(byId.get('EI-g-older')?.title).toBe('chunk wins');
+      expect(byId.get('EI-g-newer')?.title).toBe('stored newer');
+      expect(byId.get('EI-g-wd-loser')).toMatchObject({ status: 'resolved', title: 'terminal signal' });
+      expect(byId.get('EI-g-wd-winner')).toMatchObject({ status: 'open', title: 'live signal' });
+      const g00 = byId.get('EI-g-00')!;
+      expect((g00.taken_at as Date).toISOString()).toBe('2026-09-25T12:00:00.100Z');
+      expect((g00.state_changed_at as Date).toISOString()).toBe('2026-09-25T11:00:00.200Z');
+      expect(g00.tags).toEqual(['p536', 't0']);
+      expect(g00.source_plan_item_ids).toEqual(['P-536', 'P-537']);
+      expect(Number(g00.expected_cost_cents)).toBe(1200);
+      expect(byId.get('EI-g-01')?.tags).toBeNull();
+      expect(byId.get('EI-g-01')?.admission).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('winner=EI-g-wd-winner'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

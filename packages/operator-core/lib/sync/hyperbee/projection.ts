@@ -235,6 +235,13 @@ export interface ProjectionBatchSession {
    * the op writes the record itself.
    */
   defer?(target: postgres.Sql, writer: ProjectionGroupWriter<unknown>, record: unknown): Promise<boolean>;
+  /**
+   * P-537: queue `fn` to run once the batch transaction holding this op's writes commits.
+   * A lost batch drops it (the fold replays the op, which queues it again), and so does an
+   * op that did not apply. False means this op's writes are not in the open transaction
+   * (it wrote nothing yet, or autocommitted); the caller runs `fn` now.
+   */
+  afterCommit?(fn: () => Promise<void>): boolean;
 }
 
 /**
@@ -302,6 +309,32 @@ export async function projectionSql(target: postgres.Sql): Promise<postgres.Sql>
  */
 export async function projectionStatementFailed(): Promise<void> {
   await projectionBatchStore.getStore()?.recover();
+}
+
+/**
+ * P-537: run `fn` once the rows this op wrote are committed. Inside the merge's batch
+ * they stay invisible to every other connection until COMMIT, so an effect that other
+ * readers act on (a wake, an event re-fire, a write on another connection) must wait for
+ * it. Outside a batch, or when the op's writes autocommitted, `fn` runs now. `fn` runs
+ * with no ambient batch and must use a plain handle, never the {@link projectionSql} one.
+ */
+export async function projectionAfterCommit(fn: () => Promise<void>): Promise<void> {
+  if (projectionBatchStore.getStore()?.afterCommit?.(fn)) return;
+  await fn();
+}
+
+/**
+ * P-537: commit the merge's open batch now. For a batchable projection's rare path that
+ * writes on another connection: without it that write could wait on a row lock the batch
+ * holds while the batch waits on the op. Throws when the commit failed (the fold replays).
+ */
+export async function projectionFlush(): Promise<void> {
+  await projectionBatchStore.getStore()?.flush();
+}
+
+/** P-537: run `fn` with no ambient batch (after-commit effects of an op that has ended). */
+export function runOutsideProjectionBatch<T>(fn: () => T): T {
+  return projectionBatchStore.exit(fn);
 }
 
 /**

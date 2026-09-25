@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type postgres from 'postgres';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog, type MergeCursor } from './read-merge';
-import { projectionSql } from './projection';
+import { projectionDefer, projectionSql, projectionStatementFailed, type ProjectionGroupWriter } from './projection';
 import { buildEpochKeySeek } from './hive-epoch-op-gate';
 import { SNAPSHOT_TABLE_TAG, type SnapshotPayload, type SnapshotRow } from './log-snapshot';
 import type { MergeApplyOutcome } from './read-merge';
@@ -142,32 +142,57 @@ class LaneDb {
     });
   }
 
-  private async exec(
-    text: string,
-    vals: unknown[],
-    reserved: boolean,
-    tx: { stack: Map<string, unknown>[] | null },
-  ): Promise<Result> {
-    this.statements.push(text.startsWith('WRITE') ? `WRITE ${String(vals[0])}` : text);
+  private async exec(text: string, vals: unknown[], reserved: boolean, tx: FakeTx): Promise<Result> {
+    this.statements.push(
+      text.startsWith('WRITEMANY')
+        ? `WRITEMANY ${(vals[0] as string[]).join(',')}`
+        : text.startsWith('WRITE')
+          ? `WRITE ${String(vals[0])}`
+          : text,
+    );
+    try {
+      return await this.execIn(text, vals, reserved, tx);
+    } catch (err) {
+      if (reserved && tx.stack) tx.aborted = true;
+      throw err;
+    }
+  }
+
+  private async execIn(text: string, vals: unknown[], reserved: boolean, tx: FakeTx): Promise<Result> {
     const top = () => tx.stack![tx.stack!.length - 1]!;
-    switch (text) {
-      case 'BEGIN':
-        tx.stack = [new Map()];
-        return { command: 'BEGIN' };
-      case 'SAVEPOINT read_merge_op':
+    const savepoint = /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) (\w+)$/.exec(text);
+    if (tx.aborted && text !== 'COMMIT' && text !== 'ROLLBACK' && savepoint?.[1] !== 'ROLLBACK TO SAVEPOINT') {
+      throw Object.assign(new Error('current transaction is aborted'), { code: '25P02' });
+    }
+    if (savepoint) {
+      const [, verb, name] = savepoint;
+      if (verb === 'SAVEPOINT') {
         tx.stack!.push(new Map());
+        tx.names.push(name!);
         return { command: 'SAVEPOINT' };
-      case 'RELEASE SAVEPOINT read_merge_op': {
+      }
+      if (tx.names[tx.names.length - 1] !== name) throw new Error(`${verb} ${name} is not the innermost savepoint`);
+      if (verb === 'RELEASE SAVEPOINT') {
+        tx.names.pop();
         const done = tx.stack!.pop()!;
         for (const [k, v] of done) top().set(k, v);
         return { command: 'RELEASE' };
       }
-      case 'ROLLBACK TO SAVEPOINT read_merge_op':
-        tx.stack![tx.stack!.length - 1] = new Map();
-        return { command: 'ROLLBACK' };
+      tx.stack![tx.stack!.length - 1] = new Map();
+      tx.aborted = false;
+      return { command: 'ROLLBACK' };
+    }
+    switch (text) {
+      case 'BEGIN':
+        tx.stack = [new Map()];
+        tx.names = [];
+        return { command: 'BEGIN' };
       case 'COMMIT': {
         const stack = tx.stack;
+        const aborted = tx.aborted;
         tx.stack = null;
+        tx.aborted = false;
+        if (aborted) return { command: 'ROLLBACK' };
         if (this.failCommits > 0) {
           this.failCommits--;
           return { command: 'ROLLBACK' };
@@ -177,11 +202,27 @@ class LaneDb {
       }
       case 'ROLLBACK':
         tx.stack = null;
+        tx.aborted = false;
         return { command: 'ROLLBACK' };
     }
     if (text.startsWith('SELECT set_config')) return { command: 'SELECT' };
+    if (text.startsWith('WRITEMANY')) {
+      const keys = vals[0] as string[];
+      const values = vals[1] as unknown[];
+      await new Promise((r) => setImmediate(r));
+      const bad = keys.find((k) => this.failGroupKeys.has(k));
+      if (bad) throw Object.assign(new Error(`duplicate identity at ${bad}`), { code: '23505' });
+      keys.forEach((k, i) => {
+        if (reserved && tx.stack) top().set(k, values[i]);
+        else this.committed.set(k, values[i]);
+        tx.order.push(k);
+      });
+      return { command: 'INSERT' };
+    }
     if (!text.startsWith('WRITE')) throw new Error(`unexpected statement ${text}`);
     const key = String(vals[0]);
+    if (this.failWriteOnce.delete(key)) throw Object.assign(new Error(`duplicate identity at ${key}`), { code: '23505' });
+    tx.order.push(key);
     const prefix = key.split('-')[0]!;
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
@@ -224,6 +265,54 @@ function sink(db: LaneDb, opts: SinkOpts = {}) {
     await sql`WRITE ${op.hbKey} ${op.value}`;
     opts.timeline?.push(`${op.table}::${op.hbKey}`);
     return true;
+  };
+}
+
+interface GroupSinkOpts {
+  /** Keys written straight away, never handed to the group (a projection with no group writer). */
+  direct?: (key: string) => boolean;
+  /** Keys whose op hands its record over and then reports a structural deferral. */
+  deferAfterHandover?: Set<string>;
+  /** A per-record 23505 the record's own write swallows (a coalesced identity conflict). */
+  coalesce?: Set<string>;
+  /** Every op's key, in the order the ops ran. */
+  timeline?: string[];
+}
+
+/**
+ * P-536: a sink whose rows join the lane's group write, like engineer-issues. `writeOne`
+ * is the per-op write; `writeMany` writes a whole group as one WRITEMANY statement.
+ */
+function groupSink(db: LaneDb, opts: GroupSinkOpts = {}) {
+  type Rec = { key: string; value: unknown };
+  const writeOne = async (r: Rec): Promise<void | false> => {
+    const sql = (await projectionSql(db.target)) as unknown as FakeSql;
+    try {
+      await sql`WRITE ${r.key} ${r.value}`;
+    } catch (err) {
+      if (!opts.coalesce?.has(r.key)) throw err;
+      await projectionStatementFailed();
+      return false;
+    }
+  };
+  const writer: ProjectionGroupWriter<Rec> = {
+    name: 'test-group',
+    rowOf: (r) => r.key,
+    writeMany: async (sql, records) => {
+      await (sql as unknown as FakeSql)`WRITEMANY ${records.map((r) => r.key)} ${records.map((r) => r.value)}`;
+    },
+    writeOne,
+  };
+  return async (op: OpEnvelope): Promise<boolean | MergeApplyOutcome> => {
+    const record = { key: op.hbKey ?? '', value: op.value };
+    opts.timeline?.push(record.key);
+    if (!opts.direct?.(record.key) && (await projectionDefer(db.target, writer, record))) {
+      if (opts.deferAfterHandover?.has(record.key)) {
+        return { kind: 'dependency-waiting', reason: `parent of ${record.key} missing` };
+      }
+      return true;
+    }
+    return (await writeOne(record)) !== false;
   };
 }
 
@@ -484,5 +573,179 @@ describe('P-527: snapshot chunks apply on parallel lanes', () => {
     expect(info.mock.calls.filter((c: unknown[]) => String(c[0]).includes('P-524 key seek')).length).toBe(1);
     expect(cursor.positions.get(LOG)).toBe(2);
     expect(db.releases).toBe(db.reserves);
+  });
+});
+
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-536 (D-034 #1): inside a snapshot lane a projection
+ * with a group writer hands its record to the lane batch, which writes the batch's records
+ * in one statement before it commits. Each case runs the per-op `sink` (or the same sink
+ * with groups off) as the control, so "same rows" is measured, not assumed.
+ */
+describe('P-536: snapshot lanes write rows in groups', () => {
+  async function foldChunk(rows: SnapshotRow[], applyImpl: ReturnType<typeof groupSink>) {
+    const cursor = createMergeCursor();
+    const res = await mergeAdmittedLogsIncremental([memLog([chunk(rows)])], cursor, {
+      applyImpl,
+      getTimeoutMs: 0,
+      batchApply: { ...BATCH, snapshotLanes: 4 },
+    });
+    return { cursor, res };
+  }
+
+  it('leaves the same rows, cursor and winners as per-op writes, in one statement per lane transaction', async () => {
+    const rows = setRows(40, 160);
+    const perOpDb = new LaneDb();
+    const perOp = await foldChunk(rows, sink(perOpDb));
+    const db = new LaneDb();
+    const grouped = await foldChunk(rows, groupSink(db));
+
+    expect([...db.committed].sort()).toEqual([...perOpDb.committed].sort());
+    expect(db.committed.size).toBe(200);
+    expect(grouped.cursor.positions.get(LOG)).toBe(1);
+    expect(winnersOf(grouped.cursor)).toEqual(winnersOf(perOp.cursor));
+    expect(grouped.cursor.applyFailures?.get(LOG)).toBeUndefined();
+    // CONTROL: the per-op sink writes a statement and a savepoint per row.
+    expect(perOpDb.count('SAVEPOINT read_merge_op')).toBe(200);
+    // 4 lanes x 50 rows, committed every 25 ops: 8 transactions, one group write each.
+    expect(db.statements.filter((s) => s.startsWith('WRITE ')).length).toBe(0);
+    expect(db.statements.filter((s) => s.startsWith('WRITEMANY ')).length).toBe(8);
+    expect(db.count('SAVEPOINT read_merge_op')).toBe(0);
+    expect(db.count('SAVEPOINT read_merge_group')).toBe(8);
+    expect(db.count('RELEASE SAVEPOINT read_merge_group')).toBe(8);
+    expect(grouped.res.batch).toMatchObject({ ops: 200, grouped: 200, groupReplays: 0, rewinds: 0 });
+    expect(db.releases).toBe(db.reserves);
+    expect(db.count('BEGIN')).toBe(db.count('COMMIT'));
+  });
+
+  it('a failed group write rolls back to its savepoint and writes its rows one at a time', async () => {
+    const db = new LaneDb();
+    db.failGroupKeys.add('N-7');
+    const { cursor, res } = await foldChunk(setRows(0, 120), groupSink(db));
+
+    expect(db.committed.size).toBe(120);
+    expect(cursor.positions.get(LOG)).toBe(1);
+    expect(cursor.applyFailures?.get(LOG)).toBeUndefined();
+    expect(db.count('ROLLBACK TO SAVEPOINT read_merge_group')).toBe(1);
+    expect(db.count('WRITE N-7')).toBe(1);
+    expect(res.batch).toMatchObject({ groupReplays: 1, rewinds: 0 });
+    // The replayed group's records each got their own savepoint, all released.
+    const replayed = db.count('SAVEPOINT read_merge_group_row');
+    expect(replayed).toBeGreaterThan(0);
+    expect(db.count('RELEASE SAVEPOINT read_merge_group_row')).toBe(replayed);
+    expect(res.batch?.grouped).toBe(120 - replayed);
+  });
+
+  it('a replayed record that is refused on its own is refused exactly as its op would refuse it', async () => {
+    // The per-op write swallows this 23505 (an identity coalesce) after rolling back to
+    // its savepoint; replayed from a group it must do the same, and the chunk still lands.
+    const db = new LaneDb();
+    db.failGroupKeys.add('N-7');
+    db.failWriteOnce.add('N-7');
+    const { cursor, res } = await foldChunk(setRows(0, 120), groupSink(db, { coalesce: new Set(['N-7']) }));
+
+    expect(db.committed.has('N-7')).toBe(false);
+    expect(db.committed.size).toBe(119);
+    expect(cursor.positions.get(LOG)).toBe(1);
+    expect(cursor.applyFailures?.get(LOG)).toBeUndefined();
+    expect(db.count('ROLLBACK TO SAVEPOINT read_merge_group_row')).toBe(1);
+    expect(res.batch).toMatchObject({ groupReplays: 1, rewinds: 0 });
+  });
+
+  it('a record that fails on its own too loses the lane batch, and the chunk replays outside any batch', async () => {
+    const db = new LaneDb();
+    db.failGroupKeys.add('N-7');
+    db.failWriteOnce.add('N-7');
+    const cursor = createMergeCursor();
+    const opts = { applyImpl: groupSink(db), getTimeoutMs: 0, batchApply: { ...BATCH, snapshotLanes: 4 } };
+    const first = await mergeAdmittedLogsIncremental([memLog([chunk(setRows(0, 120))])], cursor, opts);
+
+    expect(cursor.positions.get(LOG) ?? 0).toBe(0);
+    expect(cursor.applyFailures?.get(LOG)?.reason).toContain('snapshot lane batch lost');
+    expect(cursor.batchSerialUntil?.get(LOG)).toBe(1);
+    expect(first.batch?.rewinds).toBeGreaterThan(0);
+    // No winner claims a row whose write rolled back.
+    expect([...cursor.winners.keys()].every((k) => db.committed.has(k.split('::')[1]!))).toBe(true);
+
+    const beginsBefore = db.count('BEGIN');
+    const groupsBefore = db.statements.filter((s) => s.startsWith('WRITEMANY ')).length;
+    await mergeAdmittedLogsIncremental([memLog([chunk(setRows(0, 120))])], cursor, opts);
+    expect(db.committed.size).toBe(120);
+    expect(cursor.positions.get(LOG)).toBe(1);
+    expect(cursor.applyFailures?.get(LOG)).toBeUndefined();
+    // The replay wrote row by row with no batch, so no group either.
+    expect(db.count('BEGIN') - beginsBefore).toBe(0);
+    expect(db.statements.filter((s) => s.startsWith('WRITEMANY ')).length).toBe(groupsBefore);
+    await vi.waitFor(() => expect(db.releases).toBe(db.reserves));
+  });
+
+  it('two records for one row never share a group: the later one lands last', async () => {
+    const rows = setRows(0, 40);
+    rows.push({ table: 'notes', hbKey: 'N-3', value: { n: 'second' }, ts: 9999, schema_version: 1 });
+    const perOpDb = new LaneDb();
+    await foldChunk(rows, sink(perOpDb));
+    const db = new LaneDb();
+    const { cursor } = await foldChunk(rows, groupSink(db));
+
+    expect(perOpDb.committed.get('N-3')).toEqual({ n: 'second' });
+    expect(db.committed.get('N-3')).toEqual({ n: 'second' });
+    expect([...db.committed].sort()).toEqual([...perOpDb.committed].sort());
+    const groupsWithN3 = db.statements.filter((s) => s.startsWith('WRITEMANY ') && s.split(/[ ,]/).includes('N-3'));
+    expect(groupsWithN3).toHaveLength(2);
+    expect(cursor.positions.get(LOG)).toBe(1);
+  });
+
+  it('an op that hands its record over and then does not apply takes the record back', async () => {
+    const rows = setRows(0, 120);
+    const perOpDb = new LaneDb();
+    const perOp = await foldChunk(rows, sink(perOpDb, { defer: new Set(['N-5']) }));
+    const db = new LaneDb();
+    const { cursor } = await foldChunk(rows, groupSink(db, { deferAfterHandover: new Set(['N-5']) }));
+
+    expect(db.committed.has('N-5')).toBe(false);
+    expect([...db.committed].sort()).toEqual([...perOpDb.committed].sort());
+    expect(cursor.applyFailures?.get(LOG)).toMatchObject({ position: 0, kind: 'dependency-waiting' });
+    expect(winnersOf(cursor)).toEqual(winnersOf(perOp.cursor));
+  });
+
+  it('a statement an op issues itself lands after the records handed over before it', async () => {
+    // WI rows write straight away (a projection without a group writer); N rows are grouped.
+    const rows = setRows(40, 160);
+    const perOpDb = new LaneDb();
+    await foldChunk(rows, sink(perOpDb));
+    const db = new LaneDb();
+    const timeline: string[] = [];
+    await foldChunk(rows, groupSink(db, { direct: (k) => k.startsWith('WI-'), timeline }));
+
+    expect([...db.committed].sort()).toEqual([...perOpDb.committed].sort());
+    expect(db.count('SAVEPOINT read_merge_op')).toBe(40);
+    expect(db.statements.some((s) => s.startsWith('WRITEMANY '))).toBe(true);
+    // Every connection wrote its keys in the order their ops ran.
+    for (const tx of db.connections) {
+      const mine = new Set(tx.order);
+      expect(tx.order).toEqual(timeline.filter((k) => mine.has(k)));
+    }
+  });
+
+  it('the tail batch never groups: only snapshot lanes do', async () => {
+    const ops: PeerLogOp[] = Array.from({ length: 60 }, (_, i) => ({
+      type: 'put',
+      table: 'notes',
+      hbKey: `T-${i}`,
+      value: { i },
+      ts: 1000 + i,
+      schema_version: 1,
+      author_pubkey: 'pk',
+    }));
+    const db = new LaneDb();
+    const res = await mergeAdmittedLogsIncremental([memLog(ops)], createMergeCursor(), {
+      applyImpl: groupSink(db),
+      getTimeoutMs: 0,
+      batchApply: { ...BATCH, snapshotLanes: 4 },
+    });
+    expect(db.committed.size).toBe(60);
+    expect(db.statements.filter((s) => s.startsWith('WRITEMANY ')).length).toBe(0);
+    expect(db.count('SAVEPOINT read_merge_op')).toBe(60);
+    expect(res.batch).toMatchObject({ ops: 60, grouped: 0 });
   });
 });
