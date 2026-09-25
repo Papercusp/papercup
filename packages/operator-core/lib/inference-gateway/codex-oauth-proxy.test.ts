@@ -15,6 +15,7 @@ import {
   __resetCodexRefreshState,
   accessTokenExpired,
   aggregateCodexNonStreamResponse,
+  createCodexProviderCompletionDecoder,
   buildCodexUpstreamHeaders,
   codexBackendUrl,
   CodexNonStreamAggregateError,
@@ -44,6 +45,56 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await fs.rm(home, { recursive: true, force: true });
+});
+
+describe('accepted Codex provider completion evidence', () => {
+  const response = { id: 'resp_provider_1', model: 'gpt-5.6-sol', usage: {
+    input_tokens: 120, output_tokens: 17,
+    input_tokens_details: { cached_tokens: 20, cache_write_tokens: 5 },
+  } };
+
+  it('reads provider model and inclusive usage from chunked SSE', () => {
+    const wire = `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: {
+      id: response.id, status: 'in_progress' } })}\n\n` +
+      `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n` +
+      'data: [DONE]\n\n';
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream');
+    const bytes = Buffer.from(wire);
+    let seen = null;
+    for (let at = 0; at < bytes.length; at += 7) {
+      seen = decoder.push(bytes.subarray(at, at + 7)) ?? seen;
+    }
+    expect(seen).toEqual({ responseId: 'resp_provider_1', model: 'gpt-5.6-sol',
+      usage: { inputTokens: 120, inputTokenBasis: 'inclusive', outputTokens: 17,
+        cacheReadTokens: 20, cacheCreationTokens: 5 } });
+    expect(decoder.push(Buffer.from('data: [DONE]\n\n'))).toBeNull();
+    expect(decoder.finish()).toEqual(seen);
+  });
+
+  it('reads a complete JSON response and refuses absent model or usage', () => {
+    const decoder = createCodexProviderCompletionDecoder('application/json');
+    decoder.push(Buffer.from(JSON.stringify(response)));
+    expect(decoder.finish()).toMatchObject({ responseId: response.id, model: response.model });
+    for (const invalid of [{ ...response, model: undefined }, { ...response, usage: undefined }]) {
+      const bad = createCodexProviderCompletionDecoder('application/json');
+      bad.push(Buffer.from(JSON.stringify(invalid)));
+      expect(() => bad.finish()).toThrow('lacks provider model or valid token usage');
+    }
+  });
+
+  it('refuses a stream that ends without provider completion', () => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream');
+    decoder.push(Buffer.from('data: {"type":"response.created","response":{"id":"requested-only"}}\n\n'));
+    expect(() => decoder.finish()).toThrow('ended without provider completion');
+  });
+
+  it('bounds one SSE frame without rejecting a large batch of small frames', () => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream');
+    const filler = 'data: {"type":"response.in_progress"}\n\n'.repeat(30_000);
+    const complete = `data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`;
+    expect(decoder.push(Buffer.from(filler + complete))).toMatchObject({ responseId: response.id });
+    expect(decoder.finish()).toMatchObject({ responseId: response.id });
+  });
 });
 
 async function writeAuth(tokens: Record<string, unknown>, extra: Record<string, unknown> = {}) {

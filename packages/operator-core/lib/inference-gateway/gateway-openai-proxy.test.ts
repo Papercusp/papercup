@@ -151,6 +151,32 @@ const ok = (_req: http.IncomingMessage, res: http.ServerResponse) => {
   res.end(JSON.stringify({ id: 'resp_1', ok: true }));
 };
 
+it('refuses a bound Codex operation before upstream work while actual provider evidence is unavailable', async () => {
+  let upstreamCalls = 0;
+  let backendRead: string | undefined;
+  await bootCodex((_req, res) => {
+    upstreamCalls++;
+    ok(_req, res);
+  }, [codexAcct('cdx-1')], {
+    readAcceptedOperationModelPolicy: async (ownerId, backend) => {
+      expect(ownerId).toBe('operation-worker');
+      backendRead = backend;
+      return { status: 'bound', policy: {
+        mode: 'exact', models: ['gpt-5.6-sol'], effort: 'high', onUnavailable: 'fail',
+      }, attestation: {
+        operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'native-codex-worker',
+        workspaceId: 'default', ownerId, harnessSlug: 'papercup',
+        workItemId: 'WI-codex-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+      } };
+    },
+  });
+  const response = await postResponses({ model: 'gpt-5.6-sol', reasoning: { effort: 'high' },
+    input: 'x' }, { [OWNER_HEADER]: 'operation-worker' });
+  expect(response.status).toBe(503);
+  expect(backendRead).toBe('codex');
+  expect(upstreamCalls).toBe(0);
+});
+
 describe('proxyOpenAi — no pool / configuration', () => {
   it('/v1/responses returns a 503 gateway envelope when no Codex pool is configured', async () => {
     openaiUpstream = await startUpstream(ok);

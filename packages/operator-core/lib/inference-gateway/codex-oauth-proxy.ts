@@ -529,6 +529,118 @@ export async function aggregateCodexNonStreamResponse(
   }
 }
 
+/** Provider-authored completion evidence for an accepted Responses request.
+ * OpenAI input_tokens includes its cached subset; keep that basis explicit so
+ * completion does not compare it to the transcript's uncached input column. */
+export interface CodexProviderCompletionEvidence {
+  responseId: string;
+  model: string;
+  usage: {
+    inputTokens: number;
+    inputTokenBasis: 'inclusive';
+    outputTokens: number;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+  };
+}
+
+/** Incremental SSE/JSON decoder shared by the bearer and OAuth relays. It
+ * accepts only a provider response.completed object, never a request model or
+ * the cli-exec bridge's synthetic response. One frame is bounded independently
+ * of the stream length, so long agent turns need no whole-stream buffer. */
+export function createCodexProviderCompletionDecoder(contentType: string) {
+  const sse = contentType.toLowerCase().includes('text/event-stream');
+  if (!sse && !contentType.toLowerCase().includes('application/json')) {
+    throw new Error('accepted Codex response has an unsupported content type');
+  }
+  const decoder = new StringDecoder('utf8');
+  let carry = '';
+  let completed: CodexProviderCompletionEvidence | null = null;
+  const maxBytes = sse ? 1_048_576 : 8_388_608;
+  const count = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const readResponse = (value: unknown): CodexProviderCompletionEvidence => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('accepted Codex response has no provider completion object');
+    }
+    const response = value as Record<string, unknown>;
+    const usage = response.usage && typeof response.usage === 'object' && !Array.isArray(response.usage)
+      ? response.usage as Record<string, unknown> : null;
+    const details = usage?.input_tokens_details && typeof usage.input_tokens_details === 'object' &&
+      !Array.isArray(usage.input_tokens_details)
+      ? usage.input_tokens_details as Record<string, unknown> : null;
+    const input = count(usage?.input_tokens);
+    const output = count(usage?.output_tokens);
+    const cacheRead = count(details?.cached_tokens);
+    const cacheWrite = count(details?.cache_write_tokens);
+    if (typeof response.id !== 'string' || !response.id ||
+        typeof response.model !== 'string' || !response.model || input === null || output === null ||
+        (cacheRead !== null && cacheRead > input) ||
+        (cacheRead !== null && cacheWrite !== null && cacheRead + cacheWrite > input)) {
+      throw new Error('accepted Codex response lacks provider model or valid token usage');
+    }
+    return { responseId: response.id, model: response.model,
+      usage: { inputTokens: input, inputTokenBasis: 'inclusive', outputTokens: output,
+        cacheReadTokens: cacheRead, cacheCreationTokens: cacheWrite } };
+  };
+  const readFrame = (frame: string): CodexProviderCompletionEvidence | null => {
+    const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart()).join('\n').trim();
+    if (!data || data === '[DONE]') return null;
+    let event: unknown;
+    try { event = JSON.parse(data); } catch { throw new Error('accepted Codex response has malformed SSE JSON'); }
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+    const typed = event as { type?: unknown; response?: unknown };
+    return typed.type === 'response.completed' ? readResponse(typed.response) : null;
+  };
+  const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
+    carry += decoder.write(Buffer.from(chunk));
+    if (!sse) {
+      if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+      return null;
+    }
+    const boundaries = /\r?\n\r?\n/g;
+    let boundary: RegExpExecArray | null;
+    let frameStart = 0;
+    let newlyCompleted: CodexProviderCompletionEvidence | null = null;
+    while ((boundary = boundaries.exec(carry))) {
+      const frame = carry.slice(frameStart, boundary.index);
+      frameStart = boundaries.lastIndex;
+      if (frame.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+      const evidence = readFrame(frame);
+      if (evidence) {
+        if (completed) throw new Error('accepted Codex response has duplicate completions');
+        completed = evidence;
+        newlyCompleted = evidence;
+      }
+    }
+    carry = carry.slice(frameStart);
+    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    return newlyCompleted;
+  };
+  const finish = (): CodexProviderCompletionEvidence => {
+    carry += decoder.end();
+    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    if (sse) {
+      const tail = carry.trim();
+      if (tail) {
+        const evidence = readFrame(tail);
+        if (evidence) {
+          if (completed) throw new Error('accepted Codex response has duplicate completions');
+          completed = evidence;
+        }
+      }
+    } else {
+      let body: unknown;
+      try { body = JSON.parse(carry); } catch { throw new Error('accepted Codex response has malformed JSON'); }
+      completed = readResponse(body);
+    }
+    if (!completed) throw new Error('accepted Codex response ended without provider completion');
+    return completed;
+  };
+  return { push, finish };
+}
+
 /** Build the upstream request headers: start from the codex CLI's incoming headers
  *  (minus hop-by-hop / auth / host, which the caller strips), then inject the
  *  ChatGPT-subscription OAuth bearer + account + originator. Session/thread ids the

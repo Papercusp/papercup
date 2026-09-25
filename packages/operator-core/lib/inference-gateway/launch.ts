@@ -958,9 +958,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   }
 
   const gateway = createInferenceGateway({
-    readAcceptedOperationModelPolicy: async (ownerId) => {
+    readAcceptedOperationModelPolicy: async (ownerId, backend = 'claude') => {
       const { activeWorkspaceId } = await import('../workspace-registry');
-      return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId);
+      return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId, backend);
     },
     recordAcceptedOperationModelAttestation: async (context, evidence) => {
       const [{ getOrgPg }, { recordDirectOperationModelAttestation }] = await Promise.all([

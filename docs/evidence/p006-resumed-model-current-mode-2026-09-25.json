@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 installed v1 survives v2 across an actual warm Codex model resume with fresh mode delivery",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the verified disposable instance: install attested v1 through snapshotBlueprintReleaseSource and commitBlueprintRelease, bootstrap selected Codex, run codex exec with its generated home and launcher hook-trust setting, install v2, repair the missing home, enable IDEATE, read native coord:orient and persisted launch pin, then codex exec resume the original thread and inspect the native transcript and model reply"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T10:18:33.829Z",
+  "finishedAt": "2026-09-25T10:19:24.219Z",
+  "summary": "A real Codex model turn on installed identity v1 and a later resumed turn used the same native thread. After Cupboard installed v2, native home recovery kept the v1 definition and original specification revision. IDEATE was enabled afterward, appeared in native orientation and the resumed turn's injected control context, and was named by the resumed model. The disposable verifier exited 0.",
+  "assertions": [
+    {
+      "id": "isolated-current-host",
+      "passed": true,
+      "evidence": "The verifier confirmed disposable Postgres on port 46013, workspace verify-tauri-isolated-90, a frozen plain-node host containing pinned-source-stale, and its private PAPERCUSP_HOME. The verifier's prior focused bearer run separately confirmed the disposable bearer authenticates and the real user bearer is refused."
+    },
+    {
+      "id": "real-v1-model-turn",
+      "passed": true,
+      "evidence": "Codex thread 01a0d812-eba1-76d3-ae40-62e12599d868 completed an actual model turn before the update and replied P006 INSTALLED V1 DEFINITION. Its JSONL output SHA-256 was 0bb65ef6dfb1881ee8b36f8142e56cbee065b0ecbf74d838e3b8311240a9cb86."
+    },
+    {
+      "id": "real-v2-install-and-v1-recovery",
+      "passed": true,
+      "evidence": "The existing Cupboard lifecycle returned operation=update, activeVersion=1.0.1, retainedVersions=[1.0.1,1.0.0]. Native ensure-codex-home returned repaired=true, promptRepaired=true, reason=pinned-source-stale and preservedSpecificationRevision=850e50e16c142a3f3bb72c8a4aec279abf392836160187e50441ebde4c0e83ac. The restored AGENTS.md contained the v1 marker and lacked the v2 marker."
+    },
+    {
+      "id": "fresh-mode-beside-persisted-pin",
+      "passed": true,
+      "evidence": "After v2 install, native mode:set enabled IDEATE and native coord:orient reported modes.active=[ideate]. The isolated adv_sessions launch_spec still pinned domain:p006-installed-domain sourceRevision=2e036f854fb7e550daf545c60770dabb4d6acf95eb6f2268e2e3c07eef8a3ce4 and the original specification revision. The SU identity manifest declares current-mode-state from modes/store:agent_modes with refresh=turn."
+    },
+    {
+      "id": "real-warm-resume-delivers-v1-and-current-mode",
+      "passed": true,
+      "evidence": "codex exec resume completed on the same native thread and replied with P006 INSTALLED V1 DEFINITION and active mode ideate, without mentioning the v2 marker. The resumed prompt asked for active mode names without naming IDEATE. The recorded second-turn developer injection contained CTRL modes=[ideate] and the su.mode-ideate attachment; its text SHA-256 was faaa56f360ce43df3cc6e2cc8cfd407526756a5b33a3e829b0090d9caa1af5f7. Resumed JSONL SHA-256 was daaca224d83a86a3a68696777435ca8a3c4de82372020ff075ca2ecd929346d0; native transcript SHA-256 was 7ba5a1f84579d234be2e50edd41de2051faa1f4c495ef310d06765ead93795f6."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host, disposable Tauri/Postgres, native Codex model turns",
+  "limitation": "This verifies warm Codex model resume and current registry mode delivery beside a selected v1 identity pin after real v2 installation. It does not prove a cold fresh-context turn, Claude model resume, fleet/GOAL holder replacement, generic identity isolation, or a persisted identityComponentDeliveryV1 provider receipt. The throwaway model transcript is identified by hashes but was not retained as a repository artifact."
+}
