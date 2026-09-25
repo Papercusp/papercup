@@ -4051,6 +4051,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             '(deferrals were buffered across a cursor replacement, so no floor is known)',
         );
       }
+      // P-541: re-decide the member TTL hold now that this pass's admissions, lengths and
+      // cursor moves are known. The hold set at the top of the pass reads the LAST pass, which
+      // never saw a log admitted since, a replaced cursor or the rewind just paid.
+      evictionReFold.noteUnpositioned(logs, mergeCursor);
+      pendingMemberContent.holdExpiry(!evictionReFold.isCaughtUp);
 
       // WI-2105 + EI-20317490590418053 (flag-gated, default ON): load PG once,
       // but seed only keys admitted in THIS pass. The boot-lifetime cache is
