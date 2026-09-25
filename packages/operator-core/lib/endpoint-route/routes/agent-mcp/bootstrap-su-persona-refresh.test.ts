@@ -228,7 +228,7 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
         })) },
         specificationRevision: 'a'.repeat(64),
         stateRevision: input.stateRevision,
-        compositionSource: 'composition',
+        compositionSource: 'compatibility',
       }));
 
       expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({ ok: true });
@@ -245,6 +245,88 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       });
       expect(recordSuLaunchSpec).toHaveBeenCalledTimes(1);
       expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('pins an inherited slot source even when its picker root revision is unchanged', async () => {
+    const { getIdentitySource } = await import('../../../agent-identities/source');
+    const { recordSuLaunchSpec } = await import('../../../adv-sessions');
+    const sourceDir = mkdtempSync(join(tmpdir(), 'refresh-inherited-slot-'));
+    try {
+      const parentDir = join(sourceDir, '.papercusp', 'blueprints', 'refresh-parent');
+      const childDir = join(sourceDir, '.papercusp', 'blueprints', 'refresh-child');
+      mkdirSync(parentDir, { recursive: true });
+      mkdirSync(childDir, { recursive: true });
+      const parentPath = join(parentDir, 'blueprint.yaml');
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.0\n');
+      writeFileSync(join(childDir, 'blueprint.yaml'),
+        'id: refresh-child\nextends: refresh-parent\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+      const selected = await getIdentitySource('refresh-child', { repoDir: sourceDir });
+      expect(selected.ok).toBe(true);
+      if (!selected.ok) throw new Error('fixture identity did not resolve');
+      const pin = { ref: 'domain:refresh-child', sourceRevision: selected.contentHash };
+      const artifactInputs = selected.layers.map((layer) => ({
+        kind: 'blueprint-layer', ref: layer.id, contentHash: layer.contentHash,
+      }));
+      readLaunchSpecMock.mockResolvedValue(spec({
+        stack: [pin.ref], selectedIdentity: pin,
+        specificationRevision: 'a'.repeat(64),
+        specificationArtifact: { specificationRevision: 'a'.repeat(64), inputs: artifactInputs },
+      }));
+      const baseBuild = buildLaunchSpecMock.getMockImplementation()!;
+      const mockBuild = async () => ({ ...await baseBuild(), cwd: sourceDir, stack: [pin.ref] });
+      buildLaunchSpecMock.mockImplementationOnce(mockBuild).mockImplementationOnce(mockBuild);
+      compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+        promptText: input.promptText, stack: input.stack,
+        specificationArtifact: { inputs: artifactInputs },
+        specificationRevision: 'a'.repeat(64), stateRevision: input.stateRevision,
+        compositionSource: 'compatibility',
+      }));
+      expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({ ok: true });
+      const v1Render = readFileSync(join(dir, `session-refresh-${OWNER}.md`), 'utf8');
+
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.1\n');
+      const changed = await getIdentitySource('refresh-child', { repoDir: sourceDir });
+      expect(changed.ok).toBe(true);
+      if (!changed.ok) throw new Error('changed fixture identity did not resolve');
+      expect(changed.contentHash).toBe(pin.sourceRevision);
+      expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({
+        ok: false, reason: 'render-failed',
+        error: expect.stringMatching(/inherited source revision changed/),
+      });
+      expect(recordSuLaunchSpec).toHaveBeenCalledTimes(1);
+      expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledTimes(1);
+      expect(requestSessionIdentityActivationMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(dir, `session-refresh-${OWNER}.md`), 'utf8')).toBe(v1Render);
+
+      // Rollback has a different current artifact. Its prior selected closure
+      // must be checked against the matching history receipt instead.
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.0\n');
+      const { parseSuLaunchSpecRecord, rebuildSuLaunchArtifact } = await import('../../../su-persona-render');
+      const rollbackRecord = parseSuLaunchSpecRecord(spec({
+        stack: ['practice:other'], selectedIdentity: null,
+        identityHistory: [{
+          stack: [pin.ref], selectedIdentity: pin,
+          specificationRevision: 'a'.repeat(64), stateRevision: 'prior-state',
+          specificationArtifact: { specificationRevision: 'a'.repeat(64), inputs: artifactInputs },
+          recordedAt: new Date().toISOString(),
+        }],
+      }));
+      expect(rollbackRecord).not.toBeNull();
+      buildLaunchSpecMock.mockImplementationOnce(mockBuild);
+      compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+        promptText: input.promptText, stack: input.stack,
+        specificationArtifact: { inputs: artifactInputs },
+        specificationRevision: 'a'.repeat(64), stateRevision: input.stateRevision,
+        compositionSource: 'compatibility',
+      }));
+      await expect(rebuildSuLaunchArtifact({
+        ownerId: OWNER, operatorBaseUrl: 'http://localhost:3070', record: rollbackRecord!,
+        stack: [pin.ref], selectedIdentity: pin, modeSection: '',
+      })).resolves.toMatchObject({ artifact: { stack: [pin.ref] } });
+      expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledTimes(2);
     } finally {
       rmSync(sourceDir, { recursive: true, force: true });
     }

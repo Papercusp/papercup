@@ -35,9 +35,14 @@ describe('projectBlueprintOperationStatus', () => {
     expect(projectBlueprintOperationStatus(direct, [item('WI-12', 'passed')])).toMatchObject({
       phase: 'terminal', outcome: 'succeeded',
     });
+    expect(projectBlueprintOperationStatus(direct, [{ ...item('WI-12', 'done'), completionAuthority: 'committed' }]))
+      .toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
     expect(projectBlueprintOperationStatus(direct, [{ ...item('WI-12', 'passed'), completionAuthority: null }]))
       .toMatchObject({ phase: 'terminal', outcome: 'unverified' });
     expect(projectBlueprintOperationStatus(direct, [item('WI-12', 'deprecated')])).toMatchObject({
+      phase: 'terminal', outcome: 'dropped',
+    });
+    expect(projectBlueprintOperationStatus(direct, [item('WI-12', 'dropped')])).toMatchObject({
       phase: 'terminal', outcome: 'dropped',
     });
   });

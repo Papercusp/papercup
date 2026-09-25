@@ -28,6 +28,7 @@ import {
   rebuildSuLaunchArtifact,
   type SuLaunchArtifactHistoryEntry,
   type SuLaunchSpecRecord,
+  type SelectedIdentityPin,
 } from './su-persona-render';
 import { requestSessionIdentityActivationInTransaction } from './agent-tools/coordination/control-anchor';
 import { findLiveHost, injectIntoHost } from './events/await/psu-pty-discovery';
@@ -386,6 +387,8 @@ function historyWithCurrent(record: SuLaunchSpecRecord): SuLaunchArtifactHistory
       ? [
           {
             stack: [...(record.stack ?? [])],
+            ...(record.selectedIdentity !== undefined
+              ? { selectedIdentity: record.selectedIdentity } : {}),
             specificationRevision: record.specificationRevision,
             stateRevision: record.stateRevision,
             specificationArtifact: record.specificationArtifact,
@@ -408,11 +411,13 @@ export async function resolveIdentityStackMutation(
   input: IdentityMutationInput,
   record: SuLaunchSpecRecord,
   repoDir: string | null,
-): Promise<{ stack: string[]; delivery: MutationDelivery | null; replaced: string | null; changed: boolean }> {
+): Promise<{ stack: string[]; selectedIdentity: SelectedIdentityPin | null;
+  delivery: MutationDelivery | null; replaced: string | null; changed: boolean }> {
   if (input.action === 'rollback') {
     const prior = record.identityHistory?.[0];
     if (!prior) throw new Error('No prior identity revision is available to roll back to.');
-    return { stack: [...prior.stack], delivery: 'relaunch-with-carry', replaced: null, changed: true };
+    return { stack: [...prior.stack], selectedIdentity: prior.selectedIdentity ?? null,
+      delivery: 'relaunch-with-carry', replaced: null, changed: true };
   }
   const identityId = input.identityId?.trim() || '';
   const slotRaw = input.slot?.trim() || '';
@@ -452,6 +457,7 @@ export async function resolveIdentityStackMutation(
   }
   return {
     stack: bindingRefs(mutation.after),
+    selectedIdentity: mutation.changed ? null : record.selectedIdentity ?? null,
     delivery: mutation.changed ? mutation.delivery : null,
     replaced: mutation.replaced?.id ?? null,
     changed: mutation.changed,
@@ -510,6 +516,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
     operatorBaseUrl: input.operatorBaseUrl,
     record,
     stack: mutation.stack,
+    selectedIdentity: mutation.selectedIdentity,
     modeSection: input.modeSection,
   });
   const diff = diffIdentitySpecifications(
@@ -535,6 +542,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
   const nextRecord: SuLaunchSpecRecord = {
     ...record,
     stack: rebuilt.artifact.stack,
+    selectedIdentity: mutation.selectedIdentity,
     specificationRevision: rebuilt.artifact.specificationRevision,
     stateRevision: rebuilt.artifact.stateRevision,
     specificationArtifact: rebuilt.artifact.specificationArtifact,

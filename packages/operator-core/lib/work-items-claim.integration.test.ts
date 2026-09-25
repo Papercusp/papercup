@@ -141,6 +141,11 @@ beforeAll(async () => {
       workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
       PRIMARY KEY (workspace_id, owner_id)
     );
+    CREATE TABLE harness_shared.blueprint_specifications (
+      workspace_id text NOT NULL, harness_slug text NOT NULL,
+      specification_revision text NOT NULL, artifact jsonb NOT NULL,
+      PRIMARY KEY (workspace_id, harness_slug, specification_revision)
+    );
   `).simple();
   // The claim path emits awaited claim/release events and arms lifecycle-bound
   // interests. Keep this throwaway DB on the event schema those side effects
@@ -176,6 +181,7 @@ beforeEach(async () => {
     TRUNCATE harness_shared.work_items,
              harness_shared.adv_sessions,
              harness_shared.session_briefs,
+             harness_shared.blueprint_specifications,
              harness_shared.event_awaits,
              harness_shared.event_wake_deliveries,
              harness_shared.event_key_fires,
@@ -314,9 +320,10 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
       harness: H, by: 'effect-old', completionRef: 'stale result',
     })).rejects.toThrow('blueprint operation effect refused');
     expect((await wi.getWorkItem(id, H))?.state).toBe('wip');
-    expect((await wi.setWorkItemState(id, 'done', {
+    await expect(wi.setWorkItemState(id, 'done', {
       harness: H, by: 'effect-current', completionRef: 'current result',
-    }))?.state).toBe('done');
+    })).rejects.toThrow('accepted blueprint operation specification snapshot is missing');
+    expect((await wi.getWorkItem(id, H))?.state).toBe('wip');
   });
 
   it('also fences the direct issue state writer after reassignment', async () => {
@@ -333,8 +340,9 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
     await expect(setIssueState(id, 'resolved', 'issue-effect-old', 'stale result'))
       .rejects.toThrow('blueprint operation effect refused');
     expect((await wi.getWorkItem(id, H))?.state).toBe('open');
-    expect((await setIssueState(id, 'resolved', 'issue-effect-current', 'current result'))?.state)
-      .toBe('resolved');
+    await expect(setIssueState(id, 'resolved', 'issue-effect-current', 'current result'))
+      .rejects.toThrow('blueprint operation completion requires validated outputPayload');
+    expect((await wi.getWorkItem(id, H))?.state).toBe('open');
   });
 
   it('reports pinned claimability for the exact worker and refuses other previews', async () => {

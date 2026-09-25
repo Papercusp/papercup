@@ -4401,6 +4401,7 @@ async function completeOne(
           // so it lands durably on the row's `_completionEvidence`, not just in this
           // call's return value.
           completionEvidence: completionEvidenceToPersist,
+          outputPayload: it.outputPayload,
           // P-008 (d): the resolved declaration, persisted under
           // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
           assumptions: resolvedAssumptions,

@@ -3302,6 +3302,8 @@ export async function setIssueState(
   completionRef?: string,
   opts: {
     completionEvidence?: PersistedCompletionEvidence;
+    /** Already validated by the unified work-item completion boundary. */
+    blueprintResult?: { operationId: string; specificationRevision: string; output: unknown; evidenceRef: string };
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under `TERMINAL_ASSUMPTIONS_KEY`. Optional here for the same
@@ -3380,7 +3382,7 @@ export async function setIssueState(
       ? await operationClaims.readActiveOperationWorkerClaimBinding(ws, by)
       : { status: 'none' as const }
     : null;
-  const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
+  const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, opts.blueprintResult);
   // EI-21184699633369991: work_items:set_state { force:true } accepts a
   // completionRef without structured evidence. Preserve the existing authority
   // on that ref-only correction; otherwise the terminal UPDATE turns a valid
@@ -3471,6 +3473,12 @@ export async function setIssueState(
         )`
       : tx`TRUE`;
     if (isTerminal) {
+      const priorBlueprintPin = priorRow.payload && typeof priorRow.payload === 'object' &&
+        !Array.isArray(priorRow.payload) ? (priorRow.payload as Record<string, unknown>).blueprintOperation : null;
+      if (!opts.skipCompletionGate && (state === 'done' || state === 'resolved') &&
+          priorBlueprintPin && !opts.blueprintResult) {
+        throw new Error('blueprint operation completion requires validated outputPayload');
+      }
       // Clear the cached goal for the holder this write actually releases.
       priorAssignee = priorRow?.taken_by ?? null;
 
@@ -3604,12 +3612,19 @@ export async function setIssueState(
                                   -- Exempt the evidence subtree; merge it verbatim.
                                   ELSE COALESCE(payload, '{}'::jsonb) || (
                                          jsonb_strip_nulls(
-                                           ${evidencePayloadJson}::text::jsonb - '_completionEvidence'
+                                           ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult'
                                          )
                                          || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
                                                  THEN jsonb_build_object(
                                                         '_completionEvidence',
                                                         ${evidencePayloadJson}::text::jsonb -> '_completionEvidence'
+                                                      )
+                                                 ELSE '{}'::jsonb
+                                            END
+                                         || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'blueprintResult'
+                                                 THEN jsonb_build_object(
+                                                        'blueprintResult',
+                                                        ${evidencePayloadJson}::text::jsonb -> 'blueprintResult'
                                                       )
                                                  ELSE '{}'::jsonb
                                             END

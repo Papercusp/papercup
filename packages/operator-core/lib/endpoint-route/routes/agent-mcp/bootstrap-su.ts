@@ -3067,6 +3067,9 @@ export const bootstrapSu = defineTool({
         loopArmed,
         fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
         stack: spec.stack,
+        ...(body.selected_identity_revision && body.stack?.length === 1
+          ? { selectedIdentity: { ref: body.stack[0]!, sourceRevision: body.selected_identity_revision } }
+          : {}),
         specificationRevision: launchArtifact.specificationRevision,
         stateRevision: launchArtifact.stateRevision,
         principalId: launchPrincipal?.slug?.trim() || sid,

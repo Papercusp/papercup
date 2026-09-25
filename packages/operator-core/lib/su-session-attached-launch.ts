@@ -15,6 +15,7 @@ import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
 import { prepareStructuredSuResume } from './su-session-resume';
 import { resolveCodexModelSelection } from './model-context-budget.mjs';
+import { normalizeModelSpecForAgent } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
@@ -138,7 +139,15 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
     const codexSelection = input.agent === 'codex'
       ? resolveCodexModelSelection(input.model, { source: input.model?.trim() ? 'explicit' : 'configured-default' })
       : null;
-    const selectedModel = codexSelection?.model ?? input.model;
+    // A fresh PUI launch bypasses psu's CLI argument normalization. Apply the
+    // same Claude window marker before both bootstrap's saved launch spec and
+    // the structured SDK receive this model; exact resume already normalizes
+    // its saved model in prepareStructuredSuResume. Without this, bare sonnet
+    // opens a 200k local Claude window and can reject a native-question
+    // continuation before its next gateway request (WI-10003087).
+    const selectedModel = input.agent === 'claude'
+      ? normalizeModelSpecForAgent('claude', input.model)
+      : codexSelection?.model ?? input.model;
     // Preserve the request's authenticated principal. Bootstrap remains the one
     // authority for persona, scope, account, mode, membership and native identity.
     const response = await bootstrapSu.handler(new Request(request.url, {

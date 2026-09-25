@@ -1118,6 +1118,7 @@ export default defineTool({
           preflight: importCompletenessPreflight({
             root,
             probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+            ...(wholeBlob ? { enforceSourceCohort: true } : {}),
           }),
         });
       let outcome = buildAdmission(dryRun || precheckApplies);

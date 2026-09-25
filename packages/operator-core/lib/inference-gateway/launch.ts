@@ -54,6 +54,7 @@ import {
   type TierAdmissionConfig,
 } from '@papercusp/papercusp-shared/agent';
 import { trackDetached } from '../detached-imports';
+import { readActiveOperationModelPolicy } from '../blueprint/operation-worker-binding';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { EXTERNAL_SCHEDULES } from '../schedule-descriptors.mjs';
 
@@ -957,6 +958,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   }
 
   const gateway = createInferenceGateway({
+    readAcceptedOperationModelPolicy: async (ownerId) => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId);
+    },
     pool,
     codexPool,
     codexCliPool,

@@ -3462,6 +3462,8 @@ export async function setWorkItemState(
     allowNonCanonical?: boolean;
     completionRef?: string;
     completionEvidence?: PersistedCompletionEvidence;
+    /** Typed output for a successful accepted blueprint operation. */
+    outputPayload?: unknown;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
@@ -3550,6 +3552,21 @@ export async function setWorkItemState(
   } else {
     throw new Error(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
+    );
+  }
+  const blueprintPin = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+    ? (wi.payload as Record<string, unknown>).blueprintOperation : null;
+  let blueprintResult: Awaited<ReturnType<typeof import('./blueprint/operation-service').prepareDirectOperationCompletion>> | undefined;
+  if (!opts.skipCompletionGate && state === 'done' && blueprintPin) {
+    const priorResult = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+      ? (wi.payload as Record<string, unknown>).blueprintResult : null;
+    const priorOutput = isSettledWorkItemState(wi.state) && priorResult &&
+      typeof priorResult === 'object' && !Array.isArray(priorResult)
+      ? (priorResult as Record<string, unknown>).output : undefined;
+    const { prepareDirectOperationCompletion } = await import('./blueprint/operation-service');
+    blueprintResult = await prepareDirectOperationCompletion(
+      getOrgPg().sql, activeWorkspaceId(), wi,
+      opts.outputPayload === undefined ? priorOutput : opts.outputPayload,
     );
   }
   if (state === 'needs-human' && !readStructuredOwnerAsk(wi.payload)) {
@@ -3924,6 +3941,7 @@ export async function setWorkItemState(
     }
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
+      blueprintResult,
       // P-008 (d): forwarded, or the issue family would silently drop every
       // assumption declaration while the feature family persisted it — a
       // half-verification across FAMILIES, the same defect D-050 forbids across
@@ -3963,7 +3981,7 @@ export async function setWorkItemState(
         );
       }
     }
-    const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
+    const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions, blueprintResult);
     // EI-21184699633369991 (issue-family twin): a force ref-only correction must not turn a
     // valid completion into an authority:null row. Hoisted out of the SQL below so the
     // derivation and the CASE arm that honours it read the SAME condition.
@@ -4073,12 +4091,19 @@ export async function setWorkItemState(
                             THEN payload
                             ELSE COALESCE(payload, '{}'::jsonb) || (
                                    jsonb_strip_nulls(
-                                     ${evidencePayloadJson}::text::jsonb - '_completionEvidence'
+                                     ${evidencePayloadJson}::text::jsonb - '_completionEvidence' - 'blueprintResult'
                                    )
                                    || CASE WHEN ${evidencePayloadJson}::text::jsonb ? '_completionEvidence'
                                            THEN jsonb_build_object(
                                                   '_completionEvidence',
                                                   ${evidencePayloadJson}::text::jsonb -> '_completionEvidence'
+                                                )
+                                           ELSE '{}'::jsonb
+                                      END
+                                   || CASE WHEN ${evidencePayloadJson}::text::jsonb ? 'blueprintResult'
+                                           THEN jsonb_build_object(
+                                                  'blueprintResult',
+                                                  ${evidencePayloadJson}::text::jsonb -> 'blueprintResult'
                                                 )
                                            ELSE '{}'::jsonb
                                       END

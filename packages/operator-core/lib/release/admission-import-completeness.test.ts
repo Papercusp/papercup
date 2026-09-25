@@ -325,6 +325,37 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(ok.published).toBe(true);
     expect(refAt(root, frozenLineageRef(candidate))).toBe(ok.commit);
   });
+
+  it('refuses a whole-blob admission until differing reverse-importing tests and their imported modules share its pinned source', () => {
+    const { root, candidate } = repo();
+    const sourceCommit = sweep(root, {
+      'lib/a.ts': 'export const a = 2;\n',
+      'lib/a.test.ts': "import { a } from './a';\nimport { c } from './c';\nexport const result = a + c;\n",
+      'lib/c.ts': 'export const c = 2;\n',
+    }, 'cohort source');
+    const preflight = importCompletenessPreflight({ root, probeRef: sourceCommit, enforceSourceCohort: true });
+    const pinned = { source: { ref: sourceCommit }, preflight };
+
+    const missingTest = admit(root, candidate, ['lib/a.ts'], pinned);
+    expect(missingTest).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/a.test.ts', relation: 'reverse-importer' })],
+    });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+
+    const missingModule = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts'], pinned);
+    expect(missingModule).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/c.ts', relation: 'imported-module' })],
+    });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+
+    const complete = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts', 'lib/c.ts'], pinned);
+    expect(complete.ok).toBe(true);
+    if (complete.ok) expect(refAt(root, frozenLineageRef(candidate))).toBe(complete.commit);
+  });
 });
 
 describe('injected runner — the branches a plain repo cannot produce cheaply', () => {
@@ -412,6 +443,8 @@ describe('injected runner — the branches a plain repo cannot produce cheaply',
       commit: 'c'.repeat(40),
       tree: 't'.repeat(40),
       admitted: ['lib/a.ts'],
+      sourceCommit: 's'.repeat(40),
+      repairHead: 'r'.repeat(40),
     });
     expect(stop).toMatchObject({ code: 'git-failed', step: expect.stringContaining('completeness preflight') });
   });

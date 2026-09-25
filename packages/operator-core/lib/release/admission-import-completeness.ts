@@ -447,6 +447,97 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
   return { ok: false, code: 'admission-incomplete', missing, checked, imports: asks.length, skipped };
 }
 
+/**
+ * D-045: a whole-blob admission must carry differing tests that import an admitted file,
+ * plus differing modules imported by an admitted test, from the SAME resolved source commit.
+ * Only paths differing from the pre-admission repair head can be owed. This check runs before
+ * publication and never widens the caller's allowlist on its behalf.
+ */
+function checkWholeBlobSourceCohort(input: {
+  root: string;
+  sourceCommit: string;
+  repairHead: string;
+  admitted: readonly string[];
+  git?: AdmissionGitRunner;
+}):
+  | { ok: true }
+  | { ok: false; code: 'git-failed'; step: string; detail: string }
+  | { ok: false; code: 'admission-incomplete'; missing: AdmissionMissingImport[] } {
+  const git = input.git ?? realAdmissionGit;
+  const diff = git(['diff', '--no-ext-diff', '--name-only', '-z', input.repairHead, input.sourceCommit, '--'],
+    { cwd: input.root });
+  if (diff.status !== 0) return {
+    ok: false,
+    code: 'git-failed',
+    step: 'source cohort diff',
+    detail: `exited ${diff.status}: ${(diff.stderr || diff.stdout).trim().slice(0, 400)}`,
+  };
+  const differing = new Set(diff.stdout.split('\0').filter(Boolean));
+  const admitted = new Set(input.admitted);
+  const testFile = (path: string) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path);
+  const tests = [...new Set([...differing, ...admitted].filter(testFile))];
+  if (tests.length === 0) return { ok: true };
+
+  const atSource = (path: string) => `${input.sourceCommit}:${path}`;
+  const testKinds = batchKinds(git, input.root, tests.map(atSource));
+  if (!testKinds.ok) return { ok: false, code: 'git-failed', step: testKinds.step, detail: testKinds.detail };
+  type ImportAsk = { test: string; specifier: string; candidates: string[] };
+  const asks: ImportAsk[] = [];
+  for (const test of tests) {
+    // A test deleted at the pinned source cannot be imported from that source.
+    if (testKinds.kinds.get(atSource(test)) !== 'blob') continue;
+    const read = git(['cat-file', 'blob', atSource(test)], { cwd: input.root });
+    if (read.status !== 0) return {
+      ok: false,
+      code: 'git-failed',
+      step: `source cohort read ${test}`,
+      detail: `exited ${read.status}: ${(read.stderr || read.stdout).trim().slice(0, 400)}`,
+    };
+    for (const specifier of extractRelativeImportSpecifiers(read.stdout)) {
+      const candidates = resolveImportCandidates(test, specifier);
+      if (candidates) asks.push({ test, specifier, candidates });
+    }
+  }
+  const importedKinds = batchKinds(git, input.root,
+    asks.flatMap((ask) => ask.candidates.map(atSource)));
+  if (!importedKinds.ok) return {
+    ok: false,
+    code: 'git-failed',
+    step: importedKinds.step,
+    detail: importedKinds.detail,
+  };
+
+  const missing = new Map<string, AdmissionMissingImport>();
+  for (const ask of asks) {
+    const imported = ask.candidates.find((candidate) =>
+      importedKinds.kinds.get(atSource(candidate)) === 'blob');
+    if (!imported) continue;
+    if (!admitted.has(ask.test) && admitted.has(imported) && differing.has(ask.test)) {
+      missing.set(ask.test, {
+        from: imported,
+        specifier: ask.specifier,
+        wanted: ask.test,
+        tried: [ask.test],
+        atProbeRef: 'present',
+        relation: 'reverse-importer',
+      });
+    }
+    if (admitted.has(ask.test) && differing.has(imported) && !admitted.has(imported)) {
+      missing.set(imported, {
+        from: ask.test,
+        specifier: ask.specifier,
+        wanted: imported,
+        tried: ask.candidates,
+        atProbeRef: 'present',
+        relation: 'imported-module',
+      });
+    }
+  }
+  return missing.size === 0
+    ? { ok: true }
+    : { ok: false, code: 'admission-incomplete', missing: [...missing.values()] };
+}
+
 /** One line per missing import, for a refusal `detail`. */
 export function renderMissingImports(missing: readonly AdmissionMissingImport[]): string {
   return missing
@@ -471,6 +562,8 @@ export function importCompletenessPreflight(opts: {
   root: string;
   probeRef?: string;
   git?: AdmissionGitRunner;
+  /** D-045 whole-blob source-cohort closure; other admission modes retain the forward check. */
+  enforceSourceCohort?: boolean;
 }): NonNullable<AdmitPathsInput['preflight']> {
   return (built): AdmissionPreflightRefusal | null => {
     const r = checkAdmissionImportCompleteness({
@@ -480,16 +573,42 @@ export function importCompletenessPreflight(opts: {
       probeRef: opts.probeRef,
       git: opts.git,
     });
-    if (r.ok) return null;
-    if (r.code === 'git-failed')
-      return { code: 'git-failed', step: `completeness preflight: ${r.step}`, detail: r.detail };
+    if (!r.ok) {
+      if (r.code === 'git-failed')
+        return { code: 'git-failed', step: `completeness preflight: ${r.step}`, detail: r.detail };
+      return {
+        code: 'admission-incomplete',
+        missing: r.missing,
+        detail:
+          `REFUSED: admission ${built.commit.slice(0, 12)} is incomplete — ${r.missing.length} import(s) resolve to nothing at ` +
+          `the proved commit (${renderMissingImports(r.missing)}). It was NOT published and repairHead did not move; ` +
+          'the tip is never widened for you — admit the named path(s) alongside yours.',
+      };
+    }
+    if (!opts.enforceSourceCohort) return null;
+    const cohort = checkWholeBlobSourceCohort({
+      root: opts.root,
+      sourceCommit: built.sourceCommit,
+      repairHead: built.repairHead,
+      admitted: built.admitted,
+      git: opts.git,
+    });
+    if (cohort.ok) return null;
+    if (cohort.code === 'git-failed') return {
+      code: 'git-failed',
+      step: `source cohort preflight: ${cohort.step}`,
+      detail: cohort.detail,
+    };
+    const listed = cohort.missing.map((m) => m.relation === 'reverse-importer'
+      ? `${m.wanted} imports admitted ${m.from} via ${JSON.stringify(m.specifier)}`
+      : `${m.wanted} is imported by admitted test ${m.from} via ${JSON.stringify(m.specifier)}`);
     return {
       code: 'admission-incomplete',
-      missing: r.missing,
+      missing: cohort.missing,
       detail:
-        `REFUSED: admission ${built.commit.slice(0, 12)} is incomplete — ${r.missing.length} import(s) resolve to nothing at ` +
-        `the proved commit (${renderMissingImports(r.missing)}). It was NOT published and repairHead did not move; ` +
-        'the tip is never widened for you — admit the named path(s) alongside yours.',
+        `REFUSED: whole-blob admission ${built.commit.slice(0, 12)} omits ${cohort.missing.length} differing ` +
+        `same-source cohort path(s) from ${built.sourceCommit.slice(0, 12)} (${listed.join('; ')}). ` +
+        'It was NOT published and repairHead did not move; admit the named paths from the same source commit.',
     };
   };
 }

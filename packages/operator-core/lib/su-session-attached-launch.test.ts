@@ -190,4 +190,16 @@ describe('attached launch authority', () => {
       .toMatchObject({ model: expected, model_source: source, headless: true });
     expect(mocks.rpc.mock.calls[0][2].model).toBe(expected);
   });
+
+  it.each([
+    { requested: 'sonnet', expected: 'sonnet[1m]' },
+    { requested: 'opus:high', expected: 'opus[1m]:high' },
+  ])('normalizes a fresh Claude $requested model before bootstrap and SDK startup', async ({ requested, expected }) => {
+    const response = await launchAttachedSuSession(request(), {
+      ...input, agent_chat_id: `claude-window-${requested}`, model: requested,
+    });
+    expect(response.status).toBe(200);
+    expect(await (mocks.bootstrap.mock.calls[0][0] as Request).json()).toMatchObject({ model: expected });
+    expect(mocks.engine.mock.calls[0][3].model).toBe(expected);
+  });
 });

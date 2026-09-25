@@ -61,6 +61,7 @@ const mocks = vi.hoisted(() => ({
   retract: vi.fn(),
   containment: vi.fn(),
   presence: vi.fn(),
+  listPresence: vi.fn().mockResolvedValue([]),
   // P-020: the hunk-exact source builder + the ledger read the admit op consults first.
   hunkExact: vi.fn(),
   committedPatch: vi.fn(),
@@ -141,7 +142,10 @@ vi.mock('../locks/identity', () => ({ readIdentity: () => ({ ownerId: 'su-test' 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test', ownerLabel: 'su · test', workspaceId: 'ws-1' }),
 }));
-vi.mock('../coordination/presence', () => ({ writePresence: mocks.presence }));
+vi.mock('../coordination/presence', () => ({
+  writePresence: mocks.presence,
+  listPresence: mocks.listPresence,
+}));
 
 /** A P-021 repair manifest with one red test-file leg whose subject path is known. */
 const manifestRow = {
@@ -1971,7 +1975,7 @@ describe('release:repair-queue', () => {
           preflight: expect.any(Function),
         }),
       );
-      expect(mocks.importPreflight).toHaveBeenCalledWith({ root: '/repo', probeRef: sourceCommit });
+      expect(mocks.importPreflight).toHaveBeenCalledWith({ root: '/repo', probeRef: sourceCommit, enforceSourceCohort: true });
       expect(result).toMatchObject({
         ok: true,
         mode: 'whole-blob',

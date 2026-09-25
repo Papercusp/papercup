@@ -119,6 +119,8 @@ export interface AdmissionMissingImport {
   tried: string[];
   /** Whether `wanted` exists on the probe ref (the shared staging tip): `present` means admitting it closes the gap. */
   atProbeRef: 'present' | 'absent' | 'unknown';
+  /** A same-source cohort member required by a whole-blob admission. Omitted for forward missing imports. */
+  relation?: 'reverse-importer' | 'imported-module';
 }
 
 /**
@@ -284,6 +286,9 @@ export interface AdmitPathsInput {
     commit: string;
     tree: string;
     admitted: readonly string[];
+    /** The exact source object and parent used to build this proved commit. */
+    sourceCommit: string;
+    repairHead: string;
   }) => AdmissionPreflightRefusal | null;
 }
 
@@ -551,7 +556,13 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     // caught a suite later by the gate's lint:tsc round; the door refuses it now and names the
     // path to admit, and it NEVER widens to the tip on the caller's behalf.
     if (input.preflight) {
-      const stop = input.preflight({ commit, tree, admitted: proof.admitted });
+      const stop = input.preflight({
+        commit,
+        tree,
+        admitted: proof.admitted,
+        sourceCommit: sourceSha,
+        repairHead: repairHeadSha,
+      });
       if (stop) {
         return stop.code === 'git-failed'
           ? { ok: false, code: 'git-failed', step: stop.step, detail: stop.detail, commit }

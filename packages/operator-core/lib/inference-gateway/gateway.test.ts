@@ -12,6 +12,7 @@ import {
   classifyProxyHandlerError,
   effectivePriorityLabel,
   MODEL_DOWNGRADED_HEADER,
+  OWNER_HEADER,
   RETRIES_EXHAUSTED_HEADER,
   ROUTED_ACCOUNT_HEADER,
   normalizeGatewayRequestBody,
@@ -1324,6 +1325,103 @@ test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every
   const s = (await (await ask('/stats')).json()) as { opusToSonnetDowngrades: number };
   assert.equal(s.opusToSonnetDowngrades, 1, '/stats records the last-resort downgrade for observability');
   resetGovernorRegistry();
+});
+
+test.each([
+  {
+    name: 'exact Opus refuses a Sonnet substitution',
+    policy: { mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'fail' },
+    status: 503,
+    finalModel: 'claude-opus-4',
+  },
+  {
+    name: 'allowed Opus and Sonnet permits the listed substitution',
+    policy: { mode: 'allowed', models: ['claude-opus-4', 'claude-sonnet-4-6'], onUnavailable: 'fail' },
+    status: 200,
+    finalModel: 'claude-sonnet-4-6',
+  },
+  {
+    name: 'preferred Opus and Sonnet permits the listed fallback',
+    policy: { mode: 'preferred', models: ['claude-opus-4', 'claude-sonnet-4-6'], onUnavailable: 'fail' },
+    status: 200,
+    finalModel: 'claude-sonnet-4-6',
+  },
+  {
+    name: 'another provider cannot authorize the same model name',
+    policy: { mode: 'allowed', models: ['claude-opus-4', 'openai/claude-sonnet-4-6'], onUnavailable: 'fail' },
+    status: 503,
+    finalModel: 'claude-opus-4',
+  },
+  {
+    name: 'wait policy reports capacity with a retry hint',
+    policy: { mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'wait' },
+    status: 429,
+    finalModel: 'claude-opus-4',
+  },
+] as const)('accepted operation model policy: $name', async ({ policy, status, finalModel }) => {
+  resetGovernorRegistry();
+  const upstreamModels: string[] = [];
+  upstream = await startUpstream((_req, res, body) => {
+    const reqModel = (JSON.parse(body) as { model: string }).model;
+    upstreamModels.push(reqModel);
+    res.writeHead(reqModel.includes('opus') ? 403 : 200, { 'content-type': 'application/json' });
+    res.end(reqModel.includes('opus')
+      ? '{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}'
+      : '{"ok":true}');
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  let policyReads = 0;
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    readAcceptedOperationModelPolicy: async (ownerId) => {
+      assert.equal(ownerId, 'operation-worker');
+      policyReads++;
+      return { status: 'bound', policy };
+    },
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, status);
+  assert.ok(policyReads > 0, 'the substitution boundary read the operation policy');
+  assert.equal(upstreamModels.at(-1), finalModel);
+  if (status === 429) assert.ok(Number(response.headers.get('retry-after')) > 0);
+  if (status === 200) assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), 'opus->sonnet');
+  else assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), null);
+});
+
+test('accepted operation model policy lookup failure refuses the last-resort substitution', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+  });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([
+      { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+      { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+    ]),
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'unavailable', reason: 'database read failed' }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /model policy unavailable/);
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4');
 });
 
 test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {

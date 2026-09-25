@@ -879,10 +879,12 @@ export function stripNulBytesDeep<T>(value: T): { value: T; stripped: boolean } 
 export function terminalPayloadMergeJson(
   evidence: PersistedCompletionEvidence | undefined,
   assumptions?: StoredAssumptionDeclaration | undefined,
+  blueprintResult?: { operationId: string; specificationRevision: string; output: unknown; evidenceRef: string },
 ): string | null {
   const merge: Record<string, unknown> = {};
   if (evidence && Object.keys(evidence).length > 0) merge[TERMINAL_COMPLETION_EVIDENCE_KEY] = evidence;
   if (assumptions) merge[TERMINAL_ASSUMPTIONS_KEY] = assumptions;
+  if (blueprintResult) merge.blueprintResult = blueprintResult;
   if (Object.keys(merge).length === 0) return null;
   const { value: sanitized } = stripNulBytesDeep(merge);
   return JSON.stringify(sanitized);

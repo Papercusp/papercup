@@ -13,10 +13,12 @@ import {
   applySuPromptOverlays,
   buildSuInstructionRuntime,
   parseSuLaunchSpecRecord,
+  pinnedSuRecoveryPrompt,
   suPersonaRefreshPathFor,
   type SuLaunchSpecRecord,
 } from './su-persona-render';
 import { launchContextDir, launchContextPathFor } from './su-launch-context';
+import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 
 const runtime = buildSuInstructionRuntime({
   ownerId: 'su-test',
@@ -223,6 +225,15 @@ describe('parseSuLaunchSpecRecord', () => {
     expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(good)))).toEqual(good);
   });
 
+  it('retains an exact named selection pin and rejects malformed pins', () => {
+    const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
+    expect(parseSuLaunchSpecRecord({ ...good, stack: ['domain:review-domain'], selectedIdentity }))
+      .toMatchObject({ selectedIdentity });
+    expect(parseSuLaunchSpecRecord({ ...good, selectedIdentity: {
+      ref: 'composition:review-suite', sourceRevision: 'stale',
+    } })).toBeNull();
+  });
+
   it('retains the authenticated principal and only an artifact matching its declared revision', () => {
     const revision = 'a'.repeat(64);
     const artifact = { schemaVersion: 1, specificationRevision: revision } as never;
@@ -256,6 +267,31 @@ describe('parseSuLaunchSpecRecord', () => {
       autoMode: false, drainMode: false, loopArmed: false,
       profile: 'engineer', fleet: null, planSlug: null, harnessSlug: null,
     });
+  });
+});
+
+describe('pinnedSuRecoveryPrompt', () => {
+  it('replays the exact prior instruction bytes and refuses a tampered artifact', async () => {
+    const launch = await compileLaunchSpecificationArtifact({
+      promptText: 'PINNED V1 INSTRUCTIONS', cwd: '/tmp', role: 'su',
+      stack: [], state: { schemaVersion: 1 },
+    });
+    const record = parseSuLaunchSpecRecord({
+      v: 1, agent: 'codex', workspaceId: 'ws',
+      selectedIdentity: { ref: 'domain:research', sourceRevision: 'a'.repeat(64) },
+      specificationRevision: launch.specificationRevision,
+      specificationArtifact: launch.specificationArtifact,
+    });
+    expect(record).not.toBeNull();
+    expect(pinnedSuRecoveryPrompt(record!)).toEqual({
+      promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: launch.specificationRevision,
+    });
+    expect(() => pinnedSuRecoveryPrompt({
+      ...record!, specificationArtifact: {
+        ...launch.specificationArtifact,
+        inputs: [...launch.specificationArtifact.inputs, { kind: 'unknown' }],
+      } as never,
+    })).toThrow();
   });
 });
 

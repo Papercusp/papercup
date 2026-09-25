@@ -61,7 +61,8 @@ const resolveWorkItemRef = vi.fn();
 const linkWorkItem = vi.fn();
 const subscribeWorkItem = vi.fn();
 const resolveAdoptedName = vi.fn();
-vi.mock('../../plan-items/agent-names', () => ({
+vi.mock('../../plan-items/agent-names', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-items/agent-names')>(),
   resolveAdoptedName: (...a: unknown[]) => resolveAdoptedName(...a),
 }));
 // EI-19362441037986499: the record-only-completion-of-an-already-terminal-item writer. It
@@ -73,6 +74,20 @@ const attachCompletionEvidenceToSettledItem = vi.fn();
 const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  // The improvement-review module is imported through complete.ts's analysis
+  // dependency graph and binds these references at import time.
+  getWorkItemDetail: vi.fn(),
+  mergeWorkItemPayload: vi.fn(),
+  releaseWorkItem: vi.fn(),
+  claimWorkItem: vi.fn(),
+  depsBlockedExclusionSql: vi.fn(),
+  explainIssueClaimFloors: vi.fn(),
+  isClaimHoldParked: vi.fn(),
+  observeWorkItem: vi.fn(),
+  looksLikePolicyGate: vi.fn(),
+  readWorkItemClaimHoldProvenance: vi.fn(),
+  readUnresolvedDepBlockers: vi.fn(),
+  ACTIVE_FEATURE_FAMILY_KINDS: ['feature'],
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
   commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
@@ -1985,6 +2000,21 @@ describe('work_items:complete (keyed-array)', () => {
 
     expect(mergeWorkItemOutputPayload).toHaveBeenCalledWith('F-12', outputPayload, { harness: 'papercup' });
     expect(r.outputPayload).toEqual(outputPayload);
+  });
+
+  it('passes terminal outputPayload to the canonical state writer before the sidecar merge', async () => {
+    const outputPayload = { answer: 'done' };
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'done' }));
+    await one({
+      id: 'F-12', harness: 'papercup', state: 'done',
+      completion: { summary: 'typed result complete', tests: 'unit fixture' },
+      outputPayload,
+    });
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12', 'done', expect.objectContaining({ outputPayload }),
+    );
+    expect(mergeWorkItemOutputPayload).toHaveBeenCalledWith('F-12', outputPayload, { harness: 'papercup' });
   });
 
   it('returns the completion-boundary reflect step (self-learning P-001/B)', async () => {

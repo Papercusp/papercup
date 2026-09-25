@@ -34,7 +34,11 @@ import {
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
-import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import {
+  replayAgentSpecification,
+  specificationPrompt,
+  type ResolvedAgentSpecification,
+} from '@papercusp/orchestrator/blueprint';
 import {
   buildLaunchSpec,
   compileLaunchSpecificationArtifact,
@@ -264,6 +268,9 @@ export interface SuLaunchSpecRecord {
   fleet: { slug: string | null; role: string | null } | null;
   /** Resolved launch binding and the last artifact/state receipts (P-008). */
   stack?: string[];
+  /** The picker root and exact selected closure. `stack` remains the expanded
+   * component binding consumed by the live control plane. */
+  selectedIdentity?: SelectedIdentityPin | null;
   specificationRevision?: string;
   stateRevision?: string;
   /** Authenticated principal at launch; stable across changes in worn identity. */
@@ -274,8 +281,29 @@ export interface SuLaunchSpecRecord {
   identityHistory?: SuLaunchArtifactHistoryEntry[];
 }
 
+export interface SelectedIdentityPin {
+  ref: string;
+  sourceRevision: string;
+}
+
+/** Recover only a verified, previously delivered prompt when a pinned source
+ * has moved and a missing Codex home needs its instructions restored. No new
+ * activation is implied by replaying the immutable launch artifact. */
+export function pinnedSuRecoveryPrompt(record: SuLaunchSpecRecord): {
+  promptText: string;
+  specificationRevision: string;
+} | null {
+  if (!record.selectedIdentity || !record.specificationArtifact || !record.specificationRevision) return null;
+  const artifact = replayAgentSpecification(record.specificationArtifact);
+  if (artifact.specificationRevision !== record.specificationRevision) {
+    throw new Error('pinned SU recovery artifact does not match the launch receipt');
+  }
+  return { promptText: specificationPrompt(artifact), specificationRevision: artifact.specificationRevision };
+}
+
 export interface SuLaunchArtifactHistoryEntry {
   stack: string[];
+  selectedIdentity?: SelectedIdentityPin | null;
   specificationRevision: string;
   stateRevision: string;
   specificationArtifact: ResolvedAgentSpecification;
@@ -334,6 +362,7 @@ export function carryIdentityReceiptForControlActivation(
   if (alreadyReceipted) return null;
   const carried: SuLaunchArtifactHistoryEntry = {
     stack: [...(record.stack ?? [])],
+    ...(record.selectedIdentity !== undefined ? { selectedIdentity: record.selectedIdentity } : {}),
     specificationRevision,
     stateRevision,
     specificationArtifact: artifact,
@@ -358,6 +387,18 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
   if (typeof r.agent !== 'string' || !r.agent) return null;
   if (typeof r.workspaceId !== 'string' || !r.workspaceId) return null;
   const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const parseSelection = (value: unknown): SelectedIdentityPin | null | undefined => {
+    if (value == null) return null;
+    if (!value || typeof value !== 'object') return undefined;
+    const pin = value as Record<string, unknown>;
+    if (typeof pin.ref !== 'string' || !/^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pin.ref) ||
+        typeof pin.sourceRevision !== 'string' || !/^[a-f0-9]{64}$/.test(pin.sourceRevision)) {
+      return undefined;
+    }
+    return { ref: pin.ref, sourceRevision: pin.sourceRevision };
+  };
+  const selectedIdentity = parseSelection(r.selectedIdentity);
+  if (selectedIdentity === undefined) return null;
   const normalizedContextSize = normalizeSuContextSize(r.contextSize);
   if (!normalizedContextSize.ok) return null;
   const modelSource =
@@ -378,8 +419,10 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
         const stateRevision = str(entry.stateRevision);
         const recordedAt = str(entry.recordedAt);
         const priorArtifact = entry.specificationArtifact;
+        const priorSelection = parseSelection(entry.selectedIdentity);
         if (
           !revision || !stateRevision || !recordedAt ||
+          priorSelection === undefined ||
           !priorArtifact || typeof priorArtifact !== 'object' ||
           str((priorArtifact as Record<string, unknown>).specificationRevision) !== revision
         ) return [];
@@ -387,6 +430,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
           stack: Array.isArray(entry.stack)
             ? entry.stack.filter((item): item is string => typeof item === 'string' && item.length > 0).slice(0, 40)
             : [],
+          ...(entry.selectedIdentity !== undefined ? { selectedIdentity: priorSelection } : {}),
           specificationRevision: revision,
           stateRevision,
           specificationArtifact: priorArtifact as ResolvedAgentSpecification,
@@ -419,6 +463,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     stack: Array.isArray(r.stack)
       ? r.stack.filter((value): value is string => typeof value === 'string' && value.length > 0).slice(0, 40)
       : [],
+    ...(r.selectedIdentity !== undefined ? { selectedIdentity } : {}),
     ...(specificationRevision ? { specificationRevision } : {}),
     ...(str(r.stateRevision) ? { stateRevision: str(r.stateRevision)! } : {}),
     ...(str(r.principalId) ? { principalId: str(r.principalId)! } : {}),
@@ -433,6 +478,9 @@ export interface RebuildSuLaunchArtifactInput {
   record: SuLaunchSpecRecord;
   /** Override only the explicit mutable stack. Derived mode/posture layers stay registry-owned. */
   stack?: readonly string[];
+  /** An explicit mutation can clear or restore the picker root independently of
+   * the expanded component stack. Omitted keeps the persisted selection. */
+  selectedIdentity?: SelectedIdentityPin | null;
   /** Kept outside this module so bootstrap-su remains the one owner of mode-directive prose. */
   modeSection: string;
 }
@@ -458,6 +506,11 @@ export async function rebuildSuLaunchArtifact(
   input: RebuildSuLaunchArtifactInput,
 ): Promise<RebuiltSuLaunchArtifact> {
   const { ownerId, operatorBaseUrl, record } = input;
+  const nextStack = input.stack ?? record.stack ?? [];
+  const selectedIdentity = input.selectedIdentity !== undefined
+    ? input.selectedIdentity
+    : input.stack !== undefined && JSON.stringify(nextStack) !== JSON.stringify(record.stack ?? [])
+      ? null : record.selectedIdentity ?? null;
   const plan = await resolveSuPlanContext({
     planSlug: record.planSlug,
     harnessSlug: record.harnessSlug,
@@ -483,12 +536,33 @@ export async function rebuildSuLaunchArtifact(
     personaTier: record.personaTier,
     model: record.model,
     planSlug: record.planSlug,
-    stack: input.stack ?? record.stack ?? [],
+    stack: nextStack,
     planTitle: plan.planTitle,
     planNow: plan.planNow,
     fleetRole: record.fleet?.role ?? null,
     modes: instructionRuntime.modes,
   });
+  const selectedResolution = selectedIdentity
+    ? await (await import('./agent-identities/source')).resolvePinnedIdentityLaunchSelection({
+        ...selectedIdentity, repoDir: spec.cwd, stack: spec.stack,
+      })
+    : null;
+  // A single-slot picker revision names its root source file. Its inherited
+  // layers are pinned by the immutable launch artifact already stored beside
+  // this record. A rollback compares against the matching history receipt.
+  if (selectedResolution && selectedIdentity && !selectedIdentity.ref.startsWith('composition:')) {
+    const sameSelection = (pin: SelectedIdentityPin | null | undefined) =>
+      pin?.ref === selectedIdentity.ref && pin.sourceRevision === selectedIdentity.sourceRevision;
+    const priorArtifact = sameSelection(record.selectedIdentity)
+      ? record.specificationArtifact
+      : record.identityHistory?.find((entry) => sameSelection(entry.selectedIdentity))?.specificationArtifact;
+    if (!priorArtifact || !selectedResolution.layers.every((layer) =>
+      priorArtifact.inputs.some((entry) =>
+        entry.kind === 'blueprint-layer' && entry.ref === layer.id &&
+        entry.contentHash === layer.contentHash))) {
+      throw new Error('selected identity inherited source revision changed before SU artifact rebuild');
+    }
+  }
   const overlaid = await applySuPromptOverlays({
     basePromptText: spec.promptText,
     agent: record.agent,
@@ -510,6 +584,7 @@ export async function rebuildSuLaunchArtifact(
     harnessSlug: record.harnessSlug,
     role: 'su',
     stack: spec.stack,
+    compositionRootId: selectedResolution?.compositionRootId ?? null,
     stateRevision: precedence.watermark,
     state: {
       schemaVersion: 1,
@@ -518,6 +593,12 @@ export async function rebuildSuLaunchArtifact(
       instructionPrecedence: precedence,
     },
   });
+  if (selectedResolution && !selectedResolution.layers.every((layer) =>
+    artifact.specificationArtifact.inputs.some((entry) =>
+      entry.kind === 'blueprint-layer' && entry.ref === layer.id &&
+      entry.contentHash === layer.contentHash))) {
+    throw new Error('selected identity source revision changed during SU artifact rebuild');
+  }
   return {
     spec,
     artifact,

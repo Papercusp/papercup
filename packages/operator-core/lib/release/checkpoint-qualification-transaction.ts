@@ -435,6 +435,41 @@ function consumedRunner(
   ].slice(-32);
 }
 
+/**
+ * WI-10002602 — a run id belongs to the physical runner that bound it. A runner that starts
+ * records `checkpoint-run:<runId>` in its evidence (activateScheduledCheckpointRunner), so this
+ * evidence is how an id is traced back to its runner. A transition that releases a runner
+ * (wait, displacement) keeps `runId` on the attempt as history. Before this helper, the next
+ * runner INHERITED that id: its CLI activated with its own run id, the stale id did not match,
+ * and activation refused with `conflict`. Every later fire re-joined the same attempt, so the
+ * gate wedged permanently (attempt 984d0934: 08:23Z fire refused, stored=abf32d6d, which was
+ * bound to the runner consumed at 06:38Z).
+ */
+function runIdBoundToRunner(
+  runner: { evidenceRefs?: readonly string[] } | null | undefined,
+  runId: string,
+): boolean {
+  return Boolean(runner?.evidenceRefs?.includes(`checkpoint-run:${runId}`));
+}
+
+/** The stored run id is history: it is bound to a consumed runner, not the incumbent. */
+function storedRunIdIsFromEndedRunner(current: CheckpointQualificationTransaction): boolean {
+  const runId = current.runId;
+  if (!runId) return false;
+  if (runIdBoundToRunner(current.currentPhysicalRunner, runId)) return false;
+  return (current.consumedPhysicalRuns ?? []).some((run) => runIdBoundToRunner(run, runId));
+}
+
+/** The run id a FRESH runner reservation carries: its own, never one bound to another runner. */
+function runIdForFreshRunner(current: CheckpointQualificationTransaction, inputRunId: string | null | undefined): string | null {
+  const own = inputRunId?.trim() || null;
+  if (own) return own;
+  if (!current.runId) return null;
+  if (runIdBoundToRunner(current.currentPhysicalRunner, current.runId)) return null;
+  if (storedRunIdIsFromEndedRunner(current)) return null;
+  return current.runId;
+}
+
 export function qualificationPhaseDurations(
   current: CheckpointQualificationTransaction,
   nowMs = Date.now(),
@@ -981,7 +1016,8 @@ export function reserveQualificationRunner(
     if (
       (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
       (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
-      (current.runId && input.runId && current.runId !== input.runId.trim()) ||
+      (current.runId && input.runId && current.runId !== input.runId.trim() &&
+        !storedRunIdIsFromEndedRunner(current)) ||
       (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
     ) return { status: 'conflict', transaction: current };
     if (input.started !== true && input.pid == null && !input.unit) {
@@ -1035,7 +1071,7 @@ export function reserveQualificationRunner(
       updatedAtMs: nowMs,
       candidate: input.candidate?.trim() || current.candidate,
       repairHead: input.repairHead?.trim() || current.repairHead,
-      runId: input.runId?.trim() || current.runId,
+      runId: runIdForFreshRunner(current, input.runId),
       phase: 'running',
       ...(input.started === false ? {} : { lastStartedAtMs: nowMs, lastProgressAtMs: nowMs }),
       phaseEnteredAtMs:
@@ -1141,7 +1177,7 @@ export function settleQualificationTransaction(
   ) {
     return { status: 'conflict', transaction: current };
   }
-  if (current.runId && runId && current.runId !== runId) {
+  if (current.runId && runId && current.runId !== runId && !storedRunIdIsFromEndedRunner(current)) {
     return { status: 'conflict', transaction: current };
   }
   const outcome = classifyQualificationVerdict(input);

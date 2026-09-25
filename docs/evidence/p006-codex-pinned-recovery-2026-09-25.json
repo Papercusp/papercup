@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 isolated Codex pinned instruction recovery after selected source update",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the verified disposable instance: write local domain identity v1, GET bootstrap-su/options, POST bootstrap-su with selected_identity_revision, change the fixture to v2, remove that session's AGENTS.md, POST adv/sessions/ensure-codex-home, inspect restored AGENTS.md and the isolated adv_sessions row"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T08:27:46Z",
+  "finishedAt": "2026-09-25T08:30:30Z",
+  "summary": "The isolated current-build operator restored the authenticated v1 Codex instructions after the selected identity source changed to v2. It reported a pinned-source-stale recovery and kept the original selected source and specification revision in the launch record. The verifier tore down its disposable database and home after exit 0.",
+  "assertions": [
+    {
+      "id": "isolated-current-build",
+      "passed": true,
+      "evidence": "The verifier confirmed sidecar HARNESS_ADMIN_DATABASE_URL reached its disposable Postgres on port 42149, workspace verify-tauri-isolated-90, and the frozen plain-node host bundle contained pinned-source-stale. No shared database or user Codex home was modified."
+    },
+    {
+      "id": "v1-launch-pin",
+      "passed": true,
+      "evidence": "Native bootstrap-su returned status ok and sessionId 1 for domain:p006-native-domain v1. Its specificationRevision was 1354e5bfa082c18a1cc855aceefc264ece96890ca975747954193b97e1a69f95."
+    },
+    {
+      "id": "v2-source-does-not-replace-v1-recovery",
+      "passed": true,
+      "evidence": "After editing only the isolated identity source and prompt to v2 and removing only this test session's AGENTS.md, native ensure-codex-home returned ok=true, repaired=true, promptRepaired=true, reason=pinned-source-stale, preservedSpecificationRevision=1354e5bfa082c18a1cc855aceefc264ece96890ca975747954193b97e1a69f95. The restored AGENTS.md contained NATIVE P006 V1 DEFINITION and lacked NATIVE P006 V2 DEFINITION."
+    },
+    {
+      "id": "launch-record-pin-remains-v1",
+      "passed": true,
+      "evidence": "The isolated adv_sessions row retained selectedIdentity.ref=domain:p006-native-domain, sourceRevision=9dbb796f4e02f9a562bc2610ce850caddb7cdc4160affa691d285e82d58579f0, and specificationRevision=1354e5bfa082c18a1cc855aceefc264ece96890ca975747954193b97e1a69f95."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host and isolated Tauri/Postgres",
+  "limitation": "This exercised the native bootstrap and missing-home recovery endpoints and persisted receipt, but did not start or resume an actual Codex model turn. It did not test warm Claude carry, fresh operational producer values, fleet/GOAL replacement, or generic identity isolation."
+}

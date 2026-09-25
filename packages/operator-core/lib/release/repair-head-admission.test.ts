@@ -512,7 +512,7 @@ describe('preflight — P-004: runs on the PROVED commit, before publish, on dry
 
   it('a refusing preflight sees the proved commit + admitted set, returns admission-incomplete with that commit, and the lineage ref never moves', () => {
     const { root, candidate } = repo();
-    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const sourceCommit = sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
     const seen: Parameters<Preflight>[0][] = [];
     const preflight: Preflight = (built) => {
       seen.push(built);
@@ -533,6 +533,8 @@ describe('preflight — P-004: runs on the PROVED commit, before publish, on dry
     expect(seen).toHaveLength(1);
     expect(seen[0]?.admitted).toEqual(['lib/a.ts']);
     expect(seen[0]?.commit).toBe(confirmed.commit);
+    expect(seen[0]?.sourceCommit).toBe(sourceCommit);
+    expect(seen[0]?.repairHead).toBe(candidate);
     // Built and proved — the object exists — but unreferenced: ordinary garbage.
     expect(git(root, ['cat-file', '-t', confirmed.commit ?? ''])).toBe('commit');
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
