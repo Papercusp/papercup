@@ -1052,7 +1052,7 @@ export default defineTool({
       if (args.migrationBootSmokeOverride) {
         try {
           migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
-            version: args.version, channel, platform, sourceSha: args.sourceSha,
+            version: args.version, channel, platform,
             ...args.migrationBootSmokeOverride,
           }, true);
         } catch (err) {
@@ -1212,7 +1212,7 @@ export default defineTool({
     if (args.migrationBootSmokeOverride) {
       try {
         migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
-          version: args.version, channel, sourceSha: args.sourceSha,
+          version: args.version, channel,
           ...args.migrationBootSmokeOverride,
         }, true);
       } catch (err) {

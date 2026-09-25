@@ -32,7 +32,8 @@ const resolveWorkItemRef = vi.fn();
 const linkWorkItem = vi.fn();
 const subscribeWorkItem = vi.fn();
 const attachCompletionEvidenceToSettledItem = vi.fn();
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),

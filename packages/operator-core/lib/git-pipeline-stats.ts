@@ -472,6 +472,10 @@ export interface GitPipelineSnapshot {
   /** Release-gate snapshot (main vs `ready` vs deployed :3070). */
   deploy: DevDeployState;
 
+  /** Root selected for the optional active-run probe. Null means its pipeline
+   * mapping was unavailable; absent means this snapshot did not request the probe. */
+  activeRunRoot?: string | null;
+
   /** overview-tab-expansion-2026-07-20 P-001: the LIVE green-checkpoint suite run
    *  (systemd probe via checkActiveCheckpointRun — the same self-healing check the
    *  launch path uses). `null` = NOT PROBED (the default: live callers — watchdogs,
@@ -1594,13 +1598,13 @@ export async function gitPipelineSnapshot(
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
   // a probe failure yields null (not probed), never a broken snapshot.
   let activeRun: GitPipelineSnapshot['activeRun'] = null;
+  let resolvedActiveRunRoot: string | null = null;
   if (opts.includeActiveRun) {
     try {
       // release:deploy and the operator-home derived read always target the default pipeline.
       // Use its explicit integration root directly so registry ambiguity/availability cannot
       // turn a live run-lock into a false null. Non-default pipelines still require the
       // registry mapping to avoid attaching one harness's checkpoint process to another.
-      let resolvedActiveRunRoot: string | null;
       if (slug === DEFAULT_SLUG) {
         resolvedActiveRunRoot = deploy.integrationRoot;
       } else {
@@ -1764,5 +1768,6 @@ export async function gitPipelineSnapshot(
     recent,
     deploy,
     activeRun,
+    ...(opts.includeActiveRun ? { activeRunRoot: resolvedActiveRunRoot } : {}),
   };
 }

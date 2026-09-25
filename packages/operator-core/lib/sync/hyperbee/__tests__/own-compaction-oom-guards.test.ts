@@ -201,7 +201,13 @@ describe('(c) a contiguous fold passes over prior snapshot sets instead of re-ex
     const ra = await snapshot(a.log, 'inline');
     const rb = await snapshot(b.log, 'worker');
     refused();
-    expect(rb).toEqual(ra);
+    // The hold duration measures two separate executions; byte and row results
+    // must agree, but elapsed milliseconds need not.
+    const { appendsHeldMs: inlineHoldMs, ...inlineResult } = ra;
+    const { appendsHeldMs: workerHoldMs, ...workerResult } = rb;
+    expect(workerResult).toEqual(inlineResult);
+    expect(inlineHoldMs).toBeGreaterThanOrEqual(0);
+    expect(workerHoldMs).toBeGreaterThanOrEqual(0);
     expect(await rawRange(b.log, rb.coversUpTo, rb.coversUpTo + rb.chunkCount)).toEqual(
       await rawRange(a.log, ra.coversUpTo, ra.coversUpTo + ra.chunkCount),
     );

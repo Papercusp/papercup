@@ -48,7 +48,8 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
   claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
-vi.mock('../../../agent-tools/coordination/presence', () => ({
+vi.mock('../../../agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-tools/coordination/presence')>()),
   touchHeartbeat: vi.fn(async () => {}),
 }));
 

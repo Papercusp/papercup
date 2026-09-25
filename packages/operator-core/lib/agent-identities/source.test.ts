@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { stringify as stringifyYaml } from 'yaml';
+import { dirname, join } from 'node:path';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
-import { SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
+import { builtinBlueprintPath, SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
 import {
   bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, compileSelectedIdentityResources,
   getSelectedModeCatalog, getSelectedModeDefinitions,
@@ -14,6 +14,67 @@ const scope = { workspace: 'ws-test', goal: 'goal-1', ownerId: 'su-goal-1' };
 const observedAt = '2026-09-24T13:00:00.000Z';
 
 describe('selected identity producer output binding', () => {
+  it('reconciles every built-in SU contribution with the census and compiled provenance', async () => {
+    const blueprintRoot = dirname(dirname(builtinBlueprintPath('su')));
+    const census = readFileSync(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE ??
+      new URL('../../../../docs/evidence/p007-identity-input-consumer-census-2026-09-25.md', import.meta.url), 'utf8');
+    const censusRows = new Map(census.split('\n').flatMap((line) => {
+      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+      const key = /^`(su(?:\.[^`]+)?\/[^`]+)`$/.exec(cells[0] ?? '')?.[1];
+      return key ? [[key, cells] as const] : [];
+    }));
+    const identities = readdirSync(blueprintRoot).filter((id) =>
+      (id === 'su' || id.startsWith('su.')) && existsSync(join(blueprintRoot, id, 'blueprint.yaml')));
+    const declarations = identities.flatMap((id) => {
+      const raw = parseYaml(readFileSync(join(blueprintRoot, id, 'blueprint.yaml'), 'utf8')) as {
+        contributions?: Array<{ id: string; purpose: string; source: 'fixed' | 'provider';
+          refresh: string; inputKind: string; ref: string; producerRef?: string;
+          availability?: 'required' | 'optional' }>;
+      };
+      return (raw.contributions ?? []).map((entry) => ({ identityId: id, ...entry }));
+    });
+    const keys = declarations.map((entry) => `${entry.identityId}/${entry.id}`);
+    expect(keys).toHaveLength(24);
+    expect([...censusRows.keys()].sort()).toEqual([...keys].sort());
+    for (const entry of declarations) {
+      const cells = censusRows.get(`${entry.identityId}/${entry.id}`)!;
+      expect(cells[1], entry.id).toContain(entry.producerRef ?? entry.ref);
+      expect(cells[2].replaceAll(' ', '-'), entry.id).toContain(entry.refresh);
+      expect(cells[3], entry.id).toMatch(/\.test\.ts/);
+    }
+    for (const identityId of identities) {
+      const provided = declarations.filter((entry) => entry.identityId === identityId && entry.source === 'provider');
+      if (!provided.length) continue;
+      const output = (entry: typeof provided[number]) => ({ contributionId: entry.id,
+        value: entry.inputKind === 'prompt-file' ? `CURRENT ${entry.id}` : { current: entry.id } });
+      const outputs = provided.map(output);
+      const input = { identityId, sourceTier: 'builtin' as const, outputs,
+        scope: { workspace: 'ws-test', harness: 'papercusp', ownerId: 'su-1' }, observedAt };
+      const bound = await bindSelectedIdentityOutputArtifact(input);
+      for (const entry of provided) {
+        expect(bound.artifact.provenance, `${identityId}/${entry.id}`).toContainEqual(expect.objectContaining({
+          path: `contribution.${entry.id}`, decision: `provider:${entry.refresh}`,
+          producerRef: entry.producerRef,
+        }));
+        const others = outputs.filter((candidate) => candidate.contributionId !== entry.id);
+        if (entry.availability === 'optional') {
+          const omitted = await bindSelectedIdentityOutputArtifact({ ...input,
+            outputs: [...others, { contributionId: entry.id,
+              omission: { reason: 'not-requested' as const } }],
+          });
+          expect(omitted.artifact.provenance, `${identityId}/${entry.id}`).toContainEqual(
+            expect.objectContaining({ path: `contribution.${entry.id}`, decision: 'omitted:not-requested' }),
+          );
+        } else {
+          await expect(bindSelectedIdentityOutputArtifact({ ...input,
+            outputs: [...others, { contributionId: entry.id,
+              omission: { reason: 'not-requested' as const } }],
+          })).rejects.toThrow(/declared operational input is absent|declared prompt input is absent/);
+        }
+      }
+    }
+  });
+
   it('requires both root SU mode and assignment outputs with their declared turn producers', async () => {
     const bound = await bindSelectedIdentityOutputArtifact({
       identityId: 'su', sourceTier: 'builtin',
