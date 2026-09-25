@@ -169,6 +169,63 @@ describe('logical checkpoint qualification transaction', () => {
     ).toBe(false);
   });
 
+  it('settles a repair-head verification whose verdict names the frozen candidate plus the verified head (WI-10002602)', () => {
+    // The attempt is reserved against the repair head it verifies ('repair-head-1'), but the
+    // green-checkpoint verdict names the FROZEN candidate as `candidate` and the verified head
+    // as `repairHead`. Before the fix this returned conflict: the verdict was discarded and the
+    // attempt stayed non-terminal, wedging every later scheduled fire.
+    const reserved = reserveQualificationRunner(
+      beginQualificationTransaction(null, {
+        attemptId: 'attempt-rh',
+        requiredAncestorSha: 'repair-head-1',
+        candidate: 'repair-head-1',
+        nowMs: 100,
+      }).transaction,
+      { attemptId: 'attempt-rh', runnerId: 'physical-rh', candidate: 'repair-head-1', leaseDurationMs: 1_000, nowMs: 150 },
+    ).transaction;
+
+    const settled = settleQualificationTransaction(reserved, {
+      attemptId: 'attempt-rh',
+      candidate: 'frozen-candidate-1',
+      repairHead: 'repair-head-1',
+      reason: 'repair-in-progress',
+      green: null,
+      nowMs: 200,
+    });
+    // repair-in-progress is a no-verdict: the attempt returns to waiting with its runner
+    // released, instead of staying 'running' under a runner that will never settle it.
+    expect(settled.status).toBe('updated');
+    expect(settled.transaction).toMatchObject({
+      phase: 'waiting',
+      candidate: 'frozen-candidate-1',
+      repairHead: 'repair-head-1',
+      currentPhysicalRunner: null,
+    });
+
+    // A real verdict on the same repair head settles terminally.
+    const red = settleQualificationTransaction(reserved, {
+      attemptId: 'attempt-rh',
+      candidate: 'frozen-candidate-1',
+      repairHead: 'repair-head-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 200,
+    });
+    expect(red.status).toBe('updated');
+    expect(red.transaction).toMatchObject({ phase: 'terminal', repairHead: 'repair-head-1' });
+
+    // A verdict for a DIFFERENT repair head is still a stale producer and must not settle.
+    const otherHead = settleQualificationTransaction(reserved, {
+      attemptId: 'attempt-rh',
+      candidate: 'frozen-candidate-1',
+      repairHead: 'repair-head-2',
+      reason: 'repair-in-progress',
+      green: null,
+      nowMs: 200,
+    });
+    expect(otherHead).toMatchObject({ status: 'conflict', transaction: reserved });
+  });
+
   it('pins the first terminal result to the exact candidate and run identity', () => {
     const current = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',
