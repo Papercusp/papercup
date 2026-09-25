@@ -155,12 +155,31 @@ describe('accepted blueprint operation worker binding', () => {
         }, desired: revision, prepared: null, applied: revision,
       },
     };
-    sqlMock.mockImplementation((strings: TemplateStringsArray) =>
-      strings.join('').includes('SELECT id, role') ? [{ id: 7, role: 'worker' }] : [row]);
+    let attestationRow = { native_session_id: 'native-worker-a' as string | null,
+      operation_receipt_id: 19 as number | null };
+    sqlMock.mockImplementation((strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('SELECT id, role')) return [{ id: 7, role: 'worker' }];
+      if (query.includes('SELECT s.session_id AS native_session_id')) {
+        return [attestationRow];
+      }
+      return [row];
+    });
     readAcceptedBlueprintDirectWorkItem.mockResolvedValue({ pin, operation: {
       ...operation, id: 'run', policy: { ...operation.policy, model: modelPolicy },
     } });
-    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({ status: 'bound', policy: modelPolicy });
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
+      status: 'bound', policy: modelPolicy,
+      attestation: { operationReceiptId: 19, advSessionId: 7, nativeSessionId: 'native-worker-a',
+        workspaceId: 'ws-a', ownerId: 'worker-a', harnessSlug: 'harness-a', workItemId: 'WI-1',
+        operationId: 'run',
+        specificationRevision: REVISION },
+    });
+
+    attestationRow = { native_session_id: null, operation_receipt_id: null };
+    expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({
+      status: 'bound', policy: modelPolicy, attestation: null,
+    });
 
     row.accepted_operation = { ...accepted, modelPolicy: { ...modelPolicy, models: ['claude-sonnet-4-6'] } };
     expect(await readActiveOperationModelPolicy('ws-a', 'worker-a')).toEqual({

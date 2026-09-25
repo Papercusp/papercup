@@ -97,8 +97,21 @@ export type ActiveOperationWorkerClaimRead =
   | { status: 'none' }
   | { status: 'unavailable'; reason: string };
 
+export interface ActiveOperationAttestationContext {
+  operationReceiptId: number;
+  advSessionId: number;
+  nativeSessionId: string;
+  workspaceId: string;
+  ownerId: string;
+  harnessSlug: string;
+  workItemId: string;
+  operationId: string;
+  specificationRevision: string;
+}
+
 export type ActiveOperationModelPolicyRead =
-  | { status: 'bound'; policy: NonNullable<AcceptedOperationWorkerBinding['modelPolicy']> }
+  | { status: 'bound'; policy: NonNullable<AcceptedOperationWorkerBinding['modelPolicy']>;
+      attestation: ActiveOperationAttestationContext | null }
   | { status: 'none' }
   | { status: 'unavailable'; reason: string };
 
@@ -144,7 +157,39 @@ export async function readActiveOperationModelPolicy(
           )) {
         return { status: 'unavailable', reason: 'accepted operation model selection differs from its policy' } as const;
       }
-      return { status: 'bound', policy } as const;
+      // Resolve the existing operation invocation, not a caller-supplied
+      // request key, as the durable event stream for actual model evidence.
+      // Direct legacy admissions without an invocation remain policy-bound but
+      // have no attestation sink; a later writer must fail closed on null.
+      const [receipt] = await getOrgPg().sql<Array<{
+        native_session_id: string | null;
+        operation_receipt_id: string | number | null;
+      }>>`
+        SELECT s.session_id AS native_session_id, i.id AS operation_receipt_id
+          FROM harness_shared.adv_sessions s
+          LEFT JOIN harness_shared.blueprint_operation_invocations i
+            ON i.workspace_id = s.workspace_id
+           AND i.harness_slug = ${active.binding.harnessSlug}
+           AND i.target_kind = 'work-item' AND i.target_ref = ${active.binding.workItemId}
+           AND i.operation_id = ${active.binding.operationId}
+           AND i.specification_revision = ${active.binding.specificationRevision}
+           AND i.caller_id = ${active.binding.pin.callerId ?? null}
+           AND i.request_key = ${active.binding.pin.requestKey ?? null}
+           AND i.request_fingerprint = ${active.binding.pin.requestFingerprint ?? null}
+         WHERE s.id = ${active.receipt.sessionId}
+           AND s.workspace_id = ${workspaceId} AND s.coord_owner_id = ${ownerId}
+           AND s.ended_at IS NULL AND s.ended_by IS NULL
+      `;
+      if (!receipt) return { status: 'unavailable', reason: 'accepted operation worker session ended' } as const;
+      const operationReceiptId = Number(receipt.operation_receipt_id);
+      const attestation = receipt.native_session_id && Number.isSafeInteger(operationReceiptId) && operationReceiptId > 0
+        ? { operationReceiptId, advSessionId: active.receipt.sessionId,
+            nativeSessionId: receipt.native_session_id, workspaceId, ownerId,
+            harnessSlug: active.binding.harnessSlug, workItemId: active.binding.workItemId,
+            operationId: active.binding.operationId,
+            specificationRevision: active.binding.specificationRevision }
+        : null;
+      return { status: 'bound', policy, attestation } as const;
     });
   } catch {
     return { status: 'unavailable', reason: 'accepted operation model policy could not be verified' };
