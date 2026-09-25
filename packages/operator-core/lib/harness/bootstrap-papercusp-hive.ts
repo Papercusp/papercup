@@ -30,7 +30,7 @@ import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hiv
 import { detectPapercupRoot } from './register-papercusp';
 import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
 import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
-import { ensureWorkspaceEntry, writeRegistry, workspacesRoot } from '../workspace-registry';
+import { ensureCurrentWorkspace, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
 import {
   adoptSharedHiveIdentity,
@@ -299,11 +299,7 @@ export interface BootstrapPapercuspHiveDeps {
  *  papercusp-hive-join's `defaultSetHome`, which already registers-then-sets;
  *  the fix there was never mirrored back here until now. */
 export function defaultSetHomeWorkspace(ws: string): void {
-  const reg = ensureWorkspaceEntry(ws, 'Papercusp');
-  if (reg.current !== ws) {
-    reg.current = ws;
-    writeRegistry(reg);
-  }
+  ensureCurrentWorkspace(ws, 'Papercusp');
 }
 
 /** P-005 default: has THIS box already joined the canonical hive? joinHiveAsView's
