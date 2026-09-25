@@ -358,6 +358,8 @@ describe('buildRoleLaunchSpec', () => {
       if (identityInput?.kind !== 'blueprint-layer') throw new Error('plain-domain source pin missing');
       const acceptedOperation = {
         workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: 'a'.repeat(64),
+        pin: { kind: 'blueprint-operation' as const, harnessSlug: 'harness-a', operationId: 'run',
+          specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} },
         identity: { ref: 'plain-domain', revision: identityInput!.revision,
           contentHash: identityInput!.contentHash },
         stack: ['domain:plain-domain'], requiredTools: ['work_items:get'],
@@ -395,6 +397,8 @@ describe('buildRoleLaunchSpec', () => {
       if (otherInput?.kind !== 'blueprint-layer') throw new Error('other-domain source pin missing');
       const otherOperation = {
         workItemId: 'WI-2', harnessSlug: 'harness-a', operationId: 'read', specificationRevision: 'b'.repeat(64),
+        pin: { kind: 'blueprint-operation' as const, harnessSlug: 'harness-a', operationId: 'read',
+          specificationRevision: 'b'.repeat(64), operationVersion: '1.0.0', input: {} },
         identity: { ref: 'other-domain', revision: otherInput.revision,
           contentHash: otherInput.contentHash },
         stack: ['domain:other-domain'], requiredTools: ['mail:read'],

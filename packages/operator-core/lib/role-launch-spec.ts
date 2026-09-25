@@ -845,6 +845,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
         workItemId: acceptedOperation.workItemId,
         operationId: acceptedOperation.operationId,
         specificationRevision: acceptedOperation.specificationRevision,
+        pin: acceptedOperation.pin,
         identity: acceptedOperation.identity,
         requiredTools: acceptedOperation.requiredTools,
       } } : {}),
