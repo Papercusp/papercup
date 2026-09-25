@@ -31,6 +31,8 @@ import {
 import { activeWorkspaceId } from './workspace-registry';
 import { resolveSessionRef } from './compaction-usage';
 import { requestSessionIdentityActivation } from './agent-tools/coordination/control-anchor';
+import { acknowledgeActivation, normalizeSessionActivation, prepareActivation } from './session-activation';
+import { readActiveOperationWorkerClaimBinding } from './blueprint/operation-worker-binding';
 
 // Exercise the lifecycle SQL without scheduling real delayed cleanup of test rows.
 vi.mock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: vi.fn() }));
@@ -104,6 +106,63 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
         FROM harness_shared.session_briefs WHERE owner_id = ${OWNER}
     `;
     expect(persisted?.activation).toMatchObject({ desired: revision, status: 'desired' });
+  });
+});
+
+describe('active operation worker claim receipt', () => {
+  it('requires the applied active role receipt, then rejects an ended session', async () => {
+    const owner = 'role-claim-reader-integration';
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
+    const acceptedOperation = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-claim-reader', operationId: 'extract',
+      specificationRevision: 'c'.repeat(64),
+      identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
+      requiredTools: ['work_items:get'],
+    };
+    expect(await readActiveOperationWorkerClaimBinding(WS, owner)).toEqual({ status: 'none' });
+    const id = await seedAdv({ coordOwnerId: owner });
+    try {
+      await admin`UPDATE harness_shared.adv_sessions SET role = 'worker' WHERE id = ${id}`;
+      expect(await recordSuLaunchSpec(id, owner, {
+        v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+        ...revision, specificationArtifact: { configuration: { grants: { requires: ['work_items:get'] } } },
+        acceptedOperation,
+      })).toBe(true);
+      await requestSessionIdentityActivation({
+        ownerId: owner, workspaceId: WS, revision, source: 'launch',
+        attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      });
+      expect(await readActiveOperationWorkerClaimBinding(WS, owner)).toEqual({
+        status: 'unavailable', reason: 'active operation worker identity is not applied',
+      });
+
+      const [brief] = await admin<{ activation: unknown }[]>`
+        SELECT control_state->'activation' AS activation
+          FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}
+      `;
+      const desired = normalizeSessionActivation(brief.activation)!;
+      const applied = acknowledgeActivation(prepareActivation(desired, revision), revision);
+      await admin`
+        UPDATE harness_shared.session_briefs
+           SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(applied)}, true)
+         WHERE workspace_id = ${WS} AND owner_id = ${owner}
+      `;
+      const claimBinding = await readActiveOperationWorkerClaimBinding(WS, owner);
+      if (claimBinding.status !== 'bound') throw new Error(JSON.stringify(claimBinding));
+      expect(claimBinding).toMatchObject({
+        status: 'bound', binding: {
+          workItemId: acceptedOperation.workItemId,
+          operationId: acceptedOperation.operationId,
+          specificationRevision: acceptedOperation.specificationRevision,
+          identity: acceptedOperation.identity,
+          requiredTools: ['work_items:get'],
+        },
+      });
+      await admin`UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'self' WHERE id = ${id}`;
+      expect(await readActiveOperationWorkerClaimBinding(WS, owner)).toEqual({ status: 'none' });
+    } finally {
+      await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+    }
   });
 });
 
