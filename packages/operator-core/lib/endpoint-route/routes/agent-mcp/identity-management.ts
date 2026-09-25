@@ -9,9 +9,14 @@ interface Body {
   action?: unknown;
   identityId?: unknown;
   slot?: unknown;
+  compositionId?: unknown;
+  componentRefs?: unknown;
+  description?: unknown;
+  harnessSlug?: unknown;
 }
 
-const ACTIONS = new Set(['preview', 'attach', 'switch', 'detach', 'rollback']);
+const ACTIONS = new Set(['preview', 'attach', 'switch', 'detach', 'rollback',
+  'preview-composition', 'save-composition']);
 
 export default defineTool({
   method: 'POST',
@@ -29,10 +34,39 @@ export default defineTool({
     }
     const ownerId = typeof body.ownerId === 'string' ? body.ownerId.trim() : '';
     const action = typeof body.action === 'string' && ACTIONS.has(body.action) ? body.action : '';
-    if (!ownerId || !action) {
+    const compositionAction = action === 'preview-composition' || action === 'save-composition';
+    if ((!ownerId && !compositionAction) || !action) {
       return Response.json({ ok: false, error: 'ownerId and a valid action are required' }, { status: 400 });
     }
     try {
+      if (compositionAction) {
+        if (typeof body.compositionId !== 'string' || !Array.isArray(body.componentRefs) ||
+            body.componentRefs.some((ref) => typeof ref !== 'string') ||
+            (body.description != null && typeof body.description !== 'string')) {
+          return Response.json({ ok: false, error: 'compositionId, componentRefs and description are invalid' }, { status: 400 });
+        }
+        const harnessSlug = typeof body.harnessSlug === 'string' ? body.harnessSlug.trim() : '';
+        const [{ previewNamedIdentityComposition, saveNamedIdentityComposition },
+          { resolveProjectDir }, { papercuspPathForWorkspace }] = await Promise.all([
+          import('../../../identity-management'), import('../../../spawn-config'),
+          import('../../../papercusp-root'),
+        ]);
+        const workspaceId = activeWorkspaceId();
+        const repoDir = harnessSlug
+          ? await resolveProjectDir(harnessSlug, workspaceId)
+          : papercuspPathForWorkspace(workspaceId);
+        if (!repoDir) return Response.json({ ok: false, error: 'selected harness is not registered' }, { status: 404 });
+        const input = { id: body.compositionId, componentRefs: body.componentRefs as string[],
+          description: body.description as string | undefined, repoDir };
+        const result = action === 'save-composition'
+          ? await saveNamedIdentityComposition(input)
+          : await previewNamedIdentityComposition(input);
+        if (action === 'save-composition') {
+          const { notifySyncInvalidate } = await import('../../../sync-sse');
+          await notifySyncInvalidate('identities.surface').catch(() => {});
+        }
+        return Response.json({ ok: true, action, ...result });
+      }
       const [{ mutateIdentityStack }, { readSuLaunchSpecByOwner, }, { parseSuLaunchSpecRecord }] = await Promise.all([
         import('../../../identity-management'),
         import('../../../adv-sessions'),

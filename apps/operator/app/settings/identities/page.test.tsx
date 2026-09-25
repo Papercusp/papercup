@@ -233,6 +233,35 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("IdentitySettingsPage", () => {
+  it("previews selected components and saves the reviewed named identity", async () => {
+    const preview = { ok: true, id: 'named-research', action: 'preview-composition',
+      components: [{ ref: 'domain:research-steward', sourceRevision: 'a'.repeat(64) }],
+      preview: { layers: [{ id: 'research-steward', revision: 'a'.repeat(64) }],
+        bundles: [{ kind: 'recipe', ref: 'research-plan' }],
+        grants: { requires: ['calendar.read'] }, knobs: { aiBackend: { default: { model: 'sol' } } },
+        contributions: [{ id: 'current-brief', source: 'provider', refresh: 'launch' }],
+        launchCompatibility: { eligible: false, reason: 'Needs live producer binding' } } };
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json(preview))
+      .mockResolvedValueOnce(Response.json({ ...preview, action: 'save-composition' }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      render(<IdentitySettingsPage />);
+      fireEvent.change(screen.getByRole('textbox', { name: 'New identity name' }),
+        { target: { value: 'named-research' } });
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Include research-steward as domain' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Preview composition' }));
+      await waitFor(() => expect(screen.getByText(/recipe:research-plan/)).toBeTruthy());
+      expect(screen.getByRole('alert').textContent).toContain('Needs live producer binding');
+      fireEvent.click(screen.getByRole('button', { name: 'Save named identity' }));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+      const bodies = fetch.mock.calls.map((call) => JSON.parse(call[1].body as string));
+      expect(bodies.map((body) => body.action)).toEqual(['preview-composition', 'save-composition']);
+      expect(bodies[1].componentRefs).toEqual(['domain:research-steward']);
+      expect(H.invalidate).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("pages the catalog and keeps invalid sources visible with their reasons", () => {
     const first = surface();
     first.catalogNextAfter = "research-steward";

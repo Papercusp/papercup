@@ -20,6 +20,8 @@ const H = vi.hoisted(() => ({
     }),
   ),
   mutate: vi.fn(async (_input: unknown) => ({ ok: true, changed: true })),
+  previewComposition: vi.fn(async (_input: unknown) => ({ id: 'named-composition', preview: { bundles: [] } })),
+  saveComposition: vi.fn(async (_input: unknown) => ({ ok: true, id: 'named-composition' })),
   modeSection: vi.fn(() => 'mode-section'),
   invalidate: vi.fn(async (_name: string) => {}),
 }));
@@ -31,7 +33,11 @@ vi.mock('../../../adv-sessions', async (importOriginal) => ({
   readSuLaunchSpecByOwner: H.readLaunchSpec,
 }));
 vi.mock('../../../su-persona-render', () => ({ parseSuLaunchSpecRecord: H.parseLaunchSpec }));
-vi.mock('../../../identity-management', () => ({ mutateIdentityStack: H.mutate }));
+vi.mock('../../../identity-management', () => ({ mutateIdentityStack: H.mutate,
+  previewNamedIdentityComposition: H.previewComposition,
+  saveNamedIdentityComposition: H.saveComposition }));
+vi.mock('../../../spawn-config', () => ({ resolveProjectDir: vi.fn(async () => '/workspace/pot') }));
+vi.mock('../../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/workspace' }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: H.invalidate }));
 vi.mock('./bootstrap-su', () => ({ composeModePromptSection: H.modeSection }));
 
@@ -91,6 +97,21 @@ describe('POST /agent-mcp/identity-management', () => {
       operatorBaseUrl: 'http://operator.test',
       modeSection: 'mode-section',
     });
+    expect(H.invalidate).toHaveBeenCalledWith('identities.surface');
+  });
+
+  it('previews and saves a named composition through the existing library without a live session', async () => {
+    const body = { action: 'preview-composition', compositionId: 'named-composition',
+      componentRefs: ['domain:research-steward'], description: 'Research work' };
+    const preview = await post(body);
+    expect(preview.status).toBe(200);
+    expect(H.previewComposition).toHaveBeenCalledWith({ id: 'named-composition',
+      componentRefs: ['domain:research-steward'], description: 'Research work', repoDir: '/workspace' });
+    expect(H.readLaunchSpec).not.toHaveBeenCalled();
+    expect(H.invalidate).not.toHaveBeenCalled();
+    const saved = await post({ ...body, action: 'save-composition' });
+    expect(saved.status).toBe(200);
+    expect(H.saveComposition).toHaveBeenCalledTimes(1);
     expect(H.invalidate).toHaveBeenCalledWith('identities.surface');
   });
 

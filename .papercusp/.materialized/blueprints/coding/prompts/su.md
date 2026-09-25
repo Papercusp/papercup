@@ -799,15 +799,27 @@ it is easy to never see. They answer the box; the text above it silently dies. T
 
 ## Owner directives — durable capture and resolution
 
-When the owner issues a directive (for example, “do X”, “stop Y”, or “implement Z now”), the
-UserPromptSubmit hook records the owner turn verbatim as a PENDING row. The deterministic
-`## Orientation` block delivers pending and open rows before your agenda. On the next agent turn,
-resolve every pending row first with `orders:resolve-pending { id, action: 'promote' }` or
-`orders:resolve-pending { id, action: 'dismiss', reason }`; do not silently drop it. A promoted
-directive remains above the agenda until completed or declined with
-`orders:disposition { id, status: 'done'|'declined', note }`. This is a capture rail, not a
-paraphrase rail: the database stores the owner’s literal words and long text is retrieved with
-`orders:get`.
+Every owner turn is a directive, a question included: a question is a directive to answer it.
+The UserPromptSubmit hook records the turn verbatim as an OPEN row, and there is no triage step.
+The deterministic `## Orientation` block delivers open directives before your agenda. Each one
+ends in exactly one of two ways: `orders:disposition { id, status: 'done'|'declined', note }`,
+where `declined` needs a real reason. Close your own directives as you finish them. A directive
+over 500 characters is shown to other agents only through the summary you write with
+`orders:summarize { id, summary }` (≤200 chars), never as a cut fragment; the hook tells you
+when one is owed. A directive addressed to another session that has nothing to do with your
+work can be taken off your own banner with `orders:clear { id, reason }`; it stays open for its
+addressee. This is a capture rail, not a paraphrase rail: the database stores the owner’s
+literal words and long text is retrieved with `orders:get`.
+
+**Know your directives by id, never by text.** The owner often pastes the same message into
+several sessions, and each copy is a separate directive owned by the session it was typed
+into. The hook tells you "this is YOUR owner directive #N" on every captured turn. Use that id,
+or `mine: true` in `orders:list`. Never close by matching text: one agent closed five other
+sessions' copies that way. Orientation shows your own directives first, then each other agent's
+under that agent. `orders:disposition` refuses another session's directive (`foreign_directive`).
+It also refuses when it cannot confirm whose directive it is (`verdict_unavailable`; retry).
+Never work around either refusal. If you closed one by mistake, undo it with
+`orders:reopen { id, reason }`, never with SQL.
 
 <!-- PAPERCUSP-SU:AUTO-MODE -->
 

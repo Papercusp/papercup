@@ -1,7 +1,12 @@
 /** P-011 identity library, explain/diff, and live-stack mutation on existing stores. */
 import type { Sql } from 'postgres';
+import { randomUUID } from 'node:crypto';
+import { mkdir, realpath, rename, rmdir, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative } from 'node:path';
+import { stringify as stringifyYaml } from 'yaml';
 import { getOrgPg } from '@papercusp/db-org';
-import type { ResolvedAgentSpecification, SessionActivation } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSourceDocumentSchema, resolveBlueprintSource,
+  type ResolvedAgentSpecification, type SessionActivation } from '@papercusp/orchestrator/blueprint';
 import {
   attachLayer,
   bindingRefs,
@@ -11,7 +16,10 @@ import {
   type SlotId,
   SLOT_SPECS,
 } from '@papercusp/orchestrator/blueprint';
-import { listIdentitySources, getIdentitySource } from './agent-identities/source';
+import { listIdentitySources, getIdentitySource, inspectIdentitySource,
+  identityLaunchCompatibility } from './agent-identities/source';
+import { availableBlueprintSources, operatorResolveExtends } from './blueprint/installed-blueprints';
+import { papercuspPathForWorkspace } from './papercusp-root';
 import { provisionLaunchIdentityResources } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import {
@@ -144,7 +152,7 @@ export async function readIdentitySurface(input: {
   const record = row ? parseSuLaunchSpecRecord(row.launch_spec) : null;
   const repoDir = record?.harnessSlug
     ? await resolveProjectDir(record.harnessSlug, input.workspaceId).catch(() => null)
-    : null;
+    : papercuspPathForWorkspace(input.workspaceId);
   const catalog = await listIdentitySources({ ...(repoDir ? { repoDir } : {}),
     after: input.after?.trim() || undefined, limit: input.limit ?? 30 });
   const events = ownerId
@@ -208,6 +216,91 @@ export async function readIdentitySurface(input: {
       message: 'Provider bindings arrive in M3. Existing pot bindings remain unchanged.',
     },
   };
+}
+
+/** A named composition is another validated abstract blueprint source in the
+ * existing local library. It has no work item, fleet or launch slot of its own. */
+export async function previewNamedIdentityComposition(input: {
+  id: string;
+  description?: string;
+  componentRefs: string[];
+  repoDir: string;
+}) {
+  if (!/^[a-z][a-z0-9._-]{1,119}$/.test(input.id)) {
+    throw new Error('identity name must be a lowercase blueprint id');
+  }
+  if (input.componentRefs.length < 1 || input.componentRefs.length > 40) {
+    throw new Error('named identity needs 1-40 selected components');
+  }
+  const ids = new Set<string>();
+  const sources = new Map(availableBlueprintSources({ localDirs: [
+    join(input.repoDir, '.papercusp', 'blueprints'),
+  ] }).map((entry) => [entry.id, entry]));
+  const components = [] as Array<{ ref: string; id: string; tier: string; version: string | null;
+    sourceRevision: string }>;
+  for (const ref of input.componentRefs) {
+    const matched = /^([a-z][a-z0-9-]*):([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(ref);
+    if (!matched) throw new Error(`invalid component ref ${ref}`);
+    const [, slot, id] = matched;
+    if (ids.has(id!)) throw new Error(`identity component ${id} was selected twice`);
+    ids.add(id!);
+    const selected = await getIdentitySource(id!, { repoDir: input.repoDir });
+    if (!selected.ok || !selected.identity.slots.some((entry) => entry.slot === slot)) {
+      throw new Error(`component ${ref} is unavailable or does not declare its selected slot`);
+    }
+    components.push({ ref, id: id!, tier: sources.get(id!)?.tier ?? 'unknown',
+      version: selected.identity.version ?? null,
+      sourceRevision: selected.contentHash });
+  }
+  const existing = await getIdentitySource(input.id, { repoDir: input.repoDir });
+  if (existing.ok || !('error' in existing) || existing.error !== 'identity-not-found') {
+    throw new Error(`identity ${input.id} already exists or shadows another source`);
+  }
+  const source = { id: input.id, extends: components.map((entry) => entry.id),
+    version: '1.0.0', description: input.description?.trim() || `Named composition ${input.id}`,
+    slots: [] as [] };
+  const inspected = inspectIdentitySource(source, { repoDir: input.repoDir });
+  if (!inspected.ok) {
+    const details = 'errors' in inspected && Array.isArray(inspected.errors)
+      ? inspected.errors.map((issue) => `${issue.code}: ${issue.message}`).join('; ') : '';
+    throw new Error(details || ('error' in inspected ? String(inspected.error) : 'identity composition is invalid'));
+  }
+  const resolve = operatorResolveExtends({ localDirs: [join(input.repoDir, '.papercusp', 'blueprints')] });
+  const resolved = resolveBlueprintSource(source, { resolve });
+  if (!resolved.validation.ok) throw new Error('identity composition failed source resolution');
+  const configuration = BlueprintSourceDocumentSchema.parse(resolved.merged);
+  return { id: source.id, source, yaml: stringifyYaml(source, { lineWidth: 100 }),
+    components, preview: {
+      layers: resolved.layers.map((layer) => ({ id: layer.id, revision: layer.contentHash })),
+      bundles: configuration.bundles ?? [], grants: configuration.grants ?? null,
+      knobs: configuration.knobs ?? null, contributions: configuration.contributions ?? [],
+      launchCompatibility: identityLaunchCompatibility(configuration, source.slots),
+    } };
+}
+
+export async function saveNamedIdentityComposition(input: Parameters<typeof previewNamedIdentityComposition>[0]) {
+  const prepared = await previewNamedIdentityComposition(input);
+  const root = await realpath(input.repoDir);
+  const parent = join(root, '.papercusp', 'blueprints');
+  await mkdir(parent, { recursive: true });
+  const actualParent = await realpath(parent);
+  const within = relative(root, actualParent);
+  if (within === '..' || within.startsWith('../') || isAbsolute(within)) {
+    throw new Error('identity library escapes the selected workspace');
+  }
+  const target = join(actualParent, prepared.id);
+  await mkdir(target);
+  const temporary = join(target, `.blueprint-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, prepared.yaml, { flag: 'wx' });
+    await rename(temporary, join(target, 'blueprint.yaml'));
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    await rmdir(target).catch(() => {});
+    throw error;
+  }
+  return { ok: true as const, id: prepared.id, preview: prepared.preview,
+    components: prepared.components };
 }
 
 function flatten(value: unknown, prefix = '', out = new Map<string, unknown>()): Map<string, unknown> {

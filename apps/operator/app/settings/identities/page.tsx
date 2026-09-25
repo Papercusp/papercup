@@ -15,6 +15,7 @@ import { RichGrid, type ColumnDef } from "@papercusp/grid-core";
 import type { RosterAgent } from "@papercusp/agent-roster";
 import { toast } from "sonner";
 import { Button } from "@/app/harness/Button";
+import { Checkbox } from "@/app/harness/Checkbox";
 import { RadioGroup } from "@/app/harness/RadioGroup";
 import { Select } from "@/app/harness/Select";
 import { advRosterArgs } from "@/lib/adv-roster-args";
@@ -39,6 +40,7 @@ interface IdentitySummary {
   tier: string;
   version?: string | null;
   sourceRevision?: string | null;
+  launchCompatibility?: { eligible: boolean; reason: string | null };
   description?: string | null;
   slots: Array<{ slot: string; cardinality: "exclusive" | "additive" | null }>;
   sourcePath: string;
@@ -142,26 +144,41 @@ interface MutationResult {
   error?: string;
 }
 
-async function identityMutationRest(
-  args: MutationArgs,
-): Promise<MutationResult> {
+interface CompositionResult {
+  ok: boolean;
+  id: string;
+  components: Array<{ ref: string; sourceRevision: string }>;
+  preview: {
+    layers: Array<{ id: string; revision: string }>;
+    bundles: Array<{ kind: string; ref: string }>;
+    grants: { requires?: string[]; optional?: string[] } | null;
+    knobs: unknown;
+    contributions: Array<{ id: string; source: string; refresh: string }>;
+    launchCompatibility: { eligible: boolean; reason: string | null };
+  };
+}
+
+async function postIdentityManagement<T extends { ok: boolean; error?: string }>(args: object): Promise<T> {
   const response = await fetch("/api/agent-mcp/identity-management", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
   });
   const text = await response.text();
-  let result: Partial<MutationResult> = {};
+  let result: Partial<T> = {};
   try {
-    result = JSON.parse(text) as MutationResult;
+    result = JSON.parse(text) as T;
   } catch {
     // The typed error below preserves the status when a proxy returns HTML.
   }
   if (!response.ok || result.ok === false) {
     throw new Error(result.error ?? `HTTP ${response.status}`);
   }
-  return result as MutationResult;
+  return result as T;
 }
+
+const identityMutationRest = (args: MutationArgs) =>
+  postIdentityManagement<MutationResult>(args);
 
 function shortRevision(value: string | null | undefined): string {
   return value ? value.slice(0, 10) : "—";
@@ -365,6 +382,36 @@ export default function IdentitySettingsPage() {
   const [busy, setBusy] = useState<MutationAction | null>(null);
   const [review, setReview] = useState<MutationResult | null>(null);
   const [lastResult, setLastResult] = useState<MutationResult | null>(null);
+  const [compositionId, setCompositionId] = useState("");
+  const [compositionDescription, setCompositionDescription] = useState("");
+  const [componentRefs, setComponentRefs] = useState<string[]>([]);
+  const [compositionPreview, setCompositionPreview] = useState<CompositionResult | null>(null);
+  const [compositionBusy, setCompositionBusy] = useState(false);
+  const previewIsCurrent = Boolean(compositionPreview?.id === compositionId.trim() &&
+    JSON.stringify(compositionPreview.components.map((entry) => entry.ref)) === JSON.stringify(componentRefs));
+
+  const runComposition = async (action: "preview-composition" | "save-composition") => {
+    setCompositionBusy(true);
+    try {
+      const result = await postIdentityManagement<CompositionResult>({
+        action, compositionId: compositionId.trim(), description: compositionDescription.trim(),
+        componentRefs, harnessSlug: surface?.session?.harnessSlug ?? null,
+      });
+      if (action === "preview-composition") setCompositionPreview(result);
+      else {
+        toast.success(`Saved ${result.id} to the identity library.`);
+        setCompositionPreview(null);
+        setCompositionId("");
+        setCompositionDescription("");
+        setComponentRefs([]);
+        identityQuery.invalidate?.();
+      }
+    } catch (error) {
+      toast.error(`Identity composition failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    } finally {
+      setCompositionBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!selectedSlot?.cardinality) return;
@@ -646,6 +693,10 @@ export default function IdentitySettingsPage() {
                     <dt>Source revision</dt>
                     <dd><code>{shortRevision(selected.sourceRevision)}</code></dd>
                   </div>
+                  {selected.launchCompatibility?.eligible === false && <div>
+                    <dt>Launch availability</dt>
+                    <dd>{selected.launchCompatibility.reason}</dd>
+                  </div>}
                   <div>
                     <dt>Source id</dt>
                     <dd>
@@ -719,6 +770,59 @@ export default function IdentitySettingsPage() {
                 </span>
               </div>
             )}
+          </div>
+          <div className="pc-identities__composer pc-card" aria-label="Compose named identity">
+            <h2>Compose a named identity</h2>
+            <p>Choose reusable components, inspect their resources and settings, then save one named selection.</p>
+            <label><span>Name</span>
+              <input value={compositionId} disabled={compositionBusy} aria-label="New identity name"
+                placeholder="research-steward" onChange={(event) => {
+                  setCompositionId(event.target.value); setCompositionPreview(null);
+                }} />
+            </label>
+            <label><span>Description</span>
+              <input value={compositionDescription} disabled={compositionBusy} aria-label="New identity description"
+                onChange={(event) => { setCompositionDescription(event.target.value); setCompositionPreview(null); }} />
+            </label>
+            <div className="pc-identities__component-options" role="group" aria-label="Identity components">
+              {identities.flatMap((identity) => identity.slots.filter((slot) => slot.cardinality).map((slot) => {
+                const ref = identityRef(identity, slot.slot);
+                return <label key={ref}>
+                  <Checkbox checked={componentRefs.includes(ref)} disabled={compositionBusy}
+                    ariaLabel={`Include ${identity.id} as ${slot.slot}`}
+                    onChange={(checked) => {
+                      setComponentRefs((current) => checked
+                        ? [...current.filter((value) => value.split(':')[0] !== slot.slot &&
+                          !value.endsWith(`:${identity.id}`)), ref]
+                        : current.filter((value) => value !== ref));
+                      setCompositionPreview(null);
+                    }} />
+                  <span>{identity.id} · {slot.slot} · {identity.tier} · {identity.version || "unversioned"}</span>
+                </label>;
+              }))}
+            </div>
+            {componentRefs.length > 0 && <p>Selected: {componentRefs.join(" · ")}</p>}
+            <div className="pc-identities__actions">
+              <Button disabled={compositionBusy || !compositionId.trim() || componentRefs.length === 0}
+                onClick={() => void runComposition("preview-composition")}>Preview composition</Button>
+              <Button variant="primary" disabled={compositionBusy || !previewIsCurrent}
+                onClick={() => void runComposition("save-composition")}>Save named identity</Button>
+            </div>
+            {compositionPreview && <div className="pc-identities__composition-preview" role="status">
+              <h3>Composition preview</h3>
+              <p>Sources: {compositionPreview.preview.layers.map((layer) =>
+                `${layer.id} (${shortRevision(layer.revision)})`).join(" · ")}</p>
+              <p>Resources: {compositionPreview.preview.bundles.map((bundle) =>
+                `${bundle.kind}:${bundle.ref}`).join(" · ") || "none"}</p>
+              <p>Required tools: {compositionPreview.preview.grants?.requires?.join(" · ") || "none"}</p>
+              <p>Optional tools: {compositionPreview.preview.grants?.optional?.join(" · ") || "none"}</p>
+              <p>Operational settings: {printable(compositionPreview.preview.knobs)}</p>
+              <p>Current context: {compositionPreview.preview.contributions.map((entry) =>
+                `${entry.id} (${entry.source}, ${entry.refresh})`).join(" · ") || "none"}</p>
+              {compositionPreview.preview.launchCompatibility.eligible === false && <p role="alert">
+                This composition can be saved, but it cannot be launched from a plain Identity picker: {compositionPreview.preview.launchCompatibility.reason}
+              </p>}
+            </div>}
           </div>
         </section>
       )}
@@ -998,6 +1102,11 @@ export default function IdentitySettingsPage() {
         .pc-identities__agent-picker { display: grid; gap: 5px; min-width: 210px; color: var(--fg-mute); font-size: 11px; }
         .pc-identities__tabs, .pc-identities__actions, .pc-identities__rollback { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .pc-identities__library { display: grid; grid-template-columns: minmax(250px, .82fr) minmax(340px, 1.18fr); gap: 14px; }
+        .pc-identities__composer { grid-column: 1 / -1; display: grid; gap: 10px; }
+        .pc-identities__composer > label { display: grid; gap: 4px; }
+        .pc-identities__composer input { max-width: 520px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-3); color: var(--fg); }
+        .pc-identities__component-options { display: grid; gap: 6px; max-height: 220px; overflow: auto; }
+        .pc-identities__component-options label { display: flex; align-items: center; gap: 8px; }
         .pc-identities .pc-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); }
         .pc-identities__catalog, .pc-identities__detail, .pc-identities__agent { min-width: 0; }
         .pc-identities__search input { box-sizing: border-box; width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-3); color: var(--fg); }
