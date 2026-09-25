@@ -2906,8 +2906,10 @@ export interface IncrementalMergeResult {
  * Safety: best-effort and read-only. Every read that resolves inside
  * `peekTimeoutMs` is kept in `peeked` and consumed by the main loop INSTEAD of a
  * second read, so the op the fold applies is the one the lookup saw; anything not
- * read in time is simply read by the main loop as before. A seed only replaces a
- * winner whose order key is lower, and only strictly-older ops are ever skipped.
+ * read in time is simply read by the main loop as before. A snapshot chunk is never
+ * kept (P-532): the main loop reads it, so a window over a set holds no chunk decoded.
+ * A seed only replaces a winner whose order key is lower, and only strictly-older ops
+ * are ever skipped.
  * Without `prefetch` it only reads the window (P-528's look-ahead).
  */
 async function peekAndSeedStoredOrder(args: {
@@ -2940,7 +2942,10 @@ async function peekAndSeedStoredOrder(args: {
         );
       reads.push(
         Promise.race([read, deadline]).then((r) => {
-          if (r !== TIMEOUT && r.ok) peeked.set(i, r.op);
+          // P-532 (D-027): a snapshot chunk is never kept. Neither consumer reads one, and
+          // a window can span a whole set: a VM peer held 477 chunks of ~4 MiB here, 3.6 GB
+          // decoded, until the heap limit killed it. The main loop reads each chunk itself.
+          if (r !== TIMEOUT && r.ok && !isSnapshotOp(r.op)) peeked.set(i, r.op);
         }),
       );
     }

@@ -24,6 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { encodeHlc } from '@papercusp/locks-core';
+import { buildSnapshotOps } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import {
@@ -209,6 +210,46 @@ describe('P-528: skip superseded puts in the tail fold', () => {
     });
     expect(store.applied).toEqual(['K1', 'X', 'K2']);
     expect(res.supersededSkips).toBe(0);
+  });
+
+  it('P-532: the look-ahead never keeps a snapshot chunk; the main loop reads each chunk itself', async () => {
+    const prefix = [put('papercusp/WI-1', 100, { id: 'P1' }), put('papercusp/WI-2', 110, { id: 'P2' })];
+    // A 1-byte chunk budget puts each row in its own chunk: a 2-chunk set over the prefix.
+    const set = buildSnapshotOps({
+      ops: prefix,
+      coversUpTo: prefix.length,
+      author_pubkey: AUTHOR,
+      ts: 120,
+      schema_version: 1,
+      maxChunkBytes: 1,
+    });
+    expect(set).toHaveLength(2);
+    const ops = [...prefix, ...set, put('papercusp/WI-1', 200, { id: 'P3' })];
+    const reads = new Map<number, number>();
+    const base = memLog('A', ops);
+    const counted: AdmittedLog = {
+      keyHex: base.keyHex,
+      get length() {
+        return base.length;
+      },
+      async get(i: number) {
+        reads.set(i, (reads.get(i) ?? 0) + 1);
+        return base.get(i);
+      },
+    };
+    const store = fakeStore();
+    await drain([counted], store.apply, { skipSuperseded: ALL });
+    // The look-ahead read each chunk and dropped it, so the main loop read it again.
+    // Before P-532 the chunk stayed decoded in the window until the main loop took it:
+    // a window over a 478-chunk set held 3.6 GB on the P-007 VM (plan D-027).
+    for (let p = prefix.length; p < prefix.length + set.length; p++) expect(reads.get(p)).toBe(2);
+    // A plain op is still read once: the main loop takes it from the look-ahead.
+    expect(reads.get(0)).toBe(1);
+    expect(reads.get(ops.length - 1)).toBe(1);
+    const plain = fakeStore();
+    await drain([memLog('A', ops)], plain.apply);
+    expect(store.valueOf('papercusp/WI-1')).toBe(plain.valueOf('papercusp/WI-1'));
+    expect(store.valueOf('papercusp/WI-2')).toBe(plain.valueOf('papercusp/WI-2'));
   });
 
   it('a declined superseder has its skipped put applied in order, landing where the plain fold lands', async () => {
