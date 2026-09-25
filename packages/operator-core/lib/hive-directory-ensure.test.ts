@@ -162,4 +162,53 @@ describe('ensureHiveDirectoryWired', () => {
     expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(1);
     await wiring?.stop();
   });
+
+  /**
+   * P-539. The canonical first join bounds this call at 30 s and retries it. On the
+   * Mac VM rig the DHT bootstrap alone took ~55 s, so the retry arrived while the
+   * first wire was still running and inside the 60 s throttle — which answered null
+   * ("not wired") for a wire that was about to succeed. A concurrent caller must get
+   * the in-flight attempt instead.
+   */
+  it('P-539: a caller arriving while a wire is in progress gets that same attempt, not null', async () => {
+    vi.resetModules();
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
+
+    let releaseIdentity!: () => void;
+    const identityGate = new Promise<void>((resolve) => {
+      releaseIdentity = resolve;
+    });
+    const resolveLocalAnnounceIdentity = vi.fn(async () => {
+      await identityGate;
+      return {
+        githubLogin: 'alice',
+        githubUserId: 1,
+        devicePubkeyBase64: Buffer.alloc(32, 1).toString('base64'),
+        attestationGistId: 'gist',
+        keychainId: 'kc',
+      };
+    });
+
+    vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
+    vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
+    vi.doMock('./identity/hive-keypair', () => ({
+      loadHiveKeyStatus: vi.fn(async () => ({ kind: 'not_found' })),
+      hiveKeychainId: vi.fn((workspaceId: string, potId: string) => `${workspaceId}:${potId}`),
+    }));
+    vi.doMock('./hive-member-repos', () => ({ deriveHiveMemberRepoRefs: vi.fn(async () => []) }));
+    vi.doMock('./sync/hyperbee/swarm', () => ({ getSharedSwarm: vi.fn(async () => fakeSwarm()) }));
+
+    const { ensureHiveDirectoryWired, __resetHiveDirectoryWiring } = await import('./hive-directory-boot');
+    __resetHiveDirectoryWiring();
+
+    const first = ensureHiveDirectoryWired('ws');
+    // Unforced and inside the 60 s throttle: before P-539 this resolved null at once.
+    const second = ensureHiveDirectoryWired('ws');
+    releaseIdentity();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).not.toBeNull();
+    expect(b).toBe(a);
+    expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(1);
+    await a?.stop();
+  });
 });

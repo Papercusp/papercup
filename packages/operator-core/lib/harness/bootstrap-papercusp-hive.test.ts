@@ -1008,6 +1008,85 @@ describe('startBootstrapPapercuspHive (single-flight)', () => {
     expect(second.state).toBe('already-present');
     expect(retry.initSubmodules).toHaveBeenCalledTimes(1);
   });
+
+  // P-539: a skip before the invite topic is joined (directory wiring stalled) can never be
+  // re-triggered by the directory ingest — the canonical pot announces only on that topic —
+  // so the process retries it itself instead of waiting for the next app start.
+  type JoinFn = NonNullable<NonNullable<Parameters<typeof bootstrapPapercuspHive>[0]>['joinCanonical']>;
+  const joinDeps = (joinCanonical: JoinFn) =>
+    spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      joinCanonical,
+      retryDelaysMs: [1_000, 2_000],
+    });
+  const stalled = {
+    state: 'skipped' as const,
+    slug: null,
+    reason: 'hive directory wiring stalled: hive directory wiring timed out after 30000ms',
+    retryable: true,
+  };
+
+  it('P-539: a retryable skip re-runs the join in-process on the backoff until it joins', async () => {
+    vi.useFakeTimers();
+    try {
+      const joinCanonical = vi
+        .fn<JoinFn>()
+        .mockResolvedValueOnce(stalled)
+        .mockResolvedValue({ state: 'joined' as const, slug: PAPERCUSP_HIVE_SLUG });
+      const deps = joinDeps(joinCanonical);
+      const first = await startBootstrapPapercuspHive(deps).done;
+      expect(first).toMatchObject({ state: 'skipped', retryable: true });
+      expect(joinCanonical).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(joinCanonical).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(joinCanonical).toHaveBeenCalledTimes(2);
+
+      // Joined: the success is cached and no further retry is scheduled.
+      const after = await startBootstrapPapercuspHive(deps).done;
+      expect(after.state).toBe('cloned-and-created');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(joinCanonical).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('P-539: a non-retryable skip schedules nothing (the wizard or the ingest re-trigger owns it)', async () => {
+    vi.useFakeTimers();
+    try {
+      const joinCanonical = vi.fn(async () => ({
+        state: 'skipped' as const,
+        slug: null,
+        reason: 'canonical hive not announcing yet (owner offline)',
+      }));
+      const res = await startBootstrapPapercuspHive(joinDeps(joinCanonical)).done;
+      expect(res.state).toBe('skipped');
+      expect(res.retryable).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(joinCanonical).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('P-539: in-process retries are bounded by the backoff schedule, then give up loudly', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const joinCanonical = vi.fn(async () => stalled);
+      await startBootstrapPapercuspHive(joinDeps(joinCanonical)).done;
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      // The first run plus one retry per scheduled delay, then nothing more.
+      expect(joinCanonical).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('still not reachable after 2 in-process retries'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('defaultSetHomeWorkspace (registers before making current)', () => {

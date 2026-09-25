@@ -86,6 +86,14 @@ export function buildVerifyBindingAdapter(opts: VerifyBindingAdapterOpts = {}): 
       return 'pending';
     }
     if (result.valid) return 'verified';
+    // A→B admission diagnostic (PAPERCUSP_A003_TRACE, off by default): the caller only
+    // sees 'fail', so name the attestation reason here (WI-10003109).
+    if (process.env.PAPERCUSP_A003_TRACE === '1') {
+      console.error(
+        `[A-003] ${new Date().toISOString()} verify-binding: gist=${attestationGistId} ` +
+          `device=${devicePubkeyBase64.slice(0, 10)} uid=${githubUserId} → ${result.reason}`,
+      );
+    }
     // Only OUR transient unavailability is retryable; every conclusive
     // attestation failure (gist_not_found / *_mismatch / signature_invalid /
     // gist_body_invalid) rejects.
