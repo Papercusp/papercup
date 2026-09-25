@@ -6951,6 +6951,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (!acceptedCodexModelAllows(request.policy, evidence.model, request.forwardedEffort)) {
           throw new Error('provider returned a model outside the accepted Codex operation policy');
         }
+        if (request.forwardedEffort && evidence.providerEffort &&
+            evidence.providerEffort !== request.forwardedEffort) {
+          throw new Error('provider reported reasoning effort differs from the accepted forwarded effort');
+        }
         if (!deps.recordAcceptedOperationModelAttestation) {
           throw new Error('accepted Codex operation attestation writer is unavailable');
         }
@@ -6961,6 +6965,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           requestedModel: request.requestedModel,
           actualModel: evidence.model,
           forwardedEffort: request.forwardedEffort,
+          providerEffort: evidence.providerEffort,
           effortSource: request.forwardedEffort ? 'forwarded-request' : 'unavailable',
           usage: evidence.usage,
         });

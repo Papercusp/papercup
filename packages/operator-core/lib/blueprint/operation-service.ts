@@ -326,6 +326,7 @@ const OperationEventBodySchema = z.discriminatedUnion('kind', [
     backend: z.enum(['claude', 'omp', 'codex']), provider: z.string().min(1),
     requestedModel: z.string().min(1), actualModel: z.string().min(1),
     forwardedEffort: z.string().nullable(), effortSource: z.enum(['forwarded-request', 'unavailable']),
+    providerEffort: z.string().min(1).nullable().optional(),
     usage: z.object({ inputTokens: z.number().int().nonnegative().nullable(),
       outputTokens: z.number().int().nonnegative().nullable(),
       cacheReadTokens: z.number().int().nonnegative().nullable(),
@@ -447,6 +448,9 @@ export function recordDirectOperationModelAttestation(
     }
     if ((input.forwardedEffort === null) !== (input.effortSource === 'unavailable')) {
       throw new Error('blueprint model attestation effort source contradicts its value');
+    }
+    if (input.providerEffort && input.forwardedEffort && input.providerEffort !== input.forwardedEffort) {
+      throw new Error('blueprint model attestation provider effort contradicts forwarded effort');
     }
     if ((input.backend === 'codex' &&
           (input.provider !== 'openai' || input.usage.inputTokenBasis !== 'inclusive')) ||
@@ -798,8 +802,9 @@ async function verifyDirectOperationModel(
       return `accepted worker reported a model outside the ${policy.mode} policy`;
     }
     if (policy.effort && (event.effortSource !== 'forwarded-request' ||
-        event.forwardedEffort !== policy.effort.toLowerCase())) {
-      return 'actual reasoning effort is not attested at the accepted level';
+        event.forwardedEffort !== policy.effort.toLowerCase() ||
+        (event.providerEffort != null && event.providerEffort !== policy.effort.toLowerCase()))) {
+      return 'forwarded or provider-reported reasoning effort differs from the accepted level';
     }
     if ((row.agent === 'claude' && (!nonnegative(row.input_tokens) ||
           event.usage.inputTokens === null || Number(row.input_tokens) !== event.usage.inputTokens)) ||

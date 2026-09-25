@@ -535,6 +535,9 @@ export async function aggregateCodexNonStreamResponse(
 export interface CodexProviderCompletionEvidence {
   responseId: string;
   model: string;
+  /** Optional provider echo. Absence leaves forwarded request effort as the
+   * only evidence and must never be described as provider-observed effort. */
+  providerEffort: string | null;
   usage: {
     inputTokens: number;
     inputTokenBasis: 'inclusive';
@@ -564,6 +567,14 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
       throw new Error('accepted Codex response has no provider completion object');
     }
     const response = value as Record<string, unknown>;
+    const reasoning = response.reasoning && typeof response.reasoning === 'object' &&
+      !Array.isArray(response.reasoning) ? response.reasoning as Record<string, unknown> : null;
+    const rawEffort = reasoning?.effort;
+    if (rawEffort !== undefined && rawEffort !== null &&
+        (typeof rawEffort !== 'string' || !rawEffort.trim())) {
+      throw new Error('accepted Codex response has invalid provider reasoning effort');
+    }
+    const providerEffort = typeof rawEffort === 'string' ? rawEffort.trim().toLowerCase() : null;
     const usage = response.usage && typeof response.usage === 'object' && !Array.isArray(response.usage)
       ? response.usage as Record<string, unknown> : null;
     const details = usage?.input_tokens_details && typeof usage.input_tokens_details === 'object' &&
@@ -579,7 +590,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
         (cacheRead !== null && cacheWrite !== null && cacheRead + cacheWrite > input)) {
       throw new Error('accepted Codex response lacks provider model or valid token usage');
     }
-    return { responseId: response.id, model: response.model,
+    return { responseId: response.id, model: response.model, providerEffort,
       usage: { inputTokens: input, inputTokenBasis: 'inclusive', outputTokens: output,
         cacheReadTokens: cacheRead, cacheCreationTokens: cacheWrite } };
   };

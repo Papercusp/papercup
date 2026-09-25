@@ -48,7 +48,7 @@ afterEach(async () => {
 });
 
 describe('accepted Codex provider completion evidence', () => {
-  const response = { id: 'resp_provider_1', model: 'gpt-5.6-sol', usage: {
+  const response = { id: 'resp_provider_1', model: 'gpt-5.6-sol', reasoning: { effort: 'high' }, usage: {
     input_tokens: 120, output_tokens: 17,
     input_tokens_details: { cached_tokens: 20, cache_write_tokens: 5 },
   } };
@@ -64,7 +64,7 @@ describe('accepted Codex provider completion evidence', () => {
     for (let at = 0; at < bytes.length; at += 7) {
       seen = decoder.push(bytes.subarray(at, at + 7)) ?? seen;
     }
-    expect(seen).toEqual({ responseId: 'resp_provider_1', model: 'gpt-5.6-sol',
+    expect(seen).toEqual({ responseId: 'resp_provider_1', model: 'gpt-5.6-sol', providerEffort: 'high',
       usage: { inputTokens: 120, inputTokenBasis: 'inclusive', outputTokens: 17,
         cacheReadTokens: 20, cacheCreationTokens: 5 } });
     expect(decoder.push(Buffer.from('data: [DONE]\n\n'))).toBeNull();
@@ -80,6 +80,16 @@ describe('accepted Codex provider completion evidence', () => {
       bad.push(Buffer.from(JSON.stringify(invalid)));
       expect(() => bad.finish()).toThrow('lacks provider model or valid token usage');
     }
+  });
+
+  it('keeps an absent provider effort distinct from forwarded request effort', () => {
+    const decoder = createCodexProviderCompletionDecoder('application/json');
+    const { reasoning: _reasoning, ...withoutReasoning } = response;
+    decoder.push(Buffer.from(JSON.stringify(withoutReasoning)));
+    expect(decoder.finish().providerEffort).toBeNull();
+    const malformed = createCodexProviderCompletionDecoder('application/json');
+    malformed.push(Buffer.from(JSON.stringify({ ...response, reasoning: { effort: 7 } })));
+    expect(() => malformed.finish()).toThrow('invalid provider reasoning effort');
   });
 
   it('refuses a stream that ends without provider completion', () => {

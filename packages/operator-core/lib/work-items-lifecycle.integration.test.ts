@@ -616,6 +616,9 @@ describe('blueprint direct-item revision pin', () => {
     await expect(recordDirectOperationModelAttestation(db.sql, binding.attestation,
       { ...evidence, usage: { ...evidence.usage, inputTokenBasis: 'uncached' } }))
       .rejects.toThrow('token basis differs from backend');
+    await expect(recordDirectOperationModelAttestation(db.sql, binding.attestation,
+      { ...evidence, providerEffort: 'low' }))
+      .rejects.toThrow('provider effort contradicts forwarded effort');
     expect((await getBlueprintOperationEvents(db.sql, handle, 'codex-consumer')).events)
       .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'model-attestation',
         backend: 'codex', provider: 'openai', actualModel: 'gpt-5.6-sol',

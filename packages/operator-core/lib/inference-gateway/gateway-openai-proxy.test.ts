@@ -235,6 +235,9 @@ describe('accepted Codex provider attestation', () => {
   it.each([
     ['off-policy model', completedCodexResponse('gpt-5.6-luna')],
     ['missing provider usage', completedCodexResponse('gpt-5.6-sol', null)],
+    ['provider-reported effort mismatch', { ...completedCodexResponse(), response: {
+      ...completedCodexResponse().response, reasoning: { effort: 'low' },
+    } }],
   ])('refuses a bearer %s before exposing a successful head', async (_case, completion) => {
     const record = vi.fn(async () => undefined);
     await bootCodex((_req, res) => {
