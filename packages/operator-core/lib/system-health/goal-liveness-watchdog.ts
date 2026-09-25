@@ -127,6 +127,10 @@ import {
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import {
+  readGoalHolderFirstTurnAttestation,
+  type GoalHolderFirstTurnAttestation,
+} from '../goals/holder-attestation';
+import {
   assessGoalHolderLaunchCapacityForGoal,
   formatCapacityUntil,
   type GoalHolderLaunchCapacityVerdict,
@@ -187,6 +191,8 @@ export const GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS = 2;
  */
 export const GOAL_HOLDER_REKICK_INTERVAL_MS = 5 * 60_000;
 export const GOAL_HOLDER_REKICK_MAX = 3;
+/** Give a new elected holder time to complete its first turn before recovery. */
+export const GOAL_HOLDER_FIRST_TURN_GRACE_MS = 15 * 60_000;
 
 /**
  * How long a goal may show no live holder before it is called abandoned.
@@ -1462,6 +1468,8 @@ export interface GoalHolderRespawnSummary {
   gaveUp: number;
   /** WI-2140573: live-but-idle holders woken with a retry brief instead of relaunched. */
   rekicked: number;
+  /** Elected live holders that did not attest within the first-turn grace. */
+  partialFirstTurn: number;
   /**
    * WI-2140573 finding 5: lost holders whose recovery was DEFERRED this tick
    * because every account the launch would draw on is measured unable to serve
@@ -1518,6 +1526,10 @@ export interface GoalHolderRespawnDeps {
   readAuthority: (workspaceId: string, ownerId: string) => Promise<GoalHolderAuthority>;
   neutralize: (goal: GoalRowLike, ownerId: string, reason: string) => Promise<void>;
   notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
+  attestHolder?: (
+    goal: GoalRowLike,
+    holder: GoalHolderRow,
+  ) => Promise<GoalHolderFirstTurnAttestation>;
   /** Refreshes control context after the direct respawn GOAL-mode write. */
   refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
   /** Atomically reserve one durable per-goal launch slot before a process is minted. */
@@ -1544,6 +1556,7 @@ export interface GoalHolderRespawnDeps {
     goal: GoalRowLike,
     ownerId: string,
     attempt: number,
+    attestation?: GoalHolderFirstTurnAttestation,
   ) => Promise<{ woken: number; staged: number }>;
   /** Re-kick ledger, keyed like `states`; a new elected holder starts a fresh budget. */
   rekickStates?: Map<string, GoalHolderRekickState>;
@@ -2009,7 +2022,25 @@ async function defaultRekickGoalHolder(
   goal: GoalRowLike,
   ownerId: string,
   attempt: number,
+  attestation?: GoalHolderFirstTurnAttestation,
 ): Promise<{ woken: number; staged: number }> {
+  if (attestation) {
+    const summary = `GOAL holder first-turn recovery ${attempt}/${GOAL_HOLDER_REKICK_MAX}: ${goal.goalId}`;
+    const body =
+      `You are the elected holder for GOAL '${goal.goalId}', but the first-turn attestation ` +
+      `remains partial after its grace period. Missing: ${attestation.missing.join(', ')}. ` +
+      `Check the exact GOAL subject, arm a durable loop, write loop:checkpoint, and complete ` +
+      `one successful goal-scoped portfolio act. A read or report alone does not place work. ` +
+      `This is attempt ${attempt}/${GOAL_HOLDER_REKICK_MAX}; the existing respawner may ` +
+      `elect a replacement if the evidence remains partial.`;
+    await sendMessage(HOLDER_RESPAWNER_IDENTITY, { to: [ownerId], summary, body });
+    const result = await wakeRecipients([ownerId], {
+      summary, payload: { action: 'rekick', goalId: goal.goalId, attempt, max: GOAL_HOLDER_REKICK_MAX,
+        missing: attestation.missing },
+      source: HOLDER_RESPAWNER_IDENTITY.ownerId, workspaceId: goal.workspaceId,
+    });
+    return { woken: result.woken, staged: result.staged };
+  }
   const summary =
     `GOAL holder re-kick ${attempt}/${GOAL_HOLDER_REKICK_MAX}: '${goal.goalId}' — you are the ` +
     `elected holder, but this session produced no output and nothing is armed to wake it`;
@@ -2089,6 +2120,9 @@ function holderRespawnDeps(
       });
     },
     notifyHandoff: notifyGoalHolderHandoff,
+    attestHolder: async (goal, holder) => await readGoalHolderFirstTurnAttestation(sql, {
+      workspaceId: goal.workspaceId, goalId: goal.goalId, holder,
+    }),
     reserveRateSlot: async (goal, nowMs) => await reserveGoalHolderRespawnRateSlot(sql, goal, nowMs),
     reconcileStrandedLatch: async (goal, nowMs) =>
       await reconcileStrandedGoalHolderRespawnLatch(sql, goal, nowMs),
@@ -2127,6 +2161,7 @@ export async function runGoalHolderRespawnOnce(
     neutralizeFailed: 0,
     gaveUp: 0,
     rekicked: 0,
+    partialFirstTurn: 0,
     deferredCapacity: 0,
     skipped: false,
   };
@@ -2216,8 +2251,30 @@ export async function runGoalHolderRespawnOnce(
     }
     if (fold.liveness === 'unknown') continue;
 
+    let partialFirstTurn: GoalHolderFirstTurnAttestation | null = null;
+    if (fold.liveness === 'held' && fold.elected &&
+        deps.now() - fold.elected.setAtMs >= GOAL_HOLDER_FIRST_TURN_GRACE_MS) {
+      try {
+        const attestation = await deps.attestHolder?.(goal, fold.elected);
+        if (!attestation || attestation.status === 'unknown') {
+          // Do not erase a partial holder's re-kick history on a transient
+          // evidence outage, and never replace it on an unknown verdict.
+          continue;
+        }
+        if (attestation?.status === 'partial') {
+          partialFirstTurn = attestation;
+          summary.partialFirstTurn += 1;
+        }
+      } catch (error) {
+        // An unreadable attestation cannot justify replacing a live sovereign.
+        console.warn(`[goal-holder-respawner] first-turn attestation unavailable for ${goal.goalId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+    }
+
     const previous = deps.states.get(key);
-    if (fold.liveness === 'held') {
+    if (fold.liveness === 'held' && !partialFirstTurn) {
       // A holder that is alive again has spent nothing: a later idle spell
       // earns a fresh re-kick budget (a re-kick that WORKED is the whole point).
       rekickStates.delete(key);
@@ -2337,6 +2394,31 @@ export async function runGoalHolderRespawnOnce(
             (capacity ? ` — ${capacity.reason}` : ''),
         );
       }
+    }
+
+    if (partialFirstTurn && fold.elected) {
+      const ownerId = fold.elected.ownerId;
+      const carried = rekickStates.get(key);
+      const ledger = carried?.ownerId === ownerId
+        ? carried : { ownerId, attemptsAtMs: [] };
+      const lastAtMs = ledger.attemptsAtMs.at(-1) ?? null;
+      const nowMs = deps.now();
+      if (lastAtMs != null && nowMs - lastAtMs < GOAL_HOLDER_REKICK_INTERVAL_MS) continue;
+      if (ledger.attemptsAtMs.length < GOAL_HOLDER_REKICK_MAX) {
+        rekickStates.set(key, ledger);
+        const attempt = ledger.attemptsAtMs.length + 1;
+        ledger.attemptsAtMs.push(nowMs);
+        try {
+          await (deps.rekick ?? defaultRekickGoalHolder)(goal, ownerId, attempt, partialFirstTurn);
+          summary.rekicked += 1;
+        } catch (error) {
+          console.warn(`[goal-holder-respawner] partial first-turn re-kick ${attempt} failed for ${goal.goalId}: ` +
+            `${error instanceof Error ? error.message : String(error)}`);
+        }
+        continue;
+      }
+      // The same damping, durable launch cap, CAS election and handoff below
+      // handle a holder that stayed partial through every spaced re-kick.
     }
 
     // WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still

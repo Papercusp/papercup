@@ -52,6 +52,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
   GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS,
+  GOAL_HOLDER_FIRST_TURN_GRACE_MS,
+  GOAL_HOLDER_REKICK_INTERVAL_MS,
   pauseGoalForHolderRespawnRateCap,
   reconcileStrandedGoalHolderRespawnLatch,
   reserveGoalHolderRespawnRateSlot,
@@ -68,6 +70,7 @@ import {
 } from '../goals/holder';
 import { GOAL_MODE } from '../modes/goal-session';
 import { setMode } from '../modes/store';
+import { readGoalHolderPortfolioAct } from '../goals/holder-attestation';
 
 const WS = 'ws-woe-p010';
 const HARNESS = 'papercusp-p010';
@@ -223,6 +226,15 @@ function drillDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): {
     neutralize: async () => {},
     notifyHandoff: async () => {},
     escalateGiveUp: async () => {},
+    // Existing recovery cases test liveness; the new first-turn path has its
+    // own explicit case below and must not inherit fixture absence as failure.
+    attestHolder: async (goal, holder) => ({
+      status: 'complete', workspaceId: goal.workspaceId, goalId: goal.goalId,
+      ownerId: holder.ownerId, modeSetAt: new Date(holder.setAtMs).toISOString(),
+      loopActive: true, checkpointAt: new Date(holder.setAtMs).toISOString(),
+      portfolioAct: { tool: 'plans:new', at: new Date(holder.setAtMs).toISOString() },
+      missing: [], unavailable: [],
+    }),
     // WI-2140573 finding 5: the default assessor reads the box's LIVE account
     // pool, which this drill must not depend on — measure capacity as clear.
     assessLaunchCapacity: async () => ({
@@ -465,6 +477,71 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     const tickC = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tickC).toMatchObject({ attempted: 0, respawned: 0 });
     expect(launches).toEqual([GOAL]);
+  }, 60_000);
+
+  it('re-kicks a live but partial first-turn holder before a rate-governed replacement', async () => {
+    const goalId = 'goal-partial-first-turn';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder(INITIAL_HOLDER, goalId);
+    sessions.set(INITIAL_HOLDER, liveSignals());
+    const holder = (await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: [goalId] }))[0]!;
+    let nowMs = holder.setAtMs + GOAL_HOLDER_FIRST_TURN_GRACE_MS - 1;
+    let evidenceUnavailable = false;
+    const kicks: number[] = [];
+    const { deps, launches } = drillDeps({
+      now: () => nowMs,
+      rekickStates: new Map(),
+      attestHolder: async () => ({
+        status: evidenceUnavailable ? 'unknown' : 'partial', workspaceId: WS, goalId, ownerId: INITIAL_HOLDER,
+        modeSetAt: new Date(holder.setAtMs).toISOString(), loopActive: true,
+        checkpointAt: null, portfolioAct: null, missing: ['checkpoint', 'portfolio-act'],
+        unavailable: evidenceUnavailable ? ['portfolio-act'] : [],
+      }),
+      rekick: async (_goal, _ownerId, attempt) => { kicks.push(attempt); return { woken: 1, staged: 0 }; },
+    });
+    expect(await runGoalHolderRespawnOnce(rootSql, deps)).toMatchObject({ partialFirstTurn: 0, attempted: 0 });
+    nowMs += 2;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (attempt === 2) {
+        evidenceUnavailable = true;
+        expect(await runGoalHolderRespawnOnce(rootSql, deps))
+          .toMatchObject({ partialFirstTurn: 0, rekicked: 0, attempted: 0 });
+        evidenceUnavailable = false;
+      }
+      const tick = await runGoalHolderRespawnOnce(rootSql, deps);
+      expect(tick).toMatchObject({ partialFirstTurn: 1, rekicked: 1, attempted: 0 });
+      nowMs += GOAL_HOLDER_REKICK_INTERVAL_MS;
+    }
+    expect(kicks).toEqual([1, 2, 3]);
+    const recovered = await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(recovered).toMatchObject({ partialFirstTurn: 1, attempted: 1, respawned: 1 });
+    expect(launches).toEqual([goalId]);
+    const rows = await goalModeRows(goalId);
+    expect(rows.at(-1)).toMatchObject({ owner_id: 'su-replacement-1', subject: goalId });
+  }, 60_000);
+
+  it('accepts only a successful, current-window, exact-goal holder portfolio act from the real ledger', async () => {
+    const goalId = 'goal-attestation-ledger';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder(INITIAL_HOLDER, goalId);
+    const holder = (await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: [goalId] }))[0]!;
+    const insert = async (tool: string, goal: string, status: string, atMs: number) => {
+      await rootSql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+           status, coord_owner_id, goal_id, goal_actor_class, invoked_at)
+        VALUES (${WS}, ${HARNESS}, 'test', ${tool}, 'su', 'test', 'test',
+                ${status}, ${INITIAL_HOLDER}, ${goal}, 'holder-agent',
+                to_timestamp(${atMs}::bigint / 1000.0))`;
+    };
+    await insert('plans:new', goalId, 'ok', holder.setAtMs - 1_000);
+    await insert('plans:new', 'other-goal', 'ok', holder.setAtMs + 1_000);
+    await insert('goals:list', goalId, 'ok', holder.setAtMs + 2_000);
+    await insert('plans:new', goalId, 'refused', holder.setAtMs + 3_000);
+    expect(await readGoalHolderPortfolioAct(rootSql, WS, goalId, INITIAL_HOLDER, holder.setAtMs)).toBeNull();
+    await insert('plans:new', goalId, 'ok', holder.setAtMs + 4_000);
+    expect(await readGoalHolderPortfolioAct(rootSql, WS, goalId, INITIAL_HOLDER, holder.setAtMs))
+      .toMatchObject({ tool: 'plans:new' });
   }, 60_000);
 
   it('a post-wake tool-active turn stays held; a true warm wake miss still respawns', async () => {

@@ -24,6 +24,7 @@ import RouteErrorBoundary, {
   delayedChunkRetryMs,
   pruneRetryLog,
 } from './RouteErrorBoundary';
+import { resetRenderCrashReportDedupForTest } from '../lib/render-crash-report';
 
 // Throws based on a module-level flag rather than a prop, so a re-render driven by
 // the boundary's OWN setState (Try again) re-evaluates the latest flag — exactly
@@ -40,6 +41,7 @@ afterEach(() => {
   // Clear (don't reassign) — the vi.mock factory bound this exact fn reference.
   H.hardReload.mockClear();
   H.explode = true;
+  resetRenderCrashReportDedupForTest();
 });
 
 describe('<RouteErrorBoundary>', () => {
@@ -54,6 +56,8 @@ describe('<RouteErrorBoundary>', () => {
   });
 
   it('shows the recoverable fallback card when a child throws', () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
     vi.spyOn(console, 'error').mockImplementation(() => {});
     render(
       <RouteErrorBoundary>
@@ -66,6 +70,7 @@ describe('<RouteErrorBoundary>', () => {
     expect(screen.getByText('Try again')).toBeTruthy();
     // Stack is hidden until expanded.
     expect(screen.queryByText(/kaboom in a tab/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith('/api/desktop/telemetry-report', expect.objectContaining({ method: 'POST' }));
   });
 
   it('Reload calls hardReload (the desktop-host-safe reload)', () => {

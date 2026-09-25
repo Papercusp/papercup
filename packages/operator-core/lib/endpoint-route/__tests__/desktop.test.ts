@@ -344,6 +344,47 @@ describe('desktop route ports', () => {
     expect(res.status).toBe(403);
   });
 
+  it('archives only redacted render crashes while telemetry is disabled and deduplicates the ring', async () => {
+    const payload = {
+      source: 'render-boundary', boundary: 'adv-tab', errorType: 'TypeError',
+      component: 'LearningTab', tab: 'learning',
+      fingerprint: 'forged', message: 'secret-token=abc', stack: 'private stack',
+    };
+    const ring: { reports: Array<{ kind: string; payload: unknown; received_at: string }> } = { reports: [] };
+    vi.mocked(readOperatorState).mockImplementation(async (key) =>
+      key === 'telemetry_reports' ? ring : null,
+    );
+    vi.mocked(writeOperatorState).mockImplementation(async (key, value) => {
+      if (key === 'telemetry_reports') ring.reports = (value as typeof ring).reports;
+    });
+    const app = appWith(desktopTelemetryReport as AnyRoute[]);
+    const first = await app.request('/desktop/telemetry-report', json({ kind: 'crash', payload }));
+    expect(first.status).toBe(200);
+    expect(ring.reports).toHaveLength(1);
+    expect(ring.reports[0]?.payload).toEqual({
+      source: 'render-boundary', boundary: 'adv-tab', errorType: 'TypeError',
+      component: 'LearningTab', tab: 'learning',
+      fingerprint: 'adv-tab:TypeError:LearningTab:learning',
+    });
+    expect(JSON.stringify(ring)).not.toContain('secret-token');
+    const second = await app.request('/desktop/telemetry-report', json({ kind: 'crash', payload }));
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ deduped: true });
+    expect(ring.reports).toHaveLength(1);
+  });
+
+  it('rejects malformed render-boundary payloads even when telemetry is enabled', async () => {
+    vi.mocked(readOperatorState).mockResolvedValue({ telemetry_enabled: true });
+    const res = await appWith(desktopTelemetryReport as AnyRoute[])
+      .request('/desktop/telemetry-report', json({
+        kind: 'crash',
+        payload: { source: 'render-boundary', boundary: 'route', errorType: 'Error', component: '/secret/path', tab: 'other' },
+      }));
+    expect(res.status).toBe(400);
+    expect(vi.mocked(writeOperatorState)).not.toHaveBeenCalledWith('telemetry_reports', expect.anything());
+    vi.mocked(readOperatorState).mockReset().mockResolvedValue(null);
+  });
+
   it('POST /desktop/workspace-validate rejects an invalid body with 400', async () => {
     const res = await appWith(desktopWorkspaceValidate as AnyRoute)
       .request('/desktop/workspace-validate', json({ notpath: 1 }));

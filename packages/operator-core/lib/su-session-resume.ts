@@ -66,7 +66,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
   const session = { ...row, sessionId: nativeId, ompThreadId: nativeId,
     configDir: native.backend === 'claude' ? native.configDir : undefined,
     codexHome: native.backend === 'codex' ? native.codexHome : undefined };
-  const liveHost = findLiveHost(record.ownerId);
+  let liveHost = findLiveHost(record.ownerId);
   if (liveHost) throw new Error('This session still has a live host; reconnect to that process');
   if (row.pid) {
     try { process.kill(row.pid, 0); throw new Error('The saved native process is still alive'); }
@@ -83,6 +83,8 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
       processHolder = sessionProcessHolder(nativeId);
     }
+    liveHost = findLiveHost(record.ownerId);
+    if (liveHost) throw new Error('This session gained a live host while waiting for its native process to exit');
   }
   const writerHolder = native.backend === 'codex' ? codexThreadWriterHolder(native.codexHome, nativeId) : null;
   const evidence = native.backend === 'codex'

@@ -1123,6 +1123,15 @@ export function evaluateCarryBudgetReservation(input: {
 export interface CarryTaskEvaluation {
   /** Stable workload identity shared ONLY by the control/candidate pair. */
   taskId: string;
+  /** D017 source stratum and exact frozen predecessor cut. These observations
+   * still need controller-side provenance; this arithmetic cannot authenticate
+   * a caller-supplied number or source reference. */
+  sourceId: string | null;
+  sourceRef: string | null;
+  measuredHistoryInputTokens: number | null;
+  historyEvidenceRef: string | null;
+  observedIdleMs: number | null;
+  idleEvidenceRef: string | null;
   arm: 'control' | 'candidate';
   model: string | null;
   transport: string | null;
@@ -1144,15 +1153,25 @@ export interface CarryTaskEvaluation {
 }
 
 /** R-4/R-8 acceptance arithmetic. A passing synthetic test is not a passing live cohort. */
-export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], minimumPairs = 30) {
-  if (!Number.isSafeInteger(minimumPairs) || minimumPairs < 2) throw new Error('minimumPairs must be at least two');
+export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[]) {
   const insufficient: string[] = [];
   const failures: string[] = [];
+  const recipe = createCarryTrialRecipe();
+  const minimumPairs = recipe.pairs.length;
+  const expectedPairs = new Map(recipe.pairs.map(pair => [pair.id, pair]));
+  const expectedSources = new Map(recipe.sources.map(source => [source.id, source]));
+  const sourceCuts = new Map<string, { ref: string; tokens: number; evidenceRef: string }>();
+  const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
   const chargedRequests = new Set<string>();
   const byTask = new Map<string, CarryTaskEvaluation[]>();
   for (const sample of samples) byTask.set(sample.taskId, [...(byTask.get(sample.taskId) ?? []), sample]);
+  for (const id of expectedPairs.keys()) {
+    if (!byTask.has(id)) insufficient.push(`missing-recipe-pair:${id}`);
+  }
   const pairs: Array<{ control: CarryTaskEvaluation; candidate: CarryTaskEvaluation }> = [];
   for (const [taskId, rows] of byTask) {
+    if (!expectedPairs.has(taskId)) insufficient.push(`unexpected-recipe-pair:${taskId}`);
     const control = rows.filter(row => row.arm === 'control');
     const candidate = rows.filter(row => row.arm === 'candidate');
     if (!taskId || control.length !== 1 || candidate.length !== 1) {
@@ -1162,6 +1181,33 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], 
     const dimensions = ['model', 'transport', 'authorizationScope', 'workloadFingerprint'] as const;
     if (dimensions.some(key => !a[key] || !b[key] || a[key] !== b[key])) {
       insufficient.push(`unmatched-dimensions:${taskId}`); continue;
+    }
+    const expected = expectedPairs.get(taskId);
+    const source = expected && expectedSources.get(expected.sourceId);
+    for (const row of [a, b]) {
+      if (!source || row.sourceId !== source.id || !nonblank(row.sourceRef) ||
+        !nonblank(row.historyEvidenceRef) || !count(row.measuredHistoryInputTokens) ||
+        row.measuredHistoryInputTokens < source.history.minInputTokens ||
+        row.measuredHistoryInputTokens > source.history.maxInputTokens) {
+        insufficient.push(`unmeasured-or-out-of-band-history:${taskId}:${row.arm}`);
+      }
+      if (!source || !nonblank(row.idleEvidenceRef) || !count(row.observedIdleMs) ||
+        row.observedIdleMs < source.idle.minMs ||
+        (source.idle.maxInclusive ? row.observedIdleMs > source.idle.maxMs : row.observedIdleMs >= source.idle.maxMs)) {
+        insufficient.push(`unmeasured-or-out-of-band-idle:${taskId}:${row.arm}`);
+      }
+    }
+    if (source && nonblank(a.sourceRef) && count(a.measuredHistoryInputTokens) && nonblank(a.historyEvidenceRef)) {
+      const prior = sourceCuts.get(source.id);
+      if (prior && (prior.ref !== a.sourceRef || prior.tokens !== a.measuredHistoryInputTokens ||
+        prior.evidenceRef !== a.historyEvidenceRef)) {
+        insufficient.push(`inconsistent-source-cut:${source.id}`);
+      } else sourceCuts.set(source.id, { ref: a.sourceRef, tokens: a.measuredHistoryInputTokens,
+        evidenceRef: a.historyEvidenceRef });
+    }
+    if (!nonblank(a.sourceRef) || a.sourceRef !== b.sourceRef ||
+      a.measuredHistoryInputTokens !== b.measuredHistoryInputTokens || a.historyEvidenceRef !== b.historyEvidenceRef) {
+      insufficient.push(`unmatched-source-cut:${taskId}`);
     }
     if (!a.completed || !b.completed) failures.push(`incomplete-task:${taskId}`);
     if (a.quality === 'fail' || b.quality === 'fail') failures.push(`quality-failure:${taskId}`);
@@ -1222,7 +1268,14 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[], 
     firstTwo: pairedBootstrapCI(taskCounts('control', true), taskCounts('candidate', true), bootstrap),
     task: pairedBootstrapCI(taskCounts('control', false), taskCounts('candidate', false), bootstrap),
   };
-  const metrics = { controlTotal, candidateTotal, controlStartup, candidateStartup, controlP95, candidateP95,
+  const strata = recipe.sources.map(source => {
+    const members = pairs.filter(pair => pair.control.sourceId === source.id);
+    const tokens = (arm: 'control' | 'candidate') => members.reduce((sum, pair) => sum +
+      pair[arm].requests.reduce((n, request) => n + request.uncachedInputTokens!, 0), 0);
+    return { sourceId: source.id, historyInputTokens: sourceCuts.get(source.id)?.tokens ?? null,
+      pairs: members.length, controlUncachedInputTokens: tokens('control'), candidateUncachedInputTokens: tokens('candidate') };
+  });
+  const metrics = { controlTotal, candidateTotal, controlStartup, candidateStartup, controlP95, candidateP95, strata,
     firstTwoUncachedReduction: 1 - candidateStartup / controlStartup,
     taskUncachedReduction: 1 - candidateTotal / controlTotal,
     p95LatencyChange: candidateP95 / controlP95 - 1, uncertainty };

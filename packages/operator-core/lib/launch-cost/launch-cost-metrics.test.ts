@@ -886,8 +886,14 @@ describe('carry startup recurrence detectors (P-009)', () => {
 });
 
 describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => {
-  const cohort = (): CarryTaskEvaluation[] => Array.from({ length: 30 }, (_, n) => ['control', 'candidate'].map(arm => ({
-    taskId: `task-${n}`, arm: arm as 'control' | 'candidate', model: 'gpt-6-sol', transport: 'subscription',
+  const recipe = createCarryTrialRecipe();
+  const cohort = (): CarryTaskEvaluation[] => recipe.pairs.flatMap((pair, n) => ['control', 'candidate'].map(arm => ({
+    taskId: pair.id, sourceId: pair.sourceId, sourceRef: `fixture:${pair.sourceId}`,
+    measuredHistoryInputTokens: pair.sourceId.startsWith('L-') ? 650_000 : 50_000,
+    historyEvidenceRef: `fixture:history:${pair.sourceId}`,
+    observedIdleMs: pair.sourceId.endsWith('I0') ? 30_000 : pair.sourceId.endsWith('I1') ? 480_000 : 4_200_000,
+    idleEvidenceRef: `fixture:idle:${pair.id}:${arm}`,
+    arm: arm as 'control' | 'candidate', model: 'gpt-6-sol', transport: 'subscription',
     authorizationScope: 'tenant-a/account-a', workloadFingerprint: 'fixture-v1', completed: true,
     quality: 'pass' as const, qualityEvidenceRef: `fixture:test-${n}-${arm}`, firstUsefulResponseMs: 1000,
     accountingComplete: true, requests: [
@@ -906,7 +912,39 @@ describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => 
       resamplingUnit: 'task-pair', ci: 0.95, iterations: 10000, seed: 12345 });
     expect(result.metrics?.uncertainty.firstTwo.delta).toEqual({ point: -1_290_000, lower: -1_290_000, upper: -1_290_000, ci: 0.95 });
     expect(result.metrics?.uncertainty.task.delta).toEqual({ point: -1_290_000, lower: -1_290_000, upper: -1_290_000, ci: 0.95 });
+    expect(result.metrics?.strata.map(stratum => [stratum.sourceId, stratum.pairs])).toEqual(
+      recipe.sources.map(source => [source.id, 5]));
   });
+  it('requires the exact six measured history and idle strata from the frozen recipe', () => {
+    const full = cohort(), first = recipe.pairs[0].id, another = recipe.pairs[1].id;
+    expect(evaluateCarryTaskPairs(full.map(row => row.taskId === first ? { ...row, taskId: another } : row)).insufficient)
+      .toContain(`missing-recipe-pair:${first}`);
+    for (const changed of [
+      { measuredHistoryInputTokens: null }, { measuredHistoryInputTokens: 599_999 },
+      { historyEvidenceRef: '' }, { observedIdleMs: 60_000 }, { idleEvidenceRef: '' },
+      { sourceRef: '' }, { sourceId: 'L-I2' },
+    ]) {
+      const rows = full.map((row, index) => index === 0 ? { ...row, ...changed } : row);
+      expect(evaluateCarryTaskPairs(rows).status).toBe('insufficient');
+    }
+    const drift = full.map(row => row.taskId === another ? { ...row, sourceRef: 'fixture:different-cut' } : row);
+    expect(evaluateCarryTaskPairs(drift).insufficient).toContain(`inconsistent-source-cut:${recipe.pairs[0].sourceId}`);
+    const evidenceDrift = full.map(row => row.taskId === another ? { ...row, historyEvidenceRef: 'fixture:other-measurement' } : row);
+    expect(evaluateCarryTaskPairs(evidenceDrift).insufficient).toContain(`inconsistent-source-cut:${recipe.pairs[0].sourceId}`);
+  });
+  it.each([
+    ['S-I0', 20_000, 59_999, 19_999, 60_000],
+    ['S-I1', 80_000, 600_000, 80_001, 600_001],
+    ['L-I2', 600_000, 4_500_000, 599_999, 4_500_001],
+  ] as const)('honors measured boundaries for %s without relabeling an out-of-band source',
+    (sourceId, historyInBand, idleInBand, historyOutOfBand, idleOutOfBand) => {
+      const base = cohort();
+      const changed = (history: number, idle: number) => base.map(row => row.sourceId === sourceId
+        ? { ...row, measuredHistoryInputTokens: history, observedIdleMs: idle } : row);
+      expect(evaluateCarryTaskPairs(changed(historyInBand, idleInBand)).status).toBe('pass');
+      expect(evaluateCarryTaskPairs(changed(historyOutOfBand, idleInBand)).status).toBe('insufficient');
+      expect(evaluateCarryTaskPairs(changed(historyInBand, idleOutOfBand)).status).toBe('insufficient');
+    });
   it('fails relocated cost in preparation/compaction/recovery/retry even when startup looks cheap', () => {
     for (const phase of ['preparation', 'compaction', 'recovery', 'retry'] as const) {
       const rows = cohort().map(row => row.arm === 'candidate' ? { ...row,
@@ -950,7 +988,7 @@ describe('matched carry acceptance: cost, quality and latency (R-4/R-8)', () => 
     }
   });
   it('does not pass savings supported only by one outlier when the paired interval includes zero', () => {
-    const rows = cohort().map(row => row.taskId === 'task-0' ? row : { ...row,
+    const rows = cohort().map(row => row.taskId === recipe.pairs[0].id ? row : { ...row,
       requests: row.requests.map(request => ({ ...request, uncachedInputTokens: 10 })) });
     const result = evaluateCarryTaskPairs(rows);
     expect(result.status).toBe('insufficient');

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PTY incident report missing-class copy-out mutation",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file scratchpad/pty-host-incident-verification-2026-09-25.md",
+    "--mutate 's/^\\| \\x60PTY-WAKE-REARM\\x60 \\|.*$//'",
+    "--test 'PTY_INCIDENT_REPORT_PATH={} node scripts/test-files.mjs apps/operator/lib/pty-host-incident-verification.test.ts'",
+    "--expect caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T19:42:39.074Z",
+  "finishedAt": "2026-09-25T19:44:13.045Z",
+  "summary": "The two-test report guard passed against both the canonical report and its unmutated copy. Removing the PTY-WAKE-REARM row from the copied report made the coverage assertion fail with missing: [PTY-WAKE-REARM]. The mutation probe reported caught with baseline_exit=0, guard_exit=1, target=copy-out and verified the canonical report remained byte-identical. Markdown mutant syntax was unchecked.",
+  "assertions": [
+    {
+      "id": "canonical-and-relocated-baselines-pass",
+      "passed": true,
+      "evidence": "The canonical and unmutated relocated report each produced 2 passing tests, exit 0."
+    },
+    {
+      "id": "missing-class-mutant-caught",
+      "passed": true,
+      "evidence": "The copied report's PTY-WAKE-REARM row was removed. The project Vitest suite failed its coverage assertion with missing: [PTY-WAKE-REARM]; mutation-probe verdict=caught, baseline_exit=0, guard_exit=1."
+    },
+    {
+      "id": "canonical-report-unchanged",
+      "passed": true,
+      "evidence": "mutation-probe reported tree integrity VERIFIED: the canonical report was byte-identical to its pre-probe state."
+    }
+  ],
+  "workItemId": "WI-10003055",
+  "specId": "PTY-INCIDENT-VERIFICATION",
+  "testFile": "apps/operator/lib/pty-host-incident-verification.test.ts",
+  "sourceFile": "scratchpad/pty-host-incident-verification-2026-09-25.md"
+}

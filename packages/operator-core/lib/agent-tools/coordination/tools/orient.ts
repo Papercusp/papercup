@@ -3577,6 +3577,7 @@ export default defineTool({
           return readGoalPortfolioBrief({
             workspaceId: orientWorkspaceId,
             goalId: goalSubject,
+            attestOwnerId: ownerId,
           });
         })()
       : undefined;

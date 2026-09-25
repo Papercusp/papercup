@@ -167,6 +167,15 @@ describe('structured exact resume preparation', () => {
     expect(m.witness).toHaveBeenCalledWith(expect.objectContaining({
       processHolder: { held: false, reason: 'clean-scan', pid: null },
     }));
+    expect(m.live).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses if a competing host appears while waiting for the old process', async () => {
+    m.holder.mockReturnValueOnce({ held: true, reason: 'argv-match', pid: 1234 })
+      .mockReturnValue({ held: false, reason: 'clean-scan', pid: null });
+    m.live.mockReturnValueOnce(null).mockReturnValue({ pid: 4321 });
+    await expect(prepareStructuredSuResume(fixture('claude'))).rejects.toThrow('gained a live host');
+    expect(m.acquire).not.toHaveBeenCalled();
   });
 
   it('releases the reservation when the transcript or selected account cannot be restored', async () => {
