@@ -153,7 +153,7 @@ function syscallFileProbe(home: string, name: string) {
   const parse = (text: string) => {
     if (!text.endsWith('\n') || Buffer.byteLength(text) >= maxBytes) throw new Error('incomplete owned syscall trace');
     const pending = new Map<number, string>(), exited = new Set<number>(), seen = new Set<number>();
-    const accesses: Array<{ pid: number; syscall: string; filePath: string; result: string }> = [];
+    const accesses: Array<{ tid: number; syscall: string; filePath: string; result: string }> = [];
     let unavailableLabels = 0, failedCalls = 0;
     for (const line of text.trimEnd().split('\n')) {
       const match = line.match(/^\s*(\d+)\s+(.+)$/);
@@ -184,12 +184,12 @@ function syscallFileProbe(home: string, name: string) {
       // These remain explicit residue; file paths are labels, not inode/byte proof.
       const path = descriptor?.[1];
       if (!path?.startsWith('/') || /[\\<>]| \(deleted\)$/.test(path)) { unavailableLabels++; continue; }
-      accesses.push({ pid, syscall, filePath: path, result: value });
+      accesses.push({ tid: pid, syscall, filePath: path, result: value });
     }
     if (pending.size || !seen.size || [...seen].some(pid => !exited.has(pid))) throw new Error('incomplete owned syscall lifecycle');
     return { schemaVersion: 'owned-syscall-files-v1', evidenceKind: 'observation-only',
       traceSha256: createHash('sha256').update(text).digest('hex'), traceBytes: Buffer.byteLength(text),
-      tracedPids: [...seen].sort((a, b) => a - b), accesses, unavailableLabels, failedCalls,
+      tracedTaskIds: [...seen].sort((a, b) => a - b), accesses, unavailableLabels, failedCalls,
       unresolved: ['descriptor labels do not authenticate bytes or inode identity',
         'failed opens, non-file descriptors and escaped/deleted paths are not resolved',
         'unselected syscalls, unexercised branches, external writers and production equivalence remain unproven'] };
@@ -623,7 +623,7 @@ it('rejects incomplete syscall evidence and preserves descriptor parsing residue
   expect(() => trace.parse(complete + '1 close(3</input>) = 0\n')).toThrow('owned syscall row after exit');
   expect(() => trace.parse('x'.repeat(8 * 1024 * 1024) + '\n')).toThrow('incomplete owned syscall trace');
   const resumed = trace.parse('1 read(3</input>,  <unfinished ...>\n1 <... read resumed>""..., 1) = 1\n1 +++ exited with 0 +++\n');
-  expect(resumed.accesses).toEqual([{ pid: 1, syscall: 'read', filePath: '/input', result: '1' }]);
+  expect(resumed.accesses).toEqual([{ tid: 1, syscall: 'read', filePath: '/input', result: '1' }]);
   expect(trace.parse('1 openat(AT_FDCWD, ""..., O_RDONLY) = 3</input>\n1 +++ exited with 0 +++\n').accesses).toEqual([]);
   const residue = trace.parse('1 openat(AT_FDCWD, ""..., O_RDONLY) = 3</dev/null<char 1:3>>\n' +
     '1 read(3</dev/null<char 1:3>>, ""..., 1) = 1\n1 read(3</input (deleted)>, ""..., 1) = 1\n' +
@@ -642,7 +642,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
       const fd = fs.openSync('input.bin', 'r');
       const buffer = Buffer.alloc(32);
       fs.readSync(fd, buffer, 0, buffer.length, 0);
-      fs.readvSync(fd, [buffer], 0);
+      fs.readvSync(fd, [buffer, Buffer.alloc(16)], 0);
       fs.closeSync(fd);
       require('node:readline').createInterface({ input: process.stdin }).on('line', line =>
         process.stdout.write(JSON.stringify({ id: JSON.parse(line).id, result: {} }) + '\\n'));
@@ -668,12 +668,12 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     await p.close();
     const observation = trace.read();
     expect(observation.accesses.some(row => row.syscall === 'read' && row.filePath === join(home, 'config.toml'))).toBe(true);
-    expect(new Set(observation.accesses.filter(row => row.filePath === join(home, 'config.toml')).map(row => row.pid)).size)
+    expect(new Set(observation.accesses.filter(row => row.filePath === join(home, 'config.toml')).map(row => row.tid)).size)
       .toBeGreaterThan(0);
     expect(observation.evidenceKind).toBe('observation-only');
     expect(observation.unresolved.length).toBeGreaterThan(0);
     console.info('CARRY_NATIVE_SYSCALL_OBSERVATION', JSON.stringify({ traceSha256: observation.traceSha256,
-      traceBytes: observation.traceBytes, tracedPids: observation.tracedPids.length,
+      traceBytes: observation.traceBytes, tracedTasks: observation.tracedTaskIds.length,
       fileReadCalls: observation.accesses.filter(row => row.syscall !== 'mmap').length,
       mappedFileCalls: observation.accesses.filter(row => row.syscall === 'mmap').length,
       unavailableLabels: observation.unavailableLabels, failedCalls: observation.failedCalls }));
