@@ -113,7 +113,48 @@ describe('PendingMembershipContent drops (D-016)', () => {
     expect(buf.size()).toBe(2);
     expect(buf.dropped.takeDropCounts()).toEqual({ evicted: 1, expired: 0 });
     buf.holdExpiry(false);
-    expect(buf.sweepExpired(60_000)).toBe(1); // r2's TTL passed; r3's has not
+    // P-538: the release re-arms r2 and r3 from the first observed now (60_000): one full TTL.
+    expect(buf.sweepExpired(60_000)).toBe(0);
+    expect(buf.sweepExpired(60_999)).toBe(0);
+    expect(buf.sweepExpired(61_000)).toBe(2);
+    expect(buf.dropped.takeDropCounts()).toEqual({ evicted: 0, expired: 2 });
+  });
+
+  it('P-538: content deferred during catch-up survives a member admitted just after it ends', () => {
+    const buf = new PendingMembershipContent(100, 5 * 60_000);
+    buf.holdExpiry(true); // a 943 s snapshot-set pass
+    runWithDeferralSource({ keyHex: LOG, position: 7_789_134 }, () => buf.defer(member('r1'), 0));
+    buf.holdExpiry(false); // the fold caught up at 943 s
+    buf.defer({ ...member('r2'), authorDevice: 'dev-other' }, 943_000); // any later sweep
+    const drained = buf.drainForDevices(['dev-1'], 965_000); // admitted 22 s later
+    expect(drained.map((d) => d.rowKey)).toEqual(['r1']);
+    expect(buf.dropped.takeDropCounts()).toEqual({ evicted: 0, expired: 0 });
+    expect(buf.dropped.takeOwed()).toBeNull(); // nothing to re-fold: no rewind into the set
+  });
+
+  it('P-538: a member drain returns its own entries even past their TTL, while other buckets still expire', () => {
+    const buf = new PendingMembershipContent(100, 1_000);
+    runWithDeferralSource({ keyHex: LOG, position: 12 }, () => buf.defer(member('r1'), 0));
+    runWithDeferralSource({ keyHex: OTHER, position: 5 }, () =>
+      buf.defer({ ...member('x1'), authorDevice: 'dev-2' }, 0),
+    );
+    const drained = buf.drainForDevices(['dev-1'], 5_000);
+    expect(drained.map((d) => d.rowKey)).toEqual(['r1']);
+    expect(buf.size()).toBe(0); // dev-2's entry was past its TTL and swept after the drain
+    expect(buf.dropped.takeDropCounts()).toEqual({ evicted: 0, expired: 1 });
+    expect(buf.dropped.takeOwed()).toBeNull(); // dev-2 was never admitted: nothing owed
+    expect(buf.dropped.has('device:dev-1')).toBe(false);
+  });
+
+  it('P-538: a source-log drain returns its own entries even past their TTL', () => {
+    const buf = new PendingMembershipContent(100, 1_000);
+    runWithDeferralSource({ keyHex: LOG, position: 30 }, () =>
+      buf.deferUnresolvedSourceLog({ sourceLogKey: 'log-9', tableTag: 'engineer-issues', rowKey: 's1', reapply: async () => {} }, 0),
+    );
+    const drained = buf.drainForSourceLogKeys(['log-9'], 5_000);
+    expect(drained.map((d) => d.rowKey)).toEqual(['s1']);
+    expect(buf.dropped.takeDropCounts()).toEqual({ evicted: 0, expired: 0 });
+    expect(buf.dropped.takeOwed()).toBeNull();
   });
 
   it('the member drain releases the device record even when every entry was dropped', () => {

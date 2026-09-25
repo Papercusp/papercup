@@ -484,6 +484,28 @@ describe('P-522 (b): DeferralEvictionReFold and rewindMergeCursor', () => {
     expect(refold.settle(cursor).kind).toBe('rewound');
   });
 
+  it('P-538: a stalled-behind log is settled but NOT caught up; only a log at its length is', () => {
+    const refold = new DeferralEvictionReFold();
+    expect(refold.isCaughtUp).toBe(false); // a fresh fold is catching up until a pass says otherwise
+    const cursor = createMergeCursor();
+    cursor.positions.set(K, 40);
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 40]])); // could not move
+    expect(refold.isSettled).toBe(true);
+    expect(refold.isCaughtUp).toBe(false);
+
+    const unpositioned = createMergeCursor(); // a fresh log held for its seed scan
+    refold.noteFold([lengthOf(1_000)], unpositioned, new Map());
+    expect(refold.isCaughtUp).toBe(false);
+
+    cursor.positions.set(K, 1_000);
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 40]]));
+    expect(refold.isCaughtUp).toBe(true);
+    refold.noteFold([lengthOf(1_200)], cursor, new Map([[K, 1_000]]));
+    expect(refold.isCaughtUp).toBe(false);
+    refold.noteIdle();
+    expect(refold.isCaughtUp).toBe(true);
+  });
+
   it('a replaced cursor pays the debt (it re-reads from its seeds); its floors start over', () => {
     const refold = new DeferralEvictionReFold();
     const a = createMergeCursor();

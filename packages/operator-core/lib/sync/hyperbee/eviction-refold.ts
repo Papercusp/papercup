@@ -59,6 +59,8 @@ export class DeferralEvictionReFold {
   /** D-016: keyHex → the lowest log position among owed drops that recorded one. */
   private owedFloors = new Map<string, number>();
   private settled = false;
+  /** P-538: every admitted log is at its length (no stall exemption). */
+  private caughtUp = false;
   private floors = new Map<string, number>();
   private exact = true;
   private floorsCursor: MergeCursor | null = null;
@@ -90,6 +92,17 @@ export class DeferralEvictionReFold {
   /** Whether the last pass left the fold settled: every log at its length or stuck. */
   get isSettled(): boolean {
     return this.settled;
+  }
+
+  /**
+   * P-538: whether the last pass left every admitted log at its length. Unlike
+   * {@link isSettled}, a log that is behind but could not move (a read stall while blocks
+   * download, a fresh log held for its seed scan) is NOT caught up. boot.ts holds the member
+   * TTL on this: P-007 run #10 read settled before a 943 s snapshot-set pass, the TTL ran
+   * through the whole set, and 12 deferrals expired minutes before their member arrived.
+   */
+  get isCaughtUp(): boolean {
+    return this.caughtUp;
   }
 
   /**
@@ -160,11 +173,16 @@ export class DeferralEvictionReFold {
       if (position === undefined) return log.length === 0;
       return position >= log.length || position === positionsBefore.get(log.keyHex);
     });
+    this.caughtUp = logs.every((log) => {
+      const position = cursor.positions.get(log.keyHex);
+      return position === undefined ? log.length === 0 : position >= log.length;
+    });
   }
 
   /** A pass that found nothing to fold: every log is at its length. */
   noteIdle(): void {
     this.settled = true;
+    this.caughtUp = true;
   }
 
   /** The floor recorded for `keyHex` (tests and logging). */

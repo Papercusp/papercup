@@ -136,16 +136,38 @@ export class PendingMembershipContent {
   readonly dropped = new DroppedDeferrals();
   /** D-016: TTL expiry is paused while the fold is catching up. See {@link holdExpiry}. */
   private expiryHeld = false;
+  /** P-538: a hold was released; the next observed `now` re-arms every buffered TTL. */
+  private rearmOnNextNow = false;
 
   /**
    * D-016: pause (`true`) or resume TTL expiry. boot.ts holds it while the fold has not
-   * settled. A catching-up fold is far behind the log, so an author's member row may be
+   * caught up. A catching-up fold is far behind the log, so an author's member row may be
    * just ahead of the content waiting on it, and a wall-clock TTL would drop that content
-   * minutes before the row arrives. The size cap still bounds the buffer while held. Once
-   * the fold settles, the next sweep drops whatever outlived its TTL.
+   * minutes before the row arrives. The size cap still bounds the buffer while held.
+   *
+   * P-538: releasing the hold gives every entry still buffered a fresh TTL from the next
+   * observed `now`. Before this, the first sweep after a long catch-up dropped everything
+   * deferred during it. On P-007 run #10 that was the 12 ops of a member admitted seconds
+   * later, and their owed re-fold rewound the fold into the snapshot set it had just applied.
    */
   holdExpiry(held: boolean): void {
+    if (this.expiryHeld && !held) this.rearmOnNextNow = true;
     this.expiryHeld = held;
+  }
+
+  /** P-538: apply a pending re-arm. Every entry becomes `now + ttlMs`, which keeps each
+   *  bucket's expiry non-decreasing in insertion order (the sweep relies on it). */
+  private rearm(now: number): void {
+    if (!this.rearmOnNextNow || this.expiryHeld) return;
+    this.rearmOnNextNow = false;
+    const expiresAt = now + this.ttlMs;
+    for (const buckets of [this.buckets, this.sourceLogBuckets] as const) {
+      for (const bucket of buckets.values()) {
+        for (const d of bucket.values()) {
+          if (d.expiresAt < expiresAt) d.expiresAt = expiresAt;
+        }
+      }
+    }
   }
 
   constructor(
@@ -221,10 +243,12 @@ export class PendingMembershipContent {
   /**
    * A member just federated (a `hive_members` row applied). Remove + return — in FIFO order —
    * the deferred ops waiting on ANY of that member's device pubkeys, so the caller can re-apply
-   * them (their membership is now known). Sweeps expired entries first. Returns [] if none.
+   * them (their membership is now known), then sweeps the other buckets. Returns [] if none.
    */
   drainForDevices(devices: Iterable<string>, now: number): DeferredMemberContentOp[] {
-    this.sweepExpired(now);
+    // P-538: take the drained buckets BEFORE sweeping. Their author is a member now, so an
+    // entry past its TTL is still content to apply. Sweeping first dropped it and then released
+    // its record, which turned the author's own content into an owed re-fold.
     const out: DeferredMemberContentOp[] = [];
     for (const device of devices) {
       this.dropped.release(`device:${device}`);
@@ -234,6 +258,7 @@ export class PendingMembershipContent {
       this.total -= bucket.size;
       out.push(...bucket.values());
     }
+    this.sweepExpired(now);
     // FIFO across the (possibly multiple) drained buckets.
     return out.sort((a, b) => a.seq - b.seq);
   }
@@ -243,7 +268,7 @@ export class PendingMembershipContent {
    * on that log key so the caller can re-apply them against the now-populated resolver.
    */
   drainForSourceLogKeys(sourceLogKeys: Iterable<string>, now: number): DeferredSourceLogContentOp[] {
-    this.sweepExpired(now);
+    // P-538: drained buckets first, then the sweep (see drainForDevices).
     const out: DeferredSourceLogContentOp[] = [];
     for (const sourceLogKey of sourceLogKeys) {
       this.dropped.release(`sourceLog:${sourceLogKey}`);
@@ -253,6 +278,7 @@ export class PendingMembershipContent {
       this.total -= bucket.size;
       out.push(...bucket.values());
     }
+    this.sweepExpired(now);
     return out.sort((a, b) => a.seq - b.seq);
   }
 
@@ -261,6 +287,7 @@ export class PendingMembershipContent {
    *  Returns the count evicted. */
   sweepExpired(now: number): number {
     if (this.expiryHeld) return 0;
+    this.rearm(now);
     // Every entry gets the same ttlMs from a non-decreasing `now`, so each bucket expires in
     // insertion order: pop expired heads and stop at the first live one (P-523).
     const sweep = <T extends { expiresAt: number; source?: DeferralSource }>(
