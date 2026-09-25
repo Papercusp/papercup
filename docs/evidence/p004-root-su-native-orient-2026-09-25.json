@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 root SU native orient receipt from isolated current build",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready scripts/verify-tauri-headless.sh -- python3 -",
+    "Inside the disposable host: coord:whoami, coord:declare-intent, coord:orient {mode:'monitor'}, then dev:pg_query the exact coord:orient tool invocation metadata for rootIdentityContribution"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T22:11:10Z",
+  "finishedAt": "2026-09-25T22:16:16Z",
+  "summary": "An isolated current-build operator with its own migrated PostgreSQL returned a native coord:orient result for the tracked SU owner and recorded a bound root SU identity receipt. The receipt names current-mode-state from modes/store:agent_modes and current-assignment from coord:presence. The assertion command passed and the verifier completed teardown with exit 0.",
+  "assertions": [
+    {
+      "id": "isolated-native-owner-and-presence",
+      "passed": true,
+      "evidence": "coord:whoami returned the tracked SU owner; coord:declare-intent persisted that same owner in the disposable workspace before orient."
+    },
+    {
+      "id": "native-orient-root-receipt",
+      "passed": true,
+      "evidence": "Isolated tool_invocations id 7, servingBuildSha a5361da746, metadata_json.rootIdentityContribution.identityId=su, sourceRevision=f4d612298e67e1b280e0c71f81e2baff45c83dfc7e03d394f25e2e2d86930282, both required contributions bound with producer refs modes/store:agent_modes and coord:presence."
+    },
+    {
+      "id": "source-and-teardown",
+      "passed": true,
+      "evidence": "The verifier froze canonical current source after root binding code commit f6ff66bf6fbb921263211d32611ddebe57f38764. Post-run orient.ts and turn-start-orientation.ts blobs matched that commit; verifier exit 0 followed teardown."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-004",
+  "workItem": "WI-10002959",
+  "operatorPlane": "isolated current-build plain-node operator and disposable migrated PostgreSQL, native coord:orient MCP call",
+  "limitation": "This proves the native orient metadata path for a disposable SU presence row. It does not exercise a model turn or the turn-start HTTP hook, and it does not prove deployed main, rollback, fleet/GOAL replacement, or final P-008 acceptance. The disposable database and host were torn down after the check."
+}

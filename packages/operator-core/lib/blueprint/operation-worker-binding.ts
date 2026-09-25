@@ -3,7 +3,8 @@ import type { JSONValue, Sql } from 'postgres';
 import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { normalizeModelId } from '@papercusp/model-pricing';
-import { getWorkItem } from '../work-items';
+import { getWorkItem, type WorkItem } from '../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import { getIdentitySource } from '../agent-identities/source';
 import { normalizeSessionActivation } from '../session-activation';
@@ -298,6 +299,80 @@ export function operationWorkerEffectWhereSql(
   return read.status === 'bound'
     ? sql`${claim} AND ${sql.unsafe(columns.holder)} = ${read.receipt.ownerId}`
     : claim;
+}
+
+/** The program executor has a receipt, not an applied agent-session claim.
+ * Carry the root's admission-row timestamp in its durable DBOS input. Any
+ * unrelated mutation, completion/reopen, or cancellation that changes the
+ * canonical row makes its old attempt unable to close successfully. */
+export interface AcceptedProgramRootAttempt {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  receiptId: number;
+  operationId: string;
+  specificationRevision: string;
+  updatedTs: number;
+  requireUncancelled: boolean;
+}
+
+export async function validateAcceptedProgramRootAttempt(
+  attempt: AcceptedProgramRootAttempt,
+  item: WorkItem,
+): Promise<void> {
+  if (!Number.isSafeInteger(attempt.receiptId) || attempt.receiptId <= 0 ||
+      !Number.isSafeInteger(attempt.updatedTs) || attempt.updatedTs <= 0 ||
+      attempt.workItemId !== item.id || attempt.harnessSlug !== item.harness) {
+    throw new Error('accepted program root attempt is stale or malformed');
+  }
+  const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(
+    getOrgPg().sql, attempt.workspaceId, item,
+  );
+  if (operation.execution?.kind !== 'program' || pin.operationId !== attempt.operationId ||
+      pin.specificationRevision !== attempt.specificationRevision) {
+    throw new Error('accepted program root attempt does not match the pinned program');
+  }
+}
+
+/** Repeat the program receipt, immutable kind, status and attempt epoch inside
+ * the canonical state UPDATE. This is a narrow alternative to the agent worker
+ * effect predicate, never a general bypass of accepted-operation authority. */
+export function programRootEffectWhereSql(
+  sql: Sql,
+  attempt: AcceptedProgramRootAttempt,
+  columns: { payload: 'payload' | 'wi.payload'; id: 'feature_id' | 'wi.feature_id';
+    harness: 'harness_slug' | 'wi.harness_slug'; status: 'status' | 'wi.status';
+    updated: 'updated_ts' | 'wi.updated_ts' },
+) {
+  const payload = sql.unsafe(columns.payload);
+  return sql`(
+    ${sql.unsafe(columns.id)} = ${attempt.workItemId}
+    AND ${sql.unsafe(columns.harness)} IN (${attempt.harnessSlug}, ${`harness:${attempt.harnessSlug}`})
+    AND ${sql.unsafe(columns.updated)} = ${attempt.updatedTs}
+    AND NOT (${sql.unsafe(columns.status)} = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+    AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'reopenHistory')
+    AND (${!attempt.requireUncancelled} OR NOT (COALESCE(${payload}, '{}'::jsonb) ? 'blueprintCancellation'))
+    AND EXISTS (
+      SELECT 1 FROM harness_shared.blueprint_operation_invocations i
+      JOIN harness_shared.blueprint_specifications s
+        ON s.workspace_id = i.workspace_id AND s.harness_slug = i.harness_slug
+       AND s.specification_revision = i.specification_revision
+     WHERE i.id = ${attempt.receiptId} AND i.workspace_id = ${attempt.workspaceId}
+       AND i.harness_slug = ${attempt.harnessSlug}
+       AND i.target_kind = 'work-item' AND i.target_ref = ${attempt.workItemId}
+       AND i.operation_id = ${attempt.operationId}
+       AND i.specification_revision = ${attempt.specificationRevision}
+       AND ${payload}->'blueprintOperation'->>'callerId' = i.caller_id
+       AND ${payload}->'blueprintOperation'->>'requestKey' = i.request_key
+       AND ${payload}->'blueprintOperation'->>'requestFingerprint' = i.request_fingerprint
+       AND ${payload}->'blueprintOperation'->>'specificationRevision' = i.specification_revision
+       AND EXISTS (
+         SELECT 1 FROM jsonb_array_elements(s.artifact->'configuration'->'operations') op
+          WHERE op->>'id' = i.operation_id AND op->'execution'->>'kind' = 'program'
+            AND op->'target'->>'kind' = 'work-item'
+       )
+    )
+  )`;
 }
 
 /** Read the current, applied operation identity for a claim target. A launch

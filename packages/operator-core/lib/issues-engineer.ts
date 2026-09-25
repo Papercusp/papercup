@@ -3304,6 +3304,8 @@ export async function setIssueState(
     completionEvidence?: PersistedCompletionEvidence;
     /** Already validated by the unified work-item completion boundary. */
     blueprintResult?: { operationId: string; specificationRevision: string; output: unknown; evidenceRef: string };
+    /** Internal, receipt-fenced DBOS program-root terminal write. */
+    acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under `TERMINAL_ASSUMPTIONS_KEY`. Optional here for the same
@@ -3378,7 +3380,7 @@ export async function setIssueState(
   const operationClaims = !opts.skipCompletionGate
     ? await import('./blueprint/operation-worker-binding') : null;
   const operationEffectRead = operationClaims
-    ? by
+    ? opts.acceptedProgramAttempt ? null : by
       ? await operationClaims.readActiveOperationWorkerClaimBinding(ws, by)
       : { status: 'none' as const }
     : null;
@@ -3439,13 +3441,15 @@ export async function setIssueState(
           taken_by: string | null;
           harness_slug: string;
           status: string;
+          updated_ts: string | number;
           payload: unknown;
           terminal_owner: string | null;
           terminal_completion_ref: string | null;
           authority: string | null;
         }[]
       >`
-        SELECT taken_by, harness_slug, status, payload, terminal_owner, terminal_completion_ref, authority
+        SELECT taken_by, harness_slug, status, updated_ts, payload,
+               terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
@@ -3453,6 +3457,17 @@ export async function setIssueState(
         FOR UPDATE`;
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
+    if (opts.acceptedProgramAttempt) {
+      const payload = priorRow.payload && typeof priorRow.payload === 'object' &&
+        !Array.isArray(priorRow.payload) ? priorRow.payload as Record<string, unknown> : {};
+      if (Number(priorRow.updated_ts) !== opts.acceptedProgramAttempt.updatedTs ||
+          ISSUE_TERMINAL_STATUSES.has(priorRow.status) ||
+          Object.prototype.hasOwnProperty.call(payload, 'reopenHistory') ||
+          (opts.acceptedProgramAttempt.requireUncancelled &&
+            Object.prototype.hasOwnProperty.call(payload, 'blueprintCancellation'))) {
+        return [] as IssueRowDb[];
+      }
+    }
     if (operationClaims && operationEffectRead) {
       const harness = priorRow.harness_slug.startsWith('harness:')
         ? priorRow.harness_slug.slice('harness:'.length) : priorRow.harness_slug;
@@ -3463,7 +3478,16 @@ export async function setIssueState(
         throw new Error(`blueprint operation effect refused: ${match.allowed ? 'current claim holder changed' : match.reason}`);
       }
     }
-    const currentEffect = operationClaims && operationEffectRead
+    const currentEffect = operationClaims && opts.acceptedProgramAttempt
+      ? tx`EXISTS (
+          SELECT 1 FROM harness_shared.work_items AS wi
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}
+             AND ${operationClaims.programRootEffectWhereSql(tx, opts.acceptedProgramAttempt, {
+               payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug',
+               status: 'wi.status', updated: 'wi.updated_ts',
+             })}
+        )`
+      : operationClaims && operationEffectRead
       ? tx`EXISTS (
           SELECT 1 FROM harness_shared.work_items AS wi
            WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}

@@ -3464,6 +3464,9 @@ export async function setWorkItemState(
     completionEvidence?: PersistedCompletionEvidence;
     /** Typed output for a successful accepted blueprint operation. */
     outputPayload?: unknown;
+    /** Trusted DBOS program-root close. The immutable receipt and admission
+     * epoch are checked again in the terminal UPDATE; never exposed as a tool arg. */
+    acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
@@ -3525,10 +3528,16 @@ export async function setWorkItemState(
   // before any completion attestation or other pre-write side effect as well.
   // Trusted recovery paths with skipCompletionGate keep their existing reaper
   // authority; that option is not exposed as an agent tool argument.
-  const operationClaims = wi.family === 'feature' && !opts.skipCompletionGate
+  if (opts.acceptedProgramAttempt && (opts.skipCompletionGate || !isSettledWorkItemState(state))) {
+    throw new Error('accepted program attempt requires a governed terminal transition');
+  }
+  const operationClaims = (wi.family === 'feature' || opts.acceptedProgramAttempt) && !opts.skipCompletionGate
     ? await import('./blueprint/operation-worker-binding') : null;
+  if (opts.acceptedProgramAttempt && operationClaims) {
+    await operationClaims.validateAcceptedProgramRootAttempt(opts.acceptedProgramAttempt, wi);
+  }
   const operationEffectRead = operationClaims
-    ? opts.by
+    ? opts.acceptedProgramAttempt ? null : opts.by
       ? await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), opts.by)
       : { status: 'none' as const }
     : null;
@@ -3557,7 +3566,7 @@ export async function setWorkItemState(
   const blueprintPin = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
     ? (wi.payload as Record<string, unknown>).blueprintOperation : null;
   let blueprintResult: Awaited<ReturnType<typeof import('./blueprint/operation-service').prepareDirectOperationCompletion>> | undefined;
-  if (!opts.skipCompletionGate && state === 'done' && blueprintPin) {
+  if (!opts.skipCompletionGate && (state === 'done' || state === 'passed' || state === 'resolved') && blueprintPin) {
     const priorResult = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
       ? (wi.payload as Record<string, unknown>).blueprintResult : null;
     const priorOutput = isSettledWorkItemState(wi.state) && priorResult &&
@@ -3942,6 +3951,7 @@ export async function setWorkItemState(
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
       blueprintResult,
+      acceptedProgramAttempt: opts.acceptedProgramAttempt,
       // P-008 (d): forwarded, or the issue family would silently drop every
       // assumption declaration while the feature family persisted it — a
       // half-verification across FAMILIES, the same defect D-050 forbids across
@@ -4110,6 +4120,11 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${opts.acceptedProgramAttempt && operationClaims
+           ? operationClaims.programRootEffectWhereSql(tx, opts.acceptedProgramAttempt, {
+               payload: 'payload', id: 'feature_id', harness: 'harness_slug',
+               status: 'status', updated: 'updated_ts',
+             }) : tx`TRUE`}
          AND ${operationClaims && operationEffectRead
            ? operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
                payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
