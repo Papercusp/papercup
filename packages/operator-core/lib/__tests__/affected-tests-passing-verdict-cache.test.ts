@@ -42,7 +42,13 @@ import {
 } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8').replaceAll(
+// The supervised copy-out mutation probe reads its relocated subject. Ordinary
+// suite runs always read the canonical repo source.
+const AFFECTED_TESTS_PATH =
+  process.env.PAPERCUSP_MUTATION_PROBE === '1' && process.env.PAPERCUSP_AFFECTED_TESTS_SOURCE_OVERRIDE
+    ? process.env.PAPERCUSP_AFFECTED_TESTS_SOURCE_OVERRIDE
+    : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+const AFFECTED_TESTS_SRC = readFileSync(AFFECTED_TESTS_PATH, 'utf8').replaceAll(
   '"',
   "'",
 );
