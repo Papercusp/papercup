@@ -1274,7 +1274,13 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             }
             const spec = slotSpec(layer.slot);
             if (!spec) throw new Error(`selected SU identity ${layer.id} has unknown slot ${layer.slot}`);
-            const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
+            const promptDir = path.join(path.dirname(identity.sourcePath), 'prompts');
+            const slotDocument = path.join(promptDir, `${layer.slot}.md`);
+            // The canonical papercusp-engineer domain is published as the
+            // blueprint's agent-base-overlay.md; authored domains use domain.md.
+            const sourcePath = layer.slot === 'domain' && !fsSync.existsSync(slotDocument)
+              ? path.join(promptDir, 'agent-base-overlay.md')
+              : slotDocument;
             if (!fsSync.existsSync(sourcePath)) {
               throw new Error(`selected SU identity ${layer.id} is missing ${layer.slot} document`);
             }

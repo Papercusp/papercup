@@ -1351,7 +1351,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(out.addressed?.partKeys).toEqual(['lead-1']);
   });
 
-  it('renders a selected local domain identity on the first SU launch without fleet or goal state', async () => {
+  it('renders a selected local domain identity from either supported document on the first SU launch', async () => {
     const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
     const dir = mkdtempSync(join(tmpdir(), 'su-selected-domain-'));
     const id = 'fixture-generic-domain';
@@ -1375,6 +1375,16 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
       expect(new URL(spec.mcpUrl).searchParams.get('superuser')).toBe('1');
 
       rmSync(join(identityDir, 'prompts', 'domain.md'));
+      writeFileSync(join(identityDir, 'prompts', 'agent-base-overlay.md'), 'CANONICAL DOMAIN OVERLAY\n');
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      resolvePromptFilesMock.mockReturnValueOnce([
+        join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md'),
+      ]);
+      await buildLaunchSpec({ ...su, harnessSlug: 'fixture', stack: [`domain:${id}`] });
+      const overlayRendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(overlayRendered.baseText ?? '').toContain('CANONICAL DOMAIN OVERLAY');
+
+      rmSync(join(identityDir, 'prompts', 'agent-base-overlay.md'));
       vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
       resolvePromptFilesMock.mockReturnValueOnce([
         join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md'),
