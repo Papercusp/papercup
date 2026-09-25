@@ -177,6 +177,200 @@ it('refuses a bound Codex operation before upstream work while actual provider e
   expect(upstreamCalls).toBe(0);
 });
 
+const boundCodexRead = async (ownerId: string) => ({
+  status: 'bound' as const,
+  policy: { mode: 'exact' as const, models: ['gpt-5.6-sol'], effort: 'high', onUnavailable: 'fail' as const },
+  attestation: {
+    operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'native-codex-worker',
+    workspaceId: 'default', ownerId, harnessSlug: 'papercup', workItemId: 'WI-codex-1',
+    operationId: 'run', specificationRevision: 'a'.repeat(64),
+  },
+});
+const boundCodexRequest = { model: 'gpt-5.6-sol', reasoning: { effort: 'high' }, input: 'x', stream: true };
+const completedCodexResponse = (model = 'gpt-5.6-sol', usage: unknown = {
+  input_tokens: 12, output_tokens: 3, input_tokens_details: { cached_tokens: 2 },
+}) => ({ type: 'response.completed', response: { id: 'resp_bound_codex', model, usage, output: [] } });
+
+describe('accepted Codex provider attestation', () => {
+  it('records a bearer provider completion before exposing its successful stream', async () => {
+    const record = vi.fn(async (..._args: unknown[]) => undefined);
+    const wire = `data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`;
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(wire);
+    }, [codexAcct('cdx-1')], {
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+    });
+    const response = await postResponses(boundCodexRequest, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(wire);
+    expect(record).toHaveBeenCalledOnce();
+    expect(record.mock.calls[0]?.[1]).toMatchObject({
+      backend: 'codex', provider: 'openai', requestedModel: 'gpt-5.6-sol',
+      actualModel: 'gpt-5.6-sol', forwardedEffort: 'high', effortSource: 'forwarded-request',
+      providerResponseId: 'resp_bound_codex',
+      usage: { inputTokens: 12, inputTokenBasis: 'inclusive', outputTokens: 3, cacheReadTokens: 2 },
+    });
+  });
+
+  it('accepts an alias-equivalent provider model under the exact policy', async () => {
+    const record = vi.fn(async () => undefined);
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(completedCodexResponse().response));
+    }, [codexAcct('cdx-1')], {
+      readAcceptedOperationModelPolicy: async (ownerId) => ({
+        ...await boundCodexRead(ownerId),
+        policy: { mode: 'exact', models: ['sol:high'], effort: 'high', onUnavailable: 'fail' },
+      }),
+      recordAcceptedOperationModelAttestation: record,
+    });
+    const response = await postResponses({ model: 'sol:high', input: 'x', stream: false },
+      { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(200);
+    expect(record).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['off-policy model', completedCodexResponse('gpt-5.6-luna')],
+    ['missing provider usage', completedCodexResponse('gpt-5.6-sol', null)],
+  ])('refuses a bearer %s before exposing a successful head', async (_case, completion) => {
+    const record = vi.fn(async () => undefined);
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`);
+    }, [codexAcct('cdx-1')], {
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+    });
+    const response = await postResponses(boundCodexRequest, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(502);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unrecordable bearer completion and an off-policy request before upstream work', async () => {
+    let calls = 0;
+    await bootCodex((_req, res) => {
+      calls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(completedCodexResponse().response));
+    }, [codexAcct('cdx-1')], {
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: async () => { throw new Error('event log unavailable'); },
+    });
+    const rejected = await postResponses({ ...boundCodexRequest, model: 'gpt-5.6-luna' },
+      { [OWNER_HEADER]: 'operation-worker' });
+    expect(rejected.status).toBe(403);
+    expect(calls).toBe(0);
+    const response = await postResponses({ ...boundCodexRequest, stream: false },
+      { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(502);
+    expect(calls).toBe(1);
+  });
+
+  it('records an OAuth provider completion before exposing its successful stream', async () => {
+    const home = await makeCodexHome('chatgpt-bound');
+    const cliAccounts = [{ accountId: 'chatgpt-bound', home }];
+    const record = vi.fn(async () => undefined);
+    const wire = `data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`;
+    const cliRun = vi.fn(async () => ({ text: 'synthetic', inputTokens: 1, outputTokens: 1 }));
+    const fetchImpl = vi.fn(async () => new Response(wire,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({
+        accountId: account.accountId, token: async () => '',
+      }))),
+      codexCliRun: cliRun, codexOAuthProxy: true, fetchImpl,
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const response = await postResponses(boundCodexRequest, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(wire);
+    expect(record).toHaveBeenCalledOnce();
+    expect(cliRun).not.toHaveBeenCalled();
+  });
+
+  it('attests OAuth non-stream aggregation and refuses a synthetic CLI fallback', async () => {
+    const home = await makeCodexHome('chatgpt-bound');
+    const cliAccounts = [{ accountId: 'chatgpt-bound', home }];
+    const record = vi.fn(async () => undefined);
+    const cliRun = vi.fn(async () => ({ text: 'synthetic', inputTokens: 1, outputTokens: 1 }));
+    const completion = completedCodexResponse();
+    const fetchImpl = vi.fn(async () => new Response(
+      `data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    )) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({
+        accountId: account.accountId, token: async () => '',
+      }))),
+      codexCliRun: cliRun, codexOAuthProxy: true, fetchImpl,
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const nonstream = await postResponses({ ...boundCodexRequest, stream: false },
+      { [OWNER_HEADER]: 'operation-worker' });
+    expect(nonstream.status).toBe(200);
+    expect(await nonstream.json()).toMatchObject(completion.response);
+    expect(record).toHaveBeenCalledOnce();
+    expect(cliRun).not.toHaveBeenCalled();
+    await gw.close();
+    gw = undefined;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({
+        accountId: account.accountId, token: async () => '',
+      }))),
+      codexCliRun: cliRun, codexOAuthProxy: false,
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const synthetic = await postResponses(boundCodexRequest, { [OWNER_HEADER]: 'operation-worker' });
+    expect(synthetic.status).toBe(503);
+    expect(cliRun).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['wait', 429, '30'],
+    ['fail', 503, null],
+  ] as const)('reports accepted Codex %s policy when the account pool has no route', async (onUnavailable, status, retryAfter) => {
+    let upstreamCalls = 0;
+    openaiUpstream = await startUpstream((_req, res) => { upstreamCalls++; res.end(); });
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      upstreamBase: openaiUpstream.base,
+      openaiUpstreamBase: openaiUpstream.base,
+      readAcceptedOperationModelPolicy: async (ownerId) => ({
+        ...await boundCodexRead(ownerId),
+        policy: { mode: 'exact', models: ['gpt-5.6-sol'], effort: 'high', onUnavailable },
+      }),
+      recordAcceptedOperationModelAttestation: async () => undefined,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const response = await postResponses(boundCodexRequest, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(status);
+    expect(response.headers.get('retry-after')).toBe(retryAfter);
+    if (onUnavailable === 'fail') expect(response.headers.get('x-should-retry')).toBe('false');
+    expect(upstreamCalls).toBe(0);
+  });
+});
+
 describe('proxyOpenAi — no pool / configuration', () => {
   it('/v1/responses returns a 503 gateway envelope when no Codex pool is configured', async () => {
     openaiUpstream = await startUpstream(ok);
@@ -1550,7 +1744,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       if (calls <= 2) {
         return new Response(JSON.stringify({ error: { message: 'pool burst' } }), {
           status: 429,
-          headers: { 'content-type': 'application/json', 'retry-after': '80ms' },
+          headers: { 'content-type': 'application/json', 'retry-after': '200ms' },
         });
       }
       return new Response('data: [DONE]\n\n', {
@@ -1567,7 +1761,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       ),
       codexOAuthProxy: true,
       fetchImpl,
-      requestAbsorbMs: 300,
+      requestAbsorbMs: 500,
       internalRetryDeadlineMs: 1,
       selfHeal: { enabled: false },
     });
@@ -1577,11 +1771,20 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       { model: 'gpt-5.5', input: 'absorb me', stream: true },
       { [ACCOUNT_HEADER]: 'chatgpt-a' },
     );
-    const observedUntil = Date.now() + 500;
+    const observedUntil = Date.now() + 800;
     while (calls < 2 && Date.now() < observedUntil) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(calls).toBeGreaterThanOrEqual(2);
-    const stats = (await (await ask('/stats')).json()) as { codexAdmission: { running: number } };
-    expect(stats.codexAdmission.running).toBe(0);
+    // fetchImpl counts the second call before its 429 has released admission.
+    // Observe the slot release itself while the recovery request is parked.
+    let releasedWhileParked = false;
+    while (calls === 2 && Date.now() < observedUntil) {
+      if (gw!.stats().codexAdmission.running === 0) {
+        releasedWhileParked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(releasedWhileParked).toBe(true);
 
     const res = await pending;
     expect(res.status).toBe(200);

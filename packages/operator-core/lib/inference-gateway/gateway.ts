@@ -21,6 +21,7 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { normalizeModelId } from '@papercusp/model-pricing';
+import { resolveCodexModel } from '../model-context-budget.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
@@ -144,10 +145,12 @@ import {
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
   codexReserveModelFor,
+  createCodexProviderCompletionDecoder,
   parseCodexRateReset,
   refreshCodexToken,
   resolveCodexAccessToken,
   type CodexAuth,
+  type CodexProviderCompletionEvidence,
 } from './codex-oauth-proxy';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
@@ -836,6 +839,24 @@ function acceptedClaudeModelAllows(policy: AcceptedClaudeModelPolicy, requested:
     const listedEffort = MODEL_EFFORT_SUFFIX.exec(entry)?.[1]?.toLowerCase();
     return (!listedEffort || !requestedEffort || listedEffort === requestedEffort) &&
       (!policy.effort || !listedEffort || listedEffort === policy.effort.toLowerCase());
+  });
+}
+
+/** Compare Codex policy entries at the provider API model boundary. The
+ * request's reasoning.effort is a separate field; a suffix on a policy entry
+ * still constrains it. */
+function acceptedCodexModelAllows(
+  policy: AcceptedClaudeModelPolicy,
+  model: string,
+  effort: string | null,
+): boolean {
+  const provider = (value: string) => value.includes('/') ? value.slice(0, value.indexOf('/')).toLowerCase() : 'openai';
+  if (!['openai', 'openai-codex'].includes(provider(model))) return false;
+  const canonical = (value: string) => normalizeModelId(resolveCodexModel(value.replace(MODEL_EFFORT_SUFFIX, '')));
+  return policy.models.some((entry) => {
+    if (!['openai', 'openai-codex'].includes(provider(entry)) || canonical(entry) !== canonical(model)) return false;
+    const listedEffort = MODEL_EFFORT_SUFFIX.exec(entry)?.[1]?.toLowerCase();
+    return (!listedEffort || listedEffort === effort) && (!policy.effort || policy.effort.toLowerCase() === effort);
   });
 }
 
@@ -6896,6 +6917,77 @@ export function createInferenceGateway(deps: GatewayDeps) {
     ownerId?: string;
   };
 
+  type AcceptedCodexRequest = {
+    policy: AcceptedClaudeModelPolicy;
+    context: ActiveOperationAttestationContext;
+    requestedModel: string;
+    forwardedEffort: string | null;
+    requestId: string;
+  };
+
+  /** Bound Responses traffic cannot expose a successful head until the final
+   * provider model and usage are durably recorded. Streaming bodies are held
+   * with an explicit cap; an oversized reply fails closed before any 2xx. */
+  function acceptedCodexResponse(
+    request: AcceptedCodexRequest,
+    contentType: string,
+    bufferBody: boolean,
+  ) {
+    const decoder = createCodexProviderCompletionDecoder(contentType);
+    const chunks: Buffer[] = [];
+    let bufferedBytes = 0;
+    return {
+      push(chunk: Uint8Array) {
+        decoder.push(chunk);
+        if (!bufferBody) return;
+        bufferedBytes += chunk.byteLength;
+        if (bufferedBytes > 32 * 1024 * 1024) {
+          throw new Error('accepted Codex response exceeds the attested relay bound');
+        }
+        chunks.push(Buffer.from(chunk));
+      },
+      async finish(): Promise<Buffer[]> {
+        const evidence: CodexProviderCompletionEvidence = decoder.finish();
+        if (!acceptedCodexModelAllows(request.policy, evidence.model, request.forwardedEffort)) {
+          throw new Error('provider returned a model outside the accepted Codex operation policy');
+        }
+        if (!deps.recordAcceptedOperationModelAttestation) {
+          throw new Error('accepted Codex operation attestation writer is unavailable');
+        }
+        await deps.recordAcceptedOperationModelAttestation(request.context, {
+          requestId: request.requestId,
+          providerResponseId: evidence.responseId,
+          backend: 'codex', provider: 'openai',
+          requestedModel: request.requestedModel,
+          actualModel: evidence.model,
+          forwardedEffort: request.forwardedEffort,
+          effortSource: request.forwardedEffort ? 'forwarded-request' : 'unavailable',
+          usage: evidence.usage,
+        });
+        return chunks;
+      },
+    };
+  }
+
+  async function flushAcceptedCodexChunks(res: http.ServerResponse, chunks: Buffer[]): Promise<void> {
+    for (const chunk of chunks) {
+      if (res.destroyed || res.writableEnded) return;
+      if (!res.write(chunk)) {
+        await new Promise<void>((resolve) => {
+          const settle = () => {
+            res.off('drain', settle);
+            res.off('close', settle);
+            res.off('error', settle);
+            resolve();
+          };
+          res.once('drain', settle);
+          res.once('close', settle);
+          res.once('error', settle);
+        });
+      }
+    }
+  }
+
   interface CodexLegacyTransportExecution {
     req: http.IncomingMessage;
     res: http.ServerResponse;
@@ -6903,6 +6995,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string;
     preBody?: Buffer;
     routing: CodexLegacyRouting;
+    acceptedOperation?: AcceptedCodexRequest;
   }
 
   /** Execute a ChatGPT-subscription strategy selected by the static lane
@@ -6922,9 +7015,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
           kernelAdmission,
           execution.routing,
           execution.preBody,
+          execution.acceptedOperation,
         );
         return;
       case 'serveCodexCliBridge':
+        if (execution.acceptedOperation) {
+          sendJson(execution.res, 503, { type: 'error',
+            error: { type: 'api_error', message: 'accepted Codex operation requires provider-authored model attestation' },
+            gateway: true }, { 'x-should-retry': 'false' });
+          return;
+        }
         await serveCodexCliBridge(
           execution.req,
           execution.res,
@@ -7399,6 +7499,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     kernelAdmission: GatewayLaneAdmission,
     routing: CodexLegacyRouting,
     preBody?: Buffer,
+    acceptedOperation?: AcceptedCodexRequest,
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('oauth-http');
@@ -7460,7 +7561,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (!wantStream && !codexOAuthNonStreamEnabled) {
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(providerAdapters.codex.lane, 'cli-exec'),
-        { req, res, cli, url, preBody: bodyBuf, routing },
+        { req, res, cli, url, preBody: bodyBuf, routing, acceptedOperation },
         // Same request, same slot: the OAuth->CLI fallback hands its own admission down
         // rather than minting a second one, so the delegated transport cannot re-admit.
         kernelAdmission,
@@ -7524,6 +7625,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let attemptsSeen = 0;
     let lastAccountId = cli.accountId;
     let cacheProbe: PassThrough | null = null;
+    let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
+    let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
       cacheProbe.end();
@@ -7567,7 +7670,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // Public Luna may be backed by the ChatGPT subscription's hidden reserve
         // tier after a premium-window 429. The adapter keeps the public model in
         // telemetry and only rewrites the retry body at the upstream seam.
-        reserveModel: codexReserveModelFor(bodyModel),
+        // The hidden reserve tier is an upstream model substitution. A bound
+        // operation waits/refuses when its accepted model has no capacity.
+        reserveModel: acceptedOperation ? undefined : codexReserveModelFor(bodyModel),
         tokenTimeoutMs,
         failoverBackoffMs: bare429FailoverBackoffMs,
         ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
@@ -7865,6 +7970,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // served by SSE: withhold the head and aggregate. Error statuses
               // (including a hard-pinned 429) stay byte-transparent.
               if (!wantStream && status >= 200 && status < 300) {
+                if (acceptedOperation) {
+                  acceptedRelay = acceptedCodexResponse(
+                    acceptedOperation, metadata.headers['content-type'] ?? '', false,
+                  );
+                }
                 pendingHead = { status, headers: { ...outHeaders, 'content-type': 'application/json' } };
                 aggregateSource = new PassThrough();
                 aggregateSource.on('error', () => undefined);
@@ -7887,14 +7997,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 aggregatePromise.catch(() => undefined);
                 return;
               }
-              res.writeHead(status, outHeaders);
+              if (acceptedOperation && status >= 200 && status < 300) {
+                acceptedRelay = acceptedCodexResponse(
+                  acceptedOperation, metadata.headers['content-type'] ?? '', true,
+                );
+                pendingAcceptedHead = { status, headers: outHeaders };
+                res.setTimeout(0);
+              } else {
+                res.writeHead(status, outHeaders);
+              }
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);
+              acceptedRelay?.push(chunk);
               if (aggregateSource) {
                 aggregateSource.write(chunk);
                 return;
               }
+              if (acceptedRelay) return;
               // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)` did.
               if (!res.write(chunk)) {
                 await new Promise<void>((resolve) => {
@@ -7912,6 +8032,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
             },
             end: async () => {
               endCacheProbe();
+              if (acceptedRelay && pendingAcceptedHead) {
+                const chunks = await acceptedRelay.finish();
+                res.setTimeout(downstreamIdleMs);
+                res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
+                await flushAcceptedCodexChunks(res, chunks);
+                res.end();
+                return;
+              }
               if (!aggregateSource || !aggregatePromise || !pendingHead) {
                 res.end();
                 return;
@@ -7971,6 +8099,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 if (!res.destroyed && !res.writableEnded) res.destroy();
                 return;
               }
+              if (acceptedRelay) await acceptedRelay.finish();
               res.writeHead(head.status, head.headers);
               res.end(aggregated);
             },
@@ -8137,6 +8266,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // policy gate rather than a second socket read. It also makes an omitted
     // model explicit on the body sent to either bearer or ChatGPT transports.
     let preBody: Buffer | undefined;
+    let requestModel: string | null = null;
+    let requestEffort: string | null = null;
     if (req.method === 'POST' && url.startsWith('/v1/responses')) {
       stageSpan?.beginStage('bodyRead');
       try {
@@ -8185,6 +8316,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
           };
         }
         preBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+        requestModel = parsedModel.id;
+        const forwardedReasoning = parsed.reasoning;
+        requestEffort = forwardedReasoning && typeof forwardedReasoning === 'object' &&
+          !Array.isArray(forwardedReasoning) && typeof (forwardedReasoning as Record<string, unknown>).effort === 'string'
+          ? ((forwardedReasoning as Record<string, string>).effort).trim().toLowerCase() : null;
         stageSpan?.setModel(parsedModel.id);
         stageSpan?.setStreaming(parsed.stream === true);
       } catch (error) {
@@ -8200,6 +8336,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     const adapter = providerAdapters.codex;
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
+    let acceptedOperation: AcceptedCodexRequest | undefined;
     if (preBody && wantOwner && deps.readAcceptedOperationModelPolicy) {
       let operationModelPolicy: ActiveOperationModelPolicyRead;
       try {
@@ -8215,18 +8352,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
       if (operationModelPolicy.status === 'bound') {
-        // TEMPORARY MITIGATION (P-008): the bearer/OAuth relays have not yet
-        // persisted provider-authored response model and usage, and cli-exec
-        // synthesizes its response model from the request. A successful Codex
-        // reply would claim evidence we do not possess. Refuse before account
-        // selection or upstream work until the durable response seam is wired.
-        sendJson(res, 503, { type: 'error',
-          error: { type: 'api_error',
-            message: 'accepted Codex operation requires provider-authored model attestation' },
-          gateway: true }, { 'x-should-retry': 'false' });
-        return;
+        if (!requestModel || !acceptedCodexModelAllows(operationModelPolicy.policy, requestModel, requestEffort)) {
+          sendJson(res, 403, { type: 'error',
+            error: { type: 'permission_error', message: 'requested model or effort is outside the accepted Codex operation policy' },
+            gateway: true }, { 'x-should-retry': 'false' });
+          return;
+        }
+        if (!operationModelPolicy.attestation || !deps.recordAcceptedOperationModelAttestation) {
+          sendJson(res, 503, { type: 'error',
+            error: { type: 'api_error', message: 'accepted Codex operation attestation sink is unavailable' },
+            gateway: true }, { 'x-should-retry': 'false' });
+          return;
+        }
+        acceptedOperation = { policy: operationModelPolicy.policy, context: operationModelPolicy.attestation,
+          requestedModel: requestModel, forwardedEffort: requestEffort, requestId: randomUUID() };
       }
     }
+    const sendUnavailableCodexRoute = (message: string) => {
+      const wait = acceptedOperation?.policy.onUnavailable === 'wait';
+      sendJson(res, wait ? 429 : 503, {
+        type: 'error',
+        error: { type: wait ? 'rate_limit_error' : 'api_error', message },
+        gateway: true,
+      }, wait ? { 'retry-after': '30' } : acceptedOperation ? { 'x-should-retry': 'false' } : {});
+    };
     const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
     const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
     const wantAccount = dynPin
@@ -8300,14 +8449,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         if (!cli) {
           req.resume();
-          sendJson(res, 503, {
-            type: 'error',
-            error: {
-              type: 'api_error',
-              message: adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable',
-            },
-            gateway: true,
-          });
+          sendUnavailableCodexRoute(adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable');
           return;
         }
       } else {
@@ -8352,15 +8494,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           if (!cli) {
             req.resume();
-            sendJson(res, 503, {
-              type: 'error',
-              error: {
-                type: 'api_error',
-                message:
-                  (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable',
-              },
-              gateway: true,
-            });
+            sendUnavailableCodexRoute(
+              (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable',
+            );
             return;
           }
         }
@@ -8411,7 +8547,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
-        { req, res, cli, url, preBody, routing: { hardPin, pinned: cliPin, ownerId: wantOwner } },
+        { req, res, cli, url, preBody, routing: { hardPin, pinned: cliPin, ownerId: wantOwner }, acceptedOperation },
         kernelAdmission,
       );
       return;
@@ -8487,6 +8623,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the same Node stream it piped downstream; the kernel hands chunks to
     // `downstream.write`, so they are tee'd into this PassThrough instead.
     let cacheProbe: PassThrough | null = null;
+    let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
+    let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
       cacheProbe.end();
@@ -8819,7 +8957,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 account: metadata.accountId,
                 status,
               });
-              res.writeHead(status, outHeaders);
+              if (acceptedOperation && status >= 200 && status < 300) {
+                acceptedRelay = acceptedCodexResponse(
+                  acceptedOperation, metadata.headers['content-type'] ?? '', true,
+                );
+                pendingAcceptedHead = { status, headers: outHeaders };
+                // Upstream progress is bounded by the kernel's request/body
+                // deadlines while the success head is intentionally withheld.
+                res.setTimeout(0);
+              } else {
+                res.writeHead(status, outHeaders);
+              }
               cacheProbe = new PassThrough();
               // Keep the tee in flowing mode for the stream's whole life: the observer
               // detaches its own 'data' listener once it has read the usage record, and
@@ -8831,6 +8979,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);
+              if (acceptedRelay) {
+                acceptedRelay.push(chunk);
+                return;
+              }
               // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)`
               // did. The kernel wraps this call in the downstream-idle deadline, so a
               // client that never drains is torn down by that guard rather than hanging.
@@ -8848,8 +9000,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 });
               }
             },
-            end: () => {
+            end: async () => {
               endCacheProbe();
+              if (acceptedRelay && pendingAcceptedHead) {
+                const chunks = await acceptedRelay.finish();
+                res.setTimeout(downstreamIdleMs);
+                res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
+                await flushAcceptedCodexChunks(res, chunks);
+              }
               res.end();
             },
           },

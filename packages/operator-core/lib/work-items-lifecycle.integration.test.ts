@@ -30,6 +30,7 @@ import type { JSONValue } from 'postgres';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -51,8 +52,10 @@ import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestra
 import { projectBlueprintToPg } from './blueprint/project-to-pg';
 import { acceptBlueprintDirectWorkItem, readAcceptedBlueprintDirectWorkItem } from './blueprint/operation-admission';
 import { readActiveOperationModelPolicy } from './blueprint/operation-worker-binding';
-import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from './blueprint/operation-service';
+import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, recordDirectOperationModelAttestation, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from './blueprint/operation-service';
 import { BlueprintOperationClient, createPgBlueprintOperationPort } from './blueprint/operation-client';
+import { createInferenceGateway, OWNER_HEADER } from './inference-gateway/gateway';
+import { createFailoverPool } from './inference-gateway/account-failover';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -230,6 +233,8 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.agent_usage_samples (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, session_id text,
       source text NOT NULL, provider text NOT NULL, model text,
+      input_tokens bigint, output_tokens bigint,
+      cache_read_tokens bigint, cache_creation_tokens bigint,
       usage_provenance jsonb);
   `);
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
@@ -307,9 +312,11 @@ beforeEach(async () => {
 
 describe('blueprint direct-item revision pin', () => {
   it.each([
-    { mode: 'exact', models: ['claude-opus-4-8'] },
-    { mode: 'allowed', models: ['claude-opus-4-8', 'openai/claude-sonnet-4-6'] },
-  ] as const)('admits a $mode model-bound result only with compatible actual request reports', async ({ mode, models }) => {
+    { name: 'exact', mode: 'exact', models: ['claude-opus-4-8'], actual: 'claude-opus-4-8', effort: undefined },
+    { name: 'allowed', mode: 'allowed', models: ['claude-opus-4-8', 'openai/claude-sonnet-4-6'], actual: 'claude-opus-4-8', effort: undefined },
+    { name: 'exact effort', mode: 'exact', models: ['claude-opus-4-8'], actual: 'claude-opus-4-8', effort: 'high' },
+    { name: 'exact 1M alias', mode: 'exact', models: ['opus[1m]'], actual: 'claude-opus-5', effort: undefined },
+  ] as const)('admits a $name model-bound result only with compatible actual request reports', async ({ mode, models, actual, effort }) => {
     const source = {
       id: 'model-result-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
       spine: { edges: { DONE: { to: 'done' } } },
@@ -318,7 +325,7 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object' },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode, models: [...models], onUnavailable: 'fail' } },
+        policy: { model: { mode, models: [...models], ...(effort ? { effort } : {}), onUnavailable: 'fail' } },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -330,6 +337,7 @@ describe('blueprint direct-item revision pin', () => {
       operationId: 'extract', requestKey: 'model-result', input: {},
     });
     if (handle.target.kind !== 'work-item') throw new Error('expected direct target');
+    const itemId = handle.target.id;
     const item = await wi.getWorkItem(handle.target.id, 'papercup');
     const pin = (item?.payload as Record<string, unknown> | null)?.blueprintOperation;
     await db.sql`
@@ -344,40 +352,79 @@ describe('blueprint direct-item revision pin', () => {
     expect(await result()).toMatchObject({ state: 'unavailable' });
 
     const nativeSession = `model-result-${handle.target.id}`;
+    const owner = `model-result-owner-${handle.target.id}`;
     await db.sql`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, feature, agent, session_id, launch_spec)
-      VALUES ('default', ${handle.target.id}, 'claude', ${nativeSession},
+        (workspace_id, feature, agent, session_id, coord_owner_id, launch_spec)
+      VALUES ('default', ${handle.target.id}, 'claude', ${nativeSession}, ${owner},
         ${db.sql.json({ acceptedOperation: { pin: pin as JSONValue } })})
     `;
-    const report = async (model: string | null, modelSource = 'transcript') => {
-      await db.sql`TRUNCATE harness_shared.agent_usage_samples RESTART IDENTITY`;
+    const attest = async (actualModel: string, providerResponseId: string, requestId: string) => {
       await db.sql`
-        INSERT INTO harness_shared.agent_usage_samples
-          (workspace_id, session_id, source, provider, model, usage_provenance)
-        VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', ${model},
-          ${db.sql.json({ grain: 'request', modelSource })})
+        INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+        VALUES ('default', 'blueprint-operation', ${`receipt:${handle.receiptId}`},
+          ${`model-attestation:${providerResponseId}`}, ${db.sql.json({
+            kind: 'model-attestation', receiptId: handle.receiptId, workItemId: itemId,
+            runId: null, ownerId: owner, nativeSessionId: nativeSession, requestId,
+            providerResponseId, backend: 'claude', provider: 'anthropic',
+            requestedModel: actual, actualModel,
+            forwardedEffort: effort ?? null, effortSource: effort ? 'forwarded-request' : 'unavailable', source: 'gateway',
+            usage: { inputTokens: 10, outputTokens: null, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          })})
       `;
     };
-    await report('claude-opus-4-8');
+    const report = async (model: string | null, modelSource = 'transcript') => {
+      await db.sql`TRUNCATE harness_shared.agent_usage_samples RESTART IDENTITY`;
+      await db.sql`DELETE FROM harness_shared.coord_event_log
+        WHERE workspace_id = 'default' AND surface = 'blueprint-operation'
+          AND writer_key = ${`receipt:${handle.receiptId}`} AND body->>'kind' = 'model-attestation'`;
+      await db.sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+           cache_read_tokens, cache_creation_tokens, usage_provenance)
+        VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', ${model}, 10, 2, 0, 0,
+          ${db.sql.json({ grain: 'request', modelSource, sourceId: 'message:msg-model-1' })})
+      `;
+      if (model) await attest(model, 'msg-model-1', '123e4567-e89b-42d3-a456-426614174001');
+    };
+    await report(actual);
     expect(await result()).toMatchObject({ state: 'ready' });
-    await report('anthropic/claude-opus-4-8:high');
+    if (effort) {
+      await db.sql`UPDATE harness_shared.coord_event_log
+        SET body = jsonb_set(body, '{forwardedEffort}', '"low"'::jsonb)
+        WHERE workspace_id = 'default' AND writer_key = ${`receipt:${handle.receiptId}`}
+          AND body->>'kind' = 'model-attestation'`;
+      expect(await result()).toMatchObject({ state: 'unavailable',
+        reason: expect.stringContaining('reasoning effort') });
+    } else {
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET input_tokens = 11
+        WHERE workspace_id = 'default' AND session_id = ${nativeSession}`;
+      expect(await result()).toMatchObject({ state: 'unavailable',
+        reason: expect.stringContaining('usage differs') });
+    }
+    await db.sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = 'default'
+      AND surface = 'blueprint-operation' AND writer_key = ${`receipt:${handle.receiptId}`}
+      AND body->>'kind' = 'model-attestation'`;
+    expect(await result()).toMatchObject({ state: 'unavailable' });
+    await report(`anthropic/${actual}:high`);
     expect(await result()).toMatchObject({ state: 'ready' });
     await report('claude-sonnet-4-6');
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining(`outside the ${mode} policy`) });
-    await report('claude-opus-4-8');
+    await report(actual);
     await db.sql`
       INSERT INTO harness_shared.agent_usage_samples
-        (workspace_id, session_id, source, provider, model, usage_provenance)
-      VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', 'claude-sonnet-4-6',
-        ${db.sql.json({ grain: 'request', modelSource: 'transcript' })})
+        (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, usage_provenance)
+      VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', 'claude-sonnet-4-6', 10, 2, 0, 0,
+        ${db.sql.json({ grain: 'request', modelSource: 'transcript', sourceId: 'message:msg-model-2' })})
     `;
+    await attest('claude-sonnet-4-6', 'msg-model-2', '123e4567-e89b-42d3-a456-426614174002');
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining(`outside the ${mode} policy`) });
     await report(null);
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unreported') });
-    await report('claude-opus-4-8', 'request');
+    await report(actual, 'request');
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unreported') });
-    await report('claude-opus-4-8');
+    await report(actual);
     await db.sql`UPDATE harness_shared.adv_sessions SET agent = 'codex' WHERE session_id = ${nativeSession}`;
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unsupported') });
   });
@@ -437,14 +484,48 @@ describe('blueprint direct-item revision pin', () => {
       `;
       await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
         WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
-      expect(await readActiveOperationModelPolicy('default', owner)).toEqual({
+      const appliedPolicy = await readActiveOperationModelPolicy('default', owner);
+      expect(appliedPolicy).toMatchObject({
         status: 'bound', policy: modelPolicy,
+        attestation: { operationReceiptId: handle.receiptId, nativeSessionId: sessionId,
+          ownerId: owner, workItemId: itemId, harnessSlug: 'papercup' },
       });
+      if (appliedPolicy.status !== 'bound' || !appliedPolicy.attestation) {
+        throw new Error('expected canonical operation attestation context');
+      }
+      const requestEvidence = {
+        requestId: '123e4567-e89b-42d3-a456-426614174000',
+        providerResponseId: `msg-${itemKind}`, backend: 'claude' as const, provider: 'anthropic',
+        requestedModel: 'claude-opus-4-8', actualModel: 'claude-opus-4-8',
+        forwardedEffort: null, effortSource: 'unavailable' as const,
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      };
+      const recorded = await recordDirectOperationModelAttestation(
+        db.sql, appliedPolicy.attestation, requestEvidence,
+      );
+      expect(recorded.replayed).toBe(false);
+      expect(await recordDirectOperationModelAttestation(
+        db.sql, appliedPolicy.attestation, requestEvidence,
+      )).toEqual({ id: recorded.id, replayed: true });
+      await expect(recordDirectOperationModelAttestation(db.sql, appliedPolicy.attestation,
+        { ...requestEvidence, actualModel: 'claude-sonnet-4-6' }))
+        .rejects.toThrow('reused with different input');
+      await expect(recordDirectOperationModelAttestation(db.sql,
+        { ...appliedPolicy.attestation, workItemId: 'WI-other' }, requestEvidence))
+        .rejects.toThrow('current applied operation receipt');
+      expect((await getBlueprintOperationEvents(db.sql, handle, 'model-consumer')).events)
+        .toEqual(expect.arrayContaining([expect.objectContaining({
+          kind: 'model-attestation', receiptId: handle.receiptId,
+          ownerId: owner, nativeSessionId: sessionId,
+          providerResponseId: requestEvidence.providerResponseId,
+          actualModel: 'claude-opus-4-8',
+        })]));
       await db.sql`
         INSERT INTO harness_shared.agent_usage_samples
-          (workspace_id, session_id, source, provider, model, usage_provenance)
-        VALUES ('default', ${sessionId}, 'interactive', 'anthropic', 'claude-opus-4-8',
-          ${db.sql.json({ grain: 'request', modelSource: 'transcript' })})
+          (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+           cache_read_tokens, cache_creation_tokens, usage_provenance)
+        VALUES ('default', ${sessionId}, 'interactive', 'anthropic', 'claude-opus-4-8', 10, 2, 0, 0,
+          ${db.sql.json({ grain: 'request', modelSource: 'transcript', sourceId: `message:msg-${itemKind}` })})
       `;
 
       const close = (outputPayload?: unknown) => wi.setWorkItemState(itemId, 'done', {
@@ -472,6 +553,314 @@ describe('blueprint direct-item revision pin', () => {
       });
     },
   );
+
+  it('persists provider-authored Codex completion evidence on its applied backend receipt', async () => {
+    const modelPolicy = { mode: 'exact' as const, models: ['gpt-5.6-sol'],
+      effort: 'high', onUnavailable: 'fail' as const };
+    const source = { id: 'codex-attestation-fixture', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+    };
+    await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
+      blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
+    const handle = await submitBlueprintOperation(db.sql, { workspaceId: 'default',
+      harnessSlug: 'papercup', callerId: 'codex-consumer', operationId: 'extract',
+      requestKey: 'codex-attestation', input: {} });
+    if (handle.target.kind !== 'work-item') throw new Error('expected direct work item');
+    const itemId = handle.target.id;
+    const item = await wi.getWorkItem(itemId, 'papercup');
+    const pin = (item?.payload as Record<string, unknown>).blueprintOperation;
+    const owner = `codex-model-owner-${itemId}`;
+    const sessionId = `codex-model-session-${itemId}`;
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, feature, agent, session_id, coord_owner_id, role, launch_spec)
+      VALUES ('default', ${itemId}, 'codex', ${sessionId}, ${owner}, 'worker',
+        ${db.sql.json({ workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+          ...revision, specificationArtifact: { configuration: { grants: {} } },
+          acceptedOperation: { kind: 'blueprint-operation-worker', workItemId: itemId,
+            operationId: 'extract', specificationRevision: handle.specificationRevision, pin,
+            identity: { ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+            requiredTools: ['work_items:complete'], modelPolicy,
+            modelSelection: { model: 'gpt-5.6-sol:high', requestedModel: null,
+              backend: 'codex', source: 'operation-policy' } },
+        } as JSONValue)})
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES ('default', ${owner}, ${db.sql.json({ activation: { schemaVersion: 1,
+        attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        desired: revision, prepared: null, applied: revision, status: 'applied',
+      } })})
+    `;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+    const binding = await readActiveOperationModelPolicy('default', owner, 'codex');
+    expect(binding).toMatchObject({ status: 'bound', policy: modelPolicy,
+      attestation: { operationReceiptId: handle.receiptId, nativeSessionId: sessionId } });
+    if (binding.status !== 'bound' || !binding.attestation) throw new Error('missing applied Codex receipt');
+    const evidence = { requestId: '123e4567-e89b-42d3-a456-426614174004',
+      providerResponseId: 'resp-codex-provider', backend: 'codex' as const,
+      provider: 'openai', requestedModel: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol',
+      forwardedEffort: 'high', effortSource: 'forwarded-request' as const,
+      usage: { inputTokens: 120, inputTokenBasis: 'inclusive' as const,
+        outputTokens: 17, cacheReadTokens: 20, cacheCreationTokens: 5 },
+    };
+    const first = await recordDirectOperationModelAttestation(db.sql, binding.attestation, evidence);
+    expect(first.replayed).toBe(false);
+    expect(await recordDirectOperationModelAttestation(db.sql, binding.attestation, evidence))
+      .toEqual({ id: first.id, replayed: true });
+    await expect(recordDirectOperationModelAttestation(db.sql, binding.attestation,
+      { ...evidence, usage: { ...evidence.usage, inputTokenBasis: 'uncached' } }))
+      .rejects.toThrow('token basis differs from backend');
+    expect((await getBlueprintOperationEvents(db.sql, handle, 'codex-consumer')).events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'model-attestation',
+        backend: 'codex', provider: 'openai', actualModel: 'gpt-5.6-sol',
+        usage: expect.objectContaining({ inputTokens: 120, inputTokenBasis: 'inclusive' }) })]));
+    const close = () => wi.setWorkItemState(itemId, 'done', {
+      harness: 'papercup', by: owner, completionAuthority: 'committed', outputPayload: {},
+    });
+    await expect(close()).rejects.toThrow('model attestation failed');
+    await db.sql`
+      INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, usage_provenance)
+      VALUES ('default', ${sessionId}, 'interactive', 'openai', 'gpt-5.6-sol', 95, 17, 20, 5,
+        ${db.sql.json({ grain: 'request', modelSource: 'transcript',
+          sourceId: 'cumulative:0:codex-request-1', inputTotalTokens: 120 })})
+    `;
+    await db.sql`UPDATE harness_shared.coord_event_log
+      SET body = jsonb_set(body, '{actualModel}', '"gpt-5.6-terra"'::jsonb)
+      WHERE workspace_id = 'default' AND writer_key = ${`receipt:${handle.receiptId}`}
+        AND body->>'kind' = 'model-attestation'`;
+    await expect(close()).rejects.toThrow('outside the exact policy');
+    await db.sql`UPDATE harness_shared.coord_event_log
+      SET body = jsonb_set(body, '{actualModel}', '"gpt-5.6-sol"'::jsonb)
+      WHERE workspace_id = 'default' AND writer_key = ${`receipt:${handle.receiptId}`}
+        AND body->>'kind' = 'model-attestation'`;
+    await db.sql`UPDATE harness_shared.agent_usage_samples
+      SET usage_provenance = jsonb_set(usage_provenance, '{inputTotalTokens}', '121'::jsonb)
+      WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+    await expect(close()).rejects.toThrow('model attestation failed');
+    await db.sql`UPDATE harness_shared.agent_usage_samples
+      SET usage_provenance = jsonb_set(usage_provenance, '{inputTotalTokens}', '120'::jsonb)
+      WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+    expect((await close())?.state).toBe('done');
+    expect(await getBlueprintOperationResult(db.sql, handle, 'codex-consumer'))
+      .toMatchObject({ state: 'ready', output: {} });
+  });
+
+  it('joins a real Codex gateway response to its applied receipt and transcript before completion', async () => {
+    const modelPolicy = { mode: 'exact' as const, models: ['gpt-5.6-sol'],
+      effort: 'high', onUnavailable: 'fail' as const };
+    const source = { id: 'codex-gateway-attestation', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+    };
+    await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
+      blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
+    const handle = await submitBlueprintOperation(db.sql, { workspaceId: 'default',
+      harnessSlug: 'papercup', callerId: 'codex-gateway-consumer', operationId: 'extract',
+      requestKey: 'codex-gateway-attestation', input: {} });
+    if (handle.target.kind !== 'work-item') throw new Error('expected direct work item');
+    const itemId = handle.target.id;
+    const item = await wi.getWorkItem(itemId, 'papercup');
+    const pin = (item?.payload as Record<string, unknown>).blueprintOperation;
+    const owner = `codex-gateway-owner-${itemId}`;
+    const sessionId = `codex-gateway-session-${itemId}`;
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, feature, agent, session_id, coord_owner_id, role, launch_spec)
+      VALUES ('default', ${itemId}, 'codex', ${sessionId}, ${owner}, 'worker',
+        ${db.sql.json({ workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+          ...revision, specificationArtifact: { configuration: { grants: {} } },
+          acceptedOperation: { kind: 'blueprint-operation-worker', workItemId: itemId,
+            operationId: 'extract', specificationRevision: handle.specificationRevision, pin,
+            identity: { ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+            requiredTools: ['work_items:complete'], modelPolicy,
+            modelSelection: { model: 'gpt-5.6-sol:high', requestedModel: null,
+              backend: 'codex', source: 'operation-policy' } },
+        } as JSONValue)})
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES ('default', ${owner}, ${db.sql.json({ activation: { schemaVersion: 1,
+        attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        desired: revision, prepared: null, applied: revision, status: 'applied',
+      } })})
+    `;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-codex-gateway', model: 'gpt-5.6-sol', output: [],
+        usage: { input_tokens: 120, output_tokens: 17,
+          input_tokens_details: { cached_tokens: 20, cache_write_tokens: 5 } } }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const upstreamPort = (upstream.address() as { port: number }).port;
+    const gateway = createInferenceGateway({
+      accountId: 'integration', token: async () => 'fixture-token',
+      upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+      openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+      codexPool: createFailoverPool([{ accountId: 'codex-integration', token: async () => 'fixture-codex-token' }]),
+      readAcceptedOperationModelPolicy: (worker, backend) =>
+        readActiveOperationModelPolicy('default', worker, backend),
+      recordAcceptedOperationModelAttestation: async (context, evidence) => {
+        await recordDirectOperationModelAttestation(db.sql, context, evidence);
+      },
+    });
+    try {
+      const port = await gateway.listen(0);
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: owner },
+        body: JSON.stringify({ model: 'gpt-5.6-sol', reasoning: { effort: 'high' },
+          input: 'x', stream: false }),
+      });
+      const responseBody = await response.text();
+      expect(response.status, responseBody).toBe(200);
+      expect((JSON.parse(responseBody) as { id: string }).id).toBe('resp-codex-gateway');
+    } finally {
+      await gateway.close();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+    expect((await getBlueprintOperationEvents(db.sql, handle, 'codex-gateway-consumer')).events)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'model-attestation',
+        backend: 'codex', providerResponseId: 'resp-codex-gateway', actualModel: 'gpt-5.6-sol',
+        usage: expect.objectContaining({ inputTokens: 120, inputTokenBasis: 'inclusive' }) })]));
+    const close = () => wi.setWorkItemState(itemId, 'done', {
+      harness: 'papercup', by: owner, completionAuthority: 'committed', outputPayload: {},
+    });
+    await expect(close()).rejects.toThrow('model attestation failed');
+    await db.sql`
+      INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, usage_provenance)
+      VALUES ('default', ${sessionId}, 'interactive', 'openai', 'gpt-5.6-sol', 95, 17, 20, 5,
+        ${db.sql.json({ grain: 'request', modelSource: 'transcript',
+          sourceId: 'cumulative:0:codex-gateway-request', inputTotalTokens: 120 })})
+    `;
+    expect((await close())?.state).toBe('done');
+    expect(await getBlueprintOperationResult(db.sql, handle, 'codex-gateway-consumer'))
+      .toMatchObject({ state: 'ready', output: {} });
+  });
+
+  it('joins a real gateway response event to request-grain usage before committed completion', async () => {
+    const modelPolicy = { mode: 'exact' as const, models: ['claude-opus-4-8'],
+      effort: 'high', onUnavailable: 'fail' as const };
+    const source = {
+      id: 'gateway-model-attestation', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
+      spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy },
+      }],
+    };
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup',
+      blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }),
+    });
+    const handle = await submitBlueprintOperation(db.sql, {
+      workspaceId: 'default', harnessSlug: 'papercup', callerId: 'model-consumer',
+      operationId: 'extract', requestKey: 'gateway-model-attestation', input: {},
+    });
+    if (handle.target.kind !== 'work-item') throw new Error('expected direct work item');
+    const itemId = handle.target.id;
+    const item = await wi.getWorkItem(itemId, 'papercup');
+    const pin = (item?.payload as Record<string, unknown>).blueprintOperation;
+    const owner = `gateway-model-owner-${itemId}`;
+    const sessionId = `gateway-model-session-${itemId}`;
+    const launchRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, feature, agent, session_id, coord_owner_id, role, launch_spec)
+      VALUES ('default', ${itemId}, 'claude', ${sessionId}, ${owner}, 'worker',
+        ${db.sql.json({ workspaceId: 'default', harnessSlug: 'papercup', role: 'worker',
+          ...launchRevision, specificationArtifact: { configuration: { grants: {} } },
+          acceptedOperation: {
+            kind: 'blueprint-operation-worker', workItemId: itemId, operationId: 'extract',
+            specificationRevision: handle.specificationRevision, pin,
+            identity: { ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+            requiredTools: ['work_items:complete'], modelPolicy,
+            modelSelection: { model: 'claude-opus-4-8:high', requestedModel: null,
+              backend: 'claude', source: 'operation-policy' },
+          },
+        } as JSONValue)})
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES ('default', ${owner}, ${db.sql.json({ activation: { schemaVersion: 1,
+        attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        desired: launchRevision, prepared: null, applied: launchRevision, status: 'applied',
+      } })})
+    `;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
+      WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'msg-gateway-integration', model: 'claude-opus-4-8',
+        usage: { input_tokens: 10, output_tokens: 2,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const upstreamPort = (upstream.address() as { port: number }).port;
+    const gateway = createInferenceGateway({
+      accountId: 'integration', token: async () => 'fixture-token',
+      upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+      readAcceptedOperationModelPolicy: (worker) => readActiveOperationModelPolicy('default', worker),
+      recordAcceptedOperationModelAttestation: async (context, evidence) => {
+        await recordDirectOperationModelAttestation(db.sql, context, evidence);
+      },
+    });
+    try {
+      const port = await gateway.listen(0);
+      const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: owner },
+        body: JSON.stringify({ model: 'claude-opus-4-8', output_config: { effort: 'high' },
+          messages: [{ role: 'user', content: 'x' }] }),
+      });
+      const responseBody = await response.text();
+      expect(response.status, responseBody).toBe(200);
+      expect((JSON.parse(responseBody) as { id: string }).id).toBe('msg-gateway-integration');
+    } finally {
+      await gateway.close();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+    const events = await getBlueprintOperationEvents(db.sql, handle, 'model-consumer');
+    expect(events.events).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: 'model-attestation', providerResponseId: 'msg-gateway-integration',
+      requestedModel: 'claude-opus-4-8', actualModel: 'claude-opus-4-8',
+      forwardedEffort: 'high', nativeSessionId: sessionId,
+      usage: expect.objectContaining({ inputTokens: 10, outputTokens: 2 }),
+    })]));
+    const close = () => wi.setWorkItemState(itemId, 'done', {
+      harness: 'papercup', by: owner, completionAuthority: 'committed', outputPayload: {},
+    });
+    await expect(close()).rejects.toThrow('model attestation failed');
+    await db.sql`
+      INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, source, provider, model, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, usage_provenance)
+      VALUES ('default', ${sessionId}, 'interactive', 'anthropic', 'claude-opus-4-8', 11, 2, 0, 0,
+        ${db.sql.json({ grain: 'request', modelSource: 'transcript',
+          sourceId: 'message:msg-gateway-integration' })})
+    `;
+    await expect(close()).rejects.toThrow('usage differs');
+    await db.sql`UPDATE harness_shared.agent_usage_samples SET input_tokens = 10
+      WHERE workspace_id = 'default' AND session_id = ${sessionId}`;
+    expect((await close())?.state).toBe('done');
+    expect(await getBlueprintOperationResult(db.sql, handle, 'model-consumer'))
+      .toMatchObject({ state: 'ready', output: {} });
+  });
 
   it('shares a durable direct handle across submission replay, scoped status and typed result reads', async () => {
     const source = {

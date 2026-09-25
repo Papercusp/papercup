@@ -45,6 +45,13 @@ export function selectAcceptedOperationWorkerModel(
 ): AcceptedOperationWorkerBinding['modelSelection'] | null {
   const policy = binding?.modelPolicy;
   if (!policy) return null;
+  // OMP can egress directly to several providers, while the canonical
+  // completion verifier currently has provider evidence for Claude/Codex
+  // request grains only. Refuse before account selection or session creation
+  // instead of letting an OMP worker run and fail attestation afterward.
+  if (backend === 'omp') {
+    throw new Error('accepted model policy has no verifiable OMP provider response path');
+  }
   const canonical = (value: string) => normalizeModelId(
     backend === 'codex' ? resolveCodexModel(value) : value,
   );

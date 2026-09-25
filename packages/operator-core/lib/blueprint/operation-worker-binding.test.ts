@@ -132,7 +132,10 @@ describe('accepted blueprint operation worker binding', () => {
     expect(selectAcceptedOperationWorkerModel({ ...binding,
       modelPolicy: { ...binding.modelPolicy, mode: 'preferred' },
     }, null, 'codex')?.model).toBe('gpt-5.6-terra:high');
+    expect(() => selectAcceptedOperationWorkerModel(binding, null, 'omp'))
+      .toThrow('no verifiable OMP provider response path');
     expect(selectAcceptedOperationWorkerModel({ ...binding, modelPolicy: undefined }, 'gpt-5.6-luna', 'codex')).toBeNull();
+    expect(selectAcceptedOperationWorkerModel({ ...binding, modelPolicy: undefined }, 'gpt-5.6-luna', 'omp')).toBeNull();
   });
 
   it('checks the active launch receipt against the immutable accepted model policy', async () => {
