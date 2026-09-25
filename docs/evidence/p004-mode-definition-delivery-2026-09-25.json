@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 native mode definition and applied receipt parity",
+  "framework": "operational",
+  "command": [
+    "ptool mode:get --url=http://127.0.0.1:3170 --json {contracts:true}",
+    "ptool coord:orient --url=http://127.0.0.1:3170 --json {mode:monitor}",
+    "ptool dev:pg_query --url=http://127.0.0.1:3170 --json {session_briefs.activation,adv_sessions.launch_spec}"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T06:20:36Z",
+  "finishedAt": "2026-09-25T06:20:41Z",
+  "summary": "Current-build native session su-9a43633d-fac7-46a7-b714-7bf50b87dc7b: AUTO and GRADE source and definition revisions from mode:get exactly matched the next native orientation; control activation was applied at its desired specification/state pair. Read-only observation only; the separately recorded failed transitions at 2026-09-24T21:56Z and 23:34Z are not erased by this later applied state.",
+  "assertions": [
+    {
+      "id": "auto-source-and-definition-match",
+      "passed": true,
+      "evidence": "mode:get and coord:orient both returned AUTO sourceRevision 669d32f8e3544c97f9c5c3817d5d2c5d31baa62ed49b0bcf334b33881c6ff6f6 and definitionRevision 07cad75a5c6fc359a68ad2fd13e10e241158cd0c24cfaccb526e940099f34759."
+    },
+    {
+      "id": "grade-source-and-definition-match",
+      "passed": true,
+      "evidence": "mode:get and coord:orient both returned GRADE sourceRevision c91900a88ef99d84313b659137fc0c389da4df906182b191dcfd0ef35733997e and definitionRevision 70213dd85c0180ca3015400c8e1538ee8e2cd05af91b829b91047cfad62c3f03."
+    },
+    {
+      "id": "applied-receipt-matches-desired",
+      "passed": true,
+      "evidence": "session_briefs activation.status=applied, prepared=null; desired and applied specificationRevision were c0c10f877bf528444909ac3682101c5b163628b9f0f8311ebc1306c25665c8da and stateRevision were 156c8c07ca0cadc783b3d0dbecdaf4f6d8bcf0d201626b0f419fed16384bb493."
+    },
+    {
+      "id": "applied-specification-has-launch-record",
+      "passed": true,
+      "evidence": "The same owner's adv_sessions row 29899 stores launch_spec.specificationRevision c0c10f877bf528444909ac3682101c5b163628b9f0f8311ebc1306c25665c8da, matching the applied control receipt."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-004",
+  "workItem": "WI-10002959",
+  "operatorPlane": "current-build staging :3170",
+  "limitation": "This sampled an already enabled native session. It did not itself toggle a new mode or replay the earlier transient stack-render failures."
+}
