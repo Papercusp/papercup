@@ -38,3 +38,5 @@ import './ops/aggregate.js';
 import './ops/resolve.js';
 // Composition ops (coord:vote / coord:deliberate / coord:ask) — run a sub-program.
 import './ops/compose.js';
+// Internal accepted-operation program steps; execution is owned by DBOS.
+import './ops/blueprint-child.js';
