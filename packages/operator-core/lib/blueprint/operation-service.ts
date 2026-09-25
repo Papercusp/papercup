@@ -366,7 +366,7 @@ export function getBlueprintOperationEvents(
     const cursor = options.cursor ?? '0';
     if (!/^(0|[1-9][0-9]*)$/.test(cursor)) throw new Error('blueprint operation cursor must be a decimal event id');
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
-    const { status } = await readCanonicalOperation(sql, handle, callerId);
+    const { status } = await readValidatedCanonicalOperation(sql, handle, callerId);
     const rows = handle.target.kind === 'work-item'
       ? await sql<Array<{ id: string | number; ts: Date | string; body: unknown }>>`
           SELECT id, ts, body FROM harness_shared.coord_event_log

@@ -986,6 +986,8 @@ describe('blueprint direct-item revision pin', () => {
     `;
     expect(await getBlueprintOperationStatus(db.sql, first, request.callerId))
       .toMatchObject({ phase: 'terminal', outcome: 'unverified' });
+    expect((await getBlueprintOperationEvents(db.sql, first, request.callerId)).status)
+      .toMatchObject({ phase: 'terminal', outcome: 'unverified' });
     expect(await getBlueprintOperationResult(db.sql, first, request.callerId)).toMatchObject({
       state: 'unavailable', status: { outcome: 'unverified' },
       reason: expect.stringContaining('output is invalid'),
