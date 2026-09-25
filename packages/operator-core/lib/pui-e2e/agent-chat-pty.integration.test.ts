@@ -45,7 +45,7 @@ vi.hoisted(() => { process.env.PAPERCUSP_SYNC_SLOW_RESOLVE_MS ??= '60000'; });
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
-  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'edit' | 'stream' | 'approval'
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'wrapped-question' | 'edit' | 'stream' | 'approval'
     | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
   successText: 'PUI structured engine replied',
   // One entry per native launch: an exact resume names the dead native id in
@@ -304,7 +304,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
               result();
               continue;
             }
-            if (scriptedEngine.mode === 'question') {
+            if (scriptedEngine.mode === 'question' || scriptedEngine.mode === 'wrapped-question') {
               // An inline question, left OPEN: the turn must park until the owner
               // answers, which is the state PUI-QUESTION is about.
               //
@@ -329,8 +329,11 @@ vi.mock('../su-session-claude-engine', async (original) => {
                 options: scriptedEngine.questionOptions.map((label) => ({ label })),
                 multiSelect: false, // -> presentation.kind 'radio' (true would give 'checkbox')
               }];
+              const wrapped = scriptedEngine.mode === 'wrapped-question';
+              const toolName = wrapped ? 'mcp__papercusp-su__tools_invoke' : 'AskUserQuestion';
+              const toolInput = wrapped ? { name: 'AskUserQuestion', args: { questions } } : { questions };
               output.write({ type: 'assistant', session_id: nativeId, message: { content: [
-                { type: 'tool_use', id: scriptedEngine.questionCallId, name: 'AskUserQuestion', input: { questions } },
+                { type: 'tool_use', id: scriptedEngine.questionCallId, name: toolName, input: toolInput },
               ] } });
               // `signal`, `toolUseID` and `requestId` are the required members
               // of the permission context; handleClaude reads nothing else on
@@ -338,20 +341,23 @@ vi.mock('../su-session-claude-engine', async (original) => {
               // id as the tool_use emitted just above — that is how the real
               // provider correlates the two halves, so the fixture must too.
               const controller = new AbortController();
-              void Promise.resolve(sdkOptions.canUseTool?.('AskUserQuestion', { questions }, {
+              void Promise.resolve(sdkOptions.canUseTool?.(toolName, toolInput, {
                 signal: controller.signal,
                 toolUseID: scriptedEngine.questionCallId,
                 requestId: `${scriptedEngine.questionCallId}-request`,
               }))
                 .then((verdict) => {
                   scriptedEngine.questionVerdicts.push(verdict ?? { behavior: 'no-permission-callback' });
-                  const answers = verdict && 'updatedInput' in verdict
+                  const directAnswers = verdict && 'updatedInput' in verdict
                     ? (verdict.updatedInput as { answers?: Record<string, string> } | undefined)?.answers ?? {} : {};
+                  const wrappedAnswer = wrapped && verdict?.behavior === 'deny' && 'message' in verdict
+                    ? String(verdict.message ?? '') : '';
+                  const answerResult = wrapped ? wrappedAnswer : JSON.stringify(directAnswers);
                   // Only now does the turn finish: the owner's answer is what
                   // un-parks it, which is the half a test cannot see from the
                   // card events alone.
                   output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
-                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: JSON.stringify(answers) },
+                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: answerResult },
                   ] } });
                   output.write({ type: 'assistant', session_id: nativeId, message: { content: [
                     { type: 'text', text: scriptedEngine.successText },
@@ -4026,12 +4032,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
   // The question is driven through the engine's real SDK permission callback,
   // so the card under test is minted by the production `SuNativeCards` path
   // that the live provider uses — not by fixture code standing in for it.
-  test('PUI-QUESTION: an inline question is answered in the PUI and the answer reaches the asking turn', async () => {
+  test.each([
+    { route: 'direct', mode: 'question' as const, toolName: 'AskUserQuestion' },
+    { route: 'wrapped', mode: 'wrapped-question' as const, toolName: 'mcp__papercusp-su__tools_invoke' },
+  ])('PUI-QUESTION: a $route question is answered in the PUI and reaches the asking turn', async ({ mode, toolName }) => {
     const prompt = 'PUI question clause probe';
     // Distinct from the default so the completion wait cannot be satisfied by
     // some earlier turn's text sitting in the append-only transcript.
     scriptedEngine.successText = 'PUI question clause answered';
-    scriptedEngine.mode = 'question';
+    scriptedEngine.mode = mode;
     const pane = new PuiPane(bin, operatorPort, home);
     try {
       await openComposer(pane);
@@ -4084,10 +4093,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         interval: 100,
       });
       const verdict = scriptedEngine.questionVerdicts[0];
-      expect(verdict.behavior, JSON.stringify(verdict)).toBe('allow');
-      // Keyed by the exact question text: this is simultaneously the
-      // "not lost" and the "not misattributed to another question" evidence.
-      expect(verdict.updatedInput?.answers).toEqual({ [scriptedEngine.questionPrompt]: 'Change' });
+      if (mode === 'wrapped-question') {
+        // The wrapper cannot execute a client-native question tool. Its denied
+        // result carries the selected answer back into Claude's same turn.
+        expect(verdict.behavior, JSON.stringify(verdict)).toBe('deny');
+        expect(verdict.message).toContain(`"${scriptedEngine.questionPrompt}":"Change"`);
+      } else {
+        expect(verdict.behavior, JSON.stringify(verdict)).toBe('allow');
+        expect(verdict.updatedInput?.answers).toEqual({ [scriptedEngine.questionPrompt]: 'Change' });
+      }
 
       // Falsifier half 3 — "misattributed". The card has to belong to the turn
       // that asked. correlationId is minted by registerCard and is NOT the tool
@@ -4100,7 +4114,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
       );
       const askedBy = scriptedEngine.events.find(
-        (event) => event.type === 'tool' && event.phase === 'started' && event.name === 'AskUserQuestion',
+        (event) => event.type === 'tool' && event.phase === 'started' && event.name === toolName,
       );
       if (opened?.type !== 'card' || closed?.type !== 'card' || askedBy?.type !== 'tool') {
         throw new Error('The question did not produce a matched tool/card open/close triple');
@@ -4126,7 +4140,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
           prompt: card.prompt,
           options: card.presentation.options.map((option) => option.label),
           selected: 'Change',
-          answers: verdict.updatedInput?.answers,
+          answers: mode === 'wrapped-question' ? verdict.message : verdict.updatedInput?.answers,
           turnId: opened.turnId,
           correlationId: card.correlationId,
           cardReplies,
