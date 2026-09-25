@@ -7,7 +7,8 @@ import { blueprintPackageInputs, builtinBlueprintPath, resolveBlueprintSource, r
   type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { buildBlueprintReleaseArchive, commitBlueprintRelease } from './cupboard/blueprint-release';
-import { diffIdentitySpecifications, resolveIdentityStackMutation } from './identity-management';
+import { diffIdentitySpecifications, previewNamedIdentityComposition,
+  resolveIdentityStackMutation, saveNamedIdentityComposition } from './identity-management';
 import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog, listIdentitySources } from './agent-identities/source';
 import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
 import type { SuLaunchSpecRecord } from './su-persona-render';
@@ -49,6 +50,60 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  it('previews and atomically saves a named composition in the existing local blueprint library', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'named-identity-composition-'));
+    const domainId = 'zz-compose-domain';
+    const practiceId = 'zz-compose-practice';
+    const id = 'zz-named-composition';
+    try {
+      for (const [componentId, slot] of [[domainId, 'domain'], [practiceId, 'practice']]) {
+        const dir = join(root, '.papercusp', 'blueprints', componentId!);
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, 'blueprint.yaml'), stringifyYaml({ id: componentId,
+          extends: 'base', version: '1.0.0', slots: [{ slot }] }));
+      }
+      const input = { id, repoDir: root,
+        componentRefs: [`domain:${domainId}`, `practice:${practiceId}`] };
+      const preview = await previewNamedIdentityComposition(input);
+      expect(preview.components.map((component) => component.ref)).toEqual(input.componentRefs);
+      expect(preview.components.map((component) => component.tier)).toEqual(['local', 'local']);
+      expect(preview.preview.launchCompatibility).toMatchObject({ eligible: false,
+        reason: expect.stringContaining('launch selection') });
+      expect(preview.preview.layers.map((layer) => layer.id)).toContain(domainId);
+      const saved = await saveNamedIdentityComposition(input);
+      expect(saved.ok).toBe(true);
+      const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
+      expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });
+      expect((await getIdentitySource(id, { repoDir: root })).ok).toBe(true);
+      expect((await listIdentitySources({ repoDir: root, after: 'zy', limit: 10 })).identities)
+        .toContainEqual(expect.objectContaining({ id, launchCompatibility: {
+          eligible: false, reason: expect.stringContaining('launch selection'),
+        } }));
+      const providerDir = join(root, '.papercusp', 'blueprints', 'zz-provider-parent');
+      const providerChildDir = join(root, '.papercusp', 'blueprints', 'zz-provider-child');
+      await mkdir(providerDir, { recursive: true });
+      await mkdir(providerChildDir, { recursive: true });
+      await writeFile(join(providerDir, 'blueprint.yaml'), stringifyYaml({
+        id: 'zz-provider-parent', extends: 'base', version: '1.0.0',
+        slots: [{ slot: 'domain' }], contributions: [{ id: 'current-brief',
+          purpose: 'operational', source: 'provider', refresh: 'launch', inputKind: 'setting',
+          ref: 'current-brief', producerRef: 'existing.brief' }],
+      }));
+      await writeFile(join(providerChildDir, 'blueprint.yaml'), stringifyYaml({
+        id: 'zz-provider-child', extends: 'zz-provider-parent', version: '1.0.0', slots: [],
+      }));
+      const withProvider = await listIdentitySources({ repoDir: root, after: 'zy', limit: 20 });
+      expect(withProvider.identities.find((entry) => entry.id === 'zz-provider-parent')?.launchCompatibility)
+        .toMatchObject({ eligible: false, reason: expect.stringContaining('producer binding') });
+      expect(withProvider.identities.find((entry) => entry.id === 'zz-provider-child')?.launchCompatibility)
+        .toMatchObject({ eligible: false, reason: expect.stringContaining('launch selection') });
+      await expect(saveNamedIdentityComposition(input)).rejects.toThrow(/already exists/);
+      await expect(previewNamedIdentityComposition({ ...input, id: 'zz-bad-composition',
+        componentRefs: [`practice:${domainId}`] })).rejects.toThrow(/does not declare/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('pins an already-produced structured fleet brief without changing its value or prompt sink', async () => {
     const data = { ok: true, summary: { fleet: 'alpha', members: 2 } };
     const before = JSON.stringify(data);
