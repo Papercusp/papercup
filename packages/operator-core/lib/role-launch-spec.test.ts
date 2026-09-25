@@ -626,6 +626,21 @@ describe('buildRoleLaunchSpec', () => {
         scope: { workspace: 'workspace-a', harness: 'harness-a' },
         observedAt: '2026-09-24T00:00:00.000Z',
       });
+      await expect(bindSelectedIdentityOutputArtifact({
+        identityId: id, repoDir: dir,
+        outputs: [
+          { contributionId: 'current-brief', omission: { reason: 'not-requested' } },
+          { contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' },
+        ],
+        scope: { workspace: 'workspace-a', harness: 'harness-a' },
+        observedAt: '2026-09-24T00:00:00.000Z',
+      })).rejects.toThrow(/declared operational input is absent/);
+      await expect(bindSelectedIdentityOutputArtifact({
+        identityId: id, repoDir: dir,
+        outputs: [{ contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' }],
+        scope: { workspace: 'workspace-a', harness: 'harness-a' },
+        observedAt: '2026-09-24T00:00:00.000Z',
+      })).rejects.toThrow(/declared operational input is absent/);
       const input = {
         promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
         harnessSlug: 'harness-a', role: 'worker', stack: [`domain:${id}`],
