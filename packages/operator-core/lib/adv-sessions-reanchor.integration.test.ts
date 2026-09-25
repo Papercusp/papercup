@@ -150,8 +150,14 @@ describe('active operation worker claim receipt', () => {
       const claimBinding = await readActiveOperationWorkerClaimBinding(WS, owner);
       if (claimBinding.status !== 'bound') throw new Error(JSON.stringify(claimBinding));
       expect(claimBinding).toMatchObject({
-        status: 'bound', binding: {
+        status: 'bound', receipt: {
+          sessionId: id, workspaceId: WS, ownerId: owner,
+          specificationRevision: revision.specificationRevision,
+          stateRevision: revision.stateRevision,
+          acceptedOperation,
+        }, binding: {
           workItemId: acceptedOperation.workItemId,
+          harnessSlug: 'papercusp',
           operationId: acceptedOperation.operationId,
           specificationRevision: acceptedOperation.specificationRevision,
           identity: acceptedOperation.identity,
