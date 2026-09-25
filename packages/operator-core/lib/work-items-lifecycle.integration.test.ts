@@ -46,6 +46,8 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 import { getKeyFireLatch } from './events/await/store';
+import { awaitWorkItemCompletionEvent } from './dbos/work-item-event-await';
+import { completionEventIntentIdOf } from './work-items-events';
 import { setAutoPumpEnabledForTests } from './events/await/engine';
 import { reconcileWorkItemCompletionEventIntents } from './work-item-completion-event-reconciler';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
@@ -988,11 +990,29 @@ describe('blueprint direct-item revision pin', () => {
       state: 'unavailable', status: { outcome: 'unverified' },
       reason: expect.stringContaining('output is invalid'),
     });
+    const completedItemId = first.target.id;
+    const awaitResult = () => awaitWorkItemCompletionEvent({
+      itemId: completedItemId, harnessSlug: 'papercup', workspaceId: 'default',
+      deadlineAt: new Date(Date.now() + 10_000).toISOString(), pollMs: 100,
+    }, {
+      // This fixture writes the terminal row with raw SQL, so publish its
+      // matching intent synthetically while exercising the real result reader.
+      readLatch: async () => ({ lastPayload: {
+        completionIntentId: completionEventIntentIdOf((await wi.getWorkItem(completedItemId, 'papercup'))!),
+      } }) as Awaited<ReturnType<typeof getKeyFireLatch>>,
+    });
+    expect(await awaitResult()).toMatchObject({ kind: 'settled', successful: false });
     await db.sql`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(payload, '{blueprintResult,output,answer}', ${JSON.stringify('done')}::text::jsonb)
        WHERE feature_id = ${first.target.id} AND workspace_id = 'default' AND harness_slug = 'papercup'
     `;
+    expect(await client.result(clientHandle)).toMatchObject({ state: 'ready', output: { answer: 'done' } });
+    expect(await awaitResult()).toMatchObject({ kind: 'settled', successful: true });
+    await expect(wi.setWorkItemState(first.target.id, 'done', {
+      harness: 'papercup', by: request.callerId, completionAuthority: 'committed',
+      outputPayload: { answer: 'changed' },
+    })).rejects.toThrow('accepted operation item requires its applied worker');
     expect(await client.result(clientHandle)).toMatchObject({ state: 'ready', output: { answer: 'done' } });
     expect(await signalBlueprintOperation(db.sql, first, request.callerId, signalInput))
       .toMatchObject({ eventId: signal.eventId, replayed: true, wakeQueued: false });

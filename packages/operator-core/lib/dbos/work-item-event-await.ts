@@ -8,11 +8,13 @@
  * The event is an executor signal; the work item remains the outcome authority.
  */
 import { runWithWorkspace } from '../workspace-als';
+import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem, isSettledWorkItemState, type WorkItem } from '../work-items';
 import { ALL_SUCCESSFUL_STATUSES } from '../work-item-blocking';
 import { completionEventIntentIdOf } from '../work-items-events';
 import { getKeyFireLatch } from '../events/await/store';
 import type { KeyFireRow } from '../events/await/types';
+import { getBlueprintOperationResult, type BlueprintOperationHandle } from '../blueprint/operation-service';
 
 export interface WorkItemEventWaitInput {
   itemId: string;
@@ -48,7 +50,7 @@ function latchedIntent(latch: KeyFireRow | null): string | null {
   return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
-function hasValidatedSuccess(item: WorkItem): boolean {
+async function hasValidatedSuccess(item: WorkItem, input: WorkItemEventWaitInput): Promise<boolean> {
   if (!ALL_SUCCESSFUL_STATUSES.has(item.state) ||
       (item.completionAuthority !== 'committed' && item.completionAuthority !== 'validated')) return false;
   const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
@@ -60,11 +62,33 @@ function hasValidatedSuccess(item: WorkItem): boolean {
       !result || typeof result !== 'object' || Array.isArray(result)) return false;
   const accepted = pin as Record<string, unknown>;
   const completed = result as Record<string, unknown>;
-  return accepted.kind === 'blueprint-operation' &&
-    completed.operationId === accepted.operationId &&
-    completed.specificationRevision === accepted.specificationRevision &&
-    typeof completed.evidenceRef === 'string' && completed.evidenceRef.trim().length > 0 &&
-    Object.prototype.hasOwnProperty.call(completed, 'output');
+  if (accepted.kind !== 'blueprint-operation' || typeof accepted.callerId !== 'string' ||
+      typeof accepted.operationId !== 'string' || typeof accepted.specificationRevision !== 'string' ||
+      typeof accepted.requestKey !== 'string' ||
+      completed.operationId !== accepted.operationId ||
+      completed.specificationRevision !== accepted.specificationRevision ||
+      typeof completed.evidenceRef !== 'string' || !completed.evidenceRef.trim() ||
+      !Object.prototype.hasOwnProperty.call(completed, 'output')) return false;
+
+  // A shaped stored result can still violate its retained output schema or
+  // model policy. Consume the same pinned result as the public operation API.
+  const sql = getOrgPg().sql;
+  const receipts = await runWithWorkspace(input.workspaceId, () => sql<Array<{ id: string | number }>>`
+    SELECT id FROM harness_shared.blueprint_operation_invocations
+     WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
+       AND caller_id = ${accepted.callerId as string} AND operation_id = ${accepted.operationId as string}
+       AND request_key = ${accepted.requestKey as string}
+       AND specification_revision = ${accepted.specificationRevision as string}
+       AND target_kind = 'work-item' AND target_ref = ${item.id}
+  `);
+  const receiptId = Number(receipts[0]?.id);
+  if (!Number.isSafeInteger(receiptId) || receiptId <= 0) return false;
+  const handle: BlueprintOperationHandle = {
+    workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, receiptId,
+    operationId: accepted.operationId, specificationRevision: accepted.specificationRevision,
+    target: { kind: 'work-item', id: item.id },
+  };
+  return (await getBlueprintOperationResult(sql, handle, accepted.callerId)).state === 'ready';
 }
 
 async function defaultReadItem(input: WorkItemEventWaitInput): Promise<WorkItem | null> {
@@ -111,7 +135,7 @@ export async function awaitWorkItemCompletionEvent(
             (!currentIntent || currentIntent === pendingIntent)) {
           return {
             kind: 'settled', itemId: input.itemId, state: current.state,
-            successful: hasValidatedSuccess(current),
+            successful: await hasValidatedSuccess(current, input),
             source: pendingIntent ? 'completion-event' : 'current-state',
             completionIntentId: pendingIntent,
           };
