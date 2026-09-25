@@ -5,6 +5,7 @@ import {
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
+  selectGoalPlacementPlan,
   goalPlanningObligation,
   type GoalPlanningProviderInput,
   waitingOnObligations,
@@ -277,6 +278,16 @@ function portfolio(worklist: GoalPortfolioBrief['worklist'], degradedReasons: st
     degradedReasons,
   };
 }
+
+describe('independent GOAL plan lanes (P-020)', () => {
+  it('offers the next unplaced plan while an earlier independent fleet works', () => {
+    const first = worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'alpha');
+    const second = worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'beta');
+    expect(selectGoalPlacementPlan(portfolio([first, second]))?.slug).toBe('alpha');
+    const working = worklistPlan(placement('working', 'none'), 'alpha');
+    expect(selectGoalPlacementPlan(portfolio([working, second]))?.slug).toBe('beta');
+  });
+});
 
 function launch(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchResolution {
   return {

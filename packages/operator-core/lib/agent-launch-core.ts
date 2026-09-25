@@ -1138,6 +1138,19 @@ export function renderMemberBaseline(opts: {
   ].join('\n');
 }
 
+/** The GOAL holder's live allocation, carried to leaders and every member. */
+export function renderGoalFleetAllocation(opts: {
+  goalId: string;
+  intendedParallelPlanFleets: number | null;
+  fleetMemberTarget?: number;
+}): string {
+  return [
+    '## GOAL parallel allocation',
+    `Goal \`${opts.goalId}\`: intended concurrent plan fleets = ${opts.intendedParallelPlanFleets ?? 'undeclared'}${opts.fleetMemberTarget == null ? '' : `; this fleet member target = ${opts.fleetMemberTarget}`}.`,
+    'The GOAL holder chooses this width from the live portfolio. Max agents and max per fleet are binding ceilings, not targets to fill. Independent plan lanes may run concurrently; ask the holder before changing this allocation.',
+  ].join('\n');
+}
+
 /** Compose a member's launch context = the universal baseline + (optionally) the
  *  leader's per-fleet brief BELOW it (the brief wins on fleet-specifics). Pure +
  *  exported for tests. */
@@ -1148,6 +1161,7 @@ export function composeMemberLaunchContext(opts: {
   count: number;
   carry?: 'warm' | 'cold';
   customBriefText?: string | null;
+  goalAllocation?: { goalId: string; intendedParallelPlanFleets: number | null } | null;
 }): string {
   const baseline = renderMemberBaseline(opts);
   const brief = opts.customBriefText?.trim();
@@ -1159,7 +1173,10 @@ export function composeMemberLaunchContext(opts: {
   // evaluator independence.  Without this final section, a fleet leader could
   // label a member a "non-lineage independent reviewer" and spend a complete
   // grading pass before scorecards:emit finally rejected the member's lineage.
-  return `${composed}\n---\n\n${IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD}\n`;
+  const goalAllocation = opts.goalAllocation
+    ? `\n---\n\n${renderGoalFleetAllocation({ ...opts.goalAllocation, fleetMemberTarget: opts.count })}\n`
+    : '';
+  return `${composed}${goalAllocation}\n---\n\n${IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD}\n`;
 }
 
 /**

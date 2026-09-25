@@ -208,6 +208,14 @@ describe('GoalSettingsSection — an unreadable document is an alarm, not an abs
 });
 
 describe('GoalSettingsSection — writing', () => {
+  it('authors intended plan-fleet width independently of the ceilings', async () => {
+    mount({ maxAgents: 12, maxPerFleet: 5 });
+    open();
+    fireEvent.change(screen.getByLabelText('Concurrent plan fleets intended'), { target: { value: '2' } });
+    fireEvent.click(saveBtn());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(writtenBody().launchSettings).toEqual({ maxAgents: 12, maxPerFleet: 5, intendedParallelPlanFleets: 2 });
+  });
   it('posts the edited document to goals:update', async () => {
     mount({ maxAgents: 3 });
     open();

@@ -16,6 +16,7 @@ import {
   MEMBER_BASELINE_RULES,
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  composeMemberLaunchContext,
   composeModelSpec,
   foldMemberSpec,
   injectAccountArg,
@@ -33,6 +34,20 @@ import {
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+describe('GOAL allocation in every member brief (P-020)', () => {
+  it('carries the holder width after a custom brief without replacing the fleet target', () => {
+    const context = composeMemberLaunchContext({
+      fleetSlug: 'alpha-fleet', plan: 'alpha', count: 3,
+      customBriefText: 'Work P-001. The ceiling is 12.',
+      goalAllocation: { goalId: 'goal-1', intendedParallelPlanFleets: 2 },
+    });
+    expect(context).toContain('one of 3 parallel worker agents');
+    expect(context).toContain('intended concurrent plan fleets = 2; this fleet member target = 3');
+    expect(context.indexOf('GOAL parallel allocation')).toBeGreaterThan(context.indexOf('Work P-001'));
+    expect(context).toContain('ceilings, not targets to fill');
+  });
+});
 
 describe('member baseline causal-evidence contract', () => {
   it('names every v2 field required by successful defect closes', () => {

@@ -652,6 +652,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/release/worktree-coverage-watchdog.ts: this watchdog probe/control operation is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "The import-closure queue is a per-request graph traversal, not resident work: each file enters once, the metafile input population is refused above CLOSURE_FILE_CAP (20,000), and the build has a 20-second deadline. It starts no independent task and is discarded when the one preflight returns.",
+  },
+  {
     path: "packages/operator-core/lib/search/import-graph.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",

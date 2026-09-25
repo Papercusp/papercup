@@ -51,6 +51,13 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
       harness: 'papercusp', role: 'owner', killCriterion: 'stop if the plan no longer serves this goal',
     });
 
+    await sql`UPDATE harness_shared.goals
+      SET launch_settings = ${sql.json({ intendedParallelPlanFleets: 2 })}
+      WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const liveWidth = await readGoalPortfolioBrief({ workspaceId: WS, goalId: GOAL, sql });
+    expect(liveWidth?.launch).toMatchObject({ intendedParallelPlanFleets: 2 });
+    expect(liveWidth?.launch.ceilings).toEqual({ maxAgents: 12, maxPerFleet: 5 });
+
     await sql`UPDATE harness_shared.work_items SET goal_id = NULL
       WHERE workspace_id = ${WS} AND feature_id = 'WI-ladder'`;
     expect((await read())?.attribution?.issues).toEqual(expect.arrayContaining([

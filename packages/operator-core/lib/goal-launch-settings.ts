@@ -384,6 +384,8 @@ export const goalLaunchSettingsSchema = z
       `D-005: ceiling on any ONE fleet pursuing this goal; composes with maxAgents. ` +
         `Omit for the system default (${GOAL_LAUNCH_DEFAULTS.maxPerFleet}); '${UNLIMITED_CEILING}' for no ceiling at all`,
     ),
+    /** D-004/P-020: the holder's intended concurrent PLAN fleets, not an agent ceiling. */
+    intendedParallelPlanFleets: z.number().int().positive().max(100).optional(),
     defaults: launchProfileSchema.optional(),
     /**
      * D-016: keyed by the CLOSED launch-slot vocabulary, never by psu `--role`.
@@ -761,6 +763,8 @@ export interface GoalPortfolioBrief {
   };
   launch: {
     settings: GoalLaunchSettings | null;
+    /** Null is a visible missing holder decision, never inferred from a ceiling. */
+    intendedParallelPlanFleets?: number | null;
     ceilings: { maxAgents: number | null; maxPerFleet: number | null };
     headcount: GoalHeadcount;
   };
@@ -1315,7 +1319,8 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       : []),
     `Drain fleet: ${brief.drainFleet.slug ?? 'not declared'}; live=${brief.drainFleet.live ?? 'unknown'}; working=${brief.drainFleet.working ?? 'unknown'}; control=${brief.drainFleet.controlState ?? 'unknown'}`,
     `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
-    `Launch: headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
+    `Launch: intendedParallelPlanFleets=${brief.launch.intendedParallelPlanFleets ?? brief.launch.settings?.intendedParallelPlanFleets ?? 'undeclared'}; headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
+    `Independent plan-lane placement candidates: ${brief.worklist.filter((p) => p.placement.reconciliation.action === 'launch-plan-fleet').map((p) => p.ref).join(', ') || 'none'}. Verify exact admission, then place admissible lanes concurrently to the chosen width; ceilings are limits, not targets.`,
     // P-004: NAME THE POPULATION. This line lands in the kickoff of every agent
     // that works the goal, which makes it the most-read rendering of this number
     // anywhere — and `spent=` unqualified reads as what the goal has cost. It is
@@ -1862,7 +1867,7 @@ export async function readGoalPortfolioBrief(args: {
         working: fleetRaw ? portfolioNumber(fleetRaw.working) : null,
       },
       queue,
-      launch: { settings: launch.settings, ceilings: launch.ceilings, headcount: launch.headcount },
+      launch: { settings: launch.settings, intendedParallelPlanFleets: launch.settings?.intendedParallelPlanFleets ?? null, ceilings: launch.ceilings, headcount: launch.headcount },
       budget: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
         spentCents: launch.budget?.spentCents ?? null,
@@ -1928,7 +1933,7 @@ export async function readGoalPortfolioBrief(args: {
         claimable: null,
         claimabilityScope: 'unknown',
       },
-      launch: { settings: launch.settings, ceilings: launch.ceilings, headcount: launch.headcount },
+      launch: { settings: launch.settings, intendedParallelPlanFleets: launch.settings?.intendedParallelPlanFleets ?? null, ceilings: launch.ceilings, headcount: launch.headcount },
       budget: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
         spentCents: launch.budget?.spentCents ?? null,

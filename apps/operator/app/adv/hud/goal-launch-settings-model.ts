@@ -82,6 +82,7 @@ export interface LaunchRoleForm extends LaunchProfileForm {
 export interface LaunchSettingsForm {
   maxAgents: string;
   maxPerFleet: string;
+  intendedParallelPlanFleets: string;
   defaults: LaunchProfileForm;
   roles: LaunchRoleForm[];
 }
@@ -219,6 +220,7 @@ export function settingsToForm(s: GoalDetailLaunchSettings | null | undefined): 
   return {
     maxAgents: s?.maxAgents == null ? '' : String(s.maxAgents),
     maxPerFleet: s?.maxPerFleet == null ? '' : String(s.maxPerFleet),
+    intendedParallelPlanFleets: s?.intendedParallelPlanFleets == null ? '' : String(s.intendedParallelPlanFleets),
     defaults: profileToForm(s?.defaults),
     roles: Object.entries(s?.roles ?? {}).map(([role, p]) => ({
       key: nextRoleKey(),
@@ -310,6 +312,15 @@ function parseCeiling(raw: string, label: string): { value?: number | typeof UNL
   return { value: n };
 }
 
+function parseIntendedPlanFleets(raw: string): { value?: number; problem?: string } {
+  const text = raw.trim();
+  if (!text) return {};
+  if (!/^\d+$/.test(text)) return { problem: 'Concurrent plan fleets must be a whole number.' };
+  const value = Number(text);
+  if (value < 1 || value > 100) return { problem: 'Concurrent plan fleets must be between 1 and 100.' };
+  return { value };
+}
+
 /** Is this ceiling field currently set to the explicit no-ceiling? */
 export function isUnlimited(raw: string): boolean {
   return raw.trim().toLowerCase() === UNLIMITED;
@@ -359,6 +370,10 @@ export function formToSettings(form: LaunchSettingsForm): SettingsDocumentResult
   const maxPerFleet = parseCeiling(form.maxPerFleet, 'Max per fleet');
   if (maxPerFleet.problem) problems.push(maxPerFleet.problem);
   else if (maxPerFleet.value !== undefined) doc.maxPerFleet = maxPerFleet.value;
+
+  const intendedPlanFleets = parseIntendedPlanFleets(form.intendedParallelPlanFleets);
+  if (intendedPlanFleets.problem) problems.push(intendedPlanFleets.problem);
+  else if (intendedPlanFleets.value !== undefined) doc.intendedParallelPlanFleets = intendedPlanFleets.value;
 
   const defaults = formToProfile(form.defaults, 'Default');
   problems.push(...defaults.problems);
@@ -472,6 +487,12 @@ export function settingsSummary(
   if (perFleet === UNLIMITED) parts.push('no fleet ceiling');
   else if (typeof perFleet === 'number') parts.push(`${perFleet}/fleet`);
   else if (defaults) parts.push(`${defaults.maxPerFleet}/fleet (default)`);
+
+  if (s?.intendedParallelPlanFleets != null) {
+    parts.push(`${s.intendedParallelPlanFleets} concurrent plan fleet${s.intendedParallelPlanFleets === 1 ? '' : 's'} intended`);
+  } else {
+    parts.push('Plan fleet width undecided');
+  }
 
   const pinned = s?.defaults ? Object.keys(s.defaults).length : 0;
   if (pinned) parts.push(`${pinned} default${pinned === 1 ? '' : 's'}`);

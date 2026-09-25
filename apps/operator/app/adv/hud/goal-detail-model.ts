@@ -220,6 +220,8 @@ export interface GoalDetailLaunchSettings {
   maxAgents?: GoalDetailCeiling | null;
   /** Ceiling on any ONE fleet pursuing it. Composes with maxAgents. */
   maxPerFleet?: GoalDetailCeiling | null;
+  /** Holder-selected concurrent plan fleets. This is intent, not a ceiling. */
+  intendedParallelPlanFleets?: number;
   defaults?: GoalDetailLaunchProfile;
   roles?: Record<string, GoalDetailLaunchProfile>;
 }

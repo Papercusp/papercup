@@ -310,7 +310,7 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     h.finished.mockImplementationOnce(async () => { await settlement; return true; });
     // Invoke only THIS server's registered handler; never send a real signal
     // to the test runner or invoke unrelated process-global signal listeners.
-    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(vi.fn<typeof process.exit>());
     const rejected = expect(child.result).rejects.toThrow('Socket error');
     const closed = once(server, 'close');
     try {
@@ -335,7 +335,7 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
   });
 
   it('exits promptly on shutdown with no active requests', async () => {
-    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(vi.fn<typeof process.exit>());
     const closed = once(server, 'close');
     try {
       shutdown();

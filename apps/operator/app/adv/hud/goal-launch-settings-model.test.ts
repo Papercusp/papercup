@@ -75,6 +75,7 @@ describe('settingsToForm', () => {
     const f = settingsToForm(null);
     expect(f.maxAgents).toBe('');
     expect(f.maxPerFleet).toBe('');
+    expect(f.intendedParallelPlanFleets).toBe('');
     expect(f.defaults.model).toBe('');
     expect(f.roles).toEqual([]);
   });
@@ -88,11 +89,13 @@ describe('settingsToForm', () => {
     const f = settingsToForm({
       maxAgents: 3,
       maxPerFleet: 2,
+      intendedParallelPlanFleets: 4,
       defaults: { model: 'sonnet', carry: 'cold' },
       roles: { engineer: { effort: 'high' } },
     });
     expect(f.maxAgents).toBe('3');
     expect(f.maxPerFleet).toBe('2');
+    expect(f.intendedParallelPlanFleets).toBe('4');
     expect(f.defaults.model).toBe('sonnet');
     expect(f.defaults.carry).toBe('cold');
     expect(f.roles).toHaveLength(1);
@@ -107,6 +110,15 @@ describe('settingsToForm', () => {
 });
 
 describe('formToSettings', () => {
+  it('stores intended concurrent plan fleets as a distinct positive integer', () => {
+    const result = formToSettings(form({ intendedParallelPlanFleets: ' 2 ', maxAgents: '12' }));
+    expect(result.settings).toMatchObject({ intendedParallelPlanFleets: 2, maxAgents: 12 });
+    for (const bad of ['0', '101', '1.5', 'unlimited']) {
+      expect(formToSettings(form({ intendedParallelPlanFleets: bad })).problems).toEqual([
+        expect.stringContaining('Concurrent plan fleets'),
+      ]);
+    }
+  });
   it('clears the document when nothing is pinned', () => {
     // Not `{}` — "no settings" must be ONE state in the database.
     expect(formToSettings(form()).settings).toBeNull();
@@ -349,17 +361,17 @@ describe('settingsSummary', () => {
   it('says the ceiling is unset — not that it is 12 — when no defaults were shipped', () => {
     // A pre-D-015 payload carries no defaults. Printing a number here would be
     // the editor inventing the very value D-011 says it must be told.
-    expect(settingsSummary(null)).toBe('Agent ceiling unset');
+    expect(settingsSummary(null)).toBe('Agent ceiling unset · Plan fleet width undecided');
   });
 
   it('leads with the ceiling in force', () => {
-    expect(settingsSummary({ maxAgents: 3 })).toBe('Max 3 agents');
-    expect(settingsSummary({ maxAgents: 1 })).toBe('Max 1 agent');
+    expect(settingsSummary({ maxAgents: 3 })).toBe('Max 3 agents · Plan fleet width undecided');
+    expect(settingsSummary({ maxAgents: 1 })).toBe('Max 1 agent · Plan fleet width undecided');
   });
 
   it('counts what else is pinned', () => {
     expect(
       settingsSummary({ maxAgents: 3, maxPerFleet: 2, defaults: { model: 'x' }, roles: { e: { effort: 'high' } } }),
-    ).toBe('Max 3 agents · 2/fleet · 1 default · 1 role profile');
+    ).toBe('Max 3 agents · 2/fleet · Plan fleet width undecided · 1 default · 1 role profile');
   });
 });

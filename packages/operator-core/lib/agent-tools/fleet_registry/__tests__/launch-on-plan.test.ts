@@ -1061,7 +1061,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
 
   it('spawns a separate leader when the actual GOAL holder omits leader', async () => {
     goalLaunchReadMock.mockResolvedValue({
-      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      goalId: 'parent-goal', settings: { intendedParallelPlanFleets: 2 }, drainFleetSlug: null,
       degraded: false, degradedReasons: [],
     });
     goalModeSubjectMock.mockResolvedValue('parent-goal');
@@ -1084,6 +1084,11 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     });
     expect(setPresenceFleetMock).not.toHaveBeenCalledWith('ws-1', 'owner-1', expect.anything(), 'leader');
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    const fs = require('node:fs');
+    const allocation = 'intended concurrent plan fleets = 2; this fleet member target = 1';
+    expect(fs.readFileSync(payload.memberLaunchContextPath, 'utf8')).toContain(allocation);
+    expect(fs.readFileSync('/tmp/fleet-launch-ctx-test/launch-context/fleet-steward-delegates-leader-context.md', 'utf8'))
+      .toContain(allocation);
   });
 
   it('refuses actual GOAL self-leadership before fleet writes or spawning', async () => {

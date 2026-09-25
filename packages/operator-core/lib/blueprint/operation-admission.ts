@@ -45,6 +45,26 @@ export interface AcceptBlueprintDirectItemInput {
   callerId?: string;
   /** Stable caller key for concurrent and crash-safe admission replay. */
   requestKey?: string;
+  /** Internal program-child call: use the parent's immutable specification. */
+  expectedSpecificationRevision?: string;
+}
+
+/** A child invocation must keep its parent's definition even if the mutable
+ * blueprint pointer moves before admission or a lost response is replayed. */
+export function selectOperationSpecificationRevision(
+  expected: string | undefined,
+  receipt: string | undefined,
+  current: string | null,
+): string {
+  if (expected !== undefined && !/^[0-9a-f]{64}$/.test(expected)) {
+    throw new Error('expected blueprint operation specification revision is invalid');
+  }
+  if (expected && receipt && expected !== receipt) {
+    throw new Error('blueprint operation receipt differs from the expected specification revision');
+  }
+  const revision = receipt ?? expected ?? current;
+  if (!revision) throw new Error('blueprint operation has no projected specification');
+  return revision;
 }
 
 interface InvocationReceiptRow {
@@ -122,6 +142,10 @@ async function findDirectItemByRequest(
       ? (item.payload as Record<string, unknown>)
       : {};
   const pin = AcceptedOperationPinSchema.parse(payload.blueprintOperation);
+  if (request.expectedSpecificationRevision &&
+      pin.specificationRevision !== request.expectedSpecificationRevision) {
+    throw new Error('recovered blueprint operation differs from the expected specification revision');
+  }
   if (pin.requestFingerprint !== fingerprint || pin.requestKey !== key) {
     throw new Error('blueprint operation request key was reused with different input');
   }
@@ -208,6 +232,10 @@ async function acceptBlueprintDirectWorkItemScoped(
           if (receipt && (receipt.request_fingerprint !== fingerprint || receipt.target_kind !== 'work-item')) {
             throw new Error('blueprint operation request key was reused with different input or target');
           }
+          if (request.expectedSpecificationRevision && receipt?.specification_revision &&
+              receipt.specification_revision !== request.expectedSpecificationRevision) {
+            throw new Error('blueprint operation receipt differs from the expected specification revision');
+          }
           if (receipt?.target_ref) {
             const item = await getWorkItem(receipt.target_ref, request.harnessSlug);
             if (!item) throw new Error('blueprint operation receipt points to a missing work item');
@@ -247,10 +275,12 @@ async function acceptBlueprintDirectWorkItemScoped(
             }
             return recovered;
           }
-          const revision =
-            receipt?.specification_revision ??
-            (await readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug));
-          if (!revision) throw new Error('blueprint operation has no projected specification');
+          const revision = selectOperationSpecificationRevision(
+            request.expectedSpecificationRevision,
+            receipt?.specification_revision,
+            receipt?.specification_revision || request.expectedSpecificationRevision
+              ? null : await readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug),
+          );
           const specification = await readBlueprintSpecificationSnapshot(
             tx,
             request.workspaceId,
@@ -302,8 +332,10 @@ async function acceptBlueprintDirectWorkItemScoped(
         }),
     );
   }
-  const revision = await readBlueprintHashFromPg(sql, request.workspaceId, request.harnessSlug);
-  if (!revision) throw new Error('blueprint operation has no projected specification');
+  const revision = selectOperationSpecificationRevision(
+    request.expectedSpecificationRevision, undefined,
+    request.expectedSpecificationRevision ? null : await readBlueprintHashFromPg(sql, request.workspaceId, request.harnessSlug),
+  );
   const specification = await readBlueprintSpecificationSnapshot(
     sql,
     request.workspaceId,
@@ -342,6 +374,8 @@ export interface AcceptBlueprintPlanRunInput {
   operationId: string;
   requestKey: string;
   input: Record<string, unknown>;
+  /** Internal program-child call: use the parent's immutable specification. */
+  expectedSpecificationRevision?: string;
 }
 
 export interface AcceptedBlueprintPlanRun {
@@ -434,10 +468,12 @@ async function acceptBlueprintPlanRunScoped(
         if (receipt && (receipt.request_fingerprint !== fingerprint || receipt.target_kind !== 'plan')) {
           throw new Error('blueprint operation request key was reused with different input or target');
         }
-        const revision =
-          receipt?.specification_revision ??
-          (await readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug));
-        if (!revision) throw new Error('blueprint operation has no projected specification');
+        const revision = selectOperationSpecificationRevision(
+          request.expectedSpecificationRevision,
+          receipt?.specification_revision,
+          receipt?.specification_revision || request.expectedSpecificationRevision
+            ? null : await readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug),
+        );
         const specification = await readBlueprintSpecificationSnapshot(
           tx,
           request.workspaceId,

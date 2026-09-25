@@ -424,6 +424,23 @@ export default function GoalSettingsSection({
               disabled={busy}
               onChange={(next) => setForm((f) => ({ ...f, maxPerFleet: next }))}
             />
+            <div className="hud-goal__set-field">
+              <label className="hud-goal__set-label" htmlFor={`gs-${goalId}-intendedParallelPlanFleets`}>
+                Concurrent plan fleets intended
+              </label>
+              <input
+                id={`gs-${goalId}-intendedParallelPlanFleets`}
+                className="hud-goal__set-in"
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                value={form.intendedParallelPlanFleets}
+                disabled={busy}
+                onChange={(event) => setForm((f) => ({ ...f, intendedParallelPlanFleets: event.target.value }))}
+              />
+              <span className="hud-goal__set-hint">The holder's chosen number of concurrent plan fleets. The agent ceilings still limit each launch.</span>
+            </div>
           </div>
 
           <h4 className="hud-goal__set-h">Default launch profile</h4>

@@ -155,6 +155,7 @@ import {
   MEMBER_BASELINE_RULES as sharedMemberBaselineRules,
   renderMemberBaseline as sharedRenderMemberBaseline,
   composeMemberLaunchContext as sharedComposeMemberLaunchContext,
+  renderGoalFleetAllocation,
   verifyFreshLaunchStarted,
   modelEffortFromSpec,
   resolveLaunchMode,
@@ -2477,6 +2478,18 @@ export default defineTool({
     if ('error' in agentResolution) return err(agentResolution.error);
     const { agent, model: memberModel, modelSource: memberModelSource } = agentResolution;
     const count = args.count ?? 1;
+    const goalAllocation = goalOverlay.goalId
+      ? {
+          goalId: goalOverlay.goalId,
+          // P-020: intention comes from the live goal settings, never from a ceiling.
+          intendedParallelPlanFleets: goalSettings.settings?.intendedParallelPlanFleets ?? null,
+        }
+      : null;
+    if (goalAllocation?.intendedParallelPlanFleets == null) {
+      if (goalAllocation) goalLaunchNotes.push(
+        `goal ${goalAllocation.goalId} has no intendedParallelPlanFleets decision in live launch settings; set it from the portfolio before treating a ceiling as the desired width.`,
+      );
+    }
 
     // P-003: `plan` is optional. A pure claim-spec fleet launches with no plan — its
     // members self-pull by `claimKinds`, so require a lane when no plan is given (else
@@ -3532,8 +3545,8 @@ export default defineTool({
 
       // The remote brief travels as TEXT inside the signed request; the honoring host
       // composes it under the member baseline itself (delegated-spawn-honor).
-      let remoteBriefText: string | null = null;
-      if (args.launchContext?.trim()) {
+      let remoteBriefText: string | null = args.brief?.trim() || null;
+      if (!remoteBriefText && args.launchContext?.trim()) {
         const rawLaunchContext = args.launchContext.trim();
         if (looksLikeInlineLaunchContextText(rawLaunchContext)) {
           // EI-19276371920501216: this is brief TEXT, not a path — send it as-is
@@ -3546,11 +3559,15 @@ export default defineTool({
             return err(`Could not read launchContext \`${rawLaunchContext}\` for the remote brief: ${e?.message ?? e}`);
           }
         }
-        if (remoteBriefText.length > 8000) {
-          return err(
-            `launchContext is ${remoteBriefText.length} chars — a remote spawn-request brief is capped at 8000 (the member baseline is composed on the honoring host regardless). Trim the brief.`,
-          );
-        }
+      }
+      if (goalAllocation) {
+        const allocation = renderGoalFleetAllocation({ ...goalAllocation, fleetMemberTarget: count });
+        remoteBriefText = [remoteBriefText, allocation].filter(Boolean).join('\n\n');
+      }
+      if (remoteBriefText && remoteBriefText.length > 8000) {
+        return err(
+          `remote launch brief is ${remoteBriefText.length} chars — a remote spawn-request brief is capped at 8000. Trim the custom brief.`,
+        );
       }
 
       // Same atomic idempotency guard as a local wave: a re-fired call must not publish
@@ -4101,6 +4118,7 @@ export default defineTool({
         count,
         carry: args.carry,
         customBriefText: sharedBriefText,
+        goalAllocation,
       });
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       mkdirSync(ctxDir, { recursive: true });
@@ -4179,6 +4197,7 @@ export default defineTool({
             // OWN warm/cold choice shapes ITS baseline, not the fleet-wide default.
             carry: args.members?.[specIndex]?.carry ?? args.carry,
             customBriefText: briefText,
+            goalAllocation,
           });
           const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${specIndex + 1}.md`);
           writeFileSync(ctxPath, composed, 'utf8');
@@ -4854,6 +4873,7 @@ export default defineTool({
           'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
           'you and retains responsibility for portfolio priorities and resource allocation.',
           `Your assigned target is ${count} member seats. Execute the plan within the supplied fleet size and model configuration.`,
+          ...(goalAllocation ? [renderGoalFleetAllocation({ ...goalAllocation, fleetMemberTarget: count })] : []),
           'The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.',
           'Request allocation changes from that steward; do not unilaterally widen the fleet or replace its model choices.',
           'Proceed with execution and member supervision under this assignment.',

@@ -4,10 +4,18 @@
  * project-guide path derivation; the preview/read/write handlers are thin wrappers
  * over `renderSuPlaybook` + fs that the live host exercises.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { __test } from './prompt-studio';
 import promptStudioRoutes from './prompt-studio';
+
+// The repository test harness defaults runtime flags off. This suite exercises the
+// declared loopback tier itself, so keep that tier enabled (and let auth reject the
+// request before any feature-gated handler can run).
+vi.mock('@papercusp/flags/server', async (original) => ({
+  ...(await original<typeof import('@papercusp/flags/server')>()),
+  getFlag: vi.fn().mockResolvedValue(true),
+}));
 
 const { resolveSourcePath, projectGuidePath, PROMPT_SOURCES, PROJECT_GUIDE_ID } = __test;
 const DIR = '/repo/apps/operator/prompts';
@@ -63,18 +71,25 @@ describe('prompt-studio routes — loopback authz boundary (security regression)
   });
 
   it('the mounted stack 403s a non-loopback caller on every route', async () => {
+    // Developer shells may deliberately opt into remote administration. This test
+    // pins the default security boundary, so do not inherit that ambient override.
+    vi.stubEnv('PAPERCUSP_ALLOW_REMOTE_ADMIN', '0');
     const { Hono } = await import('hono');
     const { registerRoute } = await import('../define-route');
     const app = new Hono();
-    for (const r of routes) registerRoute(app, r as never);
-    for (const r of routes) {
-      const init = r.method === 'GET' ? undefined : {
-        method: r.method, body: '{}', headers: { 'content-type': 'application/json' },
-      };
-      const res = await app.request(`http://evil.example.com${r.path}`, init);
-      expect(res.status, `${r.method} ${r.path}`).toBe(403);
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      expect(body?.error).toBe('loopback_only');
+    try {
+      for (const r of routes) registerRoute(app, r as never);
+      for (const r of routes) {
+        const init = r.method === 'GET' ? undefined : {
+          method: r.method, body: '{}', headers: { 'content-type': 'application/json' },
+        };
+        const res = await app.request(`http://evil.example.com${r.path}`, init);
+        expect(res.status, `${r.method} ${r.path}`).toBe(403);
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        expect(body?.error).toBe('loopback_only');
+      }
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
