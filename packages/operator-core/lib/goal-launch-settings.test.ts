@@ -698,6 +698,22 @@ describe('the schema accepts/refuses `headless` and `fleetType` (P-007)', () => 
   });
 });
 
+describe('P-020 intended parallel plan fleets', () => {
+  it('accepts a deliberate width independently of either ceiling', () => {
+    const result = goalLaunchSettingsSchema.safeParse({
+      intendedParallelPlanFleets: 3,
+      maxAgents: 2,
+      maxPerFleet: 1,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.intendedParallelPlanFleets).toBe(3);
+    for (const width of [0, -1, 1.5, 101, '3', 'unlimited']) {
+      expect(goalLaunchSettingsSchema.safeParse({ intendedParallelPlanFleets: width }).success).toBe(false);
+    }
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgents: 12 }).success).toBe(true);
+  });
+});
+
 describe('readGoalLaunchSettings', () => {
   it('reports "none declared" for a NULL column — the common case, not an error', async () => {
     const r = await readGoalLaunchSettings('g1', mockSql({ settings: { g1: null } }));
@@ -1215,6 +1231,12 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
 
     const rendered = renderGoalPortfolioBrief(brief!);
+    expect(rendered).toContain('intendedParallelPlanFleets=undeclared');
+    expect(rendered).toContain('Independent plan-lane placement candidates: plan:papercusp/alpha');
+    expect(renderGoalPortfolioBrief({
+      ...brief!,
+      launch: { ...brief!.launch, settings: { intendedParallelPlanFleets: 2 }, intendedParallelPlanFleets: 2 },
+    })).toContain('intendedParallelPlanFleets=2');
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
     expect(rendered).toContain('Pots: papercusp:owner[kill=stop if no owner]');
     expect(rendered).toContain('Attribution ladder: healthy; checked=1 pot links/1 plans/1 work items');
