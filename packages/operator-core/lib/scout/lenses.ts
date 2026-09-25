@@ -174,6 +174,11 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // so ideation targets measured infrastructure pain directly.
     ['watchdog-health', digest.watchdogHealth ?? []],
     ['pty-host-health', digest.ptyHostHealth ?? []],
+    ['ci-test-health', digest.ciTestHealth ?? []],
+    ['workspace-host-health', digest.workspaceHostHealth ?? []],
+    ['system-health-flap', digest.systemHealthFlaps ?? []],
+    ['rework-lesson', digest.reworkLessons ?? []],
+    ['browser-crash-health', digest.browserCrashHealth ?? []],
     // P-010 (blender-self-learning): the release ship-path incident rides the
     // flatten so ideation targets chronic gate/pipeline pain directly.
     ['gate-pipeline-health', digest.gatePipelineHealth ?? []],
@@ -228,6 +233,16 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Watchdog health (chronic measured infrastructure signal — 15min collectors)';
     case 'pty-host-health':
       return 'PTY host health (persisted delivery failures and recovered retries)';
+    case 'ci-test-health':
+      return 'CI test health (repeated gate file failures and same-commit local divergence)';
+    case 'workspace-host-health':
+      return 'Workspace host health (managed operation failures and later host recovery)';
+    case 'system-health-flap':
+      return 'System health flap (critical transitions and time back to OK)';
+    case 'rework-lesson':
+      return 'Rework lesson (explicit reason attached to a deprecated work item)';
+    case 'browser-crash-health':
+      return 'Browser render crash (redacted local telemetry)';
     case 'gate-pipeline-health':
       return 'Gate / pipeline health (release ship-path — standing reds, promotion/deploy stall, chronic pipeline failures)';
     case 'coord-health':

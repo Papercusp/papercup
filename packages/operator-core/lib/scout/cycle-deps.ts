@@ -665,6 +665,13 @@ export function buildScoutCycleDeps(
       } catch {
         /* best-effort */
       }
+      try {
+        const { buildBrowserCrashHealthLane } = await import('./browser-crash-health-lane');
+        const lane = await buildBrowserCrashHealthLane();
+        if (lane.length > 0) digest.browserCrashHealth = lane;
+      } catch {
+        /* best-effort */
+      }
       // GATE / PIPELINE-HEALTH lane (blender-self-learning-2026-07-12 P-010 /
       // WI-4455): the release ship-path — standing gate reds + stall,
       // promotion/deploy lag, and chronic pipeline_events failures, joined into

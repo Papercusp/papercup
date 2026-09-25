@@ -96,6 +96,8 @@ export type MetaPatternCategory =
   | 'ci-test-health'
   | 'workspace-host-health'
   | 'system-health-flap'
+  | 'rework-lesson'
+  | 'browser-crash-health'
   // blender-self-learning-2026-07-12 P-010: the release pipeline's ship-path
   // health — standing gate reds + stall, promotion/deploy lag, and chronic
   // pipeline_events failure classes, JOINED into one incident (WI-4455).
@@ -201,6 +203,10 @@ export interface CorpusDigest {
   workspaceHostHealth?: MetaPattern[];
   /** Repeated critical health transitions and observed time back to OK. */
   systemHealthFlaps?: MetaPattern[];
+  /** Cause-backed status regression lessons; bare flips stay in reverts only. */
+  reworkLessons?: MetaPattern[];
+  /** Redacted durable render-boundary crashes from the telemetry archive. */
+  browserCrashHealth?: MetaPattern[];
   /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
    *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
    *  chronic pipeline_events failure classes, joined into one incident

@@ -69,6 +69,8 @@ export interface RevertRecord {
   actor?: string | null;
   /** ISO timestamp of the transition. */
   ts: string;
+  /** A reason attached to the terminal deprecation transition, when present. */
+  reason?: string | null;
 }
 
 /**
@@ -227,6 +229,11 @@ const META_PATTERN_CATEGORIES = [
   'niche-map',
   'watchdog-health',
   'pty-host-health',
+  'ci-test-health',
+  'workspace-host-health',
+  'system-health-flap',
+  'rework-lesson',
+  'browser-crash-health',
   'gate-pipeline-health',
   'coord-health',
   'tool-telemetry',
@@ -309,6 +316,16 @@ export const DigestSchema = z.object({
   /** PTY host runtime failures and recovered retries from psu_pty_host_events.
    *  OPTIONAL: populated by the cycle seam, like watchdogHealth. */
   ptyHostHealth: z.array(MetaPatternSchema).optional(),
+  /** CI test-run failure recurrence and same-commit local divergence. */
+  ciTestHealth: z.array(MetaPatternSchema).optional(),
+  /** Managed workspace-host operation failures and later host success. */
+  workspaceHostHealth: z.array(MetaPatternSchema).optional(),
+  /** Repeated critical health transitions and observed time back to OK. */
+  systemHealthFlaps: z.array(MetaPatternSchema).optional(),
+  /** Cause-backed lessons from the existing revert substrate. */
+  reworkLessons: z.array(MetaPatternSchema).optional(),
+  /** Redacted render-boundary crash summaries from local telemetry. */
+  browserCrashHealth: z.array(MetaPatternSchema).optional(),
   /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
    *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
    *  chronic pipeline_events failure classes (WI-4455). OPTIONAL: populated by
@@ -1033,6 +1050,33 @@ function buildReverts(reverts: RevertRecord[], limit: number): MetaPattern[] {
   return finalize(scored, limit);
 }
 
+/** A status flip alone explains no cause. Only explicit, non-generic
+ * deprecation reasons can become grounded ideation lessons. */
+export function buildReworkLessons(reverts: readonly RevertRecord[], limit: number): MetaPattern[] {
+  const causal = reverts
+    .filter((row) => row.to === 'deprecated' && revertWeight(row.from, row.to) > 0)
+    .filter((row) => {
+      const reason = row.reason?.trim();
+      return Boolean(reason && reason.length >= 12 && !/^(?:deprecated|reverted|cancelled|passed|failed)$/i.test(reason));
+    })
+    .sort((a, b) => b.ts.localeCompare(a.ts) || a.workItemId.localeCompare(b.workItemId));
+  const seen = new Set<string>();
+  const out: MetaPattern[] = [];
+  for (const row of causal) {
+    if (seen.has(row.workItemId)) continue;
+    seen.add(row.workItemId);
+    out.push({
+      category: 'rework-lesson',
+      ref: `wi:${row.workItemId}`,
+      summary: `${row.workItemId} deprecated after ${row.from}: ${row.reason!.trim().slice(0, 180)}`,
+      detail: `Reason is the work item's recorded deprecation reason; status transition at ${row.ts}. Inspect the work item before applying this lesson elsewhere.`,
+      weight: Math.min(1, 0.55 + revertWeight(row.from, row.to) / 20),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 /**
  * Severity of one rating — how strongly a measurement signals a problem worth
  * ideating on (rubric-driven-observations P-006). `healthy` = 0 (a healthy
@@ -1209,6 +1253,7 @@ export async function synthesizeStateOfHive(
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
   const capabilityGaps = buildCapabilityGaps(frictionForMining, nowMs, limit);
   const revertPatterns = buildReverts(reverts, limit);
+  const reworkLessons = buildReworkLessons(reverts, limit);
   const rubricRatings = buildRubricRatings(observations, limit);
   const rubricGaps = buildRubricGaps(frictionClusters, frictionById, rubrics, limit);
 
@@ -1242,6 +1287,7 @@ export async function synthesizeStateOfHive(
     chronicDeferrals,
     capabilityGaps,
     reverts: revertPatterns,
+    reworkLessons,
     rubricRatings,
     rubricGaps,
     headline,

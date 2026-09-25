@@ -32,6 +32,7 @@ const { buildPtyHostHealthLane } = await import('./pty-host-health-lane');
 const { buildCiTestHealthLane } = await import('./ci-test-health-lane');
 const { buildWorkspaceHostHealthLane } = await import('./workspace-host-health-lane');
 const { buildSystemHealthFlapLane } = await import('./system-health-flap-lane');
+const { buildBrowserCrashHealthLane } = await import('./browser-crash-health-lane');
 const { synthesizeStateOfHive } = await import('./corpus-digest');
 const { flattenDigest } = await import('./lenses');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -62,6 +63,13 @@ describe('state-of-Hive production readers (real PG)', () => {
         (${WS}, 'papercup', 'F-KILLED', ${T},        'status', '"passed"',     '"deprecated"', 'reviewer'),
         (${WS}, 'papercup', 'F-RECOVER',${T},        'status', '"failing"',    '"todo"',       'worker'),
         (${WS}, 'papercup', 'F-NOISE',  ${T},        'notes',  'old note',     'new note',     'worker')`;
+    await sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, deprecation_reason)
+      VALUES
+        (${WS}, 'papercup', 'F-KILLED', 'Reason-backed killed feature', 'deprecated',
+         'The implementation relied on a stale provider assumption')
+    `;
 
     // — agent_usage_samples spend buckets (NOT NULL: bucket_key/provider/model_class/source). —
     await sql`
@@ -110,6 +118,14 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(sample.from).toBe('passed'); // unquoted (not '"passed"')
     expect(sample.to).toBe('deprecated');
     expect(sample.harness).toBe('papercup');
+    expect(sample.reason).toContain('stale provider assumption');
+    const digest = await synthesizeStateOfHive(readers, { nowMs: T });
+    const lessons = flattenDigest(digest).filter((pattern) => pattern.category === 'rework-lesson');
+    expect(lessons).toContainEqual(expect.objectContaining({
+      ref: 'wi:F-KILLED',
+      summary: expect.stringContaining('stale provider assumption'),
+    }));
+    expect(lessons.some((pattern) => pattern.ref === 'wi:F-REVERT')).toBe(false);
   });
 
   it('CI corpus reader separates repeated gate failures from clean same-commit local divergence', async () => {
@@ -206,6 +222,34 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flattenDigest({
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       systemHealthFlaps: lane,
+    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
+  });
+
+  it('browser crash corpus reader folds only redacted render-boundary reports from the local archive', async () => {
+    const sql = db.adminSql;
+    const payload = {
+      source: 'render-boundary', boundary: 'adv-tab', errorType: 'TypeError',
+      component: 'LearningTab', tab: 'learning',
+      fingerprint: 'adv-tab:TypeError:LearningTab:learning',
+    };
+    await sql`
+      INSERT INTO harness_shared.telemetry_reports_archive
+        (workspace_id, received_at, kind, payload)
+      VALUES
+        (${WS}, '2026-06-08T08:00:00Z', 'crash', ${JSON.stringify(payload)}::text::jsonb),
+        (${WS}, '2026-06-08T09:00:00Z', 'crash', ${JSON.stringify(payload)}::text::jsonb),
+        (${WS}, '2026-06-08T09:01:00Z', 'crash',
+         '{"message":"raw error; no render-boundary source"}'::jsonb)
+    `;
+    const lane = await buildBrowserCrashHealthLane({ workspaceId: WS, nowMs: T });
+    expect(lane).toHaveLength(1);
+    expect(lane[0]).toMatchObject({ category: 'browser-crash-health' });
+    expect(lane[0]?.summary).toContain('2 redacted TypeError render crash report(s)');
+    expect(lane[0]?.detail).toMatch(/telemetry_reports_archive\.id=\d+/);
+    expect(lane[0]?.detail).not.toContain('raw error');
+    expect(flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      browserCrashHealth: lane,
     }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
   });
 
