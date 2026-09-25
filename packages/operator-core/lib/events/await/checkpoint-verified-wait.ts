@@ -39,13 +39,16 @@ function checkpointRunLockRoot(
   pipeline: string,
   snapshot: GitPipelineSnapshot,
 ): string | null {
-  const configuredRoot = snapshot.deploy?.integrationRoot;
+  // The active-run probe already resolved this pipeline's registry root. Its
+  // explicit null is authoritative: do not fall back to the operator deploy
+  // root when a non-default pipeline has no unique mapping.
+  const configuredRoot =
+    'activeRunRoot' in snapshot ? snapshot.activeRunRoot : snapshot.deploy?.integrationRoot;
   if (configuredRoot && pipelineName(configuredRoot) === pipeline) return configuredRoot;
 
   // A missing or mismatched root must degrade to UNKNOWN rather than attach
-  // another pipeline's lock to this wait. The snapshot's deploy state is the
-  // same root used by the pipeline-position lock seam; do not guess from the
-  // process cwd or an environment fallback here.
+  // another pipeline's lock to this wait. Legacy injected snapshots may only
+  // carry deploy state; never guess from the process cwd or environment.
   return null;
 }
 

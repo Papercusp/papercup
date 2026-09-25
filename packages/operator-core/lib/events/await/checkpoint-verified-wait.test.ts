@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 import { checkpointProducerCertificate, observeCheckpointProducer } from './checkpoint-verified-wait';
 import { classifyVerifiedWaitTimeout } from './verified-wait';
@@ -108,6 +108,47 @@ describe('checkpoint verified-wait producer adapter', () => {
       classification: 'progressing',
       nextAction: 're-await',
     });
+  });
+
+  it('probes the resolved non-default pipeline root instead of the operator deploy root', async () => {
+    const current = snapshot({
+      slug: 'sidestage',
+      activeRunRoot: '/workspace/sidestage',
+      deploy: { integrationRoot: '/workspace/papercusp' } as GitPipelineSnapshot['deploy'],
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+    });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'sidestage', candidateSha: 'abc123', ownerId: 'su-1', issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000, verificationDeadlineMs: 2_000, snapshot: current,
+    });
+    const runLock = vi.fn(() => ({ held: true, elapsedSec: 1, pid: 42 }));
+
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current, runLock });
+
+    expect(runLock).toHaveBeenCalledExactlyOnceWith('/workspace/sidestage');
+    expect(observed).toMatchObject({
+      state: 'active',
+      evidence: { active: true, activeSource: 'run-lock', runLockPid: 42 },
+    });
+  });
+
+  it.each([null, '/workspace/other'])('does not probe a fallback root when the resolved root is %s', async (activeRunRoot) => {
+    const current = snapshot({
+      slug: 'sidestage',
+      activeRunRoot,
+      deploy: { integrationRoot: '/workspace/sidestage' } as GitPipelineSnapshot['deploy'],
+      activeRun: null,
+    });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'sidestage', candidateSha: 'abc123', ownerId: 'su-1', issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000, verificationDeadlineMs: 2_000, snapshot: current,
+    });
+    const runLock = vi.fn(() => ({ held: true, elapsedSec: 1, pid: 42 }));
+
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current, runLock });
+
+    expect(runLock).not.toHaveBeenCalled();
+    expect(observed).toMatchObject({ state: 'unknown', evidence: { active: null } });
   });
 
   it('does not fabricate liveness when the live run-lock is not held', async () => {
