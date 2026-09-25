@@ -219,9 +219,22 @@ export async function joinCanonicalPapercuspHive(
     // 1. gh identity — the directory needs an announce identity to wire.
     const id = await resolveGithub();
     if (id.kind !== 'ok') {
-      // No gh yet → park at 0% with the sign-in prompt (banner stays visible), retry.
+      // A transient failure (gh timed out on a starved first boot, /user got no answer)
+      // is not a sign-out: retry in-process like a wiring stall (P-539), or the first
+      // join waits for the next app start (P-007 run #13).
+      if (id.transient) {
+        record('clone', 'running', { percent: 0, detail: 'waiting for GitHub to respond' });
+        return {
+          state: 'skipped',
+          slug: null,
+          reason: `GitHub identity unavailable: ${id.reason ?? 'unknown'}`.slice(0, 200),
+          retryable: true,
+        };
+      }
+      // No gh yet → park at 0% with the sign-in prompt (banner stays visible); the
+      // setup wizard re-triggers the join after sign-in.
       record('clone', 'running', { percent: 0, detail: AWAITING_GH_SIGNIN_DETAIL });
-      return { state: 'skipped', slug: null, reason: 'join awaiting GitHub sign-in' };
+      return { state: 'skipped', slug: null, reason: `join awaiting GitHub sign-in${id.reason ? ` (${id.reason})` : ''}` };
     }
 
     // 2. Wire the directory + subscribe to the canonical invite topic.
