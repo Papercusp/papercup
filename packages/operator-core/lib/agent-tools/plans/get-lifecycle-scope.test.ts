@@ -96,7 +96,8 @@ vi.mock("../../rubrics", () => ({
 vi.mock("../../plan-audits", () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
 }));
-vi.mock("./plan-lifecycle-derivation", () => ({
+vi.mock("./plan-lifecycle-derivation", async (orig) => ({
+  ...await orig<typeof import("./plan-lifecycle-derivation")>(),
   derivePlanLifecycleForRead: M.derivePlanLifecycleForRead,
 }));
 

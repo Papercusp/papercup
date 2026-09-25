@@ -2011,3 +2011,42 @@ passed (19358162). The tracked drop-in matches the installed file byte-for-byte,
 systemd reports the wrapper in ExecStart, and the subsequent configured sync
 completed successfully. These fixes and their source proof do not constitute
 popup acceptance or final promotion.
+
+### P-007 native prefetch result and independent enrichment reads
+
+At23:32Z the unchanged native shell e41628 and SPA938a5191 against staging
+19d7b93dda measured2013ms, failing the1500ms budget. Both private IPC
+descriptors were refreshed against PID4048595 before the run. Log:
+`/tmp/p007-native-prefetch-20260924-2332.log`; acknowledged16-measure result:
+`perfrun-1790292738503-hir31n`. Cumulative request-start was343ms,
+response1657ms, content1702ms, styles1716ms and preview1999ms.
+
+Matching server invocation29485066 took1085ms, with1060.250ms in the plan
+read. Source was76.741ms and lifecycle0.288ms, confirming the pre-resolved
+lifecycle path was used. Issue blocks took319.679ms and test coverage553.648ms;
+linked features19.047ms, rubric/audit46.231ms and stale paths44.243ms. These
+are wall times. Earlier post-carry invocations29479951 and29480469 also had
+source near25ms and lifecycle below1ms, with different slow enrichment stages.
+This proves the extra lifecycle transaction is removed; it does not prove
+native acceptance or a controlled distributional speedup.
+
+The existing getter now overlaps the independent issue-block, linked-feature,
+coverage and Now reads, joins their results before lifecycle, and overlaps
+rubric/audit with stale-path inspection. Query predicates, cache identity,
+selection and advisory failure behavior remain the same. Timing metadata says
+`wall-time-per-stage-overlapping`: stage durations are no longer additive.
+The new controlled rendezvous test holds issue blocks pending and requires
+features/coverage to start before release, then checks returned badges and
+lifecycle freshness. A second case verifies failed badge reads preserve the
+plan and issue blocks. Final lifecycle suite19368600 passed7/0skipped; existing
+shape, item, heading and ship-readiness suites19368590/91/93/94 passed43/0skipped.
+An earlier new-test failure19368592 exposed a partial mock missing the real
+timestamp normalizer; it was corrected before the final pass.
+
+Both staging incidents are now closed with committed completion authority:
+EI-24180022773715880 and EI-24183493174271355. After the initial snapshot
+integration, setup required an adjacent `dependency-generation.sh`; the
+existing snapshot launcher now copies adjacent shell helpers too. Final suite
+19358689 passed10/0skipped, including mutation of that helper while paused.
+Configured staging sync completed0 at23:28:11Z and `/api/health` returned
+HTTP200/19d7b93dda at23:30:24Z. These are staging observations, not shipment.
