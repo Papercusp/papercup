@@ -73,6 +73,23 @@ describe('acceptanceGraderRecovery', () => {
     expect(recovery!.instruction).toMatch(/retry plans:set-plan-status/i);
   });
 
+  it('names assigned graders by owner id and the grading conversation, never "[object Object]"', () => {
+    const recovery = acceptanceGraderRecovery(
+      lifecycle({
+        state: 'assigned',
+        conversationId: 'conv-grading-1',
+        graders: [
+          { ownerId: 'su-grader-a', score: 0.9, liveness: 'live', via: 'floor' },
+          { ownerId: 'su-grader-b', score: 0.4, liveness: 'live', via: 'minimum' },
+        ],
+      }),
+      PAUSED,
+    );
+    expect(recovery!.instruction).toContain('Graders were assigned (su-grader-a, su-grader-b)');
+    expect(recovery!.instruction).toContain('grading conversation conv-grading-1');
+    expect(recovery!.instruction).not.toContain('[object Object]');
+  });
+
   it('reports an unexplained inactive sweep as its own code, without calling it a deliberate hold', () => {
     const recovery = acceptanceGraderRecovery(lifecycle({ state: 'assigned', graders: [] }), INACTIVE);
     expect(recovery).toMatchObject({ code: 'grading_sweep_inactive', sweep: INACTIVE });

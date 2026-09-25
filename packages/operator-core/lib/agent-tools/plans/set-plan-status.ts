@@ -410,10 +410,15 @@ export function acceptanceGraderRecovery(
             `author lineage claim ${id} and grade with scorecards:emit.`;
       break;
     }
-    case 'assigned':
-      route = `Graders were assigned${lifecycle.graders?.length ? ` (${lifecycle.graders.join(', ')})` : ''}; ` +
-        `confirm one picks up the grading conversation, and if none does, ${RETRY}.`;
+    case 'assigned': {
+      // Render owner ids: joining AssignedGrader objects printed "[object Object]",
+      // so the shipper could not tell whom to confirm with.
+      const graders = lifecycle.graders?.map((grader) => grader.ownerId) ?? [];
+      const thread = lifecycle.conversationId ? ` ${lifecycle.conversationId}` : '';
+      route = `Graders were assigned${graders.length ? ` (${graders.join(', ')})` : ''}; ` +
+        `confirm one picks up the grading conversation${thread}, and if none does, ${RETRY}.`;
       break;
+    }
     case 'launched':
       route = lifecycle.agentStarted === false
         ? `A fresh judge was launched but never started; ${RETRY}.`
