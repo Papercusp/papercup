@@ -323,6 +323,36 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'plan-run', status: 'done', outcome: 'partial', outputStored: true }),
       ]));
+
+    const leafOwner = 'leaf-recursion-test';
+    const leafRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-leaf' };
+    const leafPin = { kind: 'blueprint-operation', harnessSlug: HARNESS,
+      operationId: 'leaf-step', specificationRevision: 'c'.repeat(64),
+      operationVersion: '1.0.0', input: {} };
+    const leafSession = await recordAdvSession({ workspaceId: WS, mode: 'console',
+      role: 'worker', coordOwnerId: leafOwner });
+    if (!leafSession) throw new Error('worker session fixture was not recorded');
+    await sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${sql.json({
+      workspaceId: WS, harnessSlug: HARNESS, role: 'worker', ...leafRevision,
+      specificationArtifact: { configuration: { grants: {} } },
+      acceptedOperation: { kind: 'blueprint-operation-worker', workItemId: 'F-leaf',
+        operationId: 'leaf-step', specificationRevision: leafPin.specificationRevision,
+        pin: leafPin,
+        identity: { ref: 'leaf-worker', revision: '1.0.0', contentHash: 'd'.repeat(64) },
+        requiredTools: ['blueprint:submit'] },
+    })} WHERE id = ${leafSession}`;
+    await sql`INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES (${WS}, ${leafOwner}, ${sql.json({ activation: {
+        schemaVersion: 1,
+        attribution: { actorId: leafOwner, principalId: leafOwner, sessionId: leafOwner },
+        desired: leafRevision, prepared: null, applied: leafRevision, status: 'applied',
+      } })})`;
+    await expect(acceptBlueprintPlanRun(sql, { ...request, callerId: leafOwner, requestKey: 'leaf-recursion' }))
+      .rejects.toThrow('plan leaf operation cannot recursively relaunch a plan');
+    const [leafReceipts] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.blueprint_operation_invocations
+       WHERE workspace_id = ${WS} AND caller_id = ${leafOwner}`;
+    expect(leafReceipts.n).toBe(0);
   });
   it('rejects an invalid executable dependency candidate before the instance and ledger transaction lands', async () => {
     const invalidContent = TEMPLATE_CONTENT.replace('blocked-by: P-001', 'blocked-by: P-404');

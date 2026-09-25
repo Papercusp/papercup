@@ -20,6 +20,7 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { mintLegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
+import { acknowledgeActivation, desiredActivation, prepareActivation } from './session-activation';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -128,6 +129,19 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
+  // P-007: claim authority reads the active role receipt. Narrow work-item
+  // fixtures carry only the two columns sets that reader needs.
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      role text, started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz, ended_by text, launch_spec jsonb
+    );
+    CREATE TABLE harness_shared.session_briefs (
+      workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
+      PRIMARY KEY (workspace_id, owner_id)
+    );
+  `).simple();
   // The claim path emits awaited claim/release events and arms lifecycle-bound
   // interests. Keep this throwaway DB on the event schema those side effects
   // actually use; without it, the CAS assertions are obscured by fail-soft
@@ -160,6 +174,8 @@ afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`
     TRUNCATE harness_shared.work_items,
+             harness_shared.adv_sessions,
+             harness_shared.session_briefs,
              harness_shared.event_awaits,
              harness_shared.event_wake_deliveries,
              harness_shared.event_key_fires,
@@ -170,6 +186,171 @@ beforeEach(async () => {
   leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
   leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
+});
+
+describe('blueprint operation claim authority (real PostgreSQL)', () => {
+  const operationRevision = 'c'.repeat(64);
+  const launchRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
+  const pin = () => ({
+    kind: 'blueprint-operation', harnessSlug: H, operationId: 'execute',
+    specificationRevision: operationRevision, operationVersion: '1.0.0', input: {},
+  });
+
+  async function activateWorker(ownerId: string, itemId: string) {
+    const activation = acknowledgeActivation(prepareActivation(desiredActivation(
+      { actorId: ownerId, principalId: ownerId, sessionId: ownerId }, launchRevision,
+    ), launchRevision), launchRevision);
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, coord_owner_id, role, launch_spec)
+      VALUES ('default', ${ownerId}, 'worker', ${db.sql.json({
+        workspaceId: 'default', harnessSlug: H, role: 'worker', ...launchRevision,
+        specificationArtifact: { configuration: { grants: {} } },
+        acceptedOperation: {
+          kind: 'blueprint-operation-worker', workItemId: itemId, operationId: 'execute',
+          specificationRevision: operationRevision,
+          pin: pin(),
+          identity: { ref: 'worker', revision: '1.0.0', contentHash: 'd'.repeat(64) },
+          requiredTools: ['work_items:claim'],
+        },
+      })})
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, control_state)
+      VALUES ('default', ${ownerId}, ${db.sql.json({ activation })})
+    `;
+  }
+
+  it('requires an applied exact worker for pinned feature and issue claims', async () => {
+    await seedFeature('WI-op-feature');
+    await seedIssue('WI-op-issue');
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = 'WI-op-feature'`;
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = 'WI-op-issue'`;
+
+    expect(await wi.claimWorkItem('WI-op-feature', 'ordinary-su', { harness: H })).toBeNull();
+    expect(await wi.claimWorkItem('WI-op-issue', 'ordinary-su', { harness: H })).toBeNull();
+
+    await activateWorker('worker-feature', 'WI-op-feature');
+    expect(await wi.claimWorkItem('WI-op-issue', 'worker-feature', { harness: H })).toBeNull();
+    expect((await wi.claimWorkItem('WI-op-feature', 'worker-feature', { harness: H }))?.assignee)
+      .toBe('worker-feature');
+
+    await activateWorker('worker-issue', 'WI-op-issue');
+    expect((await wi.claimWorkItem('WI-op-issue', 'worker-issue', { harness: H }))?.assignee)
+      .toBe('worker-issue');
+    await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = now() WHERE coord_owner_id = 'worker-issue'`;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-op-issue'`;
+    expect(await wi.claimWorkItem('WI-op-issue', 'worker-issue', { harness: H })).toBeNull();
+  });
+
+  it('filters self-pull atomically to the applied operation item', async () => {
+    await seedFeature('WI-pull-feature');
+    await seedIssue('WI-pull-issue');
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id IN ('WI-pull-feature', 'WI-pull-issue')`;
+
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'ordinary-su' })).toBeNull();
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'ordinary-su' }, 'default')).toBeNull();
+
+    await activateWorker('pull-feature-worker', 'WI-pull-feature');
+    expect((await wi.claimNextWorkItem({ harness: H, assignee: 'pull-feature-worker' }))?.id)
+      .toBe('WI-pull-feature');
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'pull-feature-worker' }, 'default'))
+      .toBeNull();
+
+    await activateWorker('pull-issue-worker', 'WI-pull-issue');
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'pull-issue-worker' }, 'default'))?.id)
+      .toBe('WI-pull-issue');
+  });
+
+  it('fences a receipt that ends or loses activation after admission was read', async () => {
+    const owner = 'worker-stale-read';
+    await seedFeature('WI-stale-receipt');
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = 'WI-stale-receipt'`;
+    await activateWorker(owner, 'WI-stale-receipt');
+    const claims = await import('./blueprint/operation-worker-binding');
+    const read = await claims.readActiveOperationWorkerClaimBinding('default', owner);
+    expect(read.status).toBe('bound');
+    const stillEligible = () => db.sql`
+      SELECT target.feature_id FROM harness_shared.work_items AS target
+       WHERE target.feature_id = 'WI-stale-receipt'
+         AND ${claims.operationWorkerClaimWhereSql(db.sql, read, {
+           payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
+         })}
+    `;
+    expect(await stillEligible()).toHaveLength(1);
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({
+      blueprintOperation: { ...pin(), input: { changed: true } },
+    })} WHERE feature_id = 'WI-stale-receipt'`;
+    expect(await stillEligible()).toHaveLength(0);
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = 'WI-stale-receipt'`;
+    await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = now() WHERE coord_owner_id = ${owner}`;
+    expect(await stillEligible()).toHaveLength(0);
+    await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = NULL WHERE coord_owner_id = ${owner}`;
+    await db.sql`UPDATE harness_shared.session_briefs SET control_state = ${db.sql.json({ activation: {
+      status: 'desired', desired: { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) },
+      prepared: null, applied: null,
+      schemaVersion: 1, attribution: { actorId: owner, principalId: owner, sessionId: owner },
+    } })} WHERE owner_id = ${owner}`;
+    expect(await stillEligible()).toHaveLength(0);
+  });
+
+  it('rejects an old feature holder at the state and completion writer after reassignment', async () => {
+    const id = 'WI-operation-effect';
+    await seedFeature(id);
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = ${id}`;
+    await activateWorker('effect-old', id);
+    await activateWorker('effect-current', id);
+    expect((await wi.claimWorkItem(id, 'effect-old', { harness: H }))?.assignee).toBe('effect-old');
+    expect((await wi.setWorkItemState(id, 'wip', { harness: H, by: 'effect-old' }))?.state).toBe('wip');
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'effect-current' WHERE feature_id = ${id}`;
+
+    await expect(wi.setWorkItemState(id, 'done', {
+      harness: H, by: 'effect-old', completionRef: 'stale result',
+    })).rejects.toThrow('blueprint operation effect refused');
+    expect((await wi.getWorkItem(id, H))?.state).toBe('wip');
+    expect((await wi.setWorkItemState(id, 'done', {
+      harness: H, by: 'effect-current', completionRef: 'current result',
+    }))?.state).toBe('done');
+  });
+
+  it('also fences the direct issue state writer after reassignment', async () => {
+    const id = 'WI-operation-issue-effect';
+    await seedIssue(id);
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = ${id}`;
+    await activateWorker('issue-effect-old', id);
+    await activateWorker('issue-effect-current', id);
+    expect((await wi.claimWorkItem(id, 'issue-effect-old', { harness: H }))?.assignee).toBe('issue-effect-old');
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'issue-effect-current' WHERE feature_id = ${id}`;
+    const { setIssueState } = await import('./issues-engineer');
+
+    await expect(setIssueState(id, 'resolved', 'issue-effect-old', 'stale result'))
+      .rejects.toThrow('blueprint operation effect refused');
+    expect((await wi.getWorkItem(id, H))?.state).toBe('open');
+    expect((await setIssueState(id, 'resolved', 'issue-effect-current', 'current result'))?.state)
+      .toBe('resolved');
+  });
+
+  it('reports pinned claimability for the exact worker and refuses other previews', async () => {
+    const id = 'WI-operation-preview';
+    await seedFeature(id);
+    await seedFeature('WI-ordinary-preview');
+    await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({ blueprintOperation: pin() })}
+      WHERE feature_id = ${id}`;
+    await activateWorker('preview-worker', id);
+
+    expect((await wi.observeWorkItem(id, { harness: H, assignee: 'preview-worker' }))?.available).toBe(true);
+    expect((await wi.observeWorkItem(id, { harness: H, assignee: 'ordinary-su' }))?.operationClaimDenied)
+      .toContain('requires its applied worker');
+    expect((await wi.observeWorkItem('WI-ordinary-preview', { harness: H, assignee: 'preview-worker' }))?.available)
+      .toBe(false);
+  });
 });
 
 describe('EI-22536788145490710: upgrade the installed issue claim guard', () => {

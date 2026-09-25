@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { observeWorkItem } from '../../work-items';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 export default defineTool({
@@ -41,12 +42,16 @@ export default defineTool({
       harness: z.string().max(80).optional(),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),
-  async handler(args) {
+  async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
+    // This read is intentionally open to an unattributed caller. Such a caller
+    // cannot receive a positive preview for a pinned operation item.
+    let assignee: string | undefined;
+    try { assignee = resolveAgentIdentity(ctx).ownerId; } catch { assignee = undefined; }
     const env = await runBulk(
       ids,
       async (id) => {
-        const obs = await observeWorkItem(id, { harness: args.harness });
+        const obs = await observeWorkItem(id, { harness: args.harness, ...(assignee ? { assignee } : {}) });
         return obs
           ? { ...obs, ok: true as const, id }
           : { ok: false as const, id, error: `work_item '${id}' not found` };

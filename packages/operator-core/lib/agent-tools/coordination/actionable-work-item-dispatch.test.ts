@@ -422,7 +422,7 @@ describe('P-001 existing-review recovery baseline', () => {
     expect(d.authorize).toHaveBeenLastCalledWith({
       workItemId: id, target: 'fixture-reviewer', harness: 'email', workspaceId: 'workspace-fixture',
     });
-    expect(d.observe).toHaveBeenLastCalledWith(id, { revalidateHeld: true });
+    expect(d.observe).toHaveBeenLastCalledWith(id, { revalidateHeld: true, assignee: 'fixture-reviewer' });
     expect(d.claim).toHaveBeenCalledTimes(held ? 0 : 1);
     expect(d.wake).toHaveBeenCalledTimes(1);
   });

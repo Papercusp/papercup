@@ -2926,13 +2926,18 @@ export async function claimIssue(
   // fleet mean of ~3 per action.
   // Mirrors releaseIssue's identical pre-read of the BASE work_items table (which sidesteps
   // the engineer_issues view's harness_slug encoding split).
-  const priorRows = await sql<{ taken_by: string | null }[]>`
-    SELECT taken_by
+  const priorRows = await sql<{ taken_by: string | null; harness_slug: string; payload: unknown }[]>`
+    SELECT taken_by, harness_slug, payload
       FROM harness_shared.work_items
      WHERE workspace_id = ${ws}
        AND feature_id = ${id}
        AND item_kind IN ('bug', 'change', 'task')`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
+  const operationClaims = await import('./blueprint/operation-worker-binding');
+  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
+  if (!priorRows[0] || !operationClaims.matchOperationWorkerClaim(operationClaimRead, {
+    id, harness: priorRows[0].harness_slug, payload: priorRows[0].payload,
+  }).allowed) return null;
   // A holder's subject must be captured in the SAME atomic UPDATE as the claim.
   // The watchdog coalescer intentionally refreshes an open issue's visible
   // title/body and watchdogKey; a follow-up completion must not silently treat
@@ -2993,6 +2998,9 @@ export async function claimIssue(
       END,
       assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
+       AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
+         payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
+       })}
        -- EI-15027: a literal 'unassigned' sentinel (case/whitespace-insensitive) — some
        -- federated/legacy writers use it as a "not taken" placeholder instead of NULL/''
        -- (mirrors EI-7939's normalizeTakenBy for the feature-family taken_by column) —
@@ -3365,6 +3373,13 @@ export async function setIssueState(
     }
   }
   const ws = await resolveIssueWorkspace(id);
+  const operationClaims = !opts.skipCompletionGate
+    ? await import('./blueprint/operation-worker-binding') : null;
+  const operationEffectRead = operationClaims
+    ? by
+      ? await operationClaims.readActiveOperationWorkerClaimBinding(ws, by)
+      : { status: 'none' as const }
+    : null;
   const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
   // EI-21184699633369991: work_items:set_state { force:true } accepts a
   // completionRef without structured evidence. Preserve the existing authority
@@ -3414,13 +3429,13 @@ export async function setIssueState(
   let terminalWriteSucceeded = false;
   let terminalWriteWasAttested = false;
   const rows = await boundedOrgTxn(async (tx) => {
-    if (isTerminal) {
-      // Read the holder in the SAME transaction as the terminal UPDATE. The
-      // cached goal must be cleared for the holder that this write actually
-      // released, not for the completion actor (which may be a system path).
-      const prior = await tx<
+    // Lock the canonical row before any state or completion side effect. A
+    // reassignment then waits and observes this write, or wins first and makes
+    // the old worker's effect predicate fail.
+    const prior = await tx<
         {
           taken_by: string | null;
+          harness_slug: string;
           status: string;
           payload: unknown;
           terminal_owner: string | null;
@@ -3428,13 +3443,35 @@ export async function setIssueState(
           authority: string | null;
         }[]
       >`
-        SELECT taken_by, status, payload, terminal_owner, terminal_completion_ref, authority
+        SELECT taken_by, harness_slug, status, payload, terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
            AND origin <> 'remote'
-         FOR UPDATE`;
-      const priorRow = prior[0];
+        FOR UPDATE`;
+    const priorRow = prior[0];
+    if (!priorRow) return [] as IssueRowDb[];
+    if (operationClaims && operationEffectRead) {
+      const harness = priorRow.harness_slug.startsWith('harness:')
+        ? priorRow.harness_slug.slice('harness:'.length) : priorRow.harness_slug;
+      const match = operationClaims.matchOperationWorkerClaim(operationEffectRead, {
+        id, harness, payload: priorRow.payload,
+      });
+      if (!match.allowed || (operationEffectRead.status === 'bound' && priorRow.taken_by !== by)) {
+        throw new Error(`blueprint operation effect refused: ${match.allowed ? 'current claim holder changed' : match.reason}`);
+      }
+    }
+    const currentEffect = operationClaims && operationEffectRead
+      ? tx`EXISTS (
+          SELECT 1 FROM harness_shared.work_items AS wi
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}
+             AND ${operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
+               payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug', holder: 'wi.taken_by',
+             })}
+        )`
+      : tx`TRUE`;
+    if (isTerminal) {
+      // Clear the cached goal for the holder this write actually releases.
       priorAssignee = priorRow?.taken_by ?? null;
 
       // EI-21351699305761113 / EI-18736669939338784: direct issue callers bypass
@@ -3584,6 +3621,7 @@ export async function setIssueState(
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
            AND origin <> 'remote'
+           AND ${currentEffect}
         RETURNING feature_id`;
       if (updated.length === 0) return [] as IssueRowDb[];
       terminalWriteSucceeded = true;
@@ -3606,11 +3644,13 @@ export async function setIssueState(
            SET state = ${state}, assignee = NULL, assigned_at = NULL, last_progress_at = NULL,
                origin = 'local', updated_at = now()
          WHERE workspace_id = ${ws} AND issue_id = ${id}
+           AND ${currentEffect}
         RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     }
     return await tx<IssueRowDb[]>`
       UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
        WHERE workspace_id = ${ws} AND issue_id = ${id}
+         AND ${currentEffect}
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
   });
   if (isTerminal && terminalWriteSucceeded && priorAssignee) {

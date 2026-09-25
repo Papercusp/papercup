@@ -66,6 +66,9 @@ it('the public run handler prepares mappings before real execution and returns t
     ]),
     list: vi.fn().mockResolvedValue([]),
     unattributed: vi.fn().mockResolvedValue(0),
+    // A settled row retires its pending twin; with no retract dependency that step
+    // reports `retraction_unavailable` and the bundle can never be `recorded`.
+    retract: vi.fn(),
   };
   phases.prepare.mockImplementation((request, runId, files, scope) =>
     actual.prepareTestEvidence(request, runId, files, scope, deps));

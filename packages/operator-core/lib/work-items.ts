@@ -3519,6 +3519,23 @@ export async function setWorkItemState(
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  // The feature writer below uses this same receipt inside its UPDATE. Check
+  // before any completion attestation or other pre-write side effect as well.
+  // Trusted recovery paths with skipCompletionGate keep their existing reaper
+  // authority; that option is not exposed as an agent tool argument.
+  const operationClaims = wi.family === 'feature' && !opts.skipCompletionGate
+    ? await import('./blueprint/operation-worker-binding') : null;
+  const operationEffectRead = operationClaims
+    ? opts.by
+      ? await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), opts.by)
+      : { status: 'none' as const }
+    : null;
+  if (operationClaims && operationEffectRead) {
+    const match = operationClaims.matchOperationWorkerClaim(operationEffectRead, wi);
+    if (!match.allowed || (operationEffectRead.status === 'bound' && wi.assignee !== opts.by)) {
+      throw new Error(`blueprint operation effect refused: ${match.allowed ? 'current claim holder changed' : match.reason}`);
+    }
+  }
   const requestedState = state;
   const norm = normalizeWorkItemState(wi.family, state);
   if (norm.ok) {
@@ -4068,6 +4085,10 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${operationClaims && operationEffectRead
+           ? operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
+               payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
+             }) : tx`TRUE`}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`
         : await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
@@ -4076,6 +4097,10 @@ export async function setWorkItemState(
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${operationClaims && operationEffectRead
+           ? operationClaims.operationWorkerEffectWhereSql(tx, operationEffectRead, {
+               payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
+             }) : tx`TRUE`}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`,
     );
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
@@ -5261,6 +5286,9 @@ export async function claimWorkItem(
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     prior = wi;
+    const operationClaims = await import('./blueprint/operation-worker-binding');
+    const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
+    if (!operationClaims.matchOperationWorkerClaim(operationClaimRead, wi).allowed) return null;
     const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
       ? opts.agentReviewAdmission
       : null;
@@ -5306,6 +5334,9 @@ export async function claimWorkItem(
                THEN last_progress_at ELSE NULL END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
+           payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
+         })}
          -- EI-20731607691070897: fromHolder (the CALLER) is the atomic self-held
          -- transfer leg -- see the opts doc on claimWorkItem. When it is absent it
          -- falls back to the assignee, making this disjunct a duplicate of the one
@@ -7462,6 +7493,11 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
+  const operationClaims = await import('./blueprint/operation-worker-binding');
+  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(ws, filter.assignee);
+  if (operationClaimRead.status === 'unavailable') {
+    throw new Error(`operation claim authority unavailable: ${operationClaimRead.reason}`);
+  }
 
   // One feature-family claim attempt, optionally narrowed to `kind` — the shared shape
   // for tier 1 (as the caller asked) and tier 2 (widened, kind stripped).
@@ -7502,6 +7538,9 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
             claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })}
+            AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
+              payload: 'payload', id: 'feature_id', harness: 'harness_slug',
+            })}
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
           -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
@@ -8251,6 +8290,13 @@ export async function claimNextIssueWorkItem(
   // handler and this call — a hard, deterministic, restart-immune false miss (confirmed
   // live 2026-07-17, WI-5261).
   const issueWs = resolveIssuesScopeWorkspace(explicitActiveWorkspaceId || undefined);
+  const operationClaims = await import('./blueprint/operation-worker-binding');
+  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(
+    explicitActiveWorkspaceId, filter.assignee,
+  );
+  if (operationClaimRead.status === 'unavailable') {
+    throw new Error(`operation claim authority unavailable: ${operationClaimRead.reason}`);
+  }
   // Issue-family rows carry harness_slug = 'harness:<slug>' → <slug> (harness-scoped) or
   // 'operator:<workspace_id>' (operator scope, migration 382 — the harness_slug='' sentinel
   // it replaced is gone in current data). EI-5919 / WI-1406: this query used to match ONLY
@@ -8366,6 +8412,9 @@ export async function claimNextIssueWorkItem(
          FROM harness_shared.work_items wi
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
+          AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
+            payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug',
+          })}
           -- WI-4309: narrow to the spec's closed-world id set, when one was extracted.
           AND ${idFilter ? tx`wi.feature_id = ANY(${idFilter}::text[])` : tx`TRUE`}
           -- WI-5258: exclude ids the spec negatively excludes (a not-wrapped id leaf).
@@ -8554,6 +8603,8 @@ export interface WorkItemObservation {
    *  actually succeed. False for both "someone holds it" and "unclaimed but gated". */
   available: boolean;
   claimedBy: string | null;
+  /** Current applied operation receipt prevents this target from claiming. */
+  operationClaimDenied?: string;
   /**
    * EI-7841: true when the item is UNCLAIMED (or revalidateHeld was requested)
    * yet still not-`available` because
@@ -8640,7 +8691,7 @@ export interface WorkItemObservation {
  */
 export async function observeWorkItem(
   id: string,
-  opts: { harness?: string; revalidateHeld?: boolean } = {},
+  opts: { harness?: string; revalidateHeld?: boolean; assignee?: string } = {},
 ): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -8651,6 +8702,21 @@ export async function observeWorkItem(
   // Dispatch replay preserves ownership but must re-read admission/trust/origin.
   // Ordinary rd callers retain the historical holder-only observation contract.
   const checkAdmission = unclaimed || opts.revalidateHeld === true;
+  if (checkAdmission) {
+    const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+      ? wi.payload as Record<string, unknown> : null;
+    if (opts.assignee || payload?.blueprintOperation !== undefined) {
+      const operationClaims = await import('./blueprint/operation-worker-binding');
+      const read = opts.assignee
+        ? await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), opts.assignee)
+        : { status: 'none' as const };
+      const match = operationClaims.matchOperationWorkerClaim(read, wi);
+      if (!match.allowed) return {
+        item: wi, available: false, claimedBy: wi.assignee,
+        gated: true, operationClaimDenied: match.reason,
+      };
+    }
+  }
   if (
     checkAdmission &&
     !(await isWorkItemDuplicateAdmitted(id, {

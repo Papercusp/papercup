@@ -97,10 +97,10 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       expect(helper).toBeTruthy();
       expect(envLine).toBeTruthy();
       const probe = join(work, 'probe.cjs');
-      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT}));`);
+      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR}));`);
       const script = [
         'set -eu', helper,
-        'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"',
+        'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"',
         'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234',
         'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
         'prepare_isolated_workspace', envLine,
@@ -110,7 +110,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry' },
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces') });
+      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes') });
       const registry = JSON.parse(readFileSync(join(work, 'workspaces/registry.json'), 'utf8'));
       expect(registry.current).toBe('verify-tauri-isolated-test');
       expect(registry.workspaces.map((row: { id: string }) => row.id)).toEqual(['verify-tauri-isolated-test']);
@@ -122,10 +122,13 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   it('verifies the running sidecar identity and exports it in both assertion and boot-only handoffs', () => {
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
+    expect(src).toContain('export PAPERCUSP_SU_CODEX_HOMES_DIR="$ISOLATED_CODEX_HOMES_DIR"');
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
+    expect(src).toContain("printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\\n'");
   });
 
   it.each([200, 400])('retains bounded response evidence and browser identity in the real health probe (%i)', async (status) => {

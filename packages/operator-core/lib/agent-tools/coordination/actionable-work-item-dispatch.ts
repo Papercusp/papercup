@@ -149,7 +149,7 @@ export interface ActionableWorkItemDispatchResult {
 }
 
 export interface ActionableWorkItemDispatchDeps {
-  observe: (id: string, opts: { harness?: string; revalidateHeld?: boolean }) => Promise<WorkItemObservation | null>;
+  observe: (id: string, opts: { harness?: string; revalidateHeld?: boolean; assignee?: string }) => Promise<WorkItemObservation | null>;
   authorize: typeof authorizeWorkItemDispatch;
   claim: (
     id: string,
@@ -310,7 +310,9 @@ async function classifyOne(
 > {
   let observed: WorkItemObservation | null;
   try {
-    observed = await deps.observe(workItemId, { ...(harness ? { harness } : {}), revalidateHeld: true });
+    observed = await deps.observe(workItemId, {
+      ...(harness ? { harness } : {}), revalidateHeld: true, assignee: targetAgent,
+    });
   } catch (error) {
     return {
       kind: 'skip',
@@ -468,7 +470,9 @@ async function classifyOne(
       skipped: {
         workItemId,
         code: observed.gated ? 'admission_gated' : 'read_failed',
-        reason: observed.gated
+        reason: observed.operationClaimDenied
+          ? `operation claim authority: ${observed.operationClaimDenied}`
+          : observed.gated
           ? claimFloor
             ? claimFloorReason(claimFloor)
             : admissionPending
