@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RetractSpecEvidenceOptions } from '../plans/spec-evidence-store';
+import { listSpecEvidence, type RetractSpecEvidenceOptions } from '../plans/spec-evidence-store';
 import {
   deferredTestEvidenceRecoveryBundle,
   prepareTestEvidence,
@@ -22,6 +22,7 @@ import type { RunSnapshot } from '../../testing-run-store';
  * spread another helper's result; the union stays in use wherever a caller really accepts both.
  */
 type TestFilesRunResult = Extract<TestFilesCoreResult, { error?: undefined }>;
+type ListedSpecEvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 
 const runId = 'ca5fce52-7c67-4d38-8c26-96a952f6a2a2';
 const scope = { workspaceId: 'ws', harnessSlug: 'h1', actorId: 'su-test', root: '/repo' };
@@ -37,7 +38,7 @@ const deps = () => ({
   bind: vi.fn().mockResolvedValue({ status: 'created', id: 1 }),
   measure: vi.fn().mockResolvedValue({ sourceFingerprint: 'source-before', testFingerprint: 'test-before' }),
   ledger: vi.fn().mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass', finished_at: '2026-09-08T00:00:00Z' }]),
-  list: vi.fn().mockResolvedValue([]),
+  list: vi.fn<typeof listSpecEvidence>().mockResolvedValue([]),
   unattributed: vi.fn().mockResolvedValue(0),
   runStatus: vi.fn(async (_runId: string): Promise<RunSnapshot | null> => null),
   retract: vi.fn(async (options: RetractSpecEvidenceOptions) => ({
@@ -302,10 +303,26 @@ describe('test-time evidence continuity', () => {
       originRunId: runId, runId: detached }, scope, d) };
   }
 
-  const pendingEvidenceRow = (id: number, details: unknown) => ({
+  const pendingEvidenceRow = (id: number, details: Record<string, unknown>): ListedSpecEvidenceRow => ({
     id, workItemId: 'WI-1', planSlug: 'p1', specId: 'R-1', specRevision: 2, evidenceKind: 'test',
     evidenceRef: `test-run-group:${runId}:0`, testRunId: null, details,
-    fingerprints: { sourceFingerprint: 'source-before', testFingerprint: 'test-before' },
+    sourceValId: null, currentRevision: 2, specFingerprint: 'spec-fingerprint',
+    fingerprints: {
+      sourceFingerprint: 'source-before', testFingerprint: 'test-before',
+      fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
+    },
+    coverageEvidenceRef: null, observedAt: '2026-09-24T00:00:00.000Z',
+    bindingFingerprint: `binding-${id}`, createdBy: 'su-test', createdAt: '2026-09-24T00:00:00.000Z',
+    currentness: {
+      overall: 'unknown',
+      dimensions: {
+        spec: 'current', source: 'current', test: 'current', fixture: 'not-applicable',
+        rubric: 'not-applicable', environment: 'not-applicable',
+        coverageEvidence: 'not-applicable', testRun: 'not-applicable',
+      },
+      staleReasons: [], unknownReasons: ['fixture'], comparisonSupplied: false,
+      provenance: 'not-supplied',
+    },
   });
 
   it('retires pending rows for a detached run that terminated before a file-level ledger result', async () => {
@@ -319,7 +336,7 @@ describe('test-time evidence continuity', () => {
     d.list.mockResolvedValue([
       pendingEvidenceRow(1, initial.details),
       pendingEvidenceRow(2, detachedTwin),
-    ] as never);
+    ]);
     d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'fail', 143));
 
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
@@ -340,7 +357,7 @@ describe('test-time evidence continuity', () => {
     d.unattributed.mockResolvedValue(0);
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
     const initial = d.bind.mock.calls[0]![0];
-    d.list.mockResolvedValue([pendingEvidenceRow(1, initial.details)] as never);
+    d.list.mockResolvedValue([pendingEvidenceRow(1, initial.details)]);
     d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'running', null, null));
 
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
@@ -570,20 +587,39 @@ describe('failed-scenario rerun scope (SPEC-P006-FAILED-SCENARIO-RERUN)', () => 
     testNamePattern: 'recover' });
 
   /** What a PRIOR full-matrix run left behind as evidence for the remaining scenarios. */
-  const priorMatrixEvidence = (fingerprints: { sourceFingerprint: string; testFingerprint: string }) => ([{
-    id: 7, specId: matrix.specId, specRevision: matrix.specRevision,
+  const priorMatrixEvidence = (
+    fingerprints: { sourceFingerprint: string; testFingerprint: string },
+  ): ListedSpecEvidenceRow[] => ([{
+    id: 7, workItemId: 'WI-1', planSlug: 'p1', specId: matrix.specId,
+    sourceValId: null, specRevision: matrix.specRevision, currentRevision: matrix.specRevision,
+    specFingerprint: 'matrix-spec-fingerprint',
     evidenceKind: 'test', evidenceRef: 'test-run-group:00000000-0000-4000-8000-00000000prio:0',
-    testRunId: 41, coverageEvidenceRef: null, fingerprints,
+    testRunId: 41, coverageEvidenceRef: null,
+    fingerprints: {
+      ...fingerprints, fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
+    },
     details: {
       testExecution: { schemaVersion: 1, phase: 'settled', binding: matrix },
       adequacy: { outcome: 'pass', executed: true, scenarioIds: matrix.scenarioIds },
+    },
+    observedAt: '2026-09-24T00:00:00.000Z', bindingFingerprint: 'matrix-binding',
+    createdBy: 'su-test', createdAt: '2026-09-24T00:00:00.000Z',
+    currentness: {
+      overall: 'current',
+      dimensions: {
+        spec: 'current', source: 'current', test: 'current', fixture: 'not-applicable',
+        rubric: 'not-applicable', environment: 'not-applicable',
+        coverageEvidence: 'not-applicable', testRun: 'current',
+      },
+      staleReasons: [], unknownReasons: [], comparisonSupplied: true,
+      provenance: 'server-measured',
     },
   }]);
 
   const CURRENT = { sourceFingerprint: 'source-before', testFingerprint: 'test-before' };
   const STALE_SOURCE = { sourceFingerprint: 'source-after-an-edit', testFingerprint: 'test-before' };
 
-  async function rerun(prior: unknown[], run: TestFilesCoreResult = narrowed(),
+  async function rerun(prior: ListedSpecEvidenceRow[], run: TestFilesCoreResult = narrowed(),
     req: typeof matrixRequest = matrixRequest) {
     const d = deps();
     d.list.mockResolvedValue(prior);
