@@ -1,5 +1,6 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
@@ -87,6 +88,12 @@ import {
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
+import { isTerminalState, type TaskRow } from '../../task-manager/types';
+import {
+  readHarnessTestRunEvidence,
+  type HarnessTestRunEvidence,
+} from '../../testing-run-store';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { emitScorecardEmitted } from '../../scorecard-emitted-events';
 import {
   evaluateCriterionCargoChecks,
@@ -94,6 +101,9 @@ import {
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
   evaluateCriterionRequirementChecks,
+  runCriterionCheckFiles,
+  type CriterionCheckRunner,
+  type CriterionCheckRunnerResult,
 } from '../../rubrics-criterion-checks';
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
@@ -147,6 +157,201 @@ import type { SessionState } from '../coordination/presence-wakeability';
  */
 export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
+
+/**
+ * A scorecard check process can survive an API restart while its caller cannot.
+ * The exact request identity gives that process a predictable test-run group;
+ * its task row is the pre-result receipt, and test_runs supplies per-file proof.
+ * Failed or unjudgeable attempts advance to a new group instead of mixing rows.
+ */
+export function scorecardCheckRunPrefix(input: {
+  rubricRef: string;
+  rubricRevision: number | null;
+  criteriaHash: string | null;
+  evidenceFingerprint: string;
+  createdBy: string;
+  subjectRef: string | null;
+  operationRef?: string;
+  workspaceId: string;
+  harnessSlug: string;
+  root: string;
+  sourceSha: string;
+  files: readonly string[];
+}): string {
+  const identity = [
+    input.rubricRef,
+    input.rubricRevision,
+    input.criteriaHash,
+    input.evidenceFingerprint,
+    input.createdBy,
+    input.subjectRef,
+    input.operationRef ?? null,
+    input.workspaceId,
+    input.harnessSlug,
+    input.root,
+    input.sourceSha,
+    [...input.files].sort(),
+  ];
+  return `scorecard-check-${createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 40)}`;
+}
+
+/** The only row shape that can stand in for an interrupted check-run response. */
+export function recoverScorecardCheckRun(input: {
+  rows: readonly HarnessTestRunEvidence[];
+  task: Pick<TaskRow, 'state' | 'exitCode'> | undefined;
+  runId: string;
+  files: readonly string[];
+  root: string;
+  sourceSha: string;
+  workspaceId: string;
+  harnessSlug: string;
+}): CriterionCheckRunnerResult | null {
+  if (!input.task || !isTerminalState(input.task.state) || input.rows.length !== input.files.length) return null;
+  const ids = input.rows.map((row) => row.id);
+  if (new Set(ids).size !== ids.length || new Set(input.files).size !== input.files.length) return null;
+  const expectedFiles = new Set(input.files);
+  const seenFiles = new Set<string>();
+  const byFile: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }> = {};
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const row of input.rows) {
+    const details = parseTestRunExecutionDetails(row.execution_details);
+    if (
+      !Number.isSafeInteger(row.id) || row.id <= 0 || !expectedFiles.has(row.file_path) || seenFiles.has(row.file_path) ||
+      row.finished_at === null || row.workspace_id !== input.workspaceId || row.harness_slug !== input.harnessSlug ||
+      row.run_group_id !== input.runId || row.commit_sha !== input.sourceSha || !details ||
+      details.root !== input.root || details.filePath !== row.file_path || details.runGroupId !== input.runId ||
+      details.workspaceId !== input.workspaceId || details.harnessSlug !== input.harnessSlug ||
+      details.commitSha !== input.sourceSha || details.worktreeDirty !== row.worktree_dirty ||
+      details.testNamePattern !== null || details.mutationPhase !== null || details.collectionFailed
+    ) return null;
+    // A dirty shared checkout is still an actual grading-time run. The ordinary
+    // scorecard path accepts it; spec-evidence's clean-tree provenance validator
+    // is intentionally stricter and cannot be reused here. Preserve the exact
+    // run IDs so readers can inspect its dirty flag instead of claiming clean.
+    if (row.status === 'pass' && (details.passed === 0 || details.failed !== 0)) return null;
+    if (row.status === 'fail' && details.failed === 0) return null;
+    if (row.status === 'skip' && details.passed + details.failed !== 0) return null;
+    if (row.status !== 'pass' && row.status !== 'fail' && row.status !== 'skip') return null;
+    byFile[row.file_path] = {
+      passed: details.passed,
+      failed: details.failed,
+      skipped: details.skipped,
+      collectionFailed: false,
+    };
+    passed += details.passed;
+    failed += details.failed;
+    skipped += details.skipped;
+    seenFiles.add(row.file_path);
+  }
+  if (seenFiles.size !== expectedFiles.size) return null;
+  // A known nonzero router exit contradicts a green reporter result. An
+  // ended_unobserved scope has no exit code, so its complete ledger is the
+  // same conservative fallback used by testing:run-status.
+  if (failed === 0 && input.task.exitCode != null && input.task.exitCode !== 0) return null;
+  return {
+    ok: failed === 0,
+    runId: input.runId,
+    root: input.root,
+    files: input.rows.length,
+    passed,
+    failed,
+    skipped,
+    byFile,
+    failures: [],
+    failuresTruncated: failed > 0,
+    durationMs: null,
+    testRunIds: ids,
+  };
+}
+
+export async function runRecoverableScorecardChecks(
+  opts: Parameters<CriterionCheckRunner>[0],
+  binding: {
+    rubricRef: string;
+    rubricRevision: number | null;
+    criteriaHash: string | null;
+    evidenceFingerprint: string;
+    createdBy: string;
+    subjectRef: string | null;
+    operationRef?: string;
+  },
+  deps: {
+    readRows?: typeof readHarnessTestRunEvidence;
+    listTaskRows?: (launchedBy: string, workspaceId: string) => Promise<Array<Pick<TaskRow, 'state' | 'exitCode'>>>;
+    runFiles?: CriterionCheckRunner;
+    sourceSha?: (root: string) => string | null;
+  } = {},
+): Promise<CriterionCheckRunnerResult> {
+  const runFiles = deps.runFiles ?? runCriterionCheckFiles;
+  const workspaceId = opts.workspaceId;
+  const harnessSlug = opts.harnessSlug;
+  const sourceSha = (deps.sourceSha ?? ((root) => realGitProbe.revParse(root, 'HEAD')))(opts.root);
+  // Non-repository or unattributed rubrics retain the ordinary route. They
+  // cannot make a durable replay claim because its source/scope is unknown.
+  if (!sourceSha || !workspaceId || !harnessSlug) return runFiles(opts);
+  const prefix = scorecardCheckRunPrefix({
+    ...binding,
+    workspaceId,
+    harnessSlug,
+    root: opts.root,
+    sourceSha,
+    files: opts.files,
+  });
+  const readRows = deps.readRows ?? readHarnessTestRunEvidence;
+  const listTaskRows = deps.listTaskRows ?? ((launchedBy: string, ws: string) =>
+    listTasks({ launchedBy, workspaceId: ws, includeEnded: true, limit: 2 }));
+  // Three bounded attempts allow a terminal invalid run to be replaced while
+  // every same-payload replay still starts by reconciling the earlier groups.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const runId = `${prefix}-${attempt}`;
+    let rows: Awaited<ReturnType<typeof readRows>>;
+    let tasks: Awaited<ReturnType<typeof listTaskRows>>;
+    try {
+      [rows, tasks] = await Promise.all([
+        readRows({ workspaceId, harnessSlug, runGroupId: runId }),
+        listTaskRows(`testing:run:${runId}`, workspaceId),
+      ]);
+    } catch {
+      return {
+        ok: false, runId, root: opts.root, error: 'route_error',
+        hint: 'scorecard task or test ledger could not be read; replay outcome remains unknown',
+      };
+    }
+    if (rows === null) {
+      return {
+        ok: false, runId, root: opts.root, error: 'route_error',
+        hint: 'scorecard check ledger is unavailable; cannot determine whether this request already ran',
+      };
+    }
+    if (tasks.some((task) => !isTerminalState(task.state) && task.state !== 'pending' && task.state !== 'running')) {
+      return {
+        ok: false, runId, root: opts.root, error: 'route_error',
+        hint: `scorecard check task ${runId} has an indeterminate state; verify the task before retrying`,
+      };
+    }
+    const pending = tasks.some((task) => !isTerminalState(task.state));
+    if (pending) {
+      return {
+        ok: false, runId, root: opts.root, error: 'timeout',
+        hint: `scorecard check run ${runId} is not terminal after a caller interruption; verify its task state and retry this exact emit later`,
+      };
+    }
+    if (tasks.length === 1 && rows.length > 0) {
+      const recovered = recoverScorecardCheckRun({
+        rows, task: tasks[0], runId, files: opts.files, root: opts.root,
+        sourceSha, workspaceId, harnessSlug,
+      });
+      if (recovered) return recovered;
+    }
+    if (tasks.length === 0 && rows.length === 0) return runFiles({ ...opts, runId });
+  }
+  return {
+    ok: false, runId: `${prefix}-2`, root: opts.root, error: 'route_error',
+    hint: 'three request-bound scorecard check attempts ended without complete trustworthy evidence',
+  };
+}
 
 /**
  * scorecards:emit's final read and ledger write form one deduplication critical
@@ -1102,6 +1307,8 @@ export async function emitScorecard(
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
     evaluateChecks?: typeof evaluateCriterionTestChecks;
+    /** Injectable restart-recovery seam; production reconciles task + test ledgers. */
+    runRecoverableChecks?: typeof runRecoverableScorecardChecks;
     /** Injectable seam for tests — production replays typed ContinuityProbes. */
     evaluateProbeChecks?: typeof evaluateCriterionProbeChecks;
     /** Host-bound direct dispatcher used by ContinuityProbe checks. */
@@ -2504,6 +2711,26 @@ export async function emitScorecard(
         root: checkScope.root,
         ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
         ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
+        ...(deps.evaluateChecks ? {} : {
+          // force:true expressly asks for a fresh sample even when the evidence
+          // fingerprint is unchanged; never satisfy it from an older check run.
+          runner: args.force
+            ? runCriterionCheckFiles
+            : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
+                rubricRef: args.rubricRef,
+                rubricRevision: rubricRevision ?? null,
+                criteriaHash: criteriaHash ?? null,
+                evidenceFingerprint,
+                createdBy: input.createdBy,
+                subjectRef: args.subject?.ref ?? null,
+                operationRef: JSON.stringify({
+                  terminal: args.terminal ?? null,
+                  supersedes: args.supersedes ?? null,
+                  acceptanceOf: args.acceptanceOf ?? null,
+                  acknowledgeExisting: args.acknowledgeExisting ?? null,
+                }),
+            }),
+        }),
         // One shared budget for the batched run. scorecards:emit declares a longer
         // tool timeout below, so the transport gives this mutation enough time to
         // return a typed verdict (and still leaves a full minute for process-group
