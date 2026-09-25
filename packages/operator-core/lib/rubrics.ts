@@ -60,6 +60,7 @@ import {
 import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
+import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
@@ -4262,6 +4263,7 @@ async function amendAcceptanceBarRubric(
         readAcceptanceBarContractSnapshot,
         diffAcceptanceBarContractSnapshots,
         predictAmendedBarProofFloor,
+        barRequiresAutomatedProof,
       } = await import('./acceptance-bar-contract-snapshot');
       const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
       const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
@@ -4293,6 +4295,26 @@ async function amendAcceptanceBarRubric(
       const nextTemplateData = guard.data as { barContract?: { adoptionEpoch?: number | null } };
       const startedBar =
         stored.barContract?.adoptionEpoch != null || nextTemplateData.barContract?.adoptionEpoch != null;
+      // A changed automated BAR with no test layer has no possible adequacy pass:
+      // the ship snapshot calls its depth `undeclared` even after its test runs.
+      // Reuse the activation seed's completeness rule before outside approval or
+      // any revision-invalidating write, while leaving unchanged legacy BARs alone.
+      const missingLayers = candidate.bars.flatMap((bar) =>
+        changedBars.includes(bar.barKey)
+          ? acceptanceBarContractGaps({
+              role: bar.role,
+              method: bar.method,
+              check: bar.check,
+              requiredTestLayers: bar.requiredTestLayers,
+              automatedProofRequired: barRequiresAutomatedProof(bar),
+            })
+              .filter((finding) => finding.gap === 'test_layers_missing')
+              .map((finding) => `${bar.barKey}: ${finding.detail}`)
+          : [],
+      );
+      if (startedBar && missingLayers.length > 0) {
+        throw new Error(`acceptance_bar_amendment_test_layers_missing: ${missingLayers.join('; ')}`);
+      }
       // A classRef bind is metadata-only: it changes neither the BAR set nor any
       // criterion meaning. Do not make this repair depend on the started contract
       // being ready for vetting; draft plans intentionally reach this path before
