@@ -387,6 +387,8 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
 
 let _wiring: HiveDirectoryWiring | null = null;
 let _lastWireAttemptMs = 0;
+/** P-539: the wire attempt still in progress, shared with every concurrent caller. */
+let _wiringInFlight: Promise<HiveDirectoryWiring | null> | null = null;
 
 /**
  * LAZY wire — for surfaces that need the directory live but may run before (or
@@ -396,16 +398,27 @@ let _lastWireAttemptMs = 0;
  * AFTER boot has a dead directory until restart. Returns the existing wiring
  * instantly when already joined; otherwise re-attempts at most once per minute
  * (identity resolution is the expensive/failing part). Best-effort → null.
+ *
+ * P-539: a caller that arrives while a wire is STILL IN PROGRESS gets that same
+ * attempt, not null. The canonical first join bounds this call at 30 s and, on a
+ * slow DHT bootstrap (~55 s measured on the Mac VM rig), retries it; answering
+ * that retry with null inside the 60 s throttle reported "not wired" for a wire
+ * that was about to succeed.
  */
 export async function ensureHiveDirectoryWired(
   workspaceId: string,
   opts: { force?: boolean } = {},
 ): Promise<HiveDirectoryWiring | null> {
   if (_wiring) return _wiring;
+  if (_wiringInFlight) return _wiringInFlight;
   const now = Date.now();
   if (!opts.force && now - _lastWireAttemptMs < 60_000) return null;
   _lastWireAttemptMs = now;
-  return wireHiveDirectoryForWorkspace(workspaceId);
+  const attempt = wireHiveDirectoryForWorkspace(workspaceId).finally(() => {
+    if (_wiringInFlight === attempt) _wiringInFlight = null;
+  });
+  _wiringInFlight = attempt;
+  return attempt;
 }
 
 /**
@@ -604,4 +617,5 @@ export async function reconcilePublicHiveListings(
 export function __resetHiveDirectoryWiring(): void {
   _wiring = null;
   _lastWireAttemptMs = 0;
+  _wiringInFlight = null;
 }

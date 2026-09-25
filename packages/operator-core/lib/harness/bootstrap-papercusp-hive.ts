@@ -144,6 +144,8 @@ export interface BootstrapPapercuspHiveResult {
   /** The repo path used (detected local checkout or fresh clone). */
   path?: string;
   reason?: string;
+  /** P-539: a skip the process retries itself (see startBootstrapPapercuspHive). */
+  retryable?: boolean;
 }
 
 export interface SelfAdmitCanonicalResult {
@@ -276,6 +278,9 @@ export interface BootstrapPapercuspHiveDeps {
     alreadyBooted: number;
     failed: number;
   } | void>;
+  /** P-539: backoff (ms) for re-running a RETRYABLE skip in-process. Default:
+   *  {@link BOOTSTRAP_RETRY_DELAYS_MS}. */
+  retryDelaysMs?: readonly number[];
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -906,6 +911,40 @@ async function bestEffortShare(label: string, fn: () => Promise<void>): Promise<
 let bootstrapInFlight: Promise<BootstrapPapercuspHiveResult> | null = null;
 
 /**
+ * P-539: backoff (ms) for re-running a RETRYABLE skip in-process — 7 attempts over
+ * ~15 minutes. A retryable skip means the box never joined the canonical invite topic
+ * (directory wiring stalled or not ready), so the WI-1585 ingest re-trigger cannot fire
+ * and, before this, nothing re-ran the join until the next app start. Measured on the
+ * Mac VM rig (P-007 run #11): the DHT bootstrap alone took ~55 s against the join's
+ * 30 s wiring bound, and the manual re-trigger paired the invite topic within 1 s.
+ */
+export const BOOTSTRAP_RETRY_DELAYS_MS: readonly number[] = [15_000, 30_000, 60_000, 120_000, 180_000, 240_000, 300_000];
+
+/** Retries already scheduled since the last non-retryable outcome. */
+let bootstrapRetryAttempt = 0;
+let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Schedule the next in-process retry of a retryable skip, at most one pending at a time. */
+function scheduleBootstrapRetry(deps: BootstrapPapercuspHiveDeps): void {
+  if (bootstrapRetryTimer) return;
+  const delays = deps.retryDelaysMs ?? BOOTSTRAP_RETRY_DELAYS_MS;
+  const delayMs = delays[bootstrapRetryAttempt];
+  if (delayMs === undefined) {
+    console.warn(
+      `[papercusp-hive] canonical join still not reachable after ${delays.length} in-process retries — the directory ingest re-trigger or the next boot retries`,
+    );
+    return;
+  }
+  bootstrapRetryAttempt++;
+  const timer = setTimeout(() => {
+    if (bootstrapRetryTimer === timer) bootstrapRetryTimer = null;
+    void startBootstrapPapercuspHive(deps).done.catch(() => {});
+  }, delayMs);
+  timer.unref?.();
+  bootstrapRetryTimer = timer;
+}
+
+/**
  * Single-flight trigger for "start the dogfood clone NOW" — used by BOTH the
  * boot path and the setup-wizard's post-gh-auth "start" endpoint, so they share
  * ONE run instead of racing two clones. Returns the `progressId` immediately (the
@@ -916,6 +955,8 @@ let bootstrapInFlight: Promise<BootstrapPapercuspHiveResult> | null = null;
  * background submodule fill). A `skipped` result (e.g. auth_required because gh
  * isn't signed in yet at boot) RELEASES the latch so the next trigger — the
  * wizard, after the user completes the GitHub step — re-runs and actually clones.
+ * A `retryable` skip (P-539) also schedules that next trigger itself, on
+ * {@link BOOTSTRAP_RETRY_DELAYS_MS}, because no outside trigger can arrive for it.
  */
 export function startBootstrapPapercuspHive(deps: BootstrapPapercuspHiveDeps = {}): {
   progressId: string;
@@ -924,7 +965,13 @@ export function startBootstrapPapercuspHive(deps: BootstrapPapercuspHiveDeps = {
   if (!bootstrapInFlight) {
     bootstrapInFlight = bootstrapPapercuspHive(deps).then(
       (res) => {
-        if (res.state === 'skipped') bootstrapInFlight = null; // allow a retry
+        if (res.state === 'skipped') {
+          bootstrapInFlight = null; // allow a retry
+          if (res.retryable) scheduleBootstrapRetry(deps);
+          else bootstrapRetryAttempt = 0;
+        } else {
+          bootstrapRetryAttempt = 0;
+        }
         return res;
       },
       (err) => {
@@ -936,9 +983,12 @@ export function startBootstrapPapercuspHive(deps: BootstrapPapercuspHiveDeps = {
   return { progressId: BOOTSTRAP_PROGRESS_ID, done: bootstrapInFlight };
 }
 
-/** Test seam — clear the single-flight latch between cases. */
+/** Test seam — clear the single-flight latch (and any pending P-539 retry) between cases. */
 export function __resetBootstrapInFlight(): void {
   bootstrapInFlight = null;
+  bootstrapRetryAttempt = 0;
+  if (bootstrapRetryTimer) clearTimeout(bootstrapRetryTimer);
+  bootstrapRetryTimer = null;
 }
 
 /**
@@ -1207,7 +1257,12 @@ export async function bootstrapPapercuspHive(
 
     return joinRes.state === 'joined'
       ? { state: 'cloned-and-created', slug: joinRes.slug }
-      : { state: 'skipped', slug: joinRes.slug, reason: joinRes.reason };
+      : {
+          state: 'skipped',
+          slug: joinRes.slug,
+          reason: joinRes.reason,
+          ...(joinRes.retryable ? { retryable: true } : {}),
+        };
   }
 
   // 2. Resolve the repo: a local checkout (dev box / a prior clone on PATH) wins;

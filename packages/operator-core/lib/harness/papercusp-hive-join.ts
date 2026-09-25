@@ -74,6 +74,12 @@ export interface JoinCanonicalResult {
   state: 'joined' | 'skipped';
   slug: string | null;
   reason?: string;
+  /**
+   * P-539: the skip happened BEFORE this box joined the canonical invite topic, so the
+   * WI-1585 ingest re-trigger can never fire (the canonical pot announces only on that
+   * topic) and only an in-process retry recovers it before the next app start.
+   */
+  retryable?: boolean;
 }
 
 /** Injectable seams (lib/ DI-for-tests). Production defaults to the real impls. */
@@ -226,17 +232,19 @@ export async function joinCanonicalPapercuspHive(
     } catch (e) {
       // A stalled wire (e.g. a hung GitHub call that never responds) must NOT pin
       // the bar at 5% forever — degrade to a retry like every other non-fatal step
-      // here; the NEXT boot re-runs the whole join.
+      // here. P-539: retryable, because the invite topic is not joined yet (a slow
+      // DHT bootstrap alone exceeds the bound on the Mac VM rig).
       record('clone', 'running', { percent: 10, detail: 'waiting for the Papercusp hive to come online' });
       return {
         state: 'skipped',
         slug: null,
         reason: `hive directory wiring stalled: ${(e as Error)?.message ?? e}`.slice(0, 200),
+        retryable: true,
       };
     }
     if (!wiring) {
       record('clone', 'running', { percent: 0, detail: AWAITING_GH_SIGNIN_DETAIL });
-      return { state: 'skipped', slug: null, reason: 'hive directory not wired (gh auth?)' };
+      return { state: 'skipped', slug: null, reason: 'hive directory not wired (gh auth?)', retryable: true };
     }
     // joinInviteTopic voids discovery.flushed() so it should return promptly, but
     // bound it defensively too — a hang here would also strand the bar at 5%.
