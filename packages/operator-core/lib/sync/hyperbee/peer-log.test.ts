@@ -208,8 +208,20 @@ describe('peer-log getCancellable (P-533)', () => {
     range!.cancel();
     connect();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    // `contiguousLength`, not `has`: RemoteLog.has returns a truthy promise on Hypercore 11.
     expect(remote.contiguousLength).toBe(1);
+    expect(await remote.has(2)).toBe(false);
+  });
+
+  // WI-10003092: Hypercore 11's `has` is async. The old sync wrapper returned `!!Promise`,
+  // true for every block, so the seed-admission guard (seed-log-admission.ts) could not see
+  // a replica whose blocks were never restored.
+  it('has() is true only for blocks that are local', async () => {
+    const { remote, connect } = await replicaOf3();
+    expect([await remote.has(0), await remote.has(1), await remote.has(2)]).toEqual([true, false, false]);
+    connect();
+    await remote.get(2);
+    expect(await remote.has(2)).toBe(true);
+    expect(await remote.has(1)).toBe(false);
   });
 
   it('CONTROL: a prefetch range left alone fetches its blocks in the same window', async () => {

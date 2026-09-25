@@ -172,8 +172,11 @@ export interface RemoteLog {
   prefetch(start: number, end: number): PrefetchRange | undefined;
   /** True iff block `i` is downloaded locally (Hypercore `has`). A snapshot-seeded
    *  joiner never requests blocks before its snapshot index, so this is false there —
-   *  the sparse-fetch the compaction buys (substrate-peer-log-compaction P-008). */
-  has(i: number): boolean;
+   *  the sparse-fetch the compaction buys (substrate-peer-log-compaction P-008).
+   *  Async because Hypercore 11's `has` is: a sync wrapper returned `!!Promise`, true
+   *  for every block, which let the WI-3288 seed-admission guard admit an empty replica
+   *  (WI-10003092). */
+  has(i: number): Promise<boolean>;
   /** Length of the contiguous downloaded prefix from index 0 (Hypercore
    *  `contiguousLength`); 0 when block 0 is absent — i.e. a sparse-from-snapshot replica. */
   readonly contiguousLength: number;
@@ -220,8 +223,8 @@ interface CoreLike {
   /** Hypercore ranged download — returns a Range whose `done()` resolves when
    *  the range is local. Optional in the structural view (present on real cores). */
   download?(range: { start: number; end: number }): { done(): Promise<void>; destroy?(): void };
-  /** Whether block `index` is downloaded locally. Present on real cores. */
-  has?(index: number): boolean;
+  /** Whether block `index` is downloaded locally. Present on real cores; async on Hypercore 11. */
+  has?(index: number): Promise<boolean>;
   /** Length of the contiguous downloaded prefix from 0. Present on real cores. */
   readonly contiguousLength?: number;
   /**
@@ -486,8 +489,8 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
         return undefined;
       }
     },
-    has(i: number): boolean {
-      return typeof core.has === 'function' ? !!core.has(i) : false;
+    async has(i: number): Promise<boolean> {
+      return typeof core.has === 'function' ? Boolean(await core.has(i)) : false;
     },
     get contiguousLength(): number {
       return core.contiguousLength ?? 0;

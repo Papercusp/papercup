@@ -1649,7 +1649,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         const { keyHex } = admission;
         if (keyHex === ownLog.keyHex || admitted.has(keyHex)) continue;
         const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
-        const replicaVerdict = validateSeedReplicaForAdmission(remote, admission);
+        const replicaVerdict = await validateSeedReplicaForAdmission(remote, admission);
         if (!replicaVerdict.ok) {
           // A manifest is a provenance claim, not proof that this target has
           // the corresponding bytes.  In particular, a stale sidecar can
