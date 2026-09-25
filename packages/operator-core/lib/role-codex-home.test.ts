@@ -175,6 +175,7 @@ describe('writeRoleCodexHome', () => {
     expect(toml).not.toContain('memory_tool');
     // tui-status-parity 2026-07-05: hook owns the title (see the su-home test).
     expect(toml).toContain('[tui]\nterminal_title = []');
+    expect(toml).toContain('[tui]\nterminal_title = []\nalternate_screen = "never"\n');
     // tui-status-parity D 2026-07-06: codex also gets a native bottom status pane
     // (codex-own items; canonical rust-v0.142.5 StatusLineItem IDs).
     expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
@@ -649,6 +650,28 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(idempotent.configPath, 'utf8')).toBe(upgradedToml);
   });
 
+  it('repairs the terminal paste setting in an older SU home without losing its rollout', async () => {
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const opts = {
+      sessionKey: 'terminal-paste-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-terminal-paste-upgrade',
+    };
+    const home = writeSuCodexHome({ ...opts, promptText: 'PRESERVE', model: RESOLVED_CODEX_DEFAULT });
+    const rollout = join(home.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(home.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(rollout, '{"type":"session_meta"}\n');
+    const current = readFileSync(home.configPath, 'utf8');
+    writeFileSync(home.configPath, current.replace('alternate_screen = "never"\n', ''));
+
+    const repaired = ensureSuCodexHomeConfig({ ...opts, model: RESOLVED_CODEX_DEFAULT });
+    expect(repaired.repaired).toBe(true);
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('alternate_screen = "never"');
+    expect(readFileSync(rollout, 'utf8')).toContain('session_meta');
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+    expect(ensureSuCodexHomeConfig({ ...opts, model: RESOLVED_CODEX_DEFAULT }).repaired).toBe(false);
+  });
+
   it('repairs a reused SU home from a prior owner without deleting its rollout or prompt', async () => {
     await installFakeHooks();
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
@@ -802,6 +825,7 @@ describe('writeSuCodexHome', () => {
     // title — an EMPTY terminal_title item list stops codex's own OSC-0 writes
     // (default ["activity","project"]) clobbering display.title every turn.
     expect(toml).toContain('[tui]\nterminal_title = []');
+    expect(toml).toContain('[tui]\nterminal_title = []\nalternate_screen = "never"\n');
     // tui-status-parity D 2026-07-06: codex gets a native bottom status pane.
     expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
   });

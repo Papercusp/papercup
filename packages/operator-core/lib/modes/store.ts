@@ -382,11 +382,9 @@ async function applyImpliedModes(
           : { mode: def.id, status: 'already-on' },
       );
     } catch (e) {
-      /* Fail-SOFT but LOUD. The primary mode change already landed and is
-         audited; failing it now would be worse than a partial application. But
-         an unreported miss is the silent half-state this mechanism exists to
-         abolish, so it is returned to the caller (and surfaced by mode:set)
-         rather than swallowed. */
+      /* Return the failed leg. GOAL's outer transaction converts it into a
+         rollback of the primary and implied rows; other modes keep their
+         visible fail-soft behavior. */
       out.push({ mode: def.id, status: 'failed', error: e instanceof Error ? e.message : String(e) });
     }
   }
@@ -712,7 +710,55 @@ async function writeModeRow(
  * All-or-nothing per call; never throws for semantic refusals (returns
  * stickyConflict / error), only for infrastructure failures.
  */
+/** GOAL's primary row and implication cascade are one database transition. */
 export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
+  const def = modeById(opts.modeId);
+  if (def?.id !== GOAL_MODE || !opts.enabled) return setModeCore(opts);
+  const sql = pg(opts.sql);
+  type BeginCapableSql = { begin: <T>(callback: (tx: Sql) => Promise<T>) => Promise<T> };
+  const beginSql = sql as unknown as Partial<BeginCapableSql>;
+  const expected = resolveImpliedModes(def.id);
+  const complete = (result: SetModeResult): boolean =>
+    !result.ok || expected.every((id) =>
+      result.implied?.some((entry) => entry.mode === id && entry.status !== 'failed' && entry.status !== 'skipped'),
+    );
+  const failure = (result: SetModeResult): string =>
+    expected.map((id) => {
+      const entry = result.implied?.find((candidate) => candidate.mode === id);
+      return !entry || entry.status === 'failed' || entry.status === 'skipped'
+        ? `${id}: ${entry?.error ?? entry?.status ?? 'missing from cascade'}`
+        : null;
+    }).filter((entry): entry is string => entry !== null).join('; ');
+
+  if (typeof beginSql.begin === 'function') {
+    let result: SetModeResult;
+    try {
+      result = await beginSql.begin(async (tx) => {
+        const applied = await setModeCore({ ...opts, sql: tx }, { deferNotify: true });
+        if (!complete(applied)) throw new Error(failure(applied));
+        return applied;
+      });
+    } catch (error) {
+      return { ok: false, mode: def, error: `goal_mode_implication_failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (result.ok && (!result.noop || result.implied?.some((entry) => entry.status === 'set'))) {
+      await notifyAgentOrdersChanged(opts.ownerId);
+    }
+    return result;
+  }
+  // A caller-supplied Sql without begin is already a transaction tag. Let its
+  // owner roll back a failed cascade; a root connection without begin cannot
+  // establish the required atomicity and must refuse before writing anything.
+  if (!opts.sql) return { ok: false, mode: def, error: 'goal_mode_atomicity_unavailable' };
+  const result = await setModeCore(opts, { deferNotify: true });
+  if (!complete(result)) throw new Error(`goal_mode_implication_failed: ${failure(result)}`);
+  if (result.ok && (!result.noop || result.implied?.some((entry) => entry.status === 'set'))) {
+    await notifyAgentOrdersChanged(opts.ownerId);
+  }
+  return result;
+}
+
+async function setModeCore(opts: SetModeOpts, control: { deferNotify?: boolean } = {}): Promise<SetModeResult> {
   const def = modeById(opts.modeId);
   if (!def) return { ok: false, error: `unknown mode '${opts.modeId}'` };
   const sql = pg(opts.sql);
@@ -750,7 +796,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     // WI-6974: a mode CLEAR changes what this agent was told, so push the Orders
     // panel for this owner. Reached only past the `noop` guard above, so the push
     // tracks real transitions — the thing a row trigger on agent_modes could not do.
-    await notifyAgentOrdersChanged(opts.ownerId);
+    if (!control.deferNotify) await notifyAgentOrdersChanged(opts.ownerId);
     return { ok: true, mode: def, switchedFrom: null };
   }
 
@@ -786,7 +832,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
         workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
         reason: opts.reason, setBy: opts.setBy, subject: nextSubject,
       });
-      if (implied.some((i) => i.status === 'set')) await notifyAgentOrdersChanged(opts.ownerId);
+      if (implied.some((i) => i.status === 'set') && !control.deferNotify) await notifyAgentOrdersChanged(opts.ownerId);
       return { ok: true, noop: true, mode: def, ...(implied.length ? { implied } : {}) };
     }
   }
@@ -838,7 +884,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
   // WI-6974: same as the clear branch — a set / auto-switch / reason-refresh is a
   // real orders change for THIS owner. Both `noop` early-returns above are already
   // past, so this never fires on a re-assert that wrote nothing.
-  await notifyAgentOrdersChanged(opts.ownerId);
+  if (!control.deferNotify) await notifyAgentOrdersChanged(opts.ownerId);
   const switchedFrom = incumbent && incumbent.mode !== def.id ? incumbent.mode : null;
   return {
     ok: true,

@@ -228,6 +228,10 @@ const REAL_CONFIG = `# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT
 model_provider = "papercusp-codex-gateway"
 # END PAPERCUSP_CODEX_GATEWAY_ROOT
 
+[tui]
+terminal_title = []
+alternate_screen = "never"
+
 [mcp_servers.papercusp-su]
 command = "npx"
 
@@ -279,6 +283,13 @@ function managedHooks(owner: string, includeLifecycle = true) {
 
 describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usable home', () => {
   it('true for a real papercusp home (has the coordination MCP block)', () => {
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    expect(isCodexHomeLaunchReady(dir)).toBe(true);
+  });
+
+  it('repairs a pre-0.157 home before its next GNOME Terminal resume', () => {
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG.replace('alternate_screen = "never"\n', ''));
+    expect(isCodexHomeLaunchReady(dir)).toBe(false);
     writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
     expect(isCodexHomeLaunchReady(dir)).toBe(true);
   });

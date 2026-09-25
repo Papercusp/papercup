@@ -1994,6 +1994,7 @@ export function roleLaunchArgs(
       args: [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         ...modelArgsFor("codex", model),
       ],
     };
@@ -2133,6 +2134,7 @@ export function suLaunchArgs(
       args: [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
       ],
     };
   }
@@ -2528,6 +2530,7 @@ export function resumeArgsFor(
       args: [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         ...modelArgsFor("codex", model),
         ...addDirArgs("codex", addDir),
         ...target,
@@ -13939,6 +13942,10 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
     ) return false;
     const text = readFileSync(join(codexHome, "config.toml"), "utf8"); // throws when absent
     if (!text.includes("[mcp_servers.papercusp-su]")) return false;
+    // Codex 0.157 captures GNOME Terminal right-clicks in alternate-screen
+    // mode. A healthy pre-0.157 home needs an in-place config repair on resume
+    // so the terminal's Paste menu remains usable (WI-10003121).
+    if (!text.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n')) return false;
     if (!expectedOwner) return true;
     if (!text.includes(`client=${encodeURIComponent(expectedOwner)}`))
       return false;

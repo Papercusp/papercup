@@ -36,7 +36,7 @@ interface Row {
 }
 
 /** In-memory agent_modes + agent_mode_changes behind a postgres.js-shaped tagged template. */
-function mockSql() {
+function mockSql(options: { failImpliedMode?: string } = {}) {
   const modes = new Map<string, Row>();
   const changes: Array<Record<string, unknown>> = [];
   const key = (ws: string, o: string, a: string) => `${ws}|${o}|${a}`;
@@ -84,6 +84,9 @@ function mockSql() {
          a successful insert as a conflict). Both errors are invisible from a
          green run — the row is there either way. */
       const doNothing = text.includes('DO NOTHING');
+      if (doNothing && mode === options.failImpliedMode) {
+        throw new Error(`injected implied ${mode} write failure`);
+      }
       if (doNothing && existingRow) return Promise.resolve([]); // PK conflict: no write, no row
       const isGoalElection = text.includes('goal_lease_epoch');
       const storedImpliedBy =
@@ -221,7 +224,18 @@ function mockSql() {
     sql as unknown as {
       begin: <T>(callback: (tx: Sql) => Promise<T>) => Promise<T>;
     }
-  ).begin = async <T>(callback: (tx: Sql) => Promise<T>) => await callback(sql);
+  ).begin = async <T>(callback: (tx: Sql) => Promise<T>) => {
+    const beforeModes = new Map(modes);
+    const beforeChanges = changes.length;
+    try {
+      return await callback(sql);
+    } catch (error) {
+      modes.clear();
+      for (const [k, row] of beforeModes) modes.set(k, row);
+      changes.length = beforeChanges;
+      throw error;
+    }
+  };
   return { sql, modes, changes };
 }
 
@@ -680,6 +694,17 @@ describe('implication cascade (D-003)', () => {
     expect(rows.find((r) => r.mode === 'goal')?.impliedBy).toBeNull();
   });
 
+  it('rolls back the GOAL row, election and AUTO when IDEATE cannot be implied', async () => {
+    const failing = mockSql({ failImpliedMode: 'ideate' });
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: true,
+      reason: 'owns goal g-1', setBy: ME, subject: 'g-1', sql: failing.sql,
+    });
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('goal_mode_implication_failed') });
+    expect(await getModes(WS, ME, failing.sql)).toEqual([]);
+    expect(failing.changes).toEqual([]);
+  });
+
   it('elects one GOAL holder epoch and records a bounded predecessor handoff', async () => {
     const first = await enterGoal();
     expect(first.goalElection).toEqual({
@@ -990,18 +1015,8 @@ describe('implication cascade (D-003)', () => {
     expect(res.implied).toBeUndefined();
   });
 
-  /**
-   * A cascade write that fails must degrade LOUDLY. Silence is the half-applied
-   * state this whole mechanism exists to abolish: the agent would be in GOAL,
-   * be treated by every guard as autonomous, and hold no autonomy row.
-   */
-  it('reports a failed implied write instead of swallowing it — and never fails the applied primary', async () => {
-    let hits = 0;
-    const failing = ((first: unknown, ...vals: unknown[]) => {
-      const text = Array.isArray(first) && 'raw' in (first as object) ? (first as string[]).join(' ') : '';
-      if (text.includes('DO NOTHING') && ++hits === 1) return Promise.reject(new Error('deadlock detected'));
-      return (m.sql as unknown as (f: unknown, ...v: unknown[]) => unknown)(first, ...vals);
-    }) as unknown as Sql;
+  it('rolls back GOAL when AUTO cannot be implied', async () => {
+    const failing = mockSql({ failImpliedMode: 'auto' });
     const res = await setMode({
       workspaceId: WS,
       ownerId: ME,
@@ -1010,13 +1025,11 @@ describe('implication cascade (D-003)', () => {
       reason: 'owns goal g-1',
       setBy: ME,
       subject: 'g-1',
-      sql: failing,
+      sql: failing.sql,
     });
-    expect(res.ok).toBe(true); // the primary landed and is NOT rolled back
-    expect(res.implied).toEqual([
-      { mode: 'auto', status: 'failed', error: 'deadlock detected' },
-      { mode: 'ideate', status: 'set' },
-    ]);
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('goal_mode_implication_failed') });
+    expect(await getModes(WS, ME, failing.sql)).toEqual([]);
+    expect(failing.changes).toEqual([]);
   });
 });
 

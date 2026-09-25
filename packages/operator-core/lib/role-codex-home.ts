@@ -274,11 +274,15 @@ function inheritUserCodexHome(codexHome: string): void {
  * (verified: a pre-set sentinel title survived boot + a full turn), so the
  * hook owns the title — same single-source display.title as claude/omp.
  */
-// codex `[tui]` table. Two knobs, one emission point (TOML forbids duplicate
+// codex `[tui]` table. One emission point (TOML forbids duplicate
 // table headers):
 //  - terminal_title = [] — the objective-title hook owns the title
 //    (single-source display.title); an empty item list stops codex writing its
 //    OWN OSC-0 title each turn (see the doc comment above).
+//  - alternate_screen = "never" — Codex 0.157 enables mouse reporting in its
+//    alternate screen. GNOME Terminal then sends right-clicks to Codex instead
+//    of opening the Paste context menu. Keeping normal scrollback also keeps
+//    the terminal's right-click menu usable (WI-10003121).
 //  - status_line — gives codex a native BOTTOM status pane (tui-status-parity
 //    stopgap D, 2026-07-06). codex 0.142.5 has NO command-backed status item
 //    (openai/codex#17827 is unmerged) so we can't render the papercusp fleet
@@ -295,6 +299,7 @@ const CODEX_TUI_TOML = [
   '# no command-backed status item, openai/codex#17827; stopgap, not fleet chips).',
   '[tui]',
   'terminal_title = []',
+  'alternate_screen = "never"',
   'status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]',
   '',
 ] as const;
@@ -1239,6 +1244,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes(expectedClient) &&
       contextMatches &&
       current.includes(expectedLogDir) &&
+      current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady;
   } catch {
     /* absent or unreadable — that is precisely the repair case */
