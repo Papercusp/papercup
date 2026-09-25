@@ -973,6 +973,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           ...extra.artifacts,
         ];
         const manifest = await captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
+          relativeScriptRoots: ['scanner', 'launcher', 'usage-parser', 'recipe-checker', 'wrapper-script', 'import-extractor'],
           scriptArtifactIds: ['driver', 'transport', 'scanner', 'recipe-checker', 'launcher', 'usage-parser',
             'usage-writer', 'gateway', 'gateway-observer', 'clock', 'wrapper-script', 'pricing', 'import-extractor',
             ...(readSource ? ['source-read-tool'] : [])],
@@ -985,11 +986,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
               ...extra.roots],
             nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
             unresolved: [...mutablePaths.map(path => `unfrozen writable native file: ${path}`),
-              'AST sites from selected frozen scripts only; unresolved relatives, packages, computed/indirect loaders and runtime export conditions remain uncensused',
+              'relative traversal from named roots only; transport/driver/gateway closure, packages, computed/indirect loaders and runtime export conditions remain uncensused',
               'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
               'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
         manifests.push(manifest);
         expect(manifest.scriptCensus).toMatchObject({ runtimeClosureEstablished: false });
+        expect(manifest.scriptCensus!.relativeTraversal!.artifacts.length).toBeGreaterThan(0);
+        expect(manifest.scriptCensus!.relativeTraversal!.scannedArtifactIds).toContain('recipe-checker');
         expect(manifest.scriptCensus!.sites.some(site => site.disposition === 'unbound-relative')).toBe(true);
         expect(manifest.scriptCensus!.sites.some(site => site.disposition === 'external-module')).toBe(true);
         expect(manifest.dependencyScope!.unresolved).toEqual(expect.arrayContaining(
@@ -1506,6 +1509,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           homeInputSha256: resetHome ? createHash('sha256').update(readFileSync(homeProofPath)).digest('hex') : null,
           sourceAncestors: source.ancestors.length, manifestHashes: manifests.map(m => m.sha256),
           scriptCensus: manifests.map(manifest => ({ scriptArtifactIds: manifest.scriptCensus!.scriptArtifactIds,
+            relativeTraversal: { rootArtifactIds: manifest.scriptCensus!.relativeTraversal!.rootArtifactIds,
+              scannedScripts: manifest.scriptCensus!.relativeTraversal!.scannedArtifactIds.length,
+              discoveredArtifacts: manifest.scriptCensus!.relativeTraversal!.artifacts.length },
             sites: manifest.scriptCensus!.sites.length,
             dispositions: Object.fromEntries([...new Set(manifest.scriptCensus!.sites.map(site => site.disposition))].sort()
               .map(disposition => [disposition, manifest.scriptCensus!.sites.filter(site => site.disposition === disposition).length])),
