@@ -11,13 +11,14 @@
  *   3. A delete with neither hlc nor ts (unguarded in SQL) is never skipped.
  *   4. Look-ahead reads are consumed by the fold (one read per position).
  *   5. A failing lookup degrades to today's behavior.
+ *   6. A failing apply holds the cursor at that op's position, prefetch or not.
  *
  * The fake store below mirrors the SQL guards: put wins when its order key is
  * greater or equal (the SQL tie-break is modeled as "apply"), a guarded del deletes
  * when its key is >= the stored key, and an unguarded del always deletes.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encodeHlc } from '@papercusp/locks-core';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
@@ -215,6 +216,41 @@ describe('stored-order prefetch (P-002)', () => {
     expect(skips).toBe(0);
     expect(store.applied).toEqual(['engineer-issues::papercusp/WI-1']);
     expect(store.rows.get('engineer-issues::papercusp/WI-1')?.value).toBe('stored');
+  });
+
+  it('holds the cursor at a failing apply in a prefetched window', async () => {
+    // WI-1 is stale against its stored row (the seed skips it), WI-2 applies, WI-3's apply throws.
+    const store = fakeStore(new Map([['engineer-issues::papercusp/WI-1', { hlc: null, ts: 1_000, value: 'stored' }]]));
+    const apply = async (env: OpEnvelope): Promise<boolean> => {
+      if (env.hbKey === 'papercusp/WI-3') throw new Error('apply failed');
+      return store.apply(env);
+    };
+    const log = memLog('a'.repeat(64), [
+      put('papercusp/WI-1', 500),
+      put('papercusp/WI-2', 1_001),
+      put('papercusp/WI-3', 1_002),
+      put('papercusp/WI-4', 1_003),
+    ]);
+    const cursor = createMergeCursor();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: apply,
+        getTimeoutMs: 0,
+        prefetchStoredOrder: store.prefetch,
+        storedOrderPrefetchWindow: 31,
+      });
+      expect(res.storedOrderSkips).toBe(1);
+      expect(res.caughtUp).toBe(false);
+      expect(cursor.positions.get(log.keyHex)).toBe(2);
+      expect(cursor.applyFailures?.get(log.keyHex)).toMatchObject({ position: 2 });
+      expect(store.applied).not.toContain('engineer-issues::papercusp/WI-1');
+      expect(store.rows.get('engineer-issues::papercusp/WI-2')?.ts).toBe(1_001);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('omits storedOrderSkips when the option is absent (result shape unchanged)', async () => {
