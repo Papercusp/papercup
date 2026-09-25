@@ -42,7 +42,7 @@ import {
   resetReadCursorStore,
 } from './agent-tools/coordination/read-cursors';
 import {
-  buildTurnStartOrientationBlock, defaultOrientationDeps, TURN_START_IDENTITY_DELIVERY_KEY,
+  bindTurnStartIdentityOutputs, buildTurnStartOrientationBlock, defaultOrientationDeps, TURN_START_IDENTITY_DELIVERY_KEY,
   type OrientationDeps,
 } from './turn-start-orientation';
 import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
@@ -95,6 +95,7 @@ const turn = (confirmedDeliveryToken?: string | null) =>
     workspaceId: 'ws-proof',
     deps,
     identityBinder: identityBindMock as never,
+    identityAssignmentReader: async () => null,
     ...(confirmedDeliveryToken === undefined ? {} : { confirmedDeliveryToken }),
   });
 
@@ -131,6 +132,63 @@ afterEach(async () => {
 });
 
 describe('turn-start orientation — ack-on-proof', () => {
+  it('binds root SU mode and presence assignment under the existing confirmed delivery token', async () => {
+    const modes = [{ axisKey: 'autonomy', mode: 'auto', reason: 'owner',
+      setBy: 'su-proof', setBySelf: true, ownerDirected: true, impliedBy: null }];
+    const assignmentReader = vi.fn(async () => ({ ownerId: 'su-proof', workspaceId: 'ws-proof',
+      intent: 'WI-9 current task', currentPlanSlug: 'current-plan', stale: false }));
+    const boundTurn = (confirmedDeliveryToken: string | null) => buildTurnStartOrientationBlock({
+      ownerId: 'su-proof', workspaceId: 'ws-proof',
+      deps: { ...deps, modes: async () => modes }, confirmedDeliveryToken,
+      identityBinder: identityBindMock as never, identityAssignmentReader: assignmentReader,
+    });
+    const first = await boundTurn(null);
+    await drainDetached();
+    expect(assignmentReader).toHaveBeenCalledExactlyOnceWith('su-proof');
+    expect(identityBindMock).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: 'su', sourceTier: 'builtin', outputs: [
+        { contributionId: 'current-mode-state', value: modes },
+        { contributionId: 'current-assignment', value: {
+          ownerId: 'su-proof', intent: 'WI-9 current task', currentPlanSlug: 'current-plan',
+        } },
+      ],
+    }));
+    await boundTurn(first.deliveryToken!);
+    expect(store.acks[1]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+      token: first.deliveryToken, status: 'bound', root: { identityId: 'su' },
+    });
+  });
+
+  it('reports a missing presence assignment without substituting the held-item list', async () => {
+    const bound = await bindTurnStartIdentityOutputs({
+      ownerId: 'su-proof', workspaceId: 'ws-proof',
+      state: { held: [{ id: 'WI-9' }], modes: [] } as never,
+      committed: null, epoch: 1, contextTokens: null, block: 'current block', deliveryToken: 'token',
+    }, identityBindMock as never, async () => null);
+    expect(bound.root).toMatchObject({
+      identityId: 'su', status: 'unavailable', errorRef: 'turn-start:root-binding-failed',
+    });
+    expect(identityBindMock).not.toHaveBeenCalledWith(expect.objectContaining({ identityId: 'su' }));
+  });
+
+  it('compiles the root SU receipt with the actual built-in identity source', async () => {
+    const bound = await bindTurnStartIdentityOutputs({
+      ownerId: 'su-proof', workspaceId: 'ws-proof',
+      state: { modes: [{ axisKey: 'autonomy', mode: 'auto', reason: 'owner',
+        setBy: 'su-proof', setBySelf: true, ownerDirected: true, impliedBy: null }] } as never,
+      committed: null, epoch: 1, contextTokens: null, block: 'current block', deliveryToken: 'token',
+    }, undefined, async () => ({ ownerId: 'su-proof', workspaceId: 'ws-proof',
+      intent: 'WI-9 current task', currentPlanSlug: 'current-plan', stale: false }));
+    expect(bound.root).toMatchObject({ identityId: 'su', sourceRevision: expect.any(String) });
+    if (!('contributions' in bound.root)) throw new Error('root SU output was not bound');
+    expect(bound.root.contributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound',
+        producerRef: 'modes/store:agent_modes' }),
+      expect.objectContaining({ contributionId: 'current-assignment', status: 'bound',
+        producerRef: 'coord:presence' }),
+    ]));
+  });
+
   it('re-sends a line whose delivery was never proven, and stops once it is', async () => {
     const first = await turn(null);
     expect(first.block).toContain(HISTORY_LINE);
